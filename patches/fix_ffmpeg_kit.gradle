@@ -1,0 +1,29 @@
+// FFmpeg Kit Flutter 补丁文件
+// 这个脚本会修复 FFmpegKitFlutterPlugin.java 中的 v1 embedding 兼容性问题
+
+def fixFFmpegKit() {
+    def pluginPath = new File(project.buildDir, '../../.pub-cache/hosted/pub.dev/ffmpeg_kit_flutter_full-6.0.3/android/src/main/java/com/arthenica/ffmpegkit/flutter/FFmpegKitFlutterPlugin.java')
+
+    if (!pluginPath.exists()) {
+        // 尝试在不同的路径查找
+        pluginPath = new File(System.getProperty('user.home'), '.pub-cache/hosted/pub.dev/ffmpeg_kit_flutter_full-6.0.3/android/src/main/java/com/arthenica/ffmpegkit/flutter/FFmpegKitFlutterPlugin.java')
+    }
+
+    if (pluginPath.exists()) {
+        println "正在修复 FFmpeg Kit Flutter 插件..."
+
+        def content = pluginPath.text
+        def fixed = content
+            .replaceAll("final io.flutter.plugin.common.PluginRegistry.Registrar registrar", "final Object registrar")
+            .replaceAll("public static void registerWith\\(final io.flutter.plugin.common.PluginRegistry.Registrar registrar\\)", "public static void registerWith(final Object registrar)")
+
+        pluginPath.text = fixed
+        println "FFmpeg Kit Flutter 插件修复完成!"
+    } else {
+        println "警告: 找不到 FFmpeg Kit Flutter 插件文件，跳过修复"
+    }
+}
+
+afterEvaluate {
+    fixFFmpegKit()
+}

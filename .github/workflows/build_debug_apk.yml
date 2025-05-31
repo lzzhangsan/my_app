@@ -1,0 +1,74 @@
+name: Flutter Build Release APK
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:  # 允许手动触发工作流
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.32.0'  # 指定Flutter版本
+          channel: 'stable'
+
+      - name: Cache Flutter dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.pub-cache
+          key: ${{ runner.os }}-pub-${{ hashFiles('**/pubspec.lock') }}
+          restore-keys: ${{ runner.os }}-pub-
+
+      # 确保assets/media目录存在
+      - name: Ensure assets directories exist
+        run: |
+          mkdir -p assets/media
+          touch assets/media/.gitkeep
+
+      # 获取Flutter依赖
+      - name: Get dependencies
+        run: flutter pub get
+
+      # 更新Android Gradle插件版本
+      - name: Update Android Gradle Plugin
+        run: |
+          cd android
+          sed -i 's/com.android.tools.build:gradle:[0-9.]\+/com.android.tools.build:gradle:8.3.0/g' build.gradle
+          
+          # 增加Java堆内存以解决OOM问题
+          cat > gradle.properties << EOF
+          org.gradle.jvmargs=-Xmx4g -XX:MaxPermSize=512m -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          android.enableJetifier=true
+          android.nonTransitiveRClass=false
+          android.nonFinalResIds=false
+          EOF
+
+      # 构建Release APK
+      - name: Build Release APK
+        run: |
+          # 设置更大的Java堆内存
+          export GRADLE_OPTS="-Xmx4g -Dorg.gradle.jvmargs=-Xmx4g"
+          flutter build apk --release --no-shrink
+
+      # 上传APK
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release
+          path: build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 7
