@@ -21,8 +21,8 @@ dependencies:
   path: ^1.8.0  # 调整为 1.8.0
   image_picker: ^0.8.0+4  # 调整为 0.8.0+4
   photo_manager: ^3.5.1
-  video_player: ^2.9.2
-  chewie: ^1.7.1  # 添加chewie视频播放UI组件
+  video_player: ^2.8.6
+  chewie: ^1.8.0  # 添加chewie视频播放UI组件
   flutter_colorpicker: ^1.0.3  # 调整为 1.0.3
   archive: ^4.0.4
   file_picker: ^9.0.2
