@@ -12,8 +12,8 @@ System.setProperty("android.overridePathCheck", "true")
 
 android {
     namespace "com.example.change_copy"
-    compileSdk 34  // 使用稳定版本
-    ndkVersion "23.1.7779620"  // 使用稳定的NDK版本
+    compileSdk 35  // 更新到35以满足插件要求
+    ndkVersion "25.1.8937393"  // 更新NDK版本以满足插件要求
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
@@ -34,7 +34,7 @@ android {
         // You can update the following values to match your application needs.
         // For more information, see: https://docs.flutter.dev/deployment/android#reviewing-the-gradle-build-configuration.
         minSdkVersion 24
-        targetSdkVersion 34  // 使用稳定版本
+        targetSdkVersion 35  // 更新到35以满足插件要求
         versionCode 1
         versionName "1.0"
 
