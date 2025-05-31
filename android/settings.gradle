@@ -23,7 +23,7 @@ plugins {
     id "org.jetbrains.kotlin.android" version "1.9.10" apply false
 }
 
-gradle.startParameter.systemPropertiesArgs.put("android.overridePathCheck", "true")
-System.setProperty("android.overridePathCheck", "true")
+// Removed gradle.startParameter configuration as it's not supported in Gradle 8.x
+// System properties can be set via gradle.properties instead
 
 include ":app"
