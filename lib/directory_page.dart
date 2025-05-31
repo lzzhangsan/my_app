@@ -2063,21 +2063,6 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
                 ),
               ),
             ),
-          // 添加浮动性能指示器
-          Positioned(
-            top: 16,
-            right: 16,
-            child: FloatingPerformanceIndicator(
-              onTap: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => PerformanceMonitorPage(),
-                  ),
-                );
-              },
-            ),
-          ),
         ],
       ),
     );

@@ -585,31 +585,25 @@ class _CoverPageState extends State<CoverPage> {
               ),
             ),
           
-          // 文本框
-          ..._textBoxes.map<Widget>((data) {
-            return Positioned(
-              key: ValueKey(data['id']),
-              left: data['positionX'],
-              top: data['positionY'],
-              child: GestureDetector(
-                behavior: HitTestBehavior.translucent,
-                onPanUpdate: (details) {
-                  setState(() {
-                    double newDx = data['positionX'] + details.delta.dx;
-                    double newDy = data['positionY'] + details.delta.dy;
-
-                    // 更新位置
-                    data['positionX'] = newDx;
-                    data['positionY'] = newDy;
-                  });
-                },
-                onPanEnd: (_) {
-                  _saveContent();
-                },
-                child: _buildTextBox(data),
-              ),
-            );
+          // 文本框层
+          ..._textBoxes.map((textBoxData) {
+            return _buildTextBox(textBoxData);
           }).toList(),
+          // 添加浮动性能指示器
+          Positioned(
+            top: 16,
+            right: 16,
+            child: FloatingPerformanceIndicator(
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => PerformanceMonitorPage(),
+                  ),
+                );
+              },
+            ),
+          ),
         ],
       ),
       // 优化设置按钮样式 - 磨砂玻璃效果
