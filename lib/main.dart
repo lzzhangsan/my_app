@@ -5,6 +5,8 @@ import 'cover_page.dart';
 import 'media_manager_page.dart';
 import 'core/service_locator.dart';
 import 'package:flutter/services.dart';
+import 'widgets/performance_indicator.dart';
+import 'performance_monitor_page.dart';
 
 // 添加全局导航键，以便可以在应用的任何地方访问Navigator
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
@@ -170,6 +172,22 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                   );
                 }),
               ),
+            ),
+          ),
+          
+          // 添加浮动性能指示器
+          Positioned(
+            top: 40,
+            right: 16,
+            child: FloatingPerformanceIndicator(
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => PerformanceMonitorPage(),
+                  ),
+                );
+              },
             ),
           ),
         ],

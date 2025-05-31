@@ -17,6 +17,7 @@ import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 import 'services/image_picker_service.dart';
 import 'database_helper.dart'; // 导入MediaType枚举
+import 'performance_monitor_page.dart';
 
 class DocumentEditorPage extends StatefulWidget {
   final String documentName;
@@ -1106,6 +1107,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
           onMediaMove: _handleMediaMove,
           onMediaDelete: _handleMediaDelete,
           onMediaFavorite: _handleMediaFavorite,
+          onPerformanceMonitor: _openPerformanceMonitor,
         ),
       ),
     );
@@ -1533,6 +1535,15 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
       }
       return null;
     }
+  }
+
+  void _openPerformanceMonitor() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => const PerformanceMonitorPage(),
+      ),
+    );
   }
 }
 

@@ -13,6 +13,8 @@ import 'package:path_provider/path_provider.dart';
 import 'dart:async'; // For Timer
 import 'package:path/path.dart' as path;
 import 'services/image_picker_service.dart';
+import 'widgets/performance_indicator.dart';
+import 'performance_monitor_page.dart';
 
 class DirectoryPage extends StatefulWidget {
   final Function(String) onDocumentOpen;
@@ -2061,6 +2063,21 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
                 ),
               ),
             ),
+          // 添加浮动性能指示器
+          Positioned(
+            top: 16,
+            right: 16,
+            child: FloatingPerformanceIndicator(
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => PerformanceMonitorPage(),
+                  ),
+                );
+              },
+            ),
+          ),
         ],
       ),
     );
