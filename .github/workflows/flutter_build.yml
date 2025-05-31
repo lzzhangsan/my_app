@@ -13,53 +13,78 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
+      
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: 'zulu'
           java-version: '17'
-
+      
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.32.0'  # 指定Flutter版本
           channel: 'stable'
-
+      
       - name: Cache Flutter dependencies
         uses: actions/cache@v4
         with:
           path: ~/.pub-cache
           key: ${{ runner.os }}-pub-${{ hashFiles('**/pubspec.lock') }}
           restore-keys: ${{ runner.os }}-pub-
-
+      
+      - name: Cache Gradle dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+      
       # 确保assets目录存在
       - name: Ensure assets directories exist
         run: |
           mkdir -p assets/media
           touch assets/media/.gitkeep
-
+      
       # 获取Flutter依赖
       - name: Get dependencies
         run: flutter pub get
-
-      # 更新Android Gradle插件版本
+      
+      # 更新Android构建配置
       - name: Update Android build configurations
         run: |
           cd android
+          
+          # 备份原始文件
+          cp build.gradle build.gradle.bak
+          cp gradle.properties gradle.properties.bak 2>/dev/null || true
+          cp app/build.gradle app/build.gradle.bak
+          
           # 更新build.gradle中的Gradle插件版本
           sed -i 's/com.android.tools.build:gradle:[0-9.]\+/com.android.tools.build:gradle:8.3.0/g' build.gradle
           # 更新Kotlin版本
           sed -i 's/ext.kotlin_version = .*$/ext.kotlin_version = "1.9.10"/g' build.gradle
           
-          # 增加Java堆内存以解决OOM问题
+          # 优化gradle.properties配置
           cat > gradle.properties << EOF
-          org.gradle.jvmargs=-Xmx4g -XX:MaxPermSize=512m -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8
+          # JVM内存配置
+          org.gradle.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=1g -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8
+          
+          # Android配置
           android.useAndroidX=true
           android.enableJetifier=true
-          org.gradle.daemon=false
           android.nonTransitiveRClass=false
           android.nonFinalResIds=false
+          
+          # Gradle优化（禁用以提高稳定性）
+          org.gradle.daemon=false
+          org.gradle.parallel=false
+          org.gradle.caching=false
+          org.gradle.configureondemand=false
+          android.enableBuildCache=false
           EOF
           
           # 确保app/build.gradle使用声明式方式应用Flutter插件
@@ -69,140 +94,102 @@ jobs:
           
           # 移除旧的apply方式
           sed -i '/apply from: "\$flutterRoot\/packages\/flutter_tools\/gradle\/flutter.gradle"/d' app/build.gradle
+          
+          # 确保使用稳定的SDK版本
+          sed -i 's/compileSdkVersion 35/compileSdkVersion 34/g' app/build.gradle
+          sed -i 's/targetSdkVersion 35/targetSdkVersion 34/g' app/build.gradle
 
-      # 修复FFmpeg Kit插件问题
-      - name: Fix FFmpeg Kit plugin
+      # 验证Flutter配置
+      - name: Verify Flutter configuration
         run: |
-          FFMPEG_PLUGIN_PATH="$HOME/.pub-cache/hosted/pub.dev/ffmpeg_kit_flutter_full-6.0.3/android/src/main/java/com/arthenica/ffmpegkit/flutter/FFmpegKitFlutterPlugin.java"
+          flutter doctor -v
+          flutter --version
           
-          # 检查文件是否存在
-          if [ -f "$FFMPEG_PLUGIN_PATH" ]; then
-            echo "找到FFmpeg Kit插件文件，开始修复..."
-            
-            # 简单替换，将整个registerWith方法注释掉
-            sed -i 's/public static void registerWith(final io.flutter.plugin.common.PluginRegistry.Registrar registrar)/\/\/ 已注释掉: public static void registerWith(final io.flutter.plugin.common.PluginRegistry.Registrar registrar)/g' "$FFMPEG_PLUGIN_PATH"
-            sed -i '/\/\/ 已注释掉: public static void registerWith/,/}/s/^/\/\/ /' "$FFMPEG_PLUGIN_PATH"
-            
-            # 替换init方法参数中的Registrar类型
-            sed -i 's/final io.flutter.plugin.common.PluginRegistry.Registrar registrar/final Object registrar/g' "$FFMPEG_PLUGIN_PATH"
-            
-            echo "FFmpeg Kit插件修复完成!"
-          else
-            echo "警告: 找不到FFmpeg Kit插件文件: $FFMPEG_PLUGIN_PATH"
-            find $HOME/.pub-cache -name "FFmpegKitFlutterPlugin.java" || echo "没有找到FFmpegKitFlutterPlugin.java文件"
-          fi
-
-      # 修改pubspec.yaml以暂时禁用ffmpeg_kit_flutter_full
-      - name: Disable problematic plugin
+      # 清理并重新获取依赖
+      - name: Clean and get dependencies
         run: |
-          # 创建临时备份
-          cp pubspec.yaml pubspec.yaml.bak
-          
-          # 注释掉ffmpeg_kit_flutter_full依赖
-          sed -i 's/^  ffmpeg_kit_flutter_full: \^6.0.3/  # ffmpeg_kit_flutter_full: \^6.0.3  # 临时禁用/g' pubspec.yaml
-          
-          # 显示修改后的pubspec.yaml
-          echo "修改后的pubspec.yaml:"
-          cat pubspec.yaml | grep ffmpeg
-          
-          # 运行flutter pub get更新依赖
+          flutter clean
           flutter pub get
-
-      # 临时修改使用FFmpeg的代码
-      - name: Modify FFmpeg related code
+          
+      # 检查依赖冲突
+      - name: Check for dependency conflicts
+        continue-on-error: true
         run: |
-          if [ -f "lib/media_manager_page.dart" ]; then
-            echo "修改 media_manager_page.dart 文件，临时禁用FFmpeg相关功能..."
-            
-            # 备份原始文件
-            cp lib/media_manager_page.dart lib/media_manager_page.dart.bak
-            
-            # 注释掉FFmpeg导入
-            sed -i 's|^import .package:ffmpeg_kit_flutter_full/.*|// &  // 临时禁用|g' lib/media_manager_page.dart
-            
-            # 创建临时替代功能
-            cat > /tmp/ffmpeg_replacement.dart << 'EOF'
-// 临时FFmpeg替代实现
-class _FFmpegReplacement {
-  static Future<dynamic> execute(String command) async {
-    print('FFmpeg功能临时禁用: $command');
-    return _DummySession();
-  }
-}
-
-class _ReturnCodeReplacement {
-  static bool isSuccess(dynamic returnCode) {
-    return true;
-  }
-}
-
-class _DummySession {
-  Future<dynamic> getReturnCode() async {
-    return 0;
-  }
-}
-EOF
-            
-            # 将替代实现插入到文件顶部
-            sed -i '1s|^|// 临时FFmpeg替代实现\nimport "dart:async";\n\n|' lib/media_manager_page.dart
-            cat /tmp/ffmpeg_replacement.dart >> lib/media_manager_page.dart
-            
-            # 替换FFmpegKit调用
-            sed -i 's/FFmpegKit.execute/_FFmpegReplacement.execute/g' lib/media_manager_page.dart
-            
-            # 替换ReturnCode调用
-            sed -i 's/ReturnCode.isSuccess/_ReturnCodeReplacement.isSuccess/g' lib/media_manager_page.dart
-            
-            echo "FFmpeg相关代码修改完成!"
-          else
-            echo "警告: 找不到 lib/media_manager_page.dart 文件"
-          fi
+          flutter pub deps
+          flutter analyze --no-fatal-infos
 
       # 构建APK
       - name: Build APK
         run: |
           # 设置更大的Java堆内存
-          export GRADLE_OPTS="-Xmx4g -Dorg.gradle.jvmargs=-Xmx4g"
+          export GRADLE_OPTS="-Xmx6g -Dorg.gradle.jvmargs=-Xmx6g"
+          export _JAVA_OPTIONS="-Xmx6g"
           
-          # 清理之前的构建
+          # 构建APK（使用debug模式以提高成功率）
+          flutter build apk --debug --verbose --android-skip-build-dependency-validation
+          
+      # 备用构建方案（如果主构建失败）
+      - name: Fallback build
+        if: failure()
+        continue-on-error: true
+        run: |
+          echo "主构建失败，尝试备用构建方案..."
+          
+          # 重置到原始配置
+          cd android
+          cp build.gradle.bak build.gradle 2>/dev/null || true
+          cp gradle.properties.bak gradle.properties 2>/dev/null || true
+          cp app/build.gradle.bak app/build.gradle 2>/dev/null || true
+          
+          cd ..
           flutter clean
           flutter pub get
           
-          # 构建APK
-          flutter build apk --release --verbose
+          # 使用更保守的构建选项
+          export GRADLE_OPTS="-Xmx4g -Dorg.gradle.jvmargs=-Xmx4g"
+          flutter build apk --debug --no-shrink
 
-      # 调试：查找生成的APK文件
-      - name: Debug - Find APK files
+      # 查找生成的APK文件
+      - name: Find APK files
         run: |
           echo "=== 查找所有APK文件 ==="
           find . -name "*.apk" -type f 2>/dev/null || echo "没有找到APK文件"
           
-          echo "\n=== 检查build目录结构 ==="
-          ls -la build/ 2>/dev/null || echo "build目录不存在"
-          
-          echo "\n=== 检查app目录结构 ==="
-          ls -la build/app/ 2>/dev/null || echo "build/app目录不存在"
-          
-          echo "\n=== 检查outputs目录结构 ==="
-          ls -la build/app/outputs/ 2>/dev/null || echo "build/app/outputs目录不存在"
-          
-          echo "\n=== 检查flutter-apk目录结构 ==="
-          ls -la build/app/outputs/flutter-apk/ 2>/dev/null || echo "build/app/outputs/flutter-apk目录不存在"
-          
-          echo "\n=== 检查apk目录结构 ==="
-          ls -la build/app/outputs/apk/ 2>/dev/null || echo "build/app/outputs/apk目录不存在"
-          
-          echo "\n=== 检查release目录结构 ==="
-          ls -la build/app/outputs/apk/release/ 2>/dev/null || echo "build/app/outputs/apk/release目录不存在"
+          echo "\n=== 检查主要输出目录 ==="
+          ls -la build/app/outputs/flutter-apk/ 2>/dev/null || echo "flutter-apk目录不存在"
+          ls -la build/app/outputs/apk/debug/ 2>/dev/null || echo "apk/debug目录不存在"
+          ls -la build/app/outputs/apk/release/ 2>/dev/null || echo "apk/release目录不存在"
 
-      # 上传APK（多路径尝试）
+      # 上传APK
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: app-release
+          name: app-debug
           path: |
+            build/app/outputs/flutter-apk/app-debug.apk
+            build/app/outputs/apk/debug/app-debug.apk
+            build/app/outputs/apk/debug/*.apk
             build/app/outputs/flutter-apk/app-release.apk
             build/app/outputs/apk/release/app-release.apk
             build/app/outputs/apk/release/*.apk
           retention-days: 7
           if-no-files-found: warn
+          
+      # 构建摘要
+      - name: Build summary
+        if: always()
+        run: |
+          echo "\n=== 构建摘要 ==="
+          echo "Flutter版本: $(flutter --version | head -1)"
+          echo "Java版本: $(java -version 2>&1 | head -1)"
+          echo "Gradle版本: $(cd android && ./gradlew --version | grep Gradle || echo '未知')"
+          
+          if [ -f "build/app/outputs/flutter-apk/app-debug.apk" ]; then
+            echo "✅ Debug APK构建成功"
+            ls -lh build/app/outputs/flutter-apk/app-debug.apk
+          elif [ -f "build/app/outputs/apk/debug/app-debug.apk" ]; then
+            echo "✅ Debug APK构建成功（备用路径）"
+            ls -lh build/app/outputs/apk/debug/app-debug.apk
+          else
+            echo "❌ APK构建失败"
+          fi

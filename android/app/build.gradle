@@ -12,7 +12,7 @@ System.setProperty("android.overridePathCheck", "true")
 
 android {
     namespace "com.example.change_copy"
-    compileSdk 35  // 升级到35以支持audioplayers_android插件
+    compileSdk 34  // 使用稳定版本
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
@@ -33,7 +33,7 @@ android {
         // You can update the following values to match your application needs.
         // For more information, see: https://docs.flutter.dev/deployment/android#reviewing-the-gradle-build-configuration.
         minSdkVersion 24
-        targetSdkVersion 35  // 升级到35以支持audioplayers_android插件
+        targetSdkVersion 34  // 使用稳定版本
         versionCode 1
         versionName "1.0"
 
