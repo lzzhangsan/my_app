@@ -25,6 +25,13 @@ jobs:
         with:
           flutter-version: '3.32.0'  # 指定Flutter版本
           channel: 'stable'
+
+      - name: Setup Android NDK
+        id: setup_ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: 'r23c' # 对应 23.x.xxxxxxx 版本系列，更稳定
+          add-to-path: true
       
       - name: Cache Flutter dependencies
         uses: actions/cache@v4
@@ -118,15 +125,10 @@ jobs:
           flutter pub deps
           flutter analyze --no-fatal-infos
 
-      # 构建APK
-      - name: Build APK
-        run: |
-          # 设置更大的Java堆内存
-          export GRADLE_OPTS="-Xmx6g -Dorg.gradle.jvmargs=-Xmx6g"
-          export _JAVA_OPTIONS="-Xmx6g"
-          
-          # 构建APK（使用debug模式以提高成功率）
-          flutter build apk --debug --verbose --android-skip-build-dependency-validation
+      - name: Build Debug APK
+        run: flutter build apk --debug
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup_ndk.outputs.ndk-path }}
           
       # 备用构建方案（如果主构建失败）
       - name: Fallback build
