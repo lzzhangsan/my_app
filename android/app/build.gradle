@@ -13,6 +13,7 @@ System.setProperty("android.overridePathCheck", "true")
 android {
     namespace "com.example.change_copy"
     compileSdk 34  // 使用稳定版本
+    ndkVersion "23.1.7779620"  // 使用稳定的NDK版本
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
