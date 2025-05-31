@@ -85,7 +85,8 @@ subprojects {
 }
 
 // 禁用Gradle守护进程，以防路径问题导致守护进程失败
-gradle.startParameter.useDaemon = false
+// Note: gradle.startParameter.useDaemon is not supported in Gradle 8.x
+// Use gradle.properties to configure daemon settings instead
 
 tasks.register('clean', Delete) {
     delete rootProject.buildDir
