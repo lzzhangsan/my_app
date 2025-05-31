@@ -17,13 +17,13 @@ pluginManagement {
     }
 }
 
-gradle.startParameter.systemPropertiesArgs.put("android.overridePathCheck", "true")
-System.setProperty("android.overridePathCheck", "true")
-
 plugins {
     id "dev.flutter.flutter-plugin-loader" version "1.0.0"
     id "com.android.application" version "8.3.0" apply false  // 更新为8.3.0以匹配build.gradle
     id "org.jetbrains.kotlin.android" version "1.9.10" apply false
 }
+
+gradle.startParameter.systemPropertiesArgs.put("android.overridePathCheck", "true")
+System.setProperty("android.overridePathCheck", "true")
 
 include ":app"
