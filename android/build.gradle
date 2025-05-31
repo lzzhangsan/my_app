@@ -7,7 +7,7 @@ buildscript {
         mavenCentral()
     }
     dependencies {
-        classpath 'com.android.tools.build:gradle:8.1.4'  // 升级为8.1.4版本匹配Gradle 8.4
+        classpath 'com.android.tools.build:gradle:8.0.2'  // 匹配Gradle 8.0版本
         classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
     }
 
