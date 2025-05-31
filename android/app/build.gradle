@@ -11,11 +11,7 @@ plugins {
 }
 
 android {
-<<<<<<< HEAD
     namespace "com.example.change_copy"
-=======
-    namespace "com.example.change.copy"
->>>>>>> 96c2942610f0e6836d584e769e2e05f34a40fad1
     compileSdkVersion 34
 
     compileOptions {

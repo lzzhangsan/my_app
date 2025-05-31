@@ -1,7 +1,4 @@
 // 在构建开始之前强制禁用路径检查
-gradle.startParameter.systemPropertiesArgs.put("android.overridePathCheck", "true")
-System.setProperty("android.overridePathCheck", "true")
-
 pluginManagement {
     def flutterSdkPath = {
         def properties = new Properties()
@@ -19,6 +16,9 @@ pluginManagement {
         gradlePluginPortal()
     }
 }
+
+gradle.startParameter.systemPropertiesArgs.put("android.overridePathCheck", "true")
+System.setProperty("android.overridePathCheck", "true")
 
 plugins {
     id "dev.flutter.flutter-plugin-loader" version "1.0.0"
