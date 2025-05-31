@@ -50,6 +50,13 @@ android {
     }
 }
 
+// 确保APK输出路径和文件名正确
+android.applicationVariants.all { variant ->
+    variant.outputs.all {
+        outputFileName = "app-${variant.name}.apk"
+    }
+}
+
 dependencies {
     implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.9.10"  // 更新Kotlin版本
     implementation 'com.google.android.material:material:1.9.0'

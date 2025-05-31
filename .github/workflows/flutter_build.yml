@@ -163,12 +163,46 @@ EOF
         run: |
           # 设置更大的Java堆内存
           export GRADLE_OPTS="-Xmx4g -Dorg.gradle.jvmargs=-Xmx4g"
-          flutter build apk --release --android-skip-build-dependency-validation
+          
+          # 清理之前的构建
+          flutter clean
+          flutter pub get
+          
+          # 构建APK
+          flutter build apk --release --verbose
 
-      # 上传APK
+      # 调试：查找生成的APK文件
+      - name: Debug - Find APK files
+        run: |
+          echo "=== 查找所有APK文件 ==="
+          find . -name "*.apk" -type f 2>/dev/null || echo "没有找到APK文件"
+          
+          echo "\n=== 检查build目录结构 ==="
+          ls -la build/ 2>/dev/null || echo "build目录不存在"
+          
+          echo "\n=== 检查app目录结构 ==="
+          ls -la build/app/ 2>/dev/null || echo "build/app目录不存在"
+          
+          echo "\n=== 检查outputs目录结构 ==="
+          ls -la build/app/outputs/ 2>/dev/null || echo "build/app/outputs目录不存在"
+          
+          echo "\n=== 检查flutter-apk目录结构 ==="
+          ls -la build/app/outputs/flutter-apk/ 2>/dev/null || echo "build/app/outputs/flutter-apk目录不存在"
+          
+          echo "\n=== 检查apk目录结构 ==="
+          ls -la build/app/outputs/apk/ 2>/dev/null || echo "build/app/outputs/apk目录不存在"
+          
+          echo "\n=== 检查release目录结构 ==="
+          ls -la build/app/outputs/apk/release/ 2>/dev/null || echo "build/app/outputs/apk/release目录不存在"
+
+      # 上传APK（多路径尝试）
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: app-release
-          path: build/app/outputs/flutter-apk/app-release.apk
+          path: |
+            build/app/outputs/flutter-apk/app-release.apk
+            build/app/outputs/apk/release/app-release.apk
+            build/app/outputs/apk/release/*.apk
           retention-days: 7
+          if-no-files-found: warn
