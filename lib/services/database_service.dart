@@ -82,7 +82,7 @@ class DatabaseService {
     // 启用外键约束
     await db.execute('PRAGMA foreign_keys = ON');
     // 设置WAL模式以提高并发性能
-    await db.execute('PRAGMA journal_mode = WAL');
+    // await db.execute('PRAGMA journal_mode = WAL'); // 暂时注释掉以排查问题
     // 设置同步模式
     await db.execute('PRAGMA synchronous = NORMAL');
     // 设置缓存大小

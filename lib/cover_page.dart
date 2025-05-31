@@ -593,7 +593,7 @@ class _CoverPageState extends State<CoverPage> {
           }).toList(),
           // 添加浮动性能指示器
           Positioned(
-            top: 16,
+            top: 56, // 向下调整图标位置
             right: 16,
             child: FloatingPerformanceIndicator(
               onTap: () {
