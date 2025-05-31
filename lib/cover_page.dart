@@ -15,6 +15,8 @@ import 'dart:ui';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 import 'services/image_picker_service.dart';
+import 'widgets/performance_indicator.dart';
+import 'performance_monitor_page.dart';
 
 class CoverPage extends StatefulWidget {
   const CoverPage({super.key});
