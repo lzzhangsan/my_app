@@ -54,6 +54,8 @@ android {
 android.applicationVariants.all { variant ->
     variant.outputs.all {
         outputFileName = "app-${variant.name}.apk"
+        // 确保输出目录存在
+        variant.packageApplicationProvider.get().outputDirectory = new File(project.buildDir, "outputs/apk/${variant.name}")
     }
 }
 
