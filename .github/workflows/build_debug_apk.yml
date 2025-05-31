@@ -77,7 +77,7 @@ jobs:
         run: |
           export GRADLE_OPTS="-Xmx4g -Dorg.gradle.jvmargs=-Xmx4g"
           export _JAVA_OPTIONS="-Xmx4g"
-          flutter build apk --debug --verbose
+          flutter build apk --debug --verbose --no-shrink
         env:
           ANDROID_NDK_HOME: ${{ steps.setup_ndk.outputs.ndk-path }}
 
