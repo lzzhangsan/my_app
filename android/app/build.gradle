@@ -1,14 +1,14 @@
 // android/app/build.gradle
 
-// 强制禁用路径检查
-project.ext.set("android.overridePathCheck", true)
-System.setProperty("android.overridePathCheck", "true")
-
 plugins {
     id 'com.android.application'
     id 'kotlin-android'
     id 'dev.flutter.flutter-gradle-plugin'
 }
+
+// 强制禁用路径检查
+project.ext.set("android.overridePathCheck", true)
+System.setProperty("android.overridePathCheck", "true")
 
 android {
     namespace "com.example.change_copy"
