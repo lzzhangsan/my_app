@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import '../lib/main.dart';
+import 'package:change_copy/main.dart';
 
 void main() {
   testWidgets('MainScreen displays CoverPage', (WidgetTester tester) async {
