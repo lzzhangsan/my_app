@@ -57,6 +57,9 @@ subprojects {
             }
         }
 
+        // 应用补丁脚本
+apply from: "../patches/fix_photo_manager.gradle"
+
         // 应用FFmpeg Kit修复补丁
         if (project.name == "ffmpeg_kit_flutter_full") {
             try {
