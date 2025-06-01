@@ -13,6 +13,7 @@ System.setProperty("android.overridePathCheck", "true")
 android {
     namespace "com.example.change_copy"
     compileSdk 34  // 尝试降级到 SDK 34
+    buildToolsVersion "34.0.0" // 明确指定 buildToolsVersion
     ndkVersion "23.1.7779620"  // 匹配 CI 中的 NDK r23c
 
     compileOptions {
@@ -51,20 +52,20 @@ android {
     }
 }
 
-// 确保APK输出路径和文件名正确
-android.applicationVariants.all { variant ->
-    variant.outputs.all {
-        outputFileName = "app-${variant.name}.apk"
-        // 确保输出目录存在
-        // variant.packageApplicationProvider.get().outputDirectory = new File(project.buildDir, "outputs/apk/${variant.name}")
-        // 调整为Flutter默认的输出路径，通常是 project.rootDir/build/app/outputs/apk
-        def newOutputDir = new File(project.rootDir.parentFile, "build/app/outputs/apk/${variant.name}")
-        if (!newOutputDir.exists()) {
-            newOutputDir.mkdirs()
-        }
-        variant.packageApplicationProvider.get().outputDirectory = newOutputDir
-    }
-}
+// // 确保APK输出路径和文件名正确
+// android.applicationVariants.all { variant ->
+//     variant.outputs.all {
+//         outputFileName = "app-${variant.name}.apk"
+//         // 确保输出目录存在
+//         // variant.packageApplicationProvider.get().outputDirectory = new File(project.buildDir, "outputs/apk/${variant.name}")
+//         // 调整为Flutter默认的输出路径，通常是 project.rootDir/build/app/outputs/apk
+//         def newOutputDir = new File(project.rootDir.parentFile, "build/app/outputs/apk/${variant.name}")
+//         if (!newOutputDir.exists()) {
+//             newOutputDir.mkdirs()
+//         }
+//         variant.packageApplicationProvider.get().outputDirectory = newOutputDir
+//     }
+// }
 
 dependencies {
     implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.9.10"  // 更新Kotlin版本
