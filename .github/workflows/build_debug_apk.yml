@@ -61,10 +61,15 @@ jobs:
         run: flutter pub get
 
       # 验证Flutter环境
+      - name: Make gradlew executable
+        run: |
+          chmod +x android/gradlew
+
       - name: Verify Flutter setup
         run: |
           flutter doctor -v
           flutter --version
+          cd android && ./gradlew --version
 
       # 清理并重新获取依赖
       - name: Clean and rebuild

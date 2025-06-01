@@ -107,10 +107,15 @@ jobs:
           sed -i 's/targetSdkVersion 35/targetSdkVersion 34/g' app/build.gradle
 
       # 验证Flutter配置
+      - name: Make gradlew executable
+        run: |
+          chmod +x android/gradlew
+
       - name: Verify Flutter configuration
         run: |
           flutter doctor -v
           flutter --version
+          cd android && ./gradlew --version
           
       # 清理并重新获取依赖
       - name: Clean and get dependencies

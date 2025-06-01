@@ -75,6 +75,10 @@ jobs:
           # 确保settings.gradle使用正确的版本
           sed -i 's/id "com.android.application" version "[0-9.]\+"/id "com.android.application" version "8.4.0"/g' settings.gradle
 
+      - name: Make gradlew executable
+        run: |
+          chmod +x android/gradlew
+
       - name: Verify Flutter setup
         run: |
           flutter doctor -v
