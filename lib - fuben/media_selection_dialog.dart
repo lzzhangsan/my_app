@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
-import 'core/service_locator.dart';
-import 'services/database_service.dart';
+import 'database_helper.dart';
 
 class MediaSelectionDialog extends StatefulWidget {
   final Function(String)? onMediaSelected;
@@ -22,12 +21,11 @@ class _MediaSelectionDialogState extends State<MediaSelectionDialog> {
   List<Map<String, dynamic>> _mediaItems = [];
   bool _isLoading = true;
   String _currentDirectory = 'root';
-  late final DatabaseService _databaseService;
+  final DatabaseHelper _databaseHelper = DatabaseHelper();
 
   @override
   void initState() {
     super.initState();
-    _databaseService = getService<DatabaseService>();
     _loadMediaItems();
   }
 
@@ -36,7 +34,7 @@ class _MediaSelectionDialogState extends State<MediaSelectionDialog> {
       _isLoading = true;
     });
     try {
-      final items = await _databaseService.getMediaItems(_currentDirectory);
+      final items = await _databaseHelper.getMediaItems(_currentDirectory);
       print('加载媒体项: $_currentDirectory, 共 ${items.length} 项');
       for (var item in items) {
         print('媒体项: ${item['name']}, 类型: ${item['type']}');
@@ -68,7 +66,7 @@ class _MediaSelectionDialogState extends State<MediaSelectionDialog> {
   Future<void> _navigateUp() async {
     if (_currentDirectory != 'root') {
       final parentDir =
-      await _databaseService.getMediaItemParentDirectory(_currentDirectory);
+      await _databaseHelper.getMediaItemParentDirectory(_currentDirectory);
       setState(() {
         _currentDirectory = parentDir ?? 'root';
       });

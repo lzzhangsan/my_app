@@ -7,11 +7,9 @@ import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as path;
 import 'package:share_plus/share_plus.dart';
 import 'video_player_widget.dart'; // 确保正确导入 VideoPlayerWidget
-import 'core/service_locator.dart';
-import 'services/database_service.dart';
+import 'database_helper.dart'; // 导入数据库辅助类
 import 'media_selection_dialog.dart'; // 导入媒体选择对话框
 import 'models/media_item.dart'; // 添加MediaItem类的导入
-import 'database_helper.dart'; // 导入MediaType枚举
 
 enum MediaMode { none, manual, auto }
 
@@ -29,13 +27,12 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
   final Random _random = Random();
   Widget? _mediaWidget;
   String? _selectedDirectory;
-  late final DatabaseService _databaseService;
+  final DatabaseHelper _databaseHelper = DatabaseHelper();
   Map<String, dynamic>? _currentPlayingMedia; // 添加当前正在播放的媒体项
 
   @override
   void initState() {
     super.initState();
-    _databaseService = getService<DatabaseService>();
     _loadSelectedDirectory();
   }
 
@@ -86,7 +83,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
 
   Future<List<Map<String, dynamic>>> _getMediaList() async {
     try {
-      await _databaseService.ensureMediaItemsTableExists();
+      await _databaseHelper.ensureMediaItemsTableExists();
       List<Map<String, dynamic>> mediaFiles = [];
 
       if (_selectedDirectory == 'root') {
@@ -96,7 +93,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
       } else {
         // 如果选择的是具体目录，只加载该目录下的媒体文件
         print('加载目录 $_selectedDirectory 下的文件');
-        final db = await _databaseService.database;
+        final db = await _databaseHelper.database;
         List<Map<String, dynamic>> dbItems = await db.query(
           'media_items',
           where: 'type IN (?, ?) AND directory = ?',
@@ -112,7 +109,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
             mediaFiles.add(item);
           } else {
             print('文件不存在，从数据库中移除: $path');
-            await _databaseService.deleteMediaItem(item['id']);
+            await _databaseHelper.deleteMediaItem(item['id']);
           }
         }
       }
@@ -127,7 +124,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
 
   Future<List<Map<String, dynamic>>> _getAllMediaFiles(String directoryId) async {
     List<Map<String, dynamic>> allMediaFiles = [];
-    final db = await _databaseService.database;
+    final db = await _databaseHelper.database;
 
     // 获取当前目录下的所有项
     final List<Map<String, dynamic>> items = await db.query(
@@ -155,7 +152,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
           print('文件不存在，跳过: ${path}');
           // 考虑清理数据库中不存在的文件记录
           try {
-            await _databaseService.deleteMediaItem(item['id']);
+            await _databaseHelper.deleteMediaItem(item['id']);
             print('已从数据库删除不存在的文件记录: ${item['id']}');
           } catch (e) {
             print('清理数据库记录失败: $e');
@@ -248,7 +245,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
           print('随机选择的文件不存在，从列表中移除: $path');
           
           // 从数据库和列表中移除不存在的文件
-          await _databaseService.deleteMediaItem(randomMedia['id']);
+          await _databaseHelper.deleteMediaItem(randomMedia['id']);
           
           setState(() {
             _mediaList.removeAt(randomIndex);
@@ -502,7 +499,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
       }
       
       // 更新数据库记录
-      await _databaseService.updateMediaItem({
+      await _databaseHelper.updateMediaItem({
         'id': currentMedia['id'],
         'name': currentMedia['name'],
         'path': currentMedia['path'],
@@ -546,7 +543,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
   Future<List<Map<String, dynamic>>> _getAllAvailableFolders() async {
     try {
       List<Map<String, dynamic>> folders = [];
-      final db = await _databaseService.database;
+      final db = await _databaseHelper.database;
       
       // 获取所有文件夹
       final List<Map<String, dynamic>> allFolders = await db.query(
@@ -675,7 +672,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
       final int currentIndex = _mediaList.indexWhere((media) => media['id'] == mediaId);
       
       // 先删除数据库记录
-      await _databaseService.deleteMediaItem(mediaId);
+      await _databaseHelper.deleteMediaItem(mediaId);
       
       // 尝试删除文件
       try {

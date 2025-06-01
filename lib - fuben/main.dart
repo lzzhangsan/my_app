@@ -3,10 +3,8 @@ import 'document_editor_page.dart';
 import 'directory_page.dart';
 import 'cover_page.dart';
 import 'media_manager_page.dart';
-import 'core/service_locator.dart';
+import 'database_helper.dart';
 import 'package:flutter/services.dart';
-import 'widgets/performance_indicator.dart';
-import 'performance_monitor_page.dart';
 
 // 添加全局导航键，以便可以在应用的任何地方访问Navigator
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
@@ -15,12 +13,12 @@ void main() async {
   // 确保Flutter绑定初始化
   WidgetsFlutterBinding.ensureInitialized();
 
-  // 初始化服务架构
+  // 检查并升级数据库结构
   try {
-    await serviceLocator.initialize();
-    print('服务架构初始化成功');
+    await DatabaseHelper().checkAndUpgradeDatabase();
+    print('数据库结构检查和升级成功');
   } catch (e) {
-    print('服务架构初始化失败: $e');
+    print('数据库结构检查和升级失败: $e');
   }
 
   runApp(const MyApp());
@@ -174,7 +172,6 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
               ),
             ),
           ),
-          
         ],
       ),
     );

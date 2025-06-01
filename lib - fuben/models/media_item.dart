@@ -39,4 +39,3 @@ class MediaItem {
     'date_added': dateAdded.toIso8601String(),
   };
 }
-

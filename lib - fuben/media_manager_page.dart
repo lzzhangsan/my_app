@@ -1,4 +1,4 @@
-import 'dart:io';
+﻿import 'dart:io';
 import 'dart:math' as math;
 import 'dart:async';
 import 'dart:ui' as ui;
@@ -17,18 +17,15 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:video_player/video_player.dart';
-// 临时注释以解决编译问题
-// import 'package:ffmpeg_kit_flutter_full/ffmpeg_kit.dart';
-// import 'package:ffmpeg_kit_flutter_full/return_code.dart';
+import 'package:ffmpeg_kit_flutter_full/ffmpeg_kit.dart';
+import 'package:ffmpeg_kit_flutter_full/return_code.dart';
 import 'package:photo_manager/photo_manager.dart';
 // import 'package:video_thumbnail/video_thumbnail.dart';  // 临时禁用
 
-import 'core/service_locator.dart';
-import 'services/database_service.dart';
+import 'database_helper.dart';
 import 'models/media_item.dart';
 import 'media_preview_page.dart';
 import 'create_folder_dialog.dart';
-import 'database_helper.dart';
 
 class MediaManagerPage extends StatefulWidget {
   const MediaManagerPage({super.key});
@@ -42,7 +39,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   final List<MediaItem> _mediaItems = [];
   bool _isLoading = true;
   String _currentDirectory = 'root';
-  late final DatabaseService _databaseService;
+  final DatabaseHelper _databaseHelper = DatabaseHelper();
   int _imageCount = 0;
   int _videoCount = 0;
   bool _mediaVisible = true;
@@ -55,7 +52,6 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   @override
   void initState() {
     super.initState();
-    _databaseService = getService<DatabaseService>();
     _loadSettings();
     _checkPermissions().then((_) {
       _ensureMediaTable();
@@ -92,7 +88,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
   Future<void> _ensureMediaTable() async {
     try {
-      await _databaseService.ensureMediaItemsTableExists();
+      await _databaseHelper.ensureMediaItemsTableExists();
       await _loadMediaItems();
     } catch (e) {
       debugPrint('确保媒体表存在时出错: $e');
@@ -111,12 +107,12 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       debugPrint('开始加载媒体项...');
       
       // 检查并创建回收站文件夹
-      final recycleBinFolder = await _databaseService.getMediaItemById('recycle_bin');
+      final recycleBinFolder = await _databaseHelper.getMediaItemById('recycle_bin');
       debugPrint('检查回收站文件夹: ${recycleBinFolder != null ? '存在' : '不存在'}');
       
       if (recycleBinFolder == null) {
         debugPrint('创建回收站文件夹...');
-        await _databaseService.insertMediaItem({
+        await _databaseHelper.insertMediaItem({
           'id': 'recycle_bin',
           'name': '回收站',
           'path': '',
@@ -128,12 +124,12 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       }
 
       // 检查并创建收藏夹
-      final favoritesFolder = await _databaseService.getMediaItemById('favorites');
+      final favoritesFolder = await _databaseHelper.getMediaItemById('favorites');
       debugPrint('检查收藏夹: ${favoritesFolder != null ? '存在' : '不存在'}');
       
       if (favoritesFolder == null) {
         debugPrint('创建收藏夹...');
-        await _databaseService.insertMediaItem({
+        await _databaseHelper.insertMediaItem({
           'id': 'favorites',
           'name': '收藏夹',
           'path': '',
@@ -145,7 +141,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       }
 
       // 加载当前目录的媒体项
-      final items = await _databaseService.getMediaItems(_currentDirectory);
+      final items = await _databaseHelper.getMediaItems(_currentDirectory);
       debugPrint('从目录 $_currentDirectory 加载了 ${items.length} 个项目');
       
       // 计算图片和视频数量
@@ -181,7 +177,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   }
 
   Future<bool> _checkFolderNameExists(String folderName) async {
-    final items = await _databaseService.getMediaItems(_currentDirectory);
+    final items = await _databaseHelper.getMediaItems(_currentDirectory);
     return items.any((item) =>
     item['name'] == folderName &&
         MediaType.values[item['type'] as int] == MediaType.folder);
@@ -207,7 +203,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         directory: _currentDirectory,
         dateAdded: DateTime.now(),
       );
-      await _databaseService.insertMediaItem(mediaItem.toMap());
+      await _databaseHelper.insertMediaItem(mediaItem.toMap());
       await _loadMediaItems();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -475,7 +471,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         final fileHash = await _calculateFileHash(sourceFile);
         
         // 检查是否存在重复文件
-        final duplicate = await _databaseService.findDuplicateMediaItem(fileHash, fileName);
+        final duplicate = await _databaseHelper.findDuplicateMediaItem(fileHash, fileName);
         if (duplicate != null) {
           debugPrint('发现重复文件: ${duplicate['name']}');
           skippedCount++;
@@ -500,7 +496,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         final mediaItemMap = mediaItem.toMap();
         mediaItemMap['file_hash'] = fileHash;
         
-        await _databaseService.insertMediaItem(mediaItemMap);
+        await _databaseHelper.insertMediaItem(mediaItemMap);
         importedCount++;
       }
 
@@ -559,7 +555,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
     if (shouldDelete) {
       try {
-        await _databaseService.deleteMediaItem(item.id);
+        await _databaseHelper.deleteMediaItem(item.id);
         final file = File(item.path);
         if (await file.exists()) await file.delete();
         await _loadMediaItems();
@@ -613,7 +609,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
     if (newName != null && newName.isNotEmpty && newName != item.name) {
       try {
-        final items = await _databaseService.getMediaItems(_currentDirectory);
+        final items = await _databaseHelper.getMediaItems(_currentDirectory);
         if (items.any((existingItem) =>
         existingItem['name'] == newName && existingItem['id'] != item.id)) {
           if (mounted) {
@@ -632,7 +628,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           directory: item.directory,
           dateAdded: item.dateAdded,
         );
-        await _databaseService.updateMediaItem(updatedItem.toMap());
+        await _databaseHelper.updateMediaItem(updatedItem.toMap());
         await _loadMediaItems();
         if (mounted) {
           ScaffoldMessenger.of(context)
@@ -672,7 +668,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         directory: targetDirectory,
         dateAdded: item.dateAdded,
       );
-      await _databaseService.updateMediaItem(updatedItem.toMap());
+      await _databaseHelper.updateMediaItem(updatedItem.toMap());
 
       if (mounted) {
         Navigator.of(context).pop();
@@ -702,7 +698,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   Future<void> _navigateUp() async {
     if (_currentDirectory != 'root') {
       final parentDir =
-      await _databaseService.getMediaItemParentDirectory(_currentDirectory);
+      await _databaseHelper.getMediaItemParentDirectory(_currentDirectory);
       setState(() {
         _currentDirectory = parentDir ?? 'root';
         _selectedItems.clear();
@@ -763,7 +759,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           directory: targetDirectory,
           dateAdded: item.dateAdded,
         );
-        await _databaseService.updateMediaItem(updatedItem.toMap());
+        await _databaseHelper.updateMediaItem(updatedItem.toMap());
       }
 
       if (mounted) {
@@ -861,14 +857,14 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
   Future<List<MediaItem>> _getAllAvailableFolders() async {
     try {
-      final rootItems = await _databaseService.getMediaItems('root');
+      final rootItems = await _databaseHelper.getMediaItems('root');
       final rootFolders = rootItems
           .where((item) => item['type'] == MediaType.folder.index)
           .map((item) => MediaItem.fromMap(item))
           .toList();
 
       final currentFolders = _currentDirectory != 'root'
-          ? (await _databaseService.getMediaItems(_currentDirectory))
+          ? (await _databaseHelper.getMediaItems(_currentDirectory))
           .where((item) => item['type'] == MediaType.folder.index)
           .map((item) => MediaItem.fromMap(item))
           .toList()
@@ -920,7 +916,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       try {
         for (var id in _selectedItems) {
           final item = _mediaItems.firstWhere((item) => item.id == id);
-          await _databaseService.deleteMediaItem(id);
+          await _databaseHelper.deleteMediaItem(id);
           final file = File(item.path);
           if (await file.exists()) await file.delete();
         }
@@ -1465,11 +1461,6 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         await outputDir.create(recursive: true);
       }
       
-      // 临时禁用FFmpeg代码，直接返回false以使用备选方法
-      debugPrint('FFmpeg功能临时禁用，使用备选方法生成缩略图');
-      return false;
-
-      /* 原FFmpeg代码已临时注释
       // 首先尝试视频序列的中间位置
       try {
         // 使用FFmpegKit执行命令获取视频时长
@@ -1478,12 +1469,100 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         final probeReturnCode = await probeSession.getReturnCode();
         
         if (ReturnCode.isSuccess(probeReturnCode)) {
-          ...更多FFmpeg代码...
+          final output = await probeSession.getOutput();
+          if (output != null && output.isNotEmpty) {
+            final durationSeconds = double.tryParse(output.trim());
+            if (durationSeconds != null && durationSeconds > 0) {
+              // 提取视频中间位置的帧
+              int midPoint = 0;
+              if (durationSeconds > 10) {
+                // 对于长视频，尝试1/3位置
+                midPoint = (durationSeconds / 3).floor();
+              } else if (durationSeconds > 3) {
+                // 对于短视频，从第1秒位置选取
+                midPoint = 1;
+              } else {
+                // 非常短的视频，选第0秒
+                midPoint = 0;
+              }
+              
+              // 优化的命令从视频中选取关键帧
+              String midPointCommand = 
+                  '-ss $midPoint -i "$escapedVideoPath" -vframes 1 -c:v mjpeg -q:v 1 -vf "scale=320:-1" "$escapedOutputPath" -y';
+              final midPointSession = await FFmpegKit.execute(midPointCommand);
+              final midPointReturnCode = await midPointSession.getReturnCode();
+              
+              if (ReturnCode.isSuccess(midPointReturnCode)) {
+                final outputFile = File(outputPath);
+                if (await outputFile.exists() && await outputFile.length() > 100) {
+                  debugPrint('FFmpeg 智能时间点帧提取成功: 时间点 $midPoint 秒');
+                  return true;
+                }
+              }
+            }
+          }
         }
       } catch (probeError) {
-        ...更多FFmpeg代码...
+        debugPrint('获取视频时长出错: $probeError');
+        // 继续尝试其他方法
       }
-      */
+      
+      // 尝试使用关键帧选择器 (一次尝试多个位置)
+      for (final position in ['00:00:01', '00:00:05', '00:00:10', '00:00:00']) {
+        try {
+          String command = '-ss $position -i "$escapedVideoPath" -vframes 1 -c:v mjpeg -q:v 2 -vf "scale=320:-1" "$escapedOutputPath" -y';
+          final session = await FFmpegKit.execute(command);
+          final returnCode = await session.getReturnCode();
+          
+          if (ReturnCode.isSuccess(returnCode)) {
+            final outputFile = File(outputPath);
+            if (await outputFile.exists() && await outputFile.length() > 100) {
+              debugPrint('FFmpeg 成功提取帧: $position');
+              return true;
+            }
+          }
+        } catch (e) {
+          debugPrint('尝试位置 $position 失败: $e');
+          // 继续尝试下一个位置
+        }
+      }
+      
+      // 尝试提取首帧（最可靠的方法）
+      try {
+        String command = '-i "$escapedVideoPath" -vf "select=eq(n\\,0),scale=320:-1" -vframes 1 -c:v mjpeg -q:v 2 "$escapedOutputPath" -y';
+        final session = await FFmpegKit.execute(command);
+        final returnCode = await session.getReturnCode();
+        
+        if (ReturnCode.isSuccess(returnCode)) {
+          final outputFile = File(outputPath);
+          if (await outputFile.exists() && await outputFile.length() > 100) {
+            debugPrint('FFmpeg 首帧提取成功');
+            return true;
+          }
+        }
+      } catch (e) {
+        debugPrint('提取首帧失败: $e');
+      }
+      
+      // 尝试使用缩略图过滤器
+      try {
+        String command = '-i "$escapedVideoPath" -vf "thumbnail,scale=320:-1" -vframes 1 -c:v mjpeg -q:v 2 "$escapedOutputPath" -y';
+        final session = await FFmpegKit.execute(command);
+        final returnCode = await session.getReturnCode();
+        
+        if (ReturnCode.isSuccess(returnCode)) {
+          final outputFile = File(outputPath);
+          if (await outputFile.exists() && await outputFile.length() > 100) {
+            debugPrint('FFmpeg thumbnail过滤器成功');
+            return true;
+          }
+        }
+      } catch (e) {
+        debugPrint('缩略图过滤器失败: $e');
+      }
+      
+      debugPrint('所有FFmpeg方法均失败');
+      return false;
     } catch (e) {
       debugPrint('使用 FFmpeg 提取视频帧时出错: $e');
       return false;
@@ -1819,7 +1898,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           }
           
           // 更新数据库中的哈希值
-          await _databaseService.updateMediaItemHash(item['id'], fileHash);
+          await _databaseHelper.updateMediaItemHash(item['id'], fileHash);
           
           // 将文件按哈希值分组
           if (!hashGroups.containsKey(fileHash)) {
@@ -1850,7 +1929,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           for (var duplicate in duplicates) {
             try {
               // 将重复文件移动到回收站
-              await _databaseService.updateMediaItemDirectory(duplicate['id'], 'recycle_bin');
+              await _databaseHelper.updateMediaItemDirectory(duplicate['id'], 'recycle_bin');
               duplicateCount++;
             } catch (e) {
               print('移动重复文件到回收站时出错: ${duplicate['name']}, 错误: $e');
@@ -1900,7 +1979,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     
     try {
       // 获取当前目录下的所有项目
-      final items = await _databaseService.getMediaItems(directory);
+      final items = await _databaseHelper.getMediaItems(directory);
       
       for (var item in items) {
         if (item['type'] == MediaType.folder.index) {

@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
-import 'core/service_locator.dart';
-import 'services/database_service.dart';
+import 'database_helper.dart';
 import 'resizable_and_configurable_text_box.dart';
 import 'resizable_image_box.dart';
 import 'resizable_audio_box.dart';
@@ -16,8 +15,6 @@ import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 import 'services/image_picker_service.dart';
-import 'database_helper.dart'; // 导入MediaType枚举
-import 'performance_monitor_page.dart';
 
 class DocumentEditorPage extends StatefulWidget {
   final String documentName;
@@ -54,12 +51,10 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
   bool _contentChanged = false;
   bool _textEnhanceMode = false;
   String? _recordingAudioBoxId;
-  late final DatabaseService _databaseService;
 
   @override
   void initState() {
     super.initState();
-    _databaseService = getService<DatabaseService>();
     _scrollController = ScrollController()
       ..addListener(() {
         setState(() {
@@ -71,7 +66,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
     _loadBackgroundSettings();
     _checkIsTemplate();
 
-    _databaseService.ensureAudioBoxesTableExists();
+    DatabaseHelper().ensureAudioBoxesTableExists();
 
     _autoSaveTimer = Timer.periodic(Duration(seconds: 30), (timer) {
       if (_contentChanged) {
@@ -103,7 +98,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
   Future<void> _loadBackgroundSettings() async {
     try {
       Map<String, dynamic>? settings =
-      await _databaseService.getDocumentSettings(widget.documentName);
+      await DatabaseHelper().getDocumentSettings(widget.documentName);
       if (settings != null) {
         String? imagePath = settings['background_image_path'];
         int? colorValue = settings['background_color'];
@@ -164,7 +159,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
           _backgroundImage = File(destinationPath);
           _contentChanged = true;
         });
-        await _databaseService.insertOrUpdateDocumentSettings(
+        await DatabaseHelper().insertOrUpdateDocumentSettings(
           widget.documentName,
           imagePath: destinationPath,
           colorValue: _backgroundColor?.value,
@@ -194,10 +189,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
       _contentChanged = true;
     });
     try {
-      // Ensure the method name and signature match the DatabaseService definition
-      await _databaseService.deleteDocumentBackgroundImage(widget.documentName);
+      await DatabaseHelper().deleteDocumentBackgroundImage(widget.documentName);
 
-      await _databaseService.insertOrUpdateDocumentSettings(
+      await DatabaseHelper().insertOrUpdateDocumentSettings(
         widget.documentName,
         colorValue: _backgroundColor?.value,
       );
@@ -251,7 +245,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
         _contentChanged = true;
       });
       try {
-        await _databaseService.insertOrUpdateDocumentSettings(
+        await DatabaseHelper().insertOrUpdateDocumentSettings(
           widget.documentName,
           imagePath: _backgroundImage?.path,
           colorValue: pickedColor.value,
@@ -290,8 +284,10 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
 
   Future<void> _loadContent() async {
     try {
+      final dbHelper = DatabaseHelper();
+
       List<Map<String, dynamic>> textBoxes =
-      await _databaseService.getTextBoxesByDocument(widget.documentName);
+      await dbHelper.getTextBoxesByDocument(widget.documentName);
 
       for (var textBox in textBoxes) {
         if (!textBox.containsKey('positionX') && textBox.containsKey('left')) {
@@ -309,7 +305,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
       }
 
       List<Map<String, dynamic>> imageBoxes =
-      await _databaseService.getImageBoxesByDocument(widget.documentName);
+      await dbHelper.getImageBoxesByDocument(widget.documentName);
 
       for (var imageBox in imageBoxes) {
         if (!imageBox.containsKey('positionX') && imageBox.containsKey('left')) {
@@ -327,10 +323,10 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
       }
 
       List<Map<String, dynamic>> audioBoxes =
-      await _databaseService.getAudioBoxesByDocument(widget.documentName);
+      await dbHelper.getAudioBoxesByDocument(widget.documentName);
 
       Map<String, dynamic>? docSettings =
-      await _databaseService.getDocumentSettings(widget.documentName);
+      await dbHelper.getDocumentSettings(widget.documentName);
       bool textEnhanceMode = false;
       if (docSettings != null && docSettings.containsKey('text_enhance_mode')) {
         textEnhanceMode = docSettings['text_enhance_mode'] == 1;
@@ -378,11 +374,11 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
     try {
       print('正在保存文档内容...');
 
-      await _databaseService.saveTextBoxes(_textBoxes, widget.documentName);
+      await DatabaseHelper().saveTextBoxes(_textBoxes, widget.documentName);
 
-      await _databaseService.saveImageBoxes(_imageBoxes, widget.documentName);
+      await DatabaseHelper().saveImageBoxes(_imageBoxes, widget.documentName);
 
-      await _databaseService.saveAudioBoxes(_audioBoxes, widget.documentName);
+      await DatabaseHelper().saveAudioBoxes(_audioBoxes, widget.documentName);
 
       setState(() {
         _contentChanged = false;
@@ -391,7 +387,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
       widget.onSave(_textBoxes);
 
       try {
-        await _databaseService.backupDatabase();
+        await DatabaseHelper().backupDatabase();
       } catch (e) {
         print('保存内容时数据库备份出错: $e');
       }
@@ -427,7 +423,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
         'fontSize': 16.0,
         'fontColor': Colors.black.value,
       };
-      if (_databaseService.validateTextBoxData(newTextBox)) {
+      if (DatabaseHelper().validateTextBoxData(newTextBox)) {
         _textBoxes.add(newTextBox);
         _contentChanged = true;
         _saveContent();
@@ -510,7 +506,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
           'backgroundColor': original['backgroundColor'],
           'textAlign': original['textAlign'],
         };
-        if (_databaseService.validateTextBoxData(newTextBox)) {
+        if (DatabaseHelper().validateTextBoxData(newTextBox)) {
           _textBoxes.add(newTextBox);
           _saveContent();
           _saveStateToHistory();
@@ -538,7 +534,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
           'height': original['height'],
           'imagePath': original['imagePath'],
         };
-        if (_databaseService.validateImageBoxData(newImageBox)) {
+        if (DatabaseHelper().validateImageBoxData(newImageBox)) {
           _imageBoxes.add(newImageBox);
           _saveContent();
           _saveStateToHistory();
@@ -1107,7 +1103,6 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
           onMediaMove: _handleMediaMove,
           onMediaDelete: _handleMediaDelete,
           onMediaFavorite: _handleMediaFavorite,
-          onPerformanceMonitor: _openPerformanceMonitor,
         ),
       ),
     );
@@ -1243,7 +1238,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
 
   Future<void> _checkIsTemplate() async {
     try {
-      final db = await _databaseService.database;
+      final db = await DatabaseHelper().database;
       List<Map<String, dynamic>> result = await db.query(
         'documents',
         columns: ['isTemplate'],
@@ -1264,7 +1259,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
   Future<void> _toggleTemplateStatus() async {
     try {
       bool newStatus = !_isTemplate;
-      await _databaseService
+      await DatabaseHelper()
           .setDocumentAsTemplate(widget.documentName, newStatus);
 
       setState(() {
@@ -1291,7 +1286,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
       _saveContent();
       _saveStateToHistory();
 
-      _databaseService.insertOrUpdateDocumentSettings(
+      DatabaseHelper().insertOrUpdateDocumentSettings(
         widget.documentName,
         imagePath: _backgroundImage?.path,
         colorValue: _backgroundColor?.value,
@@ -1359,7 +1354,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
 
       // 确保回收站文件夹存在
       const recycleBinId = 'recycle_bin';
-      final dbHelper = _databaseService;
+      final dbHelper = DatabaseHelper();
       
       // 检查回收站文件夹是否存在
       final recycleBinFolder = await dbHelper.getMediaItemById(recycleBinId);
@@ -1423,7 +1418,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
 
       // 确保收藏文件夹存在
       const favoritesFolderId = 'favorites';
-      final dbHelper = _databaseService;
+      final dbHelper = DatabaseHelper();
       
       // 检查收藏文件夹是否存在
       final favoritesFolder = await dbHelper.getMediaItemById(favoritesFolderId);
@@ -1536,14 +1531,4 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
       return null;
     }
   }
-
-  void _openPerformanceMonitor() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => const PerformanceMonitorPage(),
-      ),
-    );
-  }
 }
-

@@ -5,10 +5,8 @@ import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:video_player/video_player.dart';
 import 'package:chewie/chewie.dart';
-import 'core/service_locator.dart';
-import 'services/database_service.dart';
-import 'models/media_item.dart';
 import 'database_helper.dart';
+import 'models/media_item.dart';
 
 enum MediaMode { none, manual, auto }
 
@@ -32,14 +30,13 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
   final Map<int, VideoPlayerController> _videoControllers = {};
   final Map<int, ChewieController> _chewieControllers = {};
   bool _isFullScreen = false;
-  late final DatabaseService _dbService;
+  final DatabaseHelper _dbHelper = DatabaseHelper();
   MediaMode _mediaMode = MediaMode.none;
   Timer? _mediaTimer;
 
   @override
   void initState() {
     super.initState();
-    _dbService = getService<DatabaseService>();
     _currentIndex = widget.initialIndex;
     _pageController = PageController(initialPage: widget.initialIndex);
     
@@ -333,7 +330,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     try {
       // 1. 从数据库中删除
       try {
-        await _dbService.deleteMediaItem(item.id);
+        await _dbHelper.deleteMediaItem(item.id);
       } catch (e) {
         debugPrint('从数据库删除媒体项时出错: $e');
       }
@@ -396,7 +393,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
 
     try {
       // 获取根目录下的文件夹
-      final rootItems = await _dbService.getMediaItems('root');
+      final rootItems = await _dbHelper.getMediaItems('root');
       final rootFolders = rootItems
           .where((item) => item['type'] == MediaType.folder.index)
           .map((item) => MediaItem.fromMap(item))
@@ -407,7 +404,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
       // 递归获取子文件夹（如果需要）
       for (var folder in rootFolders) {
         try {
-          final subItems = await _dbService.getMediaItems(folder.id);
+          final subItems = await _dbHelper.getMediaItems(folder.id);
           final subFolders = subItems
               .where((item) => item['type'] == MediaType.folder.index)
               .map((item) => MediaItem.fromMap(item))
@@ -518,7 +515,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
         dateAdded: item.dateAdded,
       );
       
-      final result = await _dbService.updateMediaItem(updatedItem.toMap());
+      final result = await _dbHelper.updateMediaItem(updatedItem.toMap());
       if (result <= 0) {
         throw Exception('媒体项更新失败');
       }
@@ -813,7 +810,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
         dateAdded: item.dateAdded,
       );
       
-      final result = await _dbService.updateMediaItem(updatedItem.toMap());
+      final result = await _dbHelper.updateMediaItem(updatedItem.toMap());
       if (result <= 0) {
         throw Exception('添加到收藏夹失败');
       }
@@ -835,7 +832,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     final item = widget.mediaItems[_currentIndex];
     try {
       // 获取所有文件夹以找到回收站文件夹
-      final rootItems = await _dbService.getMediaItems('root');
+      final rootItems = await _dbHelper.getMediaItems('root');
       final trashFolder = rootItems
           .where((item) => 
               item['type'] == MediaType.folder.index && 
@@ -857,7 +854,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
         dateAdded: item.dateAdded,
       );
       
-      final result = await _dbService.updateMediaItem(updatedItem.toMap());
+      final result = await _dbHelper.updateMediaItem(updatedItem.toMap());
       if (result <= 0) {
         throw Exception('移动到回收站失败');
       }
@@ -959,4 +956,4 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
       stop();
     }
   }
-}
+} 

@@ -3,10 +3,8 @@
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'dart:io';
-import 'core/service_locator.dart';
-import 'services/database_service.dart';
-import 'resizable_and_configurable_text_box.dart';
 import 'database_helper.dart';
+import 'resizable_and_configurable_text_box.dart';
 import 'package:uuid/uuid.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:flutter_colorpicker/flutter_colorpicker.dart';
@@ -15,8 +13,6 @@ import 'dart:ui';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 import 'services/image_picker_service.dart';
-import 'widgets/performance_indicator.dart';
-import 'performance_monitor_page.dart';
 
 class CoverPage extends StatefulWidget {
   const CoverPage({super.key});
@@ -34,33 +30,21 @@ class _CoverPageState extends State<CoverPage> {
   List<Map<String, dynamic>> _textBoxes = [];
   List<String> _deletedTextBoxIds = [];
   static const String coverDocumentName = '__CoverPage__';
-  late final DatabaseService _databaseService;
 
   @override
   void initState() {
     super.initState();
-    print('CoverPage initState: ${DateTime.now()}'); // 添加日志
-    _databaseService = getService<DatabaseService>();
     _ensureCoverImageTableExists().then((_) {
       _loadBackgroundImage();
       _loadContent();
     });
   }
 
-  @override
-  void dispose() {
-    print('CoverPage dispose: ${DateTime.now()}'); // 添加日志
-    // 清理工作，例如取消订阅、释放资源等
-    // _textBoxes.forEach((textBoxData) {
-    //   final controller = textBoxData['controller'] as TextEditingController?;
-    //   controller?.dispose();
-    // });
-    super.dispose();
-  }
   // 确保cover_image表存在
   Future<void> _ensureCoverImageTableExists() async {
     try {
-      Database db = await _databaseService.database;
+      DatabaseHelper dbHelper = DatabaseHelper();
+      Database db = await dbHelper.database;
       
       // 检查表是否存在
       List<Map<String, dynamic>> tables = await db.rawQuery(
@@ -138,7 +122,7 @@ class _CoverPageState extends State<CoverPage> {
         await DatabaseHelper().deleteCoverImage();
         
         // 同时清除封面设置
-        DatabaseService dbHelper = _databaseService;
+        DatabaseHelper dbHelper = DatabaseHelper();
         Database db = await dbHelper.database;
         
         List<Map<String, dynamic>> tables = await db.rawQuery(
@@ -179,7 +163,8 @@ class _CoverPageState extends State<CoverPage> {
   Future<void> _removeBackgroundImageOnly() async {
     try {
       // 获取数据库实例
-      Database db = await _databaseService.database;
+      DatabaseHelper dbHelper = DatabaseHelper();
+      Database db = await dbHelper.database;
       
       // 清空现有图片记录
       await db.delete('cover_image');
@@ -258,7 +243,8 @@ class _CoverPageState extends State<CoverPage> {
   Future<void> _loadCoverSettings() async {
     try {
       // 获取数据库实例
-      Database db = await _databaseService.database;
+      DatabaseHelper dbHelper = DatabaseHelper();
+      Database db = await dbHelper.database;
       
       // 检查表是否存在
       List<Map<String, dynamic>> tables = await db.rawQuery(
@@ -308,7 +294,8 @@ class _CoverPageState extends State<CoverPage> {
       await _ensureCoverImageTableExists(); // 确保表存在
       
       // 获取数据库实例
-      Database db = await _databaseService.database;
+      DatabaseHelper dbHelper = DatabaseHelper();
+      Database db = await dbHelper.database;
       
       // 清空现有图片记录
       await db.delete('cover_image');
@@ -325,7 +312,7 @@ class _CoverPageState extends State<CoverPage> {
       print('背景图片路径已保存: $imagePath');
       
       // 自动备份数据库
-      await _databaseService.backupDatabase();
+      await DatabaseHelper().backupDatabase();
     } catch (e) {
       print('保存背景图片时出错: $e');
       ScaffoldMessenger.of(context).showSnackBar(
@@ -406,7 +393,7 @@ class _CoverPageState extends State<CoverPage> {
         }
       });
       // 自动备份数据库
-      await _databaseService.backupDatabase();
+      await DatabaseHelper().backupDatabase();
     } catch (e) {
       print('保存内容时出错: $e');
       ScaffoldMessenger.of(context).showSnackBar(
@@ -434,7 +421,7 @@ class _CoverPageState extends State<CoverPage> {
       };
 
       // 数据验证
-      if (_databaseService.validateTextBoxData(newTextBox)) {
+      if (DatabaseHelper().validateTextBoxData(newTextBox)) {
         _textBoxes.add(newTextBox);
         _saveContent();
       } else {
@@ -508,7 +495,7 @@ class _CoverPageState extends State<CoverPage> {
           };
 
           // 数据验证
-          if (_databaseService.validateTextBoxData(newTextBox)) {
+          if (DatabaseHelper().validateTextBoxData(newTextBox)) {
             _textBoxes.add(newTextBox);
             _saveContent();
           } else {
@@ -598,25 +585,31 @@ class _CoverPageState extends State<CoverPage> {
               ),
             ),
           
-          // 文本框层
-          ..._textBoxes.map((textBoxData) {
-            return _buildTextBox(textBoxData);
+          // 文本框
+          ..._textBoxes.map<Widget>((data) {
+            return Positioned(
+              key: ValueKey(data['id']),
+              left: data['positionX'],
+              top: data['positionY'],
+              child: GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onPanUpdate: (details) {
+                  setState(() {
+                    double newDx = data['positionX'] + details.delta.dx;
+                    double newDy = data['positionY'] + details.delta.dy;
+
+                    // 更新位置
+                    data['positionX'] = newDx;
+                    data['positionY'] = newDy;
+                  });
+                },
+                onPanEnd: (_) {
+                  _saveContent();
+                },
+                child: _buildTextBox(data),
+              ),
+            );
           }).toList(),
-          // 添加浮动性能指示器
-          Positioned(
-            top: 56, // 向下调整图标位置
-            right: 16,
-            child: FloatingPerformanceIndicator(
-              onTap: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => PerformanceMonitorPage(),
-                  ),
-                );
-              },
-            ),
-          ),
         ],
       ),
       // 优化设置按钮样式 - 磨砂玻璃效果
@@ -893,7 +886,8 @@ class _CoverPageState extends State<CoverPage> {
       await _ensureCoverImageTableExists();
       
       // 获取数据库实例
-      Database db = await _databaseService.database;
+      DatabaseHelper dbHelper = DatabaseHelper();
+      Database db = await dbHelper.database;
       
       // 检查表是否存在
       List<Map<String, dynamic>> tables = await db.rawQuery(
@@ -977,7 +971,7 @@ class _CoverPageState extends State<CoverPage> {
     if (shouldClear) {
       try {
         // 获取数据库实例
-        DatabaseService dbHelper = _databaseService;
+        DatabaseHelper dbHelper = DatabaseHelper();
         Database db = await dbHelper.database;
         
         // 1. 清空背景图片

@@ -1,7 +1,5 @@
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
-import 'core/service_locator.dart';
-import 'services/database_service.dart';
+import 'database_helper.dart';
 import 'document_editor_page.dart';
 import 'package:uuid/uuid.dart';
 import 'package:flutter/services.dart'; // For haptic feedback
@@ -14,8 +12,6 @@ import 'package:path_provider/path_provider.dart';
 import 'dart:async'; // For Timer
 import 'package:path/path.dart' as path;
 import 'services/image_picker_service.dart';
-import 'widgets/performance_indicator.dart';
-import 'performance_monitor_page.dart';
 
 class DirectoryPage extends StatefulWidget {
   final Function(String) onDocumentOpen;
@@ -36,24 +32,6 @@ class DirectoryPage extends StatefulWidget {
 }
 
 class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserver {
-
-  void _showWebUnsupportedDialog() {
-    if (!mounted || !kIsWeb) return; // Also check kIsWeb to be sure
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('功能提示'),
-        content: Text('此功能在Web版本中当前不可用或受限。'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: Text('确定'),
-          ),
-        ],
-      ),
-    );
-  }
-
   List<DirectoryItem> _items = [];
   String? _currentParentFolder;
   File? _backgroundImage;
@@ -70,21 +48,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    if (!kIsWeb) {
-      _loadData();
-      _loadBackgroundSettings();
-      _loadTemplateDocuments();
-    } else {
-      print("Web environment detected: Database-dependent features in initState are skipped.");
-      // Initialize with empty or default states for web
-      if (mounted) {
-        setState(() {
-          _items = [];
-          _templateDocuments = [];
-          _backgroundColor = Colors.white; // Default background for web
-        });
-      }
-    }
+    _loadData();
+    _loadBackgroundSettings();
+    _loadTemplateDocuments();
   }
 
   @override
@@ -180,9 +146,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       try {
         for (var item in _selectedItems) {
           if (item.type == ItemType.document) {
-            await getService<DatabaseService>().deleteDocument(item.name, parentFolder: _currentParentFolder);
+            await DatabaseHelper().deleteDocument(item.name, parentFolder: _currentParentFolder);
           } else if (item.type == ItemType.folder) {
-            await getService<DatabaseService>().deleteFolder(item.name, parentFolder: _currentParentFolder);
+            await DatabaseHelper().deleteFolder(item.name, parentFolder: _currentParentFolder);
           }
         }
         _selectedItems.clear();
@@ -219,9 +185,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       try {
         for (var item in _selectedItems) {
           if (item.type == ItemType.document) {
-            await getService<DatabaseService>().updateDocumentParentFolder(item.name, targetFolderName);
+            await DatabaseHelper().updateDocumentParentFolder(item.name, targetFolderName);
           } else if (item.type == ItemType.folder) {
-            await getService<DatabaseService>().updateFolderParentFolder(item.name, targetFolderName);
+            await DatabaseHelper().updateFolderParentFolder(item.name, targetFolderName);
           }
         }
         _selectedItems.clear();
@@ -258,9 +224,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       try {
         for (var item in _selectedItems) {
           if (item.type == ItemType.document) {
-            await getService<DatabaseService>().updateDocumentParentFolder(item.name, null);
+            await DatabaseHelper().updateDocumentParentFolder(item.name, null);
           } else if (item.type == ItemType.folder) {
-            await getService<DatabaseService>().updateFolderParentFolder(item.name, null);
+            await DatabaseHelper().updateFolderParentFolder(item.name, null);
           }
         }
         _selectedItems.clear();
@@ -283,19 +249,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
   }
 
   Future<void> _loadBackgroundSettings() async {
-    if (kIsWeb) {
-      print("Web environment: Skipping background settings load from database.");
-      if (mounted) {
-        setState(() {
-          _backgroundImage = null;
-          _backgroundColor = Colors.white; // Default for web
-        });
-      }
-      return;
-    }
     try {
-      print('开始加载背景设置 for folder: $_currentParentFolder');
-      Map<String, dynamic>? settings = await getService<DatabaseService>().getDirectorySettings(_currentParentFolder);
+      print('开始加载背景设置...');
+      Map<String, dynamic>? settings = await DatabaseHelper().getDirectorySettings();
 
       if (settings != null) {
         String? imagePath = settings['background_image_path'];
@@ -332,7 +288,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
                 _backgroundImage = null;
               });
             }
-            await getService<DatabaseService>().deleteDirectoryBackgroundImage();
+            await DatabaseHelper().deleteDirectoryBackgroundImage();
           }
         } else if (mounted) {
           setState(() {
@@ -359,10 +315,6 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
   }
 
   Future<void> _pickBackgroundImage() async {
-    if (kIsWeb) {
-      _showWebUnsupportedDialog();
-      return;
-    }
     try {
       final imagePath = await ImagePickerService.pickImage(context);
 
@@ -380,7 +332,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
 
         final File newImage = await File(imagePath).copy(permanentPath);
 
-        Map<String, dynamic>? settings = await getService<DatabaseService>().getDirectorySettings(_currentParentFolder);
+        Map<String, dynamic>? settings = await DatabaseHelper().getDirectorySettings();
         int? colorValue = settings != null ? settings['background_color'] : null;
 
         if (mounted) {
@@ -389,7 +341,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
           });
         }
 
-        await getService<DatabaseService>().insertOrUpdateDirectorySettings(
+        await DatabaseHelper().insertOrUpdateDirectorySettings(
           imagePath: permanentPath,
           colorValue: colorValue,
         );
@@ -407,19 +359,15 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
   }
 
   Future<void> _removeBackgroundImage() async {
-    if (kIsWeb) {
-      _showWebUnsupportedDialog();
-      return;
-    }
     final shouldDelete = await _showDeleteConfirmationDialog("背景图像", "目录的背景图像");
     if (shouldDelete) {
       try {
-        Map<String, dynamic>? settings = await getService<DatabaseService>().getDirectorySettings(_currentParentFolder);
+        Map<String, dynamic>? settings = await DatabaseHelper().getDirectorySettings();
         int? colorValue = settings != null ? settings['background_color'] : null;
 
-        await getService<DatabaseService>().deleteDirectoryBackgroundImage();
+        await DatabaseHelper().deleteDirectoryBackgroundImage();
 
-        await getService<DatabaseService>().insertOrUpdateDirectorySettings(
+        await DatabaseHelper().insertOrUpdateDirectorySettings(
           imagePath: null,
           colorValue: colorValue,
         );
@@ -443,10 +391,6 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
   }
 
   Future<void> _pickBackgroundColor() async {
-    if (kIsWeb) {
-      _showWebUnsupportedDialog();
-      return;
-    }
     Color? pickedColor = await _showColorPickerDialog();
     if (pickedColor != null) {
       try {
@@ -456,10 +400,10 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
           });
         }
 
-        Map<String, dynamic>? settings = await getService<DatabaseService>().getDirectorySettings(_currentParentFolder);
+        Map<String, dynamic>? settings = await DatabaseHelper().getDirectorySettings();
         String? currentImagePath = settings != null ? settings['background_image_path'] : null;
 
-        await getService<DatabaseService>().insertOrUpdateDirectorySettings(
+        await DatabaseHelper().insertOrUpdateDirectorySettings(
           imagePath: currentImagePath,
           colorValue: _backgroundColor!.value,
         );
@@ -512,38 +456,19 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
   }
 
   Future<void> _loadTemplateDocuments() async {
-    if (kIsWeb) {
-      print("Web environment: Skipping template documents load from database.");
-      if (mounted) {
-        setState(() {
-          _templateDocuments = [];
-        });
-      }
-      return;
-    }
     try {
-      _templateDocuments = await getService<DatabaseService>().getTemplateDocuments();
+      _templateDocuments = await DatabaseHelper().getTemplateDocuments();
     } catch (e) {
       print('加载模板文档出错: $e');
     }
   }
 
   Future<void> _loadData() async {
-    if (kIsWeb) {
-      print("Web environment: Skipping data load from database.");
-      if (mounted) {
-        setState(() {
-          _items.clear();
-          // _isLoading = false; // Assuming _isLoading is handled elsewhere or not critical for web if no data loads
-        });
-      }
-      return;
-    }
     try {
       _items.clear();
       print('清除项目列表，开始加载数据...');
 
-      List<Map<String, dynamic>> folders = await getService<DatabaseService>().getFolders(parentFolder: _currentParentFolder);
+      List<Map<String, dynamic>> folders = await DatabaseHelper().getFolders(parentFolder: _currentParentFolder);
       print('从数据库加载了 ${folders.length} 个文件夹');
 
       for (var folder in folders) {
@@ -557,7 +482,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         ));
       }
 
-      List<Map<String, dynamic>> documents = await getService<DatabaseService>().getDocuments(parentFolder: _currentParentFolder);
+      List<Map<String, dynamic>> documents = await DatabaseHelper().getDocuments(parentFolder: _currentParentFolder);
       print('从数据库加载了 ${documents.length} 个文档');
 
       for (var document in documents) {
@@ -624,10 +549,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
 
   Future<String?> _getParentFolder(String folderName) async {
     try {
-      // getFolderByName returns Map<String, dynamic>? not List<Map<String, dynamic>>
-      Map<String, dynamic>? folderData = await getService<DatabaseService>().getFolderByName(folderName);
-      if (folderData != null && folderData.containsKey('parentFolder')) {
-        return folderData['parentFolder'] as String?;
+      List<Map<String, dynamic>> result = await DatabaseHelper().getFolderByName(folderName);
+      if (result.isNotEmpty) {
+        return result.first['parentFolder'] as String?;
       }
       return null;
     } catch (e) {
@@ -638,7 +562,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
 
   void _exportDocument(String documentName) async {
     try {
-      String exportPath = await getService<DatabaseService>().exportDocument(documentName);
+      String exportPath = await DatabaseHelper().exportDocument(documentName);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('文档已导出到 $exportPath')),
@@ -681,10 +605,10 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     try {
       String? folderName = await _showFolderNameDialog(hintText: "文件夹名称");
       if (folderName != null && folderName.isNotEmpty) {
-        if (!await getService<DatabaseService>().doesNameExist(folderName)) {
+        if (!await DatabaseHelper().doesNameExist(folderName)) {
           String? parentFolder = _currentParentFolder;
 
-          await getService<DatabaseService>().insertFolder(
+          await DatabaseHelper().insertFolder(
             folderName,
             parentFolder: parentFolder,
           );
@@ -695,9 +619,6 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
           }
         } else {
           _showDuplicateNameWarning();
-          if (mounted) {
-            await _loadData(); // Refresh data even if name is duplicate
-          }
         }
       }
     } catch (e) {
@@ -714,10 +635,10 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     try {
       String? documentName = await _showFolderNameDialog(hintText: "文档名称");
       if (documentName != null && documentName.isNotEmpty) {
-        if (!await getService<DatabaseService>().doesNameExist(documentName)) {
+        if (!await DatabaseHelper().doesNameExist(documentName)) {
           String? parentFolder = _currentParentFolder;
 
-          await getService<DatabaseService>().insertDocument(
+          await DatabaseHelper().insertDocument(
             documentName,
             parentFolder: parentFolder,
           );
@@ -728,9 +649,6 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
           }
         } else {
           _showDuplicateNameWarning();
-          if (mounted) {
-            await _loadData(); // Refresh data even if name is duplicate
-          }
         }
       }
     } catch (e) {
@@ -776,10 +694,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
             String fileName = path.basenameWithoutExtension(zipPath);
 
             try {
-              // importDocument expects named parameters targetDocumentName and targetParentFolder
-              await getService<DatabaseService>().importDocument(
+              await DatabaseHelper().importDocument(
                 zipPath,
-                targetDocumentName: fileName, 
+                targetDocumentName: fileName,
                 targetParentFolder: _currentParentFolder,
               );
               successFiles.add(fileName);
@@ -843,7 +760,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     if (confirmDelete) {
       try {
         String? parentFolder = _currentParentFolder;
-        await getService<DatabaseService>().deleteDocument(documentName, parentFolder: parentFolder);
+        await DatabaseHelper().deleteDocument(documentName, parentFolder: parentFolder);
         if (mounted) {
           setState(() {
             _items.removeWhere((item) => item.type == ItemType.document && item.name == documentName);
@@ -865,7 +782,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     if (confirmDelete) {
       try {
         String? parentFolder = _currentParentFolder;
-        await getService<DatabaseService>().deleteFolder(folderName, parentFolder: parentFolder);
+        await DatabaseHelper().deleteFolder(folderName, parentFolder: parentFolder);
         if (mounted) {
           setState(() {
             _items.removeWhere((item) => item.type == ItemType.folder && item.name == folderName);
@@ -911,9 +828,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       final dateStr = "${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}";
       newName = "$newName-$dateStr";
 
-      if (!await getService<DatabaseService>().doesNameExist(newName)) {
+      if (!await DatabaseHelper().doesNameExist(newName)) {
         try {
-          await getService<DatabaseService>().renameDocument(oldName, newName);
+          await DatabaseHelper().renameDocument(oldName, newName);
           if (mounted) {
             await _loadData();
           }
@@ -938,9 +855,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       final dateStr = "${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}";
       newName = "$newName-$dateStr";
 
-      if (!await getService<DatabaseService>().doesNameExist(newName)) {
+      if (!await DatabaseHelper().doesNameExist(newName)) {
         try {
-          await getService<DatabaseService>().renameFolder(oldName, newName);
+          await DatabaseHelper().renameFolder(oldName, newName);
           if (mounted) {
             await _loadData();
           }
@@ -960,7 +877,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
 
   void _moveDocumentToDirectory(String documentName) async {
     try {
-      await getService<DatabaseService>().updateDocumentParentFolder(documentName, null);
+      await DatabaseHelper().updateDocumentParentFolder(documentName, null);
       if (mounted) {
         await _loadData();
       }
@@ -976,7 +893,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
 
   void _moveFolderToDirectory(String folderName) async {
     try {
-      await getService<DatabaseService>().updateFolderParentFolder(folderName, null);
+      await DatabaseHelper().updateFolderParentFolder(folderName, null);
       if (mounted) {
         await _loadData();
       }
@@ -1008,7 +925,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     String? targetFolderName = await _selectFolder();
     if (targetFolderName != null) {
       try {
-        await getService<DatabaseService>().updateFolderParentFolder(folderName, targetFolderName);
+        await DatabaseHelper().updateFolderParentFolder(folderName, targetFolderName);
         if (mounted) {
           await _loadData();
         }
@@ -1047,7 +964,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
 
   Future<String?> _selectFolder() async {
     try {
-      List<Map<String, dynamic>> allFolders = await getService<DatabaseService>().getAllDirectoryFolders();
+      List<Map<String, dynamic>> allFolders = await DatabaseHelper().getAllDirectoryFolders();
       if (allFolders.isEmpty) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -1094,20 +1011,19 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
   }
 
   Future<String> _getDirectoryFolderPath(String folderName) async {
-    final dbService = getService<DatabaseService>();
-    String currentPath = folderName;
+    DatabaseHelper dbHelper = DatabaseHelper();
+    String path = folderName;
     
-    // getFolderByName returns Map<String, dynamic>? not List<Map<String, dynamic>>
-    Map<String, dynamic>? currentFolderData = await dbService.getFolderByName(folderName);
-    String? parentFolderName = (currentFolderData != null && currentFolderData.containsKey('parentFolder')) ? currentFolderData['parentFolder'] as String? : null;
+    List<Map<String, dynamic>> folder = await dbHelper.getFolderByName(folderName);
+    String? parentFolder = folder.isNotEmpty ? folder.first['parentFolder'] : null;
     
-    while (parentFolderName != null) {
-      currentPath = '$parentFolderName/$currentPath';
-      currentFolderData = await dbService.getFolderByName(parentFolderName);
-      parentFolderName = (currentFolderData != null && currentFolderData.containsKey('parentFolder')) ? currentFolderData['parentFolder'] as String? : null;
+    while (parentFolder != null) {
+      path = '$parentFolder/$path';
+      folder = await dbHelper.getFolderByName(parentFolder);
+      parentFolder = folder.isNotEmpty ? folder.first['parentFolder'] : null;
     }
     
-    return currentPath;
+    return path;
   }
 
   Future<String?> _showFolderNameDialog({String? hintText, String? initialValue}) async {
@@ -1190,9 +1106,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       for (int i = 0; i < _items.length; i++) {
         final DirectoryItem item = _items[i];
         if (item.type == ItemType.folder) {
-          await getService<DatabaseService>().updateFolderOrder(item.name, i);
+          await DatabaseHelper().updateFolderOrder(item.name, i);
         } else if (item.type == ItemType.document) {
-          await getService<DatabaseService>().updateDocumentOrder(item.name, i);
+          await DatabaseHelper().updateDocumentOrder(item.name, i);
         }
       }
     } catch (e) {
@@ -1209,7 +1125,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     String? folderName = await _selectFolder();
     if (folderName != null) {
       try {
-        await getService<DatabaseService>().updateDocumentParentFolder(documentName, folderName);
+        await DatabaseHelper().updateDocumentParentFolder(documentName, folderName);
         if (mounted) {
           await _loadData();
         }
@@ -1243,7 +1159,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
   }
 
   Future<bool> _isDocumentTemplate(String documentName) async {
-    final db = await getService<DatabaseService>().database;
+    final db = await DatabaseHelper().database;
     List<Map<String, dynamic>> result = await db.query(
       'documents',
       columns: ['isTemplate'],
@@ -1259,11 +1175,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
 
   void _copyDocument(String documentName) async {
     try {
-      // copyDocument expects sourceDocumentName as positional and parentFolder as named
-      // and returns Future<String>
-      String newDocName = await getService<DatabaseService>().copyDocument(
-        documentName, 
-        parentFolder: _currentParentFolder
+      String newDocName = await DatabaseHelper().copyDocument(
+        documentName,
+        parentFolder: _currentParentFolder,
       );
       if (mounted) {
         await _loadData();
@@ -1333,7 +1247,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
                   dense: true,
                   onTap: () async {
                     Navigator.pop(context);
-                    await getService<DatabaseService>().setDocumentAsTemplate(documentName, !isTemplate);
+                    await DatabaseHelper().setDocumentAsTemplate(documentName, !isTemplate);
                     if (mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(content: Text(isTemplate ? '已取消设为模板' : '已设为模板')),
@@ -1532,17 +1446,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
 
   Future<void> _createDocumentFromTemplate(String templateName) async {
     try {
-      // Generate a new document name based on the template name
-      // You might want a more sophisticated way to get or generate this name, e.g., a dialog
-      String newName = 'New from $templateName - ${DateTime.now().millisecondsSinceEpoch}';
-      // Ensure the generated name is unique if necessary, or let the service handle it if it's designed to.
-      // For now, we assume the service might further refine the name if there's a conflict.
-
-      // createDocumentFromTemplate now returns Future<String> and expects parentFolder as a named argument.
-      String newDocName = await getService<DatabaseService>().createDocumentFromTemplate(
-        templateName, 
-        newName, 
-        parentFolder: _currentParentFolder
+      String newDocName = await DatabaseHelper().createDocumentFromTemplate(
+        templateName,
+        parentFolder: _currentParentFolder,
       );
 
       if (mounted) {
@@ -1607,10 +1513,6 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
   }
 
   Future<void> _saveCurrentBackgroundState() async {
-    if (kIsWeb) {
-      print("Web environment: Skipping save current background state.");
-      return;
-    }
     try {
       if (_backgroundImage != null) {
         print('保存当前背景图片: ${_backgroundImage!.path}');
@@ -1624,12 +1526,8 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
   }
 
   Future<void> _checkAndRestoreBackgroundImage() async {
-    if (kIsWeb) {
-      print("Web environment: Skipping background image check/restore from database.");
-      return;
-    }
     try {
-      Map<String, dynamic>? settings = await getService<DatabaseService>().getDirectorySettings(_currentParentFolder);
+      Map<String, dynamic>? settings = await DatabaseHelper().getDirectorySettings();
       if (settings != null) {
         String? imagePath = settings['background_image_path'];
         if (imagePath != null && imagePath.isNotEmpty) {
@@ -1688,7 +1586,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       for (var item in _selectedItems) {
         if (item.type == ItemType.document) {
           try {
-            String exportPath = await getService<DatabaseService>().exportDocument(item.name);
+            String exportPath = await DatabaseHelper().exportDocument(item.name);
             if (await File(exportPath).exists()) {
               filesToShare.add(XFile(exportPath));
             } else {
@@ -1757,7 +1655,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         ),
       );
 
-      final String zipPath = await getService<DatabaseService>().exportAllData();
+      final String zipPath = await DatabaseHelper().exportAllData();
 
       // 关闭进度对话框
       if (mounted) {
@@ -1824,7 +1722,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
           ),
         );
 
-        await getService<DatabaseService>().importAllData(result.files.single.path!);
+        await DatabaseHelper().importAllData(result.files.single.path!);
 
         // 关闭进度对话框
         if (mounted) {
@@ -1988,9 +1886,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
                         },
                         onAccept: (draggedItem) async {
                           if (draggedItem.type == ItemType.document) {
-                            await getService<DatabaseService>().updateDocumentParentFolder(draggedItem.name, item.name);
+                            await DatabaseHelper().updateDocumentParentFolder(draggedItem.name, item.name);
                           } else if (draggedItem.type == ItemType.folder) {
-                            await getService<DatabaseService>().updateFolderParentFolder(draggedItem.name, item.name);
+                            await DatabaseHelper().updateFolderParentFolder(draggedItem.name, item.name);
                           }
                           if (mounted) {
                             await _loadData();
