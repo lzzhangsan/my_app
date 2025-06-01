@@ -38,9 +38,11 @@ class ServiceLocator {
       // 初始化缓存服务
       await get<CacheService>().initialize();
       
-      // 注册数据库服务
-      registerSingleton<DatabaseService>(DatabaseService());
-      await get<DatabaseService>().initialize();
+      // 注册数据库服务 (非Web平台)
+      if (!kIsWeb) {
+        registerSingleton<DatabaseService>(DatabaseService());
+        await get<DatabaseService>().initialize();
+      }
       
       // 注册文件服务
       registerSingleton<FileService>(FileService());
@@ -118,7 +120,7 @@ class ServiceLocator {
         await get<MediaService>().dispose();
       }
       
-      if (isRegistered<DatabaseService>()) {
+      if (!kIsWeb && isRegistered<DatabaseService>()) {
         await get<DatabaseService>().dispose();
       }
       

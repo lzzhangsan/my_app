@@ -1,13 +1,13 @@
 // android/build.gradle
 
 buildscript {
-    ext.kotlin_version = '1.9.10'  // 更新Kotlin版本匹配settings.gradle
+    ext.kotlin_version = '1.8.0'
     repositories {
         google()
         mavenCentral()
     }
     dependencies {
-        classpath 'com.android.tools.build:gradle:8.2.2'  // 尝试降级AGP版本到8.2.2
+        classpath 'com.android.tools.build:gradle:8.0.0'
         classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
     }
 

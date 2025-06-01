@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'core/service_locator.dart';
 import 'services/database_service.dart';
@@ -35,6 +36,24 @@ class DirectoryPage extends StatefulWidget {
 }
 
 class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserver {
+
+  void _showWebUnsupportedDialog() {
+    if (!mounted || !kIsWeb) return; // Also check kIsWeb to be sure
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('功能提示'),
+        content: Text('此功能在Web版本中当前不可用或受限。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: Text('确定'),
+          ),
+        ],
+      ),
+    );
+  }
+
   List<DirectoryItem> _items = [];
   String? _currentParentFolder;
   File? _backgroundImage;
@@ -51,9 +70,21 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _loadData();
-    _loadBackgroundSettings();
-    _loadTemplateDocuments();
+    if (!kIsWeb) {
+      _loadData();
+      _loadBackgroundSettings();
+      _loadTemplateDocuments();
+    } else {
+      print("Web environment detected: Database-dependent features in initState are skipped.");
+      // Initialize with empty or default states for web
+      if (mounted) {
+        setState(() {
+          _items = [];
+          _templateDocuments = [];
+          _backgroundColor = Colors.white; // Default background for web
+        });
+      }
+    }
   }
 
   @override
@@ -252,6 +283,16 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
   }
 
   Future<void> _loadBackgroundSettings() async {
+    if (kIsWeb) {
+      print("Web environment: Skipping background settings load from database.");
+      if (mounted) {
+        setState(() {
+          _backgroundImage = null;
+          _backgroundColor = Colors.white; // Default for web
+        });
+      }
+      return;
+    }
     try {
       print('开始加载背景设置 for folder: $_currentParentFolder');
       Map<String, dynamic>? settings = await getService<DatabaseService>().getDirectorySettings(_currentParentFolder);
@@ -318,6 +359,10 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
   }
 
   Future<void> _pickBackgroundImage() async {
+    if (kIsWeb) {
+      _showWebUnsupportedDialog();
+      return;
+    }
     try {
       final imagePath = await ImagePickerService.pickImage(context);
 
@@ -362,6 +407,10 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
   }
 
   Future<void> _removeBackgroundImage() async {
+    if (kIsWeb) {
+      _showWebUnsupportedDialog();
+      return;
+    }
     final shouldDelete = await _showDeleteConfirmationDialog("背景图像", "目录的背景图像");
     if (shouldDelete) {
       try {
@@ -394,6 +443,10 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
   }
 
   Future<void> _pickBackgroundColor() async {
+    if (kIsWeb) {
+      _showWebUnsupportedDialog();
+      return;
+    }
     Color? pickedColor = await _showColorPickerDialog();
     if (pickedColor != null) {
       try {
@@ -459,6 +512,15 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
   }
 
   Future<void> _loadTemplateDocuments() async {
+    if (kIsWeb) {
+      print("Web environment: Skipping template documents load from database.");
+      if (mounted) {
+        setState(() {
+          _templateDocuments = [];
+        });
+      }
+      return;
+    }
     try {
       _templateDocuments = await getService<DatabaseService>().getTemplateDocuments();
     } catch (e) {
@@ -467,6 +529,16 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
   }
 
   Future<void> _loadData() async {
+    if (kIsWeb) {
+      print("Web environment: Skipping data load from database.");
+      if (mounted) {
+        setState(() {
+          _items.clear();
+          // _isLoading = false; // Assuming _isLoading is handled elsewhere or not critical for web if no data loads
+        });
+      }
+      return;
+    }
     try {
       _items.clear();
       print('清除项目列表，开始加载数据...');
@@ -1535,6 +1607,10 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
   }
 
   Future<void> _saveCurrentBackgroundState() async {
+    if (kIsWeb) {
+      print("Web environment: Skipping save current background state.");
+      return;
+    }
     try {
       if (_backgroundImage != null) {
         print('保存当前背景图片: ${_backgroundImage!.path}');
@@ -1548,6 +1624,10 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
   }
 
   Future<void> _checkAndRestoreBackgroundImage() async {
+    if (kIsWeb) {
+      print("Web environment: Skipping background image check/restore from database.");
+      return;
+    }
     try {
       Map<String, dynamic>? settings = await getService<DatabaseService>().getDirectorySettings(_currentParentFolder);
       if (settings != null) {

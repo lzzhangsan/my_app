@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 外部存储根目录 -->
+    <external-path name="external_storage_root" path="." />
+
+    <!-- 应用的外部文件目录（如 /Android/data/<package_name>/files/） -->
+    <external-files-path name="external_files" path="." />
+
+    <!-- 应用的外部文件目录下的 media 子目录（下载的媒体文件） -->
+    <external-files-path name="media_files" path="media/" />
+
+    <!-- 应用的缓存目录 -->
+    <cache-path name="cache_files" path="." />
+
+    <!-- 应用的内部文件目录 -->
+    <files-path name="internal_files" path="." />
+
+    <!-- 应用的内部文件目录下的 media 子目录（下载的媒体文件） -->
+    <files-path name="internal_media_files" path="media/" />
+</paths>
