@@ -87,8 +87,16 @@ jobs:
           cp gradle.properties gradle.properties.bak 2>/dev/null || true
           cp app/build.gradle app/build.gradle.bak 2>/dev/null || true
           
-          # 确保使用正确的Gradle版本
-          echo "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.6-all.zip" > gradle/wrapper/gradle-wrapper.properties
+          # 确保使用Gradle 8.6（使用腾讯云镜像加速）
+          cat > gradle/wrapper/gradle-wrapper.properties << 'EOF'
+distributionBase=GRADLE_USER_HOME
+distributionPath=wrapper/dists
+distributionUrl=https\://mirrors.cloud.tencent.com/gradle/gradle-8.6-all.zip
+networkTimeout=60000
+validateDistributionUrl=true
+zipStoreBase=GRADLE_USER_HOME
+zipStorePath=wrapper/dists
+EOF
           
           # 更新build.gradle中的Android Gradle插件版本
           sed -i 's/com.android.tools.build:gradle:[0-9.]\+/com.android.tools.build:gradle:8.4.0/g' build.gradle
