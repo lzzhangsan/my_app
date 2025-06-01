@@ -623,6 +623,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
           }
         } else {
           _showDuplicateNameWarning();
+          if (mounted) {
+            await _loadData(); // Refresh data even if name is duplicate
+          }
         }
       }
     } catch (e) {
@@ -653,6 +656,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
           }
         } else {
           _showDuplicateNameWarning();
+          if (mounted) {
+            await _loadData(); // Refresh data even if name is duplicate
+          }
         }
       }
     } catch (e) {

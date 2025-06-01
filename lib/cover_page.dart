@@ -39,6 +39,7 @@ class _CoverPageState extends State<CoverPage> {
   @override
   void initState() {
     super.initState();
+    print('CoverPage initState: ${DateTime.now()}'); // 添加日志
     _databaseService = getService<DatabaseService>();
     _ensureCoverImageTableExists().then((_) {
       _loadBackgroundImage();
@@ -46,6 +47,16 @@ class _CoverPageState extends State<CoverPage> {
     });
   }
 
+  @override
+  void dispose() {
+    print('CoverPage dispose: ${DateTime.now()}'); // 添加日志
+    // 清理工作，例如取消订阅、释放资源等
+    // _textBoxes.forEach((textBoxData) {
+    //   final controller = textBoxData['controller'] as TextEditingController?;
+    //   controller?.dispose();
+    // });
+    super.dispose();
+  }
   // 确保cover_image表存在
   Future<void> _ensureCoverImageTableExists() async {
     try {
