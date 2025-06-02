@@ -200,10 +200,11 @@ class DatabaseService {
           path TEXT NOT NULL,
           type INTEGER NOT NULL,
           directory TEXT NOT NULL,
+          date_added TEXT NOT NULL,
           file_size INTEGER DEFAULT 0,
           duration INTEGER DEFAULT 0,
           thumbnail_path TEXT,
-          hash_value TEXT,
+          file_hash TEXT,
           is_favorite INTEGER DEFAULT 0,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
@@ -248,7 +249,7 @@ class DatabaseService {
     await db.execute('CREATE INDEX idx_audio_boxes_document ON audio_boxes(document_id)');
     await db.execute('CREATE INDEX idx_media_items_directory ON media_items(directory)');
     await db.execute('CREATE INDEX idx_media_items_type ON media_items(type)');
-    await db.execute('CREATE INDEX idx_media_items_hash ON media_items(hash_value)');
+    await db.execute('CREATE INDEX idx_media_items_hash ON media_items(file_hash)');
   }
 
   /// 数据库升级
@@ -273,7 +274,7 @@ class DatabaseService {
         await db.execute('ALTER TABLE media_items ADD COLUMN file_size INTEGER DEFAULT 0');
         await db.execute('ALTER TABLE media_items ADD COLUMN duration INTEGER DEFAULT 0');
         await db.execute('ALTER TABLE media_items ADD COLUMN thumbnail_path TEXT');
-        await db.execute('ALTER TABLE media_items ADD COLUMN hash_value TEXT');
+        await db.execute('ALTER TABLE media_items ADD COLUMN file_hash TEXT');
         await db.execute('ALTER TABLE media_items ADD COLUMN is_favorite INTEGER DEFAULT 0');
         await _createIndexes(db);
         break;
@@ -579,7 +580,7 @@ class DatabaseService {
       final db = await database;
       await db.update(
         'media_items',
-        {'hash_value': fileHash},
+        {'file_hash': fileHash},
         where: 'id = ?',
         whereArgs: [id],
       );
@@ -663,7 +664,7 @@ class DatabaseService {
     try {
       final db = await database;
       List<Map<String, dynamic>> result = await db.rawQuery(
-        'SELECT MAX(`order`) as maxOrder FROM folders WHERE parentFolder ${newParentFolder == null ? 'IS NULL' : '= ?'}',
+        'SELECT MAX(`order_index`) as maxOrder FROM folders WHERE parent_folder ${newParentFolder == null ? 'IS NULL' : '= ?'}',
         newParentFolder == null ? null : [newParentFolder],
       );
       int maxOrder =
@@ -672,8 +673,8 @@ class DatabaseService {
       await db.update(
         'folders',
         {
-          'parentFolder': newParentFolder,
-          'order': maxOrder + 1,
+          'parent_folder': newParentFolder,
+          'order_index': maxOrder + 1,
         },
         where: 'name = ?',
         whereArgs: [folderName],
@@ -690,7 +691,7 @@ class DatabaseService {
     try {
       final db = await database;
       List<Map<String, dynamic>> result = await db.rawQuery(
-        'SELECT MAX(`order`) as maxOrder FROM documents WHERE parentFolder ${newParentFolder == null ? 'IS NULL' : '= ?'}',
+        'SELECT MAX(`order_index`) as maxOrder FROM documents WHERE parent_folder ${newParentFolder == null ? 'IS NULL' : '= ?'}',
         newParentFolder == null ? null : [newParentFolder],
       );
       int maxOrder =
@@ -699,8 +700,8 @@ class DatabaseService {
       await db.update(
         'documents',
         {
-          'parentFolder': newParentFolder,
-          'order': maxOrder + 1,
+          'parent_folder': newParentFolder,
+          'order_index': maxOrder + 1,
         },
         where: 'name = ?',
         whereArgs: [documentName],
@@ -866,38 +867,50 @@ class DatabaseService {
       where: 'name = ?',
       whereArgs: [documentName],
     );
-    await db.delete(
-      'text_boxes',
-      where: 'documentName = ?',
+    // 首先获取文档ID
+    List<Map<String, dynamic>> documents = await db.query(
+      'documents',
+      columns: ['id'],
+      where: 'name = ?',
       whereArgs: [documentName],
     );
-    await db.delete(
-      'image_boxes',
-      where: 'documentName = ?',
-      whereArgs: [documentName],
-    );
-    await db.delete(
-      'audio_boxes',
-      where: 'documentName = ?',
-      whereArgs: [documentName],
-    );
+    
+    if (documents.isNotEmpty) {
+      String documentId = documents.first['id'];
+      
+      await db.delete(
+        'text_boxes',
+        where: 'document_id = ?',
+        whereArgs: [documentId],
+      );
+      await db.delete(
+        'image_boxes',
+        where: 'document_id = ?',
+        whereArgs: [documentId],
+      );
+      await db.delete(
+        'audio_boxes',
+        where: 'document_id = ?',
+        whereArgs: [documentId],
+      );
 
-    await db.delete(
-      'document_settings',
-      where: 'document_name = ?',
-      whereArgs: [documentName],
-    );
+      await db.delete(
+        'document_settings',
+        where: 'document_id = ?',
+        whereArgs: [documentId],
+      );
+    }
 
     List<Map<String, dynamic>> remainingDocuments = await db.query(
       'documents',
-      where: parentFolder == null ? 'parentFolder IS NULL' : 'parentFolder = ?',
+      where: parentFolder == null ? 'parent_folder IS NULL' : 'parent_folder = ?',
       whereArgs: parentFolder == null ? null : [parentFolder],
-      orderBy: '`order` ASC',
+      orderBy: 'order_index ASC',
     );
     for (int i = 0; i < remainingDocuments.length; i++) {
       await db.update(
         'documents',
-        {'order': i},
+        {'order_index': i},
         where: 'name = ?',
         whereArgs: [remainingDocuments[i]['name']],
       );
@@ -907,12 +920,23 @@ class DatabaseService {
   Future<void> deleteDocumentBackgroundImage(String documentName) async {
     final db = await database;
     try {
-      await db.update(
-        'document_settings',
-        {'background_image_path': null},
-        where: 'document_name = ?',
+      // 首先获取文档ID
+      List<Map<String, dynamic>> documents = await db.query(
+        'documents',
+        columns: ['id'],
+        where: 'name = ?',
         whereArgs: [documentName],
       );
+      
+      if (documents.isNotEmpty) {
+        String documentId = documents.first['id'];
+        await db.update(
+          'document_settings',
+          {'background_image_path': null},
+          where: 'document_id = ?',
+          whereArgs: [documentId],
+        );
+      }
       print('Background image path deleted for document: $documentName');
     } catch (e, stackTrace) {
       _handleError('Failed to delete document background image for $documentName', e, stackTrace);
@@ -956,9 +980,9 @@ class DatabaseService {
     try {
       List<Map<String, dynamic>> result = await db.query(
         'folders',
-        where: parentFolder == null ? 'parentFolder IS NULL' : 'parentFolder = ?',
+        where: parentFolder == null ? 'parent_folder IS NULL' : 'parent_folder = ?',
         whereArgs: parentFolder == null ? null : [parentFolder],
-        orderBy: '`order` ASC',
+        orderBy: 'order_index ASC',
       );
       return result.map((map) => Map<String, dynamic>.from(map)).toList();
     } catch (e) {
@@ -972,9 +996,9 @@ class DatabaseService {
     try {
       return await db.query(
         'documents',
-        where: 'parentFolder ' + (parentFolder == null ? 'IS NULL' : '= ?'),
+        where: 'parent_folder ' + (parentFolder == null ? 'IS NULL' : '= ?'),
         whereArgs: parentFolder != null ? [parentFolder] : [],
-        orderBy: '`order` ASC',
+        orderBy: 'order_index ASC',
       );
     } catch (e, stackTrace) {
       _handleError('获取文档时出错', e, stackTrace);
@@ -1087,14 +1111,14 @@ class DatabaseService {
     );
     await db.update(
       'documents',
-      {'parentFolder': newName},
-      where: 'parentFolder = ?',
+      {'parent_folder': newName},
+      where: 'parent_folder = ?',
       whereArgs: [oldName],
     );
     await db.update(
       'folders',
-      {'parentFolder': newName},
-      where: 'parentFolder = ?',
+      {'parent_folder': newName},
+      where: 'parent_folder = ?',
       whereArgs: [oldName],
     );
   }
@@ -1114,7 +1138,7 @@ class DatabaseService {
     final db = await database;
     await db.update(
       'folders',
-      {'order': newOrder},
+      {'order_index': newOrder},
       where: 'name = ?',
       whereArgs: [folderName],
     );
@@ -1178,8 +1202,160 @@ class DatabaseService {
   }
 
   Future<void> importAllData(String filePath) async {
-    // 实现导入所有数据的逻辑
-    throw UnimplementedError('importAllData method not implemented yet');
+    try {
+      final db = await database;
+      
+      // 读取导入文件
+      final file = File(filePath);
+      if (!await file.exists()) {
+        throw Exception('导入文件不存在: $filePath');
+      }
+      
+      final jsonString = await file.readAsString();
+      final Map<String, dynamic> data = json.decode(jsonString);
+      
+      await db.transaction((txn) async {
+        // 清空现有数据
+        await txn.delete('text_boxes');
+        await txn.delete('image_boxes');
+        await txn.delete('audio_boxes');
+        await txn.delete('document_settings');
+        await txn.delete('media_items');
+        await txn.delete('documents');
+        await txn.delete('folders');
+        
+        // 导入文件夹数据
+        if (data['folders'] != null) {
+          for (var folder in data['folders']) {
+            await txn.insert('folders', {
+              'id': folder['id'],
+              'name': folder['name'],
+              'parent_folder': folder['parent_folder'],
+              'order_index': folder['order_index'] ?? 0,
+              'position': folder['position'],
+              'created_at': folder['created_at'] ?? DateTime.now().millisecondsSinceEpoch,
+              'updated_at': folder['updated_at'] ?? DateTime.now().millisecondsSinceEpoch,
+            });
+          }
+        }
+        
+        // 导入文档数据
+        if (data['documents'] != null) {
+          for (var document in data['documents']) {
+            await txn.insert('documents', {
+              'id': document['id'],
+              'name': document['name'],
+              'parent_folder': document['parent_folder'],
+              'order_index': document['order_index'] ?? 0,
+              'is_template': document['is_template'] ?? 0,
+              'position': document['position'],
+              'created_at': document['created_at'] ?? DateTime.now().millisecondsSinceEpoch,
+              'updated_at': document['updated_at'] ?? DateTime.now().millisecondsSinceEpoch,
+            });
+          }
+        }
+        
+        // 导入文本框数据
+        if (data['text_boxes'] != null) {
+          for (var textBox in data['text_boxes']) {
+            await txn.insert('text_boxes', {
+              'id': textBox['id'],
+              'document_id': textBox['document_id'],
+              'position_x': textBox['position_x'],
+              'position_y': textBox['position_y'],
+              'width': textBox['width'],
+              'height': textBox['height'],
+              'content': textBox['content'],
+              'font_size': textBox['font_size'] ?? 14.0,
+              'font_color': textBox['font_color'] ?? 4278190080,
+              'font_family': textBox['font_family'] ?? 'Roboto',
+              'font_weight': textBox['font_weight'] ?? 0,
+              'is_italic': textBox['is_italic'] ?? 0,
+              'is_underlined': textBox['is_underlined'] ?? 0,
+              'is_strike_through': textBox['is_strike_through'] ?? 0,
+              'background_color': textBox['background_color'],
+              'text_align': textBox['text_align'] ?? 0,
+              'created_at': textBox['created_at'] ?? DateTime.now().millisecondsSinceEpoch,
+              'updated_at': textBox['updated_at'] ?? DateTime.now().millisecondsSinceEpoch,
+            });
+          }
+        }
+        
+        // 导入图片框数据
+        if (data['image_boxes'] != null) {
+          for (var imageBox in data['image_boxes']) {
+            await txn.insert('image_boxes', {
+              'id': imageBox['id'],
+              'document_id': imageBox['document_id'],
+              'position_x': imageBox['position_x'],
+              'position_y': imageBox['position_y'],
+              'width': imageBox['width'],
+              'height': imageBox['height'],
+              'image_path': imageBox['image_path'],
+              'created_at': imageBox['created_at'] ?? DateTime.now().millisecondsSinceEpoch,
+              'updated_at': imageBox['updated_at'] ?? DateTime.now().millisecondsSinceEpoch,
+            });
+          }
+        }
+        
+        // 导入音频框数据
+        if (data['audio_boxes'] != null) {
+          for (var audioBox in data['audio_boxes']) {
+            await txn.insert('audio_boxes', {
+              'id': audioBox['id'],
+              'document_id': audioBox['document_id'],
+              'position_x': audioBox['position_x'],
+              'position_y': audioBox['position_y'],
+              'audio_path': audioBox['audio_path'],
+              'created_at': audioBox['created_at'] ?? DateTime.now().millisecondsSinceEpoch,
+              'updated_at': audioBox['updated_at'] ?? DateTime.now().millisecondsSinceEpoch,
+            });
+          }
+        }
+        
+        // 导入媒体项数据
+        if (data['media_items'] != null) {
+          for (var mediaItem in data['media_items']) {
+            await txn.insert('media_items', {
+              'id': mediaItem['id'],
+              'name': mediaItem['name'],
+              'path': mediaItem['path'],
+              'type': mediaItem['type'],
+              'directory': mediaItem['directory'],
+              'date_added': mediaItem['date_added'] ?? DateTime.now().toIso8601String(),
+              'file_size': mediaItem['file_size'] ?? 0,
+              'duration': mediaItem['duration'] ?? 0,
+              'thumbnail_path': mediaItem['thumbnail_path'],
+              'file_hash': mediaItem['file_hash'],
+              'is_favorite': mediaItem['is_favorite'] ?? 0,
+              'created_at': mediaItem['created_at'] ?? DateTime.now().millisecondsSinceEpoch,
+              'updated_at': mediaItem['updated_at'] ?? DateTime.now().millisecondsSinceEpoch,
+            });
+          }
+        }
+        
+        // 导入文档设置数据
+        if (data['document_settings'] != null) {
+          for (var setting in data['document_settings']) {
+            await txn.insert('document_settings', {
+              'document_id': setting['document_id'],
+              'background_image_path': setting['background_image_path'],
+              'background_color': setting['background_color'],
+              'text_enhance_mode': setting['text_enhance_mode'] ?? 0,
+              'created_at': setting['created_at'] ?? DateTime.now().millisecondsSinceEpoch,
+              'updated_at': setting['updated_at'] ?? DateTime.now().millisecondsSinceEpoch,
+            });
+          }
+        }
+      });
+      
+      if (kDebugMode) {
+        print('数据导入成功: $filePath');
+      }
+    } catch (e, stackTrace) {
+      _handleError('导入数据失败', e, stackTrace);
+      rethrow;
+    }
   }
 
   Future<void> ensureAudioBoxesTableExists() async {
@@ -1187,16 +1363,19 @@ class DatabaseService {
     await db.execute('''
       CREATE TABLE IF NOT EXISTS audio_boxes(
         id TEXT PRIMARY KEY,
-        documentName TEXT,
-        positionX REAL,
-        positionY REAL,
-        audioPath TEXT
+        document_id TEXT NOT NULL,
+        position_x REAL NOT NULL,
+        position_y REAL NOT NULL,
+        audio_path TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY (document_id) REFERENCES documents (id) ON DELETE CASCADE
       )
     ''');
   }
 
   bool validateImageBoxData(Map<String, dynamic> data) {
-    if (data['id'] == null || data['documentName'] == null) {
+    if (data['id'] == null || data['document_id'] == null) {
       return false;
     }
     if (data['positionX'] == null || data['positionY'] == null) {
