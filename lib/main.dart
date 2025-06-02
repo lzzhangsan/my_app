@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/gestures.dart';
 import 'document_editor_page.dart';
 import 'directory_page.dart';
 import 'cover_page.dart';
@@ -98,6 +100,20 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     }
   }
 
+  // 获取页面名称
+  String _getPageName(int pageIndex) {
+    switch (pageIndex) {
+      case 0:
+        return '封面页';
+      case 1:
+        return '目录页';
+      case 2:
+        return '媒体管理';
+      default:
+        return '未知页面';
+    }
+  }
+
   void _onDocumentOpen(String documentName) {
     Navigator.push(
       context,
@@ -118,64 +134,172 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: Stack(
-        alignment: Alignment.bottomCenter,
-        children: [
-          // 使用PageView实现页面滑动
-          PageView(
-            controller: _pageController,
-            onPageChanged: (index) {
-              setState(() {
-                _currentPage = index;
-              });
-              // 当页面切换到目录页面时，刷新它
-              if (index == 1) {
-                DirectoryPage.refresh();
-              }
-              // 如果切换到媒体管理页面，可以触发刷新逻辑（如果需要）
-              if (index == 2) {
-                // 建议在 MediaManagerPage 中添加静态 refresh 方法
-                // MediaManagerPage.refresh(); // 未实现，需根据实际情况添加
-              }
-            },
-            physics: const ClampingScrollPhysics(), // 确保滑动物理效果正常
-            children: [
-              CoverPage(),
-              DirectoryPage(onDocumentOpen: _onDocumentOpen),
-              MediaManagerPage(),
-            ],
-          ),
-
-          // 添加简单的页面指示器
-          Padding(
-            padding: const EdgeInsets.only(bottom: 20.0),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.3),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: List.generate(3, (index) {
-                  return Container(
-                    width: 6.0,
-                    height: 6.0,
-                    margin: const EdgeInsets.symmetric(horizontal: 3.0),
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: _currentPage == index
-                          ? Colors.white
-                          : Colors.white.withOpacity(0.5),
-                    ),
-                  );
-                }),
+      body: RawKeyboardListener(
+        focusNode: FocusNode(),
+        autofocus: true,
+        onKey: (RawKeyEvent event) {
+          if (event is RawKeyDownEvent) {
+            if (event.logicalKey == LogicalKeyboardKey.arrowLeft && _currentPage > 0) {
+              _pageController.previousPage(
+                duration: const Duration(milliseconds: 300),
+                curve: Curves.easeInOut,
+              );
+            } else if (event.logicalKey == LogicalKeyboardKey.arrowRight && _currentPage < 2) {
+              _pageController.nextPage(
+                duration: const Duration(milliseconds: 300),
+                curve: Curves.easeInOut,
+              );
+            }
+          }
+        },
+        child: Stack(
+          alignment: Alignment.bottomCenter,
+          children: [
+            // 使用PageView实现页面滑动
+            Listener(
+              onPointerSignal: (pointerSignal) {
+                if (pointerSignal is PointerScrollEvent) {
+                  // 处理鼠标滚轮事件进行页面切换
+                  if (pointerSignal.scrollDelta.dx > 0 && _currentPage < 2) {
+                    // 向右滑动
+                    _pageController.nextPage(
+                      duration: const Duration(milliseconds: 300),
+                      curve: Curves.easeInOut,
+                    );
+                  } else if (pointerSignal.scrollDelta.dx < 0 && _currentPage > 0) {
+                    // 向左滑动
+                    _pageController.previousPage(
+                      duration: const Duration(milliseconds: 300),
+                      curve: Curves.easeInOut,
+                    );
+                  }
+                }
+              },
+              child: PageView(
+                controller: _pageController,
+                onPageChanged: (index) {
+                  setState(() {
+                    _currentPage = index;
+                  });
+                  // 当页面切换到目录页面时，刷新它
+                  if (index == 1) {
+                    DirectoryPage.refresh();
+                  }
+                  // 如果切换到媒体管理页面，可以触发刷新逻辑（如果需要）
+                  if (index == 2) {
+                    // 建议在 MediaManagerPage 中添加静态 refresh 方法
+                    // MediaManagerPage.refresh(); // 未实现，需根据实际情况添加
+                  }
+                },
+                physics: const ClampingScrollPhysics(), // 确保滑动物理效果正常
+                children: [
+                  CoverPage(),
+                  DirectoryPage(onDocumentOpen: _onDocumentOpen),
+                  MediaManagerPage(),
+                ],
               ),
             ),
+
+          // 添加页面指示器和导航控件
+          Padding(
+            padding: const EdgeInsets.only(bottom: 20.0),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // 页面名称显示
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.7),
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Text(
+                    _getPageName(_currentPage),
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                // 导航按钮和指示器
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.3),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // 左箭头按钮
+                      GestureDetector(
+                        onTap: _currentPage > 0 ? () {
+                          _pageController.previousPage(
+                            duration: const Duration(milliseconds: 300),
+                            curve: Curves.easeInOut,
+                          );
+                        } : null,
+                        child: Container(
+                          padding: const EdgeInsets.all(4),
+                          child: Icon(
+                            Icons.arrow_back_ios,
+                            color: _currentPage > 0 ? Colors.white : Colors.white.withOpacity(0.3),
+                            size: 16,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      // 页面指示器
+                      ...List.generate(3, (index) {
+                        return GestureDetector(
+                          onTap: () {
+                            _pageController.animateToPage(
+                              index,
+                              duration: const Duration(milliseconds: 300),
+                              curve: Curves.easeInOut,
+                            );
+                          },
+                          child: Container(
+                            width: 8.0,
+                            height: 8.0,
+                            margin: const EdgeInsets.symmetric(horizontal: 4.0),
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: _currentPage == index
+                                  ? Colors.white
+                                  : Colors.white.withOpacity(0.5),
+                            ),
+                          ),
+                        );
+                      }),
+                      const SizedBox(width: 8),
+                      // 右箭头按钮
+                      GestureDetector(
+                        onTap: _currentPage < 2 ? () {
+                          _pageController.nextPage(
+                            duration: const Duration(milliseconds: 300),
+                            curve: Curves.easeInOut,
+                          );
+                        } : null,
+                        child: Container(
+                          padding: const EdgeInsets.all(4),
+                          child: Icon(
+                            Icons.arrow_forward_ios,
+                            color: _currentPage < 2 ? Colors.white : Colors.white.withOpacity(0.3),
+                            size: 16,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
           ),
-          
-        ],
+         ],
+        ),
       ),
     );
   }

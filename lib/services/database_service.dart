@@ -920,23 +920,12 @@ class DatabaseService {
   Future<void> deleteDocumentBackgroundImage(String documentName) async {
     final db = await database;
     try {
-      // 首先获取文档ID
-      List<Map<String, dynamic>> documents = await db.query(
-        'documents',
-        columns: ['id'],
-        where: 'name = ?',
+      await db.update(
+        'document_settings',
+        {'background_image_path': null},
+        where: 'document_name = ?',
         whereArgs: [documentName],
       );
-      
-      if (documents.isNotEmpty) {
-        String documentId = documents.first['id'];
-        await db.update(
-          'document_settings',
-          {'background_image_path': null},
-          where: 'document_id = ?',
-          whereArgs: [documentId],
-        );
-      }
       print('Background image path deleted for document: $documentName');
     } catch (e, stackTrace) {
       _handleError('Failed to delete document background image for $documentName', e, stackTrace);

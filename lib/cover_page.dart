@@ -1,6 +1,7 @@
 // lib/cover_page.dart
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:image_picker/image_picker.dart';
 import 'dart:io';
 import 'core/service_locator.dart';
@@ -40,11 +41,24 @@ class _CoverPageState extends State<CoverPage> {
   void initState() {
     super.initState();
     print('CoverPage initState: ${DateTime.now()}'); // 添加日志
-    _databaseService = getService<DatabaseService>();
-    _ensureCoverImageTableExists().then((_) {
-      _loadBackgroundImage();
-      _loadContent();
-    });
+    
+    if (!kIsWeb) {
+      _databaseService = getService<DatabaseService>();
+      _ensureCoverImageTableExists().then((_) {
+        _loadBackgroundImage();
+        _loadContent();
+      });
+    } else {
+      print("Web environment: Skipping database operations in CoverPage");
+      // 为Web环境设置默认状态
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _textBoxes = [];
+          _backgroundColor = Colors.grey[200]!;
+        });
+      }
+    }
   }
 
   @override

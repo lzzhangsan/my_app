@@ -1,0 +1,42 @@
+// 这个脚本将修复photo_manager插件的Glide依赖问题
+// 将此文件放在项目根目录下的patches文件夹中
+
+// 获取项目中所有的子项目
+rootProject.subprojects { subproject ->
+    // 找到photo_manager插件项目
+    if (subproject.name == "photo_manager") {
+        println("找到photo_manager插件，准备应用修复")
+        
+        // 确保项目配置后执行
+        subproject.afterEvaluate { project ->
+            println("正在应用photo_manager插件的Glide依赖修复")
+            
+            // 添加Glide依赖
+            project.dependencies {
+                // 使用与应用相同版本的Glide
+                implementation "com.github.bumptech.glide:glide:4.15.1"
+                annotationProcessor "com.github.bumptech.glide:compiler:4.15.1"
+            }
+            
+            // 更新Java和Kotlin配置
+            if (project.hasProperty('android')) {
+                project.android {
+                    // 设置Java兼容性
+                    compileOptions {
+                        sourceCompatibility JavaVersion.VERSION_17
+                        targetCompatibility JavaVersion.VERSION_17
+                    }
+                    
+                    // 配置Kotlin编译选项
+                    tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+                        kotlinOptions {
+                            jvmTarget = '17'
+                        }
+                    }
+                }
+            }
+            
+            println("photo_manager插件的依赖和配置已修复")
+        }
+    }
+} 

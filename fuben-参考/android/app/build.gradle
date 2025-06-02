@@ -6,15 +6,9 @@ plugins {
     id 'dev.flutter.flutter-gradle-plugin'
 }
 
-// 强制禁用路径检查
-project.ext.set("android.overridePathCheck", true)
-System.setProperty("android.overridePathCheck", "true")
-
 android {
-    namespace "com.example.change_copy"
-    compileSdk 35
-    buildToolsVersion "34.0.0" // 明确指定 buildToolsVersion
-    ndkVersion "26.1.10909125"  // 使用更新的 NDK 版本
+    namespace "com.example.change.copy"
+    compileSdkVersion 34
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
@@ -35,7 +29,7 @@ android {
         // You can update the following values to match your application needs.
         // For more information, see: https://docs.flutter.dev/deployment/android#reviewing-the-gradle-build-configuration.
         minSdkVersion 24
-        targetSdkVersion 35
+        targetSdkVersion 34
         versionCode 1
         versionName "1.0"
 
@@ -49,24 +43,6 @@ android {
             shrinkResources false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
-    }
-}
-
-// 确保APK输出路径和文件名正确
-android.applicationVariants.all { variant ->
-    variant.outputs.all {
-        outputFileName = "app-${variant.name}.apk"
-        // 确保输出目录存在
-        // project.rootDir is d:\app\my_app\android
-        // project.rootDir.parentFile is d:\app\my_app
-        // project.rootDir.parentFile.parentFile is d:\app -- THIS IS WRONG
-        // Flutter default output is project_root/build/app/outputs/apk/
-        // So, it should be project.rootDir.parentFile which is d:\app\my_app
-        def newOutputDir = new File(project.rootDir.parentFile, "build/app/outputs/apk/${variant.name}")
-        if (!newOutputDir.exists()) {
-            newOutputDir.mkdirs()
-        }
-        variant.packageApplicationProvider.get().outputDirectory = newOutputDir
     }
 }
 
@@ -91,9 +67,6 @@ if (localPropertiesFile.exists()) {
 
 def flutterRoot = localProperties.getProperty('flutter.sdk')
 if (flutterRoot == null) {
-    throw new GradleException("Flutter SDK not found. Define location with flutter.sdk in the local.properties file.")
+    throw new Exception("Flutter SDK 未在 local.properties 中定义。请确保 local.properties 文件正确配置了 Flutter SDK 路径。")
 }
-
-// 应用 Flutter Gradle 脚本
-apply from: "$flutterRoot/packages/flutter_tools/gradle/flutter.gradle"
 

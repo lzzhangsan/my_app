@@ -1,0 +1,35 @@
+// 修复 permission_handler_android 插件的编译问题
+
+// 在项目评估之前应用配置
+allprojects {
+    project ->
+    if (project.name == 'permission_handler_android') {
+        project.beforeEvaluate {
+            // 将在评估之前应用这些配置
+            android {
+                compileOptions {
+                    sourceCompatibility JavaVersion.VERSION_11
+                    targetCompatibility JavaVersion.VERSION_11
+                }
+                buildFeatures {
+                    buildConfig true
+                }
+            }
+        }
+
+        // 使用变体 API 来处理 Android 配置
+        project.afterEvaluate {
+            if (project.hasProperty('android')) {
+                android.variants.all { variant ->
+                    // 为每个变体设置 Java 兼容性级别
+                    variant.javaCompileProvider.configure { task ->
+                        task.options.compilerArgs += [
+                            '-source', '11',
+                            '-target', '11'
+                        ]
+                    }
+                }
+            }
+        }
+    }
+}

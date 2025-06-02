@@ -8,6 +8,7 @@ import 'package:crypto/crypto.dart';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
@@ -55,11 +56,23 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   @override
   void initState() {
     super.initState();
-    _databaseService = getService<DatabaseService>();
-    _loadSettings();
-    _checkPermissions().then((_) {
-      _ensureMediaTable();
-    });
+    
+    if (!kIsWeb) {
+      _databaseService = getService<DatabaseService>();
+      _loadSettings();
+      _checkPermissions().then((_) {
+        _ensureMediaTable();
+      });
+    } else {
+      print("Web environment: Skipping database and permission operations in MediaManagerPage");
+      // 为Web环境设置默认状态
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _mediaVisible = true;
+        });
+      }
+    }
   }
 
   @override

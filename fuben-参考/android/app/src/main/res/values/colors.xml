@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 定义白色 -->
+    <color name="white">#FFFFFF</color>
+    <color name="ic_launcher_background">#000000</color> <!-- 改为纯黑色 -->
+</resources>

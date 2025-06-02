@@ -1,21 +1,14 @@
 // android/build.gradle
 
 buildscript {
-    ext.kotlin_version = '1.9.10'
+    ext.kotlin_version = '1.9.10'  // 更新Kotlin版本匹配settings.gradle
     repositories {
         google()
         mavenCentral()
     }
     dependencies {
-        classpath 'com.android.tools.build:gradle:8.3.0'
+        classpath 'com.android.tools.build:gradle:8.3.0'  // 更新为8.3.0版本
         classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
-    }
-
-    // 全局设置，强制忽略路径检查
-    gradle.projectsEvaluated {
-        tasks.withType(JavaCompile) {
-            options.compilerArgs << "-Xpkginfo:always"
-        }
     }
 }
 
@@ -55,8 +48,6 @@ subprojects {
                 implementation "com.github.bumptech.glide:glide:4.15.1"
                 annotationProcessor "com.github.bumptech.glide:compiler:4.15.1"
             }
-            // 应用 photo_manager 补丁脚本
-            apply from: "../patches/fix_photo_manager.gradle"
         }
 
         // 应用FFmpeg Kit修复补丁
@@ -76,32 +67,6 @@ subprojects {
 
 rootProject.buildDir = '../build'
 subprojects {
-    afterEvaluate { project ->
-        if (project.hasProperty('android')) {
-            project.android {
-                // 设置 Java 兼容性
-                compileOptions {
-                    sourceCompatibility JavaVersion.VERSION_17
-                    targetCompatibility JavaVersion.VERSION_17
-                }
-
-                // 配置 Kotlin 编译选项
-                tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
-                    kotlinOptions {
-                        jvmTarget = '17'
-                    }
-                }
-            }
-        }
-
-        // 如果是photo_manager插件项目
-        if (project.name == "photo_manager") {
-            project.dependencies {
-                implementation "com.github.bumptech.glide:glide:4.15.1"
-                annotationProcessor "com.github.bumptech.glide:compiler:4.15.1"
-            }
-        }
-    }
     project.buildDir = "${rootProject.buildDir}/${project.name}"
 }
 

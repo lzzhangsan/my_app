@@ -30,7 +30,7 @@ dependencies:
   win32: ^5.8.0
   audioplayers: ^6.4.0
   record: ^5.2.1
-  # ffmpeg_kit_flutter_full: ^6.0.3  # 临时禁用FFmpeg包
+  ffmpeg_kit_flutter_full: ^6.0.3  # 添加FFmpeg包
   crypto: ^3.0.3  # 添加crypto包用于生成哈希值
 
 dev_dependencies:
