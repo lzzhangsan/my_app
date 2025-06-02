@@ -79,16 +79,30 @@ class DatabaseService {
 
   /// 配置数据库连接
   Future<void> _onConfigure(Database db) async {
-    // 启用外键约束
-    await db.execute('PRAGMA foreign_keys = ON');
-    // 设置WAL模式以提高并发性能
-    // await db.execute('PRAGMA journal_mode = WAL'); // 暂时注释掉以排查问题
-    // 设置同步模式
-    await db.execute('PRAGMA synchronous = NORMAL');
-    // 设置缓存大小
-    await db.execute('PRAGMA cache_size = 10000');
-    // 设置临时存储
-    await db.execute('PRAGMA temp_store = MEMORY');
+    try {
+      // 启用外键约束
+      await db.execute('PRAGMA foreign_keys = ON');
+      // 设置同步模式 - 使用NORMAL而不是FULL以提高性能
+      await db.execute('PRAGMA synchronous = NORMAL');
+      // 设置缓存大小 - 增加缓存以提高性能
+      await db.execute('PRAGMA cache_size = 10000');
+      // 设置临时存储在内存中
+      await db.execute('PRAGMA temp_store = MEMORY');
+      // 设置页面大小
+      await db.execute('PRAGMA page_size = 4096');
+      // 设置自动清理
+      await db.execute('PRAGMA auto_vacuum = INCREMENTAL');
+      
+      if (kDebugMode) {
+        print('数据库配置成功应用');
+      }
+    } catch (e, stackTrace) {
+      _handleError('配置数据库连接失败', e, stackTrace);
+      if (kDebugMode) {
+        print('配置数据库连接失败: $e');
+      }
+      rethrow;
+    }
   }
 
   /// 创建数据库表
@@ -955,12 +969,18 @@ class DatabaseService {
 
   Future<List<Map<String, dynamic>>> getDocuments({String? parentFolder}) async {
     final db = await database;
-    return await db.query(
-      'documents',
-      where: 'parentFolder ' + (parentFolder == null ? 'IS NULL' : '= ?'),
-      whereArgs: parentFolder != null ? [parentFolder] : [],
-      orderBy: '`order` ASC',
-    );
+    try {
+      return await db.query(
+        'documents',
+        where: 'parentFolder ' + (parentFolder == null ? 'IS NULL' : '= ?'),
+        whereArgs: parentFolder != null ? [parentFolder] : [],
+        orderBy: '`order` ASC',
+      );
+    } catch (e, stackTrace) {
+      _handleError('获取文档时出错', e, stackTrace);
+      print('获取文档时出错: $e');
+      return [];
+    }
   }
 
   Future<Map<String, dynamic>?> getFolderByName(String folderName) async {
