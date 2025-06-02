@@ -27,13 +27,13 @@ class Folder {
   /// 从数据库映射创建文件夹
   factory Folder.fromMap(Map<String, dynamic> map) {
     return Folder(
-      id: map['id'] as String,
-      name: map['name'] as String,
+      id: map['id'] as String? ?? '',
+      name: map['name'] as String? ?? '',
       parentFolder: map['parent_folder'] as String?,
       orderIndex: map['order_index'] as int? ?? 0,
       position: map['position'] as String?,
-      createdAt: DateTime.fromMillisecondsSinceEpoch(map['created_at'] as int),
-      updatedAt: DateTime.fromMillisecondsSinceEpoch(map['updated_at'] as int),
+      createdAt: DateTime.fromMillisecondsSinceEpoch(map['created_at'] as int? ?? DateTime.now().millisecondsSinceEpoch),
+      updatedAt: DateTime.fromMillisecondsSinceEpoch(map['updated_at'] as int? ?? DateTime.now().millisecondsSinceEpoch),
     );
   }
 

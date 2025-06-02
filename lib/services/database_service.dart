@@ -235,6 +235,18 @@ class DatabaseService {
         )
       ''');
 
+      // 目录设置表
+      await txn.execute('''
+        CREATE TABLE directory_settings(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          folder_name TEXT,
+          background_image_path TEXT,
+          background_color INTEGER,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      ''');
+
       // 创建索引以提高查询性能
       await _createIndexes(txn);
     });
@@ -462,9 +474,15 @@ class DatabaseService {
         print('正在插入媒体项: ${item['name']}');
       }
       
+      // Ensure required fields are present
+      final data = Map<String, dynamic>.from(item);
+      final now = DateTime.now().millisecondsSinceEpoch;
+      data['created_at'] ??= now;
+      data['updated_at'] ??= now;
+      
       final result = await db.insert(
         'media_items',
-        item,
+        data,
         conflictAlgorithm: ConflictAlgorithm.replace,
       );
       
@@ -592,7 +610,7 @@ class DatabaseService {
 
   /// 验证文本框数据
   bool validateTextBoxData(Map<String, dynamic> data) {
-    if (data['id'] == null || data['documentName'] == null) {
+    if (data['id'] == null) {
       return false;
     }
     if (data['width'] == null ||
@@ -1538,6 +1556,7 @@ class DatabaseService {
 
   /// Get text boxes by document
   Future<List<Map<String, dynamic>>> getTextBoxesByDocument(String documentName) async {
+    print('🔍 [DB] 开始查询文本框数据，文档名: $documentName');
     try {
       final db = await database;
       List<Map<String, dynamic>> result = await db.query(
@@ -1545,8 +1564,14 @@ class DatabaseService {
         where: 'document_id = (SELECT id FROM documents WHERE name = ?)',
         whereArgs: [documentName],
       );
+      print('✅ [DB] 文本框查询成功，返回 ${result.length} 条记录');
+      if (result.isNotEmpty) {
+        print('📋 [DB] 第一条文本框数据字段: ${result.first.keys.toList()}');
+        print('📋 [DB] 第一条文本框数据值: ${result.first}');
+      }
       return result.map((map) => Map<String, dynamic>.from(map)).toList();
     } catch (e, stackTrace) {
+      print('❌ [DB] 获取文档文本框失败: $e');
       _handleError('获取文档文本框失败', e, stackTrace);
       return [];
     }
@@ -1554,6 +1579,7 @@ class DatabaseService {
 
   /// Get image boxes by document
   Future<List<Map<String, dynamic>>> getImageBoxesByDocument(String documentName) async {
+    print('🔍 [DB] 开始查询图片框数据，文档名: $documentName');
     try {
       final db = await database;
       List<Map<String, dynamic>> result = await db.query(
@@ -1561,8 +1587,14 @@ class DatabaseService {
         where: 'document_id = (SELECT id FROM documents WHERE name = ?)',
         whereArgs: [documentName],
       );
+      print('✅ [DB] 图片框查询成功，返回 ${result.length} 条记录');
+      if (result.isNotEmpty) {
+        print('📋 [DB] 第一条图片框数据字段: ${result.first.keys.toList()}');
+        print('📋 [DB] 第一条图片框数据值: ${result.first}');
+      }
       return result.map((map) => Map<String, dynamic>.from(map)).toList();
     } catch (e, stackTrace) {
+      print('❌ [DB] 获取文档图片框失败: $e');
       _handleError('获取文档图片框失败', e, stackTrace);
       return [];
     }
@@ -1570,6 +1602,7 @@ class DatabaseService {
 
   /// Get audio boxes by document
   Future<List<Map<String, dynamic>>> getAudioBoxesByDocument(String documentName) async {
+    print('🔍 [DB] 开始查询音频框数据，文档名: $documentName');
     try {
       final db = await database;
       List<Map<String, dynamic>> result = await db.query(
@@ -1577,8 +1610,14 @@ class DatabaseService {
         where: 'document_id = (SELECT id FROM documents WHERE name = ?)',
         whereArgs: [documentName],
       );
+      print('✅ [DB] 音频框查询成功，返回 ${result.length} 条记录');
+      if (result.isNotEmpty) {
+        print('📋 [DB] 第一条音频框数据字段: ${result.first.keys.toList()}');
+        print('📋 [DB] 第一条音频框数据值: ${result.first}');
+      }
       return result.map((map) => Map<String, dynamic>.from(map)).toList();
     } catch (e, stackTrace) {
+      print('❌ [DB] 获取文档音频框失败: $e');
       _handleError('获取文档音频框失败', e, stackTrace);
       return [];
     }
@@ -1631,9 +1670,49 @@ class DatabaseService {
         for (var textBox in textBoxes) {
           if (validateTextBoxData(textBox)) {
             final data = Map<String, dynamic>.from(textBox);
+            // Remove old field if exists
+            data.remove('documentName');
             data['document_id'] = documentId;
             data['created_at'] = DateTime.now().millisecondsSinceEpoch;
             data['updated_at'] = DateTime.now().millisecondsSinceEpoch;
+            
+            // Convert field names to match database schema
+            if (data.containsKey('positionX')) {
+              data['position_x'] = data.remove('positionX');
+            }
+            if (data.containsKey('positionY')) {
+              data['position_y'] = data.remove('positionY');
+            }
+            if (data.containsKey('text')) {
+              data['content'] = data.remove('text');
+            }
+            if (data.containsKey('fontSize')) {
+              data['font_size'] = data.remove('fontSize');
+            }
+            if (data.containsKey('fontColor')) {
+              data['font_color'] = data.remove('fontColor');
+            }
+            if (data.containsKey('fontFamily')) {
+              data['font_family'] = data.remove('fontFamily');
+            }
+            if (data.containsKey('fontWeight')) {
+              data['font_weight'] = data.remove('fontWeight');
+            }
+            if (data.containsKey('isItalic')) {
+              data['is_italic'] = data.remove('isItalic');
+            }
+            if (data.containsKey('isUnderlined')) {
+              data['is_underlined'] = data.remove('isUnderlined');
+            }
+            if (data.containsKey('isStrikeThrough')) {
+              data['is_strike_through'] = data.remove('isStrikeThrough');
+            }
+            if (data.containsKey('backgroundColor')) {
+              data['background_color'] = data.remove('backgroundColor');
+            }
+            if (data.containsKey('textAlign')) {
+              data['text_align'] = data.remove('textAlign');
+            }
             
             await txn.insert(
               'text_boxes',
@@ -1679,9 +1758,22 @@ class DatabaseService {
         // Insert new image boxes
         for (var imageBox in imageBoxes) {
           final data = Map<String, dynamic>.from(imageBox);
+          // Remove old field if exists
+          data.remove('documentName');
           data['document_id'] = documentId;
           data['created_at'] = DateTime.now().millisecondsSinceEpoch;
           data['updated_at'] = DateTime.now().millisecondsSinceEpoch;
+          
+          // Convert field names to match database schema
+          if (data.containsKey('positionX')) {
+            data['position_x'] = data.remove('positionX');
+          }
+          if (data.containsKey('positionY')) {
+            data['position_y'] = data.remove('positionY');
+          }
+          if (data.containsKey('imagePath')) {
+            data['image_path'] = data.remove('imagePath');
+          }
           
           await txn.insert(
             'image_boxes',
@@ -1726,9 +1818,22 @@ class DatabaseService {
         // Insert new audio boxes
         for (var audioBox in audioBoxes) {
           final data = Map<String, dynamic>.from(audioBox);
+          // Remove old field if exists
+          data.remove('documentName');
           data['document_id'] = documentId;
           data['created_at'] = DateTime.now().millisecondsSinceEpoch;
           data['updated_at'] = DateTime.now().millisecondsSinceEpoch;
+          
+          // Convert field names to match database schema
+          if (data.containsKey('positionX')) {
+            data['position_x'] = data.remove('positionX');
+          }
+          if (data.containsKey('positionY')) {
+            data['position_y'] = data.remove('positionY');
+          }
+          if (data.containsKey('audioPath')) {
+            data['audio_path'] = data.remove('audioPath');
+          }
           
           await txn.insert(
             'audio_boxes',
@@ -1745,6 +1850,7 @@ class DatabaseService {
 
   /// Get document settings
   Future<Map<String, dynamic>?> getDocumentSettings(String documentName) async {
+    print('🔍 [DB] 开始查询文档设置，文档名: $documentName');
     try {
       final db = await database;
       List<Map<String, dynamic>> result = await db.query(
@@ -1752,11 +1858,16 @@ class DatabaseService {
         where: 'document_id = (SELECT id FROM documents WHERE name = ?)',
         whereArgs: [documentName],
       );
+      print('✅ [DB] 文档设置查询成功，返回 ${result.length} 条记录');
       if (result.isNotEmpty) {
+        print('📋 [DB] 文档设置数据字段: ${result.first.keys.toList()}');
+        print('📋 [DB] 文档设置数据值: ${result.first}');
         return result.first;
       }
+      print('ℹ️ [DB] 未找到文档设置数据');
       return null;
     } catch (e, stackTrace) {
+      print('❌ [DB] 获取文档设置失败: $e');
       _handleError('获取文档设置失败', e, stackTrace);
       return null;
     }

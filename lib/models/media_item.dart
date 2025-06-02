@@ -21,12 +21,12 @@ class MediaItem {
 
   /// 从 Map 构造 MediaItem，用于从数据库读取数据
   factory MediaItem.fromMap(Map<String, dynamic> map) => MediaItem(
-    id: map['id'] as String,
-    name: map['name'] as String,
-    path: map['path'] as String,
-    type: MediaType.values[map['type'] as int],
-    directory: map['directory'] as String,
-    dateAdded: DateTime.parse(map['date_added'] as String),
+    id: map['id'] as String? ?? '',
+    name: map['name'] as String? ?? '',
+    path: map['path'] as String? ?? '',
+    type: MediaType.values[map['type'] as int? ?? 0],
+    directory: map['directory'] as String? ?? '',
+    dateAdded: DateTime.parse(map['date_added'] as String? ?? DateTime.now().toIso8601String()),
   );
 
   /// 将 MediaItem 转换为 Map，用于存储到数据库
@@ -37,6 +37,8 @@ class MediaItem {
     'type': type.index,
     'directory': directory,
     'date_added': dateAdded.toIso8601String(),
+    'created_at': DateTime.now().millisecondsSinceEpoch,
+    'updated_at': DateTime.now().millisecondsSinceEpoch,
   };
 }
 

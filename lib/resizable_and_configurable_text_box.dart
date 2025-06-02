@@ -139,8 +139,8 @@ class CustomTextStyle {
 
   factory CustomTextStyle.fromMap(Map<String, dynamic> map) {
     return CustomTextStyle(
-      fontSize: map['fontSize'],
-      fontColor: Color(map['fontColor']),
+      fontSize: map['fontSize'] ?? 16.0,
+      fontColor: map['fontColor'] != null ? Color(map['fontColor']) : Colors.black,
       fontWeight: FontWeight.values[map['fontWeight'] ?? 0],
       isItalic: map['isItalic'] ?? false,
       backgroundColor: map['backgroundColor'] != null ? Color(map['backgroundColor']) : null,

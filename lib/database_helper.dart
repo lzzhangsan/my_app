@@ -63,21 +63,23 @@ class DatabaseHelper {
         await db.execute('''
   CREATE TABLE text_boxes(
     id TEXT PRIMARY KEY,
-    documentName TEXT,
-    positionX REAL,
-    positionY REAL,
+    document_id TEXT,
+    position_x REAL,
+    position_y REAL,
     width REAL,
     height REAL,
-    text TEXT,
-    fontSize REAL,
-    fontColor INTEGER,
-    fontFamily TEXT,
-    fontWeight INTEGER,
-    isItalic INTEGER,
-    isUnderlined INTEGER,
-    isStrikeThrough INTEGER,
-    backgroundColor INTEGER,
-    textAlign INTEGER
+    content TEXT,
+    font_size REAL,
+    font_color INTEGER,
+    font_family TEXT,
+    font_weight INTEGER,
+    is_italic INTEGER,
+    is_underlined INTEGER,
+    is_strike_through INTEGER,
+    background_color INTEGER,
+    text_align INTEGER,
+    created_at INTEGER,
+    updated_at INTEGER
   )
 ''');
 
@@ -433,21 +435,23 @@ class DatabaseHelper {
             await db.execute('''
   CREATE TABLE text_boxes(
     id TEXT PRIMARY KEY,
-    documentName TEXT,
-    positionX REAL,
-    positionY REAL,
+    document_id TEXT,
+    position_x REAL,
+    position_y REAL,
     width REAL,
     height REAL,
-    text TEXT,
-    fontSize REAL,
-    fontColor INTEGER,
-    fontFamily TEXT,
-    fontWeight INTEGER,
-    isItalic INTEGER,
-    isUnderlined INTEGER,
-    isStrikeThrough INTEGER,
-    backgroundColor INTEGER,
-    textAlign INTEGER
+    content TEXT,
+    font_size REAL,
+    font_color INTEGER,
+    font_family TEXT,
+    font_weight INTEGER,
+    is_italic INTEGER,
+    is_underlined INTEGER,
+    is_strike_through INTEGER,
+    background_color INTEGER,
+    text_align INTEGER,
+    created_at INTEGER,
+    updated_at INTEGER
   )
 ''');
             break;
@@ -1964,21 +1968,23 @@ class DatabaseHelper {
         await db.execute('''
           CREATE TABLE text_boxes(
             id TEXT PRIMARY KEY,
-            documentName TEXT,
-            positionX REAL,
-            positionY REAL,
+            document_id TEXT,
+            position_x REAL,
+            position_y REAL,
             width REAL,
             height REAL,
-            text TEXT,
-            fontSize REAL,
-            fontColor INTEGER,
-            fontFamily TEXT,
-            fontWeight INTEGER,
-            isItalic INTEGER,
-            isUnderlined INTEGER,
-            isStrikeThrough INTEGER,
-            backgroundColor INTEGER,
-            textAlign INTEGER
+            content TEXT,
+            font_size REAL,
+            font_color INTEGER,
+            font_family TEXT,
+            font_weight INTEGER,
+            is_italic INTEGER,
+            is_underlined INTEGER,
+            is_strike_through INTEGER,
+            background_color INTEGER,
+            text_align INTEGER,
+            created_at INTEGER,
+            updated_at INTEGER
           )
         ''');
         print('创建了text_boxes表');
@@ -2453,9 +2459,15 @@ class DatabaseHelper {
     debugPrint('正在插入媒体项: ${item['name']}');
     
     try {
+      // Ensure required fields are present
+      final data = Map<String, dynamic>.from(item);
+      final now = DateTime.now().millisecondsSinceEpoch;
+      data['created_at'] ??= now;
+      data['updated_at'] ??= now;
+      
       final result = await db.insert(
         'media_items',
-        item,
+        data,
         conflictAlgorithm: ConflictAlgorithm.replace,
       );
       debugPrint('插入结果: $result');

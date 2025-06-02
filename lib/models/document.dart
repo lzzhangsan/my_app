@@ -29,14 +29,14 @@ class Document {
   /// 从数据库映射创建文档
   factory Document.fromMap(Map<String, dynamic> map) {
     return Document(
-      id: map['id'] as String,
-      name: map['name'] as String,
+      id: map['id'] as String? ?? '',
+      name: map['name'] as String? ?? '',
       parentFolder: map['parent_folder'] as String?,
       orderIndex: map['order_index'] as int? ?? 0,
       isTemplate: (map['is_template'] as int? ?? 0) == 1,
       position: map['position'] as String?,
-      createdAt: DateTime.fromMillisecondsSinceEpoch(map['created_at'] as int),
-      updatedAt: DateTime.fromMillisecondsSinceEpoch(map['updated_at'] as int),
+      createdAt: DateTime.fromMillisecondsSinceEpoch(map['created_at'] as int? ?? DateTime.now().millisecondsSinceEpoch),
+      updatedAt: DateTime.fromMillisecondsSinceEpoch(map['updated_at'] as int? ?? DateTime.now().millisecondsSinceEpoch),
     );
   }
 
@@ -133,12 +133,12 @@ class DocumentSettings {
   /// 从数据库映射创建文档设置
   factory DocumentSettings.fromMap(Map<String, dynamic> map) {
     return DocumentSettings(
-      documentId: map['document_id'] as String,
+      documentId: map['document_id'] as String? ?? '',
       backgroundImagePath: map['background_image_path'] as String?,
       backgroundColor: map['background_color'] as int?,
       textEnhanceMode: map['text_enhance_mode'] as int? ?? 0,
-      createdAt: DateTime.fromMillisecondsSinceEpoch(map['created_at'] as int),
-      updatedAt: DateTime.fromMillisecondsSinceEpoch(map['updated_at'] as int),
+      createdAt: DateTime.fromMillisecondsSinceEpoch(map['created_at'] as int? ?? DateTime.now().millisecondsSinceEpoch),
+      updatedAt: DateTime.fromMillisecondsSinceEpoch(map['updated_at'] as int? ?? DateTime.now().millisecondsSinceEpoch),
     );
   }
 

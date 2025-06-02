@@ -289,11 +289,15 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
   }
 
   Future<void> _loadContent() async {
+    print('🔍 开始加载文档内容: ${widget.documentName}');
     try {
+      print('📄 正在从数据库获取文本框数据...');
       List<Map<String, dynamic>> textBoxes =
       await _databaseService.getTextBoxesByDocument(widget.documentName);
+      print('✅ 成功获取 ${textBoxes.length} 个文本框');
 
       for (var textBox in textBoxes) {
+        print('🔧 处理文本框数据: ${textBox.keys.toList()}');
         if (!textBox.containsKey('positionX') && textBox.containsKey('left')) {
           textBox['positionX'] = textBox['left'];
         }
@@ -308,10 +312,13 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
         }
       }
 
+      print('🖼️ 正在从数据库获取图片框数据...');
       List<Map<String, dynamic>> imageBoxes =
       await _databaseService.getImageBoxesByDocument(widget.documentName);
+      print('✅ 成功获取 ${imageBoxes.length} 个图片框');
 
       for (var imageBox in imageBoxes) {
+        print('🔧 处理图片框数据: ${imageBox.keys.toList()}');
         if (!imageBox.containsKey('positionX') && imageBox.containsKey('left')) {
           imageBox['positionX'] = imageBox['left'];
         }
@@ -326,16 +333,22 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
         }
       }
 
+      print('🎵 正在从数据库获取音频框数据...');
       List<Map<String, dynamic>> audioBoxes =
       await _databaseService.getAudioBoxesByDocument(widget.documentName);
+      print('✅ 成功获取 ${audioBoxes.length} 个音频框');
 
+      print('⚙️ 正在获取文档设置...');
       Map<String, dynamic>? docSettings =
       await _databaseService.getDocumentSettings(widget.documentName);
+      print('✅ 文档设置: ${docSettings?.keys.toList() ?? "无设置"}');
       bool textEnhanceMode = false;
       if (docSettings != null && docSettings.containsKey('text_enhance_mode')) {
         textEnhanceMode = docSettings['text_enhance_mode'] == 1;
       }
+      print('📝 文本增强模式: $textEnhanceMode');
 
+      print('🔄 正在更新UI状态...');
       setState(() {
         _textBoxes = textBoxes;
         _imageBoxes = imageBoxes;
@@ -346,30 +359,90 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
         _textEnhanceMode = textEnhanceMode;
         _isLoading = false;
       });
+      print('✅ UI状态更新完成');
 
-      _history.add({
-        'textBoxes':
-        _textBoxes.map((map) => Map<String, dynamic>.from(map)).toList(),
-        'imageBoxes':
-        _imageBoxes.map((map) => Map<String, dynamic>.from(map)).toList(),
-        'audioBoxes':
-        _audioBoxes.map((map) => Map<String, dynamic>.from(map)).toList(),
-        'deletedTextBoxIds': List<String>.from(_deletedTextBoxIds),
-        'deletedImageBoxIds': List<String>.from(_deletedImageBoxIds),
-        'deletedAudioBoxIds': List<String>.from(_deletedAudioBoxIds),
-        'backgroundImage': _backgroundImage?.path,
-        'backgroundColor': _backgroundColor?.value,
-        'textEnhanceMode': _textEnhanceMode,
-      });
+      print('🔄 正在添加历史记录...');
+      try {
+        // 安全地复制数据，处理null值
+        List<Map<String, dynamic>> safeTextBoxes = _textBoxes.map((map) {
+          if (map == null) {
+            print('⚠️ 发现null文本框，跳过');
+            return <String, dynamic>{};
+          }
+          Map<String, dynamic> safeMap = {};
+          map.forEach((key, value) {
+            if (key != null) {
+              safeMap[key] = value; // 允许value为null
+            }
+          });
+          return safeMap;
+        }).toList();
+        
+        List<Map<String, dynamic>> safeImageBoxes = _imageBoxes.map((map) {
+          if (map == null) {
+            print('⚠️ 发现null图片框，跳过');
+            return <String, dynamic>{};
+          }
+          Map<String, dynamic> safeMap = {};
+          map.forEach((key, value) {
+            if (key != null) {
+              safeMap[key] = value; // 允许value为null
+            }
+          });
+          return safeMap;
+        }).toList();
+        
+        List<Map<String, dynamic>> safeAudioBoxes = _audioBoxes.map((map) {
+          if (map == null) {
+            print('⚠️ 发现null音频框，跳过');
+            return <String, dynamic>{};
+          }
+          Map<String, dynamic> safeMap = {};
+          map.forEach((key, value) {
+            if (key != null) {
+              safeMap[key] = value; // 允许value为null
+            }
+          });
+          return safeMap;
+        }).toList();
+        
+        print('📊 安全数据统计: 文本框${safeTextBoxes.length}个, 图片框${safeImageBoxes.length}个, 音频框${safeAudioBoxes.length}个');
+        
+        _history.add({
+          'textBoxes': safeTextBoxes,
+          'imageBoxes': safeImageBoxes,
+          'audioBoxes': safeAudioBoxes,
+          'deletedTextBoxIds': List<String>.from(_deletedTextBoxIds.where((id) => id != null)),
+          'deletedImageBoxIds': List<String>.from(_deletedImageBoxIds.where((id) => id != null)),
+          'deletedAudioBoxIds': List<String>.from(_deletedAudioBoxIds.where((id) => id != null)),
+          'backgroundImage': _backgroundImage?.path,
+          'backgroundColor': _backgroundColor?.value,
+          'textEnhanceMode': _textEnhanceMode,
+        });
+        print('✅ 历史记录添加成功');
+      } catch (e, stackTrace) {
+        print('❌ 添加历史记录时发生错误: $e');
+        print('📍 错误堆栈: $stackTrace');
+        // 即使历史记录添加失败，也不影响文档加载
+      }
       _historyIndex = 0;
     } catch (e, stackTrace) {
-      print('加载内容时出错: $e');
-      print('堆栈跟踪: $stackTrace');
+      print('❌ 加载文档内容时发生错误!');
+      print('📄 文档名称: ${widget.documentName}');
+      print('🚨 错误类型: ${e.runtimeType}');
+      print('💥 错误详情: $e');
+      print('📍 堆栈跟踪: $stackTrace');
+      
+      // 检查是否是类型转换错误
+      if (e.toString().contains('type') && e.toString().contains('null')) {
+        print('⚠️ 检测到空值类型转换错误，可能是数据库返回了null值');
+      }
+      
       setState(() {
         _isLoading = false;
       });
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('加载内容时出错，请重试。')),
+        SnackBar(content: Text('加载内容时出错: ${e.toString()}')),
       );
     }
   }
@@ -737,20 +810,74 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
     if (_historyIndex < _history.length - 1) {
       _history = _history.sublist(0, _historyIndex + 1);
     }
-    _history.add({
-      'textBoxes':
-      _textBoxes.map((map) => Map<String, dynamic>.from(map)).toList(),
-      'imageBoxes':
-      _imageBoxes.map((map) => Map<String, dynamic>.from(map)).toList(),
-      'audioBoxes':
-      _audioBoxes.map((map) => Map<String, dynamic>.from(map)).toList(),
-      'deletedTextBoxIds': List<String>.from(_deletedTextBoxIds),
-      'deletedImageBoxIds': List<String>.from(_deletedImageBoxIds),
-      'deletedAudioBoxIds': List<String>.from(_deletedAudioBoxIds),
-      'backgroundImage': _backgroundImage?.path,
-      'backgroundColor': _backgroundColor?.value,
-      'textEnhanceMode': _textEnhanceMode,
-    });
+    
+    try {
+      // 安全地复制数据，处理null值
+      List<Map<String, dynamic>> safeTextBoxes = _textBoxes.map((map) {
+        if (map == null) {
+          return <String, dynamic>{};
+        }
+        Map<String, dynamic> safeMap = {};
+        map.forEach((key, value) {
+          if (key != null) {
+            safeMap[key] = value;
+          }
+        });
+        return safeMap;
+      }).toList();
+      
+      List<Map<String, dynamic>> safeImageBoxes = _imageBoxes.map((map) {
+        if (map == null) {
+          return <String, dynamic>{};
+        }
+        Map<String, dynamic> safeMap = {};
+        map.forEach((key, value) {
+          if (key != null) {
+            safeMap[key] = value;
+          }
+        });
+        return safeMap;
+      }).toList();
+      
+      List<Map<String, dynamic>> safeAudioBoxes = _audioBoxes.map((map) {
+        if (map == null) {
+          return <String, dynamic>{};
+        }
+        Map<String, dynamic> safeMap = {};
+        map.forEach((key, value) {
+          if (key != null) {
+            safeMap[key] = value;
+          }
+        });
+        return safeMap;
+      }).toList();
+      
+      _history.add({
+        'textBoxes': safeTextBoxes,
+        'imageBoxes': safeImageBoxes,
+        'audioBoxes': safeAudioBoxes,
+        'deletedTextBoxIds': List<String>.from(_deletedTextBoxIds.where((id) => id != null)),
+        'deletedImageBoxIds': List<String>.from(_deletedImageBoxIds.where((id) => id != null)),
+        'deletedAudioBoxIds': List<String>.from(_deletedAudioBoxIds.where((id) => id != null)),
+        'backgroundImage': _backgroundImage?.path,
+        'backgroundColor': _backgroundColor?.value,
+        'textEnhanceMode': _textEnhanceMode,
+      });
+    } catch (e) {
+      print('❌ 保存历史状态时发生错误: $e');
+      // 创建一个空的历史状态作为备用
+      _history.add({
+        'textBoxes': <Map<String, dynamic>>[],
+        'imageBoxes': <Map<String, dynamic>>[],
+        'audioBoxes': <Map<String, dynamic>>[],
+        'deletedTextBoxIds': <String>[],
+        'deletedImageBoxIds': <String>[],
+        'deletedAudioBoxIds': <String>[],
+        'backgroundImage': null,
+        'backgroundColor': null,
+        'textEnhanceMode': false,
+      });
+    }
     _historyIndex = _history.length - 1;
 
     if (_history.length > 20) {
