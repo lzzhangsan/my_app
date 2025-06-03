@@ -1245,13 +1245,13 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     final db = await getService<DatabaseService>().database;
     List<Map<String, dynamic>> result = await db.query(
       'documents',
-      columns: ['isTemplate'],
+      columns: ['is_template'],
       where: 'name = ?',
       whereArgs: [documentName],
     );
 
     if (result.isNotEmpty) {
-      return result.first['isTemplate'] == 1;
+      return result.first['is_template'] == 1;
     }
     return false;
   }
@@ -1999,34 +1999,26 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
                           }
                         },
                         builder: (context, candidateItems, rejectedItems) {
-                          return Draggable<DirectoryItem>(
-                            data: item,
-                            feedback: itemFeedback,
-                            child: Container(
-                              decoration: BoxDecoration(
-                                color: candidateItems.isNotEmpty 
-                                  ? Colors.blue.withOpacity(0.2) 
-                                  : null,
-                                borderRadius: BorderRadius.circular(4.0),
-                              ),
-                              child: Icon(
-                                Icons.folder,
-                                size: 40,
-                                color: Color(0xFFFFCA28),
-                              ),
+                          return Container(
+                            decoration: BoxDecoration(
+                              color: candidateItems.isNotEmpty 
+                                ? Colors.blue.withOpacity(0.2) 
+                                : null,
+                              borderRadius: BorderRadius.circular(4.0),
+                            ),
+                            child: Icon(
+                              Icons.folder,
+                              size: 40,
+                              color: Color(0xFFFFCA28),
                             ),
                           );
                         },
                       );
                     } else {
-                      return Draggable<DirectoryItem>(
-                        data: item,
-                        feedback: itemFeedback,
-                        child: Icon(
-                          Icons.description,
-                          size: 40,
-                          color: Color(0xFF4CAF50),
-                        ),
+                      return Icon(
+                        Icons.description,
+                        size: 40,
+                        color: Color(0xFF4CAF50),
                       );
                     }
                   }
