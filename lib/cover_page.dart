@@ -629,20 +629,18 @@ class _CoverPageState extends State<CoverPage> {
           ..._textBoxes.map((textBoxData) {
             return _buildTextBox(textBoxData);
           }),
-          // 添加浮动性能指示器
-          Positioned(
-            top: 56, // 向下调整图标位置
-            right: 16,
-            child: FloatingPerformanceIndicator(
-              onTap: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => PerformanceMonitorPage(),
-                  ),
-                );
-              },
-            ),
+          // 添加浮动性能指示器 - 修改定位方式，不使用外部Positioned
+          FloatingPerformanceIndicator(
+            alignment: Alignment.topRight,
+            margin: EdgeInsets.only(top: 80, right: 16), // 使用margin参数控制位置
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => PerformanceMonitorPage(),
+                ),
+              );
+            },
           ),
         ],
       ),
