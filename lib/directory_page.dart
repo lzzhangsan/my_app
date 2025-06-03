@@ -1531,9 +1531,8 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
 
   Future<void> _createDocumentFromTemplate(String templateName) async {
     try {
-      // Generate a new document name based on the template name
-      // You might want a more sophisticated way to get or generate this name, e.g., a dialog
-      String newName = 'New from $templateName - ${DateTime.now().millisecondsSinceEpoch}';
+      // 生成一个更简洁的新文档名称，使用"模板名称-副本"的格式
+      String newName = '$templateName-副本';
       // Ensure the generated name is unique if necessary, or let the service handle it if it's designed to.
       // For now, we assume the service might further refine the name if there's a conflict.
 

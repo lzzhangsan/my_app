@@ -1187,15 +1187,16 @@ class DatabaseService {
     print('createDocumentFromTemplate called for template $templateName, newName: $newDocumentName, parentFolder: $parentFolder');
     final db = await database;
     
-    // 1. 生成唯一的文档名称
+    // 1. 生成唯一的文档名称，使用更简洁的格式
     String finalNewDocumentName = newDocumentName;
     int attempt = 0;
     String baseName = newDocumentName;
     while (await doesNameExist(finalNewDocumentName)) {
       attempt++;
-      finalNewDocumentName = '$baseName ($attempt) - ${DateTime.now().millisecondsSinceEpoch}_${const Uuid().v4().substring(0,4)}';
-      if (attempt > 10) {
-        print('Failed to generate a unique name for document from template after 10 attempts.');
+      // 如果已存在同名文档，则使用"模板名称-副本(序号)"的格式
+      finalNewDocumentName = attempt > 1 ? '$baseName($attempt)' : baseName;
+      if (attempt > 100) {
+        print('Failed to generate a unique name for document from template after 100 attempts.');
         throw Exception('Failed to generate a unique name for document from template.');
       }
     }
