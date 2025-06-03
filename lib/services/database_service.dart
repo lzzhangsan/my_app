@@ -1165,22 +1165,140 @@ class DatabaseService {
 
   // Future<void> copyDocument(String sourceName, String targetName) async { // OLD SIGNATURE
   Future<String> copyDocument(String sourceDocumentName, {String? parentFolder}) async { // NEW SIGNATURE
-    // TODO: Implement document copy logic
-    // 1. Generate a unique new name, e.g., "Copy of $sourceDocumentName" or with timestamp
-    // 2. Query source document and its contents (text_boxes, image_boxes, audio_boxes, settings)
-    // 3. Insert new document record with the new name and parentFolder
-    // 4. Duplicate associated content for the new document name
-    // 5. Handle file paths for images/audio if they need to be copied/renamed
-    // 6. Update order if necessary
     print('copyDocument called for $sourceDocumentName, parentFolder: $parentFolder');
-    String newName = 'Copy of $sourceDocumentName - ${DateTime.now().millisecondsSinceEpoch}';
-    if (await doesNameExist(newName)) {
-        newName = 'Copy of $sourceDocumentName - ${DateTime.now().millisecondsSinceEpoch}_${const Uuid().v4().substring(0,4)}';
+    final db = await database;
+    
+    // 1. 生成唯一的文档名称，使用更简洁的格式
+    String newName = '$sourceDocumentName-副本';
+    String finalNewDocumentName = newName;
+    int attempt = 0;
+    String baseName = newName;
+    while (await doesNameExist(finalNewDocumentName)) {
+      attempt++;
+      // 如果已存在同名文档，则使用"源文档名称-副本(序号)"的格式
+      finalNewDocumentName = attempt > 1 ? '$baseName($attempt)' : baseName;
+      if (attempt > 100) {
+        print('Failed to generate a unique name for document copy after 100 attempts.');
+        throw Exception('Failed to generate a unique name for document copy.');
+      }
     }
-    print('Generated new name for copy: $newName');
-    // For now, actual database operations for copying are not implemented.
-    // throw UnimplementedError('copyDocument is not fully implemented yet. Would have created $newName.');
-    return newName; // Return the generated name for compilation
+    print('Final new document name for copy: $finalNewDocumentName');
+    
+    try {
+      // 2. 获取源文档信息
+      List<Map<String, dynamic>> sourceDocs = await db.query(
+        'documents',
+        where: 'name = ?',
+        whereArgs: [sourceDocumentName]
+      );
+      
+      if (sourceDocs.isEmpty) {
+        throw Exception('Source document not found: $sourceDocumentName');
+      }
+      
+      Map<String, dynamic> sourceDoc = sourceDocs.first;
+      // 使用字符串类型的ID，因为数据库中id字段是TEXT类型
+      String sourceId = sourceDoc['id'].toString();
+      
+      // 3. 创建新文档记录
+      int maxOrder = 0;
+      if (parentFolder != null) {
+        List<Map<String, dynamic>> docs = await db.query(
+          'documents',
+          where: 'parent_folder = ?',
+          whereArgs: [parentFolder],
+          orderBy: 'order_index DESC',
+          limit: 1
+        );
+        if (docs.isNotEmpty) {
+          maxOrder = docs.first['order_index'] ?? 0;
+        }
+      }
+      
+      // 4. 插入新文档
+      // 生成UUID作为文档ID
+      String newDocId = const Uuid().v4();
+      await db.insert('documents', {
+        'id': newDocId, // 显式设置ID为UUID
+        'name': finalNewDocumentName,
+        'parent_folder': parentFolder,
+        'is_template': 0, // 确保新文档不是模板
+        'order_index': maxOrder + 1,
+        'created_at': DateTime.now().millisecondsSinceEpoch,
+        'updated_at': DateTime.now().millisecondsSinceEpoch,
+      });
+      
+      // 5. 复制源文档的内容
+      // 复制文本框
+      List<Map<String, dynamic>> textBoxes = await db.query(
+        'text_boxes',
+        where: 'document_id = ?',
+        whereArgs: [sourceId]
+      );
+      
+      for (var textBox in textBoxes) {
+        Map<String, dynamic> newTextBox = Map<String, dynamic>.from(textBox);
+        newTextBox.remove('id');
+        newTextBox['document_id'] = newDocId;
+        // 为文本框生成新的唯一ID
+        newTextBox['id'] = const Uuid().v4();
+        await db.insert('text_boxes', newTextBox);
+      }
+      
+      // 复制图片框
+      List<Map<String, dynamic>> imageBoxes = await db.query(
+        'image_boxes',
+        where: 'document_id = ?',
+        whereArgs: [sourceId]
+      );
+      
+      for (var imageBox in imageBoxes) {
+        Map<String, dynamic> newImageBox = Map<String, dynamic>.from(imageBox);
+        newImageBox.remove('id');
+        newImageBox['document_id'] = newDocId;
+        // 为图片框生成新的唯一ID
+        newImageBox['id'] = const Uuid().v4();
+        await db.insert('image_boxes', newImageBox);
+      }
+      
+      // 复制音频框
+      List<Map<String, dynamic>> audioBoxes = await db.query(
+        'audio_boxes',
+        where: 'document_id = ?',
+        whereArgs: [sourceId]
+      );
+      
+      for (var audioBox in audioBoxes) {
+        Map<String, dynamic> newAudioBox = Map<String, dynamic>.from(audioBox);
+        newAudioBox.remove('id');
+        newAudioBox['document_id'] = newDocId;
+        // 为音频框生成新的唯一ID
+        newAudioBox['id'] = const Uuid().v4();
+        await db.insert('audio_boxes', newAudioBox);
+      }
+      
+      // 复制文档设置
+      List<Map<String, dynamic>> docSettings = await db.query(
+        'document_settings',
+        where: 'document_id = ?',
+        whereArgs: [sourceId]
+      );
+      
+      if (docSettings.isNotEmpty) {
+        Map<String, dynamic> newSettings = Map<String, dynamic>.from(docSettings.first);
+        newSettings.remove('id');
+        newSettings['document_id'] = newDocId;
+        newSettings['document_name'] = finalNewDocumentName;
+        await db.insert('document_settings', newSettings);
+      }
+      
+      print('Successfully copied document: $finalNewDocumentName');
+      return finalNewDocumentName;
+    } catch (e, stackTrace) {
+      _handleError('复制文档时出错', e, stackTrace);
+      print('复制文档时出错: $e');
+      throw e;
+    }
   }
 
   Future<String> createDocumentFromTemplate(String templateName, String newDocumentName, {String? parentFolder}) async {
