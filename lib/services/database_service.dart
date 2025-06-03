@@ -1618,7 +1618,49 @@ class DatabaseService {
         print('📋 [DB] 第一条文本框数据字段: ${result.first.keys.toList()}');
         print('📋 [DB] 第一条文本框数据值: ${result.first}');
       }
-      return result.map((map) => Map<String, dynamic>.from(map)).toList();
+      
+      // 转换字段名
+      return result.map((map) {
+        Map<String, dynamic> convertedMap = Map<String, dynamic>.from(map);
+        // 将数据库字段名转换为应用中使用的字段名
+        if (convertedMap.containsKey('position_x')) {
+          convertedMap['positionX'] = convertedMap.remove('position_x');
+        }
+        if (convertedMap.containsKey('position_y')) {
+          convertedMap['positionY'] = convertedMap.remove('position_y');
+        }
+        if (convertedMap.containsKey('content')) {
+          convertedMap['text'] = convertedMap.remove('content');
+        }
+        if (convertedMap.containsKey('font_size')) {
+          convertedMap['fontSize'] = convertedMap.remove('font_size');
+        }
+        if (convertedMap.containsKey('font_color')) {
+          convertedMap['fontColor'] = convertedMap.remove('font_color');
+        }
+        if (convertedMap.containsKey('font_family')) {
+          convertedMap['fontFamily'] = convertedMap.remove('font_family');
+        }
+        if (convertedMap.containsKey('font_weight')) {
+          convertedMap['fontWeight'] = convertedMap.remove('font_weight');
+        }
+        if (convertedMap.containsKey('is_italic')) {
+          convertedMap['isItalic'] = convertedMap.remove('is_italic');
+        }
+        if (convertedMap.containsKey('is_underlined')) {
+          convertedMap['isUnderlined'] = convertedMap.remove('is_underlined');
+        }
+        if (convertedMap.containsKey('is_strike_through')) {
+          convertedMap['isStrikeThrough'] = convertedMap.remove('is_strike_through');
+        }
+        if (convertedMap.containsKey('background_color')) {
+          convertedMap['backgroundColor'] = convertedMap.remove('background_color');
+        }
+        if (convertedMap.containsKey('text_align')) {
+          convertedMap['textAlign'] = convertedMap.remove('text_align');
+        }
+        return convertedMap;
+      }).toList();
     } catch (e, stackTrace) {
       print('❌ [DB] 获取文档文本框失败: $e');
       _handleError('获取文档文本框失败', e, stackTrace);
@@ -1641,7 +1683,22 @@ class DatabaseService {
         print('📋 [DB] 第一条图片框数据字段: ${result.first.keys.toList()}');
         print('📋 [DB] 第一条图片框数据值: ${result.first}');
       }
-      return result.map((map) => Map<String, dynamic>.from(map)).toList();
+      
+      // 转换字段名
+      return result.map((map) {
+        Map<String, dynamic> convertedMap = Map<String, dynamic>.from(map);
+        // 将数据库字段名转换为应用中使用的字段名
+        if (convertedMap.containsKey('position_x')) {
+          convertedMap['positionX'] = convertedMap.remove('position_x');
+        }
+        if (convertedMap.containsKey('position_y')) {
+          convertedMap['positionY'] = convertedMap.remove('position_y');
+        }
+        if (convertedMap.containsKey('image_path')) {
+          convertedMap['imagePath'] = convertedMap.remove('image_path');
+        }
+        return convertedMap;
+      }).toList();
     } catch (e, stackTrace) {
       print('❌ [DB] 获取文档图片框失败: $e');
       _handleError('获取文档图片框失败', e, stackTrace);
@@ -1664,7 +1721,22 @@ class DatabaseService {
         print('📋 [DB] 第一条音频框数据字段: ${result.first.keys.toList()}');
         print('📋 [DB] 第一条音频框数据值: ${result.first}');
       }
-      return result.map((map) => Map<String, dynamic>.from(map)).toList();
+      
+      // 转换字段名
+      return result.map((map) {
+        Map<String, dynamic> convertedMap = Map<String, dynamic>.from(map);
+        // 将数据库字段名转换为应用中使用的字段名
+        if (convertedMap.containsKey('position_x')) {
+          convertedMap['positionX'] = convertedMap.remove('position_x');
+        }
+        if (convertedMap.containsKey('position_y')) {
+          convertedMap['positionY'] = convertedMap.remove('position_y');
+        }
+        if (convertedMap.containsKey('audio_path')) {
+          convertedMap['audioPath'] = convertedMap.remove('audio_path');
+        }
+        return convertedMap;
+      }).toList();
     } catch (e, stackTrace) {
       print('❌ [DB] 获取文档音频框失败: $e');
       _handleError('获取文档音频框失败', e, stackTrace);
