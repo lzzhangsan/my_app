@@ -1414,7 +1414,11 @@ class DatabaseService {
           whereArgs: [folderName],
         );
       } else {
-        result = await db.query('directory_settings');
+        // 当folderName为null时，查询folder_name为null的记录，而不是所有记录
+        result = await db.query(
+          'directory_settings',
+          where: 'folder_name IS NULL',
+        );
       }
       
       if (result.isNotEmpty) {
@@ -1429,6 +1433,7 @@ class DatabaseService {
 
   /// Insert or update directory settings
   Future<void> insertOrUpdateDirectorySettings({
+    String? folderName,
     String? imagePath,
     int? colorValue,
     int? isFreeSortMode,
@@ -1436,7 +1441,10 @@ class DatabaseService {
     try {
       final db = await database;
       
-      Map<String, dynamic> data = {};
+      Map<String, dynamic> data = {
+        'folder_name': folderName,
+        'updated_at': DateTime.now().millisecondsSinceEpoch,
+      };
       
       if (imagePath == null) {
         data['background_image_path'] = null;
@@ -1452,11 +1460,41 @@ class DatabaseService {
         data['is_free_sort_mode'] = isFreeSortMode;
       }
       
-      List<Map<String, dynamic>> existing = await db.query('directory_settings');
+      // 查询特定文件夹的设置
+      List<Map<String, dynamic>> existing;
+      if (folderName != null) {
+        existing = await db.query(
+          'directory_settings',
+          where: 'folder_name = ?',
+          whereArgs: [folderName],
+        );
+      } else {
+        existing = await db.query(
+          'directory_settings',
+          where: 'folder_name IS NULL',
+        );
+      }
+      
       if (existing.isEmpty) {
+        // 如果不存在，则插入新记录
+        data['created_at'] = DateTime.now().millisecondsSinceEpoch;
         await db.insert('directory_settings', data);
       } else {
-        await db.update('directory_settings', data);
+        // 如果存在，则更新记录
+        if (folderName != null) {
+          await db.update(
+            'directory_settings',
+            data,
+            where: 'folder_name = ?',
+            whereArgs: [folderName],
+          );
+        } else {
+          await db.update(
+            'directory_settings',
+            data,
+            where: 'folder_name IS NULL',
+          );
+        }
       }
     } catch (e, stackTrace) {
       _handleError('插入或更新目录设置失败', e, stackTrace);
@@ -1465,14 +1503,23 @@ class DatabaseService {
   }
 
   /// Delete directory background image
-  Future<void> deleteDirectoryBackgroundImage() async {
+  Future<void> deleteDirectoryBackgroundImage([String? folderName]) async {
     try {
       final db = await database;
-      await db.update(
-        'directory_settings',
-        {'background_image_path': null},
-        where: 'id IS NOT NULL',
-      );
+      if (folderName != null) {
+        await db.update(
+          'directory_settings',
+          {'background_image_path': null},
+          where: 'folder_name = ?',
+          whereArgs: [folderName],
+        );
+      } else {
+        await db.update(
+          'directory_settings',
+          {'background_image_path': null},
+          where: 'folder_name IS NULL',
+        );
+      }
     } catch (e, stackTrace) {
       _handleError('删除目录背景图片失败', e, stackTrace);
       rethrow;

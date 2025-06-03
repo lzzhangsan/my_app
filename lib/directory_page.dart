@@ -328,7 +328,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
                 _backgroundImage = null;
               });
             }
-            await getService<DatabaseService>().deleteDirectoryBackgroundImage();
+            await getService<DatabaseService>().deleteDirectoryBackgroundImage(_currentParentFolder);
           }
         } else if (mounted) {
           setState(() {
@@ -386,6 +386,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         }
 
         await getService<DatabaseService>().insertOrUpdateDirectorySettings(
+          folderName: _currentParentFolder,
           imagePath: permanentPath,
           colorValue: colorValue,
         );
@@ -413,9 +414,10 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         Map<String, dynamic>? settings = await getService<DatabaseService>().getDirectorySettings(_currentParentFolder);
         int? colorValue = settings != null ? settings['background_color'] : null;
 
-        await getService<DatabaseService>().deleteDirectoryBackgroundImage();
+        await getService<DatabaseService>().deleteDirectoryBackgroundImage(_currentParentFolder);
 
         await getService<DatabaseService>().insertOrUpdateDirectorySettings(
+          folderName: _currentParentFolder,
           imagePath: null,
           colorValue: colorValue,
         );
@@ -456,6 +458,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         String? currentImagePath = settings != null ? settings['background_image_path'] : null;
 
         await getService<DatabaseService>().insertOrUpdateDirectorySettings(
+          folderName: _currentParentFolder,
           imagePath: currentImagePath,
           colorValue: _backgroundColor!.value,
         );
