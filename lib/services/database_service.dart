@@ -1157,7 +1157,7 @@ class DatabaseService {
     final db = await database;
     await db.update(
       'documents',
-      {'order': newOrder},
+      {'order_index': newOrder},
       where: 'name = ?',
       whereArgs: [documentName],
     );
