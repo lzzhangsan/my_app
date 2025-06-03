@@ -1035,8 +1035,10 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
           ),
         ),
         body: Stack(
+          key: ValueKey('main_stack'),
           children: [
             Container(
+              key: ValueKey('background_container'),
               decoration: BoxDecoration(
                 image: _backgroundImage != null
                     ? DecorationImage(
@@ -1049,10 +1051,12 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
             ),
             MediaPlayerContainer(key: _mediaPlayerKey),
             SingleChildScrollView(
+              key: ValueKey('content_scroll_view'),
               controller: _scrollController,
               child: SizedBox(
                 height: totalHeight,
                 child: Stack(
+                  key: ValueKey('content_stack'),
                   children: [
                     ..._imageBoxes.map<Widget>((data) {
                       return Positioned(

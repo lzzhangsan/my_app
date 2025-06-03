@@ -1184,30 +1184,138 @@ class DatabaseService {
   }
 
   Future<String> createDocumentFromTemplate(String templateName, String newDocumentName, {String? parentFolder}) async {
-    // TODO: Implement create from template logic
-    // 1. Validate newDocumentName uniqueness, modify if necessary
-    // 2. Essentially a copy operation from templateName to newDocumentName
-    // 3. Ensure 'isTemplate' flag is false for the new document
-    // 4. Copy contents and settings
     print('createDocumentFromTemplate called for template $templateName, newName: $newDocumentName, parentFolder: $parentFolder');
+    final db = await database;
+    
+    // 1. 生成唯一的文档名称
     String finalNewDocumentName = newDocumentName;
-    // Ensure unique name generation logic is robust
     int attempt = 0;
     String baseName = newDocumentName;
     while (await doesNameExist(finalNewDocumentName)) {
       attempt++;
       finalNewDocumentName = '$baseName ($attempt) - ${DateTime.now().millisecondsSinceEpoch}_${const Uuid().v4().substring(0,4)}';
-      if (attempt > 10) { // Safety break to prevent infinite loop in case of an issue
+      if (attempt > 10) {
         print('Failed to generate a unique name for document from template after 10 attempts.');
         throw Exception('Failed to generate a unique name for document from template.');
       }
     }
     print('Final new document name from template: $finalNewDocumentName');
-    // For now, actual database operations for creating from template are not implemented.
-    // Placeholder: Simulate document creation for compilation and testing UI flow
-    // await db.insert('documents', {'name': finalNewDocumentName, 'parentFolder': parentFolder, 'isTemplate': 0, 'order': 0});
-    // throw UnimplementedError('createDocumentFromTemplate is not fully implemented yet. Would have created $finalNewDocumentName.');
-    return finalNewDocumentName; // Return the generated name
+    
+    try {
+      // 2. 获取模板文档信息
+      List<Map<String, dynamic>> templateDocs = await db.query(
+        'documents',
+        where: 'name = ?',
+        whereArgs: [templateName]
+      );
+      
+      if (templateDocs.isEmpty) {
+        throw Exception('Template document not found: $templateName');
+      }
+      
+      Map<String, dynamic> templateDoc = templateDocs.first;
+      // 使用字符串类型的ID，因为数据库中id字段是TEXT类型
+      String templateId = templateDoc['id'].toString();
+      
+      // 3. 创建新文档记录
+      int maxOrder = 0;
+      if (parentFolder != null) {
+        List<Map<String, dynamic>> docs = await db.query(
+          'documents',
+          where: 'parent_folder = ?',
+          whereArgs: [parentFolder],
+          orderBy: 'order_index DESC',
+          limit: 1
+        );
+        if (docs.isNotEmpty) {
+          maxOrder = docs.first['order_index'] ?? 0;
+        }
+      }
+      
+      // 4. 插入新文档
+      // 生成UUID作为文档ID
+      String newDocId = const Uuid().v4();
+      await db.insert('documents', {
+        'id': newDocId, // 显式设置ID为UUID
+        'name': finalNewDocumentName,
+        'parent_folder': parentFolder,
+        'is_template': 0, // 确保新文档不是模板
+        'order_index': maxOrder + 1,
+        'created_at': DateTime.now().millisecondsSinceEpoch,
+        'updated_at': DateTime.now().millisecondsSinceEpoch,
+      });
+      
+      // 5. 复制模板文档的内容
+      // 复制文本框
+      List<Map<String, dynamic>> textBoxes = await db.query(
+        'text_boxes',
+        where: 'document_id = ?',
+        whereArgs: [templateId]
+      );
+      
+      for (var textBox in textBoxes) {
+        Map<String, dynamic> newTextBox = Map<String, dynamic>.from(textBox);
+        newTextBox.remove('id');
+        newTextBox['document_id'] = newDocId;
+        // 为文本框生成新的唯一ID
+        newTextBox['id'] = const Uuid().v4();
+        await db.insert('text_boxes', newTextBox);
+      }
+      
+      // 复制图片框
+      List<Map<String, dynamic>> imageBoxes = await db.query(
+        'image_boxes',
+        where: 'document_id = ?',
+        whereArgs: [templateId]
+      );
+      
+      for (var imageBox in imageBoxes) {
+        Map<String, dynamic> newImageBox = Map<String, dynamic>.from(imageBox);
+        newImageBox.remove('id');
+        newImageBox['document_id'] = newDocId;
+        // 为图片框生成新的唯一ID
+        newImageBox['id'] = const Uuid().v4();
+        await db.insert('image_boxes', newImageBox);
+      }
+      
+      // 复制音频框
+      List<Map<String, dynamic>> audioBoxes = await db.query(
+        'audio_boxes',
+        where: 'document_id = ?',
+        whereArgs: [templateId]
+      );
+      
+      for (var audioBox in audioBoxes) {
+        Map<String, dynamic> newAudioBox = Map<String, dynamic>.from(audioBox);
+        newAudioBox.remove('id');
+        newAudioBox['document_id'] = newDocId;
+        // 为音频框生成新的唯一ID
+        newAudioBox['id'] = const Uuid().v4();
+        await db.insert('audio_boxes', newAudioBox);
+      }
+      
+      // 复制文档设置
+      List<Map<String, dynamic>> docSettings = await db.query(
+        'document_settings',
+        where: 'document_id = ?',
+        whereArgs: [templateId]
+      );
+      
+      if (docSettings.isNotEmpty) {
+        Map<String, dynamic> newSettings = Map<String, dynamic>.from(docSettings.first);
+        newSettings.remove('id');
+        newSettings['document_id'] = newDocId;
+        newSettings['document_name'] = finalNewDocumentName;
+        await db.insert('document_settings', newSettings);
+      }
+      
+      print('Successfully created document from template: $finalNewDocumentName');
+      return finalNewDocumentName;
+    } catch (e, stackTrace) {
+      _handleError('从模板创建文档时出错', e, stackTrace);
+      print('从模板创建文档时出错: $e');
+      rethrow;
+    }
   }
 
   Future<void> importAllData(String filePath) async {

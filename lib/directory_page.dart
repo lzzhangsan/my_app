@@ -565,7 +565,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
           name: document['name'],
           type: ItemType.document,
           order: document['order'] ?? 0,
-          isTemplate: document['isTemplate'] == 1,
+          isTemplate: document['is_template'] == 1,
           isSelected: false,
         ));
       }
