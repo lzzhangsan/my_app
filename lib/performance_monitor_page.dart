@@ -263,7 +263,7 @@ class _PerformanceMonitorPageState extends State<PerformanceMonitorPage>
         _buildMetricCard(
           title: '内存使用',
           value: '${(_currentMetric!.memoryPercentage * 100).toStringAsFixed(1)}%',
-          subtitle: '${(_currentMetric!.memoryUsage / (1024 * 1024)).toStringAsFixed(0)}MB / ${(_currentMetric!.memoryTotal / (1024 * 1024)).toStringAsFixed(0)}MB',
+          subtitle: '${(_currentMetric!.memoryUsage / (1024 * 1024)).toStringAsFixed(0)}/${(_currentMetric!.memoryTotal / (1024 * 1024)).toStringAsFixed(0)}MB',
           icon: Icons.memory,
           color: _getMemoryColor(),
           progress: _currentMetric!.memoryPercentage,
@@ -271,7 +271,7 @@ class _PerformanceMonitorPageState extends State<PerformanceMonitorPage>
         _buildMetricCard(
           title: 'CPU使用',
           value: '${(_currentMetric!.cpuUsage * 100).toStringAsFixed(1)}%',
-          subtitle: _getCpuDescription(),
+          subtitle: '空闲状态',
           icon: Icons.speed,
           color: _getCpuColor(),
           progress: _currentMetric!.cpuUsage,
@@ -279,7 +279,7 @@ class _PerformanceMonitorPageState extends State<PerformanceMonitorPage>
         _buildMetricCard(
           title: '帧率',
           value: '${_currentMetric!.frameRate.toStringAsFixed(0)} FPS',
-          subtitle: _getFrameRateDescription(),
+          subtitle: '流畅状态',
           icon: Icons.videocam,
           color: _getFrameRateColor(),
           progress: _currentMetric!.frameRate / 60.0,
@@ -287,7 +287,7 @@ class _PerformanceMonitorPageState extends State<PerformanceMonitorPage>
         _buildMetricCard(
           title: '电池电量',
           value: '${(_currentMetric!.batteryLevel * 100).toStringAsFixed(0)}%',
-          subtitle: _getBatteryDescription(),
+          subtitle: '电量充足',
           icon: Icons.battery_full,
           color: _getBatteryColor(),
           progress: _currentMetric!.batteryLevel,
@@ -308,7 +308,7 @@ class _PerformanceMonitorPageState extends State<PerformanceMonitorPage>
       elevation: 4,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       child: Container(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10), // 减小内边距
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(12),
           gradient: LinearGradient(
@@ -319,48 +319,50 @@ class _PerformanceMonitorPageState extends State<PerformanceMonitorPage>
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min, // 确保卡片高度适应内容
           children: [
             Row(
               children: [
-                Icon(icon, color: color, size: 24),
-                const SizedBox(width: 8),
+                Icon(icon, color: color, size: 20), // 减小图标大小
+                const SizedBox(width: 6), // 减小间距
                 Expanded(
                   child: Text(
                     title,
                     style: TextStyle(
                       color: Colors.grey.shade700,
-                      fontSize: 14,
+                      fontSize: 13, // 减小字体大小
                       fontWeight: FontWeight.w500,
                     ),
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
               ],
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 6), // 减小间距
             Text(
               value,
               style: TextStyle(
                 color: color,
-                fontSize: 20,
+                fontSize: 18, // 减小字体大小
                 fontWeight: FontWeight.bold,
               ),
             ),
-            const SizedBox(height: 4),
+            const SizedBox(height: 2), // 减小间距
             Text(
               subtitle,
               style: TextStyle(
                 color: Colors.grey.shade600,
-                fontSize: 12,
+                fontSize: 11, // 减小字体大小
               ),
-              maxLines: 2,
+              maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 6), // 减小间距
             LinearProgressIndicator(
               value: progress.clamp(0.0, 1.0),
               backgroundColor: Colors.grey.shade300,
               valueColor: AlwaysStoppedAnimation<Color>(color),
-              minHeight: 4,
+              minHeight: 3, // 减小进度条高度
             ),
           ],
         ),
