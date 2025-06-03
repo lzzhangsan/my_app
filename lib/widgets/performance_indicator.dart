@@ -10,11 +10,11 @@ class PerformanceIndicator extends StatefulWidget {
   final double? size;
 
   const PerformanceIndicator({
-    Key? key,
+    super.key,
     this.showDetails = false,
     this.padding,
     this.size,
-  }) : super(key: key);
+  });
 
   @override
   State<PerformanceIndicator> createState() => _PerformanceIndicatorState();
@@ -115,7 +115,7 @@ class _PerformanceIndicatorState extends State<PerformanceIndicator>
   }
 
   Widget _buildLoadingIndicator() {
-    return Container(
+    return SizedBox(
       width: widget.size ?? 24,
       height: widget.size ?? 24,
       child: CircularProgressIndicator(
@@ -217,12 +217,12 @@ class FloatingPerformanceIndicator extends StatelessWidget {
   final VoidCallback? onTap;
 
   const FloatingPerformanceIndicator({
-    Key? key,
+    super.key,
     this.alignment = Alignment.topRight,
     this.margin = const EdgeInsets.all(16),
     this.showDetails = false,
     this.onTap,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {

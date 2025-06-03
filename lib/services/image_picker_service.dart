@@ -54,7 +54,7 @@ class ImagePickerService {
 
       // 获取应用文档目录
       final appDir = await getApplicationDocumentsDirectory();
-      final fileName = DateTime.now().millisecondsSinceEpoch.toString() + '.jpg';
+      final fileName = '${DateTime.now().millisecondsSinceEpoch}.jpg';
       final savedImage = File('${appDir.path}/images/$fileName');
 
       // 确保目录存在

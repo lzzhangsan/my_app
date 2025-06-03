@@ -2,22 +2,21 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
-import 'package:image_picker/image_picker.dart';
 import 'dart:io';
 import 'core/service_locator.dart';
 import 'services/database_service.dart';
 import 'resizable_and_configurable_text_box.dart';
-import 'database_helper.dart';
+
 import 'package:uuid/uuid.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:flutter_colorpicker/flutter_colorpicker.dart';
-import 'package:flutter/rendering.dart';
 import 'dart:ui';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 import 'services/image_picker_service.dart';
 import 'widgets/performance_indicator.dart';
 import 'performance_monitor_page.dart';
+import 'package:file_picker/file_picker.dart';
 
 class CoverPage extends StatefulWidget {
   const CoverPage({super.key});
@@ -33,7 +32,7 @@ class _CoverPageState extends State<CoverPage> {
   bool _hasCustomBackgroundColor = false; // 是否设置了自定义背景颜色
 
   List<Map<String, dynamic>> _textBoxes = [];
-  List<String> _deletedTextBoxIds = [];
+  final List<String> _deletedTextBoxIds = [];
   static const String coverDocumentName = '__CoverPage__';
   late final DatabaseService _databaseService;
 
@@ -134,7 +133,7 @@ class _CoverPageState extends State<CoverPage> {
         });
 
         // 更新数据库
-        await DatabaseHelper().insertCoverImage(destinationPath);
+        await getService<DatabaseService>().insertCoverImage(destinationPath);
       }
     } catch (e) {
       print('选择背景图片时出错: $e');
@@ -149,7 +148,7 @@ class _CoverPageState extends State<CoverPage> {
     if (shouldDelete) {
       try {
         await _ensureCoverImageTableExists(); // 确保表存在
-        await DatabaseHelper().deleteCoverImage();
+        await getService<DatabaseService>().deleteCoverImage();
         
         // 同时清除封面设置
         DatabaseService dbHelper = _databaseService;
@@ -241,7 +240,7 @@ class _CoverPageState extends State<CoverPage> {
       await _ensureCoverImageTableExists(); // 确保表存在
       
       // 先尝试加载图片
-      List<Map<String, dynamic>> imageRecords = await DatabaseHelper().getCoverImage();
+      List<Map<String, dynamic>> imageRecords = await getService<DatabaseService>().getCoverImage();
       if (imageRecords.isNotEmpty) {
         String imagePath = imageRecords.first['path'];
         if (await File(imagePath).exists()) {
@@ -375,7 +374,7 @@ class _CoverPageState extends State<CoverPage> {
   Future<void> _loadContent() async {
     try {
       List<Map<String, dynamic>> textBoxes =
-      await DatabaseHelper().getTextBoxesByDocument(coverDocumentName);
+      await getService<DatabaseService>().getTextBoxesByDocument(coverDocumentName);
       setState(() {
         _textBoxes =
             textBoxes.map((map) => Map<String, dynamic>.from(map)).toList();
@@ -390,7 +389,7 @@ class _CoverPageState extends State<CoverPage> {
 
   // 保存文本框内容
   Future<void> _saveContent() async {
-    final dbHelper = DatabaseHelper();
+    final dbHelper = getService<DatabaseService>();
     final db = await dbHelper.database;
 
     try {
@@ -559,13 +558,27 @@ class _CoverPageState extends State<CoverPage> {
         false;
 
     if (confirm) {
-      await DatabaseHelper().restoreDatabase();
-      // 重新加载数据
-      await _loadBackgroundImage();
-      await _loadContent();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('数据库已恢复。')),
+      // 选择要恢复的备份文件
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['zip'],
       );
+      
+      if (result != null && result.files.single.path != null) {
+        try {
+          await getService<DatabaseService>().restoreDatabase(result.files.single.path!);
+          // 重新加载数据
+          await _loadBackgroundImage();
+          await _loadContent();
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('数据库已恢复。')),
+          );
+        } catch (e) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('恢复失败: $e')),
+          );
+        }
+      }
     }
   }
 
@@ -615,7 +628,7 @@ class _CoverPageState extends State<CoverPage> {
           // 文本框层
           ..._textBoxes.map((textBoxData) {
             return _buildTextBox(textBoxData);
-          }).toList(),
+          }),
           // 添加浮动性能指示器
           Positioned(
             top: 56, // 向下调整图标位置
@@ -659,17 +672,17 @@ class _CoverPageState extends State<CoverPage> {
             child: FloatingActionButton(
               onPressed: _showSettingsPanel,
               heroTag: 'settingsBtn',
-              child: Icon(
-                Icons.settings, 
-                size: 20,
-                color: Colors.white.withOpacity(0.9), // 略微透明的图标
-              ),
               backgroundColor: Colors.transparent, // 完全透明的背景
               elevation: 0, // 去除默认的阴影效果
               focusElevation: 0,
               hoverElevation: 0,
               highlightElevation: 0,
-              splashColor: Colors.white.withOpacity(0.1), // 轻微的点击效果
+              splashColor: Colors.white.withOpacity(0.1),
+              child: Icon(
+                Icons.settings, 
+                size: 20,
+                color: Colors.white.withOpacity(0.9), // 略微透明的图标
+              ), // 轻微的点击效果
             ),
           ),
         ),
@@ -961,7 +974,7 @@ class _CoverPageState extends State<CoverPage> {
       
     } catch (e) {
       print('保存封面设置时出错: $e');
-      throw e;
+      rethrow;
     }
   }
 
@@ -980,8 +993,8 @@ class _CoverPageState extends State<CoverPage> {
             ),
             TextButton(
               onPressed: () => Navigator.of(context).pop(true),
-              child: Text('清空'),
               style: TextButton.styleFrom(foregroundColor: Colors.red),
+              child: Text('清空'),
             ),
           ],
         );

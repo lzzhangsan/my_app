@@ -6,8 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../models/media_item.dart';
-import '../core/app_state.dart';
-import '../database_helper.dart';
+import '../models/media_type.dart';
 
 class MediaService {
   static final MediaService _instance = MediaService._internal();

@@ -1,5 +1,5 @@
 // lib/models/media_item.dart
-import '../database_helper.dart'; // 导入MediaType枚举
+import 'media_type.dart'; // 导入MediaType枚举
 
 /// 媒体项类，用于表示一个媒体文件或文件夹
 class MediaItem {

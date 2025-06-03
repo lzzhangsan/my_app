@@ -13,13 +13,6 @@ import 'package:path/path.dart' as p;
 import 'package:uuid/uuid.dart';
 import '../core/app_state.dart';
 import '../core/service_locator.dart';
-import '../models/document.dart';
-import '../models/folder.dart';
-// 这些模型文件不存在，暂时注释掉
-// import '../models/text_box.dart';
-// import '../models/image_box.dart';
-// import '../models/audio_box.dart';
-import '../models/media_item.dart';
 
 /// 数据库服务 - 统一管理所有数据库操作
 class DatabaseService {
@@ -35,7 +28,7 @@ class DatabaseService {
   
   /// 事务队列
   final List<Future<void> Function(Transaction)> _transactionQueue = [];
-  bool _isProcessingTransactions = false;
+  final bool _isProcessingTransactions = false;
 
   /// 初始化数据库服务
   Future<void> initialize() async {
@@ -244,6 +237,15 @@ class DatabaseService {
           background_color INTEGER,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
+        )
+      ''');
+
+      // 封面图片表
+      await txn.execute('''
+        CREATE TABLE cover_image(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          path TEXT,
+          timestamp INTEGER
         )
       ''');
 
@@ -1003,7 +1005,7 @@ class DatabaseService {
     try {
       return await db.query(
         'documents',
-        where: 'parent_folder ' + (parentFolder == null ? 'IS NULL' : '= ?'),
+        where: 'parent_folder ${parentFolder == null ? 'IS NULL' : '= ?'}',
         whereArgs: parentFolder != null ? [parentFolder] : [],
         orderBy: 'order_index ASC',
       );
@@ -1194,7 +1196,7 @@ class DatabaseService {
     String baseName = newDocumentName;
     while (await doesNameExist(finalNewDocumentName)) {
       attempt++;
-      finalNewDocumentName = '$baseName (${attempt}) - ${DateTime.now().millisecondsSinceEpoch}_${const Uuid().v4().substring(0,4)}';
+      finalNewDocumentName = '$baseName ($attempt) - ${DateTime.now().millisecondsSinceEpoch}_${const Uuid().v4().substring(0,4)}';
       if (attempt > 10) { // Safety break to prevent infinite loop in case of an issue
         print('Failed to generate a unique name for document from template after 10 attempts.');
         throw Exception('Failed to generate a unique name for document from template.');
@@ -1943,5 +1945,251 @@ class DatabaseService {
       return false;
     }
     return true;
+  }
+
+  // ==================== Cover Image Methods ====================
+
+  /// Insert cover image
+  Future<void> insertCoverImage(String imagePath) async {
+    try {
+      final db = await database;
+      
+      // Ensure cover_image table exists
+      List<Map<String, dynamic>> tables = await db.rawQuery(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='cover_image';"
+      );
+
+      if (tables.isEmpty) {
+        await db.execute('''
+          CREATE TABLE IF NOT EXISTS cover_image (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            path TEXT,
+            timestamp INTEGER
+          )
+        ''');
+        print('在insertCoverImage中创建了cover_image表');
+      }
+
+      // Delete existing records and insert new one
+      await db.delete('cover_image');
+      await db.insert(
+        'cover_image',
+        {'path': imagePath, 'timestamp': DateTime.now().millisecondsSinceEpoch},
+      );
+      print('成功插入封面图片路径: $imagePath');
+    } catch (e, stackTrace) {
+      _handleError('插入封面图片路径失败', e, stackTrace);
+      print('插入封面图片路径时出错: $e');
+      rethrow;
+    }
+  }
+
+  /// Get cover image
+  Future<List<Map<String, dynamic>>> getCoverImage() async {
+    try {
+      final db = await database;
+      
+      // Ensure cover_image table exists
+      List<Map<String, dynamic>> tables = await db.rawQuery(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='cover_image';"
+      );
+
+      if (tables.isEmpty) {
+        await db.execute('''
+          CREATE TABLE IF NOT EXISTS cover_image (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            path TEXT,
+            timestamp INTEGER
+          )
+        ''');
+        print('在getCoverImage中创建了cover_image表');
+        return [];
+      }
+
+      return await db.query(
+        'cover_image',
+        orderBy: 'id DESC',
+        limit: 1,
+      );
+    } catch (e, stackTrace) {
+      _handleError('获取封面图片失败', e, stackTrace);
+      print('获取封面图片时出错: $e');
+      return [];
+    }
+  }
+
+  /// Delete cover image
+  Future<void> deleteCoverImage() async {
+    try {
+      final db = await database;
+      
+      // Ensure cover_image table exists
+      List<Map<String, dynamic>> tables = await db.rawQuery(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='cover_image';"
+      );
+
+      if (tables.isEmpty) {
+        await db.execute('''
+          CREATE TABLE IF NOT EXISTS cover_image (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            path TEXT,
+            timestamp INTEGER
+          )
+        ''');
+        print('在deleteCoverImage中创建了cover_image表');
+        return;
+      }
+
+      await db.delete('cover_image');
+      print('成功删除所有封面图片记录');
+    } catch (e, stackTrace) {
+      _handleError('删除封面图片失败', e, stackTrace);
+      print('删除封面图片时出错: $e');
+    }
+  }
+
+  /// Restore database from backup
+  Future<void> restoreDatabase(String filePath) async {
+    try {
+      print('开始从备份恢复数据库: $filePath');
+      
+      final Directory appDocDir = await getApplicationDocumentsDirectory();
+      final String tempDirPath = '${appDocDir.path}/temp_restore';
+      
+      // 清理并创建临时目录
+      if (await Directory(tempDirPath).exists()) {
+        await Directory(tempDirPath).delete(recursive: true);
+      }
+      await Directory(tempDirPath).create(recursive: true);
+      
+      // 解压备份文件
+      final bytes = File(filePath).readAsBytesSync();
+      final archive = ZipDecoder().decodeBytes(bytes);
+      
+      for (final file in archive) {
+        final filename = file.name;
+        if (file.isFile) {
+          final data = file.content as List<int>;
+          File('$tempDirPath/$filename')
+            ..createSync(recursive: true)
+            ..writeAsBytesSync(data);
+        }
+      }
+      
+      // 读取目录数据
+      final File dbDataFile = File('$tempDirPath/directory_data.json');
+      if (!await dbDataFile.exists()) {
+        throw Exception('备份中未找到目录数据文件');
+      }
+      
+      final Map<String, dynamic> tableData = jsonDecode(await dbDataFile.readAsString());
+      final db = await database;
+      
+      // 准备背景图片目录
+      final String backgroundImagesPath = '${appDocDir.path}/background_images';
+      await Directory(backgroundImagesPath).create(recursive: true);
+      
+      await db.transaction((txn) async {
+        // 清除现有数据
+        await txn.delete('folders');
+        await txn.delete('documents');
+        await txn.delete('text_boxes');
+        await txn.delete('image_boxes');
+        await txn.delete('audio_boxes');
+        await txn.delete('document_settings');
+        await txn.delete('directory_settings');
+        
+        // 导入新数据
+        for (var entry in tableData.entries) {
+          final String tableName = entry.key;
+          final List<dynamic> rows = entry.value;
+          print('处理表: $tableName, 行数: ${rows.length}');
+          
+          if (tableName == 'directory_settings') {
+            for (var row in rows) {
+              Map<String, dynamic> settings = Map<String, dynamic>.from(row);
+              String? fileName = settings.remove('backgroundImageFileName');
+              if (fileName != null) {
+                // 复制背景图片到新位置
+                String newPath = p.join(backgroundImagesPath, fileName);
+                String tempPath = p.join(tempDirPath, 'background_images', fileName);
+                if (await File(tempPath).exists()) {
+                  await File(tempPath).copy(newPath);
+                  settings['background_image_path'] = newPath;
+                  print('已导入目录背景图片: $newPath');
+                }
+              }
+              await txn.insert(tableName, settings);
+            }
+          } else if (tableName == 'document_settings') {
+            for (var row in rows) {
+              Map<String, dynamic> settings = Map<String, dynamic>.from(row);
+              String? fileName = settings.remove('backgroundImageFileName');
+              if (fileName != null) {
+                // 复制背景图片到新位置
+                String newPath = p.join(backgroundImagesPath, fileName);
+                String tempPath = p.join(tempDirPath, 'background_images', fileName);
+                if (await File(tempPath).exists()) {
+                  await File(tempPath).copy(newPath);
+                  settings['background_image_path'] = newPath;
+                  print('已导入文档背景图片: $newPath');
+                }
+              }
+              await txn.insert(tableName, settings);
+            }
+          } else if (tableName == 'image_boxes') {
+            for (var row in rows) {
+              Map<String, dynamic> imageBox = Map<String, dynamic>.from(row);
+              String? imageFileName = imageBox.remove('imageFileName');
+              if (imageFileName != null) {
+                // 复制图片文件到新位置
+                String imagesDirPath = p.join(appDocDir.path, 'images');
+                await Directory(imagesDirPath).create(recursive: true);
+                String newPath = p.join(imagesDirPath, imageFileName);
+                String tempPath = p.join(tempDirPath, 'images', imageFileName);
+                if (await File(tempPath).exists()) {
+                  await File(tempPath).copy(newPath);
+                  imageBox['imagePath'] = newPath;
+                  print('已导入图片框图片: $newPath');
+                }
+              }
+              await txn.insert(tableName, imageBox);
+            }
+          } else if (tableName == 'audio_boxes') {
+            for (var row in rows) {
+              Map<String, dynamic> audioBox = Map<String, dynamic>.from(row);
+              String? audioFileName = audioBox.remove('audioFileName');
+              if (audioFileName != null) {
+                // 复制音频文件到新位置
+                String audiosDirPath = p.join(appDocDir.path, 'audios');
+                await Directory(audiosDirPath).create(recursive: true);
+                String newPath = p.join(audiosDirPath, audioFileName);
+                String tempPath = p.join(tempDirPath, 'audios', audioFileName);
+                if (await File(tempPath).exists()) {
+                  await File(tempPath).copy(newPath);
+                  audioBox['audioPath'] = newPath;
+                  print('已导入音频文件: $newPath');
+                }
+              }
+              await txn.insert(tableName, audioBox);
+            }
+          } else {
+            // 其他表正常导入（folders, documents, text_boxes）
+            for (var row in rows) {
+              await txn.insert(tableName, Map<String, dynamic>.from(row));
+            }
+          }
+        }
+      });
+      
+      // 清理临时目录
+      await Directory(tempDirPath).delete(recursive: true);
+      print('所有数据导入完成');
+    } catch (e, stackTrace) {
+      _handleError('导入目录数据失败', e, stackTrace);
+      print('导入目录数据时出错: $e');
+      print('错误堆栈: $stackTrace');
+      rethrow;
+    }
   }
 }

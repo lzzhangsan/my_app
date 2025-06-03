@@ -144,7 +144,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
                       style: TextStyle(color: Colors.white, fontSize: 12),
                     ),
                     SizedBox(width: 8),
-                    Container(
+                    SizedBox(
                       width: 200,
                       height: 4,
                       child: SliderTheme(

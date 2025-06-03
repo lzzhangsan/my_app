@@ -146,10 +146,10 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
         final File file = File(path);
         
         if (await file.exists()) {
-          print('发现媒体文件: ${item['name']}, 路径: ${path}, 类型: ${item['type']}');
+          print('发现媒体文件: ${item['name']}, 路径: $path, 类型: ${item['type']}');
           allMediaFiles.add(item);
         } else {
-          print('文件不存在，跳过: ${path}');
+          print('文件不存在，跳过: $path');
           // 考虑清理数据库中不存在的文件记录
           try {
             await _databaseHelper.deleteMediaItem(item['id']);
@@ -433,7 +433,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
               runSpacing: 2, // 垂直间距
               children: [
                 // 根目录选项
-                Container(
+                SizedBox(
                   width: (MediaQuery.of(context).size.width * 0.9 - 20) / 2, // 计算每个项的宽度
                   height: 32, // 固定高度
                   child: ListTile(
@@ -446,7 +446,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
                 ),
                 // 其他文件夹选项
                 ...availableFolders.map((folder) {
-                  return Container(
+                  return SizedBox(
                     width: (MediaQuery.of(context).size.width * 0.9 - 20) / 2, // 计算每个项的宽度
                     height: 32, // 固定高度
                     child: ListTile(
@@ -457,7 +457,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
                       onTap: () => Navigator.of(context).pop(folder['id']),
                     ),
                   );
-                }).toList(),
+                }),
               ],
             ),
           ),

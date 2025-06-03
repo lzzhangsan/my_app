@@ -37,12 +37,11 @@ class PerformanceService {
       _isInitialized = true;
       
       if (kDebugMode) {
-        print('PerformanceService: 初始化完成');
-        print('监控间隔: ${_monitoringInterval.inSeconds}秒');
+        debugPrint('PerformanceService: 初始化完成，监控间隔: ${_monitoringInterval.inSeconds}秒');
       }
     } catch (e) {
       if (kDebugMode) {
-        print('PerformanceService 初始化失败: $e');
+        debugPrint('PerformanceService 初始化失败: $e');
       }
       rethrow;
     }
@@ -77,7 +76,7 @@ class PerformanceService {
       
     } catch (e) {
       if (kDebugMode) {
-        print('收集性能指标失败: $e');
+        debugPrint('收集性能指标失败: $e');
       }
     }
   }

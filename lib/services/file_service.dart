@@ -6,8 +6,6 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
-import '../models/folder.dart';
-import '../models/document.dart';
 
 class FileService {
   static final FileService _instance = FileService._internal();

@@ -7,11 +7,11 @@ class MediaSelectionDialog extends StatefulWidget {
   final String? selectedDirectory;
 
   const MediaSelectionDialog({
-    Key? key,
+    super.key,
     this.onMediaSelected,
     this.onDirectorySelected,
     this.selectedDirectory,
-  }) : super(key: key);
+  });
 
   @override
   _MediaSelectionDialogState createState() => _MediaSelectionDialogState();

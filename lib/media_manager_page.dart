@@ -1,9 +1,6 @@
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:async';
-import 'dart:ui' as ui;
-import 'dart:typed_data';
-import 'dart:convert';
 import 'package:crypto/crypto.dart';
 
 import 'package:file_picker/file_picker.dart';
@@ -17,19 +14,14 @@ import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:video_player/video_player.dart';
-// 临时注释以解决编译问题
-// import 'package:ffmpeg_kit_flutter_full/ffmpeg_kit.dart';
-// import 'package:ffmpeg_kit_flutter_full/return_code.dart';
 import 'package:photo_manager/photo_manager.dart';
-// import 'package:video_thumbnail/video_thumbnail.dart';  // 临时禁用
 
 import 'core/service_locator.dart';
 import 'services/database_service.dart';
 import 'models/media_item.dart';
 import 'media_preview_page.dart';
 import 'create_folder_dialog.dart';
-import 'database_helper.dart';
+import 'models/media_type.dart';
 
 class MediaManagerPage extends StatefulWidget {
   const MediaManagerPage({super.key});
@@ -330,7 +322,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) => Dialog(
           insetPadding: EdgeInsets.zero,
-          child: Container(
+          child: SizedBox(
             width: screenSize.width,
             height: screenSize.height * 0.9,
             child: Column(
@@ -523,8 +515,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              '导入完成: 成功导入 $importedCount 个${_getMediaTypeName(type)}文件' +
-              (skippedCount > 0 ? '，跳过 $skippedCount 个重复文件' : '')
+              '导入完成: 成功导入 $importedCount 个${_getMediaTypeName(type)}文件${skippedCount > 0 ? '，跳过 $skippedCount 个重复文件' : ''}'
             ),
           ),
         );
@@ -591,7 +582,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   }
 
   Future<void> _renameMediaItem(MediaItem item) async {
-    TextEditingController _renameController =
+    TextEditingController renameController =
     TextEditingController(text: item.name);
 
     final newName = await showDialog<String>(
@@ -599,7 +590,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       builder: (context) => AlertDialog(
         title: const Text('重命名'),
         content: TextField(
-          controller: _renameController,
+          controller: renameController,
           decoration: const InputDecoration(
             labelText: '新名称',
             border: OutlineInputBorder(),
@@ -613,7 +604,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           ),
           TextButton(
             onPressed: () {
-              final name = _renameController.text.trim();
+              final name = renameController.text.trim();
               if (name.isNotEmpty) {
                 Navigator.pop(context, name);
               }
@@ -857,7 +848,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                         }
                       },
                     );
-                  }).toList(),
+                  }),
                 ],
               ),
             ),
@@ -1448,7 +1439,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     // 截断过长的文件名
     String displayName = fileName;
     if (displayName.length > 15) {
-      displayName = displayName.substring(0, 12) + '...';
+      displayName = '${displayName.substring(0, 12)}...';
     }
     
     // 创建半透明底部条带

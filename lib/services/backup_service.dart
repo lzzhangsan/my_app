@@ -101,7 +101,7 @@ class BackupService {
     try {
       final timestamp = DateTime.now();
       final backupId = _generateBackupId();
-      final backupFileName = '${backupId}.backup';
+      final backupFileName = '$backupId.backup';
       final backupFile = File('${_backupDirectory!.path}/$backupFileName');
       
       // 收集要备份的数据

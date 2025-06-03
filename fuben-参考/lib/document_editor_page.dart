@@ -6,12 +6,10 @@ import 'resizable_image_box.dart';
 import 'resizable_audio_box.dart';
 import 'global_tool_bar.dart' as toolBar;
 import 'media_player_container.dart';
-import 'media_selection_dialog.dart';
 import 'dart:async';
 import 'package:image_picker/image_picker.dart';
 import 'dart:io';
 import 'package:flutter_colorpicker/flutter_colorpicker.dart';
-import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 import 'services/image_picker_service.dart';
@@ -20,10 +18,10 @@ class DocumentEditorPage extends StatefulWidget {
   final String documentName;
   final Function(List<Map<String, dynamic>>) onSave;
   const DocumentEditorPage({
-    Key? key,
+    super.key,
     required this.documentName,
     required this.onSave,
-  }) : super(key: key);
+  });
 
   @override
   _DocumentEditorPageState createState() => _DocumentEditorPageState();
@@ -1511,7 +1509,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
 
       // 获取应用文档目录
       final appDir = await getApplicationDocumentsDirectory();
-      final fileName = DateTime.now().millisecondsSinceEpoch.toString() + '.jpg';
+      final fileName = '${DateTime.now().millisecondsSinceEpoch}.jpg';
       final savedImage = File('${appDir.path}/images/$fileName');
 
       // 确保目录存在

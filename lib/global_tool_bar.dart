@@ -15,7 +15,7 @@ class GlobalToolBar extends StatefulWidget {
   final VoidCallback? onPerformanceMonitor;
 
   const GlobalToolBar({
-    Key? key,
+    super.key,
     this.onNewTextBox,
     this.onNewImageBox,
     this.onNewAudioBox,
@@ -28,7 +28,7 @@ class GlobalToolBar extends StatefulWidget {
     this.onMediaDelete,
     this.onMediaFavorite,
     this.onPerformanceMonitor,
-  }) : super(key: key);
+  });
 
   @override
   _GlobalToolBarState createState() => _GlobalToolBarState();

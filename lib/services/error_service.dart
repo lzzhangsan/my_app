@@ -3,9 +3,7 @@
 
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'package:flutter/foundation.dart';
-import 'package:flutter/services.dart';
 import '../core/app_state.dart';
 
 class ErrorService {
@@ -42,10 +40,10 @@ class ErrorService {
   /// 记录错误日志
   void _logError(AppError appError) {
     if (kDebugMode) {
-      print('ErrorService: ${appError.severity.name.toUpperCase()} - ${appError.title}');
-      print('Message: ${appError.message}');
+      debugPrint('ErrorService: ${appError.severity.name.toUpperCase()} - ${appError.title}');
+      debugPrint('Message: ${appError.message}');
       if (appError.stackTrace != null) {
-        print('StackTrace: ${appError.stackTrace}');
+        debugPrint('StackTrace: ${appError.stackTrace}');
       }
     }
     
@@ -66,12 +64,11 @@ class ErrorService {
       _isInitialized = true;
       
       if (kDebugMode) {
-        print('ErrorService: 初始化完成');
-        print('错误保留期: ${_errorRetentionPeriod.inDays}天');
+        debugPrint('ErrorService: 初始化完成，错误保留期: ${_errorRetentionPeriod.inDays}天');
       }
     } catch (e) {
       if (kDebugMode) {
-        print('ErrorService 初始化失败: $e');
+        debugPrint('ErrorService 初始化失败: $e');
       }
       rethrow;
     }
@@ -136,12 +133,12 @@ class ErrorService {
       
       // 在调试模式下打印错误
       if (kDebugMode) {
-        print('[$severity] 错误记录: ${appError.error}');
+        debugPrint('[$severity] 错误记录: ${appError.message}');
         if (context != null) {
-          print('上下文: $context');
+          debugPrint('上下文: $context');
         }
         if (stackTrace != null) {
-          print('堆栈跟踪: $stackTrace');
+          debugPrint('堆栈跟踪: $stackTrace');
         }
       }
       
@@ -150,7 +147,7 @@ class ErrorService {
       
     } catch (e) {
       if (kDebugMode) {
-        print('记录错误失败: $e');
+        debugPrint('记录错误失败: $e');
       }
     }
   }
@@ -402,11 +399,11 @@ class ErrorService {
       
       final removedCount = initialCount - _errors.length;
       if (kDebugMode && removedCount > 0) {
-        print('清理过期错误: $removedCount 条');
+        debugPrint('清理过期错误: $removedCount 条');
       }
     } catch (e) {
       if (kDebugMode) {
-        print('清理过期错误失败: $e');
+        debugPrint('清理过期错误失败: $e');
       }
     }
   }
@@ -415,7 +412,7 @@ class ErrorService {
   void clearAllErrors() {
     _errors.clear();
     if (kDebugMode) {
-      print('所有错误记录已清空');
+      debugPrint('所有错误记录已清空');
     }
   }
 
@@ -426,7 +423,7 @@ class ErrorService {
     final removedCount = initialCount - _errors.length;
     
     if (kDebugMode) {
-      print('清空 $severity 级别错误: $removedCount 条');
+      debugPrint('清空 $severity 级别错误: $removedCount 条');
     }
   }
 
@@ -442,7 +439,7 @@ class ErrorService {
     _isInitialized = false;
     
     if (kDebugMode) {
-      print('ErrorService: 资源已释放');
+      debugPrint('ErrorService: 资源已释放');
     }
   }
 }

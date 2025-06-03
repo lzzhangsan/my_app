@@ -47,12 +47,11 @@ class CacheService {
       _isInitialized = true;
       
       if (kDebugMode) {
-        print('CacheService: 初始化完成');
-        print('缓存目录: ${_cacheDirectory!.path}');
+        debugPrint('CacheService: 初始化完成，缓存目录: ${_cacheDirectory!.path}');
       }
     } catch (e) {
       if (kDebugMode) {
-        print('CacheService 初始化失败: $e');
+        debugPrint('CacheService 初始化失败: $e');
       }
       rethrow;
     }
@@ -80,7 +79,7 @@ class CacheService {
       return true;
     } catch (e) {
       if (kDebugMode) {
-        print('设置字符串缓存失败: $e');
+        debugPrint('设置字符串缓存失败: $e');
       }
       return false;
     }
@@ -113,7 +112,7 @@ class CacheService {
       return value;
     } catch (e) {
       if (kDebugMode) {
-        print('获取字符串缓存失败: $e');
+        debugPrint('获取字符串缓存失败: $e');
       }
       return null;
     }
@@ -137,7 +136,7 @@ class CacheService {
       return true;
     } catch (e) {
       if (kDebugMode) {
-        print('设置整数缓存失败: $e');
+        debugPrint('设置整数缓存失败: $e');
       }
       return false;
     }
@@ -167,7 +166,7 @@ class CacheService {
       return value;
     } catch (e) {
       if (kDebugMode) {
-        print('获取整数缓存失败: $e');
+        debugPrint('获取整数缓存失败: $e');
       }
       return null;
     }
@@ -191,7 +190,7 @@ class CacheService {
       return true;
     } catch (e) {
       if (kDebugMode) {
-        print('设置布尔缓存失败: $e');
+        debugPrint('设置布尔缓存失败: $e');
       }
       return false;
     }
@@ -221,7 +220,7 @@ class CacheService {
       return value;
     } catch (e) {
       if (kDebugMode) {
-        print('获取布尔缓存失败: $e');
+        debugPrint('获取布尔缓存失败: $e');
       }
       return null;
     }
@@ -234,7 +233,7 @@ class CacheService {
       return await setString(key, jsonString, expiry: expiry);
     } catch (e) {
       if (kDebugMode) {
-        print('设置JSON缓存失败: $e');
+        debugPrint('设置JSON缓存失败: $e');
       }
       return false;
     }
@@ -250,7 +249,7 @@ class CacheService {
       return null;
     } catch (e) {
       if (kDebugMode) {
-        print('获取JSON缓存失败: $e');
+        debugPrint('获取JSON缓存失败: $e');
       }
       return null;
     }
@@ -273,13 +272,13 @@ class CacheService {
       }
       
       if (kDebugMode) {
-        print('文件缓存成功: $key');
+        debugPrint('文件缓存成功: $key');
       }
       
       return true;
     } catch (e) {
       if (kDebugMode) {
-        print('文件缓存失败: $e');
+        debugPrint('文件缓存失败: $e');
       }
       return false;
     }
@@ -310,7 +309,7 @@ class CacheService {
       return null;
     } catch (e) {
       if (kDebugMode) {
-        print('获取缓存文件失败: $e');
+        debugPrint('获取缓存文件失败: $e');
       }
       return null;
     }
@@ -334,7 +333,7 @@ class CacheService {
       return true;
     } catch (e) {
       if (kDebugMode) {
-        print('删除缓存文件失败: $e');
+        debugPrint('删除缓存文件失败: $e');
       }
       return false;
     }
@@ -355,7 +354,7 @@ class CacheService {
       return true;
     } catch (e) {
       if (kDebugMode) {
-        print('删除缓存失败: $e');
+        debugPrint('删除缓存失败: $e');
       }
       return false;
     }
@@ -382,11 +381,11 @@ class CacheService {
       }
       
       if (kDebugMode) {
-        print('清空所有缓存完成');
+        debugPrint('清空所有缓存完成');
       }
     } catch (e) {
       if (kDebugMode) {
-        print('清空缓存失败: $e');
+        debugPrint('清空缓存失败: $e');
       }
     }
   }
@@ -464,11 +463,11 @@ class CacheService {
       }
       
       if (kDebugMode && expiredKeys.isNotEmpty) {
-        print('清理过期缓存: ${expiredKeys.length} 项');
+        debugPrint('清理过期缓存: ${expiredKeys.length} 项');
       }
     } catch (e) {
       if (kDebugMode) {
-        print('清理过期缓存失败: $e');
+        debugPrint('清理过期缓存失败: $e');
       }
     }
   }
@@ -480,7 +479,7 @@ class CacheService {
     _isInitialized = false;
     
     if (kDebugMode) {
-      print('CacheService: 资源已释放');
+      debugPrint('CacheService: 资源已释放');
     }
   }
 }

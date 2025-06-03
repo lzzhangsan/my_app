@@ -6,7 +6,6 @@ import 'dart:io';
 import 'dart:async';
 import 'package:uuid/uuid.dart';
 import 'dart:convert';
-import 'package:archive/archive.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'dart:ui' show Offset;
@@ -621,7 +620,7 @@ class DatabaseHelper {
       );
     } catch (e) {
       print('Error inserting or updating text box: $e');
-      throw e;
+      rethrow;
     }
   }
 
@@ -671,7 +670,7 @@ class DatabaseHelper {
         }
       } catch (e) {
         print('保存文本框时出错: $e');
-        throw e;
+        rethrow;
       }
     });
 
@@ -691,7 +690,7 @@ class DatabaseHelper {
       );
     } catch (e) {
       print('Error inserting or updating image box: $e');
-      throw e;
+      rethrow;
     }
   }
 
@@ -783,7 +782,7 @@ class DatabaseHelper {
       print('更新文档设置 - 文档名: $documentName, 背景图片: ${imagePath ?? '无'}, 背景颜色: $colorValue, 文字增强: ${textEnhanceMode ?? '不变'}');
     } catch (e) {
       print('保存文档设置时出错: $e');
-      throw e;
+      rethrow;
     }
   }
 
@@ -864,7 +863,7 @@ class DatabaseHelper {
       print('成功插入封面图片路径: $imagePath');
     } catch (e) {
       print('插入封面图片路径时出错: $e');
-      throw e;
+      rethrow;
     }
   }
 
@@ -1019,7 +1018,7 @@ class DatabaseHelper {
     final db = await database;
     return await db.query(
       'documents',
-      where: 'parentFolder ' + (parentFolder == null ? 'IS NULL' : '= ?'),
+      where: 'parentFolder ${parentFolder == null ? 'IS NULL' : '= ?'}',
       whereArgs: parentFolder != null ? [parentFolder] : [],
       orderBy: '`order` ASC',
     );
@@ -1133,7 +1132,7 @@ class DatabaseHelper {
     final db = await database;
     return await db.query(
       'folders',
-      where: 'parentFolder ' + (parentFolder == null ? 'IS NULL' : '= ?'),
+      where: 'parentFolder ${parentFolder == null ? 'IS NULL' : '= ?'}',
       whereArgs: parentFolder != null ? [parentFolder] : [],
       orderBy: '`order` ASC',
     );
@@ -1453,13 +1452,13 @@ class DatabaseHelper {
 
       final zipFile = File(exportPath);
       final encoder = ZipEncoder();
-      await zipFile.writeAsBytes(encoder.encode(archive)!);
+      await zipFile.writeAsBytes(encoder.encode(archive));
 
       print('Document "$documentName" exported to $exportPath');
       return exportPath;
     } catch (e) {
       print('Error exporting document: $e');
-      throw e;
+      rethrow;
     }
   }
 
@@ -1625,7 +1624,7 @@ class DatabaseHelper {
       print('Document data imported from $zipFilePath with name $newDocumentName');
     } catch (e) {
       print('Error importing document: $e');
-      throw e;
+      rethrow;
     }
   }
 
@@ -1676,7 +1675,7 @@ class DatabaseHelper {
       print('Database restored from $backupPath');
     } catch (e) {
       print('Error restoring database: $e');
-      throw e;
+      rethrow;
     }
   }
 
@@ -2209,7 +2208,7 @@ class DatabaseHelper {
       print('成功保存了 ${imageBoxes.length} 个图片框到文档 $documentName');
     } catch (e) {
       print('保存图片框时出错: $e');
-      throw e;
+      rethrow;
     }
   }
 
@@ -2236,7 +2235,7 @@ class DatabaseHelper {
       );
     } catch (e) {
       print('添加或更新音频框时出错: $e');
-      throw e;
+      rethrow;
     }
   }
 
@@ -2302,7 +2301,7 @@ class DatabaseHelper {
       print('成功保存�� ${audioBoxes.length} 个音频框到文档 $documentName');
     } catch (e) {
       print('保存音频框时出错: $e');
-      throw e;
+      rethrow;
     }
   }
 
@@ -2320,7 +2319,7 @@ class DatabaseHelper {
       );
     } catch (e) {
       print('更新音频框位置时出错: $e');
-      throw e;
+      rethrow;
     }
   }
 
@@ -2335,7 +2334,7 @@ class DatabaseHelper {
       );
     } catch (e) {
       print('更新音频路径时出错: $e');
-      throw e;
+      rethrow;
     }
   }
 
@@ -2540,7 +2539,7 @@ class DatabaseHelper {
       print('备份路径: $backupPath');
 
       // 创建临时目录
-      final String tempDirPath = '${backupPath}/temp_backup';
+      final String tempDirPath = '$backupPath/temp_backup';
       final Directory tempDir = Directory(tempDirPath);
       if (await tempDir.exists()) {
         await tempDir.delete(recursive: true);

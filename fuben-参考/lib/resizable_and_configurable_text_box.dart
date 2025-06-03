@@ -1,8 +1,6 @@
 // lib/resizable_and_configurable_text_box.dart
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_colorpicker/flutter_colorpicker.dart';
-import 'dart:math';
 import 'dart:ui' as ui;
 import 'package:uuid/uuid.dart';
 
@@ -235,7 +233,7 @@ class ResizableAndConfigurableTextBox extends StatefulWidget {
   final bool globalEnhanceMode; // 添加全局增强模式参数
   
   const ResizableAndConfigurableTextBox({
-    Key? key,
+    super.key,
     required this.initialSize,
     required this.initialText,
     required this.initialTextStyle,
@@ -243,7 +241,7 @@ class ResizableAndConfigurableTextBox extends StatefulWidget {
     required this.onDeleteCurrent,
     required this.onDuplicateCurrent,
     this.globalEnhanceMode = false, // 默认为false
-  }) : super(key: key);
+  });
 
   @override
   _ResizableAndConfigurableTextBoxState createState() =>
@@ -1162,7 +1160,7 @@ class _ResizableAndConfigurableTextBoxState
       return color2 == null || color2 == Colors.transparent;
     }
     if (color2 == null || color2 == Colors.transparent) {
-      return color1 == null || color1 == Colors.transparent;
+      return color1 == Colors.transparent;
     }
     return color1.value == color2.value;
   }

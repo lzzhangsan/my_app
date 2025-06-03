@@ -33,7 +33,7 @@ class _ResizableAudioBoxState extends State<ResizableAudioBox> with SingleTicker
   final AudioRecorder _recorder = AudioRecorder();  // 使用AudioRecorder类
   final AudioPlayer _player = AudioPlayer();
   String _recordedPath = '';
-  List<double> _soundWaves = List.generate(5, (_) => 0.2);
+  final List<double> _soundWaves = List.generate(5, (_) => 0.2);
   bool _hasAudio = false;
   bool? _previousStartRecording;
   

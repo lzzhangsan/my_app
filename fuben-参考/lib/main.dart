@@ -4,7 +4,6 @@ import 'directory_page.dart';
 import 'cover_page.dart';
 import 'media_manager_page.dart';
 import 'database_helper.dart';
-import 'package:flutter/services.dart';
 
 // 添加全局导航键，以便可以在应用的任何地方访问Navigator
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();

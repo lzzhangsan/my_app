@@ -1,14 +1,12 @@
 // lib/cover_page.dart
 
 import 'package:flutter/material.dart';
-import 'package:image_picker/image_picker.dart';
 import 'dart:io';
 import 'database_helper.dart';
 import 'resizable_and_configurable_text_box.dart';
 import 'package:uuid/uuid.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:flutter_colorpicker/flutter_colorpicker.dart';
-import 'package:flutter/rendering.dart';
 import 'dart:ui';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
@@ -28,7 +26,7 @@ class _CoverPageState extends State<CoverPage> {
   bool _hasCustomBackgroundColor = false; // 是否设置了自定义背景颜色
 
   List<Map<String, dynamic>> _textBoxes = [];
-  List<String> _deletedTextBoxIds = [];
+  final List<String> _deletedTextBoxIds = [];
   static const String coverDocumentName = '__CoverPage__';
 
   @override
@@ -609,7 +607,7 @@ class _CoverPageState extends State<CoverPage> {
                 child: _buildTextBox(data),
               ),
             );
-          }).toList(),
+          }),
         ],
       ),
       // 优化设置按钮样式 - 磨砂玻璃效果
@@ -638,17 +636,17 @@ class _CoverPageState extends State<CoverPage> {
             child: FloatingActionButton(
               onPressed: _showSettingsPanel,
               heroTag: 'settingsBtn',
-              child: Icon(
-                Icons.settings, 
-                size: 20,
-                color: Colors.white.withOpacity(0.9), // 略微透明的图标
-              ),
               backgroundColor: Colors.transparent, // 完全透明的背景
               elevation: 0, // 去除默认的阴影效果
               focusElevation: 0,
               hoverElevation: 0,
               highlightElevation: 0,
-              splashColor: Colors.white.withOpacity(0.1), // 轻微的点击效果
+              splashColor: Colors.white.withOpacity(0.1),
+              child: Icon(
+                Icons.settings, 
+                size: 20,
+                color: Colors.white.withOpacity(0.9), // 略微透明的图标
+              ), // 轻微的点击效果
             ),
           ),
         ),
@@ -941,7 +939,7 @@ class _CoverPageState extends State<CoverPage> {
       
     } catch (e) {
       print('保存封面设置时出错: $e');
-      throw e;
+      rethrow;
     }
   }
 
@@ -960,8 +958,8 @@ class _CoverPageState extends State<CoverPage> {
             ),
             TextButton(
               onPressed: () => Navigator.of(context).pop(true),
-              child: Text('清空'),
               style: TextButton.styleFrom(foregroundColor: Colors.red),
+              child: Text('清空'),
             ),
           ],
         );

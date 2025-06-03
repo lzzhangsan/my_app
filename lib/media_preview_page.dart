@@ -8,7 +8,8 @@ import 'package:chewie/chewie.dart';
 import 'core/service_locator.dart';
 import 'services/database_service.dart';
 import 'models/media_item.dart';
-import 'database_helper.dart';
+import 'models/media_type.dart';
+
 
 enum MediaMode { none, manual, auto }
 
@@ -31,7 +32,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
   int _currentIndex = 0;
   final Map<int, VideoPlayerController> _videoControllers = {};
   final Map<int, ChewieController> _chewieControllers = {};
-  bool _isFullScreen = false;
+  final bool _isFullScreen = false;
   late final DatabaseService _dbService;
   MediaMode _mediaMode = MediaMode.none;
   Timer? _mediaTimer;
@@ -443,7 +444,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
             runSpacing: 2, // 垂直间距
             children: [
               // 根目录选项
-              Container(
+              SizedBox(
                 width: (MediaQuery.of(context).size.width * 0.9 - 20) / 2, // 计算每个项的宽度
                 height: 32, // 固定高度
                 child: ListTile(
@@ -462,7 +463,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
                 ),
               ),
               // 其他文件夹选项
-              ...folders.map((folder) => Container(
+              ...folders.map((folder) => SizedBox(
                 width: (MediaQuery.of(context).size.width * 0.9 - 20) / 2, // 计算每个项的宽度
                 height: 32, // 固定高度
                 child: ListTile(
@@ -472,7 +473,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
                   title: Text(folder.name, style: const TextStyle(fontSize: 13)),
                   onTap: () => Navigator.pop(context, folder),
                 ),
-              )).toList(),
+              )),
             ],
           ),
         ),

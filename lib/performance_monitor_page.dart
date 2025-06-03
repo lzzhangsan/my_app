@@ -5,7 +5,7 @@ import 'services/performance_service.dart';
 
 /// 性能监控面板页面
 class PerformanceMonitorPage extends StatefulWidget {
-  const PerformanceMonitorPage({Key? key}) : super(key: key);
+  const PerformanceMonitorPage({super.key});
 
   @override
   State<PerformanceMonitorPage> createState() => _PerformanceMonitorPageState();

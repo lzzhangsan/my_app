@@ -1,9 +1,7 @@
 // lib/core/app_state.dart
 // 全局应用状态管理
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 /// 应用主题状态
 class AppThemeState extends ChangeNotifier {
@@ -81,7 +79,7 @@ class AppThemeState extends ChangeNotifier {
 class AppPerformanceState extends ChangeNotifier {
   int _memoryUsage = 0;
   double _frameRate = 60.0;
-  List<String> _performanceLogs = [];
+  final List<String> _performanceLogs = [];
   bool _isMonitoring = false;
 
   int get memoryUsage => _memoryUsage;
@@ -125,7 +123,7 @@ class AppPerformanceState extends ChangeNotifier {
 
 /// 应用错误状态管理
 class AppErrorState extends ChangeNotifier {
-  List<AppError> _errors = [];
+  final List<AppError> _errors = [];
   bool _hasUnreadErrors = false;
 
   List<AppError> get errors => List.unmodifiable(_errors);

@@ -1,9 +1,7 @@
 import 'package:flutter/material.dart';
 import 'database_helper.dart';
 import 'document_editor_page.dart';
-import 'package:uuid/uuid.dart';
 import 'package:flutter/services.dart'; // For haptic feedback
-import 'package:image_picker/image_picker.dart';
 import 'dart:io';
 import 'package:flutter_colorpicker/flutter_colorpicker.dart'; // For color picker
 import 'package:file_picker/file_picker.dart'; // For file picker
@@ -32,7 +30,7 @@ class DirectoryPage extends StatefulWidget {
 }
 
 class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserver {
-  List<DirectoryItem> _items = [];
+  final List<DirectoryItem> _items = [];
   String? _currentParentFolder;
   File? _backgroundImage;
   Color? _backgroundColor;
@@ -42,7 +40,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
   Timer? _highlightTimer;
   bool _isHighlightingNewItem = false;
   bool _isMultiSelectMode = false;
-  List<DirectoryItem> _selectedItems = [];
+  final List<DirectoryItem> _selectedItems = [];
 
   @override
   void initState() {
@@ -1414,7 +1412,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       context: context,
       builder: (context) => AlertDialog(
         title: Text('选择模板'),
-        content: Container(
+        content: SizedBox(
           width: double.maxFinite,
           child: ListView.builder(
             shrinkWrap: true,
@@ -1833,7 +1831,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
                     _lastCreatedItemType == item.type &&
                     _isHighlightingNewItem;
 
-                Widget _buildListItem(DirectoryItem item, int index, bool isHighlighted) {
+                Widget buildListItem(DirectoryItem item, int index, bool isHighlighted) {
                   final itemFeedback = Material(
                     elevation: 4.0,
                     child: Container(
@@ -1878,13 +1876,13 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
                   Widget buildIcon() {
                     if (item.type == ItemType.folder) {
                       return DragTarget<DirectoryItem>(
-                        onWillAccept: (draggedItem) {
-                          if (draggedItem?.type == ItemType.folder && draggedItem?.name == item.name) {
+                        onWillAcceptWithDetails: (draggedItem) {
+                          if (draggedItem.type == ItemType.folder && draggedItem.name == item.name) {
                             return false;
                           }
                           return true;
                         },
-                        onAccept: (draggedItem) async {
+                        onAcceptWithDetails: (draggedItem) async {
                           if (draggedItem.type == ItemType.document) {
                             await DatabaseHelper().updateDocumentParentFolder(draggedItem.name, item.name);
                           } else if (draggedItem.type == ItemType.folder) {
@@ -2006,7 +2004,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
 
                 return Container(
                   key: ValueKey('${item.type}_${item.name}'),
-                  child: _buildListItem(item, index, isHighlighted),
+                  child: buildListItem(item, index, isHighlighted),
                 );
               },
             ),
