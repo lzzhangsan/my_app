@@ -43,9 +43,11 @@ class _CoverPageState extends State<CoverPage> {
     
     if (!kIsWeb) {
       _databaseService = getService<DatabaseService>();
-      _ensureCoverImageTableExists().then((_) {
-        _loadBackgroundImage();
-        _loadContent();
+      _ensureCoverPageDocumentExists().then((_) {
+        _ensureCoverImageTableExists().then((_) {
+          _loadBackgroundImage();
+          _loadContent();
+        });
       });
     } else {
       print("Web environment: Skipping database operations in CoverPage");
@@ -57,6 +59,41 @@ class _CoverPageState extends State<CoverPage> {
           _backgroundColor = Colors.grey[200]!;
         });
       }
+    }
+  }
+  
+  // 确保封面页文档存在
+  Future<void> _ensureCoverPageDocumentExists() async {
+    try {
+      final db = await _databaseService.database;
+      
+      // 检查封面页文档是否存在
+      final List<Map<String, dynamic>> result = await db.query(
+        'documents',
+        where: 'name = ?',
+        whereArgs: [coverDocumentName],
+      );
+      
+      if (result.isEmpty) {
+        print('封面页文档不存在，正在创建...');
+        // 创建封面页文档
+        final uuid = Uuid();
+        await db.insert('documents', {
+          'id': uuid.v4(),
+          'name': coverDocumentName,
+          'parent_folder': null,
+          'order_index': 0,
+          'is_template': 0,
+          'position': null,
+          'created_at': DateTime.now().millisecondsSinceEpoch,
+          'updated_at': DateTime.now().millisecondsSinceEpoch,
+        });
+        print('封面页文档已创建');
+      } else {
+        print('封面页文档已存在');
+      }
+    } catch (e) {
+      print('检查或创建封面页文档时出错: $e');
     }
   }
 
@@ -389,35 +426,13 @@ class _CoverPageState extends State<CoverPage> {
 
   // 保存文本框内容
   Future<void> _saveContent() async {
-    final dbHelper = getService<DatabaseService>();
-    final db = await dbHelper.database;
-
     try {
-      await db.transaction((txn) async {
-        // 删除已删除的文本框
-        if (_deletedTextBoxIds.isNotEmpty) {
-          await txn.delete(
-            'text_boxes',
-            where: 'id IN (${_deletedTextBoxIds.map((_) => '?').join(', ')})',
-            whereArgs: _deletedTextBoxIds,
-          );
-          _deletedTextBoxIds.clear();
-        }
-
-        // 更新或插入文本框
-        for (var textBox in _textBoxes) {
-          // 数据验证
-          if (!dbHelper.validateTextBoxData(textBox)) {
-            throw Exception('文本框数据无效');
-          }
-
-          await txn.insert(
-            'text_boxes',
-            textBox,
-            conflictAlgorithm: ConflictAlgorithm.replace,
-          );
-        }
-      });
+      // 使用数据库服务的saveTextBoxes方法保存文本框
+      await getService<DatabaseService>().saveTextBoxes(_textBoxes, coverDocumentName);
+      
+      // 清除已删除的文本框ID列表
+      _deletedTextBoxIds.clear();
+      
       // 自动备份数据库
       await _databaseService.backupDatabase();
     } catch (e) {
@@ -436,7 +451,6 @@ class _CoverPageState extends State<CoverPage> {
 
       Map<String, dynamic> newTextBox = {
         'id': uuid.v4(),
-        'documentName': coverDocumentName,
         'positionX': screenWidth / 2 - 100,
         'positionY': screenHeight / 2 - 50,
         'width': 200.0,
@@ -476,61 +490,86 @@ class _CoverPageState extends State<CoverPage> {
                 TextAlign.left,
     );
     
-    return ResizableAndConfigurableTextBox(
-      initialSize: Size(
-        data['width'],
-        data['height'],
-      ),
-      initialText: data['text'],
-      initialTextStyle: customTextStyle,
-      onSave: (size, text, textStyle) {
-        setState(() {
-          data['width'] = size.width;
-          data['height'] = size.height;
-          data['text'] = text;
-          data['fontSize'] = textStyle.fontSize;
-          data['fontColor'] = textStyle.fontColor.value;
-          data['fontWeight'] = textStyle.fontWeight.index;
-          data['isItalic'] = textStyle.isItalic ? 1 : 0;
-          data['backgroundColor'] = textStyle.backgroundColor?.value;
-          data['textAlign'] = textStyle.textAlign.index;
-        });
-        _saveContent();
-      },
-      onDeleteCurrent: () {
-        setState(() {
-          _textBoxes.removeWhere((textBox) => textBox['id'] == data['id']);
-          _deletedTextBoxIds.add(data['id']);
-        });
-        _saveContent();
-      },
-      onDuplicateCurrent: () {
-        setState(() {
-          var uuid = Uuid();
-          Map<String, dynamic> original = data;
-          Map<String, dynamic> newTextBox = {
-            'id': uuid.v4(),
-            'documentName': coverDocumentName,
-            'positionX': original['positionX'] + 20,
-            'positionY': original['positionY'] + 20,
-            'width': original['width'],
-            'height': original['height'],
-            'text': original['text'],
-            'fontSize': original['fontSize'],
-            'fontColor': original['fontColor'],
-          };
-
-          // 数据验证
-          if (_databaseService.validateTextBoxData(newTextBox)) {
-            _textBoxes.add(newTextBox);
+    // 使用Positioned组件定位文本框，并添加GestureDetector实现拖拽功能
+    return Positioned(
+      left: data['positionX'],
+      top: data['positionY'],
+      child: GestureDetector(
+        onPanUpdate: (details) {
+          // 计算新位置
+          double newDx = data['positionX'] + details.delta.dx;
+          double newDy = data['positionY'] + details.delta.dy;
+          
+          // 更新位置
+          setState(() {
+            data['positionX'] = newDx;
+            data['positionY'] = newDy;
+          });
+        },
+        onPanEnd: (details) {
+          // 拖拽结束后保存内容
+          _saveContent();
+        },
+        child: ResizableAndConfigurableTextBox(
+          initialSize: Size(
+            data['width'],
+            data['height'],
+          ),
+          initialText: data['text'],
+          initialTextStyle: customTextStyle,
+          onSave: (size, text, textStyle) {
+            setState(() {
+              data['width'] = size.width;
+              data['height'] = size.height;
+              data['text'] = text;
+              data['fontSize'] = textStyle.fontSize;
+              data['fontColor'] = textStyle.fontColor.value;
+              data['fontWeight'] = textStyle.fontWeight.index;
+              data['isItalic'] = textStyle.isItalic ? 1 : 0;
+              data['backgroundColor'] = textStyle.backgroundColor?.value;
+              data['textAlign'] = textStyle.textAlign.index;
+            });
             _saveContent();
-          } else {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('文本框数据无效，无法复制。')),
-            );
-          }
-        });
-      },
+          },
+          onDeleteCurrent: () {
+            setState(() {
+              _textBoxes.removeWhere((textBox) => textBox['id'] == data['id']);
+              _deletedTextBoxIds.add(data['id']);
+            });
+            _saveContent();
+          },
+          onDuplicateCurrent: () {
+            setState(() {
+              var uuid = Uuid();
+              Map<String, dynamic> original = data;
+              Map<String, dynamic> newTextBox = {
+                'id': uuid.v4(),
+                'positionX': original['positionX'] + 20,
+                'positionY': original['positionY'] + 20,
+                'width': original['width'],
+                'height': original['height'],
+                'text': original['text'],
+                'fontSize': original['fontSize'],
+                'fontColor': original['fontColor'],
+                'fontWeight': original['fontWeight'],
+                'isItalic': original['isItalic'],
+                'textAlign': original['textAlign'],
+                'backgroundColor': original['backgroundColor'],
+              };
+
+              // 数据验证
+              if (_databaseService.validateTextBoxData(newTextBox)) {
+                _textBoxes.add(newTextBox);
+                _saveContent();
+              } else {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('文本框数据无效，无法复制。')),
+                );
+              }
+            });
+          },
+        ),
+      ),
     );
   }
 
