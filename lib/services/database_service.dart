@@ -794,7 +794,7 @@ class DatabaseService {
       List<Map<String, dynamic>> imageBoxesToExport = [];
       for (var imageBox in imageBoxes) {
         Map<String, dynamic> imageBoxCopy = Map<String, dynamic>.from(imageBox);
-        String? imagePath = imageBox['imagePath'];
+        String? imagePath = imageBox['image_path'];
         if (imagePath != null && imagePath.isNotEmpty) {
           String fileName = p.basename(imagePath);
           imageBoxCopy['imageFileName'] = fileName;
@@ -869,7 +869,7 @@ class DatabaseService {
       List<Map<String, dynamic>> audioBoxesToExport = [];
       for (var audioBox in audioBoxes) {
         Map<String, dynamic> audioBoxCopy = Map<String, dynamic>.from(audioBox);
-        String? audioPath = audioBox['audioPath'];
+        String? audioPath = audioBox['audio_path'];
         if (audioPath != null && audioPath.isNotEmpty) {
           String fileName = p.basename(audioPath);
           audioBoxCopy['audioFileName'] = fileName;
@@ -896,7 +896,10 @@ class DatabaseService {
       // 创建ZIP文件
       final String timestamp = DateTime.now().toString().replaceAll(RegExp(r'[^0-9]'), '');
       final String zipPath = '$backupPath/directory_backup_$timestamp.zip';
-      await ZipFileEncoder().zipDirectory(Directory(tempDirPath), filename: zipPath);
+      final encoder = ZipFileEncoder();
+      encoder.create(zipPath);
+      await encoder.addDirectory(Directory(tempDirPath), includeDirName: false);
+      encoder.close();
 
       // 清理临时目录
       await tempDir.delete(recursive: true);
@@ -1009,7 +1012,7 @@ class DatabaseService {
                 String tempPath = p.join(tempDirPath, 'images', imageFileName);
                 if (await File(tempPath).exists()) {
                   await File(tempPath).copy(newPath);
-                  imageBox['imagePath'] = newPath;
+                  imageBox['image_path'] = newPath;
                   print('已导入图片框图片: $newPath');
                 }
               }
@@ -1027,7 +1030,7 @@ class DatabaseService {
                 String tempPath = p.join(tempDirPath, 'audios', audioFileName);
                 if (await File(tempPath).exists()) {
                   await File(tempPath).copy(newPath);
-                  audioBox['audioPath'] = newPath;
+                  audioBox['audio_path'] = newPath;
                   print('已导入音频文件: $newPath');
                 }
               }
@@ -1397,7 +1400,10 @@ class DatabaseService {
       final DateTime now = DateTime.now();
       final String formattedTime = '${now.year.toString().padLeft(4, '0')}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}-${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}';
       final String zipPath = '$backupPath/$documentName-$formattedTime.zip';
-      await ZipFileEncoder().zipDirectory(Directory(tempDirPath), filename: zipPath);
+      final encoder = ZipFileEncoder();
+      encoder.create(zipPath);
+      await encoder.addDirectory(Directory(tempDirPath), includeDirName: false);
+      encoder.close();
       
       // 清理临时目录
       await tempDir.delete(recursive: true);
@@ -2101,157 +2107,147 @@ class DatabaseService {
     }
   }
 
-  Future<void> importDirectoryDataImpl(String filePath) async {
+  Future<void> importDirectoryDataImpl(String zipPath) async {
     try {
-      final db = await database;
-      
-      // 读取导入文件
-      final file = File(filePath);
-      if (!await file.exists()) {
-        throw Exception('导入文件不存在: $filePath');
+      print('开始导入目录数据...');
+      final Directory appDocDir = await getApplicationDocumentsDirectory();
+      final String tempDirPath = '${appDocDir.path}/temp_import';
+      print('临时目录路径: $tempDirPath');
+
+      // 清理临时目录
+      if (await Directory(tempDirPath).exists()) {
+        await Directory(tempDirPath).delete(recursive: true);
       }
+      await Directory(tempDirPath).create(recursive: true);
+
+      // 解压ZIP文件
+      final bytes = await File(zipPath).readAsBytes();
+      final archive = ZipDecoder().decodeBytes(bytes);
+      for (var file in archive) {
+        final String filename = file.name;
+        if (file.isFile) {
+          final data = file.content as List<int>;
+          File('$tempDirPath/$filename')
+            ..createSync(recursive: true)
+            ..writeAsBytesSync(data);
+        }
+      }
+
+      // 读取目录数据
+      final File dbDataFile = File('$tempDirPath/directory_data.json');
+      if (!await dbDataFile.exists()) {
+        throw Exception('备份中未找到目录数据文件');
+      }
+
+      final Map<String, dynamic> tableData = jsonDecode(await dbDataFile.readAsString());
+      final db = await database;
+
+      // 准备背景图片目录
+      final String backgroundImagesPath = '${appDocDir.path}/background_images';
+      await Directory(backgroundImagesPath).create(recursive: true);
       
-      final jsonString = await file.readAsString();
-      final Map<String, dynamic> data = json.decode(jsonString);
+      // 准备图片目录
+      final String imagesDirPath = '${appDocDir.path}/images';
+      await Directory(imagesDirPath).create(recursive: true);
       
+      // 准备音频目录
+      final String audiosDirPath = '${appDocDir.path}/audios';
+      await Directory(audiosDirPath).create(recursive: true);
+
       await db.transaction((txn) async {
-        // 清空现有数据
+        // 清除现有数据
+        await txn.delete('folders');
+        await txn.delete('documents');
         await txn.delete('text_boxes');
         await txn.delete('image_boxes');
         await txn.delete('audio_boxes');
         await txn.delete('document_settings');
+        await txn.delete('directory_settings');
         await txn.delete('media_items');
-        await txn.delete('documents');
-        await txn.delete('folders');
-        
-        // 导入文件夹数据
-        if (data['folders'] != null) {
-          for (var folder in data['folders']) {
-            await txn.insert('folders', {
-              'id': folder['id'],
-              'name': folder['name'],
-              'parent_folder': folder['parent_folder'],
-              'order_index': folder['order_index'] ?? 0,
-              'position': folder['position'],
-              'created_at': folder['created_at'] ?? DateTime.now().millisecondsSinceEpoch,
-              'updated_at': folder['updated_at'] ?? DateTime.now().millisecondsSinceEpoch,
-            });
-          }
-        }
-        
-        // 导入文档数据
-        if (data['documents'] != null) {
-          for (var document in data['documents']) {
-            await txn.insert('documents', {
-              'id': document['id'],
-              'name': document['name'],
-              'parent_folder': document['parent_folder'],
-              'order_index': document['order_index'] ?? 0,
-              'is_template': document['is_template'] ?? 0,
-              'position': document['position'],
-              'created_at': document['created_at'] ?? DateTime.now().millisecondsSinceEpoch,
-              'updated_at': document['updated_at'] ?? DateTime.now().millisecondsSinceEpoch,
-            });
-          }
-        }
-        
-        // 导入文本框数据
-        if (data['text_boxes'] != null) {
-          for (var textBox in data['text_boxes']) {
-            await txn.insert('text_boxes', {
-              'id': textBox['id'],
-              'document_id': textBox['document_id'],
-              'position_x': textBox['position_x'],
-              'position_y': textBox['position_y'],
-              'width': textBox['width'],
-              'height': textBox['height'],
-              'content': textBox['content'],
-              'font_size': textBox['font_size'] ?? 14.0,
-              'font_color': textBox['font_color'] ?? 4278190080,
-              'font_family': textBox['font_family'] ?? 'Roboto',
-              'font_weight': textBox['font_weight'] ?? 0,
-              'is_italic': textBox['is_italic'] ?? 0,
-              'is_underlined': textBox['is_underlined'] ?? 0,
-              'is_strike_through': textBox['is_strike_through'] ?? 0,
-              'background_color': textBox['background_color'],
-              'text_align': textBox['text_align'] ?? 0,
-              'created_at': textBox['created_at'] ?? DateTime.now().millisecondsSinceEpoch,
-              'updated_at': textBox['updated_at'] ?? DateTime.now().millisecondsSinceEpoch,
-            });
-          }
-        }
-        
-        // 导入图片框数据
-        if (data['image_boxes'] != null) {
-          for (var imageBox in data['image_boxes']) {
-            await txn.insert('image_boxes', {
-              'id': imageBox['id'],
-              'document_id': imageBox['document_id'],
-              'position_x': imageBox['position_x'],
-              'position_y': imageBox['position_y'],
-              'width': imageBox['width'],
-              'height': imageBox['height'],
-              'image_path': imageBox['image_path'],
-              'created_at': imageBox['created_at'] ?? DateTime.now().millisecondsSinceEpoch,
-              'updated_at': imageBox['updated_at'] ?? DateTime.now().millisecondsSinceEpoch,
-            });
-          }
-        }
-        
-        // 导入音频框数据
-        if (data['audio_boxes'] != null) {
-          for (var audioBox in data['audio_boxes']) {
-            await txn.insert('audio_boxes', {
-              'id': audioBox['id'],
-              'document_id': audioBox['document_id'],
-              'position_x': audioBox['position_x'],
-              'position_y': audioBox['position_y'],
-              'audio_path': audioBox['audio_path'],
-              'created_at': audioBox['created_at'] ?? DateTime.now().millisecondsSinceEpoch,
-              'updated_at': audioBox['updated_at'] ?? DateTime.now().millisecondsSinceEpoch,
-            });
-          }
-        }
-        
-        // 导入媒体项数据
-        if (data['media_items'] != null) {
-          for (var mediaItem in data['media_items']) {
-            await txn.insert('media_items', {
-              'id': mediaItem['id'],
-              'name': mediaItem['name'],
-              'path': mediaItem['path'],
-              'type': mediaItem['type'],
-              'directory': mediaItem['directory'],
-              'date_added': mediaItem['date_added'] ?? DateTime.now().toIso8601String(),
-              'file_size': mediaItem['file_size'] ?? 0,
-              'duration': mediaItem['duration'] ?? 0,
-              'thumbnail_path': mediaItem['thumbnail_path'],
-              'file_hash': mediaItem['file_hash'],
-              'is_favorite': mediaItem['is_favorite'] ?? 0,
-              'created_at': mediaItem['created_at'] ?? DateTime.now().millisecondsSinceEpoch,
-              'updated_at': mediaItem['updated_at'] ?? DateTime.now().millisecondsSinceEpoch,
-            });
-          }
-        }
-        
-        // 导入文档设置数据
-        if (data['document_settings'] != null) {
-          for (var setting in data['document_settings']) {
-            await txn.insert('document_settings', {
-              'document_id': setting['document_id'],
-              'background_image_path': setting['background_image_path'],
-              'background_color': setting['background_color'],
-              'text_enhance_mode': setting['text_enhance_mode'] ?? 0,
-              'created_at': setting['created_at'] ?? DateTime.now().millisecondsSinceEpoch,
-              'updated_at': setting['updated_at'] ?? DateTime.now().millisecondsSinceEpoch,
-            });
+
+        // 导入新数据
+        for (var entry in tableData.entries) {
+          final String tableName = entry.key;
+          final List<dynamic> rows = entry.value;
+          print('处理表: $tableName, 行数: ${rows.length}');
+
+          if (tableName == 'directory_settings') {
+            for (var row in rows) {
+              Map<String, dynamic> settings = Map<String, dynamic>.from(row);
+              String? fileName = settings.remove('backgroundImageFileName');
+              if (fileName != null) {
+                // 复制背景图片到新位置
+                String newPath = p.join(backgroundImagesPath, fileName);
+                String tempPath = p.join(tempDirPath, 'background_images', fileName);
+                if (await File(tempPath).exists()) {
+                  await File(tempPath).copy(newPath);
+                  settings['background_image_path'] = newPath;
+                  print('已导入目录背景图片: $newPath');
+                }
+              }
+              await txn.insert(tableName, settings);
+            }
+          } else if (tableName == 'document_settings') {
+            for (var row in rows) {
+              Map<String, dynamic> settings = Map<String, dynamic>.from(row);
+              String? fileName = settings.remove('backgroundImageFileName');
+              if (fileName != null) {
+                // 复制背景图片到新位置
+                String newPath = p.join(backgroundImagesPath, fileName);
+                String tempPath = p.join(tempDirPath, 'background_images', fileName);
+                if (await File(tempPath).exists()) {
+                  await File(tempPath).copy(newPath);
+                  settings['background_image_path'] = newPath;
+                  print('已导入文档背景图片: $newPath');
+                }
+              }
+              await txn.insert(tableName, settings);
+            }
+          } else if (tableName == 'image_boxes') {
+            for (var row in rows) {
+              Map<String, dynamic> imageBox = Map<String, dynamic>.from(row);
+              String? imageFileName = imageBox.remove('imageFileName');
+              if (imageFileName != null) {
+                // 复制图片文件到新位置
+                String newPath = p.join(imagesDirPath, imageFileName);
+                String tempPath = p.join(tempDirPath, 'images', imageFileName);
+                if (await File(tempPath).exists()) {
+                  await File(tempPath).copy(newPath);
+                  imageBox['image_path'] = newPath; // 修正字段名称为image_path
+                  print('已导入图片框图片: $newPath');
+                }
+              }
+              await txn.insert(tableName, imageBox);
+            }
+          } else if (tableName == 'audio_boxes') {
+            for (var row in rows) {
+              Map<String, dynamic> audioBox = Map<String, dynamic>.from(row);
+              String? audioFileName = audioBox.remove('audioFileName');
+              if (audioFileName != null) {
+                // 复制音频文件到新位置
+                String newPath = p.join(audiosDirPath, audioFileName);
+                String tempPath = p.join(tempDirPath, 'audios', audioFileName);
+                if (await File(tempPath).exists()) {
+                  await File(tempPath).copy(newPath);
+                  audioBox['audio_path'] = newPath; // 修正字段名称为audio_path
+                  print('已导入音频文件: $newPath');
+                }
+              }
+              await txn.insert(tableName, audioBox);
+            }
+          } else {
+            // 其他表正常导入（folders, documents, text_boxes, media_items）
+            for (var row in rows) {
+              await txn.insert(tableName, Map<String, dynamic>.from(row));
+            }
           }
         }
       });
-      
-      if (kDebugMode) {
-        print('数据导入成功: $filePath');
-      }
+
+      // 清理临时目录
+      await Directory(tempDirPath).delete(recursive: true);
+
+      print('目录数据导入完成');
     } catch (e, stackTrace) {
       _handleError('导入数据失败', e, stackTrace);
       rethrow;
@@ -3163,7 +3159,7 @@ class DatabaseService {
                 String tempPath = p.join(tempDirPath, 'images', imageFileName);
                 if (await File(tempPath).exists()) {
                   await File(tempPath).copy(newPath);
-                  imageBox['imagePath'] = newPath;
+                  imageBox['image_path'] = newPath;
                   print('已导入图片框图片: $newPath');
                 }
               }
@@ -3181,7 +3177,7 @@ class DatabaseService {
                 String tempPath = p.join(tempDirPath, 'audios', audioFileName);
                 if (await File(tempPath).exists()) {
                   await File(tempPath).copy(newPath);
-                  audioBox['audioPath'] = newPath;
+                  audioBox['audio_path'] = newPath;
                   print('已导入音频文件: $newPath');
                 }
               }
