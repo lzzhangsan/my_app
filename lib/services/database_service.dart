@@ -1624,11 +1624,17 @@ class DatabaseService {
       
       // 3. 创建新文档记录
       int maxOrder = 0;
+      String? parentFolderId; // 新增：用于存储父文件夹ID
       if (parentFolder != null) {
+        // 查找父文件夹ID
+        final folder = await getFolderByName(parentFolder);
+        parentFolderId = folder?['id'];
+        // Optional: Add error handling if folder not found, though getFolderByName handles some cases
+
         List<Map<String, dynamic>> docs = await db.query(
           'documents',
           where: 'parent_folder = ?',
-          whereArgs: [parentFolder],
+          whereArgs: [parentFolderId], // 使用ID查询
           orderBy: 'order_index DESC',
           limit: 1
         );
@@ -1643,7 +1649,7 @@ class DatabaseService {
       await db.insert('documents', {
         'id': newDocId, // 显式设置ID为UUID
         'name': finalNewDocumentName,
-        'parent_folder': parentFolder,
+        'parent_folder': parentFolderId, // 使用ID插入
         'is_template': 0, // 确保新文档不是模板
         'order_index': maxOrder + 1,
         'created_at': DateTime.now().millisecondsSinceEpoch,
@@ -1797,11 +1803,17 @@ class DatabaseService {
       
       // 3. 创建新文档记录
       int maxOrder = 0;
+      String? parentFolderId; // 新增：用于存储父文件夹ID
       if (parentFolder != null) {
+        // 查找父文件夹ID
+        final folder = await getFolderByName(parentFolder);
+        parentFolderId = folder?['id'];
+         // Optional: Add error handling if folder not found
+
         List<Map<String, dynamic>> docs = await db.query(
           'documents',
           where: 'parent_folder = ?',
-          whereArgs: [parentFolder],
+          whereArgs: [parentFolderId], // 使用ID查询
           orderBy: 'order_index DESC',
           limit: 1
         );
@@ -1816,7 +1828,7 @@ class DatabaseService {
       await db.insert('documents', {
         'id': newDocId, // 显式设置ID为UUID
         'name': finalNewDocumentName,
-        'parent_folder': parentFolder,
+        'parent_folder': parentFolderId, // 使用ID插入
         'is_template': 0, // 确保新文档不是模板
         'order_index': maxOrder + 1,
         'created_at': DateTime.now().millisecondsSinceEpoch,
