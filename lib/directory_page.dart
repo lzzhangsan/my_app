@@ -773,18 +773,26 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
           if (file.path != null) {
             String zipPath = file.path!;
             String fileName = path.basenameWithoutExtension(zipPath);
+            
+            // 自动去掉时间戳，保持原名
+            // 匹配格式：文档名-YYYYMMDD-HHMM
+            String originalName = fileName;
+            RegExp timeStampPattern = RegExp(r'-\d{8}-\d{4}$');
+            if (timeStampPattern.hasMatch(fileName)) {
+              originalName = fileName.replaceAll(timeStampPattern, '');
+            }
 
             try {
               // importDocument expects named parameters targetDocumentName and targetParentFolder
               await getService<DatabaseService>().importDocument(
                 zipPath,
-                targetDocumentName: fileName, 
+                targetDocumentName: originalName, 
                 targetParentFolder: _currentParentFolder,
               );
-              successFiles.add(fileName);
+              successFiles.add(originalName);
             } catch (e) {
-              print('导入文档 $fileName 时出错: $e');
-              failedFiles.add(fileName);
+              print('导入文档 $originalName 时出错: $e');
+              failedFiles.add(originalName);
             }
           }
         }

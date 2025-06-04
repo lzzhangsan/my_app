@@ -1166,9 +1166,10 @@ class DatabaseService {
       final File dataFile = File('$tempDirPath/document_data.json');
       await dataFile.writeAsString(jsonEncode(documentData));
       
-      // 创建ZIP文件
-      final String timestamp = DateTime.now().toString().replaceAll(RegExp(r'[^0-9]'), '');
-      final String zipPath = '$backupPath/document_${documentName}_$timestamp.zip';
+      // 创建ZIP文件 - 使用人性化的时间格式
+      final DateTime now = DateTime.now();
+      final String formattedTime = '${now.year.toString().padLeft(4, '0')}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}-${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}';
+      final String zipPath = '$backupPath/$documentName-$formattedTime.zip';
       await ZipFileEncoder().zipDirectory(Directory(tempDirPath), filename: zipPath);
       
       // 清理临时目录
@@ -1249,9 +1250,10 @@ class DatabaseService {
         // 设置文档名称
         String finalDocumentName = targetDocumentName ?? documentData['name'] ?? p.basenameWithoutExtension(zipPath);
         
-        // 检查名称冲突并生成唯一名称
+        // 检查名称冲突并生成唯一名称 - 使用人性化的副本格式
         String uniqueName = finalDocumentName;
-        int counter = 1;
+        int attempt = 0;
+        String baseName = '$finalDocumentName-副本';
         while (true) {
           // 在事务内部检查名称是否存在
           List<Map<String, dynamic>> folders = await txn.query(
@@ -1267,8 +1269,17 @@ class DatabaseService {
           if (folders.isEmpty && documents.isEmpty) {
             break;
           }
-          uniqueName = '${finalDocumentName}_$counter';
-          counter++;
+          // 如果原名已存在，使用"原名-副本"格式
+          if (attempt == 0) {
+            uniqueName = baseName;
+          } else {
+            // 如果"原名-副本"也存在，使用"原名-副本(序号)"格式
+            uniqueName = '$baseName($attempt)';
+          }
+          attempt++;
+          if (attempt > 100) {
+            throw Exception('无法生成唯一的文档名称');
+          }
         }
         
         // 设置父文件夹
@@ -2598,6 +2609,8 @@ class DatabaseService {
         settingsData['text_enhance_mode'] = textEnhanceMode != null
             ? (textEnhanceMode ? 1 : 0)
             : existing['text_enhance_mode'];
+        // 保留原有的created_at字段
+        settingsData['created_at'] = existing['created_at'];
       } else {
         settingsData['background_image_path'] = imagePath;
         settingsData['background_color'] = colorValue;
