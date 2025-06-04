@@ -59,6 +59,17 @@ class _VideoControlsOverlayState extends State<VideoControlsOverlay> {
       return SizedBox.shrink();
     }
     
+    // 检查视频是否已播放完毕或暂停状态
+    if (controller.value.position >= controller.value.duration && 
+        controller.value.duration > Duration.zero) {
+      return SizedBox.shrink();
+    }
+    
+    // 如果视频没有在播放且不在拖拽状态，也不显示控制条
+    if (!controller.value.isPlaying && !widget.videoPlayerWidget!.isDragging) {
+      return SizedBox.shrink();
+    }
+    
     final Duration position = controller.value.position;
     final Duration duration = controller.value.duration;
 
