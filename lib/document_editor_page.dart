@@ -7,6 +7,8 @@ import 'resizable_image_box.dart';
 import 'resizable_audio_box.dart';
 import 'global_tool_bar.dart' as toolBar;
 import 'media_player_container.dart';
+import 'video_controls_overlay.dart';
+import 'video_player_widget.dart';
 import 'dart:async';
 import 'package:image_picker/image_picker.dart';
 import 'dart:io';
@@ -1224,6 +1226,10 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
                 ),
               ),
             ),
+            // 视频控制覆盖层 - 显示在最上层
+            VideoControlsOverlay(
+              videoPlayerWidget: _mediaPlayerKey.currentState?.getCurrentVideoWidget(),
+            ),
           ],
         ),
         bottomNavigationBar: toolBar.GlobalToolBar(
@@ -1239,7 +1245,6 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
           onMediaMove: _handleMediaMove,
           onMediaDelete: _handleMediaDelete,
           onMediaFavorite: _handleMediaFavorite,
-          onPerformanceMonitor: _openPerformanceMonitor,
         ),
       ),
     );
@@ -1669,13 +1674,6 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
     }
   }
 
-  void _openPerformanceMonitor() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => const PerformanceMonitorPage(),
-      ),
-    );
-  }
+
 }
 

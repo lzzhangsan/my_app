@@ -12,8 +12,6 @@ class GlobalToolBar extends StatefulWidget {
   final VoidCallback? onMediaMove;
   final VoidCallback? onMediaDelete;
   final VoidCallback? onMediaFavorite;
-  final VoidCallback? onPerformanceMonitor;
-
   const GlobalToolBar({
     super.key,
     this.onNewTextBox,
@@ -27,7 +25,6 @@ class GlobalToolBar extends StatefulWidget {
     this.onMediaMove,
     this.onMediaDelete,
     this.onMediaFavorite,
-    this.onPerformanceMonitor,
   });
 
   @override
@@ -109,15 +106,7 @@ class _GlobalToolBarState extends State<GlobalToolBar> {
                 size: 31.2,
               ),
             ),
-            IconButton(
-              icon: Icon(
-                Icons.speed,
-                color: Colors.purple,
-                size: 31.2,
-              ),
-              onPressed: widget.onPerformanceMonitor,
-              tooltip: '性能监控',
-            ),
+
           ],
         ),
       ),

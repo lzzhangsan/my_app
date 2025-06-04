@@ -28,6 +28,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
   List<Map<String, dynamic>> _mediaList = [];
   final Random _random = Random();
   Widget? _mediaWidget;
+  VideoPlayerWidget? _currentVideoWidget; // 保存当前的VideoPlayerWidget实例
   String? _selectedDirectory;
   late final DatabaseService _databaseService;
   Map<String, dynamic>? _currentPlayingMedia; // 添加当前正在播放的媒体项
@@ -200,6 +201,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
     setState(() {
       _mediaMode = MediaMode.none;
       _mediaWidget = null;
+      _currentVideoWidget = null;
       _mediaTimer?.cancel();
       _mediaTimer = null;
     });
@@ -215,6 +217,11 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
       directory: _currentPlayingMedia!['directory'],
       dateAdded: DateTime.parse(_currentPlayingMedia!['date_added']),
     );
+  }
+
+  // 获取当前的VideoPlayerWidget实例
+  VideoPlayerWidget? getCurrentVideoWidget() {
+    return _currentVideoWidget;
   }
 
   void _showRandomMedia() async {
@@ -301,15 +308,11 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
           return;
         } else if (randomMedia['type'] == 1) { // 视频
           setState(() {
-            _mediaWidget = VideoPlayerWidget(
-              file: mediaFile,
-              looping: _mediaMode == MediaMode.manual,
-              onVideoEnd: _mediaMode == MediaMode.auto ? _showRandomMedia : null,
-              onVideoError: () {
-                print('视频播放出错，尝试下一个');
-                _showRandomMedia(); // 视频出错时自动尝试下一个
-              },
-            );
+            _currentVideoWidget = VideoPlayerWidget(
+          key: ValueKey(randomMedia['path']),
+          file: File(randomMedia['path']!),
+        );
+            _mediaWidget = _currentVideoWidget;
           });
           
           // 成功显示，退出尝试循环
@@ -381,6 +384,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
               _selectedDirectory = directory;
               _currentPlayingMedia = null; // 选择新的媒体源时重置当前播放
               _mediaWidget = null; // 清除当前显示的媒体
+              _currentVideoWidget = null;
               _mediaMode = MediaMode.none; // 停止播放模式
               _mediaTimer?.cancel(); // 取消自动播放定时器
             });

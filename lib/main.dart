@@ -198,6 +198,8 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
             ),
 
           // 添加简洁的页面指示器
+          // 页面指示器 - 已注释掉，以备后用
+          /*
           Padding(
             padding: const EdgeInsets.only(bottom: 20.0),
             child: Container(
@@ -219,8 +221,8 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                       );
                     },
                     child: Container(
-                      width: 8.0,
-                      height: 8.0,
+                      width: 4.0,
+                      height: 4.0,
                       margin: const EdgeInsets.symmetric(horizontal: 4.0),
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
@@ -234,6 +236,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
               ),
             ),
           ),
+          */
          ],
         ),
       ),

@@ -9,17 +9,36 @@ class VideoPlayerWidget extends StatefulWidget {
   final bool looping;
   final VoidCallback? onVideoEnd;
   final VoidCallback? onVideoError;
+  
+  // 用于存储State引用
+  _VideoPlayerWidgetState? _state;
 
-  const VideoPlayerWidget({
+  VideoPlayerWidget({
     required this.file,
     this.looping = false,
     this.onVideoEnd,
     this.onVideoError,
-    super.key,
-  });
+    Key? key,
+  }) : super(key: key);
 
   @override
-  _VideoPlayerWidgetState createState() => _VideoPlayerWidgetState();
+  _VideoPlayerWidgetState createState() {
+    _state = _VideoPlayerWidgetState();
+    return _state!;
+  }
+  
+  // 提供访问State的方法
+  VideoPlayerController? get controller {
+    return _state?._controller;
+  }
+  
+  bool get isDragging {
+    return _state?._isDragging ?? false;
+  }
+  
+  set isDragging(bool value) {
+    _state?.isDragging = value;
+  }
 }
 
 class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
@@ -27,6 +46,16 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   bool _isEnded = false;
   bool _hasError = false;
   Timer? _progressTimer;
+  bool _isDragging = false; // 添加拖拽状态标志
+
+  // 内部setter方法
+  set isDragging(bool value) {
+    if (_isDragging != value) {
+      setState(() {
+        _isDragging = value;
+      });
+    }
+  }
 
   @override
   void initState() {
@@ -44,7 +73,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
         _controller.setLooping(widget.looping);
         
         _progressTimer = Timer.periodic(Duration(milliseconds: 100), (_) {
-          if (mounted) {
+          if (mounted && !_isDragging) { // 只有在不拖拽时才更新UI
             setState(() {});
           }
         });
@@ -120,71 +149,18 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     }
     
     return _controller.value.isInitialized
-        ? Stack(
-            alignment: Alignment.bottomCenter,
-            children: [
-              SizedBox.expand(
-                child: FittedBox(
-                  fit: BoxFit.cover,
-                  child: SizedBox(
-                    width: _controller.value.size.width,
-                    height: _controller.value.size.height,
-                    child: VideoPlayer(_controller),
-                  ),
-                ),
+        ? SizedBox.expand(
+            child: FittedBox(
+              fit: BoxFit.cover,
+              child: SizedBox(
+                width: _controller.value.size.width,
+                height: _controller.value.size.height,
+                child: VideoPlayer(_controller),
               ),
-              Container(
-                color: Colors.black.withOpacity(0.5),
-                padding: EdgeInsets.symmetric(vertical: 8),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(
-                      _formatDuration(_controller.value.position),
-                      style: TextStyle(color: Colors.white, fontSize: 12),
-                    ),
-                    SizedBox(width: 8),
-                    SizedBox(
-                      width: 200,
-                      height: 4,
-                      child: SliderTheme(
-                        data: SliderTheme.of(context).copyWith(
-                          activeTrackColor: Colors.white,
-                          inactiveTrackColor: Colors.white.withOpacity(0.3),
-                          thumbColor: Colors.white,
-                          overlayColor: Colors.white.withOpacity(0.2),
-                          trackHeight: 4,
-                          thumbShape: RoundSliderThumbShape(enabledThumbRadius: 4),
-                          overlayShape: RoundSliderOverlayShape(overlayRadius: 8),
-                        ),
-                        child: Slider(
-                          value: _controller.value.position.inMilliseconds.toDouble(),
-                          min: 0,
-                          max: _controller.value.duration.inMilliseconds.toDouble(),
-                          onChanged: (value) {
-                            final Duration position = Duration(milliseconds: value.round());
-                            _controller.seekTo(position);
-                          },
-                        ),
-                      ),
-                    ),
-                    SizedBox(width: 8),
-                    Text(
-                      _formatDuration(_controller.value.duration),
-                      style: TextStyle(color: Colors.white, fontSize: 12),
-                    ),
-                  ],
-                ),
-              ),
-            ],
+            ),
           )
         : Center(child: CircularProgressIndicator());
   }
 
-  String _formatDuration(Duration duration) {
-    String twoDigits(int n) => n.toString().padLeft(2, '0');
-    final minutes = twoDigits(duration.inMinutes.remainder(60));
-    final seconds = twoDigits(duration.inSeconds.remainder(60));
-    return '$minutes:$seconds';
-  }
+
 }
