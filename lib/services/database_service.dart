@@ -1633,7 +1633,8 @@ class DatabaseService {
         Map<String, dynamic> newSettings = Map<String, dynamic>.from(docSettings.first);
         newSettings.remove('id');
         newSettings['document_id'] = newDocId;
-        newSettings['document_name'] = finalNewDocumentName;
+        // 移除document_name字段，因为document_settings表中没有这个列
+        newSettings.remove('document_name');
         await db.insert('document_settings', newSettings);
       }
       
@@ -1769,7 +1770,8 @@ class DatabaseService {
         Map<String, dynamic> newSettings = Map<String, dynamic>.from(docSettings.first);
         newSettings.remove('id');
         newSettings['document_id'] = newDocId;
-        newSettings['document_name'] = finalNewDocumentName;
+        // 移除document_name字段，因为document_settings表中没有这个列
+        newSettings.remove('document_name');
         await db.insert('document_settings', newSettings);
       }
       
