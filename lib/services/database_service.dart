@@ -732,33 +732,18 @@ class DatabaseService {
   Future<void> updateDocumentParentFolder(
       String documentName, String? newParentFolder) async {
     try {
-      // 获取目标文件夹的ID
       String? targetFolderId;
       if (newParentFolder != null) {
-        Map<String, dynamic>? targetFolder = await getFolderByName(newParentFolder);
-        if (targetFolder == null) {
-          throw Exception('目标文件夹不存在: $newParentFolder');
-        }
-        targetFolderId = targetFolder['id'];
+        final folder = await getFolderByName(newParentFolder);
+        targetFolderId = folder?['id'];
       }
-      
-      // 检查源文档是否存在
-      Map<String, dynamic>? sourceDocument = await getDocumentByName(documentName);
-      if (sourceDocument == null) {
-        throw Exception('源文档不存在: $documentName');
-      }
-      
       final db = await database;
-      
-      // 使用事务确保操作的原子性
       await db.transaction((txn) async {
         List<Map<String, dynamic>> result = await txn.rawQuery(
           'SELECT MAX(`order_index`) as maxOrder FROM documents WHERE parent_folder ${targetFolderId == null ? 'IS NULL' : '= ?'}',
           targetFolderId == null ? null : [targetFolderId],
         );
-        int maxOrder =
-        result.first['maxOrder'] != null ? result.first['maxOrder'] as int : 0;
-
+        int maxOrder = result.first['maxOrder'] != null ? result.first['maxOrder'] as int : 0;
         int updatedRows = await txn.update(
           'documents',
           {
@@ -768,7 +753,6 @@ class DatabaseService {
           where: 'name = ?',
           whereArgs: [documentName],
         );
-        
         if (updatedRows == 0) {
           throw Exception('未能更新文档: $documentName');
         }
@@ -1047,10 +1031,15 @@ class DatabaseService {
   Future<List<Map<String, dynamic>>> getFolders({String? parentFolder}) async {
     final db = await database;
     try {
+      String? parentFolderId;
+      if (parentFolder != null) {
+        final folder = await getFolderByName(parentFolder);
+        parentFolderId = folder?['id'];
+      }
       List<Map<String, dynamic>> result = await db.query(
         'folders',
-        where: parentFolder == null ? 'parent_folder IS NULL' : 'parent_folder = ?',
-        whereArgs: parentFolder == null ? null : [parentFolder],
+        where: parentFolderId == null ? 'parent_folder IS NULL' : 'parent_folder = ?',
+        whereArgs: parentFolderId == null ? null : [parentFolderId],
         orderBy: 'order_index ASC',
       );
       return result.map((map) => Map<String, dynamic>.from(map)).toList();
@@ -1063,10 +1052,15 @@ class DatabaseService {
   Future<List<Map<String, dynamic>>> getDocuments({String? parentFolder}) async {
     final db = await database;
     try {
+      String? parentFolderId;
+      if (parentFolder != null) {
+        final folder = await getFolderByName(parentFolder);
+        parentFolderId = folder?['id'];
+      }
       return await db.query(
         'documents',
-        where: 'parent_folder ${parentFolder == null ? 'IS NULL' : '= ?'}',
-        whereArgs: parentFolder != null ? [parentFolder] : [],
+        where: parentFolderId == null ? 'parent_folder IS NULL' : 'parent_folder = ?',
+        whereArgs: parentFolderId == null ? null : [parentFolderId],
         orderBy: 'order_index ASC',
       );
     } catch (e, stackTrace) {
@@ -2261,20 +2255,22 @@ class DatabaseService {
   Future<void> insertDocument(String name, {String? parentFolder, String? position}) async {
     try {
       final db = await database;
-      
+      String? parentFolderId;
+      if (parentFolder != null) {
+        final folder = await getFolderByName(parentFolder);
+        parentFolderId = folder?['id'];
+      }
       final List<Map<String, dynamic>> result = await db.rawQuery('''
         SELECT MAX(`order_index`) as maxOrder FROM documents 
-        WHERE parent_folder ${parentFolder == null ? 'IS NULL' : '= ?'}
-      ''', parentFolder != null ? [parentFolder] : []);
-      
+        WHERE parent_folder ${parentFolderId == null ? 'IS NULL' : '= ?'}
+      ''', parentFolderId != null ? [parentFolderId] : []);
       int order = (result.first['maxOrder'] ?? -1) + 1;
-      
       await db.insert(
         'documents',
         {
           'id': const Uuid().v4(),
           'name': name,
-          'parent_folder': parentFolder,
+          'parent_folder': parentFolderId,
           'order_index': order,
           'is_template': 0,
           'position': position,
