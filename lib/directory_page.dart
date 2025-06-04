@@ -213,16 +213,56 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     String? targetFolderName = await _selectFolder();
     if (targetFolderName != null) {
       try {
+        // 检查是否存在循环依赖
         for (var item in _selectedItems) {
-          if (item.type == ItemType.document) {
-            await getService<DatabaseService>().updateDocumentParentFolder(item.name, targetFolderName);
-          } else if (item.type == ItemType.folder) {
-            await getService<DatabaseService>().updateFolderParentFolder(item.name, targetFolderName);
+          if (item.type == ItemType.folder) {
+            // 不能将文件夹移动到自身
+            if (item.name == targetFolderName) {
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('不能将文件夹移动到自身')),
+                );
+              }
+              return;
+            }
+            
+            // 不能将文件夹移动到其子文件夹中
+            String itemPath = await _getDirectoryFolderPath(targetFolderName);
+            if (itemPath.contains('${item.name}/') || itemPath.endsWith('/${item.name}')) {
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('不能将文件夹移动到其子文件夹中')),
+                );
+              }
+              return;
+            }
           }
         }
+
+        // 批量移动操作
+        final dbService = getService<DatabaseService>();
+        
+        // 获取目标文件夹信息
+        print('获取目标文件夹信息: $targetFolderName');
+        Map<String, dynamic>? targetFolder = await dbService.getFolderByName(targetFolderName);
+        if (targetFolder == null) {
+          throw Exception('目标文件夹不存在: $targetFolderName');
+        }
+        
+        for (var item in _selectedItems) {
+          if (item.type == ItemType.document) {
+            print('移动文档 ${item.name} 到文件夹 $targetFolderName');
+            await dbService.updateDocumentParentFolder(item.name, targetFolderName);
+          } else if (item.type == ItemType.folder) {
+            print('移动文件夹 ${item.name} 到文件夹 $targetFolderName');
+            await dbService.updateFolderParentFolder(item.name, targetFolderName);
+          }
+        }
+        
         _selectedItems.clear();
         _isMultiSelectMode = false;
         if (mounted) {
+          print('移动完成，重新加载数据...');
           await _loadData();
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('已将选中的项目移动到 $targetFolderName')),
@@ -231,8 +271,17 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       } catch (e) {
         print('批量移动出错: $e');
         if (mounted) {
+          String errorMsg = '批量移动出错，请重试';
+          if (e.toString().isNotEmpty) {
+            // 截取错误信息的前50个字符，避免过长
+            String errorDetails = e.toString();
+            if (errorDetails.length > 50) {
+              errorDetails = '${errorDetails.substring(0, 50)}...';
+            }
+            errorMsg = '批量移动出错: $errorDetails';
+          }
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('批量移动出错，请重试')),
+            SnackBar(content: Text(errorMsg)),
           );
         }
       }
@@ -252,16 +301,21 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     bool confirmMove = await _showMoveConfirmationDialog("选中的项目", "这些项目", "目录");
     if (confirmMove) {
       try {
+        final dbService = getService<DatabaseService>();
+        
         for (var item in _selectedItems) {
           if (item.type == ItemType.document) {
-            await getService<DatabaseService>().updateDocumentParentFolder(item.name, null);
+            print('移动文档 ${item.name} 到根目录');
+            await dbService.updateDocumentParentFolder(item.name, null);
           } else if (item.type == ItemType.folder) {
-            await getService<DatabaseService>().updateFolderParentFolder(item.name, null);
+            print('移动文件夹 ${item.name} 到根目录');
+            await dbService.updateFolderParentFolder(item.name, null);
           }
         }
         _selectedItems.clear();
         _isMultiSelectMode = false;
         if (mounted) {
+          print('移动到根目录完成，重新加载数据...');
           await _loadData();
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('已将选中的项目移动到目录')),
@@ -546,11 +600,11 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       print('从数据库加载了 ${folders.length} 个文件夹');
 
       for (var folder in folders) {
-        print('加载文件夹: ${folder['name']}, 顺序: ${folder['order']}');
+        print('加载文件夹: ${folder['name']}, 顺序: ${folder['order_index']}');
         _items.add(DirectoryItem(
           name: folder['name'],
           type: ItemType.folder,
-          order: folder['order'] ?? 0,
+          order: folder['order_index'] ?? 0,
           isTemplate: false,
           isSelected: false,
         ));
@@ -560,11 +614,11 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       print('从数据库加载了 ${documents.length} 个文档');
 
       for (var document in documents) {
-        print('加载文档: ${document['name']}, 顺序: ${document['order']}');
+        print('加载文档: ${document['name']}, 顺序: ${document['order_index']}');
         _items.add(DirectoryItem(
           name: document['name'],
           type: ItemType.document,
-          order: document['order'] ?? 0,
+          order: document['order_index'] ?? 0,
           isTemplate: document['is_template'] == 1,
           isSelected: false,
         ));
@@ -1104,17 +1158,26 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     final dbService = getService<DatabaseService>();
     String currentPath = folderName;
     
-    // getFolderByName returns Map<String, dynamic>? not List<Map<String, dynamic>>
-    Map<String, dynamic>? currentFolderData = await dbService.getFolderByName(folderName);
-    String? parentFolderName = (currentFolderData != null && currentFolderData.containsKey('parentFolder')) ? currentFolderData['parentFolder'] as String? : null;
-    
-    while (parentFolderName != null) {
-      currentPath = '$parentFolderName/$currentPath';
-      currentFolderData = await dbService.getFolderByName(parentFolderName);
-      parentFolderName = (currentFolderData != null && currentFolderData.containsKey('parentFolder')) ? currentFolderData['parentFolder'] as String? : null;
+    try {
+      // getFolderByName returns Map<String, dynamic>? not List<Map<String, dynamic>>
+      Map<String, dynamic>? currentFolderData = await dbService.getFolderByName(folderName);
+      String? parentFolderName = (currentFolderData != null && currentFolderData.containsKey('parent_folder')) 
+          ? currentFolderData['parent_folder'] as String? 
+          : null;
+      
+      while (parentFolderName != null) {
+        currentPath = '$parentFolderName/$currentPath';
+        currentFolderData = await dbService.getFolderByName(parentFolderName);
+        parentFolderName = (currentFolderData != null && currentFolderData.containsKey('parent_folder')) 
+            ? currentFolderData['parent_folder'] as String? 
+            : null;
+      }
+      
+      return currentPath;
+    } catch (e) {
+      print('获取文件夹路径出错: $e');
+      return folderName; // 出错时至少返回文件夹名称
     }
-    
-    return currentPath;
   }
 
   Future<String?> _showFolderNameDialog({String? hintText, String? initialValue}) async {

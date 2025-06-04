@@ -681,23 +681,47 @@ class DatabaseService {
   Future<void> updateFolderParentFolder(
       String folderName, String? newParentFolder) async {
     try {
+      // 获取目标文件夹的ID
+      String? targetFolderId;
+      if (newParentFolder != null) {
+        Map<String, dynamic>? targetFolder = await getFolderByName(newParentFolder);
+        if (targetFolder == null) {
+          throw Exception('目标文件夹不存在: $newParentFolder');
+        }
+        targetFolderId = targetFolder['id'];
+      }
+      
+      // 检查源文件夹是否存在
+      Map<String, dynamic>? sourceFolder = await getFolderByName(folderName);
+      if (sourceFolder == null) {
+        throw Exception('源文件夹不存在: $folderName');
+      }
+      
       final db = await database;
-      List<Map<String, dynamic>> result = await db.rawQuery(
-        'SELECT MAX(`order_index`) as maxOrder FROM folders WHERE parent_folder ${newParentFolder == null ? 'IS NULL' : '= ?'}',
-        newParentFolder == null ? null : [newParentFolder],
-      );
-      int maxOrder =
-      result.first['maxOrder'] != null ? result.first['maxOrder'] as int : 0;
+      
+      // 使用事务确保操作的原子性
+      await db.transaction((txn) async {
+        List<Map<String, dynamic>> result = await txn.rawQuery(
+          'SELECT MAX(`order_index`) as maxOrder FROM folders WHERE parent_folder ${targetFolderId == null ? 'IS NULL' : '= ?'}',
+          targetFolderId == null ? null : [targetFolderId],
+        );
+        int maxOrder =
+        result.first['maxOrder'] != null ? result.first['maxOrder'] as int : 0;
 
-      await db.update(
-        'folders',
-        {
-          'parent_folder': newParentFolder,
-          'order_index': maxOrder + 1,
-        },
-        where: 'name = ?',
-        whereArgs: [folderName],
-      );
+        int updatedRows = await txn.update(
+          'folders',
+          {
+            'parent_folder': targetFolderId,
+            'order_index': maxOrder + 1,
+          },
+          where: 'name = ?',
+          whereArgs: [folderName],
+        );
+        
+        if (updatedRows == 0) {
+          throw Exception('未能更新文件夹: $folderName');
+        }
+      });
     } catch (e, stackTrace) {
       _handleError('更新文件夹父文件夹失败', e, stackTrace);
       rethrow;
@@ -708,23 +732,47 @@ class DatabaseService {
   Future<void> updateDocumentParentFolder(
       String documentName, String? newParentFolder) async {
     try {
+      // 获取目标文件夹的ID
+      String? targetFolderId;
+      if (newParentFolder != null) {
+        Map<String, dynamic>? targetFolder = await getFolderByName(newParentFolder);
+        if (targetFolder == null) {
+          throw Exception('目标文件夹不存在: $newParentFolder');
+        }
+        targetFolderId = targetFolder['id'];
+      }
+      
+      // 检查源文档是否存在
+      Map<String, dynamic>? sourceDocument = await getDocumentByName(documentName);
+      if (sourceDocument == null) {
+        throw Exception('源文档不存在: $documentName');
+      }
+      
       final db = await database;
-      List<Map<String, dynamic>> result = await db.rawQuery(
-        'SELECT MAX(`order_index`) as maxOrder FROM documents WHERE parent_folder ${newParentFolder == null ? 'IS NULL' : '= ?'}',
-        newParentFolder == null ? null : [newParentFolder],
-      );
-      int maxOrder =
-      result.first['maxOrder'] != null ? result.first['maxOrder'] as int : 0;
+      
+      // 使用事务确保操作的原子性
+      await db.transaction((txn) async {
+        List<Map<String, dynamic>> result = await txn.rawQuery(
+          'SELECT MAX(`order_index`) as maxOrder FROM documents WHERE parent_folder ${targetFolderId == null ? 'IS NULL' : '= ?'}',
+          targetFolderId == null ? null : [targetFolderId],
+        );
+        int maxOrder =
+        result.first['maxOrder'] != null ? result.first['maxOrder'] as int : 0;
 
-      await db.update(
-        'documents',
-        {
-          'parent_folder': newParentFolder,
-          'order_index': maxOrder + 1,
-        },
-        where: 'name = ?',
-        whereArgs: [documentName],
-      );
+        int updatedRows = await txn.update(
+          'documents',
+          {
+            'parent_folder': targetFolderId,
+            'order_index': maxOrder + 1,
+          },
+          where: 'name = ?',
+          whereArgs: [documentName],
+        );
+        
+        if (updatedRows == 0) {
+          throw Exception('未能更新文档: $documentName');
+        }
+      });
     } catch (e, stackTrace) {
       _handleError('更新文档父文件夹失败', e, stackTrace);
       rethrow;
@@ -987,7 +1035,7 @@ class DatabaseService {
     for (int i = 0; i < remainingFolders.length; i++) {
       await db.update(
         'folders',
-        {'order': i},
+        {'order_index': i},
         where: 'name = ?',
         whereArgs: [remainingFolders[i]['name']],
       );
@@ -1042,6 +1090,24 @@ class DatabaseService {
       return null;
     } catch (e) {
       print('根据名称获取文件夹时出错: $e');
+      return null;
+    }
+  }
+  
+  Future<Map<String, dynamic>?> getDocumentByName(String documentName) async {
+    final db = await database;
+    try {
+      List<Map<String, dynamic>> result = await db.query(
+        'documents',
+        where: 'name = ?',
+        whereArgs: [documentName],
+      );
+      if (result.isNotEmpty) {
+        return result.first;
+      }
+      return null;
+    } catch (e) {
+      print('根据名称获取文档时出错: $e');
       return null;
     }
   }

@@ -11,7 +11,7 @@ project.ext.set("android.overridePathCheck", true)
 System.setProperty("android.overridePathCheck", "true")
 
 android {
-    namespace "com.example.change_copy"
+    namespace "com.example.change_copy2"
     compileSdk 35
     buildToolsVersion "34.0.0" // 明确指定 buildToolsVersion
     ndkVersion "26.1.10909125"  // 使用更新的 NDK 版本
@@ -31,7 +31,7 @@ android {
 
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId "com.example.change_copy"
+        applicationId "com.example.change_copy2"
         // You can update the following values to match your application needs.
         // For more information, see: https://docs.flutter.dev/deployment/android#reviewing-the-gradle-build-configuration.
         minSdkVersion 24

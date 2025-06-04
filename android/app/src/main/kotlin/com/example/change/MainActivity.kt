@@ -1,4 +1,4 @@
-package com.example.change_copy  // 修改包名，与 AndroidManifest.xml 一致
+package com.example.change_copy2  // 修改包名，与 AndroidManifest.xml 一致
 
 import android.os.Bundle
 import io.flutter.embedding.android.FlutterActivity

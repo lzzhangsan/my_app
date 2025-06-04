@@ -1,5 +1,5 @@
 name: change_copy  # 项目标识名，可以保持不变或改为 change
-description: "A copy of the original app."
+description: "A second copy of the original app."
 publish_to: 'none'
 
 version: 1.0.0+1
