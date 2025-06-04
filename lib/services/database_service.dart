@@ -939,13 +939,26 @@ class DatabaseService {
   Future<void> deleteDocumentBackgroundImage(String documentName) async {
     final db = await database;
     try {
-      await db.update(
-        'document_settings',
-        {'background_image_path': null},
-        where: 'document_name = ?',
+      // 首先获取文档ID
+      final List<Map<String, dynamic>> docs = await db.query(
+        'documents',
+        columns: ['id'],
+        where: 'name = ?',
         whereArgs: [documentName],
       );
-      print('Background image path deleted for document: $documentName');
+      
+      if (docs.isNotEmpty) {
+        String documentId = docs.first['id'];
+        await db.update(
+          'document_settings',
+          {'background_image_path': null},
+          where: 'document_id = ?',
+          whereArgs: [documentId],
+        );
+        print('Background image path deleted for document: $documentName');
+      } else {
+        print('Document not found: $documentName');
+      }
     } catch (e, stackTrace) {
       _handleError('Failed to delete document background image for $documentName', e, stackTrace);
       rethrow;
@@ -1444,12 +1457,19 @@ class DatabaseService {
       where: 'documentName = ?',
       whereArgs: [oldName],
     );
-    await db.update(
-      'document_settings',
-      {'document_name': newName},
-      where: 'document_name = ?',
-      whereArgs: [oldName],
+    // 获取文档ID
+    final List<Map<String, dynamic>> docs = await db.query(
+      'documents',
+      columns: ['id'],
+      where: 'name = ?',
+      whereArgs: [newName], // 使用新名称查询，因为documents表已经更新
     );
+    
+    if (docs.isNotEmpty) {
+      String documentId = docs.first['id'];
+      // document_settings表没有document_name字段，只有document_id字段
+      // 不需要更新document_settings表，因为它使用document_id作为外键，而document_id没有变化
+    }
   }
 
   Future<void> renameFolder(String oldName, String newName) async {
@@ -1635,6 +1655,42 @@ class DatabaseService {
         newSettings['document_id'] = newDocId;
         // 移除document_name字段，因为document_settings表中没有这个列
         newSettings.remove('document_name');
+        
+        // 复制背景图片文件（如果存在）
+        String? originalBackgroundPath = newSettings['background_image_path'];
+        if (originalBackgroundPath != null && originalBackgroundPath.isNotEmpty) {
+          try {
+            File originalFile = File(originalBackgroundPath);
+            if (await originalFile.exists()) {
+              // 获取应用私有目录
+              final appDir = await getApplicationDocumentsDirectory();
+              final backgroundDir = Directory('${appDir.path}/backgrounds');
+              if (!await backgroundDir.exists()) {
+                await backgroundDir.create(recursive: true);
+              }
+              
+              // 生成新的唯一文件名
+              final uuid = const Uuid().v4();
+              final extension = p.extension(originalBackgroundPath);
+              final newFileName = '$uuid$extension';
+              final newBackgroundPath = '${backgroundDir.path}/$newFileName';
+              
+              // 复制背景图片文件
+              await originalFile.copy(newBackgroundPath);
+              newSettings['background_image_path'] = newBackgroundPath;
+              print('复制背景图片: $originalBackgroundPath -> $newBackgroundPath');
+            } else {
+              // 原背景图片文件不存在，清除路径
+              newSettings['background_image_path'] = null;
+              print('原背景图片文件不存在，已清除路径: $originalBackgroundPath');
+            }
+          } catch (e) {
+            print('复制背景图片时出错: $e');
+            // 出错时清除背景图片路径，避免指向无效文件
+            newSettings['background_image_path'] = null;
+          }
+        }
+        
         await db.insert('document_settings', newSettings);
       }
       
@@ -1772,6 +1828,44 @@ class DatabaseService {
         newSettings['document_id'] = newDocId;
         // 移除document_name字段，因为document_settings表中没有这个列
         newSettings.remove('document_name');
+        
+        // 处理背景图片复制
+        String? originalBackgroundPath = newSettings['background_image_path'];
+        if (originalBackgroundPath != null && originalBackgroundPath.isNotEmpty) {
+          try {
+            // 获取应用私有目录
+            Directory appDir = await getApplicationDocumentsDirectory();
+            Directory backgroundsDir = Directory(p.join(appDir.path, 'backgrounds'));
+            if (!await backgroundsDir.exists()) {
+              await backgroundsDir.create(recursive: true);
+            }
+            
+            // 检查原背景图片文件是否存在
+            File originalFile = File(originalBackgroundPath);
+            if (await originalFile.exists()) {
+              // 生成新的唯一文件名
+              String extension = p.extension(originalBackgroundPath);
+              String newFileName = '${const Uuid().v4()}$extension';
+              String newBackgroundPath = p.join(backgroundsDir.path, newFileName);
+              
+              // 复制背景图片文件
+              await originalFile.copy(newBackgroundPath);
+              
+              // 更新新文档设置中的背景图片路径
+              newSettings['background_image_path'] = newBackgroundPath;
+              print('从模板复制背景图片: $originalBackgroundPath -> $newBackgroundPath');
+            } else {
+              // 如果原文件不存在，清空背景图片路径
+              newSettings['background_image_path'] = null;
+              print('模板背景图片文件不存在，已清空新文档的背景图片路径');
+            }
+          } catch (e) {
+            print('复制模板背景图片时出错: $e');
+            // 出错时清空背景图片路径，避免指向不存在的文件
+            newSettings['background_image_path'] = null;
+          }
+        }
+        
         await db.insert('document_settings', newSettings);
       }
       

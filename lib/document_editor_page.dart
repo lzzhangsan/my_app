@@ -1342,14 +1342,14 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
       final db = await _databaseService.database;
       List<Map<String, dynamic>> result = await db.query(
         'documents',
-        columns: ['isTemplate'],
+        columns: ['is_template'], // 修正字段名，使用下划线格式
         where: 'name = ?',
         whereArgs: [widget.documentName],
       );
 
       if (result.isNotEmpty) {
         setState(() {
-          _isTemplate = result.first['isTemplate'] == 1;
+          _isTemplate = result.first['is_template'] == 1; // 修正字段名，使用下划线格式
         });
       }
     } catch (e) {
