@@ -202,6 +202,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
       _mediaMode = MediaMode.none;
       _mediaWidget = null;
       _currentVideoWidget = null;
+      _currentPlayingMedia = null; // 清除当前播放媒体
       _mediaTimer?.cancel();
       _mediaTimer = null;
     });

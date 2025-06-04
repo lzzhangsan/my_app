@@ -25,13 +25,31 @@ class _VideoControlsOverlayState extends State<VideoControlsOverlay> {
   }
   
   @override
+  void didUpdateWidget(VideoControlsOverlay oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 当视频播放器组件发生变化时，重新启动定时器
+    if (widget.videoPlayerWidget != oldWidget.videoPlayerWidget) {
+      _updateTimer?.cancel();
+      _startUpdateTimer();
+      // 强制立即更新状态
+      if (mounted) {
+        setState(() {});
+      }
+    }
+  }
+  
+  @override
   void dispose() {
     _updateTimer?.cancel();
     super.dispose();
   }
   
   void _startUpdateTimer() {
-    _updateTimer = Timer.periodic(Duration(milliseconds: 100), (timer) {
+    // 取消现有定时器
+    _updateTimer?.cancel();
+    
+    // 创建新定时器，更高频率更新
+    _updateTimer = Timer.periodic(Duration(milliseconds: 30), (timer) {
       if (mounted) {
         setState(() {});
       }
@@ -54,75 +72,78 @@ class _VideoControlsOverlayState extends State<VideoControlsOverlay> {
     
     final VideoPlayerController? controller = widget.videoPlayerWidget!.controller;
     
-    // 只有当控制器存在且已初始化时才显示控制条
-    if (controller == null || !controller.value.isInitialized) {
+    // 控制器不存在时不显示
+    if (controller == null) {
       return SizedBox.shrink();
     }
     
-    // 检查视频是否已播放完毕或暂停状态
-    if (controller.value.position >= controller.value.duration && 
-        controller.value.duration > Duration.zero) {
+    // 获取当前位置和总时长
+    final Duration position = controller.value.isInitialized ? controller.value.position : Duration.zero;
+    final Duration duration = controller.value.isInitialized ? controller.value.duration : Duration(seconds: 1);
+    
+    // 视频播放完毕时隐藏（但保留缓冲和错误状态的显示）
+    if (controller.value.isInitialized && 
+        !controller.value.hasError && 
+        position >= duration && 
+        duration > Duration.zero) {
       return SizedBox.shrink();
     }
-    
-    // 如果视频没有在播放且不在拖拽状态，也不显示控制条
-    if (!controller.value.isPlaying && !widget.videoPlayerWidget!.isDragging) {
-      return SizedBox.shrink();
-    }
-    
-    final Duration position = controller.value.position;
-    final Duration duration = controller.value.duration;
 
     return Positioned(
-      bottom: 100,
-      left: 30,
-      right: 30,
+      bottom: 60, // 避免与底部工具栏重合
+      left: 10,
+      right: 10,
       child: Container(
+        height: 32, // 固定高度，减少占用空间
         decoration: BoxDecoration(
           color: Colors.black.withOpacity(0.7),
           borderRadius: BorderRadius.circular(6),
         ),
-        padding: EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
+            // 播放/暂停按钮
+            IconButton(
+              icon: Icon(
+                (controller.value.isInitialized && controller.value.isPlaying) ? Icons.pause : Icons.play_arrow,
+                color: Colors.white,
+                size: 18,
+              ),
+              padding: EdgeInsets.all(2),
+              constraints: BoxConstraints(minWidth: 24, minHeight: 24),
+              onPressed: controller.value.isInitialized ? () {
+                setState(() {
+                  if (controller.value.isPlaying) {
+                    controller.pause();
+                  } else {
+                    controller.play();
+                  }
+                });
+              } : null,
+            ),
+            SizedBox(width: 4),
             Text(
               _formatDuration(position),
-              style: TextStyle(color: Colors.white, fontSize: 10),
+              style: TextStyle(color: Colors.white, fontSize: 12),
             ),
-            SizedBox(width: 6),
             Expanded(
-              child: SliderTheme(
-                data: SliderTheme.of(context).copyWith(
-                  activeTrackColor: Colors.white,
-                  inactiveTrackColor: Colors.white.withOpacity(0.3),
-                  thumbColor: Colors.white,
-                  overlayColor: Colors.white.withOpacity(0.2),
-                  trackHeight: 3,
-                  thumbShape: RoundSliderThumbShape(enabledThumbRadius: 4),
-                  overlayShape: RoundSliderOverlayShape(overlayRadius: 8),
-                ),
-                child: Slider(
-                  value: position.inMilliseconds.toDouble(),
-                  min: 0,
-                  max: duration.inMilliseconds > 0 ? duration.inMilliseconds.toDouble() : 1.0,
-                  onChangeStart: (value) {
-                    widget.videoPlayerWidget!.isDragging = true;
-                  },
-                  onChanged: (value) {
-                    final Duration newPosition = Duration(milliseconds: value.round());
-                    controller.seekTo(newPosition);
-                  },
-                  onChangeEnd: (value) {
-                    widget.videoPlayerWidget!.isDragging = false;
-                  },
-                ),
+              child: Slider(
+                value: duration.inMilliseconds > 0 ? position.inMilliseconds.toDouble().clamp(0.0, duration.inMilliseconds.toDouble()) : 0.0,
+                min: 0.0,
+                max: duration.inMilliseconds > 0 ? duration.inMilliseconds.toDouble() : 1.0,
+                activeColor: Colors.white,
+                inactiveColor: Colors.white.withOpacity(0.3),
+                onChanged: controller.value.isInitialized ? (value) {
+                  final newPosition = Duration(milliseconds: value.toInt());
+                  controller.seekTo(newPosition);
+                  setState(() {}); // 强制更新UI
+                } : null,
               ),
             ),
-            SizedBox(width: 6),
             Text(
               _formatDuration(duration),
-              style: TextStyle(color: Colors.white, fontSize: 10),
+              style: TextStyle(color: Colors.white, fontSize: 12),
             ),
           ],
         ),

@@ -1227,16 +1227,19 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
               ),
             ),
             // 视频控制覆盖层 - 显示在最上层
-            Builder(builder: (context) {
-              final videoWidget = _mediaPlayerKey.currentState?.getCurrentVideoWidget();
-              if (videoWidget == null) {
-                return SizedBox.shrink();
-              }
-              return VideoControlsOverlay(
-                videoPlayerWidget: videoWidget,
-                key: ValueKey(videoWidget.key), // 使用视频组件的key确保正确重建
-              );
-            }),
+            StreamBuilder<Object?>(
+              stream: Stream.periodic(Duration(milliseconds: 200)), // 降低检查频率
+              builder: (context, snapshot) {
+                final videoWidget = _mediaPlayerKey.currentState?.getCurrentVideoWidget();
+                if (videoWidget == null) {
+                  return SizedBox.shrink();
+                }
+                return VideoControlsOverlay(
+                  videoPlayerWidget: videoWidget,
+                  key: ValueKey('video_controls_${videoWidget.key}'), // 使用稳定的key
+                );
+              },
+            ),
           ],
         ),
         bottomNavigationBar: toolBar.GlobalToolBar(
