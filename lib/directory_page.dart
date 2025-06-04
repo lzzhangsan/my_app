@@ -1531,18 +1531,18 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
             Divider(),
             ListTile(
               leading: Icon(Icons.backup),
-              title: Text('导出所有数据'),
+              title: Text('导出目录数据'),
               onTap: () {
                 Navigator.pop(context);
-                _exportAllData();
+                _exportDirectoryData();
               },
             ),
             ListTile(
               leading: Icon(Icons.restore),
-              title: Text('导入所有数据'),
+              title: Text('导入目录数据'),
               onTap: () {
                 Navigator.pop(context);
-                _importAllData();
+                _importDirectoryData();
               },
             ),
           ],
@@ -1809,7 +1809,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     }
   }
 
-  void _exportAllData() async {
+  void _exportDirectoryData() async {
     try {
       // 显示进度对话框
       showDialog(
@@ -1820,13 +1820,13 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
             children: [
               CircularProgressIndicator(),
               SizedBox(width: 20),
-              Text('正在导出所有数据...')
+              Text('正在导出目录数据...')
             ],
           ),
         ),
       );
 
-      final String zipPath = await getService<DatabaseService>().exportAllData();
+      final String zipPath = await getService<DatabaseService>().exportDirectoryData();
 
       // 关闭进度对话框
       if (mounted) {
@@ -1836,27 +1836,27 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       // 分享文件
       await Share.shareXFiles(
         [XFile(zipPath)],
-        subject: '目录完整备份',
+        subject: '目录数据备份',
       );
     } catch (e) {
-      print('导出所有数据时出错: $e');
+      print('导出目录数据时出错: $e');
       if (mounted) {
         Navigator.pop(context); // 关闭进度对话框
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('导出数据时出错：$e')),
+          SnackBar(content: Text('导出目录数据时出错：$e')),
         );
       }
     }
   }
 
-  void _importAllData() async {
+  void _importDirectoryData() async {
     try {
       // 显示警告对话框
       bool? confirm = await showDialog<bool>(
         context: context,
         builder: (context) => AlertDialog(
           title: Text('警告'),
-          content: Text('导入新数据将会清空当前所有数据，确定要继续吗？'),
+          content: Text('导入新目录数据将会清空当前所有数据，确定要继续吗？'),
           actions: [
             TextButton(
               child: Text('取消'),
@@ -1887,13 +1887,13 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
               children: [
                 CircularProgressIndicator(),
                 SizedBox(width: 20),
-                Text('正在导入数据...')
+                Text('正在导入目录数据...')
               ],
             ),
           ),
         );
 
-        await getService<DatabaseService>().importAllData(result.files.single.path!);
+        await getService<DatabaseService>().importDirectoryData(result.files.single.path!);
 
         // 关闭进度对话框
         if (mounted) {

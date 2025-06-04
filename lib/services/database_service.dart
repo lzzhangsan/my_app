@@ -763,10 +763,10 @@ class DatabaseService {
     }
   }
 
-  /// 导出所有数据
-  Future<String> exportAllData() async {
+  /// 导出目录数据
+  Future<String> exportDirectoryData() async {
     try {
-      print('开始导出所有数据...');
+      print('开始导出目录数据...');
       final Directory appDocDir = await getApplicationDocumentsDirectory();
       final String backupPath = '${appDocDir.path}/backups';
       print('备份路径: $backupPath');
@@ -794,8 +794,8 @@ class DatabaseService {
       List<Map<String, dynamic>> imageBoxesToExport = [];
       for (var imageBox in imageBoxes) {
         Map<String, dynamic> imageBoxCopy = Map<String, dynamic>.from(imageBox);
-        String imagePath = imageBox['imagePath'];
-        if (imagePath.isNotEmpty) {
+        String? imagePath = imageBox['imagePath'];
+        if (imagePath != null && imagePath.isNotEmpty) {
           String fileName = p.basename(imagePath);
           imageBoxCopy['imageFileName'] = fileName;
           
@@ -869,8 +869,8 @@ class DatabaseService {
       List<Map<String, dynamic>> audioBoxesToExport = [];
       for (var audioBox in audioBoxes) {
         Map<String, dynamic> audioBoxCopy = Map<String, dynamic>.from(audioBox);
-        String audioPath = audioBox['audioPath'];
-        if (audioPath.isNotEmpty) {
+        String? audioPath = audioBox['audioPath'];
+        if (audioPath != null && audioPath.isNotEmpty) {
           String fileName = p.basename(audioPath);
           audioBoxCopy['audioFileName'] = fileName;
           
@@ -901,12 +901,166 @@ class DatabaseService {
       // 清理临时目录
       await tempDir.delete(recursive: true);
 
-      print('所有数据导出完成，ZIP文件路径: $zipPath');
+      print('目录数据导出完成，ZIP文件路径: $zipPath');
       return zipPath;
     } catch (e, stackTrace) {
-      _handleError('导出所有数据失败', e, stackTrace);
+      _handleError('导出目录数据失败', e, stackTrace);
       rethrow;
     }
+  }
+  
+  /// 导入目录数据
+  Future<void> importDirectoryData(String zipPath) async {
+    try {
+      print('开始导入目录数据...');
+      final Directory appDocDir = await getApplicationDocumentsDirectory();
+      final String tempDirPath = '${appDocDir.path}/temp_import';
+      print('临时目录路径: $tempDirPath');
+
+      // 清理临时目录
+      if (await Directory(tempDirPath).exists()) {
+        await Directory(tempDirPath).delete(recursive: true);
+      }
+      await Directory(tempDirPath).create(recursive: true);
+
+      // 解压ZIP文件
+      final bytes = await File(zipPath).readAsBytes();
+      final archive = ZipDecoder().decodeBytes(bytes);
+      for (var file in archive) {
+        final String filename = file.name;
+        if (file.isFile) {
+          final data = file.content as List<int>;
+          File('$tempDirPath/$filename')
+            ..createSync(recursive: true)
+            ..writeAsBytesSync(data);
+        }
+      }
+
+      // 读取目录数据
+      final File dbDataFile = File('$tempDirPath/directory_data.json');
+      if (!await dbDataFile.exists()) {
+        throw Exception('备份中未找到目录数据文件');
+      }
+
+      final Map<String, dynamic> tableData = jsonDecode(await dbDataFile.readAsString());
+      final db = await database;
+
+      // 准备背景图片目录
+      final String backgroundImagesPath = '${appDocDir.path}/background_images';
+      await Directory(backgroundImagesPath).create(recursive: true);
+
+      await db.transaction((txn) async {
+        // 清除现有数据
+        await txn.delete('folders');
+        await txn.delete('documents');
+        await txn.delete('text_boxes');
+        await txn.delete('image_boxes');
+        await txn.delete('audio_boxes');
+        await txn.delete('document_settings');
+        await txn.delete('directory_settings');
+
+        // 导入新数据
+        for (var entry in tableData.entries) {
+          final String tableName = entry.key;
+          final List<dynamic> rows = entry.value;
+          print('处理表: $tableName, 行数: ${rows.length}');
+
+          if (tableName == 'directory_settings') {
+            for (var row in rows) {
+              Map<String, dynamic> settings = Map<String, dynamic>.from(row);
+              String? fileName = settings.remove('backgroundImageFileName');
+              if (fileName != null) {
+                // 复制背景图片到新位置
+                String newPath = p.join(backgroundImagesPath, fileName);
+                String tempPath = p.join(tempDirPath, 'background_images', fileName);
+                if (await File(tempPath).exists()) {
+                  await File(tempPath).copy(newPath);
+                  settings['background_image_path'] = newPath;
+                  print('已导入目录背景图片: $newPath');
+                }
+              }
+              await txn.insert(tableName, settings);
+            }
+          } else if (tableName == 'document_settings') {
+            for (var row in rows) {
+              Map<String, dynamic> settings = Map<String, dynamic>.from(row);
+              String? fileName = settings.remove('backgroundImageFileName');
+              if (fileName != null) {
+                // 复制背景图片到新位置
+                String newPath = p.join(backgroundImagesPath, fileName);
+                String tempPath = p.join(tempDirPath, 'background_images', fileName);
+                if (await File(tempPath).exists()) {
+                  await File(tempPath).copy(newPath);
+                  settings['background_image_path'] = newPath;
+                  print('已导入文档背景图片: $newPath');
+                }
+              }
+              await txn.insert(tableName, settings);
+            }
+          } else if (tableName == 'image_boxes') {
+            for (var row in rows) {
+              Map<String, dynamic> imageBox = Map<String, dynamic>.from(row);
+              String? imageFileName = imageBox.remove('imageFileName');
+              if (imageFileName != null) {
+                // 复制图片文件到新位置
+                String imagesDirPath = p.join(appDocDir.path, 'images');
+                await Directory(imagesDirPath).create(recursive: true);
+                String newPath = p.join(imagesDirPath, imageFileName);
+                String tempPath = p.join(tempDirPath, 'images', imageFileName);
+                if (await File(tempPath).exists()) {
+                  await File(tempPath).copy(newPath);
+                  imageBox['imagePath'] = newPath;
+                  print('已导入图片框图片: $newPath');
+                }
+              }
+              await txn.insert(tableName, imageBox);
+            }
+          } else if (tableName == 'audio_boxes') {
+            for (var row in rows) {
+              Map<String, dynamic> audioBox = Map<String, dynamic>.from(row);
+              String? audioFileName = audioBox.remove('audioFileName');
+              if (audioFileName != null) {
+                // 复制音频文件到新位置
+                String audiosDirPath = p.join(appDocDir.path, 'audios');
+                await Directory(audiosDirPath).create(recursive: true);
+                String newPath = p.join(audiosDirPath, audioFileName);
+                String tempPath = p.join(tempDirPath, 'audios', audioFileName);
+                if (await File(tempPath).exists()) {
+                  await File(tempPath).copy(newPath);
+                  audioBox['audioPath'] = newPath;
+                  print('已导入音频文件: $newPath');
+                }
+              }
+              await txn.insert(tableName, audioBox);
+            }
+          } else {
+            // 其他表直接插入
+            for (var row in rows) {
+              await txn.insert(tableName, Map<String, dynamic>.from(row));
+            }
+          }
+        }
+      });
+
+      // 清理临时目录
+      await Directory(tempDirPath).delete(recursive: true);
+
+      print('目录数据导入完成');
+    } catch (e, stackTrace) {
+      print('导入目录数据时出错: $e');
+      print('错误堆栈: $stackTrace');
+      _handleError('导入目录数据失败', e, stackTrace);
+      rethrow;
+    }
+  }
+  
+  // 保留原来的方法名称，但内部调用新方法，以保持兼容性
+  Future<String> exportAllData() async {
+    return exportDirectoryData();
+  }
+  
+  Future<void> importAllData(String zipPath) async {
+    return importDirectoryDataImpl(zipPath);
   }
 
   // ==================== 文档和文件夹管理方法 ====================
@@ -1947,7 +2101,7 @@ class DatabaseService {
     }
   }
 
-  Future<void> importAllData(String filePath) async {
+  Future<void> importDirectoryDataImpl(String filePath) async {
     try {
       final db = await database;
       
