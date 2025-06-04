@@ -15,6 +15,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:photo_manager/photo_manager.dart';
+import 'package:video_thumbnail/video_thumbnail.dart';
 
 import 'core/service_locator.dart';
 import 'services/database_service.dart';
@@ -1240,12 +1241,10 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         return thumbnailFile;
       } 
       
-      /* 临时禁用video_thumbnail插件部分
       // 尝试使用video_thumbnail插件作为备选
       if (Platform.isAndroid || Platform.isIOS) {
         try {
-          final videoThumbnailer = VideoThumbnail();
-          final thumbnailBytes = await videoThumbnailer.thumbnailData(
+          final thumbnailBytes = await VideoThumbnail.thumbnailData(
             video: videoPath,
             imageFormat: ImageFormat.JPEG,
             maxWidth: 250,
@@ -1264,7 +1263,6 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           // 继续尝试其他方法
         }
       }
-      */
       
       debugPrint('标准方法生成缩略图失败，使用简单替代方法');
       // 尝试生成彩色缩略图作为备选
