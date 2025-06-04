@@ -1439,24 +1439,21 @@ class DatabaseService {
       where: 'name = ?',
       whereArgs: [oldName],
     );
-    await db.update(
-      'text_boxes',
-      {'documentName': newName},
-      where: 'documentName = ?',
+    // 获取旧文档的ID
+    final List<Map<String, dynamic>> oldDocuments = await db.query(
+      'documents',
+      columns: ['id'],
+      where: 'name = ?',
       whereArgs: [oldName],
     );
-    await db.update(
-      'image_boxes',
-      {'documentName': newName},
-      where: 'documentName = ?',
-      whereArgs: [oldName],
-    );
-    await db.update(
-      'audio_boxes',
-      {'documentName': newName},
-      where: 'documentName = ?',
-      whereArgs: [oldName],
-    );
+    
+    if (oldDocuments.isNotEmpty) {
+      final String documentId = oldDocuments.first['id'];
+      // text_boxes表使用document_id而不是documentName
+      // 不需要更新text_boxes表，因为它与documents表通过document_id关联
+    }
+    // image_boxes和audio_boxes表也使用document_id关联
+    // 不需要更新这些表，因为它们与documents表通过document_id关联
     // 获取文档ID
     final List<Map<String, dynamic>> docs = await db.query(
       'documents',

@@ -437,9 +437,13 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
 
       await _databaseService.saveAudioBoxes(_audioBoxes, widget.documentName);
 
-      setState(() {
+      if (mounted) {
+        setState(() {
+          _contentChanged = false;
+        });
+      } else {
         _contentChanged = false;
-      });
+      }
 
       widget.onSave(_textBoxes);
 
@@ -454,12 +458,14 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
       print('保存内容时出错: $e');
       print('堆栈跟踪: $e');
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('保存失败: ${e.toString()}'),
-          duration: Duration(seconds: 3),
-        ),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('保存失败: ${e.toString()}'),
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
     }
   }
 
@@ -889,11 +895,41 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
   void dispose() {
     if (_contentChanged) {
       print('页面销毁前保存文档内容...');
-      _saveContent();
+      _saveContentOnDispose();
     }
     _autoSaveTimer?.cancel();
     _scrollController.dispose();
     super.dispose();
+  }
+
+  // 页面销毁时的保存方法，不调用setState和UI相关方法
+  Future<void> _saveContentOnDispose() async {
+    try {
+      print('正在保存文档内容...');
+
+      await _databaseService.saveTextBoxes(_textBoxes, widget.documentName);
+
+      await _databaseService.saveImageBoxes(_imageBoxes, widget.documentName);
+
+      await _databaseService.saveAudioBoxes(_audioBoxes, widget.documentName);
+
+      // 不调用setState，因为页面已经销毁
+      _contentChanged = false;
+
+      widget.onSave(_textBoxes);
+
+      try {
+        await _databaseService.backupDatabase();
+      } catch (e) {
+        print('保存内容时数据库备份出错: $e');
+      }
+
+      print('文档内容已保存');
+    } catch (e) {
+      print('保存内容时出错: $e');
+      print('堆栈跟踪: $e');
+      // 不显示SnackBar，因为页面已经销毁
+    }
   }
 
   void _showSettingsMenu() {
