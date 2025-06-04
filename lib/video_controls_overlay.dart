@@ -90,42 +90,62 @@ class _VideoControlsOverlayState extends State<VideoControlsOverlay> {
     }
 
     return Positioned(
-      bottom: 60, // 避免与底部工具栏重合
-      left: 10,
-      right: 10,
+      bottom: 0, // 紧贴屏幕最下沿
+      left: 0,
+      right: 0,
       child: Container(
-        height: 32, // 固定高度，减少占用空间
+        height: 40, // 稍微增加高度以便操作
+        // 移除背景色，只保留关键控制元素
+        padding: EdgeInsets.symmetric(horizontal: 12, vertical: 4),
         decoration: BoxDecoration(
-          color: Colors.black.withOpacity(0.7),
-          borderRadius: BorderRadius.circular(6),
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              Colors.transparent,
+              Colors.black.withOpacity(0.3),
+            ],
+          ),
         ),
-        padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             // 播放/暂停按钮
-            IconButton(
-              icon: Icon(
-                (controller.value.isInitialized && controller.value.isPlaying) ? Icons.pause : Icons.play_arrow,
-                color: Colors.white,
-                size: 18,
+            Container(
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.4),
+                shape: BoxShape.circle,
               ),
-              padding: EdgeInsets.all(2),
-              constraints: BoxConstraints(minWidth: 24, minHeight: 24),
-              onPressed: controller.value.isInitialized ? () {
-                setState(() {
-                  if (controller.value.isPlaying) {
-                    controller.pause();
-                  } else {
-                    controller.play();
-                  }
-                });
-              } : null,
+              child: IconButton(
+                icon: Icon(
+                  (controller.value.isInitialized && controller.value.isPlaying) ? Icons.pause : Icons.play_arrow,
+                  color: Colors.white,
+                  size: 18,
+                ),
+                padding: EdgeInsets.all(4),
+                constraints: BoxConstraints(minWidth: 32, minHeight: 32),
+                onPressed: controller.value.isInitialized ? () {
+                  setState(() {
+                    if (controller.value.isPlaying) {
+                      controller.pause();
+                    } else {
+                      controller.play();
+                    }
+                  });
+                } : null,
+              ),
             ),
-            SizedBox(width: 4),
-            Text(
-              _formatDuration(position),
-              style: TextStyle(color: Colors.white, fontSize: 12),
+            SizedBox(width: 8),
+            Container(
+              padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.4),
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Text(
+                _formatDuration(position),
+                style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w500),
+              ),
             ),
             Expanded(
               child: Slider(
@@ -134,6 +154,7 @@ class _VideoControlsOverlayState extends State<VideoControlsOverlay> {
                 max: duration.inMilliseconds > 0 ? duration.inMilliseconds.toDouble() : 1.0,
                 activeColor: Colors.white,
                 inactiveColor: Colors.white.withOpacity(0.3),
+                thumbColor: Colors.white,
                 onChanged: controller.value.isInitialized ? (value) {
                   final newPosition = Duration(milliseconds: value.toInt());
                   controller.seekTo(newPosition);
@@ -141,9 +162,16 @@ class _VideoControlsOverlayState extends State<VideoControlsOverlay> {
                 } : null,
               ),
             ),
-            Text(
-              _formatDuration(duration),
-              style: TextStyle(color: Colors.white, fontSize: 12),
+            Container(
+              padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.4),
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Text(
+                _formatDuration(duration),
+                style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w500),
+              ),
             ),
           ],
         ),

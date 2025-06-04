@@ -310,9 +310,15 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
         } else if (randomMedia['type'] == 1) { // 视频
           setState(() {
             _currentVideoWidget = VideoPlayerWidget(
-          key: ValueKey(randomMedia['path']),
-          file: File(randomMedia['path']!),
-        );
+              key: ValueKey(randomMedia['path']),
+              file: File(randomMedia['path']!),
+              onVideoEnd: () {
+                // 视频播放完成后，如果是自动播放模式，则切换到下一个媒体
+                if (_mediaMode == MediaMode.auto) {
+                  _showRandomMedia();
+                }
+              },
+            );
             _mediaWidget = _currentVideoWidget;
           });
           
