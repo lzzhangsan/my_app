@@ -3,12 +3,13 @@
 
 import 'package:flutter/foundation.dart';
 import 'package:sqflite/sqflite.dart';
-import 'package:path/path.dart' as p;
+import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import 'dart:async';
 import 'dart:convert';
 import 'package:archive/archive_io.dart';
+import 'package:path/path.dart' as p;
 import 'package:uuid/uuid.dart';
 import '../core/app_state.dart';
 import '../core/service_locator.dart';
@@ -35,7 +36,7 @@ class DatabaseService {
     
     try {
       final documentsDirectory = await getApplicationDocumentsDirectory();
-      final dbPath = p.join(documentsDirectory.path, _databaseName);
+      final dbPath = path.join(documentsDirectory.path, _databaseName);
       
       _database = await openDatabase(
         dbPath,
@@ -1034,152 +1035,8 @@ class DatabaseService {
   }
 
   Future<String> exportDocument(String documentName) async {
-    try {
-      print('开始导出文档: $documentName');
-      final Directory appDocDir = await getApplicationDocumentsDirectory();
-      final String backupPath = '${appDocDir.path}/backups';
-      
-      // 创建备份目录
-      await Directory(backupPath).create(recursive: true);
-      
-      // 创建临时目录
-      final String tempDirPath = '$backupPath/temp_document_export';
-      final Directory tempDir = Directory(tempDirPath);
-      if (await tempDir.exists()) {
-        await tempDir.delete(recursive: true);
-      }
-      await tempDir.create(recursive: true);
-      
-      final db = await database;
-      
-      // 获取文档信息
-      List<Map<String, dynamic>> documents = await db.query(
-        'documents',
-        where: 'name = ?',
-        whereArgs: [documentName],
-      );
-      
-      if (documents.isEmpty) {
-        throw Exception('文档不存在: $documentName');
-      }
-      
-      String documentId = documents.first['id'];
-      
-      // 导出文档相关的数据
-      final Map<String, List<Map<String, dynamic>>> documentData = {
-        'documents': documents,
-        'text_boxes': await db.query(
-          'text_boxes',
-          where: 'document_id = ?',
-          whereArgs: [documentId],
-        ),
-        'image_boxes': await db.query(
-          'image_boxes',
-          where: 'document_id = ?',
-          whereArgs: [documentId],
-        ),
-        'audio_boxes': await db.query(
-          'audio_boxes',
-          where: 'document_id = ?',
-          whereArgs: [documentId],
-        ),
-        'document_settings': await db.query(
-          'document_settings',
-          where: 'document_id = ?',
-          whereArgs: [documentId],
-        ),
-      };
-      
-      // 处理图片框数据和图片文件
-      List<Map<String, dynamic>> imageBoxesToExport = [];
-      for (var imageBox in documentData['image_boxes']!) {
-        Map<String, dynamic> imageBoxCopy = Map<String, dynamic>.from(imageBox);
-        String imagePath = imageBox['imagePath'] ?? imageBox['image_path'] ?? '';
-        if (imagePath.isNotEmpty) {
-          String fileName = p.basename(imagePath);
-          imageBoxCopy['imageFileName'] = fileName;
-          
-          // 复制图片文件
-          File imageFile = File(imagePath);
-          if (await imageFile.exists()) {
-            String relativePath = 'images/$fileName';
-            await Directory('$tempDirPath/images').create(recursive: true);
-            await imageFile.copy('$tempDirPath/$relativePath');
-            print('已导出图片: $relativePath');
-          } else {
-            print('警告：图片文件不存在: $imagePath');
-          }
-        }
-        imageBoxesToExport.add(imageBoxCopy);
-      }
-      documentData['image_boxes'] = imageBoxesToExport;
-      
-      // 处理音频框数据和音频文件
-      List<Map<String, dynamic>> audioBoxesToExport = [];
-      for (var audioBox in documentData['audio_boxes']!) {
-        Map<String, dynamic> audioBoxCopy = Map<String, dynamic>.from(audioBox);
-        String audioPath = audioBox['audioPath'] ?? audioBox['audio_path'] ?? '';
-        if (audioPath.isNotEmpty) {
-          String fileName = p.basename(audioPath);
-          audioBoxCopy['audioFileName'] = fileName;
-          
-          // 复制音频文件
-          File audioFile = File(audioPath);
-          if (await audioFile.exists()) {
-            String relativePath = 'audios/$fileName';
-            await Directory('$tempDirPath/audios').create(recursive: true);
-            await audioFile.copy('$tempDirPath/$relativePath');
-            print('已导出音频: $relativePath');
-          } else {
-            print('警告：音频文件不存在: $audioPath');
-          }
-        }
-        audioBoxesToExport.add(audioBoxCopy);
-      }
-      documentData['audio_boxes'] = audioBoxesToExport;
-      
-      // 处理文档设置和背景图片
-      List<Map<String, dynamic>> documentSettingsToExport = [];
-      for (var settings in documentData['document_settings']!) {
-        Map<String, dynamic> settingsCopy = Map<String, dynamic>.from(settings);
-        String? backgroundImagePath = settings['background_image_path'];
-        if (backgroundImagePath != null && backgroundImagePath.isNotEmpty) {
-          String fileName = p.basename(backgroundImagePath);
-          settingsCopy['backgroundImageFileName'] = fileName;
-          
-          // 复制背景图片
-          File imageFile = File(backgroundImagePath);
-          if (await imageFile.exists()) {
-            String relativePath = 'background_images/$fileName';
-            await Directory('$tempDirPath/background_images').create(recursive: true);
-            await imageFile.copy('$tempDirPath/$relativePath');
-            print('已导出背景图片: $relativePath');
-          } else {
-            print('警告：背景图片不存在: $backgroundImagePath');
-          }
-        }
-        documentSettingsToExport.add(settingsCopy);
-      }
-      documentData['document_settings'] = documentSettingsToExport;
-      
-      // 将数据保存为JSON文件
-      final File dataFile = File('$tempDirPath/document_data.json');
-      await dataFile.writeAsString(jsonEncode(documentData));
-      
-      // 创建ZIP文件
-      final String timestamp = DateTime.now().toString().replaceAll(RegExp(r'[^0-9]'), '');
-      final String zipPath = '$backupPath/document_${documentName}_$timestamp.zip';
-      await ZipFileEncoder().zipDirectory(Directory(tempDirPath), filename: zipPath);
-      
-      // 清理临时目录
-      await tempDir.delete(recursive: true);
-      
-      print('文档导出完成: $zipPath');
-      return zipPath;
-    } catch (e, stackTrace) {
-      _handleError('导出文档失败', e, stackTrace);
-      rethrow;
-    }
+    // 实现文档导出逻辑
+    throw UnimplementedError('exportDocument method not implemented yet');
   }
 
   Future<bool> doesNameExist(String name) async {
@@ -1197,207 +1054,20 @@ class DatabaseService {
     return folders.isNotEmpty || documents.isNotEmpty;
   }
 
-  Future<void> importDocument(String zipPath, {String? targetDocumentName, String? targetParentFolder}) async {
-    try {
-      print('开始导入文档: $zipPath');
-      final Directory appDocDir = await getApplicationDocumentsDirectory();
-      final String tempDirPath = '${appDocDir.path}/temp_import';
-      final Directory tempDir = Directory(tempDirPath);
-      
-      // 清理并创建临时目录
-      if (await tempDir.exists()) {
-        await tempDir.delete(recursive: true);
-      }
-      await tempDir.create(recursive: true);
-      
-      // 解压ZIP文件
-      final Archive archive = ZipDecoder().decodeBytes(await File(zipPath).readAsBytes());
-      for (final file in archive) {
-        final filename = file.name;
-        if (file.isFile) {
-          final data = file.content as List<int>;
-          File('$tempDirPath/$filename')
-            ..createSync(recursive: true)
-            ..writeAsBytesSync(data);
-        } else {
-          Directory('$tempDirPath/$filename').create(recursive: true);
-        }
-      }
-      
-      // 读取文档数据
-      final File dataFile = File('$tempDirPath/document_data.json');
-      if (!await dataFile.exists()) {
-        throw Exception('导入文件格式错误：缺少document_data.json');
-      }
-      
-      final String jsonContent = await dataFile.readAsString();
-      final Map<String, dynamic> importData = jsonDecode(jsonContent);
-      
-      final db = await database;
-      
-      await db.transaction((txn) async {
-        // 处理文档数据
-        List<dynamic> documents = importData['documents'] ?? [];
-        if (documents.isEmpty) {
-          throw Exception('导入文件中没有找到文档数据');
-        }
-        
-        Map<String, dynamic> documentData = Map<String, dynamic>.from(documents.first);
-        String originalDocumentId = documentData['id'];
-        String newDocumentId = const Uuid().v4();
-        
-        // 设置文档名称
-        String finalDocumentName = targetDocumentName ?? documentData['name'] ?? p.basenameWithoutExtension(zipPath);
-        
-        // 检查名称冲突并生成唯一名称
-        String uniqueName = finalDocumentName;
-        int counter = 1;
-        while (true) {
-          // 在事务内部检查名称是否存在
-          List<Map<String, dynamic>> folders = await txn.query(
-            'folders',
-            where: 'name = ?',
-            whereArgs: [uniqueName],
-          );
-          List<Map<String, dynamic>> documents = await txn.query(
-            'documents',
-            where: 'name = ?',
-            whereArgs: [uniqueName],
-          );
-          if (folders.isEmpty && documents.isEmpty) {
-            break;
-          }
-          uniqueName = '${finalDocumentName}_$counter';
-          counter++;
-        }
-        
-        // 设置父文件夹
-        String? parentFolderId;
-        if (targetParentFolder != null) {
-          List<Map<String, dynamic>> folders = await txn.query(
-            'folders',
-            where: 'name = ?',
-            whereArgs: [targetParentFolder],
-          );
-          if (folders.isNotEmpty) {
-            parentFolderId = folders.first['id'];
-          }
-        }
-        
-        // 插入文档
-        documentData['id'] = newDocumentId;
-        documentData['name'] = uniqueName;
-        documentData['parent_folder_id'] = parentFolderId;
-        documentData['created_at'] = DateTime.now().toIso8601String();
-        documentData['updated_at'] = DateTime.now().toIso8601String();
-        
-        await txn.insert('documents', documentData);
-        print('已导入文档: $uniqueName');
-        
-        // 处理文本框
-        List<dynamic> textBoxes = importData['text_boxes'] ?? [];
-        for (var textBox in textBoxes) {
-          Map<String, dynamic> textBoxData = Map<String, dynamic>.from(textBox);
-          textBoxData['id'] = const Uuid().v4();
-          textBoxData['document_id'] = newDocumentId;
-          await txn.insert('text_boxes', textBoxData);
-        }
-        print('已导入 ${textBoxes.length} 个文本框');
-        
-        // 处理图片框和图片文件
-        List<dynamic> imageBoxes = importData['image_boxes'] ?? [];
-        for (var imageBox in imageBoxes) {
-          Map<String, dynamic> imageBoxData = Map<String, dynamic>.from(imageBox);
-          String newImageBoxId = const Uuid().v4();
-          imageBoxData['id'] = newImageBoxId;
-          imageBoxData['document_id'] = newDocumentId;
-          
-          // 处理图片文件
-          String? imageFileName = imageBoxData['imageFileName'];
-          if (imageFileName != null && imageFileName.isNotEmpty) {
-            String sourcePath = '$tempDirPath/images/$imageFileName';
-            File sourceFile = File(sourcePath);
-            if (await sourceFile.exists()) {
-              String targetPath = '${appDocDir.path}/images/$newImageBoxId.${p.extension(imageFileName).substring(1)}';
-              await Directory(p.dirname(targetPath)).create(recursive: true);
-              await sourceFile.copy(targetPath);
-              imageBoxData['imagePath'] = targetPath;
-              imageBoxData['image_path'] = targetPath;
-              print('已导入图片: $imageFileName -> $targetPath');
-            }
-          }
-          
-          // 移除临时字段
-          imageBoxData.remove('imageFileName');
-          await txn.insert('image_boxes', imageBoxData);
-        }
-        print('已导入 ${imageBoxes.length} 个图片框');
-        
-        // 处理音频框和音频文件
-        List<dynamic> audioBoxes = importData['audio_boxes'] ?? [];
-        for (var audioBox in audioBoxes) {
-          Map<String, dynamic> audioBoxData = Map<String, dynamic>.from(audioBox);
-          String newAudioBoxId = const Uuid().v4();
-          audioBoxData['id'] = newAudioBoxId;
-          audioBoxData['document_id'] = newDocumentId;
-          
-          // 处理音频文件
-          String? audioFileName = audioBoxData['audioFileName'];
-          if (audioFileName != null && audioFileName.isNotEmpty) {
-            String sourcePath = '$tempDirPath/audios/$audioFileName';
-            File sourceFile = File(sourcePath);
-            if (await sourceFile.exists()) {
-              String targetPath = '${appDocDir.path}/audios/$newAudioBoxId.${p.extension(audioFileName).substring(1)}';
-              await Directory(p.dirname(targetPath)).create(recursive: true);
-              await sourceFile.copy(targetPath);
-              audioBoxData['audioPath'] = targetPath;
-              audioBoxData['audio_path'] = targetPath;
-              print('已导入音频: $audioFileName -> $targetPath');
-            }
-          }
-          
-          // 移除临时字段
-          audioBoxData.remove('audioFileName');
-          await txn.insert('audio_boxes', audioBoxData);
-        }
-        print('已导入 ${audioBoxes.length} 个音频框');
-        
-        // 处理文档设置和背景图片
-        List<dynamic> documentSettings = importData['document_settings'] ?? [];
-        for (var settings in documentSettings) {
-          Map<String, dynamic> settingsData = Map<String, dynamic>.from(settings);
-          settingsData['id'] = const Uuid().v4();
-          settingsData['document_id'] = newDocumentId;
-          
-          // 处理背景图片
-          String? backgroundImageFileName = settingsData['backgroundImageFileName'];
-          if (backgroundImageFileName != null && backgroundImageFileName.isNotEmpty) {
-            String sourcePath = '$tempDirPath/background_images/$backgroundImageFileName';
-            File sourceFile = File(sourcePath);
-            if (await sourceFile.exists()) {
-              String targetPath = '${appDocDir.path}/background_images/${newDocumentId}_${backgroundImageFileName}';
-              await Directory(p.dirname(targetPath)).create(recursive: true);
-              await sourceFile.copy(targetPath);
-              settingsData['background_image_path'] = targetPath;
-              print('已导入背景图片: $backgroundImageFileName -> $targetPath');
-            }
-          }
-          
-          // 移除临时字段
-          settingsData.remove('backgroundImageFileName');
-          await txn.insert('document_settings', settingsData);
-        }
-        print('已导入 ${documentSettings.length} 个文档设置');
-      });
-      
-      // 清理临时目录
-      await tempDir.delete(recursive: true);
-      
-      print('文档导入完成');
-    } catch (e, stackTrace) {
-      _handleError('导入文档失败', e, stackTrace);
-      rethrow;
-    }
+  Future<void> importDocument(String zipPath, {String? targetDocumentName, String? targetParentFolder}) async { // Placeholder
+    // TODO: Implement document import logic
+    print('importDocument called with path: $zipPath, targetDocumentName: $targetDocumentName, targetParentFolder: $targetParentFolder');
+    // This will likely involve:
+    // 1. Unzipping the file
+    // 2. Reading the manifest/data file (e.g., JSON)
+    // 3. Importing document metadata, text boxes, image boxes, audio boxes
+    // 4. Copying media files to appropriate locations
+    // 5. Handling potential conflicts (e.g., duplicate names)
+    // For now, we'll assume the document name from the zip if not provided
+    final String docName = targetDocumentName ?? path.basenameWithoutExtension(zipPath);
+    print('Effective document name for import: $docName');
+    print('Target parent folder for import: $targetParentFolder');
+    throw UnimplementedError('importDocument is not yet fully implemented with targetDocumentName and targetParentFolder.');
   }
 
   Future<void> renameDocument(String oldName, String newName) async {
