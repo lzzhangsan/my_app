@@ -2085,10 +2085,38 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
                         },
                       );
                     } else {
-                      return Icon(
-                        Icons.description,
-                        size: 40,
-                        color: Color(0xFF4CAF50),
+                      return Draggable<DirectoryItem>(
+                        data: item,
+                        feedback: Material(
+                          elevation: 4.0,
+                          child: Container(
+                            padding: EdgeInsets.all(8.0),
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(8.0),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  Icons.description,
+                                  size: 24,
+                                  color: Color(0xFF4CAF50),
+                                ),
+                                SizedBox(width: 8.0),
+                                Text(
+                                  item.name,
+                                  style: TextStyle(fontWeight: FontWeight.bold),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        child: Icon(
+                          Icons.description,
+                          size: 40,
+                          color: Color(0xFF4CAF50),
+                        ),
                       );
                     }
                   }
