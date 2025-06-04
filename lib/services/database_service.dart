@@ -2274,13 +2274,13 @@ class DatabaseService {
     if (data['id'] == null || data['document_id'] == null) {
       return false;
     }
-    if (data['positionX'] == null || data['positionY'] == null) {
+    if (data['position_x'] == null || data['position_y'] == null) {
       return false;
     }
     if (data['width'] == null || data['height'] == null) {
       return false;
     }
-    if (data['imagePath'] == null || data['imagePath'].toString().isEmpty) {
+    if (data['image_path'] == null || data['image_path'].toString().isEmpty) {
       return false;
     }
     return true;
