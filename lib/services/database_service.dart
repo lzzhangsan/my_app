@@ -1287,9 +1287,12 @@ class DatabaseService {
         // 插入文档
         documentData['id'] = newDocumentId;
         documentData['name'] = uniqueName;
-        documentData['parent_folder_id'] = parentFolderId;
+        documentData['parent_folder'] = parentFolderId;
         documentData['created_at'] = DateTime.now().toIso8601String();
         documentData['updated_at'] = DateTime.now().toIso8601String();
+        
+        // 移除可能存在的错误字段名
+        documentData.remove('parent_folder_id');
         
         await txn.insert('documents', documentData);
         print('已导入文档: $uniqueName');
@@ -1321,14 +1324,14 @@ class DatabaseService {
               String targetPath = '${appDocDir.path}/images/$newImageBoxId.${p.extension(imageFileName).substring(1)}';
               await Directory(p.dirname(targetPath)).create(recursive: true);
               await sourceFile.copy(targetPath);
-              imageBoxData['imagePath'] = targetPath;
               imageBoxData['image_path'] = targetPath;
               print('已导入图片: $imageFileName -> $targetPath');
             }
           }
           
-          // 移除临时字段
+          // 移除临时字段和错误字段名
           imageBoxData.remove('imageFileName');
+          imageBoxData.remove('imagePath');
           await txn.insert('image_boxes', imageBoxData);
         }
         print('已导入 ${imageBoxes.length} 个图片框');
@@ -1350,14 +1353,14 @@ class DatabaseService {
               String targetPath = '${appDocDir.path}/audios/$newAudioBoxId.${p.extension(audioFileName).substring(1)}';
               await Directory(p.dirname(targetPath)).create(recursive: true);
               await sourceFile.copy(targetPath);
-              audioBoxData['audioPath'] = targetPath;
               audioBoxData['audio_path'] = targetPath;
               print('已导入音频: $audioFileName -> $targetPath');
             }
           }
           
-          // 移除临时字段
+          // 移除临时字段和错误字段名
           audioBoxData.remove('audioFileName');
+          audioBoxData.remove('audioPath');
           await txn.insert('audio_boxes', audioBoxData);
         }
         print('已导入 ${audioBoxes.length} 个音频框');
@@ -1366,8 +1369,9 @@ class DatabaseService {
         List<dynamic> documentSettings = importData['document_settings'] ?? [];
         for (var settings in documentSettings) {
           Map<String, dynamic> settingsData = Map<String, dynamic>.from(settings);
-          settingsData['id'] = const Uuid().v4();
           settingsData['document_id'] = newDocumentId;
+          // 移除错误的id字段
+          settingsData.remove('id');
           
           // 处理背景图片
           String? backgroundImageFileName = settingsData['backgroundImageFileName'];
