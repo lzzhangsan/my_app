@@ -49,10 +49,17 @@ class _BrowserPageState extends State<BrowserPage> {
   bool _isEditMode = false;
   
   // 添加、删除和重新排序网站的方法
-  void _toggleEditMode() {
+  Future<void> _toggleEditMode() async {
+    final wasInEditMode = _isEditMode;
     setState(() {
       _isEditMode = !_isEditMode;
     });
+    
+    // 如果从编辑模式退出，确保保存网站列表
+    if (wasInEditMode && !_isEditMode) {
+      debugPrint('从编辑模式退出，保存网站列表');
+      await _saveCommonWebsites();
+    }
   }
 
   // 删除网站并确保保存成功
@@ -115,8 +122,8 @@ class _BrowserPageState extends State<BrowserPage> {
   void _initializeWebView() {
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      // 设置桌面版用户代理，使网站显示完整版而非移动版
-      ..setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36')
+      // 设置移动版用户代理，使网站默认显示为手机版
+      ..setUserAgent('Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36')
       // 启用JavaScript和DOM存储
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       // 配置WebView设置
@@ -186,6 +193,22 @@ class _BrowserPageState extends State<BrowserPage> {
     if (!url.startsWith('http://') && !url.startsWith('https://')) {
       processedUrl = 'https://$url';
     }
+    
+    // 为电报网站设置特殊处理，强制使用移动版
+    if (processedUrl.contains('telegram.org') || processedUrl.contains('t.me') || processedUrl.contains('web.telegram.org')) {
+      debugPrint('检测到电报网站，强制使用移动版');
+      // 如果是电报网站，使用特殊的移动版用户代理
+      _controller.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 13_2_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0.3 Mobile/15E148 Safari/604.1');
+      
+      // 如果是web.telegram.org，重定向到移动版URL
+      if (processedUrl.contains('web.telegram.org')) {
+        processedUrl = 'https://web.telegram.org/a/';
+      }
+    } else {
+      // 恢复默认的移动版用户代理
+      _controller.setUserAgent('Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36');
+    }
+    
     _controller.loadRequest(Uri.parse(processedUrl));
     setState(() {
       _showHomePage = false;
@@ -221,7 +244,30 @@ class _BrowserPageState extends State<BrowserPage> {
                 children: [
                   IconButton(
                     icon: Icon(_isEditMode ? Icons.done : Icons.edit),
-                    onPressed: _toggleEditMode,
+                    onPressed: () async {
+                      // 显示加载指示器
+                      showDialog(
+                        context: context,
+                        barrierDismissible: false,
+                        builder: (BuildContext context) {
+                          return const AlertDialog(
+                            content: Row(
+                              children: [
+                                CircularProgressIndicator(),
+                                SizedBox(width: 20),
+                                Text("处理中..."),
+                              ],
+                            ),
+                          );
+                        },
+                      );
+                      
+                      // 切换编辑模式并等待完成
+                      await _toggleEditMode();
+                      
+                      // 关闭加载指示器
+                      Navigator.of(context).pop();
+                    },
                     tooltip: _isEditMode ? '完成编辑' : '编辑网站',
                   ),
                   if (_isEditMode)
