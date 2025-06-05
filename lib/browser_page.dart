@@ -11,6 +11,7 @@ import 'package:crypto/crypto.dart';
 import 'dart:convert';
 import 'dart:math';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter/foundation.dart';
 
 import 'core/service_locator.dart';
 import 'services/database_service.dart';
@@ -28,7 +29,11 @@ class BrowserPage extends StatefulWidget {
   _BrowserPageState createState() => _BrowserPageState();
 }
 
-class _BrowserPageState extends State<BrowserPage> {
+class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClientMixin {
+  // Add mixin for state persistence
+  @override
+  bool get wantKeepAlive => true;
+
   late WebViewController _controller;
   final TextEditingController _urlController = TextEditingController();
   bool _isLoading = false;
@@ -130,6 +135,7 @@ class _BrowserPageState extends State<BrowserPage> {
     _initializeDownloader();
     _initializeWebView();
     _loadBookmarks();
+    _loadCommonWebsites();
   }
 
   Future<void> _initializeDownloader() async {
@@ -412,6 +418,7 @@ class _BrowserPageState extends State<BrowserPage> {
 
       // Reload bookmarks and common websites
       await _loadBookmarks();
+      await _loadCommonWebsites();
       debugPrint('[_goToHomePage] 已重新加载书签和常用网站');
 
       // Switch to common websites home view, keep web view instance state
@@ -761,85 +768,45 @@ class _BrowserPageState extends State<BrowserPage> {
         }
       });
 
-      // 加载常用网站
-      final commonWebsitesJson = prefs.getString('common_websites');
-      debugPrint('加载到的常用网站JSON: $commonWebsitesJson');
+      debugPrint('Successfully loaded ${_bookmarks.length} bookmarks');
 
-      try {
-        if (commonWebsitesJson != null && commonWebsitesJson.isNotEmpty) {
-          final List<dynamic> decoded = jsonDecode(commonWebsitesJson);
-          setState(() {
-            _commonWebsites.clear();
-            // 加载时不再需要 iconCode，统一使用默认图标
-            _commonWebsites.addAll(decoded.map((item) => {
-              'name': item['name'],
-              'url': item['url'],
-              'iconCode': Icons.public.codePoint, // 保存时仍然保存一个默认的iconCode
-            }).toList());
-          });
-          debugPrint('成功加载${_commonWebsites.length}个常用网站');
-        }
-      } catch (e) {
-        debugPrint('解析常用网站JSON时出错: $e');
-        // 出错时清除可能损坏的数据
-        await prefs.remove('common_websites');
-      }
+      // Load common websites is now in _loadCommonWebsites method
 
-      // 如果没有加载到常用网站或列表为空，使用默认值并统一图标
-      if (_commonWebsites.isEmpty) {
-        debugPrint('使用默认常用网站');
-        setState(() {
-          _commonWebsites.clear();
-          // 使用代码点而不是IconData对象，但统一为公共网络图标
-          _commonWebsites.addAll([
-            {'name': 'Google', 'url': 'https://www.google.com', 'iconCode': Icons.public.codePoint},
-            {'name': 'Edge', 'url': 'https://www.bing.com', 'iconCode': Icons.public.codePoint},
-            {'name': 'X', 'url': 'https://twitter.com', 'iconCode': Icons.public.codePoint},
-            {'name': 'Facebook', 'url': 'https://www.facebook.com', 'iconCode': Icons.public.codePoint},
-            {'name': 'Telegram', 'url': 'https://web.telegram.org', 'iconCode': Icons.public.codePoint},
-            {'name': '百度', 'url': 'https://www.baidu.com', 'iconCode': Icons.public.codePoint}
-          ]);
-        });
-        // 保存默认常用网站
-        await _saveCommonWebsites();
-        debugPrint('已保存默认常用网站');
-      }
     } catch (e) {
-      debugPrint('加载书签和常用网站时出错: $e');
+      debugPrint('Error loading bookmarks: $e');
     }
   }
 
   // 修改保存常用网站的方法
   Future<void> _saveCommonWebsites() async {
     try {
-      debugPrint('开始保存常用网站...');
+      debugPrint('Starting to save common websites...');
       final prefs = await SharedPreferences.getInstance();
 
-      // 确保所有网站数据格式一致，只保存必要的字段，并统一保存iconCode
+      // Ensure all website data format is consistent, save only necessary fields, and unify iconCode
       final cleanedWebsites = _commonWebsites.map((site) {
         return {
           'name': site['name'],
           'url': site['url'],
-          'iconCode': Icons.public.codePoint, // 统一保存为公共网络图标的代码点
+          'iconCode': Icons.public.codePoint, // Unify to public web icon code point
         };
       }).toList();
 
       final jsonString = jsonEncode(cleanedWebsites);
-      debugPrint('常用网站JSON: $jsonString');
+      debugPrint('Common websites JSON: $jsonString');
 
-      // 先清除旧数据，再保存新数据
+      // Clear old data first, then save new data
       await prefs.remove('common_websites');
       final result = await prefs.setString('common_websites', jsonString);
 
       if (result) {
-        debugPrint('常用网站保存成功');
+        debugPrint('Common websites saved successfully');
       } else {
-        debugPrint('常用网站保存失败: SharedPreferences返回false');
+        debugPrint('Common websites save failed: SharedPreferences returned false');
       }
     } catch (e) {
-      debugPrint('保存常用网站时出错: $e');
-      // 在调试模式下显示错误堆栈跟踪
-      debugPrintStack(label: '保存常用网站错误堆栈');
+      debugPrint('Error saving common websites: $e');
+      debugPrintStack(label: 'Save common websites error stack');
     }
   }
 
@@ -1250,21 +1217,63 @@ class _BrowserPageState extends State<BrowserPage> {
     );
   }
 
-  // 保存书签到SharedPreferences
+  // Add _saveBookmarks method - Attempting to re-add this missing method
   Future<void> _saveBookmarks() async {
     try {
-      debugPrint('开始保存书签...');
+      debugPrint('Starting to save bookmarks...');
       final prefs = await SharedPreferences.getInstance();
       final result = await prefs.setStringList('bookmarks', _bookmarks);
       if (result) {
-        debugPrint('书签保存成功');
+        debugPrint('Bookmarks saved successfully');
       } else {
-        debugPrint('书签保存失败: SharedPreferences返回false');
+        debugPrint('Bookmark save failed: SharedPreferences returned false');
       }
     } catch (e) {
-      debugPrint('保存书签时出错: $e');
-      // 在调试模式下显示错误堆栈跟踪
-      debugPrintStack(label: '保存书签错误堆栈');
+      debugPrint('Error saving bookmarks: $e');
+      debugPrintStack(label: 'Bookmark save error stack');
+    }
+  }
+
+  // Add _loadCommonWebsites method
+  Future<void> _loadCommonWebsites() async {
+     try {
+      final prefs = await SharedPreferences.getInstance();
+      final commonWebsitesJson = prefs.getString('common_websites');
+      debugPrint('Loaded common websites JSON: $commonWebsitesJson');
+
+      if (commonWebsitesJson != null && commonWebsitesJson.isNotEmpty) {
+        final List<dynamic> decoded = jsonDecode(commonWebsitesJson);
+        setState(() {
+          _commonWebsites.clear();
+          _commonWebsites.addAll(decoded.map((item) => {
+            'name': item['name'],
+            'url': item['url'],
+            'iconCode': Icons.public.codePoint, // Ensure a default iconCode is present
+          }).toList());
+        });
+        debugPrint('Successfully loaded ${_commonWebsites.length} common websites');
+      } else if (_commonWebsites.isEmpty) { // Use default if nothing loaded and list is empty
+        debugPrint('No common websites found, using defaults.');
+         setState(() {
+          _commonWebsites.clear();
+          // Use code points instead of IconData objects, but unify to public web icon
+          _commonWebsites.addAll([
+            {'name': 'Google', 'url': 'https://www.google.com', 'iconCode': Icons.public.codePoint},
+            {'name': 'Edge', 'url': 'https://www.bing.com', 'iconCode': Icons.public.codePoint},
+            {'name': 'X', 'url': 'https://twitter.com', 'iconCode': Icons.public.codePoint},
+            {'name': 'Facebook', 'url': 'https://www.facebook.com', 'iconCode': Icons.public.codePoint},
+            {'name': 'Telegram', 'url': 'https://web.telegram.org', 'iconCode': Icons.public.codePoint},
+            {'name': '百度', 'url': 'https://www.baidu.com', 'iconCode': Icons.public.codePoint}
+          ]);
+        });
+        await _saveCommonWebsites(); // Save the default list
+        debugPrint('Saved default common websites.');
+      }
+    } catch (e) {
+      debugPrint('Error loading common websites: $e');
+       // Clear potentially corrupted data on error
+       final prefs = await SharedPreferences.getInstance();
+       await prefs.remove('common_websites');
     }
   }
 
@@ -1272,129 +1281,88 @@ class _BrowserPageState extends State<BrowserPage> {
   Widget build(BuildContext context) {
     debugPrint('[_BrowserPage.build] _showHomePage: $_showHomePage, _isBrowsingWebPage: $_isBrowsingWebPage, _shouldKeepWebPageState: $_shouldKeepWebPageState');
 
-    // Notify parent about the initial state and whenever _showHomePage changes
-    // This will be called on initial build and subsequent rebuilds that change _showHomePage
-    // We can remove the addPostFrameCallback here as state changes in _loadUrl, _goToHomePage, _exitWebPage will trigger rebuild and callback
-    // WidgetsBinding.instance.addPostFrameCallback((_) {
-    //   widget.onBrowserHomePageChanged?.call(_showHomePage);
-    //   debugPrint('[_BrowserPage.build] addPostFrameCallback called. onBrowserHomePageChanged(${_showHomePage})');
-    // });
+    super.build(context); // Required for AutomaticKeepAliveClientMixin
 
     return WillPopScope(
-      // 处理Android物理返回按钮事件
+      // Handle Android physical back button events
       onWillPop: () async {
         debugPrint('[_WillPopScope] onWillPop called. Current _showHomePage: $_showHomePage');
         if (!_showHomePage) {
-          // 如果当前在浏览具体网页视图
-          // 尝试在网页内部后退
+          // If currently in web view
+          // Try to go back within the web view
           if (await _controller.canGoBack()) {
             debugPrint('[_WillPopScope] canGoBack is true, going back in webview.');
             _controller.goBack();
-            return false; // 拦截返回事件，留在当前网页
+            return false; // Intercept back event, stay on current web page
           } else {
-            // 如果不能在网页内部后退，则回到常用网站首页视图
+            // If cannot go back within web view, go to common websites home view
             debugPrint('[_WillPopScope] canGoBack is false, going to home page.');
             _goToHomePage();
-            return false; // 拦截返回事件，留在BrowserPage但切换视图
+            return false; // Intercept back event, stay on BrowserPage but switch view
           }
         }
-        // 如果当前在常用网站首页视图，允许WillPopScope事件继续，从而退出BrowserPage这个PageView的页面
+        // If currently on common websites home view, allow WillPopScope event to continue, exiting this PageView page
         debugPrint('[_WillPopScope] On home page, allowing pop.');
         return true;
       },
       child: Scaffold(
         key: _scaffoldKey,
         appBar: AppBar(
-          titleSpacing: 0, // 移除title的padding
+          titleSpacing: 0, // Remove title padding
           title: _showHomePage
-              ? const Text('网页浏览器') // 在常用网站首页显示标题
-              : const SizedBox.shrink(), // 在浏览网页时隐藏文字标题
-          leading: IconButton(
-            icon: const Icon(Icons.home), // 始终显示主页按钮 (房子图标)
-            onPressed: () async {
-              debugPrint('[_AppBar] Home button pressed.');
-              // 点击主页按钮总是回到常用网站首页视图，并保持网页实例状态
-              _goToHomePage();
-              // MainScreen的状态会在_goToHomePage内部和build方法的addPostFrameCallback中更新
-            },
-            tooltip: '回到主页',
-          ),
-          centerTitle: true, // 标题或红色X按钮居中
+              ? const Text('网页浏览器') // Show title on home page
+              : const SizedBox.shrink(), // Hide title when browsing web
+          leading: _showHomePage
+              ? null // Hide Home button on home page as per user request
+              : IconButton(
+                  icon: const Icon(Icons.home), // Show Home button when browsing web
+                  onPressed: () async {
+                    debugPrint('[_AppBar] Home button pressed.');
+                    // Clicking Home button always goes to common websites home view, keeping web view instance state
+                    _goToHomePage();
+                  },
+                  tooltip: '回到主页',
+                ),
+          centerTitle: true, // Center title or red X button
           actions: [
-            // 在浏览网页时显示红色X按钮
-            if (!_showHomePage)
-              IconButton(
-                icon: const Icon(Icons.close, color: Colors.red), // 红色X按钮
-                onPressed: () {
-                  debugPrint('[_AppBar] Close button pressed.');
-                  // 点击红色X按钮，完全退出当前网页并回到常用网站首页视图
-                  _exitWebPage();
-                  // MainScreen的状态会在_exitWebPage内部和build方法的addPostFrameCallback中更新
-                },
-                tooltip: '退出网页',
-              ),
-            // 书签按钮始终显示
+            // Bookmark button always visible
             IconButton(
               icon: const Icon(Icons.bookmark),
               onPressed: () => _showBookmarks(),
               tooltip: '显示书签',
             ),
-            // 在浏览网页时显示添加书签按钮
-            if (!_showHomePage) IconButton(
-              icon: const Icon(Icons.bookmark_add),
-              onPressed: () => _addBookmark(_currentUrl),
-              tooltip: '添加书签',
-            ),
-            // 在常用网站首页时显示编辑按钮
-            if (_showHomePage)
+            // Show Add Bookmark button when browsing web
+            if (!_showHomePage)
               IconButton(
-                icon: Icon(_isEditMode ? Icons.done : Icons.edit),
-                onPressed: () async {
-                  debugPrint('[_AppBar] Edit button pressed.');
-                  // 显示加载指示器
-                  showDialog(
-                    context: context,
-                    barrierDismissible: false,
-                    builder: (BuildContext context) {
-                      return const AlertDialog(
-                        content: Row(
-                          children: [
-                            CircularProgressIndicator(),
-                            SizedBox(width: 20),
-                            Text("处理中..."),
-                          ],
-                        ),
-                      );
-                    },
-                  );
-
-                  // 切换编辑模式并等待完成
-                  await _toggleEditMode();
-
-                  // 关闭加载指示器
-                  Navigator.of(context).pop();
+                icon: const Icon(Icons.bookmark_add),
+                onPressed: () => _addBookmark(_currentUrl),
+                tooltip: '添加书签',
+              ),
+            // Show red X button when browsing web
+            if (!_showHomePage)
+              IconButton(
+                icon: const Icon(Icons.close, color: Colors.red), // Red X button
+                onPressed: () {
+                  debugPrint('[_AppBar] Close button pressed.');
+                  // Clicking red X button completely exits current web page and returns to common websites home view
+                  _exitWebPage();
                 },
-                tooltip: _isEditMode ? '完成编辑' : '编辑网站',
+                tooltip: '退出网页',
               ),
-            // 在常用网站首页编辑模式时显示添加网站按钮
-            if (_showHomePage && _isEditMode)
-              IconButton(
-                icon: const Icon(Icons.add),
-                onPressed: () => _showAddWebsiteDialog(context),
-                tooltip: '添加网站',
-              ),
+            // Edit and Add buttons are now only within the _buildHomePage content
+            // Removed from AppBar actions as per user request
           ],
         ),
         body: _showHomePage
-            ? _buildHomePage() // 显示常用网站首页视图 (GridView/ListView)
-            : Column(// 当_showHomePage为false时，显示网页视图
+            ? _buildHomePage() // Show common websites home view (GridView/ListView)
+            : Column(// When _showHomePage is false, show web view
                 children: [
-                  // 网页工具栏 - 包含地址栏和导航按钮，只在浏览具体网页时显示
+                  // Web toolbar - includes address bar and navigation buttons, only shown when browsing a web page
                   Padding(
                     padding: const EdgeInsets.all(8.0),
                     child: Row(
                       children: [
-                         // 后退按钮
+                         // Back button
                         IconButton(
                           icon: const Icon(Icons.arrow_back),
                           onPressed: () async {
@@ -1405,7 +1373,7 @@ class _BrowserPageState extends State<BrowserPage> {
                           },
                           tooltip: '后退',
                         ),
-                        // 前进按钮
+                        // Forward button
                         IconButton(
                           icon: const Icon(Icons.arrow_forward),
                           onPressed: () async {
@@ -1416,7 +1384,7 @@ class _BrowserPageState extends State<BrowserPage> {
                           },
                           tooltip: '前进',
                         ),
-                        // 刷新按钮
+                        // Refresh button
                         IconButton(
                           icon: const Icon(Icons.refresh),
                           onPressed: () {
@@ -1425,7 +1393,7 @@ class _BrowserPageState extends State<BrowserPage> {
                           },
                           tooltip: '刷新',
                         ),
-                        // 地址栏
+                        // Address bar
                         Expanded(
                           child: TextField(
                             controller: _urlController,
@@ -1434,14 +1402,14 @@ class _BrowserPageState extends State<BrowserPage> {
                               contentPadding: EdgeInsets.symmetric(horizontal: 8),
                               border: OutlineInputBorder(),
                             ),
-                            keyboardType: TextInputType.url, // 设置键盘类型为URL
+                            keyboardType: TextInputType.url, // Set keyboard type to URL
                             onSubmitted: (url) {
                               debugPrint('[_Toolbar] Address bar submitted: $url');
                               _loadUrl(url);
                             },
                           ),
                         ),
-                        // 搜索/前往按钮
+                        // Search/Go button
                         IconButton(
                           icon: const Icon(Icons.search),
                           onPressed: () {
@@ -1453,9 +1421,9 @@ class _BrowserPageState extends State<BrowserPage> {
                       ],
                     ),
                   ),
-                  if (_isLoading) LinearProgressIndicator(value: _loadingProgress),
+                  if (_isLoading) LinearProgressIndicator(value: _loadingProgress), // Show loading indicator
                   Expanded(
-                    child: WebViewWidget(controller: _controller),
+                    child: WebViewWidget(controller: _controller), // Display WebView
                   ),
                 ],
               ),
@@ -1472,7 +1440,7 @@ class _BrowserPageState extends State<BrowserPage> {
     }).catchError((error) {
       debugPrint('保存书签时出错: $error');
     });
-    
+
     _saveCommonWebsites().then((_) {
       debugPrint('常用网站保存完成');
     }).catchError((error) {
