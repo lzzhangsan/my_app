@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:path_provider/path_provider.dart';
@@ -139,6 +140,11 @@ class _BrowserPageState extends State<BrowserPage> {
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       // 配置WebView设置
       ..setBackgroundColor(const Color(0x00000000))
+      // 禁用水平滚动，只允许垂直滚动
+      ..runJavaScript('''
+        document.body.style.overflowX = 'hidden';
+        document.documentElement.style.overflowX = 'hidden';
+      ''')
       ..setNavigationDelegate(
         NavigationDelegate(
           onProgress: (progress) {
@@ -380,21 +386,22 @@ class _BrowserPageState extends State<BrowserPage> {
 
   // 返回首页
   Future<void> _goToHomePage() async {
-    // 先保存当前状态
+    // 只有在用户主动点击主页按钮时才返回首页
     if (!_showHomePage) {
+      // 先保存当前状态
       await _saveCommonWebsites();
       debugPrint('已保存常用网站');
+      
+      // 重新加载书签和常用网站
+      await _loadBookmarks();
+      
+      // 切换到首页
+      setState(() {
+        _showHomePage = true;
+      });
+      
+      debugPrint('已返回首页并刷新数据');
     }
-    
-    // 重新加载书签和常用网站
-    await _loadBookmarks();
-    
-    // 切换到首页
-    setState(() {
-      _showHomePage = true;
-    });
-    
-    debugPrint('已返回首页并刷新数据');
   }
 
   // 构建常用网站列表页面
@@ -801,7 +808,6 @@ class _BrowserPageState extends State<BrowserPage> {
       // 处理电报特殊URL
       String processedUrl = url;
       if (url.contains('telegram.org') || url.contains('t.me')) {
-        // 确保URL是完整的
         if (!url.startsWith('http')) {
           if (url.startsWith('//')) {
             processedUrl = 'https:$url';
@@ -823,68 +829,22 @@ class _BrowserPageState extends State<BrowserPage> {
         final MediaType mediaType = result['mediaType'];
 
         if (shouldDownload) {
-          // 显示下载进度对话框
-          showDialog(
-            context: context,
-            barrierDismissible: false,
-            builder: (context) => AlertDialog(
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const CircularProgressIndicator(),
-                  const SizedBox(height: 16),
-                  const Text('正在下载媒体文件...'),
-                  const SizedBox(height: 8),
-                  Text('URL: ${processedUrl.substring(0, min(50, processedUrl.length))}...', 
-                       style: TextStyle(fontSize: 10, color: Colors.grey[600])),
-                ],
-              ),
+          // 显示一个简单的提示，表明下载已开始
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('开始下载，将在后台进行...'),
+              duration: Duration(seconds: 2),
             ),
           );
 
-          // 下载文件
-          debugPrint('开始下载文件: $processedUrl');
-          final file = await _downloadFile(processedUrl);
-          if (file != null) {
-            debugPrint('文件下载成功: ${file.path}');
-            // 保存到媒体库
-            await _saveToMediaLibrary(file, mediaType);
-            // 关闭进度对话框
-            if (mounted) Navigator.of(context).pop();
-            // 显示成功消息
-            if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text('媒体已成功保存到媒体库: ${file.path.split('/').last}'),
-                  duration: const Duration(seconds: 5),
-                  action: SnackBarAction(
-                    label: '查看',
-                    onPressed: () {
-                      // 跳转到媒体管理页面
-                      Navigator.pushNamed(context, '/media_manager');
-                    },
-                  ),
-                ),
-              );
-            }
-          } else {
-            debugPrint('文件下载失败');
-            // 关闭进度对话框
-            if (mounted) Navigator.of(context).pop();
-            // 显示错误消息
-            if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('下载失败，请重试')),
-              );
-            }
-          }
+          // 在后台执行下载
+          unawaited(_performBackgroundDownload(processedUrl, mediaType));
         }
       }
     } catch (e, stackTrace) {
       debugPrint('处理下载时出错: $e');
       debugPrint('错误堆栈: $stackTrace');
       if (mounted) {
-        Navigator.of(context).pop(); // 确保关闭任何打开的对话框
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('下载出错: $e')),
         );
@@ -1380,5 +1340,47 @@ class _BrowserPageState extends State<BrowserPage> {
     });
     
     super.dispose();
+  }
+
+  // 在后台执行下载
+  Future<void> _performBackgroundDownload(String url, MediaType mediaType) async {
+    try {
+      final file = await _downloadFile(url);
+      if (file != null) {
+        debugPrint('文件下载成功: ${file.path}');
+        // 保存到媒体库
+        await _saveToMediaLibrary(file, mediaType);
+        // 显示成功消息
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('媒体已成功保存到媒体库: ${file.path.split('/').last}'),
+              duration: const Duration(seconds: 5),
+              action: SnackBarAction(
+                label: '查看',
+                onPressed: () {
+                  // 跳转到媒体管理页面
+                  Navigator.pushNamed(context, '/media_manager');
+                },
+              ),
+            ),
+          );
+        }
+      } else {
+        debugPrint('文件下载失败');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('下载失败，请重试')),
+          );
+        }
+      }
+    } catch (e) {
+      debugPrint('后台下载出错: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('下载出错: $e')),
+        );
+      }
+    }
   }
 }

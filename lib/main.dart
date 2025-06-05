@@ -185,13 +185,11 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                   if (index == 1) {
                     DirectoryPage.refresh();
                   }
-                  // 如果切换到媒体管理页面，可以触发刷新逻辑（如果需要）
-                  if (index == 2) {
-                    // 建议在 MediaManagerPage 中添加静态 refresh 方法
-                    // MediaManagerPage.refresh(); // 未实现，需根据实际情况添加
-                  }
                 },
-                physics: const ClampingScrollPhysics(), // 确保滑动物理效果正常
+                // 根据当前页面动态设置物理效果
+                physics: _currentPage == 3 
+                  ? const NeverScrollableScrollPhysics() // 在浏览器页面禁用水平滑动
+                  : const ClampingScrollPhysics(), // 其他页面保持正常滑动
                 children: [
                   CoverPage(),
                   DirectoryPage(onDocumentOpen: _onDocumentOpen),
