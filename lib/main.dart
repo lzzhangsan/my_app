@@ -4,6 +4,7 @@ import 'document_editor_page.dart';
 import 'directory_page.dart';
 import 'cover_page.dart';
 import 'media_manager_page.dart';
+import 'browser_page.dart';
 import 'core/service_locator.dart';
 import 'package:flutter/services.dart';
 
@@ -106,6 +107,8 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         return '目录页';
       case 2:
         return '媒体管理';
+      case 3:
+        return '浏览器';
       default:
         return '未知页面';
     }
@@ -141,7 +144,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                 duration: const Duration(milliseconds: 300),
                 curve: Curves.easeInOut,
               );
-            } else if (event.logicalKey == LogicalKeyboardKey.arrowRight && _currentPage < 2) {
+            } else if (event.logicalKey == LogicalKeyboardKey.arrowRight && _currentPage < 3) {
               _pageController.nextPage(
                 duration: const Duration(milliseconds: 300),
                 curve: Curves.easeInOut,
@@ -157,7 +160,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
               onPointerSignal: (pointerSignal) {
                 if (pointerSignal is PointerScrollEvent) {
                   // 处理鼠标滚轮事件进行页面切换
-                  if (pointerSignal.scrollDelta.dx > 0 && _currentPage < 2) {
+                  if (pointerSignal.scrollDelta.dx > 0 && _currentPage < 3) {
                     // 向右滑动
                     _pageController.nextPage(
                       duration: const Duration(milliseconds: 300),
@@ -193,6 +196,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                   CoverPage(),
                   DirectoryPage(onDocumentOpen: _onDocumentOpen),
                   MediaManagerPage(),
+                  BrowserPage(),
                 ],
               ),
             ),
