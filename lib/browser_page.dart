@@ -8,6 +8,7 @@ import 'package:dio/dio.dart';
 import 'package:uuid/uuid.dart';
 import 'package:crypto/crypto.dart';
 import 'dart:convert';
+import 'dart:math';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'core/service_locator.dart';
@@ -58,7 +59,17 @@ class _BrowserPageState extends State<BrowserPage> {
     // 如果从编辑模式退出，确保保存网站列表
     if (wasInEditMode && !_isEditMode) {
       debugPrint('从编辑模式退出，保存网站列表');
+      // 显示保存中提示
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('正在保存常用网站...')),
+      );
+      
       await _saveCommonWebsites();
+      
+      // 显示保存成功提示
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('常用网站已保存')),
+      );
     }
   }
 
@@ -155,6 +166,11 @@ class _BrowserPageState extends State<BrowserPage> {
                 input.autocomplete = 'on';
               });
             ''');
+            
+            // 为电报网站注入特殊的JavaScript，以增强媒体下载功能
+            if (url.contains('telegram.org') || url.contains('t.me') || url.contains('web.telegram.org')) {
+              _injectTelegramDownloadHandlers();
+            }
           },
           onWebResourceError: (error) {
             debugPrint('WebView错误: ${error.description}');
@@ -168,11 +184,22 @@ class _BrowserPageState extends State<BrowserPage> {
           // 使用onNavigationRequest处理下载请求
           onNavigationRequest: (NavigationRequest request) {
             final url = request.url;
+            debugPrint('导航请求: $url');
+            
             // 检查URL是否为可能的下载链接
             if (_isDownloadableLink(url)) {
+              debugPrint('检测到可能的下载链接: $url');
               _handleDownload(url, '', _guessMimeType(url));
               return NavigationDecision.prevent; // 阻止WebView导航，由我们处理下载
             }
+            
+            // 特殊处理电报媒体链接
+            if (_isTelegramMediaLink(url)) {
+              debugPrint('检测到电报媒体链接: $url');
+              _handleDownload(url, '', _guessMimeType(url));
+              return NavigationDecision.prevent; // 阻止WebView导航，由我们处理下载
+            }
+            
             return NavigationDecision.navigate; // 允许WebView导航
           },
         ),
@@ -182,9 +209,143 @@ class _BrowserPageState extends State<BrowserPage> {
         'Flutter', 
         onMessageReceived: (JavaScriptMessage message) {
           debugPrint('来自JavaScript的消息: ${message.message}');
+          // 处理从JavaScript发送的消息，特别是媒体下载请求
+          _handleJavaScriptMessage(message.message);
         },
       );
     // 不再在初始化时立即加载URL
+  }
+  
+  // 检查URL是否为电报媒体链接
+  bool _isTelegramMediaLink(String url) {
+    // 电报媒体链接通常包含这些模式
+    final telegramMediaPatterns = [
+      'telegram.org/file/',
+      't.me/file/',
+      'web.telegram.org/file/',
+      'cdn.telegram.org/',
+      'cdn-telegram.org/',
+      'tg://file',
+      'tg://media',
+      'tg://photo',
+      'tg://video',
+    ];
+    
+    for (final pattern in telegramMediaPatterns) {
+      if (url.contains(pattern)) {
+        return true;
+      }
+    }
+    
+    // 检查URL是否包含常见媒体文件扩展名
+    if (url.contains('telegram') || url.contains('t.me')) {
+      final mediaExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.mp4', '.webp', '.webm'];
+      for (final ext in mediaExtensions) {
+        if (url.toLowerCase().contains(ext)) {
+          return true;
+        }
+      }
+    }
+    
+    return false;
+  }
+  
+  // 为电报网站注入特殊的JavaScript，以增强媒体下载功能
+  void _injectTelegramDownloadHandlers() {
+    debugPrint('为电报网站注入媒体下载处理程序');
+    _controller.runJavaScript('''
+      // 监听所有图片点击事件
+      document.addEventListener('click', function(e) {
+        // 查找点击事件路径中的图片元素
+        let target = e.target;
+        while (target != null) {
+          if (target.tagName === 'IMG') {
+            let imgSrc = target.src;
+            if (imgSrc) {
+              // 发送图片URL到Flutter
+              Flutter.postMessage(JSON.stringify({
+                type: 'media',
+                mediaType: 'image',
+                url: imgSrc
+              }));
+            }
+            break;
+          } else if (target.tagName === 'VIDEO') {
+            let videoSrc = target.src || (target.querySelector('source') ? target.querySelector('source').src : null);
+            if (videoSrc) {
+              // 发送视频URL到Flutter
+              Flutter.postMessage(JSON.stringify({
+                type: 'media',
+                mediaType: 'video',
+                url: videoSrc
+              }));
+            }
+            break;
+          }
+          target = target.parentElement;
+        }
+      }, true);
+      
+      // 监听所有媒体元素的右键菜单
+      document.addEventListener('contextmenu', function(e) {
+        let target = e.target;
+        if (target.tagName === 'IMG' || target.tagName === 'VIDEO') {
+          let mediaUrl = target.src || (target.querySelector('source') ? target.querySelector('source').src : null);
+          if (mediaUrl) {
+            // 发送媒体URL到Flutter
+            Flutter.postMessage(JSON.stringify({
+              type: 'media',
+              mediaType: target.tagName === 'IMG' ? 'image' : 'video',
+              url: mediaUrl
+            }));
+          }
+        }
+      }, true);
+      
+      // 查找并监听所有下载按钮
+      setInterval(function() {
+        document.querySelectorAll('a[download], a[href*="/file/"], a[href*="/media/"], button:contains("Download"), button:contains("下载")').forEach(function(element) {
+          if (!element.hasAttribute('data-download-monitored')) {
+            element.setAttribute('data-download-monitored', 'true');
+            element.addEventListener('click', function(e) {
+              let url = element.href || element.getAttribute('data-url') || element.getAttribute('data-src');
+              if (url) {
+                Flutter.postMessage(JSON.stringify({
+                  type: 'download',
+                  url: url
+                }));
+              }
+            });
+          }
+        });
+      }, 1000);
+    ''');
+  }
+  
+  // 处理从JavaScript发送的消息
+  void _handleJavaScriptMessage(String message) {
+    try {
+      final data = jsonDecode(message);
+      if (data is Map && data.containsKey('type')) {
+        final type = data['type'];
+        if (type == 'media' || type == 'download') {
+          final url = data['url'];
+          if (url != null && url is String) {
+            debugPrint('从JavaScript接收到媒体URL: $url');
+            final mediaType = data['mediaType'] ?? '';
+            String mimeType = 'application/octet-stream';
+            if (mediaType == 'image') {
+              mimeType = 'image/jpeg';
+            } else if (mediaType == 'video') {
+              mimeType = 'video/mp4';
+            }
+            _handleDownload(url, '', mimeType);
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('处理JavaScript消息时出错: $e');
+    }
   }
 
   // 加载指定URL并隐藏首页
@@ -219,12 +380,21 @@ class _BrowserPageState extends State<BrowserPage> {
 
   // 返回首页
   Future<void> _goToHomePage() async {
+    // 先保存当前状态
+    if (!_showHomePage) {
+      await _saveCommonWebsites();
+      debugPrint('已保存常用网站');
+    }
+    
+    // 重新加载书签和常用网站
+    await _loadBookmarks();
+    
+    // 切换到首页
     setState(() {
       _showHomePage = true;
     });
-    // 确保在返回首页时保存常用网站列表并等待完成
-    await _saveCommonWebsites();
-    debugPrint('已返回首页并保存常用网站');
+    
+    debugPrint('已返回首页并刷新数据');
   }
 
   // 构建常用网站列表页面
@@ -319,24 +489,30 @@ class _BrowserPageState extends State<BrowserPage> {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: Text('添加网站'),
+        title: const Text('添加网站'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             TextField(
               controller: nameController,
-              decoration: InputDecoration(labelText: '网站名称'),
+              decoration: const InputDecoration(
+                labelText: '网站名称',
+                hintText: '例如：Google',
+              ),
             ),
             TextField(
               controller: urlController,
-              decoration: InputDecoration(labelText: '网站地址'),
+              decoration: const InputDecoration(
+                labelText: '网站地址',
+                hintText: '例如：https://www.google.com',
+              ),
             ),
           ],
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: Text('取消'),
+            child: const Text('取消'),
           ),
           TextButton(
             onPressed: () async {
@@ -351,7 +527,7 @@ class _BrowserPageState extends State<BrowserPage> {
                         children: [
                           CircularProgressIndicator(),
                           SizedBox(width: 20),
-                          Text("保存中..."),
+                          Text("添加中..."),
                         ],
                       ),
                     );
@@ -361,17 +537,21 @@ class _BrowserPageState extends State<BrowserPage> {
                 // 等待添加网站完成
                 await _addWebsite(nameController.text, urlController.text, Icons.web);
                 
+                // 立即保存网站列表
+                await _saveCommonWebsites();
+                debugPrint('网站已添加并立即保存');
+                
                 // 关闭加载指示器和对话框
                 Navigator.of(context).pop(); // 关闭加载指示器
                 Navigator.of(context).pop(); // 关闭添加网站对话框
                 
                 // 显示成功消息
                 ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('网站已添加并保存')),
+                  const SnackBar(content: Text('网站已添加并保存')),
                 );
               }
             },
-            child: Text('添加'),
+            child: const Text('添加'),
           ),
         ],
       ),
@@ -380,14 +560,22 @@ class _BrowserPageState extends State<BrowserPage> {
 
   // 构建可编辑的网站列表项
   Widget _buildEditableWebsiteItem(Map<String, dynamic> website, int index) {
-    // 从代码点创建IconData或使用默认图标
-    IconData iconData;
-    if (website.containsKey('iconCode')) {
-      iconData = IconData(website['iconCode'], fontFamily: 'MaterialIcons');
-    } else if (website.containsKey('icon') && website['icon'] is IconData) {
-      iconData = website['icon'];
-    } else {
-      iconData = Icons.web;
+    // 使用预定义图标
+    IconData iconData = Icons.web;
+    // 如果有iconCode，尝试使用它，但确保不会创建非常量IconData
+    if (website.containsKey('iconCode') && website['iconCode'] is int) {
+      // 根据常见图标的codePoint选择预定义图标
+      final int codePoint = website['iconCode'];
+      if (codePoint == Icons.search.codePoint) {
+        iconData = Icons.search;
+      } else if (codePoint == Icons.language.codePoint) {
+        iconData = Icons.language;
+      } else if (codePoint == Icons.public.codePoint) {
+        iconData = Icons.public;
+      } else {
+        // 默认使用web图标
+        iconData = Icons.web;
+      }
     }
     
     return ListTile(
@@ -453,14 +641,22 @@ class _BrowserPageState extends State<BrowserPage> {
 
   // 构建网站卡片
   Widget _buildWebsiteCard(Map<String, dynamic> website) {
-    // 从代码点创建IconData或使用默认图标
-    IconData iconData;
-    if (website.containsKey('iconCode')) {
-      iconData = IconData(website['iconCode'], fontFamily: 'MaterialIcons');
-    } else if (website.containsKey('icon') && website['icon'] is IconData) {
-      iconData = website['icon'];
-    } else {
-      iconData = Icons.web;
+    // 使用预定义图标
+    IconData iconData = Icons.web;
+    // 如果有iconCode，尝试使用它，但确保不会创建非常量IconData
+    if (website.containsKey('iconCode') && website['iconCode'] is int) {
+      // 根据常见图标的codePoint选择预定义图标
+      final int codePoint = website['iconCode'];
+      if (codePoint == Icons.search.codePoint) {
+        iconData = Icons.search;
+      } else if (codePoint == Icons.language.codePoint) {
+        iconData = Icons.language;
+      } else if (codePoint == Icons.public.codePoint) {
+        iconData = Icons.public;
+      } else {
+        // 默认使用web图标
+        iconData = Icons.web;
+      }
     }
     
     return InkWell(
@@ -505,23 +701,41 @@ class _BrowserPageState extends State<BrowserPage> {
       
       // 加载常用网站
       final commonWebsitesJson = prefs.getString('common_websites');
-      if (commonWebsitesJson != null) {
-        final List<dynamic> decoded = jsonDecode(commonWebsitesJson);
-        setState(() {
-          _commonWebsites.clear();
-          _commonWebsites.addAll(decoded.map((item) => Map<String, dynamic>.from(item)).toList());
-        });
-      } else if (_commonWebsites.isEmpty) {
-        // 如果没有保存的常用网站，使用默认值
+      debugPrint('加载到的常用网站JSON: $commonWebsitesJson');
+      
+      try {
+        if (commonWebsitesJson != null && commonWebsitesJson.isNotEmpty) {
+          final List<dynamic> decoded = jsonDecode(commonWebsitesJson);
+          setState(() {
+            _commonWebsites.clear();
+            _commonWebsites.addAll(decoded.map((item) => Map<String, dynamic>.from(item)).toList());
+          });
+          debugPrint('成功加载${_commonWebsites.length}个常用网站');
+        }
+      } catch (e) {
+        debugPrint('解析常用网站JSON时出错: $e');
+        // 出错时清除可能损坏的数据
+        await prefs.remove('common_websites');
+      }
+      
+      // 如果没有加载到常用网站或列表为空，使用默认值
+      if (_commonWebsites.isEmpty) {
+        debugPrint('使用默认常用网站');
         setState(() {
           _commonWebsites.clear();
           // 使用代码点而不是IconData对象
           _commonWebsites.addAll([
             {'name': 'Google', 'url': 'https://www.google.com', 'iconCode': Icons.search.codePoint},
+            {'name': 'Edge', 'url': 'https://www.bing.com', 'iconCode': Icons.public.codePoint},
+            {'name': 'X', 'url': 'https://twitter.com', 'iconCode': Icons.public.codePoint},
+            {'name': 'Facebook', 'url': 'https://www.facebook.com', 'iconCode': Icons.public.codePoint},
+            {'name': 'Telegram', 'url': 'https://web.telegram.org', 'iconCode': Icons.public.codePoint},
             {'name': '百度', 'url': 'https://www.baidu.com', 'iconCode': Icons.search.codePoint}
           ]);
         });
-        _saveCommonWebsites(); // 保存默认常用网站
+        // 保存默认常用网站
+        await _saveCommonWebsites();
+        debugPrint('已保存默认常用网站');
       }
     } catch (e) {
       debugPrint('加载书签和常用网站时出错: $e');
@@ -551,9 +765,23 @@ class _BrowserPageState extends State<BrowserPage> {
     try {
       debugPrint('开始保存常用网站...');
       final prefs = await SharedPreferences.getInstance();
-      final jsonString = jsonEncode(_commonWebsites);
+      
+      // 确保所有网站数据格式一致，只保存必要的字段
+      final cleanedWebsites = _commonWebsites.map((site) {
+        return {
+          'name': site['name'],
+          'url': site['url'],
+          'iconCode': site['iconCode'] ?? Icons.web.codePoint,
+        };
+      }).toList();
+      
+      final jsonString = jsonEncode(cleanedWebsites);
       debugPrint('常用网站JSON: $jsonString');
+      
+      // 先清除旧数据，再保存新数据
+      await prefs.remove('common_websites');
       final result = await prefs.setString('common_websites', jsonString);
+      
       if (result) {
         debugPrint('常用网站保存成功');
       } else {
@@ -568,10 +796,26 @@ class _BrowserPageState extends State<BrowserPage> {
 
   Future<void> _handleDownload(String url, String contentDisposition, String mimeType) async {
     try {
+      debugPrint('开始处理下载: $url, MIME类型: $mimeType');
+      
+      // 处理电报特殊URL
+      String processedUrl = url;
+      if (url.contains('telegram.org') || url.contains('t.me')) {
+        // 确保URL是完整的
+        if (!url.startsWith('http')) {
+          if (url.startsWith('//')) {
+            processedUrl = 'https:$url';
+          } else {
+            processedUrl = 'https://$url';
+          }
+        }
+        debugPrint('处理后的电报URL: $processedUrl');
+      }
+      
       // 显示下载选项对话框
       final result = await showDialog<Map<String, dynamic>>(
         context: context,
-        builder: (context) => _buildDownloadDialog(url, mimeType),
+        builder: (context) => _buildDownloadDialog(processedUrl, mimeType),
       );
 
       if (result != null) {
@@ -583,21 +827,26 @@ class _BrowserPageState extends State<BrowserPage> {
           showDialog(
             context: context,
             barrierDismissible: false,
-            builder: (context) => const AlertDialog(
+            builder: (context) => AlertDialog(
               content: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  CircularProgressIndicator(),
-                  SizedBox(height: 16),
-                  Text('正在下载媒体文件...')
+                  const CircularProgressIndicator(),
+                  const SizedBox(height: 16),
+                  const Text('正在下载媒体文件...'),
+                  const SizedBox(height: 8),
+                  Text('URL: ${processedUrl.substring(0, min(50, processedUrl.length))}...', 
+                       style: TextStyle(fontSize: 10, color: Colors.grey[600])),
                 ],
               ),
             ),
           );
 
           // 下载文件
-          final file = await _downloadFile(url);
+          debugPrint('开始下载文件: $processedUrl');
+          final file = await _downloadFile(processedUrl);
           if (file != null) {
+            debugPrint('文件下载成功: ${file.path}');
             // 保存到媒体库
             await _saveToMediaLibrary(file, mediaType);
             // 关闭进度对话框
@@ -605,10 +854,21 @@ class _BrowserPageState extends State<BrowserPage> {
             // 显示成功消息
             if (mounted) {
               ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('媒体已成功保存到媒体库')),
+                SnackBar(
+                  content: Text('媒体已成功保存到媒体库: ${file.path.split('/').last}'),
+                  duration: const Duration(seconds: 5),
+                  action: SnackBarAction(
+                    label: '查看',
+                    onPressed: () {
+                      // 跳转到媒体管理页面
+                      Navigator.pushNamed(context, '/media_manager');
+                    },
+                  ),
+                ),
               );
             }
           } else {
+            debugPrint('文件下载失败');
             // 关闭进度对话框
             if (mounted) Navigator.of(context).pop();
             // 显示错误消息
@@ -620,9 +880,11 @@ class _BrowserPageState extends State<BrowserPage> {
           }
         }
       }
-    } catch (e) {
+    } catch (e, stackTrace) {
       debugPrint('处理下载时出错: $e');
+      debugPrint('错误堆栈: $stackTrace');
       if (mounted) {
+        Navigator.of(context).pop(); // 确保关闭任何打开的对话框
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('下载出错: $e')),
         );
@@ -702,16 +964,18 @@ class _BrowserPageState extends State<BrowserPage> {
   
   // 检查URL是否为可能的下载链接
   bool _isDownloadableLink(String url) {
+    debugPrint('检查URL是否为可下载链接: $url');
+    
     // 检查文件扩展名
     final fileExtensions = [
       // 图片
-      '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp',
+      '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg', '.ico',
       // 视频
-      '.mp4', '.avi', '.mov', '.wmv', '.flv', '.mkv', '.webm',
+      '.mp4', '.avi', '.mov', '.wmv', '.flv', '.mkv', '.webm', '.m3u8', '.ts',
       // 音频
-      '.mp3', '.wav', '.ogg', '.aac', '.flac',
+      '.mp3', '.wav', '.ogg', '.aac', '.flac', '.m4a',
       // 文档
-      '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+      '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.txt',
       // 压缩文件
       '.zip', '.rar', '.7z', '.tar', '.gz',
       // 其他常见下载文件
@@ -721,15 +985,46 @@ class _BrowserPageState extends State<BrowserPage> {
     final lowercaseUrl = url.toLowerCase();
     for (final ext in fileExtensions) {
       if (lowercaseUrl.endsWith(ext)) {
+        debugPrint('URL以文件扩展名结尾: $ext');
         return true;
       }
     }
     
-    // 检查URL中是否包含下载相关关键词
-    final downloadKeywords = ['download', 'dl', 'attachment', 'file'];
+    // 检查URL中是否包含明确的下载相关关键词（更严格的条件）
+    final downloadKeywords = [
+      '/download/', '/dl/', '/attachment/', '/file/', '/media/download/', 
+      '/photo/download/', '/video/download/', '/document/download/'
+    ];
     for (final keyword in downloadKeywords) {
       if (lowercaseUrl.contains(keyword)) {
+        debugPrint('URL包含明确的下载关键词: $keyword');
         return true;
+      }
+    }
+    
+    // 检查URL参数中是否包含明确的下载相关参数
+    final downloadParams = ['download=true', 'dl=1', 'attachment=1'];
+    final uri = Uri.parse(url);
+    final queryString = uri.query.toLowerCase();
+    for (final param in downloadParams) {
+      if (queryString.contains(param)) {
+        debugPrint('URL参数中包含明确的下载相关参数: $param');
+        return true;
+      }
+    }
+    
+    // 特殊处理电报链接
+    if (url.contains('telegram.org') || url.contains('t.me')) {
+      // 检查电报特定的媒体链接模式（更精确的模式）
+      final telegramMediaPatterns = [
+        '/file/', '/photo/size', '/video/size', '/document/'
+      ];
+      
+      for (final pattern in telegramMediaPatterns) {
+        if (lowercaseUrl.contains(pattern)) {
+          debugPrint('检测到电报媒体链接模式: $pattern');
+          return true;
+        }
       }
     }
     
@@ -770,26 +1065,93 @@ class _BrowserPageState extends State<BrowserPage> {
 
   Future<File?> _downloadFile(String url) async {
     try {
+      debugPrint('开始下载文件，URL: $url');
       final dio = Dio();
+      
+      // 设置Dio选项，增加超时时间和特殊的用户代理
+      dio.options.connectTimeout = const Duration(seconds: 30);
+      dio.options.receiveTimeout = const Duration(seconds: 60);
+      dio.options.headers = {
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 13_2_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0.3 Mobile/15E148 Safari/604.1',
+        'Accept': '*/*',
+      };
+      
+      // 如果是电报网站，添加特殊的请求头
+      if (url.contains('telegram.org') || url.contains('t.me')) {
+        dio.options.headers['Referer'] = 'https://web.telegram.org/';
+        dio.options.headers['Origin'] = 'https://web.telegram.org';
+      }
+      
+      // 创建媒体目录
       final appDir = await getApplicationDocumentsDirectory();
       final mediaDir = Directory('${appDir.path}/media');
       if (!await mediaDir.exists()) {
         await mediaDir.create(recursive: true);
       }
 
+      // 生成唯一文件名
       final uuid = const Uuid().v4();
       final uri = Uri.parse(url);
-      final extension = _getFileExtension(uri.path);
+      String extension = _getFileExtension(uri.path);
+      
+      // 如果没有扩展名，根据URL或MIME类型猜测
+      if (extension.isEmpty) {
+        final mimeType = _guessMimeType(url);
+        if (mimeType.startsWith('image/')) {
+          extension = '.jpg';
+        } else if (mimeType.startsWith('video/')) {
+          extension = '.mp4';
+        } else if (mimeType.startsWith('audio/')) {
+          extension = '.mp3';
+        } else {
+          extension = '.bin'; // 默认二进制文件扩展名
+        }
+        debugPrint('URL没有扩展名，根据MIME类型猜测为: $extension');
+      }
+      
       final filePath = '${mediaDir.path}/$uuid$extension';
+      debugPrint('将下载到文件路径: $filePath');
 
-      await dio.download(url, filePath);
+      // 显示下载进度
+      // dio.onDownloadProgress = (received, total) {
+      //   if (total != -1) {
+      //     final progress = received / total;
+      //     debugPrint('下载进度: ${(progress * 100).toStringAsFixed(2)}%');
+      //   }
+      // };
+
+      // 执行下载
+      final response = await dio.download(
+        url, 
+        filePath,
+        deleteOnError: true,
+        onReceiveProgress: (received, total) {
+          if (total != -1) {
+            final progress = received / total;
+            debugPrint('下载进度: ${(progress * 100).toStringAsFixed(2)}%');
+          }
+        },
+      );
+      
+      debugPrint('下载响应状态码: ${response.statusCode}');
+      
+      // 验证文件是否存在且大小大于0
       final file = File(filePath);
       if (await file.exists()) {
-        return file;
+        final fileSize = await file.length();
+        debugPrint('文件下载完成，大小: ${fileSize} 字节');
+        if (fileSize > 0) {
+          return file;
+        } else {
+          debugPrint('文件大小为0，下载可能失败');
+          await file.delete();
+          return null;
+        }
       }
       return null;
-    } catch (e) {
+    } catch (e, stackTrace) {
       debugPrint('下载文件时出错: $e');
+      debugPrint('错误堆栈: $stackTrace');
       return null;
     }
   }
@@ -936,11 +1298,7 @@ class _BrowserPageState extends State<BrowserPage> {
             icon: const Icon(Icons.bookmark_add),
             onPressed: () => _addBookmark(_currentUrl),
           ),
-          if (_showHomePage) IconButton(
-            icon: Icon(_isEditMode ? Icons.done : Icons.edit),
-            onPressed: _toggleEditMode,
-            tooltip: _isEditMode ? '完成编辑' : '编辑常用网站',
-          ),
+          // 移除AppBar中的编辑图标，只保留_buildHomePage中的那个
         ],
       ),
       body: _showHomePage 
