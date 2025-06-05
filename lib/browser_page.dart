@@ -8,6 +8,7 @@ import 'package:dio/dio.dart';
 import 'package:uuid/uuid.dart';
 import 'package:crypto/crypto.dart';
 import 'dart:convert';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'core/service_locator.dart';
 import 'services/database_service.dart';
@@ -53,13 +54,14 @@ class _BrowserPageState extends State<BrowserPage> {
       _isEditMode = !_isEditMode;
     });
   }
-  
+
   void _removeWebsite(int index) {
     setState(() {
       _commonWebsites.removeAt(index);
     });
+    _saveCommonWebsites(); // 保存更改
   }
-  
+
   void _reorderWebsites(int oldIndex, int newIndex) {
     setState(() {
       if (oldIndex < newIndex) {
@@ -68,12 +70,14 @@ class _BrowserPageState extends State<BrowserPage> {
       final item = _commonWebsites.removeAt(oldIndex);
       _commonWebsites.insert(newIndex, item);
     });
+    _saveCommonWebsites(); // 保存更改
   }
-  
+
   void _addWebsite(String name, String url, IconData icon) {
     setState(() {
       _commonWebsites.add({'name': name, 'url': url, 'icon': icon});
     });
+    _saveCommonWebsites(); // 保存更改
   }
 
   @override
@@ -329,13 +333,57 @@ class _BrowserPageState extends State<BrowserPage> {
   }
 
   Future<void> _loadBookmarks() async {
-    // 这里可以从SharedPreferences或数据库加载书签
-    // 示例代码，实际应用中应该从持久化存储加载
-    setState(() {
-      if (_bookmarks.isEmpty) {
-        _bookmarks.addAll(['https://www.baidu.com', 'https://www.bilibili.com']);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final bookmarksList = prefs.getStringList('bookmarks');
+      
+      setState(() {
+        if (bookmarksList != null && bookmarksList.isNotEmpty) {
+          _bookmarks.clear();
+          _bookmarks.addAll(bookmarksList);
+        } else if (_bookmarks.isEmpty) {
+          // 默认书签
+          _bookmarks.addAll(['https://www.baidu.com', 'https://www.bilibili.com']);
+          _saveBookmarks(); // 保存默认书签
+        }
+      });
+      
+      // 加载常用网站
+      final commonWebsitesJson = prefs.getString('common_websites');
+      if (commonWebsitesJson != null) {
+        final List<dynamic> decoded = jsonDecode(commonWebsitesJson);
+        setState(() {
+          _commonWebsites.clear();
+          _commonWebsites.addAll(decoded.map((item) => Map<String, dynamic>.from(item)).toList());
+        });
+      } else if (_commonWebsites.isEmpty) {
+        // 如果没有保存的常用网站，使用默认值
+        _saveCommonWebsites(); // 保存默认常用网站
       }
-    });
+    } catch (e) {
+      debugPrint('加载书签和常用网站时出错: $e');
+    }
+  }
+  
+  // 保存书签到SharedPreferences
+  Future<void> _saveBookmarks() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList('bookmarks', _bookmarks);
+    } catch (e) {
+      debugPrint('保存书签时出错: $e');
+    }
+  }
+  
+  // 保存常用网站到SharedPreferences
+  Future<void> _saveCommonWebsites() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final jsonString = jsonEncode(_commonWebsites);
+      await prefs.setString('common_websites', jsonString);
+    } catch (e) {
+      debugPrint('保存常用网站时出错: $e');
+    }
   }
 
   Future<void> _handleDownload(String url, String contentDisposition, String mimeType) async {
@@ -623,7 +671,7 @@ class _BrowserPageState extends State<BrowserPage> {
       setState(() {
         _bookmarks.add(url);
       });
-      // 这里可以保存到SharedPreferences或数据库
+      _saveBookmarks(); // 保存书签
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('已添加书签')),
       );
@@ -653,7 +701,7 @@ class _BrowserPageState extends State<BrowserPage> {
                 setState(() {
                   _bookmarks.removeAt(index);
                 });
-                // 这里可以从SharedPreferences或数据库中删除
+                _saveBookmarks(); // 保存更改
                 Navigator.pop(context);
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(content: Text('已删除书签')),
@@ -756,6 +804,9 @@ class _BrowserPageState extends State<BrowserPage> {
   @override
   void dispose() {
     _urlController.dispose();
+    // 确保在退出前保存所有数据
+    _saveBookmarks();
+    _saveCommonWebsites();
     super.dispose();
   }
 }
