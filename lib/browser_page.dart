@@ -30,6 +30,51 @@ class _BrowserPageState extends State<BrowserPage> {
   late final DatabaseService _databaseService;
   final List<String> _bookmarks = [];
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+  
+  // 控制是否显示首页（常用网站列表）
+  bool _showHomePage = true;
+  
+  // 常用网站列表数据
+  final List<Map<String, dynamic>> _commonWebsites = [
+    {'name': 'Google', 'url': 'https://www.google.com', 'icon': Icons.search},
+    {'name': 'Edge', 'url': 'https://www.microsoft.com/edge', 'icon': Icons.web},
+    {'name': 'X', 'url': 'https://twitter.com', 'icon': Icons.chat},
+    {'name': 'Facebook', 'url': 'https://www.facebook.com', 'icon': Icons.facebook},
+    {'name': 'Telegram', 'url': 'https://web.telegram.org', 'icon': Icons.send},
+    {'name': '百度', 'url': 'https://www.baidu.com', 'icon': Icons.search},
+  ];
+  
+  // 是否处于编辑模式
+  bool _isEditMode = false;
+  
+  // 添加、删除和重新排序网站的方法
+  void _toggleEditMode() {
+    setState(() {
+      _isEditMode = !_isEditMode;
+    });
+  }
+  
+  void _removeWebsite(int index) {
+    setState(() {
+      _commonWebsites.removeAt(index);
+    });
+  }
+  
+  void _reorderWebsites(int oldIndex, int newIndex) {
+    setState(() {
+      if (oldIndex < newIndex) {
+        newIndex -= 1;
+      }
+      final item = _commonWebsites.removeAt(oldIndex);
+      _commonWebsites.insert(newIndex, item);
+    });
+  }
+  
+  void _addWebsite(String name, String url, IconData icon) {
+    setState(() {
+      _commonWebsites.add({'name': name, 'url': url, 'icon': icon});
+    });
+  }
 
   @override
   void initState() {
@@ -55,6 +100,12 @@ class _BrowserPageState extends State<BrowserPage> {
   void _initializeWebView() {
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      // 设置桌面版用户代理，使网站显示完整版而非移动版
+      ..setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36')
+      // 启用JavaScript和DOM存储
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      // 配置WebView设置
+      ..setBackgroundColor(const Color(0x00000000))
       ..setNavigationDelegate(
         NavigationDelegate(
           onProgress: (progress) {
@@ -68,6 +119,7 @@ class _BrowserPageState extends State<BrowserPage> {
               _isLoading = true;
               _currentUrl = url;
               _urlController.text = url;
+              _showHomePage = false; // 页面开始加载时隐藏首页
             });
           },
           onPageFinished: (url) {
@@ -75,9 +127,21 @@ class _BrowserPageState extends State<BrowserPage> {
               _isLoading = false;
               _currentUrl = url;
             });
+            // 注入JavaScript以启用表单自动填充和Cookie支持
+            _controller.runJavaScript('''
+              document.querySelectorAll('input').forEach(function(input) {
+                input.autocomplete = 'on';
+              });
+            ''');
           },
           onWebResourceError: (error) {
             debugPrint('WebView错误: ${error.description}');
+            // 显示错误信息给用户
+            if (!_showHomePage) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('加载页面时出错: ${error.description}')),
+              );
+            }
           },
           // 使用onNavigationRequest处理下载请求
           onNavigationRequest: (NavigationRequest request) {
@@ -91,14 +155,186 @@ class _BrowserPageState extends State<BrowserPage> {
           },
         ),
       )
-      ..loadRequest(Uri.parse(_currentUrl));
+      // 启用本地存储
+      ..addJavaScriptChannel(
+        'Flutter', 
+        onMessageReceived: (JavaScriptMessage message) {
+          debugPrint('来自JavaScript的消息: ${message.message}');
+        },
+      );
+    // 不再在初始化时立即加载URL
+  }
+
+  // 加载指定URL并隐藏首页
+  void _loadUrl(String url) {
+    String processedUrl = url;
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      processedUrl = 'https://$url';
+    }
+    _controller.loadRequest(Uri.parse(processedUrl));
+    setState(() {
+      _showHomePage = false;
+      _currentUrl = processedUrl;
+      _urlController.text = processedUrl;
+    });
+  }
+
+  // 返回首页
+  void _goToHomePage() {
+    setState(() {
+      _showHomePage = true;
+    });
+  }
+
+  // 构建常用网站列表页面
+  Widget _buildHomePage() {
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                '常用网站',
+                style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+              ),
+              Row(
+                children: [
+                  IconButton(
+                    icon: Icon(_isEditMode ? Icons.done : Icons.edit),
+                    onPressed: _toggleEditMode,
+                    tooltip: _isEditMode ? '完成编辑' : '编辑网站',
+                  ),
+                  if (_isEditMode)
+                    IconButton(
+                      icon: Icon(Icons.add),
+                      onPressed: () => _showAddWebsiteDialog(context),
+                      tooltip: '添加网站',
+                    ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: _isEditMode
+              ? ReorderableListView.builder(
+                  padding: const EdgeInsets.all(16.0),
+                  itemCount: _commonWebsites.length,
+                  itemBuilder: (context, index) {
+                    final website = _commonWebsites[index];
+                    return _buildEditableWebsiteItem(website, index);
+                  },
+                  onReorder: _reorderWebsites,
+                )
+              : GridView.builder(
+                  padding: const EdgeInsets.all(16.0),
+                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 3,
+                    childAspectRatio: 1.0,
+                    crossAxisSpacing: 16.0,
+                    mainAxisSpacing: 16.0,
+                  ),
+                  itemCount: _commonWebsites.length,
+                  itemBuilder: (context, index) {
+                    final website = _commonWebsites[index];
+                    return _buildWebsiteCard(website);
+                  },
+                ),
+        ),
+      ],
+    );
+  }
+
+  // 显示添加网站对话框
+  void _showAddWebsiteDialog(BuildContext context) {
+    final nameController = TextEditingController();
+    final urlController = TextEditingController();
+    
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('添加网站'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: nameController,
+              decoration: InputDecoration(labelText: '网站名称'),
+            ),
+            TextField(
+              controller: urlController,
+              decoration: InputDecoration(labelText: '网站地址'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text('取消'),
+          ),
+          TextButton(
+            onPressed: () {
+              if (nameController.text.isNotEmpty && urlController.text.isNotEmpty) {
+                _addWebsite(nameController.text, urlController.text, Icons.web);
+                Navigator.pop(context);
+              }
+            },
+            child: Text('添加'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // 构建可编辑的网站列表项
+  Widget _buildEditableWebsiteItem(Map<String, dynamic> website, int index) {
+    return ListTile(
+      key: ValueKey(website['url']),
+      leading: Icon(website['icon']),
+      title: Text(website['name']),
+      subtitle: Text(website['url']),
+      trailing: IconButton(
+        icon: Icon(Icons.delete),
+        onPressed: () => _removeWebsite(index),
+      ),
+    );
+  }
+
+  // 构建网站卡片
+  Widget _buildWebsiteCard(Map<String, dynamic> website) {
+    return InkWell(
+      onTap: () => _loadUrl(website['url']),
+      child: Card(
+        elevation: 4.0,
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              website['icon'],
+              size: 40,
+              color: Theme.of(context).primaryColor,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              website['name'],
+              style: const TextStyle(fontSize: 16),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _loadBookmarks() async {
     // 这里可以从SharedPreferences或数据库加载书签
     // 示例代码，实际应用中应该从持久化存储加载
     setState(() {
-      _bookmarks.addAll(['https://www.baidu.com', 'https://www.bilibili.com']);
+      if (_bookmarks.isEmpty) {
+        _bookmarks.addAll(['https://www.baidu.com', 'https://www.bilibili.com']);
+      }
     });
   }
 
@@ -436,79 +672,84 @@ class _BrowserPageState extends State<BrowserPage> {
       key: _scaffoldKey,
       appBar: AppBar(
         title: const Text('网页浏览器'),
+        leading: _showHomePage ? null : IconButton(
+          icon: const Icon(Icons.home),
+          onPressed: _goToHomePage,
+        ),
         actions: [
           IconButton(
             icon: const Icon(Icons.bookmark),
             onPressed: () => _showBookmarks(),
           ),
-          IconButton(
+          if (!_showHomePage) IconButton(
             icon: const Icon(Icons.bookmark_add),
             onPressed: () => _addBookmark(_currentUrl),
           ),
+          if (_showHomePage) IconButton(
+            icon: Icon(_isEditMode ? Icons.done : Icons.edit),
+            onPressed: _toggleEditMode,
+            tooltip: _isEditMode ? '完成编辑' : '编辑常用网站',
+          ),
         ],
       ),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(8.0),
-            child: Row(
-              children: [
-                IconButton(
-                  icon: const Icon(Icons.arrow_back),
-                  onPressed: () async {
-                    if (await _controller.canGoBack()) {
-                      _controller.goBack();
-                    }
-                  },
-                ),
-                IconButton(
-                  icon: const Icon(Icons.arrow_forward),
-                  onPressed: () async {
-                    if (await _controller.canGoForward()) {
-                      _controller.goForward();
-                    }
-                  },
-                ),
-                IconButton(
-                  icon: const Icon(Icons.refresh),
-                  onPressed: () => _controller.reload(),
-                ),
-                Expanded(
-                  child: TextField(
-                    controller: _urlController,
-                    decoration: const InputDecoration(
-                      hintText: '输入网址',
-                      contentPadding: EdgeInsets.symmetric(horizontal: 8),
-                      border: OutlineInputBorder(),
-                    ),
-                    onSubmitted: (url) {
-                      String processedUrl = url;
-                      if (!url.startsWith('http://') && !url.startsWith('https://')) {
-                        processedUrl = 'https://$url';
+      body: _showHomePage 
+        ? _buildHomePage() 
+        : Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(8.0),
+              child: Row(
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.arrow_back),
+                    onPressed: () async {
+                      if (await _controller.canGoBack()) {
+                        _controller.goBack();
+                      } else {
+                        _goToHomePage();
                       }
-                      _controller.loadRequest(Uri.parse(processedUrl));
                     },
                   ),
-                ),
-                IconButton(
-                  icon: const Icon(Icons.search),
-                  onPressed: () {
-                    String url = _urlController.text;
-                    if (!url.startsWith('http://') && !url.startsWith('https://')) {
-                      url = 'https://$url';
-                    }
-                    _controller.loadRequest(Uri.parse(url));
-                  },
-                ),
-              ],
+                  IconButton(
+                    icon: const Icon(Icons.arrow_forward),
+                    onPressed: () async {
+                      if (await _controller.canGoForward()) {
+                        _controller.goForward();
+                      }
+                    },
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.refresh),
+                    onPressed: () => _controller.reload(),
+                  ),
+                  Expanded(
+                    child: TextField(
+                      controller: _urlController,
+                      decoration: const InputDecoration(
+                        hintText: '输入网址',
+                        contentPadding: EdgeInsets.symmetric(horizontal: 8),
+                        border: OutlineInputBorder(),
+                      ),
+                      onSubmitted: (url) {
+                        _loadUrl(url);
+                      },
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.search),
+                    onPressed: () {
+                      _loadUrl(_urlController.text);
+                    },
+                  ),
+                ],
+              ),
             ),
-          ),
-          if (_isLoading) LinearProgressIndicator(value: _loadingProgress),
-          Expanded(
-            child: WebViewWidget(controller: _controller),
-          ),
-        ],
-      ),
+            if (_isLoading) LinearProgressIndicator(value: _loadingProgress),
+            Expanded(
+              child: WebViewWidget(controller: _controller),
+            ),
+          ],
+        ),
     );
   }
 
