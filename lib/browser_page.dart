@@ -199,12 +199,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           },
           onWebResourceError: (error) {
             debugPrint('WebView错误: ${error.description}');
-            // 显示错误信息给用户
-            if (!_showHomePage) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('加载页面时出错: ${error.description}')),
-              );
-            }
+            // 不再显示错误信息给用户
+            // 只保留日志记录，去除错误提示
           },
           // 使用onNavigationRequest处理下载请求
           onNavigationRequest: (NavigationRequest request) {
