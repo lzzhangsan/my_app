@@ -16,9 +16,13 @@ import 'core/service_locator.dart';
 import 'services/database_service.dart';
 import 'models/media_item.dart';
 import 'models/media_type.dart';
+import 'main.dart'; // 添加导入以访问MainScreen
 
 class BrowserPage extends StatefulWidget {
-  const BrowserPage({Key? key}) : super(key: key);
+  // Define the callback parameter
+  final ValueChanged<bool>? onBrowserHomePageChanged;
+
+  const BrowserPage({Key? key, this.onBrowserHomePageChanged}) : super(key: key);
 
   @override
   _BrowserPageState createState() => _BrowserPageState();
@@ -36,6 +40,15 @@ class _BrowserPageState extends State<BrowserPage> {
   
   // 控制是否显示首页（常用网站列表）
   bool _showHomePage = true;
+  
+  // 添加状态变量，记录是否正在浏览具体网页
+  bool _isBrowsingWebPage = false;
+  
+  // 添加状态变量，记录是否应该保持网页状态
+  bool _shouldKeepWebPageState = false;
+  
+  // 添加状态变量，记录上次浏览的URL，用于恢复
+  String? _lastBrowsedUrl;
   
   // 常用网站列表数据
   final List<Map<String, dynamic>> _commonWebsites = [
@@ -354,7 +367,7 @@ class _BrowserPageState extends State<BrowserPage> {
     }
   }
 
-  // 加载指定URL并隐藏首页
+  // 修改加载URL的方法
   void _loadUrl(String url) {
     String processedUrl = url;
     if (!url.startsWith('http://') && !url.startsWith('https://')) {
@@ -364,15 +377,12 @@ class _BrowserPageState extends State<BrowserPage> {
     // 为电报网站设置特殊处理，强制使用移动版
     if (processedUrl.contains('telegram.org') || processedUrl.contains('t.me') || processedUrl.contains('web.telegram.org')) {
       debugPrint('检测到电报网站，强制使用移动版');
-      // 如果是电报网站，使用特殊的移动版用户代理
       _controller.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 13_2_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0.3 Mobile/15E148 Safari/604.1');
       
-      // 如果是web.telegram.org，重定向到移动版URL
       if (processedUrl.contains('web.telegram.org')) {
         processedUrl = 'https://web.telegram.org/a/';
       }
     } else {
-      // 恢复默认的移动版用户代理
       _controller.setUserAgent('Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36');
     }
     
@@ -381,109 +391,183 @@ class _BrowserPageState extends State<BrowserPage> {
       _showHomePage = false;
       _currentUrl = processedUrl;
       _urlController.text = processedUrl;
+      _isBrowsingWebPage = true;
+      _shouldKeepWebPageState = true;
+      _lastBrowsedUrl = processedUrl;
+      debugPrint('[_loadUrl] Loaded: $processedUrl, _showHomePage: $_showHomePage, _isBrowsingWebPage: $_isBrowsingWebPage');
     });
+    // Notify parent about the state change: no longer home page
+    widget.onBrowserHomePageChanged?.call(_showHomePage);
+    debugPrint('[_loadUrl] Called onBrowserHomePageChanged(${_showHomePage})');
   }
 
-  // 返回首页
+  // 修改返回首页的方法
   Future<void> _goToHomePage() async {
-    // 只有在用户主动点击主页按钮时才返回首页
+    debugPrint('[_goToHomePage] Called. Current _showHomePage: $_showHomePage');
+    // Only go to home page if not already there
     if (!_showHomePage) {
-      // 先保存当前状态
+      // Save current common websites state
       await _saveCommonWebsites();
-      debugPrint('已保存常用网站');
-      
-      // 重新加载书签和常用网站
+      debugPrint('[_goToHomePage] 已保存常用网站');
+
+      // Reload bookmarks and common websites
       await _loadBookmarks();
-      
-      // 切换到首页
+      debugPrint('[_goToHomePage] 已重新加载书签和常用网站');
+
+      // Switch to common websites home view, keep web view instance state
       setState(() {
-        _showHomePage = true;
+        _showHomePage = true; // Show common websites home view
+        debugPrint('[_goToHomePage] setState _showHomePage = true');
+        // _isBrowsingWebPage and _shouldKeepWebPageState keep current value
       });
-      
-      debugPrint('已返回首页并刷新数据');
+
+      // Notify parent about the state change: now home page
+      widget.onBrowserHomePageChanged?.call(_showHomePage);
+      debugPrint('[_goToHomePage] Called onBrowserHomePageChanged(${_showHomePage})');
+
+      debugPrint('[_goToHomePage] 已返回常用网站首页视图，保持网页实例状态');
     }
+  }
+
+  // 修改恢复网页浏览的方法 (called by the floating action button)
+  void _restoreWebPage() {
+    debugPrint('[_restoreWebPage] Called. Current _showHomePage: $_showHomePage, _isBrowsingWebPage: $_isBrowsingWebPage, _shouldKeepWebPageState: $_shouldKeepWebPageState');
+    // Only restore if currently on home page and a web page was previously browsed and kept
+    if (_showHomePage && _isBrowsingWebPage && _shouldKeepWebPageState) {
+      setState(() {
+        _showHomePage = false; // Switch back to web view
+        debugPrint('[_restoreWebPage] setState _showHomePage = false');
+      });
+      // Notify parent about the state change: no longer home page
+      widget.onBrowserHomePageChanged?.call(_showHomePage);
+      debugPrint('[_restoreWebPage] Called onBrowserHomePageChanged(${_showHomePage})');
+      debugPrint('[_restoreWebPage] 恢复网页浏览状态');
+    } else {
+      debugPrint('[_restoreWebPage] Cannot restore web page. State: _showHomePage: $_showHomePage, _isBrowsingWebPage: $_isBrowsingWebPage, _shouldKeepWebPageState: $_shouldKeepWebPageState');
+    }
+  }
+
+  // 修改完全退出网页的方法 (called by the red X button)
+  void _exitWebPage() {
+    debugPrint('[_exitWebPage] Called.');
+    // Clean up web view state and return to common websites home view
+    setState(() {
+      _showHomePage = true; // Show common websites home
+      _isBrowsingWebPage = false; // Not browsing a specific web page anymore
+      _shouldKeepWebPageState = false; // No need to keep web view state
+      _lastBrowsedUrl = null; // Clear last browsed URL
+
+      // Clear WebView history, cache, and local storage to ensure full reset
+      _controller.clearCache();
+      _controller.clearLocalStorage();
+      debugPrint('[_exitWebPage] setState _showHomePage = true, states reset');
+      // Reset current URL and address bar text
+      _currentUrl = 'https://www.baidu.com'; // Or other default URL
+      _urlController.text = _currentUrl;
+    });
+    // Notify parent about the state change: now home page
+    widget.onBrowserHomePageChanged?.call(_showHomePage);
+    debugPrint('[_exitWebPage] Called onBrowserHomePageChanged(${_showHomePage})');
+    debugPrint('[_exitWebPage] Completely exited web view and returned to common websites home view');
   }
 
   // 构建常用网站列表页面
   Widget _buildHomePage() {
-    return Column(
+    return Stack(
       children: [
-        Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(
-                '常用网站',
-                style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-              ),
-              Row(
+        Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  IconButton(
-                    icon: Icon(_isEditMode ? Icons.done : Icons.edit),
-                    onPressed: () async {
-                      // 显示加载指示器
-                      showDialog(
-                        context: context,
-                        barrierDismissible: false,
-                        builder: (BuildContext context) {
-                          return const AlertDialog(
-                            content: Row(
-                              children: [
-                                CircularProgressIndicator(),
-                                SizedBox(width: 20),
-                                Text("处理中..."),
-                              ],
-                            ),
-                          );
-                        },
-                      );
-                      
-                      // 切换编辑模式并等待完成
-                      await _toggleEditMode();
-                      
-                      // 关闭加载指示器
-                      Navigator.of(context).pop();
-                    },
-                    tooltip: _isEditMode ? '完成编辑' : '编辑网站',
+                  Text(
+                    '常用网站',
+                    style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
                   ),
-                  if (_isEditMode)
-                    IconButton(
-                      icon: Icon(Icons.add),
-                      onPressed: () => _showAddWebsiteDialog(context),
-                      tooltip: '添加网站',
-                    ),
+                  Row(
+                    children: [
+                      IconButton(
+                        icon: Icon(_isEditMode ? Icons.done : Icons.edit),
+                        onPressed: () async {
+                          debugPrint('[_AppBar] Edit button pressed.');
+                           // 显示加载指示器
+                            showDialog(
+                              context: context,
+                              barrierDismissible: false,
+                              builder: (BuildContext context) {
+                                return const AlertDialog(
+                                  content: Row(
+                                    children: [
+                                      CircularProgressIndicator(),
+                                      SizedBox(width: 20),
+                                      Text("处理中..."),
+                                    ],
+                                  ),
+                                );
+                              },
+                            );
+
+                            // 切换编辑模式并等待完成
+                            await _toggleEditMode();
+
+                            // 关闭加载指示器
+                            Navigator.of(context).pop();
+                        },
+                        tooltip: _isEditMode ? '完成编辑' : '编辑网站',
+                      ),
+                      if (_isEditMode)
+                        IconButton(
+                          icon: const Icon(Icons.add),
+                          onPressed: () => _showAddWebsiteDialog(context),
+                          tooltip: '添加网站',
+                        ),
+                    ],
+                  ),
                 ],
               ),
-            ],
+            ),
+            Expanded(
+              child: _isEditMode
+                  ? ReorderableListView.builder(
+                      padding: const EdgeInsets.all(16.0),
+                      itemCount: _commonWebsites.length,
+                      itemBuilder: (context, index) {
+                        final website = _commonWebsites[index];
+                        return _buildEditableWebsiteItem(website, index);
+                      },
+                      onReorder: _reorderWebsites,
+                    )
+                  : GridView.builder(
+                      padding: const EdgeInsets.all(16.0),
+                      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(                        crossAxisCount: 3,
+                        childAspectRatio: 1.0,
+                        crossAxisSpacing: 16.0,
+                        mainAxisSpacing: 16.0,
+                      ),
+                      itemCount: _commonWebsites.length,
+                      itemBuilder: (context, index) {
+                        final website = _commonWebsites[index];
+                        return _buildWebsiteCard(website);
+                      },
+                    ),
+            ),
+          ],
+        ),
+        // 添加返回网页的浮动操作按钮，只在有未退出网页时显示
+        if (_isBrowsingWebPage && _shouldKeepWebPageState)
+          Positioned(
+            bottom: 16.0, // 调整位置
+            right: 16.0,
+            child: FloatingActionButton(
+              onPressed: () {
+                _restoreWebPage(); // 切换回网页视图
+              },
+              tooltip: '返回上次浏览的网页',
+              child: const Icon(Icons.arrow_right_alt), // 修改图标为向右的箭头
+            ),
           ),
-        ),
-        Expanded(
-          child: _isEditMode
-              ? ReorderableListView.builder(
-                  padding: const EdgeInsets.all(16.0),
-                  itemCount: _commonWebsites.length,
-                  itemBuilder: (context, index) {
-                    final website = _commonWebsites[index];
-                    return _buildEditableWebsiteItem(website, index);
-                  },
-                  onReorder: _reorderWebsites,
-                )
-              : GridView.builder(
-                  padding: const EdgeInsets.all(16.0),
-                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: 3,
-                    childAspectRatio: 1.0,
-                    crossAxisSpacing: 16.0,
-                    mainAxisSpacing: 16.0,
-                  ),
-                  itemCount: _commonWebsites.length,
-                  itemBuilder: (context, index) {
-                    final website = _commonWebsites[index];
-                    return _buildWebsiteCard(website);
-                  },
-                ),
-        ),
       ],
     );
   }
@@ -565,53 +649,38 @@ class _BrowserPageState extends State<BrowserPage> {
     );
   }
 
-  // 构建可编辑的网站列表项
+  // 修改构建可编辑的网站列表项的方法，统一图标
   Widget _buildEditableWebsiteItem(Map<String, dynamic> website, int index) {
-    // 使用预定义图标
-    IconData iconData = Icons.web;
-    // 如果有iconCode，尝试使用它，但确保不会创建非常量IconData
-    if (website.containsKey('iconCode') && website['iconCode'] is int) {
-      // 根据常见图标的codePoint选择预定义图标
-      final int codePoint = website['iconCode'];
-      if (codePoint == Icons.search.codePoint) {
-        iconData = Icons.search;
-      } else if (codePoint == Icons.language.codePoint) {
-        iconData = Icons.language;
-      } else if (codePoint == Icons.public.codePoint) {
-        iconData = Icons.public;
-      } else {
-        // 默认使用web图标
-        iconData = Icons.web;
-      }
-    }
-    
+    // 使用统一的网络图标
+    IconData iconData = Icons.public; // 统一使用网络图标
+
     return ListTile(
       key: ValueKey(website['url']),
       leading: Icon(iconData),
       title: Text(website['name']),
       subtitle: Text(website['url']),
       trailing: IconButton(
-        icon: Icon(Icons.delete, color: Colors.red),
+        icon: const Icon(Icons.delete, color: Colors.red),
         onPressed: () async {
           // 显示确认对话框
           final shouldDelete = await showDialog<bool>(
             context: context,
             builder: (context) => AlertDialog(
-              title: Text('删除网站'),
+              title: const Text('删除网站'),
               content: Text('确定要删除 ${website['name']} 吗？'),
               actions: [
                 TextButton(
                   onPressed: () => Navigator.pop(context, false),
-                  child: Text('取消'),
+                  child: const Text('取消'),
                 ),
                 TextButton(
                   onPressed: () => Navigator.pop(context, true),
-                  child: Text('删除'),
+                  child: const Text('删除'),
                 ),
               ],
             ),
           ) ?? false;
-          
+
           if (shouldDelete) {
             // 显示加载指示器
             showDialog(
@@ -629,16 +698,16 @@ class _BrowserPageState extends State<BrowserPage> {
                 );
               },
             );
-            
+
             // 等待删除网站完成
             await _removeWebsite(index);
-            
+
             // 关闭加载指示器
             Navigator.of(context).pop();
-            
+
             // 显示成功消息
             ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('网站已删除')),
+              const SnackBar(content: Text('网站已删除')),
             );
           }
         },
@@ -646,26 +715,11 @@ class _BrowserPageState extends State<BrowserPage> {
     );
   }
 
-  // 构建网站卡片
+  // 修改构建网站卡片的方法，统一图标
   Widget _buildWebsiteCard(Map<String, dynamic> website) {
-    // 使用预定义图标
-    IconData iconData = Icons.web;
-    // 如果有iconCode，尝试使用它，但确保不会创建非常量IconData
-    if (website.containsKey('iconCode') && website['iconCode'] is int) {
-      // 根据常见图标的codePoint选择预定义图标
-      final int codePoint = website['iconCode'];
-      if (codePoint == Icons.search.codePoint) {
-        iconData = Icons.search;
-      } else if (codePoint == Icons.language.codePoint) {
-        iconData = Icons.language;
-      } else if (codePoint == Icons.public.codePoint) {
-        iconData = Icons.public;
-      } else {
-        // 默认使用web图标
-        iconData = Icons.web;
-      }
-    }
-    
+    // 使用统一的网络图标
+    IconData iconData = Icons.public; // 统一使用网络图标
+
     return InkWell(
       onTap: () => _loadUrl(website['url']),
       child: Card(
@@ -690,11 +744,12 @@ class _BrowserPageState extends State<BrowserPage> {
     );
   }
 
+  // 修改加载常用网站的方法
   Future<void> _loadBookmarks() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final bookmarksList = prefs.getStringList('bookmarks');
-      
+
       setState(() {
         if (bookmarksList != null && bookmarksList.isNotEmpty) {
           _bookmarks.clear();
@@ -705,17 +760,22 @@ class _BrowserPageState extends State<BrowserPage> {
           _saveBookmarks(); // 保存默认书签
         }
       });
-      
+
       // 加载常用网站
       final commonWebsitesJson = prefs.getString('common_websites');
       debugPrint('加载到的常用网站JSON: $commonWebsitesJson');
-      
+
       try {
         if (commonWebsitesJson != null && commonWebsitesJson.isNotEmpty) {
           final List<dynamic> decoded = jsonDecode(commonWebsitesJson);
           setState(() {
             _commonWebsites.clear();
-            _commonWebsites.addAll(decoded.map((item) => Map<String, dynamic>.from(item)).toList());
+            // 加载时不再需要 iconCode，统一使用默认图标
+            _commonWebsites.addAll(decoded.map((item) => {
+              'name': item['name'],
+              'url': item['url'],
+              'iconCode': Icons.public.codePoint, // 保存时仍然保存一个默认的iconCode
+            }).toList());
           });
           debugPrint('成功加载${_commonWebsites.length}个常用网站');
         }
@@ -724,20 +784,20 @@ class _BrowserPageState extends State<BrowserPage> {
         // 出错时清除可能损坏的数据
         await prefs.remove('common_websites');
       }
-      
-      // 如果没有加载到常用网站或列表为空，使用默认值
+
+      // 如果没有加载到常用网站或列表为空，使用默认值并统一图标
       if (_commonWebsites.isEmpty) {
         debugPrint('使用默认常用网站');
         setState(() {
           _commonWebsites.clear();
-          // 使用代码点而不是IconData对象
+          // 使用代码点而不是IconData对象，但统一为公共网络图标
           _commonWebsites.addAll([
-            {'name': 'Google', 'url': 'https://www.google.com', 'iconCode': Icons.search.codePoint},
+            {'name': 'Google', 'url': 'https://www.google.com', 'iconCode': Icons.public.codePoint},
             {'name': 'Edge', 'url': 'https://www.bing.com', 'iconCode': Icons.public.codePoint},
             {'name': 'X', 'url': 'https://twitter.com', 'iconCode': Icons.public.codePoint},
             {'name': 'Facebook', 'url': 'https://www.facebook.com', 'iconCode': Icons.public.codePoint},
             {'name': 'Telegram', 'url': 'https://web.telegram.org', 'iconCode': Icons.public.codePoint},
-            {'name': '百度', 'url': 'https://www.baidu.com', 'iconCode': Icons.search.codePoint}
+            {'name': '百度', 'url': 'https://www.baidu.com', 'iconCode': Icons.public.codePoint}
           ]);
         });
         // 保存默认常用网站
@@ -748,47 +808,29 @@ class _BrowserPageState extends State<BrowserPage> {
       debugPrint('加载书签和常用网站时出错: $e');
     }
   }
-  
-  // 保存书签到SharedPreferences
-  Future<void> _saveBookmarks() async {
-    try {
-      debugPrint('开始保存书签...');
-      final prefs = await SharedPreferences.getInstance();
-      final result = await prefs.setStringList('bookmarks', _bookmarks);
-      if (result) {
-        debugPrint('书签保存成功');
-      } else {
-        debugPrint('书签保存失败: SharedPreferences返回false');
-      }
-    } catch (e) {
-      debugPrint('保存书签时出错: $e');
-      // 在调试模式下显示错误堆栈跟踪
-      debugPrintStack(label: '保存书签错误堆栈');
-    }
-  }
-  
-  // 保存常用网站到SharedPreferences
+
+  // 修改保存常用网站的方法
   Future<void> _saveCommonWebsites() async {
     try {
       debugPrint('开始保存常用网站...');
       final prefs = await SharedPreferences.getInstance();
-      
-      // 确保所有网站数据格式一致，只保存必要的字段
+
+      // 确保所有网站数据格式一致，只保存必要的字段，并统一保存iconCode
       final cleanedWebsites = _commonWebsites.map((site) {
         return {
           'name': site['name'],
           'url': site['url'],
-          'iconCode': site['iconCode'] ?? Icons.web.codePoint,
+          'iconCode': Icons.public.codePoint, // 统一保存为公共网络图标的代码点
         };
       }).toList();
-      
+
       final jsonString = jsonEncode(cleanedWebsites);
       debugPrint('常用网站JSON: $jsonString');
-      
+
       // 先清除旧数据，再保存新数据
       await prefs.remove('common_websites');
       final result = await prefs.setString('common_websites', jsonString);
-      
+
       if (result) {
         debugPrint('常用网站保存成功');
       } else {
@@ -1072,14 +1114,6 @@ class _BrowserPageState extends State<BrowserPage> {
       final filePath = '${mediaDir.path}/$uuid$extension';
       debugPrint('将下载到文件路径: $filePath');
 
-      // 显示下载进度
-      // dio.onDownloadProgress = (received, total) {
-      //   if (total != -1) {
-      //     final progress = received / total;
-      //     debugPrint('下载进度: ${(progress * 100).toStringAsFixed(2)}%');
-      //   }
-      // };
-
       // 执行下载
       final response = await dio.download(
         url, 
@@ -1216,117 +1250,223 @@ class _BrowserPageState extends State<BrowserPage> {
     );
   }
 
+  // 保存书签到SharedPreferences
+  Future<void> _saveBookmarks() async {
+    try {
+      debugPrint('开始保存书签...');
+      final prefs = await SharedPreferences.getInstance();
+      final result = await prefs.setStringList('bookmarks', _bookmarks);
+      if (result) {
+        debugPrint('书签保存成功');
+      } else {
+        debugPrint('书签保存失败: SharedPreferences返回false');
+      }
+    } catch (e) {
+      debugPrint('保存书签时出错: $e');
+      // 在调试模式下显示错误堆栈跟踪
+      debugPrintStack(label: '保存书签错误堆栈');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      key: _scaffoldKey,
-      appBar: AppBar(
-        title: const Text('网页浏览器'),
-        leading: _showHomePage ? null : IconButton(
-          icon: const Icon(Icons.home),
-          onPressed: () async {
-            // 显示加载指示器
-            showDialog(
-              context: context,
-              barrierDismissible: false,
-              builder: (BuildContext context) {
-                return const AlertDialog(
-                  content: Row(
-                    children: [
-                      CircularProgressIndicator(),
-                      SizedBox(width: 20),
-                      Text("保存中..."),
-                    ],
-                  ),
-                );
-              },
-            );
-            
-            // 等待返回首页并保存完成
-            await _goToHomePage();
-            
-            // 关闭加载指示器
-            Navigator.of(context).pop();
-          },
+    debugPrint('[_BrowserPage.build] _showHomePage: $_showHomePage, _isBrowsingWebPage: $_isBrowsingWebPage, _shouldKeepWebPageState: $_shouldKeepWebPageState');
+
+    // Notify parent about the initial state and whenever _showHomePage changes
+    // This will be called on initial build and subsequent rebuilds that change _showHomePage
+    // We can remove the addPostFrameCallback here as state changes in _loadUrl, _goToHomePage, _exitWebPage will trigger rebuild and callback
+    // WidgetsBinding.instance.addPostFrameCallback((_) {
+    //   widget.onBrowserHomePageChanged?.call(_showHomePage);
+    //   debugPrint('[_BrowserPage.build] addPostFrameCallback called. onBrowserHomePageChanged(${_showHomePage})');
+    // });
+
+    return WillPopScope(
+      // 处理Android物理返回按钮事件
+      onWillPop: () async {
+        debugPrint('[_WillPopScope] onWillPop called. Current _showHomePage: $_showHomePage');
+        if (!_showHomePage) {
+          // 如果当前在浏览具体网页视图
+          // 尝试在网页内部后退
+          if (await _controller.canGoBack()) {
+            debugPrint('[_WillPopScope] canGoBack is true, going back in webview.');
+            _controller.goBack();
+            return false; // 拦截返回事件，留在当前网页
+          } else {
+            // 如果不能在网页内部后退，则回到常用网站首页视图
+            debugPrint('[_WillPopScope] canGoBack is false, going to home page.');
+            _goToHomePage();
+            return false; // 拦截返回事件，留在BrowserPage但切换视图
+          }
+        }
+        // 如果当前在常用网站首页视图，允许WillPopScope事件继续，从而退出BrowserPage这个PageView的页面
+        debugPrint('[_WillPopScope] On home page, allowing pop.');
+        return true;
+      },
+      child: Scaffold(
+        key: _scaffoldKey,
+        appBar: AppBar(
+          titleSpacing: 0, // 移除title的padding
+          title: _showHomePage
+              ? const Text('网页浏览器') // 在常用网站首页显示标题
+              : const SizedBox.shrink(), // 在浏览网页时隐藏文字标题
+          leading: IconButton(
+            icon: const Icon(Icons.home), // 始终显示主页按钮 (房子图标)
+            onPressed: () async {
+              debugPrint('[_AppBar] Home button pressed.');
+              // 点击主页按钮总是回到常用网站首页视图，并保持网页实例状态
+              _goToHomePage();
+              // MainScreen的状态会在_goToHomePage内部和build方法的addPostFrameCallback中更新
+            },
+            tooltip: '回到主页',
+          ),
+          centerTitle: true, // 标题或红色X按钮居中
+          actions: [
+            // 在浏览网页时显示红色X按钮
+            if (!_showHomePage)
+              IconButton(
+                icon: const Icon(Icons.close, color: Colors.red), // 红色X按钮
+                onPressed: () {
+                  debugPrint('[_AppBar] Close button pressed.');
+                  // 点击红色X按钮，完全退出当前网页并回到常用网站首页视图
+                  _exitWebPage();
+                  // MainScreen的状态会在_exitWebPage内部和build方法的addPostFrameCallback中更新
+                },
+                tooltip: '退出网页',
+              ),
+            // 书签按钮始终显示
+            IconButton(
+              icon: const Icon(Icons.bookmark),
+              onPressed: () => _showBookmarks(),
+              tooltip: '显示书签',
+            ),
+            // 在浏览网页时显示添加书签按钮
+            if (!_showHomePage) IconButton(
+              icon: const Icon(Icons.bookmark_add),
+              onPressed: () => _addBookmark(_currentUrl),
+              tooltip: '添加书签',
+            ),
+            // 在常用网站首页时显示编辑按钮
+            if (_showHomePage)
+              IconButton(
+                icon: Icon(_isEditMode ? Icons.done : Icons.edit),
+                onPressed: () async {
+                  debugPrint('[_AppBar] Edit button pressed.');
+                  // 显示加载指示器
+                  showDialog(
+                    context: context,
+                    barrierDismissible: false,
+                    builder: (BuildContext context) {
+                      return const AlertDialog(
+                        content: Row(
+                          children: [
+                            CircularProgressIndicator(),
+                            SizedBox(width: 20),
+                            Text("处理中..."),
+                          ],
+                        ),
+                      );
+                    },
+                  );
+
+                  // 切换编辑模式并等待完成
+                  await _toggleEditMode();
+
+                  // 关闭加载指示器
+                  Navigator.of(context).pop();
+                },
+                tooltip: _isEditMode ? '完成编辑' : '编辑网站',
+              ),
+            // 在常用网站首页编辑模式时显示添加网站按钮
+            if (_showHomePage && _isEditMode)
+              IconButton(
+                icon: const Icon(Icons.add),
+                onPressed: () => _showAddWebsiteDialog(context),
+                tooltip: '添加网站',
+              ),
+          ],
         ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.bookmark),
-            onPressed: () => _showBookmarks(),
-          ),
-          if (!_showHomePage) IconButton(
-            icon: const Icon(Icons.bookmark_add),
-            onPressed: () => _addBookmark(_currentUrl),
-          ),
-          // 移除AppBar中的编辑图标，只保留_buildHomePage中的那个
-        ],
-      ),
-      body: _showHomePage 
-        ? _buildHomePage() 
-        : Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.all(8.0),
-              child: Row(
+        body: _showHomePage
+            ? _buildHomePage() // 显示常用网站首页视图 (GridView/ListView)
+            : Column(// 当_showHomePage为false时，显示网页视图
                 children: [
-                  IconButton(
-                    icon: const Icon(Icons.arrow_back),
-                    onPressed: () async {
-                      if (await _controller.canGoBack()) {
-                        _controller.goBack();
-                      } else {
-                        _goToHomePage();
-                      }
-                    },
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.arrow_forward),
-                    onPressed: () async {
-                      if (await _controller.canGoForward()) {
-                        _controller.goForward();
-                      }
-                    },
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.refresh),
-                    onPressed: () => _controller.reload(),
-                  ),
-                  Expanded(
-                    child: TextField(
-                      controller: _urlController,
-                      decoration: const InputDecoration(
-                        hintText: '输入网址',
-                        contentPadding: EdgeInsets.symmetric(horizontal: 8),
-                        border: OutlineInputBorder(),
-                      ),
-                      onSubmitted: (url) {
-                        _loadUrl(url);
-                      },
+                  // 网页工具栏 - 包含地址栏和导航按钮，只在浏览具体网页时显示
+                  Padding(
+                    padding: const EdgeInsets.all(8.0),
+                    child: Row(
+                      children: [
+                         // 后退按钮
+                        IconButton(
+                          icon: const Icon(Icons.arrow_back),
+                          onPressed: () async {
+                            debugPrint('[_Toolbar] Back button pressed.');
+                            if (await _controller.canGoBack()) {
+                              _controller.goBack();
+                            }
+                          },
+                          tooltip: '后退',
+                        ),
+                        // 前进按钮
+                        IconButton(
+                          icon: const Icon(Icons.arrow_forward),
+                          onPressed: () async {
+                            debugPrint('[_Toolbar] Forward button pressed.');
+                            if (await _controller.canGoForward()) {
+                              _controller.goForward();
+                            }
+                          },
+                          tooltip: '前进',
+                        ),
+                        // 刷新按钮
+                        IconButton(
+                          icon: const Icon(Icons.refresh),
+                          onPressed: () {
+                            debugPrint('[_Toolbar] Refresh button pressed.');
+                            _controller.reload();
+                          },
+                          tooltip: '刷新',
+                        ),
+                        // 地址栏
+                        Expanded(
+                          child: TextField(
+                            controller: _urlController,
+                            decoration: const InputDecoration(
+                              hintText: '输入网址',
+                              contentPadding: EdgeInsets.symmetric(horizontal: 8),
+                              border: OutlineInputBorder(),
+                            ),
+                            keyboardType: TextInputType.url, // 设置键盘类型为URL
+                            onSubmitted: (url) {
+                              debugPrint('[_Toolbar] Address bar submitted: $url');
+                              _loadUrl(url);
+                            },
+                          ),
+                        ),
+                        // 搜索/前往按钮
+                        IconButton(
+                          icon: const Icon(Icons.search),
+                          onPressed: () {
+                            debugPrint('[_Toolbar] Search button pressed: ${_urlController.text}');
+                            _loadUrl(_urlController.text);
+                          },
+                          tooltip: '前往',
+                        ),
+                      ],
                     ),
                   ),
-                  IconButton(
-                    icon: const Icon(Icons.search),
-                    onPressed: () {
-                      _loadUrl(_urlController.text);
-                    },
+                  if (_isLoading) LinearProgressIndicator(value: _loadingProgress),
+                  Expanded(
+                    child: WebViewWidget(controller: _controller),
                   ),
                 ],
               ),
-            ),
-            if (_isLoading) LinearProgressIndicator(value: _loadingProgress),
-            Expanded(
-              child: WebViewWidget(controller: _controller),
-            ),
-          ],
-        ),
+      ),
     );
   }
 
   @override
   void dispose() {
     _urlController.dispose();
-    // 确保在退出前保存所有数据
-    // 注意：在dispose中不能使用await，所以我们使用then来处理异步操作
+    // Ensure all data is saved before exiting
     _saveBookmarks().then((_) {
       debugPrint('书签保存完成');
     }).catchError((error) {
@@ -1338,7 +1478,11 @@ class _BrowserPageState extends State<BrowserPage> {
     }).catchError((error) {
       debugPrint('保存常用网站时出错: $error');
     });
-    
+
+    // Notify parent that BrowserPage is exiting and should be considered home page for PageView physics
+    // This is important if the app is closed while on a web page view
+    widget.onBrowserHomePageChanged?.call(true); // Assume exiting to a state where horizontal swipe is allowed from this position
+
     super.dispose();
   }
 

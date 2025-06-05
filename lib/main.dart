@@ -38,14 +38,14 @@ class MyApp extends StatelessWidget {
       theme: ThemeData(
         primarySwatch: Colors.blue,
         fontFamily: 'Roboto',
-        appBarTheme: AppBarTheme(
+        appBarTheme: const AppBarTheme(
           backgroundColor: Colors.transparent,
           elevation: 0,
         ),
       ),
       navigatorKey: navigatorKey, // 添加导航键
       debugShowCheckedModeBanner: false,
-      home: MainScreen(),
+      home: const MainScreen(),
     );
   }
 }
@@ -56,12 +56,49 @@ class MainScreen extends StatefulWidget {
   const MainScreen({super.key});
 
   @override
-  _MainScreenState createState() => _MainScreenState();
+  MainScreenState createState() => MainScreenState();
 }
 
-class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
+class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   final PageController _pageController = PageController(initialPage: 1); // 设置初始页为目录页
   int _currentPage = 1; // 设置初始页索引为1（目录页）
+  
+  // Track if BrowserPage is showing its home page
+  bool _isBrowserHomePage = true;
+
+  // Callback method to update _isBrowserHomePage and trigger rebuild
+  void _handleBrowserHomePageChanged(bool isHomePage) {
+    if (_isBrowserHomePage != isHomePage) {
+      setState(() {
+        _isBrowserHomePage = isHomePage;
+        debugPrint('[_MainScreenState] _isBrowserHomePage updated to: $_isBrowserHomePage');
+      });
+    } else {
+       debugPrint('[_MainScreenState] _isBrowserHomePage state is already $isHomePage');
+    }
+  }
+
+  // Add a static method to control PageView switching
+  // This method is less relevant now that we have direct state management
+  // but keeping it for potential external navigation needs.
+  static void goToBrowserPage(bool showHomePage) {
+    if (_mainScreenStateKey.currentState != null) {
+      _mainScreenStateKey.currentState!._goToPage(3); // Index 3 is BrowserPage
+      // The BrowserPage will update _isBrowserHomePage via callback when its build method runs after navigation
+    }
+  }
+
+  // GlobalKey for MainScreenState
+  static final GlobalKey<MainScreenState> _mainScreenStateKey = GlobalKey<MainScreenState>();
+
+  // Private method for page switching
+  void _goToPage(int index) {
+     _pageController.animateToPage(
+      index,
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.easeInOut,
+    );
+  }
 
   @override
   void initState() {
@@ -133,11 +170,15 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
+    debugPrint('[_MainScreenState.build] _currentPage: $_currentPage, _isBrowserHomePage: $_isBrowserHomePage, Calculated PageView Physics: ${_currentPage == 3 ? (_isBrowserHomePage ? 'ClampingScrollPhysics' : 'NeverScrollableScrollPhysics') : 'ClampingScrollPhysics'}');
+
     return Scaffold(
+      key: _mainScreenStateKey, // Add key to Scaffold
       body: RawKeyboardListener(
         focusNode: FocusNode(),
         autofocus: true,
         onKey: (RawKeyEvent event) {
+          // Handle keyboard navigation (left/right arrow keys)
           if (event is RawKeyDownEvent) {
             if (event.logicalKey == LogicalKeyboardKey.arrowLeft && _currentPage > 0) {
               _pageController.previousPage(
@@ -155,23 +196,31 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         child: Stack(
           alignment: Alignment.bottomCenter,
           children: [
-            // 使用PageView实现页面滑动
+            // Use PageView for page swiping
             Listener(
+              // This listener handles mouse wheel scrolling horizontally
               onPointerSignal: (pointerSignal) {
                 if (pointerSignal is PointerScrollEvent) {
-                  // 处理鼠标滚轮事件进行页面切换
-                  if (pointerSignal.scrollDelta.dx > 0 && _currentPage < 3) {
-                    // 向右滑动
-                    _pageController.nextPage(
-                      duration: const Duration(milliseconds: 300),
-                      curve: Curves.easeInOut,
-                    );
-                  } else if (pointerSignal.scrollDelta.dx < 0 && _currentPage > 0) {
-                    // 向左滑动
-                    _pageController.previousPage(
-                      duration: const Duration(milliseconds: 300),
-                      curve: Curves.easeInOut,
-                    );
+                  // Only handle horizontal mouse wheel events if it's not the BrowserPage web view
+                  // The condition means: if current page is 3 (BrowserPage) AND it's NOT the home page (!isBrowserHomePage), then DO NOT handle the event.
+                  // Otherwise (current page is not 3 OR it is BrowserPage home page), handle the event.
+                   debugPrint('[_MainScreenState] PointerScrollEvent dx: ${pointerSignal.scrollDelta.dx}, current page: $_currentPage, isBrowserHomePage: $_isBrowserHomePage');
+
+                  if (!(_currentPage == 3 && !_isBrowserHomePage)) {
+                    // Handle mouse wheel events for page switching
+                    if (pointerSignal.scrollDelta.dx > 0 && _currentPage < 3) {
+                      // Swipe right
+                      _pageController.nextPage(
+                        duration: const Duration(milliseconds: 300),
+                        curve: Curves.easeInOut,
+                      );
+                    } else if (pointerSignal.scrollDelta.dx < 0 && _currentPage > 0) {
+                      // Swipe left
+                      _pageController.previousPage(
+                        duration: const Duration(milliseconds: 300),
+                        curve: Curves.easeInOut,
+                      );
+                    }
                   }
                 }
               },
@@ -180,27 +229,32 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                 onPageChanged: (index) {
                   setState(() {
                     _currentPage = index;
+                    debugPrint('[_MainScreenState] Page changed to: $index');
                   });
-                  // 当页面切换到目录页面时，刷新它
+                  // When switching to Directory page, refresh it
                   if (index == 1) {
                     DirectoryPage.refresh();
                   }
+                  // When switching to BrowserPage (index 3), its build method will update _isBrowserHomePage via callback
                 },
-                // 根据当前页面动态设置物理效果
-                physics: _currentPage == 3 
-                  ? const NeverScrollableScrollPhysics() // 在浏览器页面禁用水平滑动
-                  : const ClampingScrollPhysics(), // 其他页面保持正常滑动
+                // Dynamically set physics based on current page and BrowserPage's internal state
+                // ClampingScrollPhysics allows horizontal swipe
+                // NeverScrollableScrollPhysics disables all scrolling
+                physics: _currentPage == 3
+                    ? (_isBrowserHomePage
+                        ? const ClampingScrollPhysics() // BrowserPage home allows horizontal swipe to MediaManager
+                        : const NeverScrollableScrollPhysics()) // BrowserPage web view disables all horizontal swipe
+                    : const ClampingScrollPhysics(), // Other pages allow normal horizontal swipe
                 children: [
-                  CoverPage(),
+                  const CoverPage(),
                   DirectoryPage(onDocumentOpen: _onDocumentOpen),
-                  MediaManagerPage(),
-                  BrowserPage(),
+                  const MediaManagerPage(),
+                  BrowserPage(onBrowserHomePageChanged: _handleBrowserHomePageChanged), // Pass the callback
                 ],
               ),
             ),
 
-          // 添加简洁的页面指示器
-          // 页面指示器 - 已注释掉，以备后用
+          // Add simple page indicator (commented out)
           /*
           Padding(
             padding: const EdgeInsets.only(bottom: 20.0),
