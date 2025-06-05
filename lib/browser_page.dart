@@ -55,14 +55,19 @@ class _BrowserPageState extends State<BrowserPage> {
     });
   }
 
-  void _removeWebsite(int index) {
+  // 删除网站并确保保存成功
+  Future<void> _removeWebsite(int index) async {
+    final removedSite = _commonWebsites[index]['name'];
     setState(() {
       _commonWebsites.removeAt(index);
     });
-    _saveCommonWebsites(); // 保存更改
+    // 确保等待保存完成
+    await _saveCommonWebsites();
+    debugPrint('已删除并保存网站: $removedSite');
   }
 
-  void _reorderWebsites(int oldIndex, int newIndex) {
+  // 移动网站并确保保存成功
+  Future<void> _reorderWebsites(int oldIndex, int newIndex) async {
     setState(() {
       if (oldIndex < newIndex) {
         newIndex -= 1;
@@ -70,14 +75,20 @@ class _BrowserPageState extends State<BrowserPage> {
       final item = _commonWebsites.removeAt(oldIndex);
       _commonWebsites.insert(newIndex, item);
     });
-    _saveCommonWebsites(); // 保存更改
+    // 确保等待保存完成
+    await _saveCommonWebsites();
+    debugPrint('已移动并保存网站从位置 $oldIndex 到 $newIndex');
   }
 
-  void _addWebsite(String name, String url, IconData icon) {
+  // 添加网站并确保保存成功
+  Future<void> _addWebsite(String name, String url, IconData icon) async {
     setState(() {
-      _commonWebsites.add({'name': name, 'url': url, 'icon': icon});
+      // 存储图标的代码点而不是IconData对象
+      _commonWebsites.add({'name': name, 'url': url, 'iconCode': icon.codePoint});
     });
-    _saveCommonWebsites(); // 保存更改
+    // 确保等待保存完成
+    await _saveCommonWebsites();
+    debugPrint('已添加并保存网站: $name');
   }
 
   @override
@@ -184,10 +195,13 @@ class _BrowserPageState extends State<BrowserPage> {
   }
 
   // 返回首页
-  void _goToHomePage() {
+  Future<void> _goToHomePage() async {
     setState(() {
       _showHomePage = true;
     });
+    // 确保在返回首页时保存常用网站列表并等待完成
+    await _saveCommonWebsites();
+    debugPrint('已返回首页并保存常用网站');
   }
 
   // 构建常用网站列表页面
@@ -279,10 +293,36 @@ class _BrowserPageState extends State<BrowserPage> {
             child: Text('取消'),
           ),
           TextButton(
-            onPressed: () {
+            onPressed: () async {
               if (nameController.text.isNotEmpty && urlController.text.isNotEmpty) {
-                _addWebsite(nameController.text, urlController.text, Icons.web);
-                Navigator.pop(context);
+                // 显示加载指示器
+                showDialog(
+                  context: context,
+                  barrierDismissible: false,
+                  builder: (BuildContext context) {
+                    return const AlertDialog(
+                      content: Row(
+                        children: [
+                          CircularProgressIndicator(),
+                          SizedBox(width: 20),
+                          Text("保存中..."),
+                        ],
+                      ),
+                    );
+                  },
+                );
+                
+                // 等待添加网站完成
+                await _addWebsite(nameController.text, urlController.text, Icons.web);
+                
+                // 关闭加载指示器和对话框
+                Navigator.of(context).pop(); // 关闭加载指示器
+                Navigator.of(context).pop(); // 关闭添加网站对话框
+                
+                // 显示成功消息
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('网站已添加并保存')),
+                );
               }
             },
             child: Text('添加'),
@@ -294,20 +334,89 @@ class _BrowserPageState extends State<BrowserPage> {
 
   // 构建可编辑的网站列表项
   Widget _buildEditableWebsiteItem(Map<String, dynamic> website, int index) {
+    // 从代码点创建IconData或使用默认图标
+    IconData iconData;
+    if (website.containsKey('iconCode')) {
+      iconData = IconData(website['iconCode'], fontFamily: 'MaterialIcons');
+    } else if (website.containsKey('icon') && website['icon'] is IconData) {
+      iconData = website['icon'];
+    } else {
+      iconData = Icons.web;
+    }
+    
     return ListTile(
       key: ValueKey(website['url']),
-      leading: Icon(website['icon']),
+      leading: Icon(iconData),
       title: Text(website['name']),
       subtitle: Text(website['url']),
       trailing: IconButton(
-        icon: Icon(Icons.delete),
-        onPressed: () => _removeWebsite(index),
+        icon: Icon(Icons.delete, color: Colors.red),
+        onPressed: () async {
+          // 显示确认对话框
+          final shouldDelete = await showDialog<bool>(
+            context: context,
+            builder: (context) => AlertDialog(
+              title: Text('删除网站'),
+              content: Text('确定要删除 ${website['name']} 吗？'),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: Text('取消'),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.pop(context, true),
+                  child: Text('删除'),
+                ),
+              ],
+            ),
+          ) ?? false;
+          
+          if (shouldDelete) {
+            // 显示加载指示器
+            showDialog(
+              context: context,
+              barrierDismissible: false,
+              builder: (BuildContext context) {
+                return const AlertDialog(
+                  content: Row(
+                    children: [
+                      CircularProgressIndicator(),
+                      SizedBox(width: 20),
+                      Text("删除中..."),
+                    ],
+                  ),
+                );
+              },
+            );
+            
+            // 等待删除网站完成
+            await _removeWebsite(index);
+            
+            // 关闭加载指示器
+            Navigator.of(context).pop();
+            
+            // 显示成功消息
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('网站已删除')),
+            );
+          }
+        },
       ),
     );
   }
 
   // 构建网站卡片
   Widget _buildWebsiteCard(Map<String, dynamic> website) {
+    // 从代码点创建IconData或使用默认图标
+    IconData iconData;
+    if (website.containsKey('iconCode')) {
+      iconData = IconData(website['iconCode'], fontFamily: 'MaterialIcons');
+    } else if (website.containsKey('icon') && website['icon'] is IconData) {
+      iconData = website['icon'];
+    } else {
+      iconData = Icons.web;
+    }
+    
     return InkWell(
       onTap: () => _loadUrl(website['url']),
       child: Card(
@@ -316,7 +425,7 @@ class _BrowserPageState extends State<BrowserPage> {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Icon(
-              website['icon'],
+              iconData,
               size: 40,
               color: Theme.of(context).primaryColor,
             ),
@@ -358,6 +467,14 @@ class _BrowserPageState extends State<BrowserPage> {
         });
       } else if (_commonWebsites.isEmpty) {
         // 如果没有保存的常用网站，使用默认值
+        setState(() {
+          _commonWebsites.clear();
+          // 使用代码点而不是IconData对象
+          _commonWebsites.addAll([
+            {'name': 'Google', 'url': 'https://www.google.com', 'iconCode': Icons.search.codePoint},
+            {'name': '百度', 'url': 'https://www.baidu.com', 'iconCode': Icons.search.codePoint}
+          ]);
+        });
         _saveCommonWebsites(); // 保存默认常用网站
       }
     } catch (e) {
@@ -368,21 +485,38 @@ class _BrowserPageState extends State<BrowserPage> {
   // 保存书签到SharedPreferences
   Future<void> _saveBookmarks() async {
     try {
+      debugPrint('开始保存书签...');
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setStringList('bookmarks', _bookmarks);
+      final result = await prefs.setStringList('bookmarks', _bookmarks);
+      if (result) {
+        debugPrint('书签保存成功');
+      } else {
+        debugPrint('书签保存失败: SharedPreferences返回false');
+      }
     } catch (e) {
       debugPrint('保存书签时出错: $e');
+      // 在调试模式下显示错误堆栈跟踪
+      debugPrintStack(label: '保存书签错误堆栈');
     }
   }
   
   // 保存常用网站到SharedPreferences
   Future<void> _saveCommonWebsites() async {
     try {
+      debugPrint('开始保存常用网站...');
       final prefs = await SharedPreferences.getInstance();
       final jsonString = jsonEncode(_commonWebsites);
-      await prefs.setString('common_websites', jsonString);
+      debugPrint('常用网站JSON: $jsonString');
+      final result = await prefs.setString('common_websites', jsonString);
+      if (result) {
+        debugPrint('常用网站保存成功');
+      } else {
+        debugPrint('常用网站保存失败: SharedPreferences返回false');
+      }
     } catch (e) {
       debugPrint('保存常用网站时出错: $e');
+      // 在调试模式下显示错误堆栈跟踪
+      debugPrintStack(label: '保存常用网站错误堆栈');
     }
   }
 
@@ -722,7 +856,30 @@ class _BrowserPageState extends State<BrowserPage> {
         title: const Text('网页浏览器'),
         leading: _showHomePage ? null : IconButton(
           icon: const Icon(Icons.home),
-          onPressed: _goToHomePage,
+          onPressed: () async {
+            // 显示加载指示器
+            showDialog(
+              context: context,
+              barrierDismissible: false,
+              builder: (BuildContext context) {
+                return const AlertDialog(
+                  content: Row(
+                    children: [
+                      CircularProgressIndicator(),
+                      SizedBox(width: 20),
+                      Text("保存中..."),
+                    ],
+                  ),
+                );
+              },
+            );
+            
+            // 等待返回首页并保存完成
+            await _goToHomePage();
+            
+            // 关闭加载指示器
+            Navigator.of(context).pop();
+          },
         ),
         actions: [
           IconButton(
@@ -805,8 +962,19 @@ class _BrowserPageState extends State<BrowserPage> {
   void dispose() {
     _urlController.dispose();
     // 确保在退出前保存所有数据
-    _saveBookmarks();
-    _saveCommonWebsites();
+    // 注意：在dispose中不能使用await，所以我们使用then来处理异步操作
+    _saveBookmarks().then((_) {
+      debugPrint('书签保存完成');
+    }).catchError((error) {
+      debugPrint('保存书签时出错: $error');
+    });
+    
+    _saveCommonWebsites().then((_) {
+      debugPrint('常用网站保存完成');
+    }).catchError((error) {
+      debugPrint('保存常用网站时出错: $error');
+    });
+    
     super.dispose();
   }
 }
