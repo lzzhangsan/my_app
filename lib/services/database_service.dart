@@ -455,12 +455,32 @@ class DatabaseService {
   Future<List<Map<String, dynamic>>> getMediaItems(String directory) async {
     try {
       final db = await database;
-      return await db.query(
-        'media_items',
-        where: 'directory = ?',
-        whereArgs: [directory],
-        orderBy: 'name ASC',
-      );
+      // 使用自定义排序逻辑：
+      // 1. 回收站和收藏夹固定在最前面
+      // 2. 其他文件夹
+      // 3. 视频
+      // 4. 图片
+      // 所有项按添加时间倒序排列（最新添加的在前）
+      final folderTypeIndex = 3; // MediaType.folder.index
+      final imageTypeIndex = 0; // MediaType.image.index
+      final videoTypeIndex = 1; // MediaType.video.index
+      return await db.rawQuery('''
+        SELECT * FROM media_items 
+        WHERE directory = ? 
+        ORDER BY 
+          CASE 
+            WHEN id = 'recycle_bin' THEN 0 
+            WHEN id = 'favorites' THEN 1 
+            WHEN type = $folderTypeIndex THEN 2 
+            WHEN type = $videoTypeIndex THEN 3 
+            WHEN type = $imageTypeIndex THEN 4 
+            ELSE 5 
+          END ASC, 
+          CASE 
+            WHEN id = 'recycle_bin' OR id = 'favorites' THEN 0 
+            ELSE datetime(date_added) 
+          END DESC
+      ''', [directory]);
     } catch (e, stackTrace) {
       _handleError('获取媒体项失败', e, stackTrace);
       rethrow;
