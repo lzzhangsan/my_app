@@ -18,7 +18,7 @@ import 'core/service_locator.dart';
 import 'services/database_service.dart';
 import 'models/media_item.dart';
 import 'models/media_type.dart';
-import 'main.dart'; // 添加导入以访问MainScreen
+import 'main.dart';
 
 class BrowserPage extends StatefulWidget {
   final ValueChanged<bool>? onBrowserHomePageChanged;
@@ -41,12 +41,12 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   late final DatabaseService _databaseService;
   List<Map<String, String>> _bookmarks = [];
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
-  
+
   bool _showHomePage = true;
   bool _isBrowsingWebPage = false;
   bool _shouldKeepWebPageState = false;
   String? _lastBrowsedUrl;
-  
+
   final List<Map<String, dynamic>> _commonWebsites = [
     {'name': 'Google', 'url': 'https://www.google.com', 'icon': Icons.search},
     {'name': 'Edge', 'url': 'https://www.microsoft.com/edge', 'icon': Icons.web},
@@ -55,14 +55,12 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     {'name': 'Telegram', 'url': 'https://web.telegram.org', 'icon': Icons.send},
     {'name': '百度', 'url': 'https://www.baidu.com', 'icon': Icons.search},
   ];
-  
+
   bool _isEditMode = false;
-  
+
   Future<void> _toggleEditMode() async {
     final wasInEditMode = _isEditMode;
-    setState(() {
-      _isEditMode = !_isEditMode;
-    });
+    setState(() => _isEditMode = !_isEditMode);
     if (wasInEditMode && !_isEditMode) {
       debugPrint('从编辑模式退出，保存网站列表');
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('正在保存常用网站...')));
@@ -73,9 +71,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
   Future<void> _removeWebsite(int index) async {
     final removedSite = _commonWebsites[index]['name'];
-    setState(() {
-      _commonWebsites.removeAt(index);
-    });
+    setState(() => _commonWebsites.removeAt(index));
     await _saveCommonWebsites();
     debugPrint('已删除并保存网站: $removedSite');
   }
@@ -91,9 +87,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   }
 
   Future<void> _addWebsite(String name, String url, IconData icon) async {
-    setState(() {
-      _commonWebsites.add({'name': name, 'url': url, 'iconCode': icon.codePoint});
-    });
+    setState(() => _commonWebsites.add({'name': name, 'url': url, 'iconCode': icon.codePoint}));
     await _saveCommonWebsites();
     debugPrint('已添加并立即保存网站: $name');
   }
@@ -114,9 +108,11 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   }
 
   Future<void> _requestPermissions() async {
-    await Permission.storage.request();
+    var storageStatus = await Permission.storage.request();
+    debugPrint('存储权限状态: $storageStatus');
     if (Platform.isAndroid) {
-      await Permission.manageExternalStorage.request();
+      var manageStorageStatus = await Permission.manageExternalStorage.request();
+      debugPrint('管理外部存储权限状态: $manageStorageStatus');
     }
   }
 
@@ -124,7 +120,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setUserAgent('Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36')
-      ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setBackgroundColor(const Color(0x00000000))
       ..runJavaScript('''
         document.body.style.overflowX = 'hidden';
@@ -147,10 +142,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
             });
           },
           onPageFinished: (url) {
-            setState(() {
-              _isLoading = false;
-              _currentUrl = url;
-            });
+            setState(() => _isLoading = false);
             _controller.runJavaScript('''
               document.querySelectorAll('input').forEach(function(input) {
                 input.autocomplete = 'on';
@@ -158,9 +150,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
             ''');
             _injectDownloadHandlers();
           },
-          onWebResourceError: (error) {
-            debugPrint('WebView错误: ${error.description}');
-          },
+          onWebResourceError: (error) => debugPrint('WebView错误: ${error.description}'),
           onNavigationRequest: (NavigationRequest request) {
             final url = request.url;
             debugPrint('导航请求: $url');
@@ -186,7 +176,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         },
       );
   }
-  
+
   bool _isTelegramMediaLink(String url) {
     final telegramMediaPatterns = [
       'telegram.org/file/',
@@ -198,27 +188,34 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       'tg://media',
       'tg://photo',
       'tg://video',
+      '/a/document',
+      '/progressive/',
     ];
     for (final pattern in telegramMediaPatterns) {
-      if (url.contains(pattern)) return true;
+      if (url.contains(pattern)) {
+        debugPrint('匹配到 Telegram 媒体链接模式: $pattern, URL: $url');
+        return true;
+      }
     }
     if (url.contains('telegram') || url.contains('t.me')) {
       final mediaExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.mp4', '.webp', '.webm'];
       for (final ext in mediaExtensions) {
-        if (url.toLowerCase().contains(ext)) return true;
+        if (url.toLowerCase().contains(ext)) {
+          debugPrint('匹配到 Telegram 媒体扩展名: $ext, URL: $url');
+          return true;
+        }
       }
     }
+    debugPrint('未匹配到 Telegram 媒体链接: $url');
     return false;
   }
-  
-  // 添加下载状态跟踪
+
   final Set<String> _downloadingUrls = {};
   final Set<String> _processedUrls = {};
 
   void _injectDownloadHandlers() {
     debugPrint('为所有网站注入强化媒体下载处理程序');
     _controller.runJavaScript('''
-      // 全局媒体拦截系统初始化
       window.MediaInterceptor = window.MediaInterceptor || {
         processedUrls: new Set(),
         interceptedRequests: new Map(),
@@ -226,12 +223,10 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         m3u8Segments: new Map()
       };
 
-      // 辅助函数：检查URL是否是Blob URL
       function isBlobUrl(url) {
         return url && typeof url === 'string' && url.startsWith('blob:');
       }
 
-      // 辅助函数：检查是否是媒体URL
       function isMediaUrl(url) {
         if (!url) return false;
         const mediaExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg',
@@ -243,32 +238,25 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                lowerUrl.includes('media') || lowerUrl.includes('blob:') || lowerUrl.includes('.m3u8');
       }
 
-      // 增强的Blob URL解析器
       async function resolveBlobUrl(blobUrl, mediaType) {
         try {
           console.log('正在解析Blob URL:', blobUrl);
           const response = await fetch(blobUrl, { 
             method: 'GET',
-            headers: {
-              'Accept': '*/*',
-              'Cache-Control': 'no-cache'
-            }
+            headers: {'Accept': '*/*', 'Cache-Control': 'no-cache'}
           });
           if (!response.ok) throw new Error('Fetch failed: ' + response.statusText);
           const blob = await response.blob();
-          
-          // 检查是否是m3u8文件
           if (blob.type.includes('application/x-mpegURL') || blob.type.includes('application/vnd.apple.mpegurl')) {
             const text = await blob.text();
             return { resolvedUrl: text, isBase64: false, isM3U8: true };
           }
-          
           const reader = new FileReader();
           return new Promise((resolve, reject) => {
             reader.onloadend = () => {
               const base64Data = reader.result.split(',')[1];
               window.MediaInterceptor.blobUrls.set(blobUrl, base64Data);
-              resolve({ resolvedUrl: base64Data, isBase64: true });
+              resolve({ resolvedUrl: base64Data, isBase64: true, mediaType: mediaType });
             };
             reader.onerror = reject;
             reader.readAsDataURL(blob);
@@ -279,21 +267,18 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         }
       }
 
-      // 网络请求拦截器 - 拦截XMLHttpRequest
       (function() {
         const originalXHROpen = XMLHttpRequest.prototype.open;
-        const originalXHRSend = XMLHttpRequest.prototype.send;
-        
         XMLHttpRequest.prototype.open = function(method, url, async, user, password) {
           this._interceptedUrl = url;
           this._interceptedMethod = method;
           return originalXHROpen.apply(this, arguments);
         };
-        
+
+        const originalXHRSend = XMLHttpRequest.prototype.send;
         XMLHttpRequest.prototype.send = function(data) {
           const xhr = this;
           const url = this._interceptedUrl;
-          
           if (isMediaUrl(url)) {
             console.log('拦截到媒体请求 (XHR):', url);
             window.MediaInterceptor.interceptedRequests.set(url, {
@@ -301,40 +286,31 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
               timestamp: Date.now(),
               type: 'xhr'
             });
+            if ((url.includes('telegram.org') || url.includes('t.me')) && !window.MediaInterceptor.processedUrls.has(url)) {
+              window.MediaInterceptor.processedUrls.add(url);
+              Flutter.postMessage(JSON.stringify({
+                type: 'media',
+                mediaType: 'video',
+                url: url,
+                isBase64: false,
+                source: 'xhr_intercept',
+                action: 'download'
+              }));
+            }
           }
-          
           const originalOnLoad = this.onload;
           this.onload = function() {
-            if (isMediaUrl(url) && this.response) {
-              console.log('媒体请求完成 (XHR):', url);
-              // 自动触发下载检测
-              setTimeout(() => {
-                if (!window.MediaInterceptor.processedUrls.has(url)) {
-                  window.MediaInterceptor.processedUrls.add(url);
-                  Flutter.postMessage(JSON.stringify({
-                    type: 'media',
-                    mediaType: url.includes('video') || url.includes('.mp4') || url.includes('.webm') ? 'video' : 'image',
-                    url: url,
-                    isBase64: false,
-                    source: 'xhr_intercept',
-                    action: 'detect' // Default action for detection
-                  }));
-                }
-              }, 100);
-            }
+            if (isMediaUrl(url) && this.response) console.log('媒体请求完成 (XHR):', url);
             if (originalOnLoad) originalOnLoad.apply(this, arguments);
           };
-          
           return originalXHRSend.apply(this, arguments);
         };
       })();
 
-      // 网络请求拦截器 - 拦截Fetch API
       (function() {
         const originalFetch = window.fetch;
         window.fetch = function(input, init) {
           const url = typeof input === 'string' ? input : input.url;
-          
           if (isMediaUrl(url)) {
             console.log('拦截到媒体请求 (Fetch):', url);
             window.MediaInterceptor.interceptedRequests.set(url, {
@@ -342,317 +318,71 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
               timestamp: Date.now(),
               type: 'fetch'
             });
-            
-            // 自动触发下载检测
-            setTimeout(() => {
-              if (!window.MediaInterceptor.processedUrls.has(url)) {
-                window.MediaInterceptor.processedUrls.add(url);
-                Flutter.postMessage(JSON.stringify({
-                  type: 'media',
-                  mediaType: url.includes('video') || url.includes('.mp4') || url.includes('.webm') ? 'video' : 'image',
-                  url: url,
-                  isBase64: false,
-                  source: 'fetch_intercept',
-                  action: 'detect' // Default action for detection
-                }));
-              }
-            }, 100);
-          }
-          
-          return originalFetch.apply(this, arguments).then(response => {
-            if (isMediaUrl(url) && response.ok) {
-              console.log('媒体请求响应成功 (Fetch):', url);
+            if ((url.includes('telegram.org') || url.includes('t.me')) && !window.MediaInterceptor.processedUrls.has(url)) {
+              window.MediaInterceptor.processedUrls.add(url);
+              Flutter.postMessage(JSON.stringify({
+                type: 'media',
+                mediaType: 'video',
+                url: url,
+                isBase64: false,
+                source: 'fetch_intercept',
+                action: 'download'
+              }));
             }
+          }
+          return originalFetch.apply(this, arguments).then(response => {
+            if (isMediaUrl(url) && response.ok) console.log('媒体请求响应成功 (Fetch):', url);
             return response;
           });
         };
       })();
 
-      // 防止重复处理的URL集合（保持向后兼容）
       window.processedMediaUrls = window.MediaInterceptor.processedUrls;
 
-      // 监听双击事件以触发媒体下载
-      document.addEventListener('dblclick', async function(e) { // Change 'click' to 'dblclick'
-        let target = e.target;
-        while (target != null) {
-          let mediaUrl = null;
-          let mediaType = null;
-          
-          // 检测图片
-          if (target.tagName === 'IMG') {
-            mediaUrl = target.src || target.getAttribute('data-src') || target.getAttribute('data-original');
-            mediaType = 'image';
-          }
-          // 检测视频 - 增强检测逻辑
-          else if (target.tagName === 'VIDEO') {
-            mediaUrl = target.src || target.currentSrc;
-            // 如果video元素没有直接的src，检查source子元素
-            if (!mediaUrl) {
-              const sources = target.querySelectorAll('source');
-              for (let source of sources) {
-                if (source.src) {
-                  mediaUrl = source.src;
-                  break;
+      document.addEventListener('click', function(e) {
+        console.log('点击事件触发，目标元素:', e.target);
+        const target = e.target.closest('a[href*="progressive/document"], a[href*="media"], a[href*="video"], [class*="download"], div[role="menuitem"][aria-label*="download"], video[src], img[src]');
+        if (target) {
+          let url = target.href || target.getAttribute('data-href') || target.getAttribute('data-url') || target.src;
+          console.log('捕获到可能的下载链接:', url);
+          if (url && !window.processedMediaUrls.has(url)) {
+            if (isBlobUrl(url)) {
+              console.log('检测到 Blob URL，解析中:', url);
+              resolveBlobUrl(url, target.tagName.toLowerCase() === 'img' ? 'image' : 'video').then(resolved => {
+                if (resolved) {
+                  console.log('Blob URL 解析成功:', resolved);
+                  window.processedMediaUrls.add(url);
+                  Flutter.postMessage(JSON.stringify({
+                    type: 'media',
+                    mediaType: resolved.mediaType || 'video',
+                    url: resolved.resolvedUrl,
+                    isBase64: resolved.isBase64,
+                    action: 'download'
+                  }));
                 }
-              }
-            }
-            mediaType = 'video';
-          }
-          // 检测包含视频的容器元素
-          else if (target.querySelector('video')) {
-            const videoElement = target.querySelector('video');
-            mediaUrl = videoElement.src || videoElement.currentSrc;
-            if (!mediaUrl) {
-              const sources = videoElement.querySelectorAll('source');
-              for (let source of sources) {
-                if (source.src) {
-                  mediaUrl = source.src;
-                  break;
-                }
-              }
-            }
-            mediaType = 'video';
-          }
-          // 检测Telegram特有的媒体容器
-          else if (target.classList && (target.classList.contains('media-photo') || target.classList.contains('media-video') || target.classList.contains('video-message'))) {
-            const imgElement = target.querySelector('img');
-            const videoElement = target.querySelector('video');
-            
-            // 优先检测视频元素
-            if (videoElement) {
-              mediaUrl = videoElement.src || videoElement.currentSrc;
-              if (!mediaUrl) {
-                const sources = videoElement.querySelectorAll('source');
-                for (let source of sources) {
-                  if (source.src) {
-                    mediaUrl = source.src;
-                    break;
-                  }
-                }
-              }
-              mediaType = 'video';
-            } 
-            // 对于视频容器，尝试更智能的视频URL检测
-            else if (target.classList.contains('media-video') || target.classList.contains('video-message')) {
-              // 方法1: 查找可能的视频链接
-              const videoLink = target.querySelector('a[href*="video"], a[href*=".mp4"], a[href*=".webm"], a[href*=".mov"]');
-              if (videoLink) {
-                mediaUrl = videoLink.href;
-                mediaType = 'video';
-              } else {
-                // 方法2: 查找data属性中的视频URL
-                const dataUrl = target.getAttribute('data-video-url') || target.getAttribute('data-src') || target.getAttribute('data-href');
-                if (dataUrl && (dataUrl.includes('video') || dataUrl.includes('.mp4') || dataUrl.includes('.webm'))) {
-                  mediaUrl = dataUrl;
-                  mediaType = 'video';
-                } else {
-                  // 方法3: 查找父元素或兄弟元素中的视频信息
-                  const parentElement = target.closest('.message, .media-container, .video-container');
-                  if (parentElement) {
-                    const hiddenVideo = parentElement.querySelector('video[style*="display: none"], video[hidden]');
-                    if (hiddenVideo) {
-                      mediaUrl = hiddenVideo.src || hiddenVideo.currentSrc;
-                      if (mediaUrl) {
-                        mediaType = 'video';
-                      }
-                    }
-                  }
-                  
-                  // 方法4: 尝试从事件监听器或onclick属性获取视频URL
-                  if (!mediaUrl) {
-                    const onclickAttr = target.getAttribute('onclick') || target.getAttribute('data-onclick');
-                    if (onclickAttr && (onclickAttr.includes('video') || onclickAttr.includes('.mp4'))) {
-                      const urlMatch = onclickAttr.match(/['"]([^'"]*\.(mp4|webm|mov|avi)[^'"]*)['"]/);
-                      if (urlMatch) {
-                        mediaUrl = urlMatch[1];
-                        mediaType = 'video';
-                      }
-                    }
-                  }
-                  
-                  // 如果仍然找不到视频URL，记录日志
-                  if (!mediaUrl) {
-                    console.log('Double-click check: Telegram video container did not find a valid video URL:', element.className);
-                  }
-                }
-              }
-            }
-            // 只有明确的图片容器才处理图片
-            else if (target.classList.contains('media-photo') && imgElement && !target.classList.contains('media-video')) {
-              mediaUrl = imgElement.src || imgElement.getAttribute('data-src');
-              mediaType = 'image';
-            }
-          }
-          
-          if (mediaUrl && mediaType && !window.processedMediaUrls.has(mediaUrl)) {
-            // 过滤掉Telegram的API端点URL
-            if (mediaUrl.includes('/a/document') || mediaUrl.includes('/api/')) {
-              console.log('Skipping Telegram API URL on double-click:', mediaUrl);
-              e.preventDefault();
-              break;
-            }
-            
-            window.processedMediaUrls.add(mediaUrl);
-            console.log('Detected media on double-click:', mediaType, mediaUrl);
-            
-            if (isBlobUrl(mediaUrl)) {
-              console.log('Detected Blob URL on double-click:', mediaUrl);
-              const result = await resolveBlobUrl(mediaUrl, mediaType);
-              if (result) {
-                Flutter.postMessage(JSON.stringify({
-                  type: 'media',
-                  mediaType: mediaType,
-                  url: result.resolvedUrl,
-                  isBase64: result.isBase64,
-                  action: 'download' // Add action to indicate direct download
-                }));
-              }
+              });
             } else {
+              console.log('处理新的下载链接:', url);
+              window.processedMediaUrls.add(url);
               Flutter.postMessage(JSON.stringify({
                 type: 'media',
-                mediaType: mediaType,
-                url: mediaUrl,
+                mediaType: target.tagName.toLowerCase() === 'img' ? 'image' : 'video',
+                url: url,
                 isBase64: false,
-                action: 'download' // Add action to indicate direct download
+                action: 'download'
               }));
             }
-            e.preventDefault(); // Prevent default double-click action
-            break;
+            e.preventDefault();
+          } else {
+            console.log('URL已处理或无效，跳过:', url);
           }
-          target = target.parentElement;
+        } else {
+          console.log('未找到匹配的下载目标元素');
         }
       }, true);
-
-
-
-      // 定期检查并监控下载链接和Telegram特殊元素
-      setInterval(function() {
-        // 检查下载链接
-        document.querySelectorAll('a[download], a[href*="/file/"], a[href*="/media/"], button:contains("Download"), button:contains("下载")').
-forEach(function(element) {
-          if (!element.hasAttribute('data-download-monitored')) {
-            element.setAttribute('data-download-monitored', 'true');
-            // Option 1: Change this to dblclick if only dblclick should trigger
-            // Option 2: Keep as click but ensure Dart handler doesn't show dialog
-            // Let's keep as click for now but ensure Dart handler is direct download
-            element.addEventListener('click', function(e) { // Keep as click for general download links
-              let url = element.href || element.getAttribute('data-url') || element.getAttribute('data-src');
-              if (url && !window.processedMediaUrls.has(url)) {
-                // Filter out Telegram API endpoint URLs
-                if (url.includes('/a/document') || url.includes('/api/')) {
-                  console.log('Skipping download link with Telegram API URL:', url);
-                  return;
-                }
-
-                window.processedMediaUrls.add(url);
-                Flutter.postMessage(JSON.stringify({
-                  type: 'download',
-                  url: url,
-                  action: 'download' // Add action to indicate direct download
-                }));
-                // Do NOT prevent default here, let link potentially be followed if not downloaded
-                // e.preventDefault();
-              }
-            });
-          }
-        });
-        
-        // Special check for Telegram video elements
-        document.querySelectorAll('video, .video-message, .media-video, [data-entity-type="messageMediaVideo"]').forEach(function(element) {
-          if (!element.hasAttribute('data-telegram-monitored')) {
-            element.setAttribute('data-telegram-monitored', 'true');
-
-            let videoUrl = null;
-            if (element.tagName === 'VIDEO') {
-              videoUrl = element.src || element.currentSrc;
-              if (!videoUrl) {
-                const sources = element.querySelectorAll('source');
-                for (let source of sources) {
-                  if (source.src) {
-                    videoUrl = source.src;
-                    break;
-                  }
-                }
-              }
-            } else {
-              // For non-video tag container elements, use improved detection logic
-              const videoElement = element.querySelector('video');
-              if (videoElement) {
-                videoUrl = videoElement.src || videoElement.currentSrc;
-                if (!videoUrl) {
-                  const sources = videoElement.querySelectorAll('source');
-                  for (let source of sources) {
-                    if (source.src) {
-                      videoUrl = source.src;
-                      break;
-                    }
-                  }
-                }
-              } else if (element.classList.contains('media-video') || element.classList.contains('video-message')) {
-                // Use the same intelligent detection logic as the click event
-                // Method 1: Find possible video links
-                const videoLink = element.querySelector('a[href*="video"], a[href*=".mp4"], a[href*=".webm"], a[href*=".mov"]');
-                if (videoLink) {
-                  videoUrl = videoLink.href;
-                } else {
-                  // Method 2: Find video URLs in data attributes
-                  const dataUrl = element.getAttribute('data-video-url') || element.getAttribute('data-src') || element.getAttribute('data-href');
-                  if (dataUrl && (dataUrl.includes('video') || dataUrl.includes('.mp4') || dataUrl.includes('.webm'))) {
-                    videoUrl = dataUrl;
-                  } else {
-                    // Method 3: Find video information in parent or sibling elements
-                    const parentElement = element.closest('.message, .media-container, .video-container');
-                    if (parentElement) {
-                      const hiddenVideo = parentElement.querySelector('video[style*="display: none"], video[hidden]');
-                      if (hiddenVideo) {
-                        videoUrl = hiddenVideo.src || hiddenVideo.currentSrc;
-                      }
-                    }
-
-                    // Method 4: Try to get video URL from event listeners or onclick attributes
-                    if (!videoUrl) {
-                      const onclickAttr = element.getAttribute('onclick') || element.getAttribute('data-onclick');
-                      if (onclickAttr && (onclickAttr.includes('video') || onclickAttr.includes('.mp4'))) {
-                        const urlMatch = onclickAttr.match(/['"]([^'"]*\.(mp4|webm|mov|avi)[^'"]*)['"]/);
-                        if (urlMatch) {
-                          videoUrl = urlMatch[1];
-                        }
-                      }
-                    }
-                  }
-                }
-
-                // If video URL is still not found, log it
-                if (!videoUrl) {
-                  console.log('Periodic check: Telegram video container did not find a valid video URL:', element.className);
-                }
-              }
-            }
-
-            if (videoUrl && !window.processedMediaUrls.has(videoUrl)) {
-              // Filter out Telegram API endpoint URLs
-              if (videoUrl.includes('/a/document') || videoUrl.includes('/api/')) {
-                console.log('Skipping Telegram API URL in periodic check:', videoUrl);
-                return;
-              }
-
-              console.log('Found Telegram video in periodic check:', videoUrl);
-              // Automatically trigger detection (now direct download in Dart)
-              window.processedMediaUrls.add(videoUrl);
-              Flutter.postMessage(JSON.stringify({
-                type: 'media',
-                mediaType: 'video',
-                url: videoUrl,
-                isBase64: false,
-                action: 'download' // Add action to indicate direct download
-              }));
-            }
-          }
-        });
-      }, 2000);
     ''');
   }
-  
+
   void _handleJavaScriptMessage(String message) {
     try {
       final data = jsonDecode(message);
@@ -660,34 +390,24 @@ forEach(function(element) {
         final type = data['type'];
         final url = data['url'];
         final isBase64 = data['isBase64'] ?? false;
-        final action = data['action']; // Get the action
+        final action = data['action'];
+        final mediaType = data['mediaType'] ?? (_guessMimeType(url).startsWith('image/') ? 'image' : (_guessMimeType(url).startsWith('video/') ? 'video' : 'audio'));
 
         if (url != null && url is String) {
-          // Prevent processing the same URL repeatedly
           if (_processedUrls.contains(url)) {
             debugPrint('URL already processed, skipping: $url');
             return;
           }
-          // Add URL to processedUrls BEFORE starting download to prevent re-triggering
           _processedUrls.add(url);
 
-
-          if (action == 'download') { // Check for 'download' action for both media and general download links
-             final mediaType = data['mediaType'] ?? (_guessMimeType(url).startsWith('image/') ? 'image' : (_guessMimeType(url).startsWith('video/') ? 'video' : (_guessMimeType(url).startsWith('audio/') ? 'audio' : 'image'))); // Guess type if not provided
-             debugPrint('Received URL from JavaScript with download action: $url, type: ${mediaType}, isBase64: ${isBase64}');
-
-             if (isBase64) {
-                _handleBlobUrl(url, mediaType); // Blob URLs are handled separately
-             } else {
-                // Directly initiate download for non-base64 URLs
-                MediaType selectedType = _determineMediaType(_guessMimeType(url)); // Determine type based on MIME guess
-                _performBackgroundDownload(url, selectedType);
-             }
-          } else if (type == 'media' || type == 'download') {
-              // Handle detection messages if necessary, but do not trigger dialogs
-              debugPrint('Received non-download action message from JavaScript: $message');
-              // If you need to process detected URLs without immediate download, add logic here.
-              // Currently, we only support direct download via 'download' action.
+          if (action == 'download') {
+            debugPrint('Received URL from JavaScript with download action: $url, type: $mediaType, isBase64: $isBase64');
+            if (isBase64) {
+              _handleBlobUrl(url, mediaType);
+            } else {
+              MediaType selectedType = _determineMediaType(_guessMimeType(url));
+              _performBackgroundDownload(url, selectedType);
+            }
           }
         }
       }
@@ -698,18 +418,18 @@ forEach(function(element) {
 
   void _handleBlobUrl(String base64Data, String mediaType) async {
     try {
-      debugPrint('处理Base64数据以直接保存: ${mediaType}');
+      debugPrint('处理Base64数据以直接保存: $mediaType');
       final bytes = base64Decode(base64Data);
       final appDir = await getApplicationDocumentsDirectory();
       final mediaDir = Directory('${appDir.path}/media');
       if (!await mediaDir.exists()) await mediaDir.create(recursive: true);
       final uuid = const Uuid().v4();
-      final extension = mediaType == 'image' ? '.jpg' : (mediaType == 'video' ? '.mp4' : '.bin'); // Guess extension based on media type
+      final extension = mediaType == 'image' ? '.jpg' : (mediaType == 'video' ? '.mp4' : '.bin');
       final filePath = '${mediaDir.path}/$uuid$extension';
       final file = File(filePath);
       await file.writeAsBytes(bytes);
       debugPrint('已从Base64保存文件: $filePath');
-      await _saveToMediaLibrary(file, mediaType == 'image' ? MediaType.image : MediaType.video); // Assume image/video for Blob
+      await _saveToMediaLibrary(file, mediaType == 'image' ? MediaType.image : MediaType.video);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -725,23 +445,17 @@ forEach(function(element) {
     } catch (e, stackTrace) {
       debugPrint('处理Base64数据时出错: $e');
       debugPrint('错误堆栈: $stackTrace');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('下载失败: $e')));
-      }
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('下载失败: $e')));
     }
   }
 
   void _loadUrl(String url) {
     String processedUrl = url;
-    if (!url.startsWith('http://') && !url.startsWith('https://')) {
-      processedUrl = 'https://$url';
-    }
+    if (!url.startsWith('http://') && !url.startsWith('https://')) processedUrl = 'https://$url';
     if (processedUrl.contains('telegram.org') || processedUrl.contains('t.me') || processedUrl.contains('web.telegram.org')) {
       debugPrint('检测到电报网站，强制使用移动版');
       _controller.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 13_2_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0.3 Mobile/15E148 Safari/604.1');
-      if (processedUrl.contains('web.telegram.org')) {
-        processedUrl = 'https://web.telegram.org/a/';
-      }
+      if (processedUrl.contains('web.telegram.org')) processedUrl = 'https://web.telegram.org/a/';
     } else {
       _controller.setUserAgent('Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36');
     }
@@ -767,28 +481,18 @@ forEach(function(element) {
       await _loadBookmarks();
       await _loadCommonWebsites();
       debugPrint('[_goToHomePage] 已重新加载书签和常用网站');
-      setState(() {
-        _showHomePage = true;
-        debugPrint('[_goToHomePage] setState _showHomePage = true');
-      });
+      setState(() => _showHomePage = true);
       widget.onBrowserHomePageChanged?.call(_showHomePage);
       debugPrint('[_goToHomePage] Called onBrowserHomePageChanged(${_showHomePage})');
-      debugPrint('[_goToHomePage] 已返回常用网站首页视图，保持网页实例状态');
     }
   }
 
   void _restoreWebPage() {
     debugPrint('[_restoreWebPage] Called. Current _showHomePage: $_showHomePage, _isBrowsingWebPage: $_isBrowsingWebPage, _shouldKeepWebPageState: $_shouldKeepWebPageState');
     if (_showHomePage && _isBrowsingWebPage && _shouldKeepWebPageState) {
-      setState(() {
-        _showHomePage = false;
-        debugPrint('[_restoreWebPage] setState _showHomePage = false');
-      });
+      setState(() => _showHomePage = false);
       widget.onBrowserHomePageChanged?.call(_showHomePage);
       debugPrint('[_restoreWebPage] Called onBrowserHomePageChanged(${_showHomePage})');
-      debugPrint('[_restoreWebPage] 恢复网页浏览状态');
-    } else {
-      debugPrint('[_restoreWebPage] Cannot restore web page. State: _showHomePage: $_showHomePage, _isBrowsingWebPage: $_isBrowsingWebPage, _shouldKeepWebPageState: $_shouldKeepWebPageState');
     }
   }
 
@@ -801,13 +505,11 @@ forEach(function(element) {
       _lastBrowsedUrl = null;
       _controller.clearCache();
       _controller.clearLocalStorage();
-      debugPrint('[_exitWebPage] setState _showHomePage = true, states reset');
       _currentUrl = 'https://www.baidu.com';
       _urlController.text = _currentUrl;
     });
     widget.onBrowserHomePageChanged?.call(_showHomePage);
     debugPrint('[_exitWebPage] Called onBrowserHomePageChanged(${_showHomePage})');
-    debugPrint('[_exitWebPage] Completely exited web view and returned to common websites home view');
   }
 
   Widget _buildHomePage() {
@@ -820,10 +522,7 @@ forEach(function(element) {
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Text(
-                    '常用网站',
-                    style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-                  ),
+                  Text('常用网站', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
                   Row(
                     children: [
                       IconButton(
@@ -833,17 +532,15 @@ forEach(function(element) {
                           showDialog(
                             context: context,
                             barrierDismissible: false,
-                            builder: (BuildContext context) {
-                              return const AlertDialog(
-                                content: Row(
-                                  children: [
-                                    CircularProgressIndicator(),
-                                    SizedBox(width: 20),
-                                    Text("处理中..."),
-                                  ],
-                                ),
-                              );
-                            },
+                            builder: (context) => const AlertDialog(
+                              content: Row(
+                                children: [
+                                  CircularProgressIndicator(),
+                                  SizedBox(width: 20),
+                                  Text('处理中...'),
+                                ],
+                              ),
+                            ),
                           );
                           await _toggleEditMode();
                           Navigator.of(context).pop();
@@ -866,10 +563,7 @@ forEach(function(element) {
                   ? ReorderableListView.builder(
                       padding: const EdgeInsets.all(16.0),
                       itemCount: _commonWebsites.length,
-                      itemBuilder: (context, index) {
-                        final website = _commonWebsites[index];
-                        return _buildEditableWebsiteItem(website, index);
-                      },
+                      itemBuilder: (context, index) => _buildEditableWebsiteItem(_commonWebsites[index], index),
                       onReorder: _reorderWebsites,
                     )
                   : GridView.builder(
@@ -881,10 +575,7 @@ forEach(function(element) {
                         mainAxisSpacing: 16.0,
                       ),
                       itemCount: _commonWebsites.length,
-                      itemBuilder: (context, index) {
-                        final website = _commonWebsites[index];
-                        return _buildWebsiteCard(website);
-                      },
+                      itemBuilder: (context, index) => _buildWebsiteCard(_commonWebsites[index]),
                     ),
             ),
           ],
@@ -906,7 +597,6 @@ forEach(function(element) {
   void _showAddWebsiteDialog(BuildContext context) {
     final nameController = TextEditingController();
     final urlController = TextEditingController();
-    
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -914,48 +604,26 @@ forEach(function(element) {
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            TextField(
-              controller: nameController,
-              decoration: const InputDecoration(
-                labelText: '网站名称',
-                hintText: '例如：Google',
-              ),
-            ),
-            TextField(
-              controller: urlController,
-              decoration: const InputDecoration(
-                labelText: '网站地址',
-                hintText: '例如：https://www.google.com',
-              ),
-            ),
+            TextField(controller: nameController, decoration: const InputDecoration(labelText: '网站名称', hintText: '例如：Google')),
+            TextField(controller: urlController, decoration: const InputDecoration(labelText: '网站地址', hintText: '例如：https://www.google.com')),
           ],
         ),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
-          ),
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
           TextButton(
             onPressed: () async {
               if (nameController.text.isNotEmpty && urlController.text.isNotEmpty) {
                 showDialog(
                   context: context,
                   barrierDismissible: false,
-                  builder: (BuildContext context) {
-                    return const AlertDialog(
-                      content: Row(
-                        children: [
-                          CircularProgressIndicator(),
-                          SizedBox(width: 20),
-                          Text("添加中..."),
-                        ],
-                      ),
-                    );
-                  },
+                  builder: (context) => const AlertDialog(
+                    content: Row(
+                      children: [CircularProgressIndicator(), SizedBox(width: 20), Text('添加中...')],
+                    ),
+                  ),
                 );
                 await _addWebsite(nameController.text, urlController.text, Icons.web);
                 await _saveCommonWebsites();
-                debugPrint('网站已添加并立即保存');
                 Navigator.of(context).pop();
                 Navigator.of(context).pop();
                 ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('网站已添加并保存')));
@@ -969,10 +637,9 @@ forEach(function(element) {
   }
 
   Widget _buildEditableWebsiteItem(Map<String, dynamic> website, int index) {
-    IconData iconData = Icons.public;
     return ListTile(
       key: ValueKey(website['url']),
-      leading: Icon(iconData),
+      leading: const Icon(Icons.public),
       title: Text(website['name']),
       subtitle: Text(website['url']),
       trailing: Row(
@@ -992,14 +659,8 @@ forEach(function(element) {
                   title: const Text('删除网站'),
                   content: Text('确定要删除 ${website['name']} 吗？'),
                   actions: [
-                    TextButton(
-                      onPressed: () => Navigator.pop(context, false),
-                      child: const Text('取消'),
-                    ),
-                    TextButton(
-                      onPressed: () => Navigator.pop(context, true),
-                      child: const Text('删除'),
-                    ),
+                    TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+                    TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('删除')),
                   ],
                 ),
               ) ?? false;
@@ -1007,17 +668,11 @@ forEach(function(element) {
                 showDialog(
                   context: context,
                   barrierDismissible: false,
-                  builder: (BuildContext context) {
-                    return const AlertDialog(
-                      content: Row(
-                        children: [
-                          CircularProgressIndicator(),
-                          SizedBox(width: 20),
-                          Text("删除中..."),
-                        ],
-                      ),
-                    );
-                  },
+                  builder: (context) => const AlertDialog(
+                    content: Row(
+                      children: [CircularProgressIndicator(), SizedBox(width: 20), Text('删除中...')],
+                    ),
+                  ),
                 );
                 await _removeWebsite(index);
                 Navigator.of(context).pop();
@@ -1032,7 +687,6 @@ forEach(function(element) {
 
   void _showRenameWebsiteDialog(BuildContext context, Map<String, dynamic> website, int index) {
     final nameController = TextEditingController(text: website['name']);
-    
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -1043,48 +697,31 @@ forEach(function(element) {
           children: [
             TextField(
               controller: nameController,
-              decoration: const InputDecoration(
-                labelText: '网站名称',
-                hintText: '输入新的网站名称',
-              ),
+              decoration: const InputDecoration(labelText: '网站名称', hintText: '输入新的网站名称'),
               autofocus: true,
             ),
             const SizedBox(height: 8),
-            Text('当前URL: ${website['url']}', 
-              style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+            Text('当前URL: ${website['url']}', style: TextStyle(fontSize: 12, color: Colors.grey[600])),
           ],
         ),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
-          ),
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
           TextButton(
             onPressed: () async {
               if (nameController.text.isNotEmpty && nameController.text != website['name']) {
                 showDialog(
                   context: context,
                   barrierDismissible: false,
-                  builder: (BuildContext context) {
-                    return const AlertDialog(
-                      content: Row(
-                        children: [
-                          CircularProgressIndicator(),
-                          SizedBox(width: 20),
-                          Text("保存中..."),
-                        ],
-                      ),
-                    );
-                  },
+                  builder: (context) => const AlertDialog(
+                    content: Row(
+                      children: [CircularProgressIndicator(), SizedBox(width: 20), Text('保存中...')],
+                    ),
+                  ),
                 );
-                
-                setState(() {
-                  _commonWebsites[index]['name'] = nameController.text;
-                });
-                
+                setState(() => _commonWebsites[index]['name'] = nameController.text);
                 await _saveCommonWebsites();
-                Navigator.of(context).pop(); // 关闭加载对话框
-                Navigator.of(context).pop(); // 关闭重命名对话框
+                Navigator.of(context).pop();
+                Navigator.of(context).pop();
                 ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('网站名称已更新')));
               } else {
                 Navigator.pop(context);
@@ -1098,7 +735,6 @@ forEach(function(element) {
   }
 
   Widget _buildWebsiteCard(Map<String, dynamic> website) {
-    IconData iconData = Icons.public;
     return InkWell(
       onTap: () => _loadUrl(website['url']),
       child: Card(
@@ -1106,7 +742,7 @@ forEach(function(element) {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(iconData, size: 40, color: Theme.of(context).primaryColor),
+            const Icon(Icons.public, size: 40, color: Colors.blue),
             const SizedBox(height: 8),
             Text(website['name'], style: const TextStyle(fontSize: 16), textAlign: TextAlign.center),
           ],
@@ -1123,37 +759,24 @@ forEach(function(element) {
       setState(() {
         _bookmarks.clear();
         if (bookmarksJsonString != null && bookmarksJsonString.isNotEmpty) {
-          try {
-            final List<dynamic> decoded = jsonDecode(bookmarksJsonString);
-            // Check if the loaded data is in the new format (list of maps)
-            if (decoded.isNotEmpty && decoded[0] is Map<String, dynamic> && decoded[0].containsKey('name') && decoded[0].containsKey('url')) {
-              final List<Map<String, String>> loadedBookmarks = decoded.map((item) => {
-                'name': item['name']?.toString() ?? '', // Safely convert to string
-                'url': item['url']?.toString() ?? '',   // Safely convert to string
-              }).toList();
-              _bookmarks.addAll(loadedBookmarks);
-            } else if (decoded.isNotEmpty && decoded[0] is String) {
-               // Handle old format (list of strings/URLs) - migrate to new format
-               debugPrint('Migrating old format bookmarks...');
-               final List<Map<String, String>> migratedBookmarks = decoded.whereType<String>().map((url) => {'name': url, 'url': url} as Map<String, String>).toList();
-               _bookmarks = migratedBookmarks;
-               // Save in the new format immediately
-               _saveBookmarks();
-            }
-          } catch (e) {
-            debugPrint('Error decoding bookmarks JSON: $e');
-            // If decoding fails, clear existing bookmarks and start fresh with defaults if necessary
-             _bookmarks.clear();
+          final decoded = jsonDecode(bookmarksJsonString);
+          if (decoded.isNotEmpty && decoded[0] is Map<String, dynamic> && decoded[0].containsKey('name') && decoded[0].containsKey('url')) {
+            _bookmarks = (decoded as List).map((item) => {
+              'name': item['name']?.toString() ?? '',
+              'url': item['url']?.toString() ?? '',
+            }).toList();
+          } else if (decoded.isNotEmpty && decoded[0] is String) {
+            debugPrint('Migrating old format bookmarks...');
+            _bookmarks = (decoded as List<String>).map((url) => {'name': url, 'url': url} as Map<String, String>).toList();
+            _saveBookmarks();
           }
         }
-
-        // If bookmarks list is still empty after loading, add defaults
         if (_bookmarks.isEmpty) {
           debugPrint('Bookmarks list is empty after loading, adding defaults.');
-          _bookmarks.addAll([
+          _bookmarks = [
             {'name': '百度', 'url': 'https://www.baidu.com'},
-            {'name': 'Bilibili', 'url': 'https://www.bilibili.com'} // Using English name for example
-          ]);
+            {'name': 'Bilibili', 'url': 'https://www.bilibili.com'}
+          ];
           _saveBookmarks();
         }
       });
@@ -1167,12 +790,10 @@ forEach(function(element) {
     try {
       debugPrint('Starting to save common websites...');
       final prefs = await SharedPreferences.getInstance();
-      final cleanedWebsites = _commonWebsites.map((site) {
-        return {
-          'name': site['name'],
-          'url': site['url'],
-          'iconCode': Icons.public.codePoint,
-        };
+      final cleanedWebsites = _commonWebsites.map((site) => {
+        'name': site['name'],
+        'url': site['url'],
+        'iconCode': Icons.public.codePoint,
       }).toList();
       final jsonString = jsonEncode(cleanedWebsites);
       debugPrint('Common websites JSON: $jsonString');
@@ -1188,31 +809,22 @@ forEach(function(element) {
   Future<void> _handleDownload(String url, String contentDisposition, String mimeType, {MediaType? selectedType}) async {
     try {
       debugPrint('开始处理下载: $url, MIME类型: $mimeType');
-      
-      // 防止重复下载
       if (_downloadingUrls.contains(url)) {
         debugPrint('URL正在下载中，跳过: $url');
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('该文件正在下载中，请稍候...'))
-          );
-        }
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('该文件正在下载中，请稍候...')));
         return;
       }
-      
+
       String processedUrl = url;
       if (url.contains('telegram.org') || url.contains('t.me')) {
-        if (!url.startsWith('http')) {
-          processedUrl = url.startsWith('//') ? 'https:$url' : 'https://$url';
-        }
-        // 修复双重嵌套的progressive URL
+        if (!url.startsWith('http')) processedUrl = url.startsWith('//') ? 'https:$url' : 'https://$url';
         if (processedUrl.contains('/progressive/https://')) {
           processedUrl = processedUrl.substring(processedUrl.indexOf('/progressive/https://') + '/progressive/'.length);
           debugPrint('修复双重嵌套URL: $processedUrl');
         }
         debugPrint('处理后的电报URL: $processedUrl');
       }
-      
+
       if (selectedType == null) {
         final result = await showDialog<Map<String, dynamic>>(
           context: context,
@@ -1222,16 +834,12 @@ forEach(function(element) {
           final bool shouldDownload = result['download'];
           final MediaType mediaType = result['mediaType'];
           if (shouldDownload) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('开始下载，将在后台进行...'), duration: Duration(seconds: 2))
-            );
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('开始下载，将在后台进行...'), duration: Duration(seconds: 2)));
             unawaited(_performBackgroundDownload(processedUrl, mediaType));
           }
         }
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('开始下载，将在后台进行...'), duration: Duration(seconds: 2))
-        );
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('开始下载，将在后台进行...'), duration: Duration(seconds: 2)));
         unawaited(_performBackgroundDownload(processedUrl, selectedType));
       }
     } catch (e, stackTrace) {
@@ -1276,10 +884,7 @@ forEach(function(element) {
           ],
         ),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
-          ),
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
           TextButton(
             onPressed: () => Navigator.of(context).pop({'download': true, 'mediaType': selectedType}),
             child: const Text('下载'),
@@ -1295,9 +900,13 @@ forEach(function(element) {
     if (mimeType.startsWith('audio/')) return MediaType.audio;
     return MediaType.image;
   }
-  
+
   bool _isDownloadableLink(String url) {
     debugPrint('检查URL是否为可下载链接: $url');
+    if (url.startsWith('blob:') && (url.contains('telegram.org') || url.contains('t.me'))) {
+      debugPrint('检测到 Telegram 的 Blob URL: $url');
+      return true;
+    }
     final fileExtensions = [
       '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg', '.ico',
       '.mp4', '.avi', '.mov', '.wmv', '.flv', '.mkv', '.webm', '.m3u8', '.ts',
@@ -1343,7 +952,7 @@ forEach(function(element) {
     }
     return false;
   }
-  
+
   String _guessMimeType(String url) {
     final uri = Uri.parse(url);
     final path = uri.path.toLowerCase();
@@ -1370,94 +979,60 @@ forEach(function(element) {
   Future<File?> _downloadFile(String url) async {
     try {
       debugPrint('开始下载文件，URL: $url');
-      
       final dio = Dio();
-      dio.options.connectTimeout = const Duration(seconds: 60); // 增加连接超时
-      dio.options.receiveTimeout = const Duration(seconds: 300); // 增加接收超时，特别是视频文件
+      dio.options.connectTimeout = const Duration(seconds: 60);
+      dio.options.receiveTimeout = const Duration(seconds: 300);
       dio.options.sendTimeout = const Duration(seconds: 60);
-      
-      // 设置更完整的请求头
+
       dio.options.headers = {
         'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 13_2_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0.3 Mobile/15E148 Safari/604.1',
         'Accept': '*/*',
         'Accept-Language': 'en-US,en;q=0.9',
         'Accept-Encoding': 'gzip, deflate, br',
         'Connection': 'keep-alive',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'none',
-        'Upgrade-Insecure-Requests': '1',
       };
-      
-      // 针对Telegram的特殊处理
+
       if (url.contains('telegram.org') || url.contains('t.me')) {
-        dio.options.headers['Referer'] = 'https://web.telegram.org/';
+        dio.options.headers['Referer'] = 'https://web.telegram.org/a/';
         dio.options.headers['Origin'] = 'https://web.telegram.org';
-        dio.options.headers['Sec-Fetch-Site'] = 'same-origin';
-        dio.options.headers['X-Requested-With'] = 'XMLHttpRequest';
-        dio.options.headers['Cache-Control'] = 'no-cache';
-        dio.options.headers['Pragma'] = 'no-cache';
-        // 尝试使用当前WebView的Cookie
         final cookieManager = CookieManager.instance();
         final cookies = await cookieManager.getCookies(url: WebUri(url));
         if (cookies.isNotEmpty) {
           final cookieString = cookies.map((c) => '${c.name}=${c.value}').join('; ');
           dio.options.headers['Cookie'] = cookieString;
           debugPrint('添加Cookie: $cookieString');
+        } else {
+          debugPrint('未找到Cookie，可能需要登录 Telegram');
         }
       }
-      
+
       final appDir = await getApplicationDocumentsDirectory();
       final mediaDir = Directory('${appDir.path}/media');
       if (!await mediaDir.exists()) await mediaDir.create(recursive: true);
-      
+
       final uuid = const Uuid().v4();
       final uri = Uri.parse(url);
       String extension = _getFileExtension(uri.path);
-      
+
       if (extension.isEmpty) {
         final mimeType = _guessMimeType(url);
-        extension = mimeType.startsWith('image/') ? '.jpg' : 
-                   mimeType.startsWith('video/') ? '.mp4' : 
-                   mimeType.startsWith('audio/') ? '.mp3' : '.bin';
+        extension = mimeType.startsWith('image/') ? '.jpg' :
+                    mimeType.startsWith('video/') ? '.mp4' :
+                    mimeType.startsWith('audio/') ? '.mp3' : '.bin';
         debugPrint('URL没有扩展名，根据MIME类型猜测为: $extension');
       }
-      
+
       final filePath = '${mediaDir.path}/$uuid$extension';
       debugPrint('将下载到文件路径: $filePath');
-      
-      // 添加重试机制
+
       int retryCount = 0;
       const maxRetries = 3;
-      
+
       while (retryCount < maxRetries) {
         try {
-          // 对于Telegram的文档API URL，需要特殊处理
-          if (url.contains('telegram.org') && url.contains('/a/document')) {
-            debugPrint('检测到Telegram文档API URL，这种URL通常无法直接下载');
-            debugPrint('建议：请在Telegram中直接点击下载按钮，或者右键保存文件');
-            throw DioException(
-              requestOptions: RequestOptions(path: url),
-              message: 'Telegram文档API URL无法直接下载，请在Telegram中使用下载功能',
-            );
-          }
-          
-          // 对于其他Telegram URL，先尝试HEAD请求检查文件是否可访问
-          if (url.contains('telegram.org') || url.contains('t.me')) {
-            try {
-              final headResponse = await dio.head(url);
-              debugPrint('HEAD请求成功，状态码: ${headResponse.statusCode}');
-              if (headResponse.headers['content-length'] != null) {
-                debugPrint('文件大小: ${headResponse.headers['content-length']![0]} 字节');
-              }
-            } catch (e) {
-              debugPrint('HEAD请求失败: $e，继续尝试直接下载');
-            }
-          }
-          
-          await dio.download(
-            url, 
-            filePath, 
+          final response = await dio.download(
+            url,
+            filePath,
             deleteOnError: true,
             options: Options(
               followRedirects: true,
@@ -1472,45 +1047,27 @@ forEach(function(element) {
               } else {
                 debugPrint('已接收: $received 字节');
               }
-            }
+            },
           );
-          break; // 下载成功，退出重试循环
-        } catch (e) {
+          debugPrint('下载响应: ${response.statusCode}');
+          break;
+        } catch (e, stackTrace) {
           retryCount++;
           debugPrint('下载失败 (尝试 $retryCount/$maxRetries): $e');
-          
-          // 对于Telegram，如果是403或401错误，尝试不同的策略
-          if ((url.contains('telegram.org') || url.contains('t.me')) && retryCount < maxRetries) {
-            if (e.toString().contains('403') || e.toString().contains('401')) {
-              debugPrint('检测到认证错误，尝试调整请求头');
-              // 移除一些可能导致问题的请求头
-              dio.options.headers.remove('Sec-Fetch-Dest');
-              dio.options.headers.remove('Sec-Fetch-Mode');
-              dio.options.headers.remove('Sec-Fetch-Site');
-              dio.options.headers['User-Agent'] = 'TelegramBot (like TwitterBot)';
-            }
-          }
-          
-          if (retryCount >= maxRetries) {
-            rethrow;
-          }
-          // 等待一段时间后重试
+          debugPrint('错误堆栈: $stackTrace');
+          if (retryCount >= maxRetries) throw Exception('下载失败: $e');
           await Future.delayed(Duration(seconds: retryCount * 2));
         }
       }
-      
+
       final file = File(filePath);
       if (await file.exists()) {
         final fileSize = await file.length();
         debugPrint('文件下载完成，大小: $fileSize 字节');
-        if (fileSize > 0) {
-          return file;
-        } else {
-          await file.delete();
-          debugPrint('文件大小为0，下载可能失败');
-        }
+        if (fileSize > 0) return file;
+        await file.delete();
+        debugPrint('文件大小为0，下载可能失败');
       }
-      
       return null;
     } catch (e, stackTrace) {
       debugPrint('下载文件时出错: $e');
@@ -1562,14 +1119,8 @@ forEach(function(element) {
   }
 
   void _addBookmark(String url) {
-    // Check if bookmark with the same URL already exists
-    bool exists = _bookmarks.any((bookmark) => bookmark['url'] == url);
-
-    if (!exists) {
-      setState(() {
-        // Use URL as initial name
-        _bookmarks.add({'name': url, 'url': url});
-      });
+    if (!_bookmarks.any((bookmark) => bookmark['url'] == url)) {
+      setState(() => _bookmarks.add({'name': url, 'url': url}));
       _saveBookmarks();
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已添加书签')));
     } else {
@@ -1585,7 +1136,7 @@ forEach(function(element) {
         itemBuilder: (context, index) {
           final bookmark = _bookmarks[index];
           return ListTile(
-            title: Text(bookmark['name'] ?? bookmark['url']!), // Display name, fallback to url
+            title: Text(bookmark['name'] ?? bookmark['url']!),
             onTap: () {
               _loadUrl(bookmark['url']!);
               Navigator.pop(context);
@@ -1596,7 +1147,7 @@ forEach(function(element) {
                 IconButton(
                   icon: const Icon(Icons.edit, color: Colors.blue),
                   onPressed: () {
-                    Navigator.pop(context); // Close bottom sheet first
+                    Navigator.pop(context);
                     _showRenameBookmarkDialog(context, index);
                   },
                   tooltip: '重命名',
@@ -1610,23 +1161,14 @@ forEach(function(element) {
                         title: const Text('删除书签'),
                         content: Text('确定要删除书签 "${bookmark['name']}" 吗？'),
                         actions: [
-                          TextButton(
-                            onPressed: () => Navigator.pop(context, false),
-                            child: const Text('取消'),
-                          ),
-                          TextButton(
-                            onPressed: () => Navigator.pop(context, true),
-                            child: const Text('删除'),
-                          ),
+                          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+                          TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('删除')),
                         ],
                       ),
                     ) ?? false;
                     if (shouldDelete) {
-                      setState(() {
-                        _bookmarks.removeAt(index);
-                      });
+                      setState(() => _bookmarks.removeAt(index));
                       _saveBookmarks();
-                      // Do not pop the bottom sheet here, allow user to delete multiple
                       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已删除书签')));
                     }
                   },
@@ -1642,7 +1184,6 @@ forEach(function(element) {
   void _showRenameBookmarkDialog(BuildContext context, int index) {
     final bookmark = _bookmarks[index];
     final nameController = TextEditingController(text: bookmark['name']);
-
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -1653,51 +1194,34 @@ forEach(function(element) {
           children: [
             TextField(
               controller: nameController,
-              decoration: const InputDecoration(
-                labelText: '书签名称',
-                hintText: '输入新的书签名称',
-              ),
+              decoration: const InputDecoration(labelText: '书签名称', hintText: '输入新的书签名称'),
               autofocus: true,
             ),
             const SizedBox(height: 8),
-            Text('URL: ${bookmark['url']}',
-              style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+            Text('URL: ${bookmark['url']}', style: TextStyle(fontSize: 12, color: Colors.grey[600])),
           ],
         ),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
-          ),
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
           TextButton(
             onPressed: () async {
               if (nameController.text.isNotEmpty && nameController.text != bookmark['name']) {
                 showDialog(
                   context: context,
                   barrierDismissible: false,
-                  builder: (BuildContext context) {
-                    return const AlertDialog(
-                      content: Row(
-                        children: [
-                          CircularProgressIndicator(),
-                          SizedBox(width: 20),
-                          Text("保存中..."),
-                        ],
-                      ),
-                    );
-                  },
+                  builder: (context) => const AlertDialog(
+                    content: Row(
+                      children: [CircularProgressIndicator(), SizedBox(width: 20), Text('保存中...')],
+                    ),
+                  ),
                 );
-
-                setState(() {
-                  _bookmarks[index]['name'] = nameController.text;
-                });
-
+                setState(() => _bookmarks[index]['name'] = nameController.text);
                 await _saveBookmarks();
-                Navigator.of(context).pop(); // Close loading dialog
-                Navigator.of(context).pop(); // Close rename dialog
+                Navigator.of(context).pop();
+                Navigator.of(context).pop();
                 ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('书签名称已更新')));
               } else {
-                Navigator.pop(context); // Close dialog if name is empty or unchanged
+                Navigator.pop(context);
               }
             },
             child: const Text('保存'),
@@ -1711,7 +1235,6 @@ forEach(function(element) {
     try {
       debugPrint('Starting to save bookmarks...');
       final prefs = await SharedPreferences.getInstance();
-      // Convert list of maps to JSON string
       final jsonString = jsonEncode(_bookmarks);
       final result = await prefs.setString('bookmarks', jsonString);
       if (!result) debugPrint('Bookmark save failed: SharedPreferences returned false');
@@ -1727,7 +1250,7 @@ forEach(function(element) {
       final commonWebsitesJson = prefs.getString('common_websites');
       debugPrint('Loaded common websites JSON: $commonWebsitesJson');
       if (commonWebsitesJson != null && commonWebsitesJson.isNotEmpty) {
-        final List<dynamic> decoded = jsonDecode(commonWebsitesJson);
+        final decoded = jsonDecode(commonWebsitesJson);
         setState(() {
           _commonWebsites.clear();
           _commonWebsites.addAll(decoded.map((item) => {
@@ -1790,7 +1313,7 @@ forEach(function(element) {
               ? null
               : IconButton(
                   icon: const Icon(Icons.home),
-                  onPressed: () async {
+                  onPressed: () {
                     debugPrint('[_AppBar] Home button pressed.');
                     _goToHomePage();
                   },
@@ -1890,9 +1413,7 @@ forEach(function(element) {
   }
 
   Future<void> _performBackgroundDownload(String url, MediaType mediaType) async {
-    // 添加到下载中的URL集合
     _downloadingUrls.add(url);
-    
     try {
       debugPrint('开始后台下载: $url, 媒体类型: $mediaType');
       final file = await _downloadFile(url);
@@ -1933,7 +1454,6 @@ forEach(function(element) {
         );
       }
     } finally {
-      // 无论成功还是失败，都要从下载中的URL集合中移除
       _downloadingUrls.remove(url);
       debugPrint('已从下载队列中移除URL: $url');
     }
