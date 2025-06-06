@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
+import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_downloader/flutter_downloader.dart';
@@ -339,8 +340,9 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
 
 
-      // 定期检查并监控下载链接
+      // 定期检查并监控下载链接和Telegram特殊元素
       setInterval(function() {
+        // 检查下载链接
         document.querySelectorAll('a[download], a[href*="/file/"], a[href*="/media/"], button:contains("Download"), button:contains("下载")').
 forEach(function(element) {
           if (!element.hasAttribute('data-download-monitored')) {
@@ -357,7 +359,45 @@ forEach(function(element) {
             });
           }
         });
-      }, 1000);
+        
+        // 特别检查Telegram的视频元素
+        document.querySelectorAll('video, .video-message, .media-video, [data-entity-type="messageMediaVideo"]').forEach(function(element) {
+          if (!element.hasAttribute('data-telegram-monitored')) {
+            element.setAttribute('data-telegram-monitored', 'true');
+            
+            let videoUrl = null;
+            if (element.tagName === 'VIDEO') {
+              videoUrl = element.src || element.currentSrc;
+              if (!videoUrl) {
+                const sources = element.querySelectorAll('source');
+                for (let source of sources) {
+                  if (source.src) {
+                    videoUrl = source.src;
+                    break;
+                  }
+                }
+              }
+            } else {
+              const videoElement = element.querySelector('video');
+              if (videoElement) {
+                videoUrl = videoElement.src || videoElement.currentSrc;
+              }
+            }
+            
+            if (videoUrl && !window.processedMediaUrls.has(videoUrl)) {
+              console.log('发现Telegram视频:', videoUrl);
+              // 自动触发检测
+              window.processedMediaUrls.add(videoUrl);
+              Flutter.postMessage(JSON.stringify({
+                type: 'media',
+                mediaType: 'video',
+                url: videoUrl,
+                isBase64: false
+              }));
+            }
+          }
+        });
+      }, 2000);
     ''');
   }
   
@@ -1036,6 +1076,17 @@ forEach(function(element) {
         dio.options.headers['Referer'] = 'https://web.telegram.org/';
         dio.options.headers['Origin'] = 'https://web.telegram.org';
         dio.options.headers['Sec-Fetch-Site'] = 'same-origin';
+        dio.options.headers['X-Requested-With'] = 'XMLHttpRequest';
+        dio.options.headers['Cache-Control'] = 'no-cache';
+        dio.options.headers['Pragma'] = 'no-cache';
+        // 尝试使用当前WebView的Cookie
+        final cookieManager = CookieManager.instance();
+        final cookies = await cookieManager.getCookies(url: WebUri(url));
+        if (cookies.isNotEmpty) {
+          final cookieString = cookies.map((c) => '${c.name}=${c.value}').join('; ');
+          dio.options.headers['Cookie'] = cookieString;
+          debugPrint('添加Cookie: $cookieString');
+        }
       }
       
       final appDir = await getApplicationDocumentsDirectory();
@@ -1063,6 +1114,19 @@ forEach(function(element) {
       
       while (retryCount < maxRetries) {
         try {
+          // 对于Telegram，先尝试HEAD请求检查文件是否可访问
+          if (url.contains('telegram.org') || url.contains('t.me')) {
+            try {
+              final headResponse = await dio.head(url);
+              debugPrint('HEAD请求成功，状态码: ${headResponse.statusCode}');
+              if (headResponse.headers['content-length'] != null) {
+                debugPrint('文件大小: ${headResponse.headers['content-length']![0]} 字节');
+              }
+            } catch (e) {
+              debugPrint('HEAD请求失败: $e，继续尝试直接下载');
+            }
+          }
+          
           await dio.download(
             url, 
             filePath, 
@@ -1071,11 +1135,14 @@ forEach(function(element) {
               followRedirects: true,
               maxRedirects: 5,
               validateStatus: (status) => status != null && status < 400,
+              responseType: ResponseType.bytes,
             ),
             onReceiveProgress: (received, total) {
               if (total != -1) {
                 final progress = (received / total * 100).toStringAsFixed(2);
                 debugPrint('下载进度: $progress%');
+              } else {
+                debugPrint('已接收: $received 字节');
               }
             }
           );
@@ -1083,6 +1150,19 @@ forEach(function(element) {
         } catch (e) {
           retryCount++;
           debugPrint('下载失败 (尝试 $retryCount/$maxRetries): $e');
+          
+          // 对于Telegram，如果是403或401错误，尝试不同的策略
+          if ((url.contains('telegram.org') || url.contains('t.me')) && retryCount < maxRetries) {
+            if (e.toString().contains('403') || e.toString().contains('401')) {
+              debugPrint('检测到认证错误，尝试调整请求头');
+              // 移除一些可能导致问题的请求头
+              dio.options.headers.remove('Sec-Fetch-Dest');
+              dio.options.headers.remove('Sec-Fetch-Mode');
+              dio.options.headers.remove('Sec-Fetch-Site');
+              dio.options.headers['User-Agent'] = 'TelegramBot (like TwitterBot)';
+            }
+          }
+          
           if (retryCount >= maxRetries) {
             rethrow;
           }
