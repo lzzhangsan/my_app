@@ -213,17 +213,56 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   void _injectDownloadHandlers() {
     debugPrint('为所有网站注入媒体下载处理程序');
     _controller.runJavaScript('''
-      document.addEventListener('click', function(e) {
+      // 辅助函数：检查URL是否是Blob URL
+      function isBlobUrl(url) {
+        return url && typeof url === 'string' && url.startsWith('blob:');
+      }
+
+      // 辅助函数：将Blob URL转换为Base64数据
+      async function resolveBlobUrl(blobUrl, mediaType) {
+        try {
+          const response = await fetch(blobUrl, { method: 'GET' });
+          if (!response.ok) throw new Error('Fetch failed: ' + response.statusText);
+          const blob = await response.blob();
+          const reader = new FileReader();
+          return new Promise((resolve, reject) => {
+            reader.onloadend = () => resolve({ resolvedUrl: reader.result.split(',')[1], isBase64: true });
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+          });
+        } catch (error) {
+          console.error('Error resolving Blob URL:', error);
+          return null;
+        }
+      }
+
+      // 监听点击事件以检测媒体
+      document.addEventListener('click', async function(e) {
         let target = e.target;
         while (target != null) {
           if (target.tagName === 'IMG' || target.tagName === 'VIDEO') {
             let mediaUrl = target.src || (target.querySelector('source') ? target.querySelector('source').src : null);
             if (mediaUrl) {
-              Flutter.postMessage(JSON.stringify({
-                type: 'media',
-                mediaType: target.tagName === 'IMG' ? 'image' : 'video',
-                url: mediaUrl
-              }));
+              const mediaType = target.tagName === 'IMG' ? 'image' : 'video';
+              if (isBlobUrl(mediaUrl)) {
+                console.log('Detected Blob URL:', mediaUrl);
+                const result = await resolveBlobUrl(mediaUrl, mediaType);
+                if (result) {
+                  Flutter.postMessage(JSON.stringify({
+                    type: 'media',
+                    mediaType: mediaType,
+                    url: result.resolvedUrl,
+                    isBase64: result.isBase64
+                  }));
+                }
+              } else {
+                Flutter.postMessage(JSON.stringify({
+                  type: 'media',
+                  mediaType: mediaType,
+                  url: mediaUrl,
+                  isBase64: false
+                }));
+              }
               e.preventDefault();
               break;
             }
@@ -232,21 +271,38 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         }
       }, true);
 
-      document.addEventListener('contextmenu', function(e) {
+      // 监听右键菜单以检测媒体
+      document.addEventListener('contextmenu', async function(e) {
         let target = e.target;
         if (target.tagName === 'IMG' || target.tagName === 'VIDEO') {
           let mediaUrl = target.src || (target.querySelector('source') ? target.querySelector('source').src : null);
           if (mediaUrl) {
-            Flutter.postMessage(JSON.stringify({
-              type: 'media',
-              mediaType: target.tagName === 'IMG' ? 'image' : 'video',
-              url: mediaUrl
-            }));
+            const mediaType = target.tagName === 'IMG' ? 'image' : 'video';
+            if (isBlobUrl(mediaUrl)) {
+              console.log('Detected Blob URL:', mediaUrl);
+              const result = await resolveBlobUrl(mediaUrl, mediaType);
+              if (result) {
+                Flutter.postMessage(JSON.stringify({
+                  type: 'media',
+                  mediaType: mediaType,
+                  url: result.resolvedUrl,
+                  isBase64: result.isBase64
+                }));
+              }
+            } else {
+              Flutter.postMessage(JSON.stringify({
+                type: 'media',
+                mediaType: mediaType,
+                url: mediaUrl,
+                isBase64: false
+              }));
+            }
             e.preventDefault();
           }
         }
       }, true);
 
+      // 定期检查并监控下载链接
       setInterval(function() {
         document.querySelectorAll('a[download], a[href*="/file/"], a[href*="/media/"], button:contains("Download"), button:contains("下载")').forEach(function(element) {
           if (!element.hasAttribute('data-download-monitored')) {
@@ -272,11 +328,16 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       if (data is Map && data.containsKey('type')) {
         final type = data['type'];
         final url = data['url'];
+        final isBase64 = data['isBase64'] ?? false;
         if (url != null && url is String) {
           if (type == 'media') {
             final mediaType = data['mediaType'] ?? 'image';
-            debugPrint('从JavaScript接收到媒体URL: $url，类型: $mediaType');
-            _showDownloadDialog(url, mediaType);
+            debugPrint('从JavaScript接收到媒体URL: $url，类型: $mediaType, 是否Base64: $isBase64');
+            if (isBase64) {
+              _handleBlobUrl(url, mediaType);
+            } else {
+              _showDownloadDialog(url, mediaType);
+            }
           } else if (type == 'download') {
             debugPrint('从JavaScript接收到下载URL: $url');
             _handleDownload(url, '', _guessMimeType(url));
@@ -285,6 +346,40 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       }
     } catch (e) {
       debugPrint('处理JavaScript消息时出错: $e');
+    }
+  }
+
+  void _handleBlobUrl(String base64Data, String mediaType) async {
+    try {
+      final bytes = base64Decode(base64Data);
+      final appDir = await getApplicationDocumentsDirectory();
+      final mediaDir = Directory('${appDir.path}/media');
+      if (!await mediaDir.exists()) await mediaDir.create(recursive: true);
+      final uuid = const Uuid().v4();
+      final extension = mediaType == 'image' ? '.jpg' : '.mp4';
+      final filePath = '${mediaDir.path}/$uuid$extension';
+      final file = File(filePath);
+      await file.writeAsBytes(bytes);
+      debugPrint('已从Base64保存文件: $filePath');
+      await _saveToMediaLibrary(file, mediaType == 'image' ? MediaType.image : MediaType.video);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('媒体已成功保存到媒体库: ${file.path.split('/').last}'),
+            duration: const Duration(seconds: 5),
+            action: SnackBarAction(
+              label: '查看',
+              onPressed: () => Navigator.pushNamed(context, '/media_manager'),
+            ),
+          ),
+        );
+      }
+    } catch (e, stackTrace) {
+      debugPrint('处理Base64数据时出错: $e');
+      debugPrint('错误堆栈: $stackTrace');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('下载失败: $e')));
+      }
     }
   }
 
@@ -316,6 +411,12 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                 groupValue: selectedType,
                 onChanged: (value) => setState(() => selectedType = value!),
               ),
+              RadioListTile<MediaType>(
+                title: const Text('音频'),
+                value: MediaType.audio,
+                groupValue: selectedType,
+                onChanged: (value) => setState(() => selectedType = value!),
+              ),
             ],
           ),
           actions: [
@@ -326,7 +427,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
             TextButton(
               onPressed: () {
                 Navigator.pop(context);
-                String mimeType = selectedType == MediaType.image ? 'image/jpeg' : 'video/mp4';
+                String mimeType = selectedType == MediaType.image ? 'image/jpeg' : selectedType == MediaType.video ? 'video/mp4' : 'audio/mpeg';
                 _handleDownload(url, '', mimeType, selectedType: selectedType);
               },
               child: const Text('下载'),
