@@ -210,10 +210,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     return false;
   }
   
-  // 添加下载状态跟踪
-  final Set<String> _downloadingUrls = {};
-  final Set<String> _processedUrls = {};
-
   void _injectDownloadHandlers() {
     debugPrint('为所有网站注入媒体下载处理程序');
     _controller.runJavaScript('''
@@ -240,17 +236,13 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         }
       }
 
-      // 防止重复处理的URL集合
-      window.processedMediaUrls = window.processedMediaUrls || new Set();
-
       // 监听点击事件以检测媒体
       document.addEventListener('click', async function(e) {
         let target = e.target;
         while (target != null) {
           if (target.tagName === 'IMG' || target.tagName === 'VIDEO') {
             let mediaUrl = target.src || (target.querySelector('source') ? target.querySelector('source').src : null);
-            if (mediaUrl && !window.processedMediaUrls.has(mediaUrl)) {
-              window.processedMediaUrls.add(mediaUrl);
+            if (mediaUrl) {
               const mediaType = target.tagName === 'IMG' ? 'image' : 'video';
               if (isBlobUrl(mediaUrl)) {
                 console.log('Detected Blob URL:', mediaUrl);
@@ -284,8 +276,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         let target = e.target;
         if (target.tagName === 'IMG' || target.tagName === 'VIDEO') {
           let mediaUrl = target.src || (target.querySelector('source') ? target.querySelector('source').src : null);
-          if (mediaUrl && !window.processedMediaUrls.has(mediaUrl)) {
-            window.processedMediaUrls.add(mediaUrl);
+          if (mediaUrl) {
             const mediaType = target.tagName === 'IMG' ? 'image' : 'video';
             if (isBlobUrl(mediaUrl)) {
               console.log('Detected Blob URL:', mediaUrl);
@@ -313,14 +304,12 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
       // 定期检查并监控下载链接
       setInterval(function() {
-        document.querySelectorAll('a[download], a[href*="/file/"], a[href*="/media/"], button:contains("Download"), button:contains("下载")').
-forEach(function(element) {
+        document.querySelectorAll('a[download], a[href*="/file/"], a[href*="/media/"], button:contains("Download"), button:contains("下载")').forEach(function(element) {
           if (!element.hasAttribute('data-download-monitored')) {
             element.setAttribute('data-download-monitored', 'true');
             element.addEventListener('click', function(e) {
               let url = element.href || element.getAttribute('data-url') || element.getAttribute('data-src');
-              if (url && !window.processedMediaUrls.has(url)) {
-                window.processedMediaUrls.add(url);
+              if (url) {
                 Flutter.postMessage(JSON.stringify({
                   type: 'download',
                   url: url
@@ -341,13 +330,6 @@ forEach(function(element) {
         final url = data['url'];
         final isBase64 = data['isBase64'] ?? false;
         if (url != null && url is String) {
-          // 防止重复处理相同的URL
-          if (_processedUrls.contains(url)) {
-            debugPrint('URL已处理过，跳过: $url');
-            return;
-          }
-          _processedUrls.add(url);
-          
           if (type == 'media') {
             final mediaType = data['mediaType'] ?? 'image';
             debugPrint('从JavaScript接收到媒体URL: $url，类型: $mediaType, 是否Base64: $isBase64');
@@ -807,18 +789,6 @@ forEach(function(element) {
   Future<void> _handleDownload(String url, String contentDisposition, String mimeType, {MediaType? selectedType}) async {
     try {
       debugPrint('开始处理下载: $url, MIME类型: $mimeType');
-      
-      // 防止重复下载
-      if (_downloadingUrls.contains(url)) {
-        debugPrint('URL正在下载中，跳过: $url');
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('该文件正在下载中，请稍候...'))
-          );
-        }
-        return;
-      }
-      
       String processedUrl = url;
       if (url.contains('telegram.org') || url.contains('t.me')) {
         if (!url.startsWith('http')) {
@@ -826,7 +796,6 @@ forEach(function(element) {
         }
         debugPrint('处理后的电报URL: $processedUrl');
       }
-      
       if (selectedType == null) {
         final result = await showDialog<Map<String, dynamic>>(
           context: context,
@@ -836,16 +805,12 @@ forEach(function(element) {
           final bool shouldDownload = result['download'];
           final MediaType mediaType = result['mediaType'];
           if (shouldDownload) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('开始下载，将在后台进行...'), duration: Duration(seconds: 2))
-            );
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('开始下载，将在后台进行...'), duration: Duration(seconds: 2)));
             unawaited(_performBackgroundDownload(processedUrl, mediaType));
           }
         }
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('开始下载，将在后台进行...'), duration: Duration(seconds: 2))
-        );
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('开始下载，将在后台进行...'), duration: Duration(seconds: 2)));
         unawaited(_performBackgroundDownload(processedUrl, selectedType));
       }
     } catch (e, stackTrace) {
@@ -984,97 +949,41 @@ forEach(function(element) {
   Future<File?> _downloadFile(String url) async {
     try {
       debugPrint('开始下载文件，URL: $url');
-      
       final dio = Dio();
-      dio.options.connectTimeout = const Duration(seconds: 60); // 增加连接超时
-      dio.options.receiveTimeout = const Duration(seconds: 300); // 增加接收超时，特别是视频文件
-      dio.options.sendTimeout = const Duration(seconds: 60);
-      
-      // 设置更完整的请求头
+      dio.options.connectTimeout = const Duration(seconds: 30);
+      dio.options.receiveTimeout = const Duration(seconds: 60);
       dio.options.headers = {
         'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 13_2_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0.3 Mobile/15E148 Safari/604.1',
         'Accept': '*/*',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Connection': 'keep-alive',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'none',
-        'Upgrade-Insecure-Requests': '1',
       };
-      
-      // 针对Telegram的特殊处理
       if (url.contains('telegram.org') || url.contains('t.me')) {
         dio.options.headers['Referer'] = 'https://web.telegram.org/';
         dio.options.headers['Origin'] = 'https://web.telegram.org';
-        dio.options.headers['Sec-Fetch-Site'] = 'same-origin';
       }
-      
       final appDir = await getApplicationDocumentsDirectory();
       final mediaDir = Directory('${appDir.path}/media');
       if (!await mediaDir.exists()) await mediaDir.create(recursive: true);
-      
       final uuid = const Uuid().v4();
       final uri = Uri.parse(url);
       String extension = _getFileExtension(uri.path);
-      
       if (extension.isEmpty) {
         final mimeType = _guessMimeType(url);
-        extension = mimeType.startsWith('image/') ? '.jpg' : 
-                   mimeType.startsWith('video/') ? '.mp4' : 
-                   mimeType.startsWith('audio/') ? '.mp3' : '.bin';
+        extension = mimeType.startsWith('image/') ? '.jpg' : mimeType.startsWith('video/') ? '.mp4' : mimeType.startsWith('audio/') ? '.mp3' : '.bin';
         debugPrint('URL没有扩展名，根据MIME类型猜测为: $extension');
       }
-      
       final filePath = '${mediaDir.path}/$uuid$extension';
       debugPrint('将下载到文件路径: $filePath');
-      
-      // 添加重试机制
-      int retryCount = 0;
-      const maxRetries = 3;
-      
-      while (retryCount < maxRetries) {
-        try {
-          await dio.download(
-            url, 
-            filePath, 
-            deleteOnError: true,
-            options: Options(
-              followRedirects: true,
-              maxRedirects: 5,
-              validateStatus: (status) => status != null && status < 400,
-            ),
-            onReceiveProgress: (received, total) {
-              if (total != -1) {
-                final progress = (received / total * 100).toStringAsFixed(2);
-                debugPrint('下载进度: $progress%');
-              }
-            }
-          );
-          break; // 下载成功，退出重试循环
-        } catch (e) {
-          retryCount++;
-          debugPrint('下载失败 (尝试 $retryCount/$maxRetries): $e');
-          if (retryCount >= maxRetries) {
-            rethrow;
-          }
-          // 等待一段时间后重试
-          await Future.delayed(Duration(seconds: retryCount * 2));
-        }
-      }
-      
+      await dio.download(url, filePath, deleteOnError: true, onReceiveProgress: (received, total) {
+        if (total != -1) debugPrint('下载进度: ${(received / total * 100).toStringAsFixed(2)}%');
+      });
       final file = File(filePath);
       if (await file.exists()) {
         final fileSize = await file.length();
         debugPrint('文件下载完成，大小: $fileSize 字节');
-        if (fileSize > 0) {
-          return file;
-        } else {
-          await file.delete();
-          debugPrint('文件大小为0，下载可能失败');
-        }
+        if (fileSize > 0) return file;
+        await file.delete();
+        debugPrint('文件大小为0，下载可能失败');
       }
-      
       return null;
     } catch (e, stackTrace) {
       debugPrint('下载文件时出错: $e');
@@ -1367,7 +1276,7 @@ forEach(function(element) {
         }
       } else {
         debugPrint('文件下载失败');
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('下载失败，请检查网络连接或稍后重试')));
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('下载失败，请重试')));
       }
     } catch (e) {
       debugPrint('后台下载出错: $e');
