@@ -39,7 +39,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   double _loadingProgress = 0.0;
   String _currentUrl = 'https://www.baidu.com';
   late final DatabaseService _databaseService;
-  final List<String> _bookmarks = [];
+  List<Map<String, String>> _bookmarks = [];
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   
   bool _showHomePage = true;
@@ -1009,47 +1009,124 @@ forEach(function(element) {
       leading: Icon(iconData),
       title: Text(website['name']),
       subtitle: Text(website['url']),
-      trailing: IconButton(
-        icon: const Icon(Icons.delete, color: Colors.red),
-        onPressed: () async {
-          final shouldDelete = await showDialog<bool>(
-            context: context,
-            builder: (context) => AlertDialog(
-              title: const Text('删除网站'),
-              content: Text('确定要删除 ${website['name']} 吗？'),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context, false),
-                  child: const Text('取消'),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            icon: const Icon(Icons.edit, color: Colors.blue),
+            onPressed: () => _showRenameWebsiteDialog(context, website, index),
+            tooltip: '重命名',
+          ),
+          IconButton(
+            icon: const Icon(Icons.delete, color: Colors.red),
+            onPressed: () async {
+              final shouldDelete = await showDialog<bool>(
+                context: context,
+                builder: (context) => AlertDialog(
+                  title: const Text('删除网站'),
+                  content: Text('确定要删除 ${website['name']} 吗？'),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(context, false),
+                      child: const Text('取消'),
+                    ),
+                    TextButton(
+                      onPressed: () => Navigator.pop(context, true),
+                      child: const Text('删除'),
+                    ),
+                  ],
                 ),
-                TextButton(
-                  onPressed: () => Navigator.pop(context, true),
-                  child: const Text('删除'),
-                ),
-              ],
-            ),
-          ) ?? false;
-          if (shouldDelete) {
-            showDialog(
-              context: context,
-              barrierDismissible: false,
-              builder: (BuildContext context) {
-                return const AlertDialog(
-                  content: Row(
-                    children: [
-                      CircularProgressIndicator(),
-                      SizedBox(width: 20),
-                      Text("删除中..."),
-                    ],
-                  ),
+              ) ?? false;
+              if (shouldDelete) {
+                showDialog(
+                  context: context,
+                  barrierDismissible: false,
+                  builder: (BuildContext context) {
+                    return const AlertDialog(
+                      content: Row(
+                        children: [
+                          CircularProgressIndicator(),
+                          SizedBox(width: 20),
+                          Text("删除中..."),
+                        ],
+                      ),
+                    );
+                  },
                 );
-              },
-            );
-            await _removeWebsite(index);
-            Navigator.of(context).pop();
-            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('网站已删除')));
-          }
-        },
+                await _removeWebsite(index);
+                Navigator.of(context).pop();
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('网站已删除')));
+              }
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showRenameWebsiteDialog(BuildContext context, Map<String, dynamic> website, int index) {
+    final nameController = TextEditingController(text: website['name']);
+    
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('重命名网站'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextField(
+              controller: nameController,
+              decoration: const InputDecoration(
+                labelText: '网站名称',
+                hintText: '输入新的网站名称',
+              ),
+              autofocus: true,
+            ),
+            const SizedBox(height: 8),
+            Text('当前URL: ${website['url']}', 
+              style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () async {
+              if (nameController.text.isNotEmpty && nameController.text != website['name']) {
+                showDialog(
+                  context: context,
+                  barrierDismissible: false,
+                  builder: (BuildContext context) {
+                    return const AlertDialog(
+                      content: Row(
+                        children: [
+                          CircularProgressIndicator(),
+                          SizedBox(width: 20),
+                          Text("保存中..."),
+                        ],
+                      ),
+                    );
+                  },
+                );
+                
+                setState(() {
+                  _commonWebsites[index]['name'] = nameController.text;
+                });
+                
+                await _saveCommonWebsites();
+                Navigator.of(context).pop(); // 关闭加载对话框
+                Navigator.of(context).pop(); // 关闭重命名对话框
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('网站名称已更新')));
+              } else {
+                Navigator.pop(context);
+              }
+            },
+            child: const Text('保存'),
+          ),
+        ],
       ),
     );
   }
@@ -1075,13 +1152,42 @@ forEach(function(element) {
   Future<void> _loadBookmarks() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final bookmarksList = prefs.getStringList('bookmarks');
+      final bookmarksJsonString = prefs.getString('bookmarks');
+      debugPrint('Loaded bookmarks JSON: $bookmarksJsonString');
       setState(() {
-        if (bookmarksList != null && bookmarksList.isNotEmpty) {
-          _bookmarks.clear();
-          _bookmarks.addAll(bookmarksList);
-        } else if (_bookmarks.isEmpty) {
-          _bookmarks.addAll(['https://www.baidu.com', 'https://www.bilibili.com']);
+        _bookmarks.clear();
+        if (bookmarksJsonString != null && bookmarksJsonString.isNotEmpty) {
+          try {
+            final List<dynamic> decoded = jsonDecode(bookmarksJsonString);
+            // Check if the loaded data is in the new format (list of maps)
+            if (decoded.isNotEmpty && decoded[0] is Map<String, dynamic> && decoded[0].containsKey('name') && decoded[0].containsKey('url')) {
+              final List<Map<String, String>> loadedBookmarks = decoded.map((item) => {
+                'name': item['name']?.toString() ?? '', // Safely convert to string
+                'url': item['url']?.toString() ?? '',   // Safely convert to string
+              }).toList();
+              _bookmarks.addAll(loadedBookmarks);
+            } else if (decoded.isNotEmpty && decoded[0] is String) {
+               // Handle old format (list of strings/URLs) - migrate to new format
+               debugPrint('Migrating old format bookmarks...');
+               final List<Map<String, String>> migratedBookmarks = decoded.whereType<String>().map((url) => {'name': url, 'url': url} as Map<String, String>).toList();
+               _bookmarks = migratedBookmarks;
+               // Save in the new format immediately
+               _saveBookmarks();
+            }
+          } catch (e) {
+            debugPrint('Error decoding bookmarks JSON: $e');
+            // If decoding fails, clear existing bookmarks and start fresh with defaults if necessary
+             _bookmarks.clear();
+          }
+        }
+
+        // If bookmarks list is still empty after loading, add defaults
+        if (_bookmarks.isEmpty) {
+          debugPrint('Bookmarks list is empty after loading, adding defaults.');
+          _bookmarks.addAll([
+            {'name': '百度', 'url': 'https://www.baidu.com'},
+            {'name': 'Bilibili', 'url': 'https://www.bilibili.com'} // Using English name for example
+          ]);
           _saveBookmarks();
         }
       });
@@ -1490,9 +1596,13 @@ forEach(function(element) {
   }
 
   void _addBookmark(String url) {
-    if (!_bookmarks.contains(url)) {
+    // Check if bookmark with the same URL already exists
+    bool exists = _bookmarks.any((bookmark) => bookmark['url'] == url);
+
+    if (!exists) {
       setState(() {
-        _bookmarks.add(url);
+        // Use URL as initial name
+        _bookmarks.add({'name': url, 'url': url});
       });
       _saveBookmarks();
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已添加书签')));
@@ -1507,26 +1617,126 @@ forEach(function(element) {
       builder: (context) => ListView.builder(
         itemCount: _bookmarks.length,
         itemBuilder: (context, index) {
-          final url = _bookmarks[index];
+          final bookmark = _bookmarks[index];
           return ListTile(
-            title: Text(url),
+            title: Text(bookmark['name'] ?? bookmark['url']!), // Display name, fallback to url
             onTap: () {
-              _controller.loadRequest(Uri.parse(url));
+              _loadUrl(bookmark['url']!);
               Navigator.pop(context);
             },
-            trailing: IconButton(
-              icon: const Icon(Icons.delete),
-              onPressed: () {
-                setState(() {
-                  _bookmarks.removeAt(index);
-                });
-                _saveBookmarks();
-                Navigator.pop(context);
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已删除书签')));
-              },
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.edit, color: Colors.blue),
+                  onPressed: () {
+                    Navigator.pop(context); // Close bottom sheet first
+                    _showRenameBookmarkDialog(context, index);
+                  },
+                  tooltip: '重命名',
+                ),
+                IconButton(
+                  icon: const Icon(Icons.delete, color: Colors.red),
+                  onPressed: () async {
+                    final shouldDelete = await showDialog<bool>(
+                      context: context,
+                      builder: (context) => AlertDialog(
+                        title: const Text('删除书签'),
+                        content: Text('确定要删除书签 "${bookmark['name']}" 吗？'),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(context, false),
+                            child: const Text('取消'),
+                          ),
+                          TextButton(
+                            onPressed: () => Navigator.pop(context, true),
+                            child: const Text('删除'),
+                          ),
+                        ],
+                      ),
+                    ) ?? false;
+                    if (shouldDelete) {
+                      setState(() {
+                        _bookmarks.removeAt(index);
+                      });
+                      _saveBookmarks();
+                      // Do not pop the bottom sheet here, allow user to delete multiple
+                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已删除书签')));
+                    }
+                  },
+                ),
+              ],
             ),
           );
         },
+      ),
+    );
+  }
+
+  void _showRenameBookmarkDialog(BuildContext context, int index) {
+    final bookmark = _bookmarks[index];
+    final nameController = TextEditingController(text: bookmark['name']);
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('重命名书签'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextField(
+              controller: nameController,
+              decoration: const InputDecoration(
+                labelText: '书签名称',
+                hintText: '输入新的书签名称',
+              ),
+              autofocus: true,
+            ),
+            const SizedBox(height: 8),
+            Text('URL: ${bookmark['url']}',
+              style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () async {
+              if (nameController.text.isNotEmpty && nameController.text != bookmark['name']) {
+                showDialog(
+                  context: context,
+                  barrierDismissible: false,
+                  builder: (BuildContext context) {
+                    return const AlertDialog(
+                      content: Row(
+                        children: [
+                          CircularProgressIndicator(),
+                          SizedBox(width: 20),
+                          Text("保存中..."),
+                        ],
+                      ),
+                    );
+                  },
+                );
+
+                setState(() {
+                  _bookmarks[index]['name'] = nameController.text;
+                });
+
+                await _saveBookmarks();
+                Navigator.of(context).pop(); // Close loading dialog
+                Navigator.of(context).pop(); // Close rename dialog
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('书签名称已更新')));
+              } else {
+                Navigator.pop(context); // Close dialog if name is empty or unchanged
+              }
+            },
+            child: const Text('保存'),
+          ),
+        ],
       ),
     );
   }
@@ -1535,7 +1745,9 @@ forEach(function(element) {
     try {
       debugPrint('Starting to save bookmarks...');
       final prefs = await SharedPreferences.getInstance();
-      final result = await prefs.setStringList('bookmarks', _bookmarks);
+      // Convert list of maps to JSON string
+      final jsonString = jsonEncode(_bookmarks);
+      final result = await prefs.setString('bookmarks', jsonString);
       if (!result) debugPrint('Bookmark save failed: SharedPreferences returned false');
     } catch (e) {
       debugPrint('Error saving bookmarks: $e');
