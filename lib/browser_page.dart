@@ -247,46 +247,70 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       document.addEventListener('click', async function(e) {
         let target = e.target;
         while (target != null) {
-          if (target.tagName === 'IMG' || target.tagName === 'VIDEO') {
-            let mediaUrl = target.src || (target.querySelector('source') ? target.querySelector('source').src : null);
-            if (mediaUrl && !window.processedMediaUrls.has(mediaUrl)) {
-              window.processedMediaUrls.add(mediaUrl);
-              const mediaType = target.tagName === 'IMG' ? 'image' : 'video';
-              if (isBlobUrl(mediaUrl)) {
-                console.log('Detected Blob URL:', mediaUrl);
-                const result = await resolveBlobUrl(mediaUrl, mediaType);
-                if (result) {
-                  Flutter.postMessage(JSON.stringify({
-                    type: 'media',
-                    mediaType: mediaType,
-                    url: result.resolvedUrl,
-                    isBase64: result.isBase64
-                  }));
+          let mediaUrl = null;
+          let mediaType = null;
+          
+          // 检测图片
+          if (target.tagName === 'IMG') {
+            mediaUrl = target.src || target.getAttribute('data-src') || target.getAttribute('data-original');
+            mediaType = 'image';
+          }
+          // 检测视频 - 增强检测逻辑
+          else if (target.tagName === 'VIDEO') {
+            mediaUrl = target.src || target.currentSrc;
+            // 如果video元素没有直接的src，检查source子元素
+            if (!mediaUrl) {
+              const sources = target.querySelectorAll('source');
+              for (let source of sources) {
+                if (source.src) {
+                  mediaUrl = source.src;
+                  break;
                 }
-              } else {
-                Flutter.postMessage(JSON.stringify({
-                  type: 'media',
-                  mediaType: mediaType,
-                  url: mediaUrl,
-                  isBase64: false
-                }));
               }
-              e.preventDefault();
-              break;
+            }
+            mediaType = 'video';
+          }
+          // 检测包含视频的容器元素
+          else if (target.querySelector('video')) {
+            const videoElement = target.querySelector('video');
+            mediaUrl = videoElement.src || videoElement.currentSrc;
+            if (!mediaUrl) {
+              const sources = videoElement.querySelectorAll('source');
+              for (let source of sources) {
+                if (source.src) {
+                  mediaUrl = source.src;
+                  break;
+                }
+              }
+            }
+            mediaType = 'video';
+          }
+          // 检测Telegram特有的媒体容器
+          else if (target.classList && (target.classList.contains('media-photo') || target.classList.contains('media-video') || target.classList.contains('video-message'))) {
+            const imgElement = target.querySelector('img');
+            const videoElement = target.querySelector('video');
+            if (videoElement) {
+              mediaUrl = videoElement.src || videoElement.currentSrc;
+              if (!mediaUrl) {
+                const sources = videoElement.querySelectorAll('source');
+                for (let source of sources) {
+                  if (source.src) {
+                    mediaUrl = source.src;
+                    break;
+                  }
+                }
+              }
+              mediaType = 'video';
+            } else if (imgElement) {
+              mediaUrl = imgElement.src || imgElement.getAttribute('data-src');
+              mediaType = 'image';
             }
           }
-          target = target.parentElement;
-        }
-      }, true);
-
-      // 监听右键菜单以检测媒体
-      document.addEventListener('contextmenu', async function(e) {
-        let target = e.target;
-        if (target.tagName === 'IMG' || target.tagName === 'VIDEO') {
-          let mediaUrl = target.src || (target.querySelector('source') ? target.querySelector('source').src : null);
-          if (mediaUrl && !window.processedMediaUrls.has(mediaUrl)) {
+          
+          if (mediaUrl && mediaType && !window.processedMediaUrls.has(mediaUrl)) {
             window.processedMediaUrls.add(mediaUrl);
-            const mediaType = target.tagName === 'IMG' ? 'image' : 'video';
+            console.log('Detected media:', mediaType, mediaUrl);
+            
             if (isBlobUrl(mediaUrl)) {
               console.log('Detected Blob URL:', mediaUrl);
               const result = await resolveBlobUrl(mediaUrl, mediaType);
@@ -307,9 +331,13 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
               }));
             }
             e.preventDefault();
+            break;
           }
+          target = target.parentElement;
         }
       }, true);
+
+
 
       // 定期检查并监控下载链接
       setInterval(function() {
@@ -1348,7 +1376,11 @@ forEach(function(element) {
   }
 
   Future<void> _performBackgroundDownload(String url, MediaType mediaType) async {
+    // 添加到下载中的URL集合
+    _downloadingUrls.add(url);
+    
     try {
+      debugPrint('开始后台下载: $url, 媒体类型: $mediaType');
       final file = await _downloadFile(url);
       if (file != null) {
         debugPrint('文件下载成功: ${file.path}');
@@ -1356,7 +1388,7 @@ forEach(function(element) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('媒体已成功保存到媒体库: ${file.path.split('/').last}'),
+              content: Text('${mediaType == MediaType.video ? "视频" : mediaType == MediaType.image ? "图片" : "音频"}已成功保存到媒体库: ${file.path.split('/').last}'),
               duration: const Duration(seconds: 5),
               action: SnackBarAction(
                 label: '查看',
@@ -1366,12 +1398,30 @@ forEach(function(element) {
           );
         }
       } else {
-        debugPrint('文件下载失败');
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('下载失败，请检查网络连接或稍后重试')));
+        debugPrint('文件下载失败: $url');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('${mediaType == MediaType.video ? "视频" : mediaType == MediaType.image ? "图片" : "音频"}下载失败，请检查网络连接或稍后重试'),
+              duration: const Duration(seconds: 3),
+            ),
+          );
+        }
       }
     } catch (e) {
-      debugPrint('后台下载出错: $e');
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('下载出错: $e')));
+      debugPrint('后台下载出错: $url, 错误: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('${mediaType == MediaType.video ? "视频" : mediaType == MediaType.image ? "图片" : "音频"}下载出错: $e'),
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    } finally {
+      // 无论成功还是失败，都要从下载中的URL集合中移除
+      _downloadingUrls.remove(url);
+      debugPrint('已从下载队列中移除URL: $url');
     }
   }
 }
