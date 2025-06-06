@@ -95,7 +95,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       _commonWebsites.add({'name': name, 'url': url, 'iconCode': icon.codePoint});
     });
     await _saveCommonWebsites();
-    debugPrint('已添加并保存网站: $name');
+    debugPrint('已添加并立即保存网站: $name');
   }
 
   @override
@@ -216,22 +216,60 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   final Set<String> _processedUrls = {};
 
   void _injectDownloadHandlers() {
-    debugPrint('为所有网站注入媒体下载处理程序');
+    debugPrint('为所有网站注入强化媒体下载处理程序');
     _controller.runJavaScript('''
+      // 全局媒体拦截系统初始化
+      window.MediaInterceptor = window.MediaInterceptor || {
+        processedUrls: new Set(),
+        interceptedRequests: new Map(),
+        blobUrls: new Map(),
+        m3u8Segments: new Map()
+      };
+
       // 辅助函数：检查URL是否是Blob URL
       function isBlobUrl(url) {
         return url && typeof url === 'string' && url.startsWith('blob:');
       }
 
-      // 辅助函数：将Blob URL转换为Base64数据
+      // 辅助函数：检查是否是媒体URL
+      function isMediaUrl(url) {
+        if (!url) return false;
+        const mediaExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg',
+                                '.mp4', '.webm', '.mov', '.avi', '.mkv', '.flv', '.wmv',
+                                '.mp3', '.wav', '.ogg', '.m4a', '.aac'];
+        const lowerUrl = url.toLowerCase();
+        return mediaExtensions.some(ext => lowerUrl.includes(ext)) || 
+               lowerUrl.includes('image') || lowerUrl.includes('video') || lowerUrl.includes('audio') ||
+               lowerUrl.includes('media') || lowerUrl.includes('blob:') || lowerUrl.includes('.m3u8');
+      }
+
+      // 增强的Blob URL解析器
       async function resolveBlobUrl(blobUrl, mediaType) {
         try {
-          const response = await fetch(blobUrl, { method: 'GET' });
+          console.log('正在解析Blob URL:', blobUrl);
+          const response = await fetch(blobUrl, { 
+            method: 'GET',
+            headers: {
+              'Accept': '*/*',
+              'Cache-Control': 'no-cache'
+            }
+          });
           if (!response.ok) throw new Error('Fetch failed: ' + response.statusText);
           const blob = await response.blob();
+          
+          // 检查是否是m3u8文件
+          if (blob.type.includes('application/x-mpegURL') || blob.type.includes('application/vnd.apple.mpegurl')) {
+            const text = await blob.text();
+            return { resolvedUrl: text, isBase64: false, isM3U8: true };
+          }
+          
           const reader = new FileReader();
           return new Promise((resolve, reject) => {
-            reader.onloadend = () => resolve({ resolvedUrl: reader.result.split(',')[1], isBase64: true });
+            reader.onloadend = () => {
+              const base64Data = reader.result.split(',')[1];
+              window.MediaInterceptor.blobUrls.set(blobUrl, base64Data);
+              resolve({ resolvedUrl: base64Data, isBase64: true });
+            };
             reader.onerror = reject;
             reader.readAsDataURL(blob);
           });
@@ -241,8 +279,95 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         }
       }
 
-      // 防止重复处理的URL集合
-      window.processedMediaUrls = window.processedMediaUrls || new Set();
+      // 网络请求拦截器 - 拦截XMLHttpRequest
+      (function() {
+        const originalXHROpen = XMLHttpRequest.prototype.open;
+        const originalXHRSend = XMLHttpRequest.prototype.send;
+        
+        XMLHttpRequest.prototype.open = function(method, url, async, user, password) {
+          this._interceptedUrl = url;
+          this._interceptedMethod = method;
+          return originalXHROpen.apply(this, arguments);
+        };
+        
+        XMLHttpRequest.prototype.send = function(data) {
+          const xhr = this;
+          const url = this._interceptedUrl;
+          
+          if (isMediaUrl(url)) {
+            console.log('拦截到媒体请求 (XHR):', url);
+            window.MediaInterceptor.interceptedRequests.set(url, {
+              method: this._interceptedMethod,
+              timestamp: Date.now(),
+              type: 'xhr'
+            });
+          }
+          
+          const originalOnLoad = this.onload;
+          this.onload = function() {
+            if (isMediaUrl(url) && this.response) {
+              console.log('媒体请求完成 (XHR):', url);
+              // 自动触发下载检测
+              setTimeout(() => {
+                if (!window.MediaInterceptor.processedUrls.has(url)) {
+                  window.MediaInterceptor.processedUrls.add(url);
+                  Flutter.postMessage(JSON.stringify({
+                    type: 'media',
+                    mediaType: url.includes('video') || url.includes('.mp4') || url.includes('.webm') ? 'video' : 'image',
+                    url: url,
+                    isBase64: false,
+                    source: 'xhr_intercept'
+                  }));
+                }
+              }, 100);
+            }
+            if (originalOnLoad) originalOnLoad.apply(this, arguments);
+          };
+          
+          return originalXHRSend.apply(this, arguments);
+        };
+      })();
+
+      // 网络请求拦截器 - 拦截Fetch API
+      (function() {
+        const originalFetch = window.fetch;
+        window.fetch = function(input, init) {
+          const url = typeof input === 'string' ? input : input.url;
+          
+          if (isMediaUrl(url)) {
+            console.log('拦截到媒体请求 (Fetch):', url);
+            window.MediaInterceptor.interceptedRequests.set(url, {
+              method: (init && init.method) || 'GET',
+              timestamp: Date.now(),
+              type: 'fetch'
+            });
+            
+            // 自动触发下载检测
+            setTimeout(() => {
+              if (!window.MediaInterceptor.processedUrls.has(url)) {
+                window.MediaInterceptor.processedUrls.add(url);
+                Flutter.postMessage(JSON.stringify({
+                  type: 'media',
+                  mediaType: url.includes('video') || url.includes('.mp4') || url.includes('.webm') ? 'video' : 'image',
+                  url: url,
+                  isBase64: false,
+                  source: 'fetch_intercept'
+                }));
+              }
+            }, 100);
+          }
+          
+          return originalFetch.apply(this, arguments).then(response => {
+            if (isMediaUrl(url) && response.ok) {
+              console.log('媒体请求响应成功 (Fetch):', url);
+            }
+            return response;
+          });
+        };
+      })();
+
+      // 防止重复处理的URL集合（保持向后兼容）
+      window.processedMediaUrls = window.MediaInterceptor.processedUrls;
 
       // 监听点击事件以检测媒体
       document.addEventListener('click', async function(e) {
@@ -290,6 +415,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           else if (target.classList && (target.classList.contains('media-photo') || target.classList.contains('media-video') || target.classList.contains('video-message'))) {
             const imgElement = target.querySelector('img');
             const videoElement = target.querySelector('video');
+            
+            // 优先检测视频元素
             if (videoElement) {
               mediaUrl = videoElement.src || videoElement.currentSrc;
               if (!mediaUrl) {
@@ -302,13 +429,67 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                 }
               }
               mediaType = 'video';
-            } else if (imgElement) {
+            } 
+            // 对于视频容器，尝试更智能的视频URL检测
+            else if (target.classList.contains('media-video') || target.classList.contains('video-message')) {
+              // 方法1: 查找可能的视频链接
+              const videoLink = target.querySelector('a[href*="video"], a[href*=".mp4"], a[href*=".webm"], a[href*=".mov"]');
+              if (videoLink) {
+                mediaUrl = videoLink.href;
+                mediaType = 'video';
+              } else {
+                // 方法2: 查找data属性中的视频URL
+                const dataUrl = target.getAttribute('data-video-url') || target.getAttribute('data-src') || target.getAttribute('data-href');
+                if (dataUrl && (dataUrl.includes('video') || dataUrl.includes('.mp4') || dataUrl.includes('.webm'))) {
+                  mediaUrl = dataUrl;
+                  mediaType = 'video';
+                } else {
+                  // 方法3: 查找父元素或兄弟元素中的视频信息
+                  const parentElement = target.closest('.message, .media-container, .video-container');
+                  if (parentElement) {
+                    const hiddenVideo = parentElement.querySelector('video[style*="display: none"], video[hidden]');
+                    if (hiddenVideo) {
+                      mediaUrl = hiddenVideo.src || hiddenVideo.currentSrc;
+                      if (mediaUrl) {
+                        mediaType = 'video';
+                      }
+                    }
+                  }
+                  
+                  // 方法4: 尝试从事件监听器或onclick属性获取视频URL
+                  if (!mediaUrl) {
+                    const onclickAttr = target.getAttribute('onclick') || target.getAttribute('data-onclick');
+                    if (onclickAttr && (onclickAttr.includes('video') || onclickAttr.includes('.mp4'))) {
+                      const urlMatch = onclickAttr.match(/['"]([^'"]*\.(mp4|webm|mov|avi)[^'"]*)['"]/);
+                      if (urlMatch) {
+                        mediaUrl = urlMatch[1];
+                        mediaType = 'video';
+                      }
+                    }
+                  }
+                  
+                  // 如果仍然找不到视频URL，记录日志
+                  if (!mediaUrl) {
+                    console.log('定期检查：Telegram视频容器未找到有效的视频URL:', element.className);
+                  }
+                }
+              }
+            }
+            // 只有明确的图片容器才处理图片
+            else if (target.classList.contains('media-photo') && imgElement && !target.classList.contains('media-video')) {
               mediaUrl = imgElement.src || imgElement.getAttribute('data-src');
               mediaType = 'image';
             }
           }
           
           if (mediaUrl && mediaType && !window.processedMediaUrls.has(mediaUrl)) {
+            // 过滤掉Telegram的API端点URL
+            if (mediaUrl.includes('/a/document') || mediaUrl.includes('/api/')) {
+              console.log('跳过Telegram API URL:', mediaUrl);
+              e.preventDefault();
+              break;
+            }
+            
             window.processedMediaUrls.add(mediaUrl);
             console.log('Detected media:', mediaType, mediaUrl);
             
@@ -350,6 +531,12 @@ forEach(function(element) {
             element.addEventListener('click', function(e) {
               let url = element.href || element.getAttribute('data-url') || element.getAttribute('data-src');
               if (url && !window.processedMediaUrls.has(url)) {
+                // 过滤掉Telegram的API端点URL
+                if (url.includes('/a/document') || url.includes('/api/')) {
+                  console.log('跳过下载链接中的Telegram API URL:', url);
+                  return;
+                }
+                
                 window.processedMediaUrls.add(url);
                 Flutter.postMessage(JSON.stringify({
                   type: 'download',
@@ -378,13 +565,67 @@ forEach(function(element) {
                 }
               }
             } else {
+              // 对于非video标签的容器元素，使用改进的检测逻辑
               const videoElement = element.querySelector('video');
               if (videoElement) {
                 videoUrl = videoElement.src || videoElement.currentSrc;
+                if (!videoUrl) {
+                  const sources = videoElement.querySelectorAll('source');
+                  for (let source of sources) {
+                    if (source.src) {
+                      videoUrl = source.src;
+                      break;
+                    }
+                  }
+                }
+              } else if (element.classList.contains('media-video') || element.classList.contains('video-message')) {
+                // 使用与点击事件相同的智能检测逻辑
+                // 方法1: 查找可能的视频链接
+                const videoLink = element.querySelector('a[href*="video"], a[href*=".mp4"], a[href*=".webm"], a[href*=".mov"]');
+                if (videoLink) {
+                  videoUrl = videoLink.href;
+                } else {
+                  // 方法2: 查找data属性中的视频URL
+                  const dataUrl = element.getAttribute('data-video-url') || element.getAttribute('data-src') || element.getAttribute('data-href');
+                  if (dataUrl && (dataUrl.includes('video') || dataUrl.includes('.mp4') || dataUrl.includes('.webm'))) {
+                    videoUrl = dataUrl;
+                  } else {
+                    // 方法3: 查找父元素或兄弟元素中的视频信息
+                    const parentElement = element.closest('.message, .media-container, .video-container');
+                    if (parentElement) {
+                      const hiddenVideo = parentElement.querySelector('video[style*="display: none"], video[hidden]');
+                      if (hiddenVideo) {
+                        videoUrl = hiddenVideo.src || hiddenVideo.currentSrc;
+                      }
+                    }
+                    
+                    // 方法4: 尝试从事件监听器或onclick属性获取视频URL
+                    if (!videoUrl) {
+                      const onclickAttr = element.getAttribute('onclick') || element.getAttribute('data-onclick');
+                      if (onclickAttr && (onclickAttr.includes('video') || onclickAttr.includes('.mp4'))) {
+                        const urlMatch = onclickAttr.match(/['"]([^'"]*\.(mp4|webm|mov|avi)[^'"]*)['"]/);
+                        if (urlMatch) {
+                          videoUrl = urlMatch[1];
+                        }
+                      }
+                    }
+                  }
+                }
+                
+                // 如果仍然找不到视频URL，记录日志
+                if (!videoUrl) {
+                  console.log('定期检查：Telegram视频容器未找到有效的视频URL:', element.className);
+                }
               }
             }
             
             if (videoUrl && !window.processedMediaUrls.has(videoUrl)) {
+              // 过滤掉Telegram的API端点URL
+              if (videoUrl.includes('/a/document') || videoUrl.includes('/api/')) {
+                console.log('跳过Telegram API URL:', videoUrl);
+                return;
+              }
+              
               console.log('发现Telegram视频:', videoUrl);
               // 自动触发检测
               window.processedMediaUrls.add(videoUrl);
@@ -892,6 +1133,11 @@ forEach(function(element) {
         if (!url.startsWith('http')) {
           processedUrl = url.startsWith('//') ? 'https:$url' : 'https://$url';
         }
+        // 修复双重嵌套的progressive URL
+        if (processedUrl.contains('/progressive/https://')) {
+          processedUrl = processedUrl.substring(processedUrl.indexOf('/progressive/https://') + '/progressive/'.length);
+          debugPrint('修复双重嵌套URL: $processedUrl');
+        }
         debugPrint('处理后的电报URL: $processedUrl');
       }
       
@@ -1015,7 +1261,7 @@ forEach(function(element) {
       }
     }
     if (url.contains('telegram.org') || url.contains('t.me')) {
-      final telegramMediaPatterns = ['/file/', '/photo/size', '/video/size', '/document/'];
+      final telegramMediaPatterns = ['/file/', '/photo/size', '/video/size', '/document/', '/a/document'];
       for (final pattern in telegramMediaPatterns) {
         if (lowercaseUrl.contains(pattern)) {
           debugPrint('检测到电报媒体链接模式: $pattern');
@@ -1114,7 +1360,17 @@ forEach(function(element) {
       
       while (retryCount < maxRetries) {
         try {
-          // 对于Telegram，先尝试HEAD请求检查文件是否可访问
+          // 对于Telegram的文档API URL，需要特殊处理
+          if (url.contains('telegram.org') && url.contains('/a/document')) {
+            debugPrint('检测到Telegram文档API URL，这种URL通常无法直接下载');
+            debugPrint('建议：请在Telegram中直接点击下载按钮，或者右键保存文件');
+            throw DioException(
+              requestOptions: RequestOptions(path: url),
+              message: 'Telegram文档API URL无法直接下载，请在Telegram中使用下载功能',
+            );
+          }
+          
+          // 对于其他Telegram URL，先尝试HEAD请求检查文件是否可访问
           if (url.contains('telegram.org') || url.contains('t.me')) {
             try {
               final headResponse = await dio.head(url);
