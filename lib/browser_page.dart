@@ -316,7 +316,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                     mediaType: url.includes('video') || url.includes('.mp4') || url.includes('.webm') ? 'video' : 'image',
                     url: url,
                     isBase64: false,
-                    source: 'xhr_intercept'
+                    source: 'xhr_intercept',
+                    action: 'detect' // Default action for detection
                   }));
                 }
               }, 100);
@@ -351,7 +352,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                   mediaType: url.includes('video') || url.includes('.mp4') || url.includes('.webm') ? 'video' : 'image',
                   url: url,
                   isBase64: false,
-                  source: 'fetch_intercept'
+                  source: 'fetch_intercept',
+                  action: 'detect' // Default action for detection
                 }));
               }
             }, 100);
@@ -369,8 +371,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       // 防止重复处理的URL集合（保持向后兼容）
       window.processedMediaUrls = window.MediaInterceptor.processedUrls;
 
-      // 监听点击事件以检测媒体
-      document.addEventListener('click', async function(e) {
+      // 监听双击事件以触发媒体下载
+      document.addEventListener('dblclick', async function(e) { // Change 'click' to 'dblclick'
         let target = e.target;
         while (target != null) {
           let mediaUrl = null;
@@ -470,7 +472,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                   
                   // 如果仍然找不到视频URL，记录日志
                   if (!mediaUrl) {
-                    console.log('定期检查：Telegram视频容器未找到有效的视频URL:', element.className);
+                    console.log('Double-click check: Telegram video container did not find a valid video URL:', element.className);
                   }
                 }
               }
@@ -485,23 +487,24 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           if (mediaUrl && mediaType && !window.processedMediaUrls.has(mediaUrl)) {
             // 过滤掉Telegram的API端点URL
             if (mediaUrl.includes('/a/document') || mediaUrl.includes('/api/')) {
-              console.log('跳过Telegram API URL:', mediaUrl);
+              console.log('Skipping Telegram API URL on double-click:', mediaUrl);
               e.preventDefault();
               break;
             }
             
             window.processedMediaUrls.add(mediaUrl);
-            console.log('Detected media:', mediaType, mediaUrl);
+            console.log('Detected media on double-click:', mediaType, mediaUrl);
             
             if (isBlobUrl(mediaUrl)) {
-              console.log('Detected Blob URL:', mediaUrl);
+              console.log('Detected Blob URL on double-click:', mediaUrl);
               const result = await resolveBlobUrl(mediaUrl, mediaType);
               if (result) {
                 Flutter.postMessage(JSON.stringify({
                   type: 'media',
                   mediaType: mediaType,
                   url: result.resolvedUrl,
-                  isBase64: result.isBase64
+                  isBase64: result.isBase64,
+                  action: 'download' // Add action to indicate direct download
                 }));
               }
             } else {
@@ -509,10 +512,11 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                 type: 'media',
                 mediaType: mediaType,
                 url: mediaUrl,
-                isBase64: false
+                isBase64: false,
+                action: 'download' // Add action to indicate direct download
               }));
             }
-            e.preventDefault();
+            e.preventDefault(); // Prevent default double-click action
             break;
           }
           target = target.parentElement;
@@ -528,30 +532,36 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 forEach(function(element) {
           if (!element.hasAttribute('data-download-monitored')) {
             element.setAttribute('data-download-monitored', 'true');
-            element.addEventListener('click', function(e) {
+            // Option 1: Change this to dblclick if only dblclick should trigger
+            // Option 2: Keep as click but ensure Dart handler doesn't show dialog
+            // Let's keep as click for now but ensure Dart handler is direct download
+            element.addEventListener('click', function(e) { // Keep as click for general download links
               let url = element.href || element.getAttribute('data-url') || element.getAttribute('data-src');
               if (url && !window.processedMediaUrls.has(url)) {
-                // 过滤掉Telegram的API端点URL
+                // Filter out Telegram API endpoint URLs
                 if (url.includes('/a/document') || url.includes('/api/')) {
-                  console.log('跳过下载链接中的Telegram API URL:', url);
+                  console.log('Skipping download link with Telegram API URL:', url);
                   return;
                 }
-                
+
                 window.processedMediaUrls.add(url);
                 Flutter.postMessage(JSON.stringify({
                   type: 'download',
-                  url: url
+                  url: url,
+                  action: 'download' // Add action to indicate direct download
                 }));
+                // Do NOT prevent default here, let link potentially be followed if not downloaded
+                // e.preventDefault();
               }
             });
           }
         });
         
-        // 特别检查Telegram的视频元素
+        // Special check for Telegram video elements
         document.querySelectorAll('video, .video-message, .media-video, [data-entity-type="messageMediaVideo"]').forEach(function(element) {
           if (!element.hasAttribute('data-telegram-monitored')) {
             element.setAttribute('data-telegram-monitored', 'true');
-            
+
             let videoUrl = null;
             if (element.tagName === 'VIDEO') {
               videoUrl = element.src || element.currentSrc;
@@ -565,7 +575,7 @@ forEach(function(element) {
                 }
               }
             } else {
-              // 对于非video标签的容器元素，使用改进的检测逻辑
+              // For non-video tag container elements, use improved detection logic
               const videoElement = element.querySelector('video');
               if (videoElement) {
                 videoUrl = videoElement.src || videoElement.currentSrc;
@@ -579,18 +589,18 @@ forEach(function(element) {
                   }
                 }
               } else if (element.classList.contains('media-video') || element.classList.contains('video-message')) {
-                // 使用与点击事件相同的智能检测逻辑
-                // 方法1: 查找可能的视频链接
+                // Use the same intelligent detection logic as the click event
+                // Method 1: Find possible video links
                 const videoLink = element.querySelector('a[href*="video"], a[href*=".mp4"], a[href*=".webm"], a[href*=".mov"]');
                 if (videoLink) {
                   videoUrl = videoLink.href;
                 } else {
-                  // 方法2: 查找data属性中的视频URL
+                  // Method 2: Find video URLs in data attributes
                   const dataUrl = element.getAttribute('data-video-url') || element.getAttribute('data-src') || element.getAttribute('data-href');
                   if (dataUrl && (dataUrl.includes('video') || dataUrl.includes('.mp4') || dataUrl.includes('.webm'))) {
                     videoUrl = dataUrl;
                   } else {
-                    // 方法3: 查找父元素或兄弟元素中的视频信息
+                    // Method 3: Find video information in parent or sibling elements
                     const parentElement = element.closest('.message, .media-container, .video-container');
                     if (parentElement) {
                       const hiddenVideo = parentElement.querySelector('video[style*="display: none"], video[hidden]');
@@ -598,8 +608,8 @@ forEach(function(element) {
                         videoUrl = hiddenVideo.src || hiddenVideo.currentSrc;
                       }
                     }
-                    
-                    // 方法4: 尝试从事件监听器或onclick属性获取视频URL
+
+                    // Method 4: Try to get video URL from event listeners or onclick attributes
                     if (!videoUrl) {
                       const onclickAttr = element.getAttribute('onclick') || element.getAttribute('data-onclick');
                       if (onclickAttr && (onclickAttr.includes('video') || onclickAttr.includes('.mp4'))) {
@@ -611,29 +621,30 @@ forEach(function(element) {
                     }
                   }
                 }
-                
-                // 如果仍然找不到视频URL，记录日志
+
+                // If video URL is still not found, log it
                 if (!videoUrl) {
-                  console.log('定期检查：Telegram视频容器未找到有效的视频URL:', element.className);
+                  console.log('Periodic check: Telegram video container did not find a valid video URL:', element.className);
                 }
               }
             }
-            
+
             if (videoUrl && !window.processedMediaUrls.has(videoUrl)) {
-              // 过滤掉Telegram的API端点URL
+              // Filter out Telegram API endpoint URLs
               if (videoUrl.includes('/a/document') || videoUrl.includes('/api/')) {
-                console.log('跳过Telegram API URL:', videoUrl);
+                console.log('Skipping Telegram API URL in periodic check:', videoUrl);
                 return;
               }
-              
-              console.log('发现Telegram视频:', videoUrl);
-              // 自动触发检测
+
+              console.log('Found Telegram video in periodic check:', videoUrl);
+              // Automatically trigger detection (now direct download in Dart)
               window.processedMediaUrls.add(videoUrl);
               Flutter.postMessage(JSON.stringify({
                 type: 'media',
                 mediaType: 'video',
                 url: videoUrl,
-                isBase64: false
+                isBase64: false,
+                action: 'download' // Add action to indicate direct download
               }));
             }
           }
@@ -649,46 +660,56 @@ forEach(function(element) {
         final type = data['type'];
         final url = data['url'];
         final isBase64 = data['isBase64'] ?? false;
+        final action = data['action']; // Get the action
+
         if (url != null && url is String) {
-          // 防止重复处理相同的URL
+          // Prevent processing the same URL repeatedly
           if (_processedUrls.contains(url)) {
-            debugPrint('URL已处理过，跳过: $url');
+            debugPrint('URL already processed, skipping: $url');
             return;
           }
+          // Add URL to processedUrls BEFORE starting download to prevent re-triggering
           _processedUrls.add(url);
-          
-          if (type == 'media') {
-            final mediaType = data['mediaType'] ?? 'image';
-            debugPrint('从JavaScript接收到媒体URL: $url，类型: $mediaType, 是否Base64: $isBase64');
-            if (isBase64) {
-              _handleBlobUrl(url, mediaType);
-            } else {
-              _showDownloadDialog(url, mediaType);
-            }
-          } else if (type == 'download') {
-            debugPrint('从JavaScript接收到下载URL: $url');
-            _handleDownload(url, '', _guessMimeType(url));
+
+
+          if (action == 'download') { // Check for 'download' action for both media and general download links
+             final mediaType = data['mediaType'] ?? (_guessMimeType(url).startsWith('image/') ? 'image' : (_guessMimeType(url).startsWith('video/') ? 'video' : (_guessMimeType(url).startsWith('audio/') ? 'audio' : 'image'))); // Guess type if not provided
+             debugPrint('Received URL from JavaScript with download action: $url, type: ${mediaType}, isBase64: ${isBase64}');
+
+             if (isBase64) {
+                _handleBlobUrl(url, mediaType); // Blob URLs are handled separately
+             } else {
+                // Directly initiate download for non-base64 URLs
+                MediaType selectedType = _determineMediaType(_guessMimeType(url)); // Determine type based on MIME guess
+                _performBackgroundDownload(url, selectedType);
+             }
+          } else if (type == 'media' || type == 'download') {
+              // Handle detection messages if necessary, but do not trigger dialogs
+              debugPrint('Received non-download action message from JavaScript: $message');
+              // If you need to process detected URLs without immediate download, add logic here.
+              // Currently, we only support direct download via 'download' action.
           }
         }
       }
     } catch (e) {
-      debugPrint('处理JavaScript消息时出错: $e');
+      debugPrint('Error handling JavaScript message: $e');
     }
   }
 
   void _handleBlobUrl(String base64Data, String mediaType) async {
     try {
+      debugPrint('处理Base64数据以直接保存: ${mediaType}');
       final bytes = base64Decode(base64Data);
       final appDir = await getApplicationDocumentsDirectory();
       final mediaDir = Directory('${appDir.path}/media');
       if (!await mediaDir.exists()) await mediaDir.create(recursive: true);
       final uuid = const Uuid().v4();
-      final extension = mediaType == 'image' ? '.jpg' : '.mp4';
+      final extension = mediaType == 'image' ? '.jpg' : (mediaType == 'video' ? '.mp4' : '.bin'); // Guess extension based on media type
       final filePath = '${mediaDir.path}/$uuid$extension';
       final file = File(filePath);
       await file.writeAsBytes(bytes);
       debugPrint('已从Base64保存文件: $filePath');
-      await _saveToMediaLibrary(file, mediaType == 'image' ? MediaType.image : MediaType.video);
+      await _saveToMediaLibrary(file, mediaType == 'image' ? MediaType.image : MediaType.video); // Assume image/video for Blob
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -708,61 +729,6 @@ forEach(function(element) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('下载失败: $e')));
       }
     }
-  }
-
-  void _showDownloadDialog(String url, String mediaType) {
-    MediaType selectedType = mediaType == 'image' ? MediaType.image : MediaType.video;
-    showDialog(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setState) => AlertDialog(
-          title: const Text('下载媒体'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('您想下载这个 $mediaType 吗？'),
-              const SizedBox(height: 8),
-              Text('URL: $url', style: TextStyle(fontSize: 12, color: Colors.grey[600])),
-              const SizedBox(height: 16),
-              const Text('选择媒体类型:'),
-              RadioListTile<MediaType>(
-                title: const Text('图片'),
-                value: MediaType.image,
-                groupValue: selectedType,
-                onChanged: (value) => setState(() => selectedType = value!),
-              ),
-              RadioListTile<MediaType>(
-                title: const Text('视频'),
-                value: MediaType.video,
-                groupValue: selectedType,
-                onChanged: (value) => setState(() => selectedType = value!),
-              ),
-              RadioListTile<MediaType>(
-                title: const Text('音频'),
-                value: MediaType.audio,
-                groupValue: selectedType,
-                onChanged: (value) => setState(() => selectedType = value!),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('取消'),
-            ),
-            TextButton(
-              onPressed: () {
-                Navigator.pop(context);
-                String mimeType = selectedType == MediaType.image ? 'image/jpeg' : selectedType == MediaType.video ? 'video/mp4' : 'audio/mpeg';
-                _handleDownload(url, '', mimeType, selectedType: selectedType);
-              },
-              child: const Text('下载'),
-            ),
-          ],
-        ),
-      ),
-    );
   }
 
   void _loadUrl(String url) {
