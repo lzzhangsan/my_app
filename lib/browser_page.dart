@@ -13,6 +13,8 @@ import 'dart:convert';
 import 'dart:math';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/foundation.dart';
+import 'package:screen_recorder/screen_recorder.dart';
+import 'dart:typed_data';
 
 import 'core/service_locator.dart';
 import 'services/database_service.dart';
@@ -46,6 +48,11 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   bool _isBrowsingWebPage = false;
   bool _shouldKeepWebPageState = false;
   String? _lastBrowsedUrl;
+
+  final ScreenRecorderController _recorderController = ScreenRecorderController();
+  bool _isGifRecording = false;
+  bool _isGifExporting = false;
+  Uint8List? _gifData;
 
   final List<Map<String, dynamic>> _commonWebsites = [
     {'name': 'Google', 'url': 'https://www.google.com', 'icon': Icons.search},
@@ -114,6 +121,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       var manageStorageStatus = await Permission.manageExternalStorage.request();
       debugPrint('管理外部存储权限状态: $manageStorageStatus');
     }
+    var recordStatus = await Permission.microphone.request();
+    debugPrint('录音权限状态: $recordStatus');
   }
 
   void _initializeWebView() {
@@ -154,13 +163,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           onNavigationRequest: (NavigationRequest request) {
             final url = request.url;
             debugPrint('导航请求: $url');
-            if (_isDownloadableLink(url)) {
+            if (_isDownloadableLink(url) || _isTelegramMediaLink(url) || _isYouTubeLink(url)) {
               debugPrint('检测到可能的下载链接: $url');
-              _handleDownload(url, '', _guessMimeType(url));
-              return NavigationDecision.prevent;
-            }
-            if (_isTelegramMediaLink(url)) {
-              debugPrint('检测到电报媒体链接: $url');
               _handleDownload(url, '', _guessMimeType(url));
               return NavigationDecision.prevent;
             }
@@ -198,7 +202,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       }
     }
     if (url.contains('telegram') || url.contains('t.me')) {
-      final mediaExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.mp4', '.webp', '.webm'];
+      final mediaExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.mp4', '.webp', '.webm', '.m3u8'];
       for (final ext in mediaExtensions) {
         if (url.toLowerCase().contains(ext)) {
           debugPrint('匹配到 Telegram 媒体扩展名: $ext, URL: $url');
@@ -208,6 +212,10 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     }
     debugPrint('未匹配到 Telegram 媒体链接: $url');
     return false;
+  }
+
+  bool _isYouTubeLink(String url) {
+    return url.contains('youtube.com') || url.contains('youtu.be');
   }
 
   final Set<String> _downloadingUrls = {};
@@ -230,12 +238,13 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       function isMediaUrl(url) {
         if (!url) return false;
         const mediaExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg',
-                                '.mp4', '.webm', '.mov', '.avi', '.mkv', '.flv', '.wmv',
+                                '.mp4', '.webm', '.mov', '.avi', '.mkv', '.flv', '.wmv', '.m3u8',
                                 '.mp3', '.wav', '.ogg', '.m4a', '.aac'];
         const lowerUrl = url.toLowerCase();
         return mediaExtensions.some(ext => lowerUrl.includes(ext)) || 
                lowerUrl.includes('image') || lowerUrl.includes('video') || lowerUrl.includes('audio') ||
-               lowerUrl.includes('media') || lowerUrl.includes('blob:') || lowerUrl.includes('.m3u8');
+               lowerUrl.includes('media') || lowerUrl.includes('blob:') || lowerUrl.includes('.m3u8') ||
+               lowerUrl.includes('youtube.com') || lowerUrl.includes('youtu.be');
       }
 
       async function resolveBlobUrl(blobUrl, mediaType) {
@@ -286,7 +295,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
               timestamp: Date.now(),
               type: 'xhr'
             });
-            if ((url.includes('telegram.org') || url.includes('t.me')) && !window.MediaInterceptor.processedUrls.has(url)) {
+            if (!window.MediaInterceptor.processedUrls.has(url)) {
               window.MediaInterceptor.processedUrls.add(url);
               Flutter.postMessage(JSON.stringify({
                 type: 'media',
@@ -309,7 +318,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
       (function() {
         const originalFetch = window.fetch;
-        window.fetch = function(input, init) {
+        window.fetch = async function(input, init) {
           const url = typeof input === 'string' ? input : input.url;
           if (isMediaUrl(url)) {
             console.log('拦截到媒体请求 (Fetch):', url);
@@ -318,37 +327,46 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
               timestamp: Date.now(),
               type: 'fetch'
             });
-            if ((url.includes('telegram.org') || url.includes('t.me')) && !window.MediaInterceptor.processedUrls.has(url)) {
+            if (!window.MediaInterceptor.processedUrls.has(url)) {
               window.MediaInterceptor.processedUrls.add(url);
-              Flutter.postMessage(JSON.stringify({
-                type: 'media',
-                mediaType: 'video',
-                url: url,
-                isBase64: false,
-                source: 'fetch_intercept',
-                action: 'download'
-              }));
+              const response = await originalFetch.apply(this, arguments);
+              if (response.ok && (response.headers.get('content-type')?.startsWith('video') || response.headers.get('content-type')?.startsWith('image'))) {
+                const blob = await response.blob();
+                const blobUrl = URL.createObjectURL(blob);
+                const resolved = await resolveBlobUrl(blobUrl, response.headers.get('content-type')?.startsWith('image') ? 'image' : 'video');
+                if (resolved) {
+                  Flutter.postMessage(JSON.stringify({
+                    type: 'media',
+                    mediaType: resolved.mediaType || 'video',
+                    url: resolved.resolvedUrl,
+                    isBase64: resolved.isBase64,
+                    action: 'download'
+                  }));
+                } else {
+                  Flutter.postMessage(JSON.stringify({
+                    type: 'media',
+                    mediaType: 'video',
+                    url: url,
+                    isBase64: false,
+                    action: 'download'
+                  }));
+                }
+              }
+              return response;
             }
           }
-          return originalFetch.apply(this, arguments).then(response => {
-            if (isMediaUrl(url) && response.ok) console.log('媒体请求响应成功 (Fetch):', url);
-            return response;
-          });
+          return originalFetch.apply(this, arguments);
         };
       })();
 
       window.processedMediaUrls = window.MediaInterceptor.processedUrls;
 
-      // 长按事件处理
       let pressTimer;
       let pressedElement = null;
       let feedbackElement = null;
-      
+
       function createFeedbackElement(touchX, touchY) {
-        // 移除已存在的反馈元素
         removeFeedbackElement();
-        
-        // 创建新的反馈元素
         feedbackElement = document.createElement('div');
         feedbackElement.style.position = 'fixed';
         feedbackElement.style.left = (touchX - 50) + 'px';
@@ -369,8 +387,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         feedbackElement.style.opacity = '0.7';
         feedbackElement.innerText = '正在检测媒体...';
         document.body.appendChild(feedbackElement);
-        
-        // 动画效果
         setTimeout(() => {
           if (feedbackElement) {
             feedbackElement.style.transform = 'scale(1)';
@@ -378,8 +394,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           }
         }, 10);
       }
-      
-      // 移除反馈元素
+
       function removeFeedbackElement() {
         if (feedbackElement) {
           feedbackElement.style.transform = 'scale(0.5)';
@@ -392,8 +407,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           }, 300);
         }
       }
-      
-      // 更新反馈元素状态
+
       function updateFeedbackStatus(status, success) {
         if (feedbackElement) {
           feedbackElement.innerText = status;
@@ -401,33 +415,27 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           setTimeout(removeFeedbackElement, 1000);
         }
       }
-      
-      // 按下时开始计时
+
       document.addEventListener('touchstart', function(e) {
         console.log('触摸开始，目标元素:', e.target);
         pressedElement = e.target.closest('a[href*="progressive/document"], a[href*="media"], a[href*="video"], [class*="download"], div[role="menuitem"][aria-label*="download"], video[src], img[src]');
         if (pressedElement) {
           const touch = e.touches[0];
-          // 保存触摸位置，但不立即创建反馈元素
           const touchX = touch.clientX;
           const touchY = touch.clientY;
-          
           pressTimer = setTimeout(function() {
-            // 只在长按计时器触发时创建反馈元素
             createFeedbackElement(touchX, touchY);
             handleMediaDownload(pressedElement, e);
-          }, 500); // 500毫秒长按触发
+          }, 500);
         }
       }, true);
-      
-      // 如果手指移动，取消长按
+
       document.addEventListener('touchmove', function(e) {
         clearTimeout(pressTimer);
         removeFeedbackElement();
         pressedElement = null;
       }, true);
-      
-      // 触摸结束，取消长按
+
       document.addEventListener('touchend', function(e) {
         clearTimeout(pressTimer);
         if (!pressedElement) {
@@ -435,8 +443,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         }
         pressedElement = null;
       }, true);
-      
-      // 处理媒体下载的函数
+
       function handleMediaDownload(target, e) {
         if (!target) {
           updateFeedbackStatus('未找到媒体元素', false);
@@ -450,7 +457,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           updateFeedbackStatus('未找到下载链接', false);
           return;
         }
-        
+
         if (!window.processedMediaUrls.has(url)) {
           if (isBlobUrl(url)) {
             updateFeedbackStatus('正在处理媒体...', true);
@@ -565,6 +572,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       debugPrint('检测到电报网站，强制使用移动版');
       _controller.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 13_2_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0.3 Mobile/15E148 Safari/604.1');
       if (processedUrl.contains('web.telegram.org')) processedUrl = 'https://web.telegram.org/a/';
+    } else if (processedUrl.contains('youtube.com') || processedUrl.contains('youtu.be')) {
+      _controller.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
     } else {
       _controller.setUserAgent('Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36');
     }
@@ -662,30 +671,101 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                           onPressed: () => _showAddWebsiteDialog(context),
                           tooltip: '添加网站',
                         ),
+                      if (!_isEditMode && !_isGifRecording && !_isGifExporting)
+                        IconButton(
+                          icon: const Icon(Icons.fiber_manual_record, color: Colors.red),
+                          onPressed: () {
+                            _recorderController.start();
+                            setState(() {
+                              _isGifRecording = true;
+                              _gifData = null;
+                            });
+                          },
+                          tooltip: '录制常用网站区为GIF',
+                        ),
+                      if (_isGifRecording && !_isGifExporting)
+                        IconButton(
+                          icon: const Icon(Icons.stop, color: Colors.orange),
+                          onPressed: () async {
+                            _recorderController.stop();
+                            setState(() {
+                              _isGifRecording = false;
+                            });
+                          },
+                          tooltip: '停止录制',
+                        ),
+                      if (!_isGifRecording && _recorderController.exporter.hasFrames && !_isGifExporting)
+                        IconButton(
+                          icon: const Icon(Icons.gif_box, color: Colors.green),
+                          onPressed: () async {
+                            setState(() => _isGifExporting = true);
+                            final gif = await _recorderController.exporter.exportGif();
+                            setState(() {
+                              _gifData = gif != null ? Uint8List.fromList(gif) : null;
+                              _isGifExporting = false;
+                            });
+                            if (gif != null) {
+                              showDialog(
+                                context: context,
+                                builder: (context) => AlertDialog(
+                                  title: const Text('录制结果'),
+                                  content: Image.memory(Uint8List.fromList(gif)),
+                                  actions: [
+                                    TextButton(
+                                      onPressed: () => Navigator.pop(context),
+                                      child: const Text('关闭'),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            }
+                          },
+                          tooltip: '导出为GIF',
+                        ),
+                      if (_recorderController.exporter.hasFrames && !_isGifRecording && !_isGifExporting)
+                        IconButton(
+                          icon: const Icon(Icons.delete, color: Colors.grey),
+                          onPressed: () {
+                            setState(() {
+                              _recorderController.exporter.clear();
+                              _gifData = null;
+                            });
+                          },
+                          tooltip: '清除录制数据',
+                        ),
                     ],
                   ),
                 ],
               ),
             ),
             Expanded(
-              child: _isEditMode
-                  ? ReorderableListView.builder(
-                      padding: const EdgeInsets.all(16.0),
-                      itemCount: _commonWebsites.length,
-                      itemBuilder: (context, index) => _buildEditableWebsiteItem(_commonWebsites[index], index),
-                      onReorder: _reorderWebsites,
-                    )
-                  : GridView.builder(
-                      padding: const EdgeInsets.all(16.0),
-                      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                        crossAxisCount: 3,
-                        childAspectRatio: 1.0,
-                        crossAxisSpacing: 16.0,
-                        mainAxisSpacing: 16.0,
-                      ),
-                      itemCount: _commonWebsites.length,
-                      itemBuilder: (context, index) => _buildWebsiteCard(_commonWebsites[index]),
-                    ),
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  return ScreenRecorder(
+                    height: constraints.maxHeight,
+                    width: constraints.maxWidth,
+                    controller: _recorderController,
+                    child: _isEditMode
+                        ? ReorderableListView.builder(
+                            padding: const EdgeInsets.all(16.0),
+                            itemCount: _commonWebsites.length,
+                            itemBuilder: (context, index) => _buildEditableWebsiteItem(_commonWebsites[index], index),
+                            onReorder: _reorderWebsites,
+                          )
+                        : GridView.builder(
+                            padding: const EdgeInsets.all(16.0),
+                            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                              crossAxisCount: 3,
+                              childAspectRatio: 1.0,
+                              crossAxisSpacing: 16.0,
+                              mainAxisSpacing: 16.0,
+                            ),
+                            itemCount: _commonWebsites.length,
+                            itemBuilder: (context, index) => _buildWebsiteCard(_commonWebsites[index]),
+                          ),
+                  );
+                },
+              ),
             ),
           ],
         ),
@@ -932,6 +1012,9 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           debugPrint('修复双重嵌套URL: $processedUrl');
         }
         debugPrint('处理后的电报URL: $processedUrl');
+      } else if (url.contains('youtube.com') || url.contains('youtu.be')) {
+        processedUrl = await _resolveYouTubeUrl(url);
+        debugPrint('处理后的 YouTube URL: $processedUrl');
       }
 
       if (selectedType == null) {
@@ -956,6 +1039,14 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       debugPrint('错误堆栈: $stackTrace');
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('下载出错: $e')));
     }
+  }
+
+  Future<String> _resolveYouTubeUrl(String url) async {
+    // 简单占位符，需集成 youtube_explode_dart 或类似库
+    if (url.contains('/watch?v=')) {
+      return url; // 目前返回原始 URL，建议扩展为解析 HLS/DASH 流
+    }
+    return url;
   }
 
   Widget _buildDownloadDialog(String url, String mimeType) {
@@ -1050,14 +1141,9 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         return true;
       }
     }
-    if (url.contains('telegram.org') || url.contains('t.me')) {
-      final telegramMediaPatterns = ['/file/', '/photo/size', '/video/size', '/document/', '/a/document'];
-      for (final pattern in telegramMediaPatterns) {
-        if (lowercaseUrl.contains(pattern)) {
-          debugPrint('检测到电报媒体链接模式: $pattern');
-          return true;
-        }
-      }
+    if (url.contains('youtube.com') || url.contains('youtu.be')) {
+      debugPrint('检测到 YouTube 链接: $url');
+      return true;
     }
     return false;
   }
@@ -1077,6 +1163,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     if (path.endsWith('.flv')) return 'video/x-flv';
     if (path.endsWith('.mkv')) return 'video/x-matroska';
     if (path.endsWith('.webm')) return 'video/webm';
+    if (path.endsWith('.m3u8')) return 'application/x-mpegURL';
     if (path.endsWith('.mp3')) return 'audio/mpeg';
     if (path.endsWith('.wav')) return 'audio/wav';
     if (path.endsWith('.ogg')) return 'audio/ogg';
@@ -1113,6 +1200,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         } else {
           debugPrint('未找到Cookie，可能需要登录 Telegram');
         }
+      } else if (url.contains('youtube.com') || url.contains('youtu.be')) {
+        dio.options.headers['Referer'] = 'https://www.youtube.com';
       }
 
       final appDir = await getApplicationDocumentsDirectory();
@@ -1126,7 +1215,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       if (extension.isEmpty) {
         final mimeType = _guessMimeType(url);
         extension = mimeType.startsWith('image/') ? '.jpg' :
-                    mimeType.startsWith('video/') ? '.mp4' :
+                    mimeType.startsWith('video/') || mimeType == 'application/x-mpegURL' ? '.mp4' :
                     mimeType.startsWith('audio/') ? '.mp3' : '.bin';
         debugPrint('URL没有扩展名，根据MIME类型猜测为: $extension');
       }
@@ -1159,6 +1248,10 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
             },
           );
           debugPrint('下载响应: ${response.statusCode}');
+
+          if (extension == '.m3u8') {
+            await _handleM3u8Download(filePath, url);
+          }
           break;
         } catch (e, stackTrace) {
           retryCount++;
@@ -1182,6 +1275,23 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       debugPrint('下载文件时出错: $e');
       debugPrint('错误堆栈: $stackTrace');
       return null;
+    }
+  }
+
+  Future<void> _handleM3u8Download(String m3u8Path, String url) async {
+    final dio = Dio();
+    final response = await dio.get(url);
+    final segments = response.data.toString().split('\n').where((line) => line.startsWith('http')).toList();
+    if (segments.isNotEmpty) {
+      final outputPath = '${m3u8Path.replaceAll('.m3u8', '.mp4')}';
+      final file = File(outputPath)..createSync();
+      final sink = file.openWrite();
+      for (final segment in segments) {
+        final segmentResponse = await dio.get(segment, options: Options(responseType: ResponseType.bytes));
+        sink.add(segmentResponse.data);
+      }
+      await sink.close();
+      await _saveToMediaLibrary(file, MediaType.video);
     }
   }
 
