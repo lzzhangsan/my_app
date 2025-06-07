@@ -13,8 +13,6 @@ import 'dart:convert';
 import 'dart:math';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/foundation.dart';
-import 'package:screen_recorder/screen_recorder.dart';
-import 'dart:typed_data';
 
 import 'core/service_locator.dart';
 import 'services/database_service.dart';
@@ -48,11 +46,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   bool _isBrowsingWebPage = false;
   bool _shouldKeepWebPageState = false;
   String? _lastBrowsedUrl;
-
-  final ScreenRecorderController _recorderController = ScreenRecorderController();
-  bool _isGifRecording = false;
-  bool _isGifExporting = false;
-  Uint8List? _gifData;
 
   final List<Map<String, dynamic>> _commonWebsites = [
     {'name': 'Google', 'url': 'https://www.google.com', 'icon': Icons.search},
@@ -671,101 +664,30 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                           onPressed: () => _showAddWebsiteDialog(context),
                           tooltip: '添加网站',
                         ),
-                      if (!_isEditMode && !_isGifRecording && !_isGifExporting)
-                        IconButton(
-                          icon: const Icon(Icons.fiber_manual_record, color: Colors.red),
-                          onPressed: () {
-                            _recorderController.start();
-                            setState(() {
-                              _isGifRecording = true;
-                              _gifData = null;
-                            });
-                          },
-                          tooltip: '录制常用网站区为GIF',
-                        ),
-                      if (_isGifRecording && !_isGifExporting)
-                        IconButton(
-                          icon: const Icon(Icons.stop, color: Colors.orange),
-                          onPressed: () async {
-                            _recorderController.stop();
-                            setState(() {
-                              _isGifRecording = false;
-                            });
-                          },
-                          tooltip: '停止录制',
-                        ),
-                      if (!_isGifRecording && _recorderController.exporter.hasFrames && !_isGifExporting)
-                        IconButton(
-                          icon: const Icon(Icons.gif_box, color: Colors.green),
-                          onPressed: () async {
-                            setState(() => _isGifExporting = true);
-                            final gif = await _recorderController.exporter.exportGif();
-                            setState(() {
-                              _gifData = gif != null ? Uint8List.fromList(gif) : null;
-                              _isGifExporting = false;
-                            });
-                            if (gif != null) {
-                              showDialog(
-                                context: context,
-                                builder: (context) => AlertDialog(
-                                  title: const Text('录制结果'),
-                                  content: Image.memory(Uint8List.fromList(gif)),
-                                  actions: [
-                                    TextButton(
-                                      onPressed: () => Navigator.pop(context),
-                                      child: const Text('关闭'),
-                                    ),
-                                  ],
-                                ),
-                              );
-                            }
-                          },
-                          tooltip: '导出为GIF',
-                        ),
-                      if (_recorderController.exporter.hasFrames && !_isGifRecording && !_isGifExporting)
-                        IconButton(
-                          icon: const Icon(Icons.delete, color: Colors.grey),
-                          onPressed: () {
-                            setState(() {
-                              _recorderController.exporter.clear();
-                              _gifData = null;
-                            });
-                          },
-                          tooltip: '清除录制数据',
-                        ),
                     ],
                   ),
                 ],
               ),
             ),
             Expanded(
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  return ScreenRecorder(
-                    height: constraints.maxHeight,
-                    width: constraints.maxWidth,
-                    controller: _recorderController,
-                    child: _isEditMode
-                        ? ReorderableListView.builder(
-                            padding: const EdgeInsets.all(16.0),
-                            itemCount: _commonWebsites.length,
-                            itemBuilder: (context, index) => _buildEditableWebsiteItem(_commonWebsites[index], index),
-                            onReorder: _reorderWebsites,
-                          )
-                        : GridView.builder(
-                            padding: const EdgeInsets.all(16.0),
-                            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                              crossAxisCount: 3,
-                              childAspectRatio: 1.0,
-                              crossAxisSpacing: 16.0,
-                              mainAxisSpacing: 16.0,
-                            ),
-                            itemCount: _commonWebsites.length,
-                            itemBuilder: (context, index) => _buildWebsiteCard(_commonWebsites[index]),
-                          ),
-                  );
-                },
-              ),
+              child: _isEditMode
+                  ? ReorderableListView.builder(
+                      padding: const EdgeInsets.all(16.0),
+                      itemCount: _commonWebsites.length,
+                      itemBuilder: (context, index) => _buildEditableWebsiteItem(_commonWebsites[index], index),
+                      onReorder: _reorderWebsites,
+                    )
+                  : GridView.builder(
+                      padding: const EdgeInsets.all(16.0),
+                      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: 3,
+                        childAspectRatio: 1.0,
+                        crossAxisSpacing: 16.0,
+                        mainAxisSpacing: 16.0,
+                      ),
+                      itemCount: _commonWebsites.length,
+                      itemBuilder: (context, index) => _buildWebsiteCard(_commonWebsites[index]),
+                    ),
             ),
           ],
         ),
@@ -829,8 +751,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     return ListTile(
       key: ValueKey(website['url']),
       leading: const Icon(Icons.public),
-      title: Text(website['name']),
-      subtitle: Text(website['url']),
+      title: Text(website['name']!),
+      subtitle: Text(website['url']!),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [

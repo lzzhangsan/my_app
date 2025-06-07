@@ -37,7 +37,6 @@ dependencies:
   flutter_downloader: ^1.11.6  # 添加文件下载支持
   http: ^1.2.0  # 添加HTTP请求支持
   dio: ^5.4.0  # 添加Dio网络请求库支持
-  screen_recorder: ^0.3.0  # 使用支持空安全的屏幕录制包
 
 dev_dependencies:
   flutter_test:
