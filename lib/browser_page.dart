@@ -62,7 +62,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     final wasInEditMode = _isEditMode;
     setState(() => _isEditMode = !_isEditMode);
     if (wasInEditMode && !_isEditMode) {
-      debugPrint('从编辑模式退出，保存网站列表');
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('正在保存常用网站...')));
       await _saveCommonWebsites();
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('常用网站已保存')));
@@ -189,22 +188,15 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       '/progressive/',
     ];
     for (final pattern in telegramMediaPatterns) {
-      if (url.contains(pattern)) {
-        debugPrint('匹配到 Telegram 媒体链接模式: $pattern, URL: $url');
-        return true;
-      }
+      if (url.contains(pattern)) return true;
     }
     if (url.contains('telegram') || url.contains('t.me')) {
       final mediaExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.mp4', '.webp', '.webm', '.m3u8'];
       for (final ext in mediaExtensions) {
-        if (url.toLowerCase().contains(ext)) {
-          debugPrint('匹配到 Telegram 媒体扩展名: $ext, URL: $url');
-          return true;
-        }
+        if (url.toLowerCase().contains(ext)) return true;
       }
     }
-    debugPrint('未匹配到 Telegram 媒体链接: $url');
-    return false;
+    return url.startsWith('blob:https://web.telegram.org/');
   }
 
   bool _isYouTubeLink(String url) {
@@ -236,28 +228,20 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         const lowerUrl = url.toLowerCase();
         return mediaExtensions.some(ext => lowerUrl.includes(ext)) || 
                lowerUrl.includes('image') || lowerUrl.includes('video') || lowerUrl.includes('audio') ||
-               lowerUrl.includes('media') || lowerUrl.includes('blob:') || lowerUrl.includes('.m3u8') ||
+               lowerUrl.includes('media') || lowerUrl.includes('.m3u8') ||
                lowerUrl.includes('youtube.com') || lowerUrl.includes('youtu.be');
       }
 
       async function resolveBlobUrl(blobUrl, mediaType) {
         try {
           console.log('正在解析Blob URL:', blobUrl);
-          const response = await fetch(blobUrl, { 
-            method: 'GET',
-            headers: {'Accept': '*/*', 'Cache-Control': 'no-cache'}
-          });
+          const response = await fetch(blobUrl, { method: 'GET', headers: {'Accept': '*/*', 'Cache-Control': 'no-cache'} });
           if (!response.ok) throw new Error('Fetch failed: ' + response.statusText);
           const blob = await response.blob();
-          if (blob.type.includes('application/x-mpegURL') || blob.type.includes('application/vnd.apple.mpegurl')) {
-            const text = await blob.text();
-            return { resolvedUrl: text, isBase64: false, isM3U8: true };
-          }
           const reader = new FileReader();
           return new Promise((resolve, reject) => {
             reader.onloadend = () => {
               const base64Data = reader.result.split(',')[1];
-              window.MediaInterceptor.blobUrls.set(blobUrl, base64Data);
               resolve({ resolvedUrl: base64Data, isBase64: true, mediaType: mediaType });
             };
             reader.onerror = reject;
@@ -335,14 +319,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                     isBase64: resolved.isBase64,
                     action: 'download'
                   }));
-                } else {
-                  Flutter.postMessage(JSON.stringify({
-                    type: 'media',
-                    mediaType: 'video',
-                    url: url,
-                    isBase64: false,
-                    action: 'download'
-                  }));
                 }
               }
               return response;
@@ -410,7 +386,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       }
 
       document.addEventListener('touchstart', function(e) {
-        console.log('触摸开始，目标元素:', e.target);
         pressedElement = e.target.closest('a[href*="progressive/document"], a[href*="media"], a[href*="video"], [class*="download"], div[role="menuitem"][aria-label*="download"], video[src], img[src]');
         if (pressedElement) {
           const touch = e.touches[0];
@@ -431,9 +406,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
       document.addEventListener('touchend', function(e) {
         clearTimeout(pressTimer);
-        if (!pressedElement) {
-          removeFeedbackElement();
-        }
+        if (!pressedElement) removeFeedbackElement();
         pressedElement = null;
       }, true);
 
@@ -444,8 +417,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         }
         
         let url = target.href || target.getAttribute('data-href') || target.getAttribute('data-url') || target.src;
-        console.log('长按捕获到可能的下载链接:', url);
-        
         if (!url) {
           updateFeedbackStatus('未找到下载链接', false);
           return;
@@ -454,10 +425,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         if (!window.processedMediaUrls.has(url)) {
           if (isBlobUrl(url)) {
             updateFeedbackStatus('正在处理媒体...', true);
-            console.log('检测到 Blob URL，解析中:', url);
             resolveBlobUrl(url, target.tagName.toLowerCase() === 'img' ? 'image' : 'video').then(resolved => {
               if (resolved) {
-                console.log('Blob URL 解析成功:', resolved);
                 window.processedMediaUrls.add(url);
                 Flutter.postMessage(JSON.stringify({
                   type: 'media',
@@ -472,7 +441,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
               }
             });
           } else {
-            console.log('处理新的下载链接:', url);
             window.processedMediaUrls.add(url);
             Flutter.postMessage(JSON.stringify({
               type: 'media',
@@ -485,7 +453,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           }
           e.preventDefault();
         } else {
-          console.log('URL已处理或无效，跳过:', url);
           updateFeedbackStatus('该媒体已在处理中', false);
         }
       }
@@ -503,10 +470,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         final mediaType = data['mediaType'] ?? (_guessMimeType(url).startsWith('image/') ? 'image' : (_guessMimeType(url).startsWith('video/') ? 'video' : 'audio'));
 
         if (url != null && url is String) {
-          if (_processedUrls.contains(url)) {
-            debugPrint('URL already processed, skipping: $url');
-            return;
-          }
+          if (_processedUrls.contains(url)) return;
           _processedUrls.add(url);
 
           if (action == 'download') {
@@ -533,7 +497,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       final mediaDir = Directory('${appDir.path}/media');
       if (!await mediaDir.exists()) await mediaDir.create(recursive: true);
       final uuid = const Uuid().v4();
-      final extension = mediaType == 'image' ? '.jpg' : (mediaType == 'video' ? '.mp4' : '.bin');
+      final extension = mediaType == 'image' ? '.jpg' : '.mp4';
       final filePath = '${mediaDir.path}/$uuid$extension';
       final file = File(filePath);
       await file.writeAsBytes(bytes);
@@ -544,10 +508,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           SnackBar(
             content: Text('媒体已成功保存到媒体库: ${file.path.split('/').last}'),
             duration: const Duration(seconds: 5),
-            action: SnackBarAction(
-              label: '查看',
-              onPressed: () => Navigator.pushNamed(context, '/media_manager'),
-            ),
+            action: SnackBarAction(label: '查看', onPressed: () => Navigator.pushNamed(context, '/media_manager')),
           ),
         );
       }
@@ -562,7 +523,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     String processedUrl = url;
     if (!url.startsWith('http://') && !url.startsWith('https://')) processedUrl = 'https://$url';
     if (processedUrl.contains('telegram.org') || processedUrl.contains('t.me') || processedUrl.contains('web.telegram.org')) {
-      debugPrint('检测到电报网站，强制使用移动版');
       _controller.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 13_2_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0.3 Mobile/15E148 Safari/604.1');
       if (processedUrl.contains('web.telegram.org')) processedUrl = 'https://web.telegram.org/a/';
     } else if (processedUrl.contains('youtube.com') || processedUrl.contains('youtu.be')) {
@@ -578,37 +538,28 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       _isBrowsingWebPage = true;
       _shouldKeepWebPageState = true;
       _lastBrowsedUrl = processedUrl;
-      debugPrint('[_loadUrl] Loaded: $processedUrl, _showHomePage: $_showHomePage, _isBrowsingWebPage: $_isBrowsingWebPage');
     });
     widget.onBrowserHomePageChanged?.call(_showHomePage);
-    debugPrint('[_loadUrl] Called onBrowserHomePageChanged(${_showHomePage})');
   }
 
   Future<void> _goToHomePage() async {
-    debugPrint('[_goToHomePage] Called. Current _showHomePage: $_showHomePage');
     if (!_showHomePage) {
       await _saveCommonWebsites();
-      debugPrint('[_goToHomePage] 已保存常用网站');
       await _loadBookmarks();
       await _loadCommonWebsites();
-      debugPrint('[_goToHomePage] 已重新加载书签和常用网站');
       setState(() => _showHomePage = true);
       widget.onBrowserHomePageChanged?.call(_showHomePage);
-      debugPrint('[_goToHomePage] Called onBrowserHomePageChanged(${_showHomePage})');
     }
   }
 
   void _restoreWebPage() {
-    debugPrint('[_restoreWebPage] Called. Current _showHomePage: $_showHomePage, _isBrowsingWebPage: $_isBrowsingWebPage, _shouldKeepWebPageState: $_shouldKeepWebPageState');
     if (_showHomePage && _isBrowsingWebPage && _shouldKeepWebPageState) {
       setState(() => _showHomePage = false);
       widget.onBrowserHomePageChanged?.call(_showHomePage);
-      debugPrint('[_restoreWebPage] Called onBrowserHomePageChanged(${_showHomePage})');
     }
   }
 
   void _exitWebPage() {
-    debugPrint('[_exitWebPage] Called.');
     setState(() {
       _showHomePage = true;
       _isBrowsingWebPage = false;
@@ -620,7 +571,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       _urlController.text = _currentUrl;
     });
     widget.onBrowserHomePageChanged?.call(_showHomePage);
-    debugPrint('[_exitWebPage] Called onBrowserHomePageChanged(${_showHomePage})');
   }
 
   Widget _buildHomePage() {
@@ -639,7 +589,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                       IconButton(
                         icon: Icon(_isEditMode ? Icons.done : Icons.edit),
                         onPressed: () async {
-                          debugPrint('[_AppBar] Edit button pressed.');
                           showDialog(
                             context: context,
                             barrierDismissible: false,
@@ -866,7 +815,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     try {
       final prefs = await SharedPreferences.getInstance();
       final bookmarksJsonString = prefs.getString('bookmarks');
-      debugPrint('Loaded bookmarks JSON: $bookmarksJsonString');
       setState(() {
         _bookmarks.clear();
         if (bookmarksJsonString != null && bookmarksJsonString.isNotEmpty) {
@@ -877,13 +825,11 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
               'url': item['url']?.toString() ?? '',
             }).toList();
           } else if (decoded.isNotEmpty && decoded[0] is String) {
-            debugPrint('Migrating old format bookmarks...');
             _bookmarks = (decoded as List<String>).map((url) => {'name': url, 'url': url} as Map<String, String>).toList();
             _saveBookmarks();
           }
         }
         if (_bookmarks.isEmpty) {
-          debugPrint('Bookmarks list is empty after loading, adding defaults.');
           _bookmarks = [
             {'name': '百度', 'url': 'https://www.baidu.com'},
             {'name': 'Bilibili', 'url': 'https://www.bilibili.com'}
@@ -891,7 +837,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           _saveBookmarks();
         }
       });
-      debugPrint('Successfully loaded ${_bookmarks.length} bookmarks');
     } catch (e) {
       debugPrint('Error loading bookmarks: $e');
     }
@@ -899,7 +844,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
   Future<void> _saveCommonWebsites() async {
     try {
-      debugPrint('Starting to save common websites...');
       final prefs = await SharedPreferences.getInstance();
       final cleanedWebsites = _commonWebsites.map((site) => {
         'name': site['name'],
@@ -907,13 +851,10 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         'iconCode': Icons.public.codePoint,
       }).toList();
       final jsonString = jsonEncode(cleanedWebsites);
-      debugPrint('Common websites JSON: $jsonString');
       await prefs.remove('common_websites');
-      final result = await prefs.setString('common_websites', jsonString);
-      if (!result) debugPrint('Common websites save failed: SharedPreferences returned false');
+      await prefs.setString('common_websites', jsonString);
     } catch (e) {
       debugPrint('Error saving common websites: $e');
-      debugPrintStack(label: 'Save common websites error stack');
     }
   }
 
@@ -921,22 +862,21 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     try {
       debugPrint('开始处理下载: $url, MIME类型: $mimeType');
       if (_downloadingUrls.contains(url)) {
-        debugPrint('URL正在下载中，跳过: $url');
         if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('该文件正在下载中，请稍候...')));
         return;
       }
 
       String processedUrl = url;
-      if (url.contains('telegram.org') || url.contains('t.me')) {
+      if (url.startsWith('blob:https://web.telegram.org/')) {
+        // Blob URL 由 JavaScript 处理，不直接下载
+        return;
+      } else if (url.contains('telegram.org') || url.contains('t.me')) {
         if (!url.startsWith('http')) processedUrl = url.startsWith('//') ? 'https:$url' : 'https://$url';
         if (processedUrl.contains('/progressive/https://')) {
           processedUrl = processedUrl.substring(processedUrl.indexOf('/progressive/https://') + '/progressive/'.length);
-          debugPrint('修复双重嵌套URL: $processedUrl');
         }
-        debugPrint('处理后的电报URL: $processedUrl');
       } else if (url.contains('youtube.com') || url.contains('youtu.be')) {
         processedUrl = await _resolveYouTubeUrl(url);
-        debugPrint('处理后的 YouTube URL: $processedUrl');
       }
 
       if (selectedType == null) {
@@ -964,11 +904,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   }
 
   Future<String> _resolveYouTubeUrl(String url) async {
-    // 简单占位符，需集成 youtube_explode_dart 或类似库
-    if (url.contains('/watch?v=')) {
-      return url; // 目前返回原始 URL，建议扩展为解析 HLS/DASH 流
-    }
-    return url;
+    return url; // 占位符，需集成 youtube_explode_dart
   }
 
   Widget _buildDownloadDialog(String url, String mimeType) {
@@ -1025,10 +961,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
   bool _isDownloadableLink(String url) {
     debugPrint('检查URL是否为可下载链接: $url');
-    if (url.startsWith('blob:') && (url.contains('telegram.org') || url.contains('t.me'))) {
-      debugPrint('检测到 Telegram 的 Blob URL: $url');
-      return true;
-    }
+    if (url.startsWith('blob:https://web.telegram.org/')) return false; // Blob URL 由 JavaScript 处理
     final fileExtensions = [
       '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg', '.ico',
       '.mp4', '.avi', '.mov', '.wmv', '.flv', '.mkv', '.webm', '.m3u8', '.ts',
@@ -1039,34 +972,22 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     ];
     final lowercaseUrl = url.toLowerCase();
     for (final ext in fileExtensions) {
-      if (lowercaseUrl.endsWith(ext)) {
-        debugPrint('URL以文件扩展名结尾: $ext');
-        return true;
-      }
+      if (lowercaseUrl.endsWith(ext)) return true;
     }
     final downloadKeywords = [
       '/download/', '/dl/', '/attachment/', '/file/', '/media/download/',
       '/photo/download/', '/video/download/', '/document/download/'
     ];
     for (final keyword in downloadKeywords) {
-      if (lowercaseUrl.contains(keyword)) {
-        debugPrint('URL包含明确的下载关键词: $keyword');
-        return true;
-      }
+      if (lowercaseUrl.contains(keyword)) return true;
     }
     final downloadParams = ['download=true', 'dl=1', 'attachment=1'];
     final uri = Uri.parse(url);
     final queryString = uri.query.toLowerCase();
     for (final param in downloadParams) {
-      if (queryString.contains(param)) {
-        debugPrint('URL参数中包含明确的下载相关参数: $param');
-        return true;
-      }
+      if (queryString.contains(param)) return true;
     }
-    if (url.contains('youtube.com') || url.contains('youtu.be')) {
-      debugPrint('检测到 YouTube 链接: $url');
-      return true;
-    }
+    if (url.contains('youtube.com') || url.contains('youtu.be')) return true;
     return false;
   }
 
@@ -1118,9 +1039,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         if (cookies.isNotEmpty) {
           final cookieString = cookies.map((c) => '${c.name}=${c.value}').join('; ');
           dio.options.headers['Cookie'] = cookieString;
-          debugPrint('添加Cookie: $cookieString');
-        } else {
-          debugPrint('未找到Cookie，可能需要登录 Telegram');
         }
       } else if (url.contains('youtube.com') || url.contains('youtu.be')) {
         dio.options.headers['Referer'] = 'https://www.youtube.com';
@@ -1139,7 +1057,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         extension = mimeType.startsWith('image/') ? '.jpg' :
                     mimeType.startsWith('video/') || mimeType == 'application/x-mpegURL' ? '.mp4' :
                     mimeType.startsWith('audio/') ? '.mp3' : '.bin';
-        debugPrint('URL没有扩展名，根据MIME类型猜测为: $extension');
       }
 
       final filePath = '${mediaDir.path}/$uuid$extension';
@@ -1164,34 +1081,22 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
               if (total != -1) {
                 final progress = (received / total * 100).toStringAsFixed(2);
                 debugPrint('下载进度: $progress%');
-              } else {
-                debugPrint('已接收: $received 字节');
               }
             },
           );
-          debugPrint('下载响应: ${response.statusCode}');
-
-          if (extension == '.m3u8') {
-            await _handleM3u8Download(filePath, url);
-          }
+          if (extension == '.m3u8') await _handleM3u8Download(filePath, url);
           break;
         } catch (e, stackTrace) {
           retryCount++;
           debugPrint('下载失败 (尝试 $retryCount/$maxRetries): $e');
-          debugPrint('错误堆栈: $stackTrace');
           if (retryCount >= maxRetries) throw Exception('下载失败: $e');
           await Future.delayed(Duration(seconds: retryCount * 2));
         }
       }
 
       final file = File(filePath);
-      if (await file.exists()) {
-        final fileSize = await file.length();
-        debugPrint('文件下载完成，大小: $fileSize 字节');
-        if (fileSize > 0) return file;
-        await file.delete();
-        debugPrint('文件大小为0，下载可能失败');
-      }
+      if (await file.exists() && await file.length() > 0) return file;
+      await file.delete();
       return null;
     } catch (e, stackTrace) {
       debugPrint('下载文件时出错: $e');
@@ -1227,10 +1132,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       final fileName = file.path.split('/').last;
       final fileHash = await _calculateFileHash(file);
       final duplicate = await _databaseService.findDuplicateMediaItem(fileHash, fileName);
-      if (duplicate != null) {
-        debugPrint('发现重复文件: ${duplicate['name']}');
-        throw Exception('文件已存在于媒体库中');
-      }
+      if (duplicate != null) throw Exception('文件已存在于媒体库中');
       final uuid = const Uuid().v4();
       final mediaItem = MediaItem(
         id: uuid,
@@ -1374,14 +1276,11 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
   Future<void> _saveBookmarks() async {
     try {
-      debugPrint('Starting to save bookmarks...');
       final prefs = await SharedPreferences.getInstance();
       final jsonString = jsonEncode(_bookmarks);
-      final result = await prefs.setString('bookmarks', jsonString);
-      if (!result) debugPrint('Bookmark save failed: SharedPreferences returned false');
+      await prefs.setString('bookmarks', jsonString);
     } catch (e) {
       debugPrint('Error saving bookmarks: $e');
-      debugPrintStack(label: 'Bookmark save error stack');
     }
   }
 
@@ -1389,7 +1288,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     try {
       final prefs = await SharedPreferences.getInstance();
       final commonWebsitesJson = prefs.getString('common_websites');
-      debugPrint('Loaded common websites JSON: $commonWebsitesJson');
       if (commonWebsitesJson != null && commonWebsitesJson.isNotEmpty) {
         final decoded = jsonDecode(commonWebsitesJson);
         setState(() {
@@ -1400,9 +1298,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
             'iconCode': Icons.public.codePoint,
           }).toList());
         });
-        debugPrint('Successfully loaded ${_commonWebsites.length} common websites');
       } else if (_commonWebsites.isEmpty) {
-        debugPrint('No common websites found, using defaults.');
         setState(() {
           _commonWebsites.clear();
           _commonWebsites.addAll([
@@ -1415,7 +1311,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           ]);
         });
         await _saveCommonWebsites();
-        debugPrint('Saved default common websites.');
       }
     } catch (e) {
       debugPrint('Error loading common websites: $e');
@@ -1430,19 +1325,15 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     super.build(context);
     return WillPopScope(
       onWillPop: () async {
-        debugPrint('[_WillPopScope] onWillPop called. Current _showHomePage: $_showHomePage');
         if (!_showHomePage) {
           if (await _controller.canGoBack()) {
-            debugPrint('[_WillPopScope] canGoBack is true, going back in webview.');
             _controller.goBack();
             return false;
           } else {
-            debugPrint('[_WillPopScope] canGoBack is false, going to home page.');
             _goToHomePage();
             return false;
           }
         }
-        debugPrint('[_WillPopScope] On home page, allowing pop.');
         return true;
       },
       child: Scaffold(
@@ -1454,10 +1345,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
               ? null
               : IconButton(
                   icon: const Icon(Icons.home),
-                  onPressed: () {
-                    debugPrint('[_AppBar] Home button pressed.');
-                    _goToHomePage();
-                  },
+                  onPressed: _goToHomePage,
                   tooltip: '回到主页',
                 ),
           centerTitle: true,
@@ -1492,7 +1380,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                         IconButton(
                           icon: const Icon(Icons.arrow_back),
                           onPressed: () async {
-                            debugPrint('[_Toolbar] Back button pressed.');
                             if (await _controller.canGoBack()) _controller.goBack();
                           },
                           tooltip: '后退',
@@ -1500,17 +1387,13 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                         IconButton(
                           icon: const Icon(Icons.arrow_forward),
                           onPressed: () async {
-                            debugPrint('[_Toolbar] Forward button pressed.');
                             if (await _controller.canGoForward()) _controller.goForward();
                           },
                           tooltip: '前进',
                         ),
                         IconButton(
                           icon: const Icon(Icons.refresh),
-                          onPressed: () {
-                            debugPrint('[_Toolbar] Refresh button pressed.');
-                            _controller.reload();
-                          },
+                          onPressed: () => _controller.reload(),
                           tooltip: '刷新',
                         ),
                         Expanded(
@@ -1527,10 +1410,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                         ),
                         IconButton(
                           icon: const Icon(Icons.search),
-                          onPressed: () {
-                            debugPrint('[_Toolbar] Search button pressed: ${_urlController.text}');
-                            _loadUrl(_urlController.text);
-                          },
+                          onPressed: () => _loadUrl(_urlController.text),
                           tooltip: '前往',
                         ),
                       ],
@@ -1566,15 +1446,11 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
             SnackBar(
               content: Text('${mediaType == MediaType.video ? "视频" : mediaType == MediaType.image ? "图片" : "音频"}已成功保存到媒体库: ${file.path.split('/').last}'),
               duration: const Duration(seconds: 5),
-              action: SnackBarAction(
-                label: '查看',
-                onPressed: () => Navigator.pushNamed(context, '/media_manager'),
-              ),
+              action: SnackBarAction(label: '查看', onPressed: () => Navigator.pushNamed(context, '/media_manager')),
             ),
           );
         }
       } else {
-        debugPrint('文件下载失败: $url');
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
@@ -1596,7 +1472,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       }
     } finally {
       _downloadingUrls.remove(url);
-      debugPrint('已从下载队列中移除URL: $url');
     }
   }
 }
