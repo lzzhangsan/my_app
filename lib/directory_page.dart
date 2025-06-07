@@ -614,6 +614,11 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       print('从数据库加载了 ${documents.length} 个文档');
 
       for (var document in documents) {
+        // 跳过封面页文档，不在目录页显示
+        if (document['name'] == '__CoverPage__') {
+          print('跳过封面页文档，不在目录页显示');
+          continue;
+        }
         print('加载文档: ${document['name']}, 顺序: ${document['order_index']}');
         _items.add(DirectoryItem(
           name: document['name'],
