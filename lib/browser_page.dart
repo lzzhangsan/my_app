@@ -342,13 +342,79 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       // 长按事件处理
       let pressTimer;
       let pressedElement = null;
+      let feedbackElement = null;
+      
+      function createFeedbackElement(touchX, touchY) {
+        // 移除已存在的反馈元素
+        removeFeedbackElement();
+        
+        // 创建新的反馈元素
+        feedbackElement = document.createElement('div');
+        feedbackElement.style.position = 'fixed';
+        feedbackElement.style.left = (touchX - 50) + 'px';
+        feedbackElement.style.top = (touchY - 50) + 'px';
+        feedbackElement.style.width = '100px';
+        feedbackElement.style.height = '100px';
+        feedbackElement.style.borderRadius = '50%';
+        feedbackElement.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
+        feedbackElement.style.zIndex = '9999';
+        feedbackElement.style.display = 'flex';
+        feedbackElement.style.justifyContent = 'center';
+        feedbackElement.style.alignItems = 'center';
+        feedbackElement.style.color = 'white';
+        feedbackElement.style.fontSize = '14px';
+        feedbackElement.style.textAlign = 'center';
+        feedbackElement.style.transition = 'transform 0.5s, opacity 0.5s';
+        feedbackElement.style.transform = 'scale(0.5)';
+        feedbackElement.style.opacity = '0.7';
+        feedbackElement.innerText = '正在检测媒体...';
+        document.body.appendChild(feedbackElement);
+        
+        // 动画效果
+        setTimeout(() => {
+          if (feedbackElement) {
+            feedbackElement.style.transform = 'scale(1)';
+            feedbackElement.style.opacity = '1';
+          }
+        }, 10);
+      }
+      
+      // 移除反馈元素
+      function removeFeedbackElement() {
+        if (feedbackElement) {
+          feedbackElement.style.transform = 'scale(0.5)';
+          feedbackElement.style.opacity = '0';
+          setTimeout(() => {
+            if (feedbackElement && feedbackElement.parentNode) {
+              feedbackElement.parentNode.removeChild(feedbackElement);
+              feedbackElement = null;
+            }
+          }, 300);
+        }
+      }
+      
+      // 更新反馈元素状态
+      function updateFeedbackStatus(status, success) {
+        if (feedbackElement) {
+          feedbackElement.innerText = status;
+          feedbackElement.style.backgroundColor = success ? 'rgba(0, 128, 0, 0.5)' : 'rgba(255, 0, 0, 0.5)';
+          setTimeout(removeFeedbackElement, 1000);
+        }
+      }
       
       // 按下时开始计时
       document.addEventListener('touchstart', function(e) {
         console.log('触摸开始，目标元素:', e.target);
         pressedElement = e.target.closest('a[href*="progressive/document"], a[href*="media"], a[href*="video"], [class*="download"], div[role="menuitem"][aria-label*="download"], video[src], img[src]');
         if (pressedElement) {
+          const touch = e.touches[0];
+          // 保存触摸位置，但不立即创建反馈元素
+          const touchX = touch.clientX;
+          const touchY = touch.clientY;
+          
           pressTimer = setTimeout(function() {
+            // 只在长按计时器触发时创建反馈元素
+            createFeedbackElement(touchX, touchY);
             handleMediaDownload(pressedElement, e);
           }, 500); // 500毫秒长按触发
         }
@@ -357,24 +423,37 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       // 如果手指移动，取消长按
       document.addEventListener('touchmove', function(e) {
         clearTimeout(pressTimer);
+        removeFeedbackElement();
         pressedElement = null;
       }, true);
       
       // 触摸结束，取消长按
       document.addEventListener('touchend', function(e) {
         clearTimeout(pressTimer);
+        if (!pressedElement) {
+          removeFeedbackElement();
+        }
         pressedElement = null;
       }, true);
       
       // 处理媒体下载的函数
       function handleMediaDownload(target, e) {
-        if (!target) return;
+        if (!target) {
+          updateFeedbackStatus('未找到媒体元素', false);
+          return;
+        }
         
         let url = target.href || target.getAttribute('data-href') || target.getAttribute('data-url') || target.src;
         console.log('长按捕获到可能的下载链接:', url);
         
-        if (url && !window.processedMediaUrls.has(url)) {
+        if (!url) {
+          updateFeedbackStatus('未找到下载链接', false);
+          return;
+        }
+        
+        if (!window.processedMediaUrls.has(url)) {
           if (isBlobUrl(url)) {
+            updateFeedbackStatus('正在处理媒体...', true);
             console.log('检测到 Blob URL，解析中:', url);
             resolveBlobUrl(url, target.tagName.toLowerCase() === 'img' ? 'image' : 'video').then(resolved => {
               if (resolved) {
@@ -387,6 +466,9 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                   isBase64: resolved.isBase64,
                   action: 'download'
                 }));
+                updateFeedbackStatus('已发送下载请求', true);
+              } else {
+                updateFeedbackStatus('解析媒体失败', false);
               }
             });
           } else {
@@ -399,10 +481,12 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
               isBase64: false,
               action: 'download'
             }));
+            updateFeedbackStatus('已发送下载请求', true);
           }
           e.preventDefault();
         } else {
           console.log('URL已处理或无效，跳过:', url);
+          updateFeedbackStatus('该媒体已在处理中', false);
         }
       }
     ''');
