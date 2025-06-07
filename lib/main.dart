@@ -60,8 +60,8 @@ class MainScreen extends StatefulWidget {
 }
 
 class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
-  final PageController _pageController = PageController(initialPage: 1); // 设置初始页为目录页
-  int _currentPage = 1; // 设置初始页索引为1（目录页）
+  final PageController _pageController = PageController(initialPage: 0); // 设置初始页为封面页
+  int _currentPage = 0; // 设置初始页索引为0（封面页）
   
   // Track if BrowserPage is showing its home page
   bool _isBrowserHomePage = true;
