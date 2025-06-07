@@ -339,47 +339,72 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
       window.processedMediaUrls = window.MediaInterceptor.processedUrls;
 
-      document.addEventListener('click', function(e) {
-        console.log('点击事件触发，目标元素:', e.target);
-        const target = e.target.closest('a[href*="progressive/document"], a[href*="media"], a[href*="video"], [class*="download"], div[role="menuitem"][aria-label*="download"], video[src], img[src]');
-        if (target) {
-          let url = target.href || target.getAttribute('data-href') || target.getAttribute('data-url') || target.src;
-          console.log('捕获到可能的下载链接:', url);
-          if (url && !window.processedMediaUrls.has(url)) {
-            if (isBlobUrl(url)) {
-              console.log('检测到 Blob URL，解析中:', url);
-              resolveBlobUrl(url, target.tagName.toLowerCase() === 'img' ? 'image' : 'video').then(resolved => {
-                if (resolved) {
-                  console.log('Blob URL 解析成功:', resolved);
-                  window.processedMediaUrls.add(url);
-                  Flutter.postMessage(JSON.stringify({
-                    type: 'media',
-                    mediaType: resolved.mediaType || 'video',
-                    url: resolved.resolvedUrl,
-                    isBase64: resolved.isBase64,
-                    action: 'download'
-                  }));
-                }
-              });
-            } else {
-              console.log('处理新的下载链接:', url);
-              window.processedMediaUrls.add(url);
-              Flutter.postMessage(JSON.stringify({
-                type: 'media',
-                mediaType: target.tagName.toLowerCase() === 'img' ? 'image' : 'video',
-                url: url,
-                isBase64: false,
-                action: 'download'
-              }));
-            }
-            e.preventDefault();
-          } else {
-            console.log('URL已处理或无效，跳过:', url);
-          }
-        } else {
-          console.log('未找到匹配的下载目标元素');
+      // 长按事件处理
+      let pressTimer;
+      let pressedElement = null;
+      
+      // 按下时开始计时
+      document.addEventListener('touchstart', function(e) {
+        console.log('触摸开始，目标元素:', e.target);
+        pressedElement = e.target.closest('a[href*="progressive/document"], a[href*="media"], a[href*="video"], [class*="download"], div[role="menuitem"][aria-label*="download"], video[src], img[src]');
+        if (pressedElement) {
+          pressTimer = setTimeout(function() {
+            handleMediaDownload(pressedElement, e);
+          }, 500); // 500毫秒长按触发
         }
       }, true);
+      
+      // 如果手指移动，取消长按
+      document.addEventListener('touchmove', function(e) {
+        clearTimeout(pressTimer);
+        pressedElement = null;
+      }, true);
+      
+      // 触摸结束，取消长按
+      document.addEventListener('touchend', function(e) {
+        clearTimeout(pressTimer);
+        pressedElement = null;
+      }, true);
+      
+      // 处理媒体下载的函数
+      function handleMediaDownload(target, e) {
+        if (!target) return;
+        
+        let url = target.href || target.getAttribute('data-href') || target.getAttribute('data-url') || target.src;
+        console.log('长按捕获到可能的下载链接:', url);
+        
+        if (url && !window.processedMediaUrls.has(url)) {
+          if (isBlobUrl(url)) {
+            console.log('检测到 Blob URL，解析中:', url);
+            resolveBlobUrl(url, target.tagName.toLowerCase() === 'img' ? 'image' : 'video').then(resolved => {
+              if (resolved) {
+                console.log('Blob URL 解析成功:', resolved);
+                window.processedMediaUrls.add(url);
+                Flutter.postMessage(JSON.stringify({
+                  type: 'media',
+                  mediaType: resolved.mediaType || 'video',
+                  url: resolved.resolvedUrl,
+                  isBase64: resolved.isBase64,
+                  action: 'download'
+                }));
+              }
+            });
+          } else {
+            console.log('处理新的下载链接:', url);
+            window.processedMediaUrls.add(url);
+            Flutter.postMessage(JSON.stringify({
+              type: 'media',
+              mediaType: target.tagName.toLowerCase() === 'img' ? 'image' : 'video',
+              url: url,
+              isBase64: false,
+              action: 'download'
+            }));
+          }
+          e.preventDefault();
+        } else {
+          console.log('URL已处理或无效，跳过:', url);
+        }
+      }
     ''');
   }
 
