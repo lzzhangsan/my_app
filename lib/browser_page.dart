@@ -661,42 +661,134 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   void _showAddWebsiteDialog(BuildContext context) {
     final nameController = TextEditingController();
     final urlController = TextEditingController();
+
+    // 设置默认URL（如果在浏览网页，则使用当前URL）
+    if (!_showHomePage && _isBrowsingWebPage) {
+      urlController.text = _currentUrl;
+    }
+
+    // 先显示对话框，然后异步获取标题
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('添加网站'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(controller: nameController, decoration: const InputDecoration(labelText: '网站名称', hintText: '例如：Google')),
-            TextField(controller: urlController, decoration: const InputDecoration(labelText: '网站地址', hintText: '例如：https://www.google.com')),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
-          TextButton(
-            onPressed: () async {
-              if (nameController.text.isNotEmpty && urlController.text.isNotEmpty) {
-                showDialog(
-                  context: context,
-                  barrierDismissible: false,
-                  builder: (context) => const AlertDialog(
-                    content: Row(
-                      children: [CircularProgressIndicator(), SizedBox(width: 20), Text('添加中...')],
-                    ),
-                  ),
-                );
-                await _addWebsite(nameController.text, urlController.text, Icons.web);
-                await _saveCommonWebsites();
-                Navigator.of(context).pop();
-                Navigator.of(context).pop();
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('网站已添加并保存')));
-              }
-            },
-            child: const Text('添加'),
+      builder: (dialogContext) {
+        // 如果在浏览网页，异步获取网页标题
+        if (!_showHomePage && _isBrowsingWebPage) {
+          // 显示"获取中..."作为临时标题
+          nameController.text = "获取中...";
+
+          // 异步获取网页标题
+          _controller.getTitle().then((title) {
+            if (title != null && title.isNotEmpty && nameController.text == "获取中...") {
+              // 直接更新文本控制器，而不使用setState
+              nameController.text = title;
+              // 自动选中文本，方便用户编辑
+              nameController.selection = TextSelection(
+                baseOffset: 0,
+                extentOffset: title.length,
+              );
+            }
+          }).catchError((error) {
+            debugPrint('获取网页标题出错: $error');
+            if (nameController.text == "获取中...") {
+              nameController.text = "";
+            }
+          });
+        }
+
+        return AlertDialog(
+          title: const Text('添加网站到标签'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: nameController,
+                decoration: const InputDecoration(
+                  labelText: '网站名称',
+                  hintText: '输入自定义名称',
+                  helperText: '为网站设置一个简短易记的名称',
+                ),
+                autofocus: true,
+              ),
+              TextField(
+                controller: urlController,
+                decoration: const InputDecoration(
+                  labelText: '网站地址',
+                  hintText: '例如：https://www.google.com',
+                ),
+                enabled: !_isBrowsingWebPage, // 如果在浏览网页，则禁用URL输入框
+              ),
+            ],
           ),
-        ],
-      ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('取消'),
+            ),
+            TextButton(
+              onPressed: () async {
+                if (nameController.text.isNotEmpty &&
+                    urlController.text.isNotEmpty &&
+                    nameController.text != "获取中...") {
+
+                  // 创建一个变量存储加载对话框的context
+                  BuildContext? loadingDialogContext;
+
+                  // 显示加载对话框并保存context
+                  showDialog(
+                    context: dialogContext,
+                    barrierDismissible: false,
+                    builder: (context) {
+                      loadingDialogContext = context;
+                      return const AlertDialog(
+                        content: Row(
+                          children: [
+                            CircularProgressIndicator(),
+                            SizedBox(width: 20),
+                            Text('添加中...'),
+                          ],
+                        ),
+                      );
+                    },
+                  );
+
+                  await _addWebsite(nameController.text, urlController.text, Icons.web);
+                  await _saveCommonWebsites();
+
+                  // 安全地关闭加载对话框
+                  if (loadingDialogContext != null && Navigator.canPop(loadingDialogContext!)) {
+                    Navigator.pop(loadingDialogContext!);
+                  }
+
+                  // 关闭主对话框
+                  Navigator.of(dialogContext).pop();
+
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('已将"${nameController.text}"添加到标签栏'),
+                      duration: const Duration(seconds: 2),
+                    ),
+                  );
+                } else if (nameController.text == "获取中...") {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('请等待网页标题获取完成，或输入自定义名称'),
+                      duration: Duration(seconds: 2),
+                    ),
+                  );
+                } else {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('请输入网站名称和地址'),
+                      duration: Duration(seconds: 2),
+                    ),
+                  );
+                }
+              },
+              child: const Text('添加'),
+            ),
+          ],
+        );
+      },
     );
   }
 
@@ -1198,13 +1290,125 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   }
 
   void _addBookmark(String url) {
-    if (!_bookmarks.any((bookmark) => bookmark['url'] == url)) {
-      setState(() => _bookmarks.add({'name': url, 'url': url}));
-      _saveBookmarks();
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已添加书签')));
-    } else {
+    // 检查是否已存在相同URL的书签
+    if (_bookmarks.any((bookmark) => bookmark['url'] == url)) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('书签已存在')));
+      return;
     }
+
+    // 创建一个文本控制器，初始值设为当前网页的标题或URL
+    final nameController = TextEditingController();
+    
+    // 如果在浏览网页，尝试获取网页标题
+    if (!_showHomePage && _isBrowsingWebPage) {
+      nameController.text = "获取中...";
+      _controller.getTitle().then((title) {
+        if (title != null && title.isNotEmpty && nameController.text == "获取中...") {
+          nameController.text = title;
+          // 自动选中文本，方便用户编辑
+          nameController.selection = TextSelection(
+            baseOffset: 0,
+            extentOffset: title.length,
+          );
+        }
+      }).catchError((error) {
+        debugPrint('获取网页标题出错: $error');
+        if (nameController.text == "获取中...") {
+          nameController.text = "";
+        }
+      });
+    }
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('添加书签'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: nameController,
+              decoration: const InputDecoration(
+                labelText: '书签名称',
+                hintText: '输入自定义名称',
+                helperText: '为书签设置一个简短易记的名称',
+              ),
+              autofocus: true,
+            ),
+            const SizedBox(height: 8),
+            Text('URL: $url', style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () async {
+              if (nameController.text.isNotEmpty && nameController.text != "获取中...") {
+                // 创建一个变量存储加载对话框的context
+                BuildContext? loadingDialogContext;
+
+                // 显示加载对话框并保存context
+                showDialog(
+                  context: context,
+                  barrierDismissible: false,
+                  builder: (context) {
+                    loadingDialogContext = context;
+                    return const AlertDialog(
+                      content: Row(
+                        children: [
+                          CircularProgressIndicator(),
+                          SizedBox(width: 20),
+                          Text('添加中...'),
+                        ],
+                      ),
+                    );
+                  },
+                );
+
+                setState(() => _bookmarks.add({
+                  'name': nameController.text,
+                  'url': url,
+                }));
+                await _saveBookmarks();
+
+                // 安全地关闭加载对话框
+                if (loadingDialogContext != null && Navigator.canPop(loadingDialogContext!)) {
+                  Navigator.pop(loadingDialogContext!);
+                }
+
+                // 关闭主对话框
+                Navigator.of(context).pop();
+
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text('已将"${nameController.text}"添加到书签'),
+                    duration: const Duration(seconds: 2),
+                  ),
+                );
+              } else if (nameController.text == "获取中...") {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('请等待网页标题获取完成，或输入自定义名称'),
+                    duration: Duration(seconds: 2),
+                  ),
+                );
+              } else {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('请输入书签名称'),
+                    duration: Duration(seconds: 2),
+                  ),
+                );
+              }
+            },
+            child: const Text('添加'),
+          ),
+        ],
+      ),
+    );
   }
 
   void _showBookmarks() {
@@ -1538,3 +1742,4 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     }
   }
 }
+
