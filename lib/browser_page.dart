@@ -1612,6 +1612,29 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                 ),
           centerTitle: true,
           actions: [
+            // 添加媒体库按钮到AppBar中
+            IconButton(
+              icon: const Icon(Icons.photo_library),
+              onPressed: () {
+                print('[BrowserPage] 媒体库按钮被点击');
+                // 使用MainScreen的PageController导航到媒体管理页面（索引2）
+                final mainScreenState = MainScreenState.instance;
+                print('[BrowserPage] mainScreenState: $mainScreenState');
+                if (mainScreenState != null) {
+                  print('[BrowserPage] 准备调用goToPage(2)');
+                  mainScreenState.goToPage(2); // 索引2是媒体管理页面
+                  print('[BrowserPage] 已调用goToPage(2)');
+                } else {
+                  print('[BrowserPage] 错误: mainScreenState为null，无法导航');
+                  // 尝试使用Navigator直接导航到媒体管理页面
+                  print('[BrowserPage] 尝试使用Navigator直接导航');
+                  Navigator.of(context).push(
+                    MaterialPageRoute(builder: (context) => const MediaManagerPage()),
+                  );
+                }
+              },
+              tooltip: '媒体库',
+            ),
             if (_isBrowsingWebPage && _shouldKeepWebPageState && _showHomePage)
               IconButton(
                 icon: const Icon(Icons.arrow_right_alt),
@@ -1689,34 +1712,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                     child: Stack(
                       children: [
                         WebViewWidget(controller: _controller),
-                        // 添加一个浮动按钮，用于导航到媒体管理页面
-                        Positioned(
-                          top: 0,
-                          left: 50, // 放置在主页按钮的右边
-                          child: FloatingActionButton(
-                            mini: true,
-                            backgroundColor: Colors.blue.withOpacity(0.7),
-                            child: const Icon(Icons.photo_library, size: 20),
-                            onPressed: () {
-                              print('[BrowserPage] 媒体库按钮被点击');
-                              // 使用MainScreen的PageController导航到媒体管理页面（索引2）
-                              final mainScreenState = MainScreenState.instance;
-                              print('[BrowserPage] mainScreenState: $mainScreenState');
-                              if (mainScreenState != null) {
-                                print('[BrowserPage] 准备调用goToPage(2)');
-                                mainScreenState.goToPage(2); // 索引2是媒体管理页面
-                                print('[BrowserPage] 已调用goToPage(2)');
-                              } else {
-                                print('[BrowserPage] 错误: mainScreenState为null，无法导航');
-                                // 尝试使用Navigator直接导航到媒体管理页面
-                                print('[BrowserPage] 尝试使用Navigator直接导航');
-                                Navigator.of(context).push(
-                                  MaterialPageRoute(builder: (context) => const MediaManagerPage()),
-                                );
-                              }
-                            },
-                          ),
-                        ),
                       ],
                     ),
                   ),
