@@ -653,16 +653,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
             ),
           ],
         ),
-        if (_isBrowsingWebPage && _shouldKeepWebPageState)
-          Positioned(
-            bottom: 16.0,
-            right: 16.0,
-            child: FloatingActionButton(
-              onPressed: _restoreWebPage,
-              tooltip: '返回上次浏览的网页',
-              child: const Icon(Icons.arrow_right_alt),
-            ),
-          ),
+        // 移除底部浮动按钮，改为在顶部显示
       ],
     );
   }
@@ -1416,6 +1407,12 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                 ),
           centerTitle: true,
           actions: [
+            if (_isBrowsingWebPage && _shouldKeepWebPageState && _showHomePage)
+              IconButton(
+                icon: const Icon(Icons.arrow_right_alt),
+                onPressed: _restoreWebPage,
+                tooltip: '返回上次浏览的网页',
+              ),
             IconButton(
               icon: const Icon(Icons.bookmark),
               onPressed: _showBookmarks,
