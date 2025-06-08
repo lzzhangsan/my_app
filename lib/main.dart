@@ -45,7 +45,7 @@ class MyApp extends StatelessWidget {
       ),
       navigatorKey: navigatorKey, // 添加导航键
       debugShowCheckedModeBanner: false,
-      home: const MainScreen(),
+      home: MainScreen(key: MainScreenState.mainScreenStateKey),
     );
   }
 }
@@ -82,17 +82,17 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   // This method is less relevant now that we have direct state management
   // but keeping it for potential external navigation needs.
   static void goToBrowserPage(bool showHomePage) {
-    if (_mainScreenStateKey.currentState != null) {
-      _mainScreenStateKey.currentState!._goToPage(3); // Index 3 is BrowserPage
+    if (mainScreenStateKey.currentState != null) {
+      mainScreenStateKey.currentState!.goToPage(3); // Index 3 is BrowserPage
       // The BrowserPage will update _isBrowserHomePage via callback when its build method runs after navigation
     }
   }
 
   // GlobalKey for MainScreenState
-  static final GlobalKey<MainScreenState> _mainScreenStateKey = GlobalKey<MainScreenState>();
+  static final GlobalKey<MainScreenState> mainScreenStateKey = GlobalKey<MainScreenState>();
 
-  // Private method for page switching
-  void _goToPage(int index) {
+  // Method for page switching
+  void goToPage(int index) {
      _pageController.animateToPage(
       index,
       duration: const Duration(milliseconds: 300),
@@ -173,7 +173,7 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     debugPrint('[_MainScreenState.build] _currentPage: $_currentPage, _isBrowserHomePage: $_isBrowserHomePage, Calculated PageView Physics: ${_currentPage == 3 ? (_isBrowserHomePage ? 'ClampingScrollPhysics' : 'NeverScrollableScrollPhysics') : 'ClampingScrollPhysics'}');
 
     return Scaffold(
-      key: _mainScreenStateKey, // Add key to Scaffold
+      key: mainScreenStateKey, // Add key to Scaffold
       body: RawKeyboardListener(
         focusNode: FocusNode(),
         autofocus: true,

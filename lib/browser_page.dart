@@ -1698,10 +1698,11 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                             backgroundColor: Colors.blue.withOpacity(0.7),
                             child: const Icon(Icons.photo_library, size: 20),
                             onPressed: () {
-                              // 导航到媒体管理页面
-                              Navigator.of(context).pushReplacement(
-                                MaterialPageRoute(builder: (context) => const MediaManagerPage()),
-                              );
+                              // 使用MainScreen的PageController导航到媒体管理页面（索引2）
+                              final mainScreenState = MainScreenState.mainScreenStateKey.currentState;
+                              if (mainScreenState != null) {
+                                mainScreenState.goToPage(2); // 索引2是媒体管理页面
+                              }
                             },
                           ),
                         ),
