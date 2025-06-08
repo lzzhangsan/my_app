@@ -1,6 +1,8 @@
 import 'dart:io';
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
+import 'package:flutter/services.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:path_provider/path_provider.dart';
@@ -13,6 +15,7 @@ import 'dart:convert';
 import 'dart:math';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/foundation.dart';
+import 'package:reorderable_grid_view/reorderable_grid_view.dart';
 
 import 'core/service_locator.dart';
 import 'services/database_service.dart';
@@ -56,16 +59,14 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     {'name': '百度', 'url': 'https://www.baidu.com', 'icon': Icons.search},
   ];
 
-  bool _isEditMode = false;
+  // 移除编辑模式状态变量
+  // bool _isEditMode = false;
 
-  Future<void> _toggleEditMode() async {
-    final wasInEditMode = _isEditMode;
-    setState(() => _isEditMode = !_isEditMode);
-    if (wasInEditMode && !_isEditMode) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('正在保存常用网站...')));
-      await _saveCommonWebsites();
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('常用网站已保存')));
-    }
+  // 保留此方法但简化功能，因为我们已移除编辑模式
+  Future<void> _saveWebsites() async {
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('正在保存常用网站...')));
+    await _saveCommonWebsites();
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('常用网站已保存')));
   }
 
   Future<void> _removeWebsite(int index) async {
@@ -76,6 +77,14 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   }
 
   Future<void> _reorderWebsites(int oldIndex, int newIndex) async {
+    // 如果是添加网站按钮，不允许拖动
+    if (oldIndex >= _commonWebsites.length || newIndex > _commonWebsites.length) {
+      return;
+    }
+    
+    // 调整newIndex，因为ReorderableGridView的newIndex计算方式与ReorderableListView不同
+    if (newIndex > _commonWebsites.length) newIndex = _commonWebsites.length;
+    
     setState(() {
       if (oldIndex < newIndex) newIndex -= 1;
       final item = _commonWebsites.removeAt(oldIndex);
@@ -578,65 +587,44 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       children: [
         Column(
           children: [
-            Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text('常用网站', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
-                  Row(
-                    children: [
-                      IconButton(
-                        icon: Icon(_isEditMode ? Icons.done : Icons.edit),
-                        onPressed: () async {
-                          showDialog(
-                            context: context,
-                            barrierDismissible: false,
-                            builder: (context) => const AlertDialog(
-                              content: Row(
-                                children: [
-                                  CircularProgressIndicator(),
-                                  SizedBox(width: 20),
-                                  Text('处理中...'),
-                                ],
-                              ),
-                            ),
-                          );
-                          await _toggleEditMode();
-                          Navigator.of(context).pop();
-                        },
-                        tooltip: _isEditMode ? '完成编辑' : '编辑网站',
-                      ),
-                      if (_isEditMode)
-                        IconButton(
-                          icon: const Icon(Icons.add),
-                          onPressed: () => _showAddWebsiteDialog(context),
-                          tooltip: '添加网站',
-                        ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
+            // 移除了顶部工具栏
             Expanded(
-              child: _isEditMode
-                  ? ReorderableListView.builder(
-                      padding: const EdgeInsets.all(16.0),
-                      itemCount: _commonWebsites.length,
-                      itemBuilder: (context, index) => _buildEditableWebsiteItem(_commonWebsites[index], index),
-                      onReorder: _reorderWebsites,
-                    )
-                  : GridView.builder(
-                      padding: const EdgeInsets.all(16.0),
-                      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                        crossAxisCount: 3,
-                        childAspectRatio: 1.0,
-                        crossAxisSpacing: 16.0,
-                        mainAxisSpacing: 16.0,
+              child: ReorderableGridView.builder(
+                padding: const EdgeInsets.all(16.0),
+                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 3,
+                  childAspectRatio: 1.0,
+                  crossAxisSpacing: 16.0,
+                  mainAxisSpacing: 16.0,
+                ),
+                itemCount: _commonWebsites.length + 1, // +1 for the add button
+                itemBuilder: (context, index) {
+                  if (index == _commonWebsites.length) {
+                    // 添加新网站的按钮
+                    return InkWell(
+                      key: const ValueKey('add_website'),
+                      onTap: () => _showAddWebsiteDialog(context),
+                      child: Card(
+                        elevation: 4.0,
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: const [
+                            Icon(Icons.add_circle_outline, size: 40, color: Colors.green),
+                            SizedBox(height: 8),
+                            Text('添加网站', style: TextStyle(fontSize: 16), textAlign: TextAlign.center),
+                          ],
+                        ),
                       ),
-                      itemCount: _commonWebsites.length,
-                      itemBuilder: (context, index) => _buildWebsiteCard(_commonWebsites[index]),
-                    ),
+                    );
+                  } else {
+                    return _buildWebsiteCard(_commonWebsites[index], index);
+                  }
+                },
+                onReorder: _reorderWebsites,
+                dragStartBehavior: DragStartBehavior.start,
+                // 移除 dragEnabled 函数参数，改为在 _reorderWebsites 方法中处理
+                // 移除 onReorderStart 参数，因为 ReorderableGridView 不支持此参数
+              ),
             ),
           ],
         ),
@@ -696,54 +684,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     );
   }
 
-  Widget _buildEditableWebsiteItem(Map<String, dynamic> website, int index) {
-    return ListTile(
-      key: ValueKey(website['url']),
-      leading: const Icon(Icons.public),
-      title: Text(website['name']!),
-      subtitle: Text(website['url']!),
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          IconButton(
-            icon: const Icon(Icons.edit, color: Colors.blue),
-            onPressed: () => _showRenameWebsiteDialog(context, website, index),
-            tooltip: '重命名',
-          ),
-          IconButton(
-            icon: const Icon(Icons.delete, color: Colors.red),
-            onPressed: () async {
-              final shouldDelete = await showDialog<bool>(
-                context: context,
-                builder: (context) => AlertDialog(
-                  title: const Text('删除网站'),
-                  content: Text('确定要删除 ${website['name']} 吗？'),
-                  actions: [
-                    TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-                    TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('删除')),
-                  ],
-                ),
-              ) ?? false;
-              if (shouldDelete) {
-                showDialog(
-                  context: context,
-                  barrierDismissible: false,
-                  builder: (context) => const AlertDialog(
-                    content: Row(
-                      children: [CircularProgressIndicator(), SizedBox(width: 20), Text('删除中...')],
-                    ),
-                  ),
-                );
-                await _removeWebsite(index);
-                Navigator.of(context).pop();
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('网站已删除')));
-              }
-            },
-          ),
-        ],
-      ),
-    );
-  }
+  // 移除_buildEditableWebsiteItem方法，因为我们已经移除了编辑模式
 
   void _showRenameWebsiteDialog(BuildContext context, Map<String, dynamic> website, int index) {
     final nameController = TextEditingController(text: website['name']);
@@ -794,9 +735,11 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     );
   }
 
-  Widget _buildWebsiteCard(Map<String, dynamic> website) {
+  Widget _buildWebsiteCard(Map<String, dynamic> website, int index) {
     return InkWell(
+      key: ValueKey(website['url']),
       onTap: () => _loadUrl(website['url']),
+      onDoubleTap: () => _showWebsiteOptionsDialog(context, website, _commonWebsites.indexWhere((site) => site['url'] == website['url'])),
       child: Card(
         elevation: 4.0,
         child: Column(
@@ -807,6 +750,57 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
             Text(website['name'], style: const TextStyle(fontSize: 16), textAlign: TextAlign.center),
           ],
         ),
+      ),
+    );
+  }
+  
+  void _showWebsiteOptionsDialog(BuildContext context, Map<String, dynamic> website, int index) {
+    showModalBottomSheet(
+      context: context,
+      builder: (context) => Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ListTile(
+            leading: const Icon(Icons.edit, color: Colors.blue),
+            title: const Text('重命名'),
+            onTap: () {
+              Navigator.pop(context);
+              _showRenameWebsiteDialog(context, website, index);
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.delete, color: Colors.red),
+            title: const Text('删除'),
+            onTap: () async {
+              Navigator.pop(context);
+              final shouldDelete = await showDialog<bool>(
+                context: context,
+                builder: (context) => AlertDialog(
+                  title: const Text('删除网站'),
+                  content: Text('确定要删除 ${website['name']} 吗？'),
+                  actions: [
+                    TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+                    TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('删除')),
+                  ],
+                ),
+              ) ?? false;
+              if (shouldDelete) {
+                showDialog(
+                  context: context,
+                  barrierDismissible: false,
+                  builder: (context) => const AlertDialog(
+                    content: Row(
+                      children: [CircularProgressIndicator(), SizedBox(width: 20), Text('删除中...')],
+                    ),
+                  ),
+                );
+                await _removeWebsite(index);
+                Navigator.of(context).pop();
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('网站已删除')));
+              }
+            },
+          ),
+        ],
       ),
     );
   }
@@ -1340,7 +1334,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         key: _scaffoldKey,
         appBar: AppBar(
           titleSpacing: 0,
-          title: _showHomePage ? const Text('网页浏览器') : const SizedBox.shrink(),
+          title: _showHomePage ? const Text('浏览器') : const SizedBox.shrink(),
           leading: _showHomePage
               ? null
               : IconButton(

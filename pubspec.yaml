@@ -37,6 +37,7 @@ dependencies:
   flutter_downloader: ^1.11.6  # 添加文件下载支持
   http: ^1.2.0  # 添加HTTP请求支持
   dio: ^5.4.0  # 添加Dio网络请求库支持
+  reorderable_grid_view: ^2.2.8
 
 dev_dependencies:
   flutter_test:
