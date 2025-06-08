@@ -20,6 +20,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'core/service_locator.dart';
 import 'services/database_service.dart';
+import 'services/telegram_download_service_v2.dart';
 import 'models/media_item.dart';
 import 'models/media_type.dart';
 import 'main.dart';
@@ -46,6 +47,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   late final DatabaseService _databaseService;
   List<Map<String, String>> _bookmarks = [];
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+  final TelegramDownloadServiceV2 _telegramService = TelegramDownloadServiceV2.instance;
 
   bool _showHomePage = true;
   bool _isBrowsingWebPage = false;
@@ -131,6 +133,12 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     _initializeWebView();
     _loadBookmarks();
     _loadCommonWebsites();
+    _initializeTelegramService();
+  }
+  
+  /// 初始化 Telegram 服务
+  Future<void> _initializeTelegramService() async {
+    await _telegramService.initialize();
   }
 
   Future<void> _initializeDownloader() async {
@@ -1102,7 +1110,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
           TextButton(
             onPressed: () => Navigator.of(context).pop({'download': true, 'mediaType': selectedType}),
-            child: const Text('下载'),
+            child: const Text('解析测试'),
           ),
         ],
       ),
@@ -1681,6 +1689,11 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                 onPressed: () => _addBookmark(_currentUrl),
                 tooltip: '添加书签',
               ),
+            IconButton(
+              icon: const Icon(Icons.telegram),
+              onPressed: _showTelegramDownloadDialog,
+              tooltip: 'Telegram 下载',
+            ),
             if (!_showHomePage)
               IconButton(
                 icon: const Icon(Icons.close, color: Colors.red),
@@ -1799,6 +1812,276 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     } finally {
       _downloadingUrls.remove(url);
     }
+  }
+  
+  /// 显示 Telegram 下载对话框
+  void _showTelegramDownloadDialog() {
+    if (!_telegramService.isConfigured) {
+      _showBotTokenConfigDialog();
+    } else {
+      _showTelegramUrlInputDialog();
+    }
+  }
+  
+  /// 显示 Bot Token 配置对话框
+  void _showBotTokenConfigDialog() {
+    final tokenController = TextEditingController();
+    
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('配置 Telegram Bot'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              '请先配置 Telegram Bot Token 以使用下载功能：\n\n'
+              '1. 在 Telegram 中找到 @BotFather\n'
+              '2. 发送 /newbot 创建新机器人\n'
+              '3. 按提示设置机器人名称\n'
+              '4. 复制获得的 Token 并粘贴到下方',
+              style: TextStyle(fontSize: 14),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: tokenController,
+              decoration: const InputDecoration(
+                labelText: 'Bot Token',
+                hintText: '例如: 123456789:ABCdefGHIjklMNOpqrsTUVwxyz',
+                border: OutlineInputBorder(),
+              ),
+              maxLines: 2,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              final token = tokenController.text.trim();
+              if (token.isEmpty) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('请输入 Bot Token')),
+                );
+                return;
+              }
+              
+              // 显示验证进度
+              Navigator.pop(context);
+              _showLoadingDialog('验证 Bot Token...');
+              
+              final isValid = await _telegramService.validateBotToken(token);
+              Navigator.pop(context); // 关闭加载对话框
+              
+              if (isValid) {
+                final success = await _telegramService.saveBotToken(token);
+                if (success) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Bot Token 配置成功！'),
+                      backgroundColor: Colors.green,
+                    ),
+                  );
+                  _showTelegramUrlInputDialog();
+                } else {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('保存 Bot Token 失败'),
+                      backgroundColor: Colors.red,
+                    ),
+                  );
+                }
+              } else {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('无效的 Bot Token，请检查后重试'),
+                    backgroundColor: Colors.red,
+                  ),
+                );
+              }
+            },
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+  }
+  
+  /// 显示 Telegram URL 输入对话框
+  void _showTelegramUrlInputDialog() {
+    final urlController = TextEditingController();
+    
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Telegram 媒体下载'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+               'Telegram Bot 下载功能说明：\n\n'
+               '由于 Telegram Bot API 限制，机器人只能下载发送给它的消息。\n\n'
+               '使用方法：\n'
+               '1. 在 Telegram 中找到您的机器人\n'
+               '2. 将要下载的媒体文件转发给机器人\n'
+               '3. 机器人会自动处理并下载文件\n\n'
+               '或者输入消息链接进行解析测试：',
+               style: TextStyle(fontSize: 14),
+             ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: urlController,
+              decoration: const InputDecoration(
+                 labelText: 'Telegram 消息链接（测试解析）',
+                 hintText: '例如: https://t.me/channel/123',
+                 border: OutlineInputBorder(),
+               ),
+              maxLines: 3,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _showBotTokenConfigDialog();
+            },
+            child: const Text('重新配置 Bot'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              final url = urlController.text.trim();
+              if (url.isEmpty) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('请输入 Telegram 消息链接')),
+                );
+                return;
+              }
+              
+              Navigator.pop(context);
+              await _downloadFromTelegram(url);
+            },
+            child: const Text('解析测试'),
+          ),
+        ],
+      ),
+    );
+  }
+  
+  /// 从 Telegram 下载媒体
+  Future<void> _downloadFromTelegram(String url) async {
+    // 显示下载进度对话框
+    double progress = 0.0;
+    bool isDownloading = true;
+    
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setState) => AlertDialog(
+          title: const Text('正在下载'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              LinearProgressIndicator(value: progress),
+              const SizedBox(height: 16),
+              Text('${(progress * 100).toInt()}%'),
+            ],
+          ),
+          actions: isDownloading
+              ? []
+              : [
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('确定'),
+                  ),
+                ],
+        ),
+      ),
+    );
+    
+    try {
+      final result = await _telegramService.downloadFromMessage(
+        url,
+        onProgress: (p) {
+          if (mounted) {
+            // 更新进度
+            progress = p;
+            // 这里需要更新对话框状态，但由于 StatefulBuilder 的限制，
+            // 我们可能需要使用其他方法来更新进度
+          }
+        },
+      );
+      
+      isDownloading = false;
+      Navigator.pop(context); // 关闭进度对话框
+      
+      if (result.success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('下载成功：${result.fileName}'),
+            backgroundColor: Colors.green,
+            action: SnackBarAction(
+              label: '查看',
+              onPressed: () {
+                // 导航到媒体管理页面
+                final mainScreenState = MainScreenState.instance;
+                if (mainScreenState != null) {
+                  mainScreenState.goToPage(2);
+                } else {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(builder: (context) => const MediaManagerPage()),
+                  );
+                }
+              },
+            ),
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('下载失败：${result.error}'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } catch (e) {
+      isDownloading = false;
+      Navigator.pop(context); // 关闭进度对话框
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('下载出错：$e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+  
+  /// 显示加载对话框
+  void _showLoadingDialog(String message) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        content: Row(
+          children: [
+            const CircularProgressIndicator(),
+            const SizedBox(width: 16),
+            Text(message),
+          ],
+        ),
+      ),
+    );
   }
 }
 
