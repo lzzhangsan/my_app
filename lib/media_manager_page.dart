@@ -2011,18 +2011,6 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         title: Text(
             _currentDirectory == 'root' ? '媒体' : '媒体 / $_currentDirectory'),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.language),
-            onPressed: () {
-              // 使用Navigator.of(context)获取当前页面的Navigator
-              // 然后使用pushNamed方法跳转到浏览器页面
-              Navigator.of(context).push(
-                MaterialPageRoute(builder: (context) => BrowserPage()),
-              );
-            },
-            tooltip: '浏览器',
-            padding: const EdgeInsets.symmetric(horizontal: 4),
-          ),
           if (_currentDirectory != 'root')
             IconButton(
               icon: const Icon(Icons.arrow_upward),
