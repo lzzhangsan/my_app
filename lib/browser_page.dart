@@ -1698,10 +1698,21 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                             backgroundColor: Colors.blue.withOpacity(0.7),
                             child: const Icon(Icons.photo_library, size: 20),
                             onPressed: () {
+                              print('[BrowserPage] 媒体库按钮被点击');
                               // 使用MainScreen的PageController导航到媒体管理页面（索引2）
-                              final mainScreenState = MainScreenState.mainScreenStateKey.currentState;
+                              final mainScreenState = MainScreenState.instance;
+                              print('[BrowserPage] mainScreenState: $mainScreenState');
                               if (mainScreenState != null) {
+                                print('[BrowserPage] 准备调用goToPage(2)');
                                 mainScreenState.goToPage(2); // 索引2是媒体管理页面
+                                print('[BrowserPage] 已调用goToPage(2)');
+                              } else {
+                                print('[BrowserPage] 错误: mainScreenState为null，无法导航');
+                                // 尝试使用Navigator直接导航到媒体管理页面
+                                print('[BrowserPage] 尝试使用Navigator直接导航');
+                                Navigator.of(context).push(
+                                  MaterialPageRoute(builder: (context) => const MediaManagerPage()),
+                                );
                               }
                             },
                           ),

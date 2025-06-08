@@ -90,6 +90,9 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
   // GlobalKey for MainScreenState
   static final GlobalKey<MainScreenState> mainScreenStateKey = GlobalKey<MainScreenState>();
+  
+  // 获取当前实例
+  static MainScreenState? get instance => mainScreenStateKey.currentState;
 
   // Method for page switching
   void goToPage(int index) {
@@ -173,7 +176,7 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     debugPrint('[_MainScreenState.build] _currentPage: $_currentPage, _isBrowserHomePage: $_isBrowserHomePage, Calculated PageView Physics: ${_currentPage == 3 ? (_isBrowserHomePage ? 'ClampingScrollPhysics' : 'NeverScrollableScrollPhysics') : 'ClampingScrollPhysics'}');
 
     return Scaffold(
-      key: mainScreenStateKey, // Add key to Scaffold
+      // 移除这里的key，因为GlobalKey应该应用于StatefulWidget（MainScreen），而不是Scaffold
       body: RawKeyboardListener(
         focusNode: FocusNode(),
         autofocus: true,
