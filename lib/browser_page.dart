@@ -16,6 +16,7 @@ import 'dart:math';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/foundation.dart';
 import 'package:reorderable_grid_view/reorderable_grid_view.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'core/service_locator.dart';
 import 'services/database_service.dart';
@@ -48,6 +49,27 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
   bool _showHomePage = true;
   bool _isBrowsingWebPage = false;
+
+  Future<void> _launchExternalApp(String url) async {
+    debugPrint('尝试启动外部应用: $url');
+    try {
+      final Uri uri = Uri.parse(url);
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+        debugPrint('成功启动外部应用');
+      } else {
+        debugPrint('无法启动外部应用: $url');
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('无法打开: $url')),
+        );
+      }
+    } catch (e) {
+      debugPrint('启动外部应用时出错: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('打开链接时出错: $e')),
+      );
+    }
+  }
   bool _shouldKeepWebPageState = false;
   String? _lastBrowsedUrl;
 
@@ -168,6 +190,12 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
             if (_isDownloadableLink(url) || _isTelegramMediaLink(url) || _isYouTubeLink(url)) {
               debugPrint('检测到可能的下载链接: $url');
               _handleDownload(url, '', _guessMimeType(url));
+              return NavigationDecision.prevent;
+            }
+            // 处理自定义URL协议
+            if (!url.startsWith('http://') && !url.startsWith('https://')) {
+              debugPrint('检测到自定义URL协议: $url');
+              _launchExternalApp(url);
               return NavigationDecision.prevent;
             }
             return NavigationDecision.navigate;
