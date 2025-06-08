@@ -1691,8 +1691,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                         WebViewWidget(controller: _controller),
                         // 添加一个浮动按钮，用于导航到媒体管理页面
                         Positioned(
-                          top: 10,
-                          left: 10,
+                          top: 0,
+                          left: 50, // 放置在主页按钮的右边
                           child: FloatingActionButton(
                             mini: true,
                             backgroundColor: Colors.blue.withOpacity(0.7),
