@@ -22,6 +22,7 @@ import 'services/database_service.dart';
 import 'models/media_item.dart';
 import 'models/media_type.dart';
 import 'main.dart';
+import 'media_manager_page.dart';
 
 class BrowserPage extends StatefulWidget {
   final ValueChanged<bool>? onBrowserHomePageChanged;
@@ -1684,7 +1685,29 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                     ),
                   ),
                   if (_isLoading) LinearProgressIndicator(value: _loadingProgress),
-                  Expanded(child: WebViewWidget(controller: _controller)),
+                  Expanded(
+                    child: Stack(
+                      children: [
+                        WebViewWidget(controller: _controller),
+                        // 添加一个浮动按钮，用于导航到媒体管理页面
+                        Positioned(
+                          top: 10,
+                          left: 10,
+                          child: FloatingActionButton(
+                            mini: true,
+                            backgroundColor: Colors.blue.withOpacity(0.7),
+                            child: const Icon(Icons.photo_library, size: 20),
+                            onPressed: () {
+                              // 导航到媒体管理页面
+                              Navigator.of(context).pushReplacement(
+                                MaterialPageRoute(builder: (context) => const MediaManagerPage()),
+                              );
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 ],
               ),
       ),
