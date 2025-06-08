@@ -555,7 +555,26 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     if (!_showHomePage) {
       await _saveCommonWebsites();
       await _loadBookmarks();
+      
+      // 确保常用网站列表被正确加载
       await _loadCommonWebsites();
+      
+      // 如果常用网站列表为空，强制加载默认网站
+      if (_commonWebsites.isEmpty) {
+        debugPrint('常用网站列表为空，加载默认网站');
+        setState(() {
+          _commonWebsites.addAll([
+            {'name': 'Google', 'url': 'https://www.google.com', 'iconCode': Icons.public.codePoint},
+            {'name': 'Edge', 'url': 'https://www.bing.com', 'iconCode': Icons.public.codePoint},
+            {'name': 'X', 'url': 'https://twitter.com', 'iconCode': Icons.public.codePoint},
+            {'name': 'Facebook', 'url': 'https://www.facebook.com', 'iconCode': Icons.public.codePoint},
+            {'name': 'Telegram', 'url': 'https://web.telegram.org', 'iconCode': Icons.public.codePoint},
+            {'name': '百度', 'url': 'https://www.baidu.com', 'iconCode': Icons.public.codePoint}
+          ]);
+        });
+        await _saveCommonWebsites();
+      }
+      
       setState(() => _showHomePage = true);
       widget.onBrowserHomePageChanged?.call(_showHomePage);
     }
@@ -583,6 +602,12 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   }
 
   Widget _buildHomePage() {
+    // 确保_commonWebsites不为空
+    if (_commonWebsites.isEmpty) {
+      debugPrint('构建主页时发现常用网站列表为空，加载默认网站');
+      _loadCommonWebsites();
+    }
+    
     return Stack(
       children: [
         Column(
@@ -838,6 +863,19 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
   Future<void> _saveCommonWebsites() async {
     try {
+      // 确保_commonWebsites不为空
+      if (_commonWebsites.isEmpty) {
+        debugPrint('警告：尝试保存空的常用网站列表，将加载默认网站');
+        _commonWebsites.addAll([
+          {'name': 'Google', 'url': 'https://www.google.com', 'iconCode': Icons.public.codePoint},
+          {'name': 'Edge', 'url': 'https://www.bing.com', 'iconCode': Icons.public.codePoint},
+          {'name': 'X', 'url': 'https://twitter.com', 'iconCode': Icons.public.codePoint},
+          {'name': 'Facebook', 'url': 'https://www.facebook.com', 'iconCode': Icons.public.codePoint},
+          {'name': 'Telegram', 'url': 'https://web.telegram.org', 'iconCode': Icons.public.codePoint},
+          {'name': '百度', 'url': 'https://www.baidu.com', 'iconCode': Icons.public.codePoint}
+        ]);
+      }
+      
       final prefs = await SharedPreferences.getInstance();
       final cleanedWebsites = _commonWebsites.map((site) => {
         'name': site['name'],
@@ -845,8 +883,21 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         'iconCode': Icons.public.codePoint,
       }).toList();
       final jsonString = jsonEncode(cleanedWebsites);
-      await prefs.remove('common_websites');
-      await prefs.setString('common_websites', jsonString);
+      
+      // 先获取旧数据作为备份
+      final oldJsonString = prefs.getString('common_websites');
+      
+      // 直接设置新数据，不先移除
+      final success = await prefs.setString('common_websites', jsonString);
+      
+      if (success) {
+        debugPrint('成功保存了${cleanedWebsites.length}个常用网站');
+      } else {
+        debugPrint('保存常用网站失败，尝试恢复旧数据');
+        if (oldJsonString != null) {
+          await prefs.setString('common_websites', oldJsonString);
+        }
+      }
     } catch (e) {
       debugPrint('Error saving common websites: $e');
     }
@@ -1284,30 +1335,51 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       final commonWebsitesJson = prefs.getString('common_websites');
       if (commonWebsitesJson != null && commonWebsitesJson.isNotEmpty) {
         final decoded = jsonDecode(commonWebsitesJson);
-        setState(() {
-          _commonWebsites.clear();
-          _commonWebsites.addAll(decoded.map((item) => {
-            'name': item['name'],
-            'url': item['url'],
-            'iconCode': Icons.public.codePoint,
-          }).toList());
-        });
-      } else if (_commonWebsites.isEmpty) {
-        setState(() {
-          _commonWebsites.clear();
-          _commonWebsites.addAll([
-            {'name': 'Google', 'url': 'https://www.google.com', 'iconCode': Icons.public.codePoint},
-            {'name': 'Edge', 'url': 'https://www.bing.com', 'iconCode': Icons.public.codePoint},
-            {'name': 'X', 'url': 'https://twitter.com', 'iconCode': Icons.public.codePoint},
-            {'name': 'Facebook', 'url': 'https://www.facebook.com', 'iconCode': Icons.public.codePoint},
-            {'name': 'Telegram', 'url': 'https://web.telegram.org', 'iconCode': Icons.public.codePoint},
-            {'name': '百度', 'url': 'https://www.baidu.com', 'iconCode': Icons.public.codePoint}
-          ]);
-        });
-        await _saveCommonWebsites();
+        final List<dynamic> websitesList = decoded is List ? decoded : [];
+        
+        if (websitesList.isNotEmpty) {
+          setState(() {
+            _commonWebsites.clear();
+            _commonWebsites.addAll(websitesList.map((item) => {
+              'name': item['name'],
+              'url': item['url'],
+              'iconCode': Icons.public.codePoint,
+            }).toList());
+          });
+          debugPrint('从SharedPreferences加载了${_commonWebsites.length}个常用网站');
+          return;
+        }
       }
+      
+      // 如果没有从SharedPreferences加载到数据，或者加载的数据为空，则加载默认网站
+      setState(() {
+        _commonWebsites.clear();
+        _commonWebsites.addAll([
+          {'name': 'Google', 'url': 'https://www.google.com', 'iconCode': Icons.public.codePoint},
+          {'name': 'Edge', 'url': 'https://www.bing.com', 'iconCode': Icons.public.codePoint},
+          {'name': 'X', 'url': 'https://twitter.com', 'iconCode': Icons.public.codePoint},
+          {'name': 'Facebook', 'url': 'https://www.facebook.com', 'iconCode': Icons.public.codePoint},
+          {'name': 'Telegram', 'url': 'https://web.telegram.org', 'iconCode': Icons.public.codePoint},
+          {'name': '百度', 'url': 'https://www.baidu.com', 'iconCode': Icons.public.codePoint}
+        ]);
+      });
+      debugPrint('加载了默认常用网站');
+      await _saveCommonWebsites();
     } catch (e) {
       debugPrint('Error loading common websites: $e');
+      // 出错时加载默认网站
+      setState(() {
+        _commonWebsites.clear();
+        _commonWebsites.addAll([
+          {'name': 'Google', 'url': 'https://www.google.com', 'iconCode': Icons.public.codePoint},
+          {'name': 'Edge', 'url': 'https://www.bing.com', 'iconCode': Icons.public.codePoint},
+          {'name': 'X', 'url': 'https://twitter.com', 'iconCode': Icons.public.codePoint},
+          {'name': 'Facebook', 'url': 'https://www.facebook.com', 'iconCode': Icons.public.codePoint},
+          {'name': 'Telegram', 'url': 'https://web.telegram.org', 'iconCode': Icons.public.codePoint},
+          {'name': '百度', 'url': 'https://www.baidu.com', 'iconCode': Icons.public.codePoint}
+        ]);
+      });
+      debugPrint('加载出错，使用默认常用网站');
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove('common_websites');
     }
