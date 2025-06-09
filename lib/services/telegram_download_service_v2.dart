@@ -288,7 +288,7 @@ class TelegramDownloadServiceV2 {
     } else if (mimeType.startsWith('audio/')) {
       return MediaType.audio;
     } else {
-      return MediaType.document;
+      return MediaType.audio; // 默认为音频类型，因为document类型已被移除
     }
   }
   

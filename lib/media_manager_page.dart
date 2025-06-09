@@ -46,7 +46,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   final Map<String, File?> _videoThumbnailCache = {};
   String? _lastViewedVideoId;
   final StreamController<String> _progressController = StreamController<String>.broadcast();
-  final List<String> _availableDirectories = ['root', 'Telegram Downloads'];
+  final List<String> _availableDirectories = ['root'];
 
   @override
   void initState() {
@@ -170,13 +170,17 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       debugPrint('从目录 $_currentDirectory 加载了 ${items.length} 个项目');
       
       // 计算图片和视频数量
-      int imageCount = items.where((item) => 
-        MediaType.values[item['type'] as int] == MediaType.image
-      ).length;
+      int imageCount = items.where((item) {
+        final typeIndex = item['type'] as int;
+        if (typeIndex >= MediaType.values.length) return false;
+        return MediaType.values[typeIndex] == MediaType.image;
+      }).length;
       
-      int videoCount = items.where((item) => 
-        MediaType.values[item['type'] as int] == MediaType.video
-      ).length;
+      int videoCount = items.where((item) {
+        final typeIndex = item['type'] as int;
+        if (typeIndex >= MediaType.values.length) return false;
+        return MediaType.values[typeIndex] == MediaType.video;
+      }).length;
       
       debugPrint('当前目录下有 $imageCount 张图片和 $videoCount 个视频');
       
@@ -203,9 +207,11 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
   Future<bool> _checkFolderNameExists(String folderName) async {
     final items = await _databaseService.getMediaItems(_currentDirectory);
-    return items.any((item) =>
-    item['name'] == folderName &&
-        MediaType.values[item['type'] as int] == MediaType.folder);
+    return items.any((item) {
+      final typeIndex = item['type'] as int;
+      if (typeIndex >= MediaType.values.length) return false;
+      return item['name'] == folderName && MediaType.values[typeIndex] == MediaType.folder;
+    });
   }
 
   Future<void> _createFolder(String folderName) async {
@@ -554,8 +560,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         return '视频';
       case MediaType.audio:
         return '音频';
-      case MediaType.document:
-        return '文档';
+
       case MediaType.folder:
         return '文件夹';
     }
@@ -1189,11 +1194,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           color: Colors.lightBlue.shade100,
           child: const Icon(Icons.audio_file, size: 32, color: Colors.blue),
         );
-      case MediaType.document:
-        return Container(
-          color: Colors.green.shade100,
-          child: const Icon(Icons.description, size: 32, color: Colors.green),
-        );
+
       case MediaType.folder:
         return Container(
           color: Colors.amber.shade100,
@@ -2031,37 +2032,8 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Row(
-          children: [
-            Text(_currentDirectory == 'root' ? '媒体' : '媒体 / '),
-            DropdownButton<String>(
-              value: _currentDirectory,
-              onChanged: (String? newValue) {
-                if (newValue != null && newValue != _currentDirectory) {
-                  setState(() {
-                    _currentDirectory = newValue;
-                  });
-                  _loadMediaItems();
-                }
-              },
-              items: _availableDirectories.map<DropdownMenuItem<String>>((String value) {
-                String displayText = value;
-                if (value == 'recycle_bin') {
-                  displayText = '回收站';
-                } else if (value == 'favorites') {
-                  displayText = '收藏夹';
-                }
-                return DropdownMenuItem<String>(
-                  value: value,
-                  child: Text(displayText),
-                );
-              }).toList(),
-              underline: Container(),
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(color: Colors.white),
-              dropdownColor: Theme.of(context).primaryColor,
-            ),
-          ],
-        ),
+        title: Text(
+            _currentDirectory == 'root' ? '媒体' : '媒体 / $_currentDirectory'),
         actions: [
           if (_currentDirectory != 'root')
             IconButton(

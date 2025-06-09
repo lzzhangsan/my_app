@@ -210,11 +210,16 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
 
   Future<MediaItem?> getCurrentMedia() async {
     if (_currentPlayingMedia == null) return null;
+    
+    // 安全地获取type索引，确保不会超出范围
+    final typeIndex = _currentPlayingMedia!['type'] as int;
+    final safeTypeIndex = typeIndex < MediaType.values.length ? typeIndex : 0; // 如果索引越界，默认使用image类型
+    
     return MediaItem(
       id: _currentPlayingMedia!['id'],
       name: _currentPlayingMedia!['name'],
       path: _currentPlayingMedia!['path'],
-      type: MediaType.values[_currentPlayingMedia!['type']],
+      type: MediaType.values[safeTypeIndex],
       directory: _currentPlayingMedia!['directory'],
       dateAdded: DateTime.parse(_currentPlayingMedia!['date_added']),
     );

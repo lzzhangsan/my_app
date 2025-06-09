@@ -20,14 +20,20 @@ class MediaItem {
   });
 
   /// 从 Map 构造 MediaItem，用于从数据库读取数据
-  factory MediaItem.fromMap(Map<String, dynamic> map) => MediaItem(
-    id: map['id'] as String? ?? '',
-    name: map['name'] as String? ?? '',
-    path: map['path'] as String? ?? '',
-    type: MediaType.values[map['type'] as int? ?? 0],
-    directory: map['directory'] as String? ?? '',
-    dateAdded: DateTime.parse(map['date_added'] as String? ?? DateTime.now().toIso8601String()),
-  );
+  factory MediaItem.fromMap(Map<String, dynamic> map) {
+    // 安全地获取type索引，确保不会超出范围
+    final typeIndex = map['type'] as int? ?? 0;
+    final safeTypeIndex = typeIndex < MediaType.values.length ? typeIndex : 0; // 如果索引越界，默认使用image类型
+    
+    return MediaItem(
+      id: map['id'] as String? ?? '',
+      name: map['name'] as String? ?? '',
+      path: map['path'] as String? ?? '',
+      type: MediaType.values[safeTypeIndex],
+      directory: map['directory'] as String? ?? '',
+      dateAdded: DateTime.parse(map['date_added'] as String? ?? DateTime.now().toIso8601String()),
+    );
+  }
 
   /// 将 MediaItem 转换为 Map，用于存储到数据库
   Map<String, dynamic> toMap() => {
