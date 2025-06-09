@@ -219,6 +219,9 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   }
 
   bool _isTelegramMediaLink(String url) {
+    // 排除blob链接，让其由JavaScript处理
+    if (url.startsWith('blob:')) return false;
+    
     final telegramMediaPatterns = [
       'telegram.org/file/',
       't.me/file/',
@@ -241,7 +244,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         if (url.toLowerCase().contains(ext)) return true;
       }
     }
-    return url.startsWith('blob:https://web.telegram.org/');
+    return false;
   }
 
   bool _isYouTubeLink(String url) {
@@ -453,6 +456,30 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         clearTimeout(pressTimer);
         if (!pressedElement) removeFeedbackElement();
         pressedElement = null;
+      }, true);
+
+      // 添加点击事件监听器处理blob URL
+      document.addEventListener('click', function(e) {
+        const target = e.target;
+        const link = target.closest('a');
+        if (link && link.href && isBlobUrl(link.href)) {
+          e.preventDefault();
+          console.log('检测到blob URL点击:', link.href);
+          resolveBlobUrl(link.href, 'video').then(resolved => {
+            if (resolved) {
+              Flutter.postMessage(JSON.stringify({
+                type: 'media',
+                mediaType: resolved.mediaType || 'video',
+                url: resolved.resolvedUrl,
+                isBase64: resolved.isBase64,
+                action: 'download'
+              }));
+              console.log('已发送blob URL下载请求');
+            } else {
+              console.error('解析blob URL失败');
+            }
+          });
+        }
       }, true);
 
       function handleMediaDownload(target, e) {
@@ -1867,30 +1894,45 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
               
               // 显示验证进度
               Navigator.pop(context);
+              // 添加短暂延迟，确保对话框已完全关闭
+              await Future.delayed(const Duration(milliseconds: 100));
+              if (!mounted) return; // 如果组件已卸载，直接返回
               _showLoadingDialog('验证 Bot Token...');
               
               final isValid = await _telegramService.validateBotToken(token);
-              Navigator.pop(context); // 关闭加载对话框
-              
-              if (isValid) {
-                final success = await _telegramService.saveBotToken(token);
-                if (success) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Bot Token 配置成功！'),
-                      backgroundColor: Colors.green,
-                    ),
-                  );
-                  _showTelegramUrlInputDialog();
-                } else {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('保存 Bot Token 失败'),
-                      backgroundColor: Colors.red,
-                    ),
-                  );
+              if (mounted) { // 确保组件仍然挂载
+                try {
+                  Navigator.pop(context); // 关闭加载对话框
+                } catch (e) {
+                  // 忽略导航错误，可能是因为widget已经被销毁
                 }
               } else {
+                return; // 如果组件已卸载，直接返回
+              }
+              
+              if (isValid && mounted) {
+                final success = await _telegramService.saveBotToken(token);
+                if (mounted) {
+                  if (success) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Bot Token 配置成功！'),
+                        backgroundColor: Colors.green,
+                      ),
+                    );
+                    if (mounted) {
+                      _showTelegramUrlInputDialog();
+                    }
+                  } else {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('保存 Bot Token 失败'),
+                        backgroundColor: Colors.red,
+                      ),
+                    );
+                  }
+                }
+              } else if (mounted) {
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(
                     content: Text('无效的 Bot Token，请检查后重试'),
@@ -1963,7 +2005,9 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
               }
               
               Navigator.pop(context);
-              await _downloadFromTelegram(url);
+              if (mounted) {
+                await _downloadFromTelegram(url);
+              }
             },
             child: const Text('解析测试'),
           ),
@@ -2018,9 +2062,15 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       );
       
       isDownloading = false;
-      Navigator.pop(context); // 关闭进度对话框
+      if (mounted) {
+        try {
+          Navigator.pop(context); // 关闭进度对话框
+        } catch (e) {
+          // 忽略导航错误，可能是因为widget已经被销毁
+        }
+      }
       
-      if (result.success) {
+      if (result.success && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('下载成功：${result.fileName}'),
@@ -2041,7 +2091,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
             ),
           ),
         );
-      } else {
+      } else if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('下载失败：${result.error}'),
@@ -2051,32 +2101,43 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       }
     } catch (e) {
       isDownloading = false;
-      Navigator.pop(context); // 关闭进度对话框
-      
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('下载出错：$e'),
-          backgroundColor: Colors.red,
-        ),
-      );
+      if (mounted) {
+        try {
+          Navigator.pop(context); // 关闭进度对话框
+        } catch (navError) {
+          // 忽略导航错误，可能是因为widget已经被销毁
+        }
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('下载出错：$e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     }
   }
   
   /// 显示加载对话框
   void _showLoadingDialog(String message) {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        content: Row(
-          children: [
-            const CircularProgressIndicator(),
-            const SizedBox(width: 16),
-            Text(message),
-          ],
+    if (!mounted) return; // 确保组件仍然挂载
+    try {
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => AlertDialog(
+          content: Row(
+            children: [
+              const CircularProgressIndicator(),
+              const SizedBox(width: 16),
+              Text(message),
+            ],
+          ),
         ),
-      ),
-    );
+      );
+    } catch (e) {
+      // 忽略对话框显示错误，可能是因为widget已经被销毁
+    }
   }
 }
 
