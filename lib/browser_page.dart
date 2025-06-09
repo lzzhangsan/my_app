@@ -47,6 +47,11 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   List<Map<String, String>> _bookmarks = [];
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   final TelegramDownloadServiceV2 _telegramService = TelegramDownloadServiceV2.instance;
+  
+  // 添加轮询相关变量
+  Timer? _telegramPollingTimer;
+  int _lastUpdateId = 0;
+  bool _isPollingActive = false;
 
   bool _showHomePage = true;
   bool _isBrowsingWebPage = false;
@@ -138,6 +143,10 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   /// 初始化 Telegram 服务
   Future<void> _initializeTelegramService() async {
     await _telegramService.initialize();
+    // 如果已配置Bot Token，启动轮询
+    if (_telegramService.isConfigured) {
+      _startTelegramPolling();
+    }
   }
 
   Future<void> _initializeDownloader() async {
@@ -1787,6 +1796,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
   @override
   void dispose() {
+    _stopTelegramPolling();
     _urlController.dispose();
     _saveBookmarks().then((_) => debugPrint('书签保存完成')).catchError((error) => debugPrint('保存书签时出错: $error'));
     _saveCommonWebsites().then((_) => debugPrint('常用网站保存完成')).catchError((error) => debugPrint('保存常用网站时出错: $error'));
@@ -1914,15 +1924,17 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                 final success = await _telegramService.saveBotToken(token);
                 if (mounted) {
                   if (success) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Bot Token 配置成功！'),
-                        backgroundColor: Colors.green,
-                      ),
-                    );
-                    if (mounted) {
-                      _showTelegramUrlInputDialog();
-                    }
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Bot Token 配置成功！'),
+                      backgroundColor: Colors.green,
+                    ),
+                  );
+                  // 启动轮询
+                  _startTelegramPolling();
+                  if (mounted) {
+                    _showTelegramUrlInputDialog();
+                  }
                   } else {
                     ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(
@@ -2139,5 +2151,156 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       // 忽略对话框显示错误，可能是因为widget已经被销毁
     }
   }
+  
+  /// 启动Telegram消息轮询
+  void _startTelegramPolling() {
+    if (_isPollingActive) return;
+    
+    _isPollingActive = true;
+    _telegramPollingTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
+      _checkForNewMessages();
+    });
+    
+    debugPrint('Telegram消息轮询已启动');
+  }
+  
+  /// 停止Telegram消息轮询
+  void _stopTelegramPolling() {
+    _telegramPollingTimer?.cancel();
+    _telegramPollingTimer = null;
+    _isPollingActive = false;
+    debugPrint('Telegram消息轮询已停止');
+  }
+  
+  /// 检查新消息
+  Future<void> _checkForNewMessages() async {
+    try {
+      if (!_telegramService.isConfigured) {
+        _stopTelegramPolling();
+        return;
+      }
+      
+      final updates = await _telegramService.getUpdates();
+      
+      for (final update in updates) {
+        final updateId = update['update_id'] as int;
+        
+        // 只处理新消息
+        if (updateId > _lastUpdateId) {
+          _lastUpdateId = updateId;
+          await _processUpdate(update);
+        }
+      }
+    } catch (e) {
+      debugPrint('检查新消息失败: $e');
+    }
+  }
+  
+  /// 处理单个更新
+  Future<void> _processUpdate(Map<String, dynamic> update) async {
+    try {
+      final message = update['message'];
+      if (message == null) return;
+      
+      // 检查是否有媒体文件
+      final mediaFileId = _extractMediaFileId(message);
+      if (mediaFileId != null) {
+        await _downloadMediaFromBot(mediaFileId, message);
+      }
+    } catch (e) {
+      debugPrint('处理更新失败: $e');
+    }
+  }
+  
+  /// 提取媒体文件ID
+  String? _extractMediaFileId(Map<String, dynamic> message) {
+    // 检查照片
+    if (message['photo'] != null) {
+      final photos = message['photo'] as List;
+      if (photos.isNotEmpty) {
+        // 获取最大尺寸的照片
+        final largestPhoto = photos.reduce((a, b) => 
+          (a['file_size'] ?? 0) > (b['file_size'] ?? 0) ? a : b);
+        return largestPhoto['file_id'];
+      }
+    }
+    
+    // 检查视频
+    if (message['video'] != null) {
+      return message['video']['file_id'];
+    }
+    
+    // 检查动画(GIF)
+    if (message['animation'] != null) {
+      return message['animation']['file_id'];
+    }
+    
+    // 检查文档(可能是视频或图片)
+    if (message['document'] != null) {
+      final document = message['document'];
+      final mimeType = document['mime_type'] ?? '';
+      if (mimeType.startsWith('image/') || mimeType.startsWith('video/')) {
+        return document['file_id'];
+      }
+    }
+    
+    return null;
+  }
+  
+  /// 从Bot下载媒体文件
+  Future<void> _downloadMediaFromBot(String fileId, Map<String, dynamic> message) async {
+    try {
+      debugPrint('开始下载媒体文件: $fileId');
+      
+      final result = await _telegramService.downloadFileById(
+        fileId,
+        onProgress: (progress) {
+          debugPrint('下载进度: ${(progress * 100).toStringAsFixed(1)}%');
+        },
+      );
+      
+      if (result.success && mounted) {
+        // 显示成功通知
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('自动下载成功：${result.fileName}'),
+            backgroundColor: Colors.green,
+            action: SnackBarAction(
+              label: '查看',
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => const MediaManagerPage(),
+                  ),
+                );
+              },
+            ),
+          ),
+        );
+        
+        // 刷新媒体库
+        await _refreshMediaLibrary();
+        
+        debugPrint('媒体文件下载成功: ${result.fileName}');
+      } else {
+        debugPrint('媒体文件下载失败: ${result.error}');
+      }
+    } catch (e) {
+      debugPrint('下载媒体文件异常: $e');
+    }
+  }
+  
+  /// 刷新媒体库
+  Future<void> _refreshMediaLibrary() async {
+    try {
+      // 这里可以添加刷新媒体库的逻辑
+      // 例如通知MediaManagerPage刷新数据
+    } catch (e) {
+      debugPrint('刷新媒体库失败: $e');
+    }
+  }
+  
+
 }
 
