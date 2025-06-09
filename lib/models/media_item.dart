@@ -21,12 +21,26 @@ class MediaItem {
 
   /// 从 Map 构造 MediaItem，用于从数据库读取数据
   factory MediaItem.fromMap(Map<String, dynamic> map) {
-    // 安全地获取type索引，确保不会超出范围
+    final id = map['id'] as String? ?? '';
+    
+    // 对于特殊文件夹ID（回收站和收藏夹），始终使用文件夹类型
+    if (id == 'recycle_bin' || id == 'favorites') {
+      return MediaItem(
+        id: id,
+        name: map['name'] as String? ?? '',
+        path: map['path'] as String? ?? '',
+        type: MediaType.folder, // 强制使用文件夹类型
+        directory: map['directory'] as String? ?? '',
+        dateAdded: DateTime.parse(map['date_added'] as String? ?? DateTime.now().toIso8601String()),
+      );
+    }
+    
+    // 对于其他媒体项，安全地获取type索引
     final typeIndex = map['type'] as int? ?? 0;
     final safeTypeIndex = typeIndex < MediaType.values.length ? typeIndex : 0; // 如果索引越界，默认使用image类型
     
     return MediaItem(
-      id: map['id'] as String? ?? '',
+      id: id,
       name: map['name'] as String? ?? '',
       path: map['path'] as String? ?? '',
       type: MediaType.values[safeTypeIndex],
