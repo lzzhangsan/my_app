@@ -245,6 +245,7 @@ class TelegramDownloadServiceV2 {
         'directory': 'Telegram Downloads', // 设置下载目录
         'file_size': actualFileSize,
         'file_hash': '', // 可以后续计算文件哈希
+        'date_added': DateTime.now().toIso8601String(), // 添加日期字段
         'created_at': DateTime.now().millisecondsSinceEpoch,
       });
       
