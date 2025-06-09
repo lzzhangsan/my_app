@@ -16,7 +16,7 @@ import '../core/service_locator.dart';
 /// 数据库服务 - 统一管理所有数据库操作
 class DatabaseService {
   static const String _databaseName = 'change_app.db';
-  static const int _databaseVersion = 8;
+  static const int _databaseVersion = 9;
   
   Database? _database;
   final Completer<Database> _initCompleter = Completer<Database>();
@@ -197,6 +197,7 @@ class DatabaseService {
           duration INTEGER DEFAULT 0,
           thumbnail_path TEXT,
           file_hash TEXT,
+          telegram_file_id TEXT,
           is_favorite INTEGER DEFAULT 0,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
@@ -263,6 +264,7 @@ class DatabaseService {
     await db.execute('CREATE INDEX idx_media_items_directory ON media_items(directory)');
     await db.execute('CREATE INDEX idx_media_items_type ON media_items(type)');
     await db.execute('CREATE INDEX idx_media_items_hash ON media_items(file_hash)');
+    await db.execute('CREATE INDEX idx_media_items_telegram_file_id ON media_items(telegram_file_id)');
   }
 
   /// 数据库升级
@@ -290,6 +292,20 @@ class DatabaseService {
         await db.execute('ALTER TABLE media_items ADD COLUMN file_hash TEXT');
         await db.execute('ALTER TABLE media_items ADD COLUMN is_favorite INTEGER DEFAULT 0');
         await _createIndexes(db);
+        break;
+      case 9:
+        // 添加Telegram文件ID字段
+        try {
+          await db.execute('ALTER TABLE media_items ADD COLUMN telegram_file_id TEXT');
+          await db.execute('CREATE INDEX idx_media_items_telegram_file_id ON media_items(telegram_file_id)');
+          if (kDebugMode) {
+            print('已添加telegram_file_id列到media_items表');
+          }
+        } catch (e) {
+          if (kDebugMode) {
+            print('添加telegram_file_id列失败: $e');
+          }
+        }
         break;
     }
   }
@@ -518,11 +534,23 @@ class DatabaseService {
   }
 
   /// 查找重复的媒体项目
-  Future<Map<String, dynamic>?> findDuplicateMediaItem(String fileHash, String fileName) async {
+  Future<Map<String, dynamic>?> findDuplicateMediaItem(String fileHash, String fileName, {String? telegramFileId}) async {
     try {
       final db = await database;
       
-      // 首先通过文件哈希查找
+      // 首先通过Telegram文件ID查找（如果提供了）
+      if (telegramFileId != null && telegramFileId.isNotEmpty) {
+        final List<Map<String, dynamic>> telegramMatches = await db.query(
+          'media_items',
+          where: 'telegram_file_id = ?',
+          whereArgs: [telegramFileId],
+        );
+        if (telegramMatches.isNotEmpty) {
+          return telegramMatches.first;
+        }
+      }
+      
+      // 然后通过文件哈希查找
       if (fileHash.isNotEmpty) {
         final List<Map<String, dynamic>> hashMatches = await db.query(
           'media_items',
@@ -547,6 +575,28 @@ class DatabaseService {
       return null;
     } catch (e, stackTrace) {
       _handleError('查找重复媒体项失败', e, stackTrace);
+      rethrow;
+    }
+  }
+  
+  /// 根据Telegram文件ID查找媒体项
+  Future<Map<String, dynamic>?> findMediaItemByTelegramFileId(String telegramFileId) async {
+    try {
+      if (telegramFileId.isEmpty) return null;
+      
+      final db = await database;
+      final List<Map<String, dynamic>> matches = await db.query(
+        'media_items',
+        where: 'telegram_file_id = ?',
+        whereArgs: [telegramFileId],
+      );
+      
+      if (matches.isNotEmpty) {
+        return matches.first;
+      }
+      return null;
+    } catch (e, stackTrace) {
+      _handleError('根据Telegram文件ID查找媒体项失败', e, stackTrace);
       rethrow;
     }
   }

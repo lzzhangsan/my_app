@@ -52,6 +52,10 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   Timer? _telegramPollingTimer;
   int _lastUpdateId = 0;
   bool _isPollingActive = false;
+  
+  // 添加已下载文件ID集合
+  final Set<String> _downloadedFileIds = <String>{};
+  static const String _downloadedFileIdsKey = 'telegram_downloaded_file_ids';
 
   bool _showHomePage = true;
   bool _isBrowsingWebPage = false;
@@ -143,9 +147,14 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   /// 初始化 Telegram 服务
   Future<void> _initializeTelegramService() async {
     await _telegramService.initialize();
+    
+    // 加载已下载的文件ID和最后更新ID
+    await _loadDownloadedFileIds();
+    await _loadLastUpdateId();
+    
     // 如果已配置Bot Token，启动轮询
     if (_telegramService.isConfigured) {
-      _startTelegramPolling();
+      await _startTelegramPolling();
     }
   }
 
@@ -2153,34 +2162,96 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   }
   
   /// 启动Telegram消息轮询
-  void _startTelegramPolling() {
+  Future<void> _startTelegramPolling() async {
     if (_isPollingActive) return;
+    
+    // 从SharedPreferences加载最后处理的更新ID
+    await _loadLastUpdateId();
     
     _isPollingActive = true;
     _telegramPollingTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
       _checkForNewMessages();
     });
     
-    debugPrint('Telegram消息轮询已启动');
+    debugPrint('Telegram消息轮询已启动，最后更新ID: $_lastUpdateId');
   }
   
   /// 停止Telegram消息轮询
-  void _stopTelegramPolling() {
+  Future<void> _stopTelegramPolling() async {
     _telegramPollingTimer?.cancel();
     _telegramPollingTimer = null;
     _isPollingActive = false;
-    debugPrint('Telegram消息轮询已停止');
+    
+    // 保存最后处理的更新ID
+    await _saveLastUpdateId();
+    
+    debugPrint('Telegram消息轮询已停止，最后更新ID: $_lastUpdateId');
+  }
+  
+  /// 加载最后处理的更新ID
+  Future<void> _loadLastUpdateId() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _lastUpdateId = prefs.getInt('telegram_last_update_id') ?? 0;
+    } catch (e) {
+      debugPrint('加载最后更新ID失败: $e');
+      _lastUpdateId = 0;
+    }
+  }
+  
+  /// 保存最后处理的更新ID
+  Future<void> _saveLastUpdateId() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt('telegram_last_update_id', _lastUpdateId);
+    } catch (e) {
+      debugPrint('保存最后更新ID失败: $e');
+    }
+  }
+  
+  /// 加载已下载的文件ID
+  Future<void> _loadDownloadedFileIds() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final downloadedIds = prefs.getStringList(_downloadedFileIdsKey) ?? [];
+      _downloadedFileIds.clear();
+      _downloadedFileIds.addAll(downloadedIds);
+      debugPrint('已加载${_downloadedFileIds.length}个已下载文件ID');
+    } catch (e) {
+      debugPrint('加载已下载文件ID失败: $e');
+    }
+  }
+  
+  /// 保存已下载的文件ID
+  Future<void> _saveDownloadedFileIds() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList(_downloadedFileIdsKey, _downloadedFileIds.toList());
+    } catch (e) {
+      debugPrint('保存已下载文件ID失败: $e');
+    }
+  }
+  
+  /// 添加已下载的文件ID
+  Future<void> _addDownloadedFileId(String fileId) async {
+    if (fileId.isEmpty) return;
+    
+    if (_downloadedFileIds.add(fileId)) {
+      // 只有当集合发生变化时才保存
+      await _saveDownloadedFileIds();
+    }
   }
   
   /// 检查新消息
   Future<void> _checkForNewMessages() async {
     try {
       if (!_telegramService.isConfigured) {
-        _stopTelegramPolling();
+        await _stopTelegramPolling();
         return;
       }
       
       final updates = await _telegramService.getUpdates();
+      bool hasNewUpdates = false;
       
       for (final update in updates) {
         final updateId = update['update_id'] as int;
@@ -2188,8 +2259,14 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         // 只处理新消息
         if (updateId > _lastUpdateId) {
           _lastUpdateId = updateId;
+          hasNewUpdates = true;
           await _processUpdate(update);
         }
+      }
+      
+      // 如果有新消息，保存最后更新ID
+      if (hasNewUpdates) {
+        await _saveLastUpdateId();
       }
     } catch (e) {
       debugPrint('检查新消息失败: $e');
@@ -2250,6 +2327,12 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   /// 从Bot下载媒体文件
   Future<void> _downloadMediaFromBot(String fileId, Map<String, dynamic> message) async {
     try {
+      // 检查文件ID是否已经下载过
+      if (_downloadedFileIds.contains(fileId)) {
+        debugPrint('文件已存在，跳过下载: $fileId');
+        return;
+      }
+      
       debugPrint('开始下载媒体文件: $fileId');
       
       final result = await _telegramService.downloadFileById(
@@ -2260,29 +2343,43 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       );
       
       if (result.success && mounted) {
-        // 显示成功通知
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('自动下载成功：${result.fileName}'),
-            backgroundColor: Colors.green,
-            action: SnackBarAction(
-              label: '查看',
-              onPressed: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => const MediaManagerPage(),
-                  ),
-                );
-              },
+        // 如果是已存在的文件，显示不同的通知
+        if (result.isExisting) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('文件已存在：${result.fileName}'),
+              backgroundColor: Colors.blue,
             ),
-          ),
-        );
+          );
+          debugPrint('媒体文件已存在: ${result.fileName}');
+        } else {
+          // 显示成功通知
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('自动下载成功：${result.fileName}'),
+              backgroundColor: Colors.green,
+              action: SnackBarAction(
+                label: '查看',
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const MediaManagerPage(),
+                    ),
+                  );
+                },
+              ),
+            ),
+          );
+          
+          // 刷新媒体库
+          await _refreshMediaLibrary();
+          
+          debugPrint('媒体文件下载成功: ${result.fileName}');
+        }
         
-        // 刷新媒体库
-        await _refreshMediaLibrary();
-        
-        debugPrint('媒体文件下载成功: ${result.fileName}');
+        // 将文件ID添加到已下载集合中
+        await _addDownloadedFileId(fileId);
       } else {
         debugPrint('媒体文件下载失败: ${result.error}');
       }

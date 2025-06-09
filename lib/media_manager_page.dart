@@ -152,6 +152,19 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         debugPrint('收藏夹创建成功');
       }
 
+      // 更新可用目录列表，确保包含回收站和收藏夹
+      if (!_availableDirectories.contains('recycle_bin')) {
+        setState(() {
+          _availableDirectories.add('recycle_bin');
+        });
+      }
+      
+      if (!_availableDirectories.contains('favorites')) {
+        setState(() {
+          _availableDirectories.add('favorites');
+        });
+      }
+
       // 加载当前目录的媒体项
       final items = await _databaseService.getMediaItems(_currentDirectory);
       debugPrint('从目录 $_currentDirectory 加载了 ${items.length} 个项目');
@@ -2032,9 +2045,15 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                 }
               },
               items: _availableDirectories.map<DropdownMenuItem<String>>((String value) {
+                String displayText = value;
+                if (value == 'recycle_bin') {
+                  displayText = '回收站';
+                } else if (value == 'favorites') {
+                  displayText = '收藏夹';
+                }
                 return DropdownMenuItem<String>(
                   value: value,
-                  child: Text(value),
+                  child: Text(displayText),
                 );
               }).toList(),
               underline: Container(),

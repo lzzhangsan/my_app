@@ -5,6 +5,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as path;
 import 'package:mime/mime.dart';
+import 'package:crypto/crypto.dart';
+import 'package:uuid/uuid.dart';
 import '../core/service_locator.dart';
 import 'database_service.dart';
 import '../models/media_type.dart';
@@ -191,6 +193,20 @@ class TelegramDownloadServiceV2 {
         return DownloadResult.error('Bot Token 未配置');
       }
       
+      // 0. 检查文件ID是否已经下载过
+      final databaseService = getService<DatabaseService>();
+      final existingItem = await databaseService.findMediaItemByTelegramFileId(fileId);
+      
+      if (existingItem != null) {
+        // 文件已存在，直接返回成功
+        print('文件已存在，跳过下载: ${existingItem['name']}');
+        return DownloadResult.success(
+          existingItem['path'],
+          existingItem['name'],
+          isExisting: true
+        );
+      }
+      
       // 1. 获取文件信息
       final fileInfoResponse = await _dio.get(
         'https://api.telegram.org/bot$_botToken/getFile',
@@ -237,16 +253,22 @@ class TelegramDownloadServiceV2 {
       final actualFileSize = await file.length();
       final mimeType = lookupMimeType(localFilePath) ?? 'application/octet-stream';
       
-      final databaseService = getService<DatabaseService>();
+      // 计算文件哈希值
+      final fileBytes = await file.readAsBytes();
+      final fileHash = sha256.convert(fileBytes).toString();
+      
       await databaseService.insertMediaItem({
+        'id': const Uuid().v4(),
         'name': fileName,
         'path': localFilePath,
         'type': _getMediaTypeFromMime(mimeType).index,
         'directory': 'root', // 设置为root目录，使其他地方能访问到
         'file_size': actualFileSize,
-        'file_hash': '', // 可以后续计算文件哈希
+        'file_hash': fileHash,
+        'telegram_file_id': fileId, // 保存Telegram文件ID
         'date_added': DateTime.now().toIso8601String(), // 添加日期字段
         'created_at': DateTime.now().millisecondsSinceEpoch,
+        'updated_at': DateTime.now().millisecondsSinceEpoch,
       });
       
       return DownloadResult.success(localFilePath, fileName);
@@ -298,14 +320,16 @@ class DownloadResult {
   final String? filePath;
   final String? fileName;
   final String? error;
+  final bool isExisting; // 标识文件是否已存在
   
-  DownloadResult._({required this.success, this.filePath, this.fileName, this.error});
+  DownloadResult._({required this.success, this.filePath, this.fileName, this.error, this.isExisting = false});
   
-  factory DownloadResult.success(String filePath, String fileName) {
+  factory DownloadResult.success(String filePath, String fileName, {bool isExisting = false}) {
     return DownloadResult._(
       success: true,
       filePath: filePath,
       fileName: fileName,
+      isExisting: isExisting,
     );
   }
   
@@ -313,13 +337,14 @@ class DownloadResult {
     return DownloadResult._(
       success: false,
       error: error,
+      isExisting: false,
     );
   }
   
   @override
   String toString() {
     if (success) {
-      return 'DownloadResult.success(filePath: $filePath, fileName: $fileName)';
+      return 'DownloadResult.success(filePath: $filePath, fileName: $fileName, isExisting: $isExisting)';
     } else {
       return 'DownloadResult.error(error: $error)';
     }
