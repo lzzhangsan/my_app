@@ -5,6 +5,7 @@ enum MediaType {
   image,   // 图片
   video,   // 视频
   audio,   // 音频
+  document, // 文档
   folder,  // 文件夹
 }
 
@@ -19,6 +20,8 @@ extension MediaTypeExtension on MediaType {
         return '视频';
       case MediaType.audio:
         return '音频';
+      case MediaType.document:
+        return '文档';
       case MediaType.folder:
         return '文件夹';
     }
@@ -33,6 +36,8 @@ extension MediaTypeExtension on MediaType {
         return 'video_file';
       case MediaType.audio:
         return 'audio_file';
+      case MediaType.document:
+        return 'description';
       case MediaType.folder:
         return 'folder';
     }
@@ -47,6 +52,8 @@ extension MediaTypeExtension on MediaType {
         return MediaType.video;
       case 'audio':
         return MediaType.audio;
+      case 'document':
+        return MediaType.document;
       case 'folder':
         return MediaType.folder;
       default:

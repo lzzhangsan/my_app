@@ -540,9 +540,12 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         return '视频';
       case MediaType.audio:
         return '音频';
+      case MediaType.document:
+        return '文档';
       case MediaType.folder:
         return '文件夹';
     }
+  }
   }
 
   Future<void> _deleteMediaItem(MediaItem item) async {
@@ -1173,12 +1176,18 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           color: Colors.lightBlue.shade100,
           child: const Icon(Icons.audio_file, size: 32, color: Colors.blue),
         );
+      case MediaType.document:
+        return Container(
+          color: Colors.green.shade100,
+          child: const Icon(Icons.description, size: 32, color: Colors.green),
+        );
       case MediaType.folder:
         return Container(
           color: Colors.amber.shade100,
           child: const Icon(Icons.folder, size: 32, color: Colors.amber),
         );
     }
+  }
   }
 
   Widget _buildVideoPlaceholder() {
