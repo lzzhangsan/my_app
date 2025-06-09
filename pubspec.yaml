@@ -34,12 +34,11 @@ dependencies:
   record: ^5.2.1
   crypto: ^3.0.3  # 添加crypto包用于生成哈希值
   webview_flutter: ^4.4.4  # 添加WebView支持
-  flutter_inappwebview: ^6.0.0  # 添加InAppWebView支持
   flutter_downloader: ^1.11.6  # 添加文件下载支持
   http: ^1.2.0  # 添加HTTP请求支持
   dio: ^5.4.0  # 添加Dio网络请求库支持
   reorderable_grid_view: ^2.2.8
-  teledart: ^0.4.0  # Telegram Bot API 客户端
+  teledart: 0.6.1  # Telegram Bot API 客户端
   html: ^0.15.4  # HTML 解析支持
   mime: ^1.0.4  # MIME 类型检测
 

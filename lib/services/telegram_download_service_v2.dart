@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as path;
 import 'package:mime/mime.dart';
+import '../core/service_locator.dart';
 import 'database_service.dart';
 import '../models/media_type.dart';
 
@@ -236,12 +237,15 @@ class TelegramDownloadServiceV2 {
       final actualFileSize = await file.length();
       final mimeType = lookupMimeType(localFilePath) ?? 'application/octet-stream';
       
-      await DatabaseService.instance.insertMedia(
-        fileName,
-        localFilePath,
-        _getMediaTypeFromMime(mimeType),
-        actualFileSize,
-      );
+      final databaseService = getService<DatabaseService>();
+      await databaseService.insertMediaItem({
+        'name': fileName,
+        'path': localFilePath,
+        'type': _getMediaTypeFromMime(mimeType),
+        'size': actualFileSize,
+        'hash': '', // 可以后续计算文件哈希
+        'created_at': DateTime.now().millisecondsSinceEpoch,
+      });
       
       return DownloadResult.success(localFilePath, fileName);
       

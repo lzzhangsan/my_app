@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:webview_flutter/webview_flutter.dart';
-import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_downloader/flutter_downloader.dart';
@@ -1199,12 +1198,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       if (url.contains('telegram.org') || url.contains('t.me')) {
         dio.options.headers['Referer'] = 'https://web.telegram.org/a/';
         dio.options.headers['Origin'] = 'https://web.telegram.org';
-        final cookieManager = CookieManager.instance();
-        final cookies = await cookieManager.getCookies(url: WebUri(url));
-        if (cookies.isNotEmpty) {
-          final cookieString = cookies.map((c) => '${c.name}=${c.value}').join('; ');
-          dio.options.headers['Cookie'] = cookieString;
-        }
+        // 注意：webview_flutter 不支持直接获取 cookies
+        // 如果需要 cookies，可以考虑其他方案
       } else if (url.contains('youtube.com') || url.contains('youtu.be')) {
         dio.options.headers['Referer'] = 'https://www.youtube.com';
       }
