@@ -242,6 +242,7 @@ class TelegramDownloadServiceV2 {
         'name': fileName,
         'path': localFilePath,
         'type': _getMediaTypeFromMime(mimeType).index,
+        'directory': 'Telegram Downloads', // 设置下载目录
         'file_size': actualFileSize,
         'file_hash': '', // 可以后续计算文件哈希
         'created_at': DateTime.now().millisecondsSinceEpoch,
