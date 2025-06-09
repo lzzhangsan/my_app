@@ -80,20 +80,5 @@ dependencies {
     implementation "androidx.webkit:webkit:1.9.0"  // 添加 WebView 支持
 }
 
-// 从 local.properties 加载 Flutter SDK 路径
-def localProperties = new Properties()
-def localPropertiesFile = rootProject.file('local.properties')
-if (localPropertiesFile.exists()) {
-    localPropertiesFile.withReader('UTF-8') { reader ->
-        localProperties.load(reader)
-    }
-}
-
-def flutterRoot = localProperties.getProperty('flutter.sdk')
-if (flutterRoot == null) {
-    throw new GradleException("Flutter SDK not found. Define location with flutter.sdk in the local.properties file.")
-}
-
-// 应用 Flutter Gradle 脚本
-apply from: "$flutterRoot/packages/flutter_tools/gradle/flutter.gradle"
+// Flutter Gradle 插件已在 plugins 块中声明，无需重复应用
 
