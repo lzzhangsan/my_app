@@ -46,6 +46,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   final Map<String, File?> _videoThumbnailCache = {};
   String? _lastViewedVideoId;
   final StreamController<String> _progressController = StreamController<String>.broadcast();
+  final List<String> _availableDirectories = ['root', 'Telegram Downloads'];
 
   @override
   void initState() {
@@ -2017,8 +2018,31 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(
-            _currentDirectory == 'root' ? '媒体' : '媒体 / $_currentDirectory'),
+        title: Row(
+          children: [
+            Text(_currentDirectory == 'root' ? '媒体' : '媒体 / '),
+            DropdownButton<String>(
+              value: _currentDirectory,
+              onChanged: (String? newValue) {
+                if (newValue != null && newValue != _currentDirectory) {
+                  setState(() {
+                    _currentDirectory = newValue;
+                  });
+                  _loadMediaItems();
+                }
+              },
+              items: _availableDirectories.map<DropdownMenuItem<String>>((String value) {
+                return DropdownMenuItem<String>(
+                  value: value,
+                  child: Text(value),
+                );
+              }).toList(),
+              underline: Container(),
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(color: Colors.white),
+              dropdownColor: Theme.of(context).primaryColor,
+            ),
+          ],
+        ),
         actions: [
           if (_currentDirectory != 'root')
             IconButton(
