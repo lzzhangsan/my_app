@@ -546,7 +546,6 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         return '文件夹';
     }
   }
-  }
 
   Future<void> _deleteMediaItem(MediaItem item) async {
     final shouldDelete = await showDialog<bool>(
@@ -1186,8 +1185,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           color: Colors.amber.shade100,
           child: const Icon(Icons.folder, size: 32, color: Colors.amber),
         );
+      default:
+        return Container();
     }
-  }
   }
 
   Widget _buildVideoPlaceholder() {
