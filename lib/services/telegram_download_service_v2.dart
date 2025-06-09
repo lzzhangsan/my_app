@@ -241,9 +241,9 @@ class TelegramDownloadServiceV2 {
       await databaseService.insertMediaItem({
         'name': fileName,
         'path': localFilePath,
-        'type': _getMediaTypeFromMime(mimeType),
-        'size': actualFileSize,
-        'hash': '', // 可以后续计算文件哈希
+        'type': _getMediaTypeFromMime(mimeType).index,
+        'file_size': actualFileSize,
+        'file_hash': '', // 可以后续计算文件哈希
         'created_at': DateTime.now().millisecondsSinceEpoch,
       });
       
