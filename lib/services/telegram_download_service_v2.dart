@@ -60,8 +60,18 @@ class TelegramDownloadServiceV2 {
   /// 验证 Bot Token 是否有效
   Future<bool> validateBotToken(String token) async {
     try {
+      // 设置超时时间
+      final options = Options(
+        sendTimeout: const Duration(seconds: 10),
+        receiveTimeout: const Duration(seconds: 10),
+      );
+      
+      // 设置连接超时（在 BaseOptions 中设置）
+      _dio.options.connectTimeout = const Duration(seconds: 10);
+      
       final response = await _dio.get(
         'https://api.telegram.org/bot$token/getMe',
+        options: options,
       );
       return response.statusCode == 200 && response.data['ok'] == true;
     } catch (e) {

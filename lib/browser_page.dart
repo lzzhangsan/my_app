@@ -1870,7 +1870,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('配置 Telegram Bot'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
@@ -1889,16 +1889,20 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
               controller: tokenController,
               decoration: const InputDecoration(
                 labelText: 'Bot Token',
-                hintText: '例如: 123456789:ABCdefGHIjklMNOpqrsTUVwxyz',
+                hintText: '例如: 123456789:ABCdefGHIjklMNOpqrSTUVwxyz',
                 border: OutlineInputBorder(),
+                // 确保内容可以自动换行
+                helperMaxLines: 3,
+                errorMaxLines: 3,
               ),
-              maxLines: 2,
+              // 增加最大行数，防止溢出
+              maxLines: 3,
             ),
           ],
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () => Navigator.pop(dialogContext),
             child: const Text('取消'),
           ),
           ElevatedButton(
@@ -1911,53 +1915,99 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                 return;
               }
               
-              // 显示验证进度
-              Navigator.pop(context);
+              // 关闭当前配置对话框
+              Navigator.pop(dialogContext);
               // 添加短暂延迟，确保对话框已完全关闭
               await Future.delayed(const Duration(milliseconds: 100));
               if (!mounted) return; // 如果组件已卸载，直接返回
-              _showLoadingDialog('验证 Bot Token...');
+
+              // 创建一个变量存储加载对话框的context
+              BuildContext? loadingDialogContext;
+
+              // 显示加载对话框并保存context
+              showDialog(
+                context: context, // Use the main context here
+                barrierDismissible: false,
+                builder: (context) {
+                  loadingDialogContext = context;
+                  return const AlertDialog(
+                    content: Row(
+                      children: [
+                        CircularProgressIndicator(),
+                        SizedBox(width: 16),
+                        Text('验证 Bot Token...'),
+                      ],
+                    ),
+                  );
+                },
+              );
               
-              final isValid = await _telegramService.validateBotToken(token);
-              if (mounted) { // 确保组件仍然挂载
+              bool isValid = false;
+              try {
+                // 添加超时处理
+                isValid = await _telegramService.validateBotToken(token).timeout(
+                  const Duration(seconds: 15),
+                  onTimeout: () {
+                    print('验证 Bot Token 超时');
+                    return false;
+                  },
+                );
+              } catch (e) {
+                print('验证 Bot Token 过程中发生错误: $e');
+                isValid = false;
+              }
+
+              // 安全地关闭加载对话框
+              if (loadingDialogContext != null && mounted) {
                 try {
-                  Navigator.pop(context); // 关闭加载对话框
+                  Navigator.pop(loadingDialogContext!); // 关闭加载对话框
                 } catch (e) {
                   // 忽略导航错误，可能是因为widget已经被销毁
                 }
-              } else {
-                return; // 如果组件已卸载，直接返回
               }
               
-              if (isValid && mounted) {
-                final success = await _telegramService.saveBotToken(token);
-                if (mounted) {
-                  if (success) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Bot Token 配置成功！'),
-                      backgroundColor: Colors.green,
-                    ),
-                  );
-                  // 启动轮询
-                  _startTelegramPolling();
-                  if (mounted) {
-                    _showTelegramUrlInputDialog();
-                  }
-                  } else {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('保存 Bot Token 失败'),
-                        backgroundColor: Colors.red,
+              if (mounted) { // 确保组件仍然挂载
+                // 显示验证结果对话框
+                showDialog(
+                  context: context, // Use the main context for this dialog
+                  builder: (context) => AlertDialog(
+                    title: Text(isValid ? '验证成功' : '验证失败'),
+                    content: Text(isValid ? 'Bot Token 验证通过！' : '无效的 Bot Token，请检查后重试'),
+                    actions: [
+                      TextButton(
+                        onPressed: () async {
+                          Navigator.pop(context); // 关闭验证结果对话框
+                          if (isValid) {
+                            final success = await _telegramService.saveBotToken(token);
+                            if (mounted) {
+                              if (success) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('Bot Token 配置成功！'),
+                                    backgroundColor: Colors.green,
+                                  ),
+                                );
+                                // 启动轮询
+                                _startTelegramPolling();
+                                if (mounted) {
+                                  _showTelegramUrlInputDialog();
+                                }
+                              } else {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('保存 Bot Token 失败'),
+                                    backgroundColor: Colors.red,
+                                  ),
+                                );
+                              }
+                            }
+                          } else {
+                            _showBotTokenConfigDialog(); // 重新显示配置对话框
+                          }
+                        },
+                        child: Text('确定'),
                       ),
-                    );
-                  }
-                }
-              } else if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('无效的 Bot Token，请检查后重试'),
-                    backgroundColor: Colors.red,
+                    ],
                   ),
                 );
               }
@@ -2138,7 +2188,43 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       }
     }
   }
-  
+  /// 保存Bot Token并继续操作
+  Future<void> _saveBotTokenAndContinue(String token) async {
+    if (!mounted) return;
+    
+    _showLoadingDialog('保存 Bot Token...');
+    final success = await _telegramService.saveBotToken(token);
+    
+    if (mounted) {
+      try {
+        Navigator.pop(context); // 关闭加载对话框
+      } catch (e) {
+        // 忽略导航错误
+      }
+      
+      if (success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Bot Token 配置成功！'),
+            backgroundColor: Colors.green,
+          ),
+        );
+        // 启动轮询
+        _startTelegramPolling();
+        if (mounted) {
+          _showTelegramUrlInputDialog();
+        }
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('保存 Bot Token 失败'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
   /// 显示加载对话框
   void _showLoadingDialog(String message) {
     if (!mounted) return; // 确保组件仍然挂载
