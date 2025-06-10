@@ -89,9 +89,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
   final List<Map<String, dynamic>> _commonWebsites = [
     {'name': 'Google', 'url': 'https://www.google.com', 'icon': Icons.search},
-    {'name': 'Edge', 'url': 'https://www.microsoft.com/edge', 'icon': Icons.web},
-    {'name': 'X', 'url': 'https://twitter.com', 'icon': Icons.chat},
-    {'name': 'Facebook', 'url': 'https://www.facebook.com', 'icon': Icons.facebook},
     {'name': 'Telegram', 'url': 'https://web.telegram.org', 'icon': Icons.send},
     {'name': '百度', 'url': 'https://www.baidu.com', 'icon': Icons.search},
   ];
@@ -1036,9 +1033,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         debugPrint('警告：尝试保存空的常用网站列表，将加载默认网站');
         _commonWebsites.addAll([
           {'name': 'Google', 'url': 'https://www.google.com', 'iconCode': Icons.public.codePoint},
-          {'name': 'Edge', 'url': 'https://www.bing.com', 'iconCode': Icons.public.codePoint},
-          {'name': 'X', 'url': 'https://twitter.com', 'iconCode': Icons.public.codePoint},
-          {'name': 'Facebook', 'url': 'https://www.facebook.com', 'iconCode': Icons.public.codePoint},
           {'name': 'Telegram', 'url': 'https://web.telegram.org', 'iconCode': Icons.public.codePoint},
           {'name': '百度', 'url': 'https://www.baidu.com', 'iconCode': Icons.public.codePoint}
         ]);
@@ -1660,9 +1654,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         _commonWebsites.clear();
         _commonWebsites.addAll([
           {'name': 'Google', 'url': 'https://www.google.com', 'iconCode': Icons.public.codePoint},
-          {'name': 'Edge', 'url': 'https://www.bing.com', 'iconCode': Icons.public.codePoint},
-          {'name': 'X', 'url': 'https://twitter.com', 'iconCode': Icons.public.codePoint},
-          {'name': 'Facebook', 'url': 'https://www.facebook.com', 'iconCode': Icons.public.codePoint},
           {'name': 'Telegram', 'url': 'https://web.telegram.org', 'iconCode': Icons.public.codePoint},
           {'name': '百度', 'url': 'https://www.baidu.com', 'iconCode': Icons.public.codePoint}
         ]);
@@ -1676,9 +1667,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         _commonWebsites.clear();
         _commonWebsites.addAll([
           {'name': 'Google', 'url': 'https://www.google.com', 'iconCode': Icons.public.codePoint},
-          {'name': 'Edge', 'url': 'https://www.bing.com', 'iconCode': Icons.public.codePoint},
-          {'name': 'X', 'url': 'https://twitter.com', 'iconCode': Icons.public.codePoint},
-          {'name': 'Facebook', 'url': 'https://www.facebook.com', 'iconCode': Icons.public.codePoint},
           {'name': 'Telegram', 'url': 'https://web.telegram.org', 'iconCode': Icons.public.codePoint},
           {'name': '百度', 'url': 'https://www.baidu.com', 'iconCode': Icons.public.codePoint}
         ]);
