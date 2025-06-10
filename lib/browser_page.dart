@@ -60,6 +60,10 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   bool _showHomePage = true;
   bool _isBrowsingWebPage = false;
 
+  // 添加视频下载进度和状态的ValueNotifier
+  ValueNotifier<double?> _videoDownloadProgress = ValueNotifier(null);
+  ValueNotifier<bool> _isDownloadingVideo = ValueNotifier(false);
+
   Future<void> _launchExternalApp(String url) async {
     debugPrint('尝试启动外部应用: $url');
     try {
@@ -1224,7 +1228,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     return 'application/octet-stream';
   }
 
-  Future<File?> _downloadFile(String url) async {
+  Future<File?> _downloadFile(String url, MediaType mediaType) async { // Added mediaType parameter
     try {
       debugPrint('开始下载文件，URL: $url');
       final dio = Dio();
@@ -1233,7 +1237,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       dio.options.sendTimeout = const Duration(seconds: 60);
 
       dio.options.headers = {
-        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 13_2_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0.3 Mobile/15E148 Safari/604.1',
+        'User-Agent': 'Mozilla/5.5 (iPhone; CPU iPhone OS 13_2_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0.3 Mobile/15E148 Safari/604.1',
         'Accept': '*/*',
         'Accept-Language': 'en-US,en;q=0.9',
         'Accept-Encoding': 'gzip, deflate, br',
@@ -1284,8 +1288,11 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
             ),
             onReceiveProgress: (received, total) {
               if (total != -1) {
-                final progress = (received / total * 100).toStringAsFixed(2);
-                debugPrint('下载进度: $progress%');
+                final progress = received / total;
+                debugPrint('下载进度: ${(progress * 100).toStringAsFixed(2)}%');
+                if (mediaType == MediaType.video) { // Only update for video downloads
+                  _videoDownloadProgress.value = progress;
+                }
               }
             },
           );
@@ -1742,63 +1749,119 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
               ),
           ],
         ),
-        body: _showHomePage
-            ? _buildHomePage()
-            : Column(
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.all(8.0),
-                    child: Row(
-                      children: [
-                        IconButton(
-                          icon: const Icon(Icons.arrow_back),
-                          onPressed: () async {
-                            if (await _controller.canGoBack()) _controller.goBack();
-                          },
-                          tooltip: '后退',
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.arrow_forward),
-                          onPressed: () async {
-                            if (await _controller.canGoForward()) _controller.goForward();
-                          },
-                          tooltip: '前进',
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.refresh),
-                          onPressed: () => _controller.reload(),
-                          tooltip: '刷新',
-                        ),
-                        Expanded(
-                          child: TextField(
-                            controller: _urlController,
-                            decoration: const InputDecoration(
-                              hintText: '输入网址',
-                              contentPadding: EdgeInsets.symmetric(horizontal: 8),
-                              border: OutlineInputBorder(),
+        body: Stack( // Wrap the body in a Stack
+          children: [
+            _showHomePage
+                ? _buildHomePage()
+                : Column(
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.all(8.0),
+                        child: Row(
+                          children: [
+                            IconButton(
+                              icon: const Icon(Icons.arrow_back),
+                              onPressed: () async {
+                                if (await _controller.canGoBack()) _controller.goBack();
+                              },
+                              tooltip: '后退',
                             ),
-                            keyboardType: TextInputType.url,
-                            onSubmitted: _loadUrl,
-                          ),
+                            IconButton(
+                              icon: const Icon(Icons.arrow_forward),
+                              onPressed: () async {
+                                if (await _controller.canGoForward()) _controller.goForward();
+                              },
+                              tooltip: '前进',
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.refresh),
+                              onPressed: () => _controller.reload(),
+                              tooltip: '刷新',
+                            ),
+                            Expanded(
+                              child: TextField(
+                                controller: _urlController,
+                                decoration: const InputDecoration(
+                                  hintText: '输入网址',
+                                  contentPadding: EdgeInsets.symmetric(horizontal: 8),
+                                  border: OutlineInputBorder(),
+                                ),
+                                keyboardType: TextInputType.url,
+                                onSubmitted: _loadUrl,
+                              ),
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.search),
+                              onPressed: () => _loadUrl(_urlController.text),
+                              tooltip: '前往',
+                            ),
+                          ],
                         ),
-                        IconButton(
-                          icon: const Icon(Icons.search),
-                          onPressed: () => _loadUrl(_urlController.text),
-                          tooltip: '前往',
+                      ),
+                      if (_isLoading) LinearProgressIndicator(value: _loadingProgress),
+                      Expanded(
+                        child: Stack(
+                          children: [
+                            WebViewWidget(controller: _controller),
+                          ],
                         ),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
-                  if (_isLoading) LinearProgressIndicator(value: _loadingProgress),
-                  Expanded(
-                    child: Stack(
-                      children: [
-                        WebViewWidget(controller: _controller),
-                      ],
-                    ),
+            // Floating Download Progress Indicator
+            ValueListenableBuilder<bool>(
+              valueListenable: _isDownloadingVideo,
+              builder: (context, isDownloading, child) {
+                if (!isDownloading) {
+                  return const SizedBox.shrink(); // Hide if not downloading video
+                }
+                return Positioned(
+                  left: 16.0,
+                  bottom: 16.0,
+                  child: ValueListenableBuilder<double?>(
+                    valueListenable: _videoDownloadProgress,
+                    builder: (context, progress, child) {
+                      if (progress == null) {
+                        return const SizedBox.shrink(); // Also hide if progress is null (e.g., finished)
+                      }
+                      return Container(
+                        width: 60,
+                        height: 60,
+                        decoration: BoxDecoration(
+                          color: Colors.black.withOpacity(0.6),
+                          shape: BoxShape.circle,
+                        ),
+                        child: Stack(
+                          alignment: Alignment.center,
+                          children: [
+                            SizedBox(
+                              width: 50,
+                              height: 50,
+                              child: CircularProgressIndicator(
+                                value: progress,
+                                backgroundColor: Colors.grey.withOpacity(0.5),
+                                valueColor: const AlwaysStoppedAnimation<Color>(Colors.blue),
+                                strokeWidth: 4,
+                              ),
+                            ),
+                            Text(
+                              '${(progress * 100).toInt()}%',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
                   ),
-                ],
-              ),
+                );
+              },
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1807,6 +1870,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   void dispose() {
     _stopTelegramPolling();
     _urlController.dispose();
+    _videoDownloadProgress.dispose(); // Dispose ValueNotifier
+    _isDownloadingVideo.dispose(); // Dispose ValueNotifier
     _saveBookmarks().then((_) => debugPrint('书签保存完成')).catchError((error) => debugPrint('保存书签时出错: $error'));
     _saveCommonWebsites().then((_) => debugPrint('常用网站保存完成')).catchError((error) => debugPrint('保存常用网站时出错: $error'));
     widget.onBrowserHomePageChanged?.call(true);
@@ -1817,7 +1882,14 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     _downloadingUrls.add(url);
     try {
       debugPrint('开始后台下载: $url, 媒体类型: $mediaType');
-      final file = await _downloadFile(url);
+      
+      if (mediaType == MediaType.video) {
+        _isDownloadingVideo.value = true;
+        _videoDownloadProgress.value = 0.0;
+      }
+
+      final file = await _downloadFile(url, mediaType);
+
       if (file != null) {
         debugPrint('文件下载成功: ${file.path}');
         await _saveToMediaLibrary(file, mediaType);
@@ -1852,6 +1924,10 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       }
     } finally {
       _downloadingUrls.remove(url);
+      if (mediaType == MediaType.video) {
+        _isDownloadingVideo.value = false;
+        _videoDownloadProgress.value = null;
+      }
     }
   }
   
@@ -2188,64 +2264,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       }
     }
   }
-  /// 保存Bot Token并继续操作
-  Future<void> _saveBotTokenAndContinue(String token) async {
-    if (!mounted) return;
-    
-    _showLoadingDialog('保存 Bot Token...');
-    final success = await _telegramService.saveBotToken(token);
-    
-    if (mounted) {
-      try {
-        Navigator.pop(context); // 关闭加载对话框
-      } catch (e) {
-        // 忽略导航错误
-      }
-      
-      if (success) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Bot Token 配置成功！'),
-            backgroundColor: Colors.green,
-          ),
-        );
-        // 启动轮询
-        _startTelegramPolling();
-        if (mounted) {
-          _showTelegramUrlInputDialog();
-        }
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('保存 Bot Token 失败'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-    }
-  }
-
-  /// 显示加载对话框
-  void _showLoadingDialog(String message) {
-    if (!mounted) return; // 确保组件仍然挂载
-    try {
-      showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (context) => AlertDialog(
-          content: Row(
-            children: [
-              const CircularProgressIndicator(),
-              const SizedBox(width: 16),
-              Text(message),
-            ],
-          ),
-        ),
-      );
-    } catch (e) {
-      // 忽略对话框显示错误，可能是因为widget已经被销毁
-    }
-  }
   
   /// 启动Telegram消息轮询
   Future<void> _startTelegramPolling() async {
@@ -2412,6 +2430,27 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   
   /// 从Bot下载媒体文件
   Future<void> _downloadMediaFromBot(String fileId, Map<String, dynamic> message) async {
+    // Determine media type before starting download to control progress indicator
+    MediaType? mediaType;
+    if (message['video'] != null || message['animation'] != null) {
+      mediaType = MediaType.video;
+    } else if (message['photo'] != null) {
+      mediaType = MediaType.image;
+    } else if (message['document'] != null) {
+      final document = message['document'];
+      final mimeType = document['mime_type'] ?? '';
+      if (mimeType.startsWith('video/')) {
+        mediaType = MediaType.video;
+      } else if (mimeType.startsWith('image/')) {
+        mediaType = MediaType.image;
+      }
+    }
+
+    if (mediaType == MediaType.video) {
+      _isDownloadingVideo.value = true;
+      _videoDownloadProgress.value = 0.0;
+    }
+
     try {
       // 检查文件ID是否已经下载过
       if (_downloadedFileIds.contains(fileId)) {
@@ -2425,6 +2464,9 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         fileId,
         onProgress: (progress) {
           debugPrint('下载进度: ${(progress * 100).toStringAsFixed(1)}%');
+          if (mediaType == MediaType.video) { // Use the inferred mediaType
+             _videoDownloadProgress.value = progress;
+          }
         },
       );
       
@@ -2471,6 +2513,11 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       }
     } catch (e) {
       debugPrint('下载媒体文件异常: $e');
+    } finally {
+      if (mediaType == MediaType.video) {
+        _isDownloadingVideo.value = false;
+        _videoDownloadProgress.value = null;
+      }
     }
   }
   
@@ -2483,7 +2530,5 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       debugPrint('刷新媒体库失败: $e');
     }
   }
-  
-
 }
 
