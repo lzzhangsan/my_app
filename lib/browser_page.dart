@@ -1283,7 +1283,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
             options: Options(
               followRedirects: true,
               maxRedirects: 5,
-              validateStatus: (status) => status != null && status < 400,
+              validateStatus: (status) => status != null && status < 500, // Treat 4xx as valid, handle in catch block
               responseType: ResponseType.bytes,
             ),
             onReceiveProgress: (received, total) {
@@ -1301,8 +1301,27 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         } catch (e, stackTrace) {
           retryCount++;
           debugPrint('下载失败 (尝试 $retryCount/$maxRetries): $e');
-          if (retryCount >= maxRetries) throw Exception('下载失败: $e');
-          await Future.delayed(Duration(seconds: retryCount * 2));
+          if (e is DioException) {
+            if (e.type == DioExceptionType.connectionTimeout || e.type == DioExceptionType.receiveTimeout || e.type == DioExceptionType.sendTimeout) {
+              debugPrint('下载超时错误: $e');
+              if (retryCount >= maxRetries) throw Exception('下载超时，请检查网络连接或稍后重试');
+            } else if (e.type == DioExceptionType.badResponse) {
+              debugPrint('下载响应错误: 状态码 ${e.response?.statusCode}, 错误: ${e.response?.data}');
+              if (e.response?.statusCode == 400) {
+                if (retryCount >= maxRetries) throw Exception('下载失败: 文件无法访问或Bot权限不足');
+              } else {
+                if (retryCount >= maxRetries) throw Exception('下载失败: 服务器返回错误 ${e.response?.statusCode}');
+              }
+            } else if (e.type == DioExceptionType.unknown) {
+              debugPrint('下载未知错误 (可能是网络问题): $e');
+              if (retryCount >= maxRetries) throw Exception('下载失败: 网络连接异常或未知错误');
+            } else {
+              if (retryCount >= maxRetries) throw Exception('下载失败: ${e.message}');
+            }
+          } else {
+            if (retryCount >= maxRetries) throw Exception('下载失败: $e');
+          }
+          await Future.delayed(Duration(seconds: retryCount * 3)); // Increased delay
         }
       }
 

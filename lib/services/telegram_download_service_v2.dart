@@ -30,6 +30,10 @@ class TelegramDownloadServiceV2 {
   /// 初始化服务
   Future<void> initialize() async {
     await _loadBotToken();
+    // Set global Dio options
+    _dio.options.connectTimeout = const Duration(seconds: 15);
+    _dio.options.sendTimeout = const Duration(seconds: 15);
+    _dio.options.receiveTimeout = const Duration(seconds: 300); // Increased for large files
   }
   
   /// 加载保存的 Bot Token
@@ -224,7 +228,11 @@ class TelegramDownloadServiceV2 {
       );
       
       if (fileInfoResponse.statusCode != 200 || fileInfoResponse.data['ok'] != true) {
-        return DownloadResult.error('无法获取文件信息');
+        String errorMessage = '无法获取文件信息。';
+        if (fileInfoResponse.data != null && fileInfoResponse.data['description'] != null) {
+          errorMessage += ' 错误: ${fileInfoResponse.data['description']}';
+        }
+        return DownloadResult.error(errorMessage);
       }
       
       final fileInfo = fileInfoResponse.data['result'];
@@ -252,37 +260,62 @@ class TelegramDownloadServiceV2 {
         downloadUrl,
         localFilePath,
         onReceiveProgress: (received, total) {
-          if (total > 0 && onProgress != null) {
+          if (total != -1 && onProgress != null) {
             onProgress(received / total);
           }
         },
       );
       
-      // 4. 保存到数据库
-      final file = File(localFilePath);
-      final actualFileSize = await file.length();
-      final mimeType = lookupMimeType(localFilePath) ?? 'application/octet-stream';
-      
-      // 计算文件哈希值
-      final fileBytes = await file.readAsBytes();
-      final fileHash = sha256.convert(fileBytes).toString();
-      
-      await databaseService.insertMediaItem({
-        'id': const Uuid().v4(),
-        'name': fileName,
-        'path': localFilePath,
-        'type': _getMediaTypeFromMime(mimeType).index,
-        'directory': 'root', // 设置为root目录，使其他地方能访问到
-        'file_size': actualFileSize,
-        'file_hash': fileHash,
-        'telegram_file_id': fileId, // 保存Telegram文件ID
-        'date_added': DateTime.now().toIso8601String(), // 添加日期字段
-        'created_at': DateTime.now().millisecondsSinceEpoch,
-        'updated_at': DateTime.now().millisecondsSinceEpoch,
-      });
-      
-      return DownloadResult.success(localFilePath, fileName);
-      
+      // 4. 将文件保存到媒体库并记录 file_id
+      final appFile = File(localFilePath);
+      if (await appFile.exists() && await appFile.length() > 0) {
+        final mimeType = lookupMimeType(localFilePath) ?? '';
+        MediaType mediaType;
+        if (mimeType.startsWith('image/')) {
+          mediaType = MediaType.image;
+        } else if (mimeType.startsWith('video/')) {
+          mediaType = MediaType.video;
+        } else if (mimeType.startsWith('audio/')) {
+          mediaType = MediaType.audio;
+        } else {
+          mediaType = MediaType.audio;
+        }
+
+        final fileHash = md5.convert(await appFile.readAsBytes()).toString();
+        final uuid = const Uuid().v4();
+
+        final mediaItem = {
+          'id': uuid,
+          'name': fileName,
+          'path': localFilePath,
+          'type': mediaType.index,
+          'directory': 'root',
+          'date_added': DateTime.now().toIso8601String(),
+          'file_hash': fileHash,
+          'telegram_file_id': fileId, // 保存 Telegram file_id
+        };
+
+        await databaseService.insertMediaItem(mediaItem);
+        return DownloadResult.success(localFilePath, fileName);
+      } else {
+        return DownloadResult.error('下载的文件为空或不存在');
+      }
+
+    } on DioException catch (e) {
+      String errorMessage = '下载失败。';
+      if (e.type == DioExceptionType.connectionTimeout || e.type == DioExceptionType.receiveTimeout || e.type == DioExceptionType.sendTimeout) {
+        errorMessage = '下载超时，请检查网络连接或稍后重试。';
+      } else if (e.type == DioExceptionType.badResponse) {
+        if (e.response?.statusCode == 400) {
+          errorMessage = '文件无法访问或Bot权限不足。请确保媒体文件直接转发给Bot，且Bot是群组或频道成员。';
+        } else {
+          errorMessage = '服务器返回错误: ${e.response?.statusCode}';
+        }
+      } else if (e.type == DioExceptionType.unknown) {
+         errorMessage = '网络连接异常或未知错误。请检查您的网络。';
+      }
+      print('下载文件失败 (DioError): $errorMessage, URL: ${e.requestOptions.path}');
+      return DownloadResult.error(errorMessage);
     } catch (e) {
       print('下载文件失败: $e');
       return DownloadResult.error('下载失败: ${e.toString()}');
