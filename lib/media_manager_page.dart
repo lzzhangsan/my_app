@@ -814,10 +814,26 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   }
 
   Future<void> _showMoveDialog({MediaItem? item}) async {
+    String? excludeId;
+    if (item != null && item.type == MediaType.folder) {
+      excludeId = item.id;
+    } else if (_isMultiSelectMode && _selectedItems.isNotEmpty) {
+      // If multiple items are selected, and any of them is a folder,
+      // exclude the first selected folder and its subfolders.
+      // For simplicity, we just take the first selected item that is a folder.
+      for (var selectedId in _selectedItems) {
+        final selectedItem = _mediaItems.firstWhere((i) => i.id == selectedId);
+        if (selectedItem.type == MediaType.folder) {
+          excludeId = selectedItem.id;
+          break;
+        }
+      }
+    }
+
     showDialog(
       context: context,
       builder: (context) => FutureBuilder<List<MediaItem>>(
-        future: _getAllAvailableFolders(),
+        future: _getAllAvailableFolders(excludeFolderId: excludeId),
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
             return const AlertDialog(
@@ -886,7 +902,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     );
   }
 
-  Future<List<MediaItem>> _getAllAvailableFolders() async {
+  Future<List<MediaItem>> _getAllAvailableFolders({String? excludeFolderId}) async {
     try {
       final rootItems = await _databaseService.getMediaItems('root');
       final rootFolders = rootItems
@@ -899,14 +915,52 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           .where((item) => item['type'] == MediaType.folder.index)
           .map((item) => MediaItem.fromMap(item))
           .toList()
-          : [];
+          : <MediaItem>[];
 
-      final allFolders = <MediaItem>{...rootFolders, ...currentFolders};
+      // Remove Recycle Bin and Favorites from fetched folders if they are already there
+      final filteredRootFolders = rootFolders.where((folder) => folder.id != 'recycle_bin' && folder.id != 'favorites').toList();
+      final filteredCurrentFolders = currentFolders.where((folder) => folder.id != 'recycle_bin' && folder.id != 'favorites').toList();
+
+      // Explicitly add Recycle Bin and Favorites, ensuring they are always available
+      final recycleBin = await _databaseService.getMediaItemById('recycle_bin') ??
+          <String, dynamic>{'id': 'recycle_bin', 'name': '回收站', 'path': '', 'type': MediaType.folder.index, 'directory': 'root', 'date_added': DateTime.now().toIso8601String()};
+      final favorites = await _databaseService.getMediaItemById('favorites') ??
+          <String, dynamic>{'id': 'favorites', 'name': '收藏夹', 'path': '', 'type': MediaType.folder.index, 'directory': 'root', 'date_added': DateTime.now().toIso8601String()};
+
+      final allFolders = <MediaItem>{}
+        ..addAll(filteredRootFolders)
+        ..addAll(filteredCurrentFolders)
+        ..add(MediaItem.fromMap(recycleBin))
+        ..add(MediaItem.fromMap(favorites));
+
+      // Filter out the excluded folder and its subfolders
+      if (excludeFolderId != null) {
+        final excludedSubfolders = await _getAllSubfolderIds(excludeFolderId);
+        allFolders.removeWhere((folder) => folder.id == excludeFolderId || excludedSubfolders.contains(folder.id));
+      }
+
       return allFolders.toList();
     } catch (e) {
       debugPrint('获取可用文件夹时出错: $e');
       return [];
     }
+  }
+
+  // Helper method to get all subfolder IDs recursively
+  Future<Set<String>> _getAllSubfolderIds(String parentFolderId) async {
+    Set<String> subfolderIds = {};
+    try {
+      final itemsInParent = await _databaseService.getMediaItems(parentFolderId);
+      for (var item in itemsInParent) {
+        if (item['type'] == MediaType.folder.index) {
+          subfolderIds.add(item['id']);
+          subfolderIds.addAll(await _getAllSubfolderIds(item['id']));
+        }
+      }
+    } catch (e) {
+      debugPrint('递归获取子文件夹ID时出错: $e');
+    }
+    return subfolderIds;
   }
 
   Future<void> _deleteSelectedItems() async {
@@ -1012,6 +1066,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     bool isLastViewed = item.id == _lastViewedVideoId;
 
     return GestureDetector(
+      key: ValueKey(item.id),
       onTap: _isMultiSelectMode
           ? () => _toggleItemSelection(item.id)
           : () {
