@@ -1517,50 +1517,56 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   void _showBookmarks() {
     showModalBottomSheet(
       context: context,
-      builder: (context) => ListView.builder(
-        itemCount: _bookmarks.length,
-        itemBuilder: (context, index) {
-          final bookmark = _bookmarks[index];
-          return ListTile(
-            title: Text(bookmark['name'] ?? bookmark['url']!),
-            onTap: () {
-              _loadUrl(bookmark['url']!);
-              Navigator.pop(context);
+      builder: (context) => StatefulBuilder(
+        builder: (BuildContext context, StateSetter modalSetState) {
+          return ListView.builder(
+            itemCount: _bookmarks.length,
+            itemBuilder: (context, index) {
+              final bookmark = _bookmarks[index];
+              return ListTile(
+                title: Text(bookmark['name'] ?? bookmark['url']!),
+                onTap: () {
+                  _loadUrl(bookmark['url']!);
+                  Navigator.pop(context);
+                },
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.edit, color: Colors.blue),
+                      onPressed: () {
+                        Navigator.pop(context);
+                        _showRenameBookmarkDialog(context, index);
+                      },
+                      tooltip: '重命名',
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.delete, color: Colors.red),
+                      onPressed: () async {
+                        final shouldDelete = await showDialog<bool>(
+                          context: context,
+                          builder: (context) => AlertDialog(
+                            title: const Text('删除书签'),
+                            content: Text('确定要删除书签 "${bookmark['name']}" 吗？'),
+                            actions: [
+                              TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+                              TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('删除')),
+                            ],
+                          ),
+                        ) ?? false;
+                        if (shouldDelete) {
+                          modalSetState(() {
+                            _bookmarks.removeAt(index);
+                          });
+                          _saveBookmarks();
+                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已删除书签')));
+                        }
+                      },
+                    ),
+                  ],
+                ),
+              );
             },
-            trailing: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                IconButton(
-                  icon: const Icon(Icons.edit, color: Colors.blue),
-                  onPressed: () {
-                    Navigator.pop(context);
-                    _showRenameBookmarkDialog(context, index);
-                  },
-                  tooltip: '重命名',
-                ),
-                IconButton(
-                  icon: const Icon(Icons.delete, color: Colors.red),
-                  onPressed: () async {
-                    final shouldDelete = await showDialog<bool>(
-                      context: context,
-                      builder: (context) => AlertDialog(
-                        title: const Text('删除书签'),
-                        content: Text('确定要删除书签 "${bookmark['name']}" 吗？'),
-                        actions: [
-                          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-                          TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('删除')),
-                        ],
-                      ),
-                    ) ?? false;
-                    if (shouldDelete) {
-                      setState(() => _bookmarks.removeAt(index));
-                      _saveBookmarks();
-                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已删除书签')));
-                    }
-                  },
-                ),
-              ],
-            ),
           );
         },
       ),
