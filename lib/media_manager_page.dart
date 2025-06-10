@@ -309,7 +309,6 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       }
 
       debugPrint('总共找到 ${allVideos.length} 个唯一视频');
-      allVideos.sort((a, b) => b.createDateTime.compareTo(a.createDateTime));
 
       List<AssetEntity> selectedVideos = await _showVideoSelectionDialog(allVideos);
       debugPrint('用户选择了 ${selectedVideos.length} 个视频');
