@@ -48,6 +48,10 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   final StreamController<String> _progressController = StreamController<String>.broadcast();
   final List<String> _availableDirectories = ['root'];
 
+  // For automatic invalid media cleanup
+  final Set<String> _itemsToCleanup = {};
+  Timer? _cleanupTimer;
+
   @override
   void initState() {
     super.initState();
@@ -73,6 +77,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   @override
   void dispose() {
     _progressController.close();
+    _cleanupTimer?.cancel(); // Cancel the cleanup timer
     super.dispose();
   }
 
@@ -1184,8 +1189,10 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         return Image.file(
           File(item.path),
           fit: BoxFit.cover,
-          errorBuilder: (context, error, stackTrace) =>
-          const Icon(Icons.image, size: 32),
+          errorBuilder: (context, error, stackTrace) {
+            _scheduleCleanup(item.id); // Schedule cleanup on image load error
+            return const Icon(Icons.image, size: 32);
+          },
         );
       case MediaType.video:
         return FutureBuilder<File?>(
@@ -1202,6 +1209,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                     fit: BoxFit.cover,
                     errorBuilder: (context, error, stackTrace) {
                       debugPrint('加载视频缩略图失败: ${item.path}, 错误: $error');
+                      _scheduleCleanup(item.id); // Schedule cleanup on video thumbnail load error
                       return _buildVideoPlaceholder();
                     },
                   ),
@@ -1239,7 +1247,8 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                   ),
                 ],
               );
-            } else {
+            } else { // Handle cases where thumbnail generation failed or data is null
+              _scheduleCleanup(item.id); // Schedule cleanup if thumbnail is not available
               return _buildVideoPlaceholder();
             }
           },
@@ -2080,6 +2089,54 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           SnackBar(content: Text('导出文件时出错: $e')),
         );
       }
+    }
+  }
+
+  // New method for scheduling cleanup
+  void _scheduleCleanup(String itemId) {
+    _itemsToCleanup.add(itemId);
+    _cleanupTimer?.cancel(); // Cancel any existing timer
+    _cleanupTimer = Timer(const Duration(seconds: 5), () { // Debounce cleanup by 5 seconds
+      _performCleanup();
+    });
+  }
+
+  // New method to perform the cleanup
+  Future<void> _performCleanup() async {
+    if (_itemsToCleanup.isEmpty) return;
+
+    debugPrint('开始自动清理无效媒体文件: ${_itemsToCleanup.length} 个');
+    Set<String> cleanedItems = Set.from(_itemsToCleanup); // Copy items to avoid modification during iteration
+    _itemsToCleanup.clear(); // Clear the main set
+
+    for (var id in cleanedItems) {
+      try {
+        final item = _mediaItems.firstWhere((i) => i.id == id, orElse: () => null as MediaItem);
+        if (item != null) {
+          await _deleteMediaItemSilently(item);
+          debugPrint('已自动清理无效文件: ${item.name}');
+        }
+      } catch (e) {
+        debugPrint('自动清理文件时出错 ($id): $e');
+      }
+    }
+    
+    // Reload media items after cleanup
+    await _loadMediaItems();
+    debugPrint('无效媒体文件自动清理完成。');
+  }
+
+  // New method to delete media item silently (without confirmation dialog)
+  Future<void> _deleteMediaItemSilently(MediaItem item) async {
+    try {
+      await _databaseService.deleteMediaItem(item.id);
+      final file = File(item.path);
+      if (await file.exists()) {
+        await file.delete();
+      }
+    } catch (e) {
+      debugPrint('静默删除媒体项时出错: ${item.name}, 错误: $e');
+      rethrow;
     }
   }
 
