@@ -3344,4 +3344,41 @@ class DatabaseService {
     await initialize();
     print('数据库已从备份恢复: $backupPath');
   }
+
+  /// 应用启动时自动检测并执行24小时自动备份
+  Future<void> autoBackupIfNeeded() async {
+    final documentsDirectory = await getApplicationDocumentsDirectory();
+    final backupDirPath = p.join(documentsDirectory.path, 'backups');
+    final metaFile = File(p.join(backupDirPath, 'backup_meta.json'));
+    List<dynamic> metaList = [];
+    if (await metaFile.exists()) {
+      try {
+        metaList = jsonDecode(await metaFile.readAsString());
+      } catch (_) {}
+    }
+    DateTime? lastAuto;
+    int autoCount = 0;
+    for (var meta in metaList) {
+      if (meta['type'] == 'auto') {
+        autoCount++;
+        final t = DateTime.tryParse(meta['time'] ?? '');
+        if (lastAuto == null || (t != null && t.isAfter(lastAuto))) lastAuto = t;
+      }
+    }
+    final now = DateTime.now();
+    if (lastAuto == null || now.difference(lastAuto).inHours >= 24) {
+      final n = autoCount + 1;
+      final sizeMB = () async {
+        final dbPath = p.join(documentsDirectory.path, _databaseName);
+        final dbFile = File(dbPath);
+        if (await dbFile.exists()) {
+          return (await dbFile.length() / 1024 / 1024).toStringAsFixed(2);
+        }
+        return '0.00';
+      };
+      final size = await sizeMB();
+      final remark = '自动备份-第${n}版-${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')} ${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')} ${size}MB';
+      await backupDatabaseFileWithMeta(remark: remark, isAuto: true);
+    }
+  }
 }

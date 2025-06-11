@@ -20,6 +20,7 @@ import 'widgets/performance_indicator.dart';
 import 'performance_monitor_page.dart';
 import 'package:file_picker/file_picker.dart';
 import 'dart:convert';
+import 'package:flutter/services.dart';
 
 class CoverPage extends StatefulWidget {
   const CoverPage({super.key});
@@ -46,6 +47,7 @@ class _CoverPageState extends State<CoverPage> {
     
     if (!kIsWeb) {
       _databaseService = getService<DatabaseService>();
+      _databaseService.autoBackupIfNeeded();
       _ensureCoverPageDocumentExists().then((_) {
         _ensureCoverImageTableExists().then((_) {
           _loadBackgroundImage();
@@ -1329,8 +1331,9 @@ class _CoverPageState extends State<CoverPage> {
                     Navigator.pop(context);
                     await _databaseService.restoreDatabaseFileWithMeta(meta['file']);
                     if (mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('数据库已恢复: ${meta['remark']}')));
-                      // 可选：刷新页面或重启App
+                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('数据库已恢复: ${meta['remark']}，即将自动重启应用...')));
+                      await Future.delayed(Duration(seconds: 2));
+                      SystemChannels.platform.invokeMethod('SystemNavigator.pop');
                     }
                   },
                   child: Text('恢复'),
