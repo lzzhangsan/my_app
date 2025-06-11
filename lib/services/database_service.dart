@@ -3272,4 +3272,76 @@ class DatabaseService {
       rethrow;
     }
   }
+
+  /// 物理备份整个数据库文件（带备注和meta，自动清理只保留10个）
+  Future<void> backupDatabaseFileWithMeta({String? remark, bool isAuto = false}) async {
+    final documentsDirectory = await getApplicationDocumentsDirectory();
+    final dbPath = p.join(documentsDirectory.path, _databaseName);
+    final dbFile = File(dbPath);
+    if (!await dbFile.exists()) {
+      print('数据库文件不存在，无需备份');
+      return;
+    }
+    final backupDirPath = p.join(documentsDirectory.path, 'backups');
+    final backupDir = Directory(backupDirPath);
+    if (!await backupDir.exists()) {
+      await backupDir.create(recursive: true);
+    }
+    final now = DateTime.now();
+    final timeStr = '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}_${now.hour.toString().padLeft(2, '0')}-${now.minute.toString().padLeft(2, '0')}-${now.second.toString().padLeft(2, '0')}';
+    final safeRemark = (remark ?? (isAuto ? '自动备份' : '手动备份')).replaceAll(RegExp(r'[^\u4e00-\u9fa5A-Za-z0-9_-]'), '');
+    final backupFileName = '${_databaseName}_backup_${timeStr}_${safeRemark.isNotEmpty ? safeRemark : (isAuto ? 'auto' : 'manual')}.db';
+    final backupPath = p.join(backupDirPath, backupFileName);
+    await dbFile.copy(backupPath);
+    // 写入meta
+    final metaFile = File(p.join(backupDirPath, 'backup_meta.json'));
+    List<dynamic> metaList = [];
+    if (await metaFile.exists()) {
+      try {
+        metaList = jsonDecode(await metaFile.readAsString());
+      } catch (_) {}
+    }
+    metaList.insert(0, {
+      'file': backupFileName,
+      'remark': remark ?? (isAuto ? '自动备份' : '手动备份'),
+      'type': isAuto ? 'auto' : 'manual',
+      'time': now.toIso8601String(),
+      'size': await File(backupPath).length(),
+    });
+    // 只保留10个
+    if (metaList.length > 10) {
+      for (var i = 10; i < metaList.length; i++) {
+        final old = metaList[i];
+        final oldFile = File(p.join(backupDirPath, old['file']));
+        if (await oldFile.exists()) await oldFile.delete();
+      }
+      metaList = metaList.sublist(0, 10);
+    }
+    await metaFile.writeAsString(jsonEncode(metaList));
+    print('数据库已物理备份到: $backupPath');
+  }
+
+  /// 物理恢复数据库文件（带meta）
+  Future<void> restoreDatabaseFileWithMeta(String backupFileName) async {
+    final documentsDirectory = await getApplicationDocumentsDirectory();
+    final dbPath = p.join(documentsDirectory.path, _databaseName);
+    final backupDirPath = p.join(documentsDirectory.path, 'backups');
+    final backupPath = p.join(backupDirPath, backupFileName);
+    final backupFile = File(backupPath);
+    if (!await backupFile.exists()) {
+      print('备份文件不存在: $backupPath');
+      throw Exception('备份文件不存在');
+    }
+    // 关闭数据库连接
+    if (_database != null) {
+      await _database!.close();
+      _database = null;
+      _isInitialized = false;
+    }
+    // 用备份覆盖
+    await backupFile.copy(dbPath);
+    // 重新初始化数据库
+    await initialize();
+    print('数据库已从备份恢复: $backupPath');
+  }
 }

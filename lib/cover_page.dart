@@ -19,6 +19,7 @@ import 'services/image_picker_service.dart';
 import 'widgets/performance_indicator.dart';
 import 'performance_monitor_page.dart';
 import 'package:file_picker/file_picker.dart';
+import 'dart:convert';
 
 class CoverPage extends StatefulWidget {
   const CoverPage({super.key});
@@ -966,22 +967,22 @@ class _CoverPageState extends State<CoverPage> {
                 _buildSettingItem(
                   icon: Icons.backup,
                   iconColor: Colors.green[700]!,
-                  title: '备份数据库',
-                  subtitle: '创建当前数据的备份',
+                  title: '物理备份数据库',
+                  subtitle: '完整备份数据库文件',
                   onTap: () {
                     Navigator.pop(context);
-                    _showBackupDialog();
+                    _showPhysicalBackupDialog();
                   },
                 ),
                 
                 _buildSettingItem(
                   icon: Icons.restore,
                   iconColor: Colors.amber[800]!,
-                  title: '恢复数据库',
-                  subtitle: '从备份恢复数据',
+                  title: '物理恢复数据库',
+                  subtitle: '从物理备份文件恢复',
                   onTap: () {
                     Navigator.pop(context);
-                    _showRestoreConfirmationDialog();
+                    _showPhysicalRestoreDialog();
                   },
                   isLast: true,
                 ),
@@ -1238,142 +1239,107 @@ class _CoverPageState extends State<CoverPage> {
     }
   }
   
-  // 显示备份对话框
-  Future<void> _showBackupDialog() async {
-    final TextEditingController nameController = TextEditingController();
-    final TextEditingController descriptionController = TextEditingController();
-    
-    // 生成默认备份名称
+  // 物理备份数据库（带备注名）
+  Future<void> _showPhysicalBackupDialog() async {
     final now = DateTime.now();
-    final defaultName = 'manual_backup_${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}_${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}';
-    nameController.text = defaultName;
-    
-    final result = await showDialog<Map<String, String>>(
+    final defaultName = '手动备份-${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}_${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}';
+    final TextEditingController nameController = TextEditingController(text: defaultName);
+    final result = await showDialog<String>(
       context: context,
       builder: (context) {
         return AlertDialog(
-          title: Text('创建备份'),
-          content: Container(
-            width: double.maxFinite,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  '将创建包含所有数据的完整备份',
-                  style: TextStyle(
-                    color: Colors.grey[600],
-                    fontSize: 14,
-                  ),
-                ),
-                SizedBox(height: 16),
-                TextField(
-                  controller: nameController,
-                  decoration: InputDecoration(
-                    labelText: '备份名称',
-                    hintText: '输入备份名称',
-                    border: OutlineInputBorder(),
-                  ),
-                  maxLength: 50,
-                ),
-                SizedBox(height: 8),
-                TextField(
-                  controller: descriptionController,
-                  decoration: InputDecoration(
-                    labelText: '备份描述（可选）',
-                    hintText: '输入备份描述',
-                    border: OutlineInputBorder(),
-                  ),
-                  maxLines: 2,
-                  maxLength: 100,
-                ),
-              ],
+          title: Text('物理备份数据库'),
+          content: TextField(
+            controller: nameController,
+            decoration: InputDecoration(
+              labelText: '备注名',
+              hintText: '输入本次备份的备注名',
+              border: OutlineInputBorder(),
             ),
+            maxLength: 30,
           ),
           actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: Text('取消'),
-            ),
+            TextButton(onPressed: () => Navigator.pop(context), child: Text('取消')),
             ElevatedButton(
-              onPressed: () {
-                final name = nameController.text.trim();
-                if (name.isEmpty) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('请输入备份名称')),
-                  );
-                  return;
-                }
-                
-                Navigator.of(context).pop({
-                  'name': name,
-                  'description': descriptionController.text.trim(),
-                });
-              },
-              child: Text('创建备份'),
+              onPressed: () => Navigator.pop(context, nameController.text.trim()),
+              child: Text('备份'),
             ),
           ],
         );
       },
     );
-    
-    if (result != null) {
-      await _createBackup(
-        name: result['name']!,
-        description: result['description']!.isEmpty ? null : result['description'],
-      );
+    if (result != null && result.isNotEmpty) {
+      await _databaseService.backupDatabaseFileWithMeta(remark: result, isAuto: false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('数据库已备份: $result')));
+      }
     }
   }
-  
-  // 创建备份
-  Future<void> _createBackup({required String name, String? description}) async {
-    try {
-      // 显示加载指示器
-      showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (context) {
-          return AlertDialog(
-            content: Row(
-              children: [
-                CircularProgressIndicator(),
-                SizedBox(width: 16),
-                Text('正在创建备份...'),
-              ],
-            ),
-          );
-        },
-      );
-      
-      final backupService = serviceLocator.get<BackupService>();
-      final backupRecord = await backupService.createBackup(
-        name: name,
-        description: description,
-        isAutoBackup: false,
-      );
-      
-      // 关闭加载指示器
-      Navigator.of(context).pop();
-      
-      if (backupRecord != null) {
-        final sizeKB = (backupRecord.fileSize / 1024).toStringAsFixed(1);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('备份创建成功！\n名称: ${backupRecord.name}\n大小: ${sizeKB} KB'),
-            duration: Duration(seconds: 3),
-          ),
-        );
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('备份创建失败，请重试')),
-        );
-      }
-    } catch (e) {
-      // 关闭加载指示器（如果还在显示）
-      Navigator.of(context, rootNavigator: true).pop();
-      
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('备份创建失败: $e')),
-      );
+
+  // 物理恢复数据库（带meta）
+  Future<void> _showPhysicalRestoreDialog() async {
+    final appDir = await getApplicationDocumentsDirectory();
+    final backupDir = Directory('${appDir.path}/backups');
+    final metaFile = File('${backupDir.path}/backup_meta.json');
+    if (!await metaFile.exists()) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('没有找到任何物理数据库备份记录。')));
+      return;
     }
+    List<dynamic> metaList = [];
+    try {
+      metaList = jsonDecode(await metaFile.readAsString());
+    } catch (_) {}
+    if (metaList.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('没有找到任何物理数据库备份记录。')));
+      return;
+    }
+    int? selectedIdx;
+    await showDialog(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setState) {
+            return AlertDialog(
+              title: Text('选择要恢复的数据库备份'),
+              content: SizedBox(
+                width: double.maxFinite,
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: metaList.length,
+                  itemBuilder: (context, idx) {
+                    final meta = metaList[idx];
+                    final dt = DateTime.tryParse(meta['time'] ?? '') ?? DateTime.now();
+                    final sizeKB = ((meta['size'] ?? 0) / 1024).toStringAsFixed(1);
+                    return RadioListTile<int>(
+                      value: idx,
+                      groupValue: selectedIdx,
+                      onChanged: (v) => setState(() => selectedIdx = v),
+                      title: Text(meta['remark'] ?? '无备注', style: TextStyle(fontWeight: FontWeight.bold)),
+                      subtitle: Text('时间: ${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')} ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}\n类型: ${meta['type'] == 'auto' ? '自动备份' : '手动备份'}  大小: ${sizeKB}KB'),
+                      secondary: Icon(meta['type'] == 'auto' ? Icons.autorenew : Icons.edit),
+                    );
+                  },
+                ),
+              ),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(context), child: Text('取消')),
+                ElevatedButton(
+                  onPressed: selectedIdx == null ? null : () async {
+                    final meta = metaList[selectedIdx!];
+                    Navigator.pop(context);
+                    await _databaseService.restoreDatabaseFileWithMeta(meta['file']);
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('数据库已恢复: ${meta['remark']}')));
+                      // 可选：刷新页面或重启App
+                    }
+                  },
+                  child: Text('恢复'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
   }
 }
