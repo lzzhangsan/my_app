@@ -39,4 +39,15 @@ class DiaryService {
     entries.removeWhere((e) => e.id == id);
     await saveEntries(entries);
   }
+
+  Future<void> autoSaveEntry(DiaryEntry entry) async {
+    final entries = await loadEntries();
+    final idx = entries.indexWhere((e) => e.id == entry.id);
+    if (idx != -1) {
+      entries[idx] = entry;
+    } else {
+      entries.add(entry);
+    }
+    await saveEntries(entries);
+  }
 } 

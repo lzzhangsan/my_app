@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
-import 'video_player_widget.dart';
+import 'widgets/video_player_widget.dart';
 
 class VideoControlsOverlay extends StatefulWidget {
   final VideoPlayerWidget? videoPlayerWidget;

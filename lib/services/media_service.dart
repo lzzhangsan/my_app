@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../models/media_item.dart';
 import '../models/media_type.dart';
+import 'package:video_thumbnail/video_thumbnail.dart';
 
 class MediaService {
   static final MediaService _instance = MediaService._internal();
@@ -249,6 +250,29 @@ class MediaService {
     
     if (kDebugMode) {
       print('MediaService: 资源已释放');
+    }
+  }
+
+  Future<File?> generateVideoThumbnail(String videoPath) async {
+    try {
+      final tempDir = await getTemporaryDirectory();
+      final thumbnailPath = await VideoThumbnail.thumbnailFile(
+        video: videoPath,
+        thumbnailPath: tempDir.path,
+        imageFormat: ImageFormat.JPEG,
+        maxWidth: 320,
+        quality: 75,
+      );
+      if (thumbnailPath != null) {
+        final thumbnailFile = File(thumbnailPath);
+        if (await thumbnailFile.exists() && await thumbnailFile.length() > 100) {
+          return thumbnailFile;
+        }
+      }
+      return null;
+    } catch (e) {
+      print('生成视频缩略图失败: $e');
+      return null;
     }
   }
 }

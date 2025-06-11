@@ -8,6 +8,8 @@ import 'services/image_picker_service.dart';
 import 'resizable_image_box.dart';
 import 'dart:io';
 import 'package:flutter_svg/flutter_svg.dart';
+import 'widgets/video_player_widget.dart';
+import 'services/media_service.dart';
 
 class DiaryPage extends StatefulWidget {
   const DiaryPage({Key? key}) : super(key: key);
@@ -82,24 +84,19 @@ class _DiaryPageState extends State<DiaryPage> {
         centerTitle: true,
         actions: [
           IconButton(
-            icon: Icon(_showFavoritesOnly ? Icons.star : Icons.star_border),
+            icon: Icon(_showFavoritesOnly ? Icons.favorite : Icons.favorite_border, color: _showFavoritesOnly ? Colors.red : null),
             tooltip: _showFavoritesOnly ? '显示全部' : '只看收藏',
             onPressed: () => setState(() => _showFavoritesOnly = !_showFavoritesOnly),
+          ),
+          IconButton(
+            icon: _TodayCircleIcon(),
+            tooltip: '回到今天',
+            onPressed: () => setState(() => _selectedDate = DateTime.now()),
           ),
         ],
       ),
       body: Column(
         children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.end,
-            children: [
-              TextButton.icon(
-                icon: Icon(Icons.today),
-                label: Text('回到今天'),
-                onPressed: () => setState(() => _selectedDate = DateTime.now()),
-              ),
-            ],
-          ),
           _buildCalendar(),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
@@ -132,60 +129,84 @@ class _DiaryPageState extends State<DiaryPage> {
     final weekDayOffset = firstDayOfMonth.weekday % 7;
     final days = List.generate(daysInMonth, (i) => DateTime(_selectedDate.year, _selectedDate.month, i + 1));
     return Card(
-      margin: const EdgeInsets.all(12),
-      child: Column(
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              IconButton(
-                icon: const Icon(Icons.chevron_left),
-                onPressed: () => _onDateSelected(DateTime(_selectedDate.year, _selectedDate.month - 1, 1)),
-              ),
-              Text('${_selectedDate.year}年${_selectedDate.month}月', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-              IconButton(
-                icon: const Icon(Icons.chevron_right),
-                onPressed: () => _onDateSelected(DateTime(_selectedDate.year, _selectedDate.month + 1, 1)),
-              ),
-            ],
-          ),
-          GridView.builder(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 7,
-              childAspectRatio: 1.2,
+      margin: const EdgeInsets.all(8),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 4),
+        child: Column(
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Row(
+                  children: [
+                    IconButton(
+                      icon: Icon(Icons.keyboard_double_arrow_left, size: 28, weight: 800),
+                      tooltip: '上一年',
+                      onPressed: () => setState(() => _selectedDate = DateTime(_selectedDate.year - 1, _selectedDate.month, 1)),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.chevron_left),
+                      onPressed: () => _onDateSelected(DateTime(_selectedDate.year, _selectedDate.month - 1, 1)),
+                    ),
+                  ],
+                ),
+                Text('${_selectedDate.year}年${_selectedDate.month}月', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                Row(
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.chevron_right),
+                      onPressed: () => _onDateSelected(DateTime(_selectedDate.year, _selectedDate.month + 1, 1)),
+                    ),
+                    IconButton(
+                      icon: Icon(Icons.keyboard_double_arrow_right, size: 28, weight: 800),
+                      tooltip: '下一年',
+                      onPressed: () => setState(() => _selectedDate = DateTime(_selectedDate.year + 1, _selectedDate.month, 1)),
+                    ),
+                  ],
+                ),
+              ],
             ),
-            itemCount: weekDayOffset + days.length,
-            itemBuilder: (context, index) {
-              if (index < weekDayOffset) {
-                return const SizedBox.shrink();
-              }
-              final day = days[index - weekDayOffset];
-              final isSelected = isSameDay(day, _selectedDate);
-              final hasEntry = _entries.any((e) => isSameDay(e.date, day));
-              return GestureDetector(
-                onTap: () => _onDateSelected(day),
-                child: Container(
-                  margin: const EdgeInsets.all(4),
-                  decoration: BoxDecoration(
-                    color: isSelected ? Colors.blueAccent : (hasEntry ? Colors.blue.withOpacity(0.2) : null),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Center(
-                    child: Text(
-                      '${day.day}',
-                      style: TextStyle(
-                        color: isSelected ? Colors.white : Colors.black87,
-                        fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+            GridView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 7,
+                childAspectRatio: 1.1,
+                mainAxisSpacing: 2,
+                crossAxisSpacing: 2,
+              ),
+              itemCount: weekDayOffset + days.length,
+              itemBuilder: (context, index) {
+                if (index < weekDayOffset) {
+                  return const SizedBox.shrink();
+                }
+                final day = days[index - weekDayOffset];
+                final isSelected = isSameDay(day, _selectedDate);
+                final hasEntry = _entries.any((e) => isSameDay(e.date, day));
+                return GestureDetector(
+                  onTap: () => _onDateSelected(day),
+                  child: Container(
+                    margin: const EdgeInsets.all(1),
+                    decoration: BoxDecoration(
+                      color: isSelected ? Colors.blueAccent : (hasEntry ? Colors.blue.withOpacity(0.2) : null),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Center(
+                      child: Text(
+                        '${day.day}',
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: isSelected ? Colors.white : Colors.black87,
+                          fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                        ),
                       ),
                     ),
                   ),
-                ),
-              );
-            },
-          ),
-        ],
+                );
+              },
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -221,7 +242,7 @@ class _DiaryPageState extends State<DiaryPage> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 IconButton(
-                  icon: Icon(entry.isFavorite ? Icons.star : Icons.star_border, color: entry.isFavorite ? Colors.amber : null),
+                  icon: Icon(entry.isFavorite ? Icons.favorite : Icons.favorite_border, color: entry.isFavorite ? Colors.red : null),
                   tooltip: entry.isFavorite ? '取消收藏' : '收藏',
                   onPressed: () async {
                     final updated = entry.copyWith(isFavorite: !entry.isFavorite);
@@ -266,10 +287,13 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
   late DateTime _date;
   List<String> _imagePaths = [];
   List<String> _audioPaths = [];
+  List<String> _videoPaths = [];
   String? _weather;
   String? _mood;
   String? _location;
   bool _isFavorite = false;
+  final DiaryService _diaryService = DiaryService();
+  bool _isSaving = false;
 
   final List<Map<String, dynamic>> _weatherSvgOptions = [
     {'icon': 'assets/icon/weather_sunny.svg', 'label': '晴'},
@@ -299,6 +323,7 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
     _contentController = TextEditingController(text: widget.entry?.content ?? '');
     _imagePaths = List<String>.from(widget.entry?.imagePaths ?? []);
     _audioPaths = List<String>.from(widget.entry?.audioPaths ?? []);
+    _videoPaths = List<String>.from(widget.entry?.videoPaths ?? []);
     _weather = widget.entry?.weather;
     _mood = widget.entry?.mood;
     _location = widget.entry?.location;
@@ -311,323 +336,482 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
     super.dispose();
   }
 
+  @override
+  Widget build(BuildContext context) {
+    return WillPopScope(
+      onWillPop: () async {
+        await _autoSave();
+        Navigator.of(context).pop(_buildEntry());
+        return false;
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          leading: IconButton(icon: Icon(Icons.close), onPressed: () async {
+            await _autoSave();
+            Navigator.of(context).pop(_buildEntry());
+          }),
+          title: Text('${_date.month}月${_date.day}日  ${_date.hour.toString().padLeft(2, '0')}:${_date.minute.toString().padLeft(2, '0')}  ${_weekdayStr(_date.weekday)}', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 22)),
+          centerTitle: true,
+          actions: [
+            IconButton(
+              icon: Icon(_isFavorite ? Icons.favorite : Icons.favorite_border, color: _isFavorite ? Colors.red : Colors.grey),
+              tooltip: _isFavorite ? '取消收藏' : '收藏',
+              onPressed: () async {
+                setState(() {
+                  _isFavorite = !_isFavorite;
+                });
+                await _autoSave();
+              },
+            ),
+          ],
+        ),
+        body: SafeArea(
+          child: SingleChildScrollView(
+            padding: EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TextField(
+                  controller: _contentController,
+                  maxLines: null,
+                  style: TextStyle(fontSize: 18),
+                  decoration: InputDecoration(
+                    hintText: '记录今日',
+                    border: InputBorder.none,
+                  ),
+                  onChanged: (_) async {
+                    await _autoSave();
+                  },
+                ),
+                SizedBox(height: 12),
+                // 图片+视频混合九宫格
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    ..._imagePaths.asMap().entries.map((e) => Stack(
+                      children: [
+                        GestureDetector(
+                          onTap: () => showDialog(
+                            context: context,
+                            builder: (_) => Dialog(
+                              backgroundColor: Colors.black,
+                              insetPadding: EdgeInsets.zero,
+                              child: _ImageGalleryViewer(
+                                imagePaths: _imagePaths,
+                                initialIndex: e.key,
+                              ),
+                            ),
+                          ),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(10),
+                            child: Image.file(
+                              File(e.value),
+                              width: 90,
+                              height: 90,
+                              fit: BoxFit.cover,
+                            ),
+                          ),
+                        ),
+                        Positioned(
+                          right: 0,
+                          top: 0,
+                          child: GestureDetector(
+                            onTap: () => _removeImage(e.key),
+                            child: Container(
+                              padding: const EdgeInsets.all(4),
+                              decoration: const BoxDecoration(
+                                color: Colors.black54,
+                                shape: BoxShape.circle,
+                              ),
+                              child: const Icon(
+                                Icons.close,
+                                color: Colors.white,
+                                size: 14,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    )),
+                    ..._videoPaths.asMap().entries.map((e) => GestureDetector(
+                      onTap: () => showDialog(
+                        context: context,
+                        builder: (_) => Dialog(
+                          backgroundColor: Colors.black,
+                          insetPadding: EdgeInsets.zero,
+                          child: _VideoPlayerViewer(
+                            videoPaths: _videoPaths,
+                            initialIndex: e.key,
+                          ),
+                        ),
+                      ),
+                      child: SizedBox(
+                        width: 90,
+                        height: 90,
+                        child: _buildVideoThumbnail(e.value, e.key),
+                      ),
+                    )),
+                    if (_imagePaths.length + _videoPaths.length < 9)
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          GestureDetector(
+                            onTap: _pickImage,
+                            child: Container(
+                              width: 90,
+                              height: 90,
+                              decoration: BoxDecoration(
+                                color: Colors.grey[200],
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: const Icon(
+                                Icons.add_photo_alternate,
+                                size: 32,
+                                color: Colors.grey,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          GestureDetector(
+                            onTap: _pickVideo,
+                            child: Container(
+                              width: 90,
+                              height: 90,
+                              decoration: BoxDecoration(
+                                color: Colors.grey[200],
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: const Icon(
+                                Icons.video_call,
+                                size: 32,
+                                color: Colors.grey,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                  ],
+                ),
+                SizedBox(height: 16),
+                // 语音
+                Row(
+                  children: [
+                    Text('语音：', style: TextStyle(fontSize: 16)),
+                    IconButton(
+                      icon: Icon(Icons.add_circle_outline),
+                      onPressed: _addAudioBox,
+                      tooltip: '添加语音',
+                    ),
+                  ],
+                ),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    ..._audioPaths.asMap().entries.map((entry) {
+                      final idx = entry.key;
+                      final path = entry.value;
+                      return SizedBox(
+                        width: MediaQuery.of(context).size.width / 5 - 24,
+                        child: ResizableAudioBox(
+                          audioPath: path,
+                          onIsRecording: (isRec) {},
+                          onSettingsPressed: () {
+                            showModalBottomSheet(
+                              context: context,
+                              builder: (ctx) => SafeArea(
+                                child: Wrap(
+                                  children: [
+                                    ListTile(
+                                      leading: Icon(Icons.mic),
+                                      title: Text('录制新语音'),
+                                      onTap: () {
+                                        Navigator.pop(ctx);
+                                        _updateAudioPath(idx, '');
+                                      },
+                                    ),
+                                    ListTile(
+                                      leading: Icon(Icons.delete),
+                                      title: Text('删除语音框'),
+                                      onTap: () {
+                                        Navigator.pop(ctx);
+                                        _removeAudioBox(idx);
+                                      },
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
+                          onPathUpdated: (newPath) => _updateAudioPath(idx, newPath),
+                        ),
+                      );
+                    }),
+                  ],
+                ),
+                SizedBox(height: 16),
+                // 天气和心情下拉选择
+                Row(
+                  children: [
+                    Expanded(
+                      child: DropdownButtonFormField<String>(
+                        value: _mood,
+                        decoration: InputDecoration(
+                          labelText: '今天的心情',
+                          prefixIcon: _mood != null
+                              ? SvgPicture.asset(_moodSvgOptions.firstWhere((e) => e['label'] == _mood)['icon'], width: 24, height: 24)
+                              : null,
+                          border: OutlineInputBorder(),
+                        ),
+                        items: _moodSvgOptions.map((opt) => DropdownMenuItem<String>(
+                          value: opt['label'],
+                          child: Row(
+                            children: [
+                              SvgPicture.asset(opt['icon'], width: 24, height: 24),
+                              SizedBox(width: 8),
+                              Text(opt['label']),
+                            ],
+                          ),
+                        )).toList(),
+                        onChanged: (val) => setState(() {
+                          _mood = val;
+                        }),
+                      ),
+                    ),
+                    SizedBox(width: 16),
+                    Expanded(
+                      child: DropdownButtonFormField<String>(
+                        value: _weather,
+                        decoration: InputDecoration(
+                          labelText: '今天的天气',
+                          prefixIcon: _weather != null
+                              ? SvgPicture.asset(_weatherSvgOptions.firstWhere((e) => e['label'] == _weather)['icon'], width: 24, height: 24)
+                              : null,
+                          border: OutlineInputBorder(),
+                        ),
+                        items: _weatherSvgOptions.map((opt) => DropdownMenuItem<String>(
+                          value: opt['label'],
+                          child: Row(
+                            children: [
+                              SvgPicture.asset(opt['icon'], width: 24, height: 24),
+                              SizedBox(width: 8),
+                              Text(opt['label']),
+                            ],
+                          ),
+                        )).toList(),
+                        onChanged: (val) => setState(() {
+                          _weather = val;
+                        }),
+                      ),
+                    ),
+                  ],
+                ),
+                SizedBox(height: 16),
+                // 地点
+                Row(
+                  children: [
+                    const Icon(Icons.location_on_outlined, color: Colors.grey),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: TextField(
+                        controller: TextEditingController(text: _location ?? ''),
+                        decoration: const InputDecoration(
+                          hintText: '请输入地点',
+                          border: InputBorder.none,
+                        ),
+                        onChanged: (val) => setState(() {
+                          _location = val;
+                        }),
+                      ),
+                    ),
+                  ],
+                ),
+                SizedBox(height: 24),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  DiaryEntry _buildEntry() {
+    return DiaryEntry(
+      id: widget.entry?.id ?? const Uuid().v4(),
+      date: _date,
+      content: _contentController.text,
+      imagePaths: _imagePaths,
+      audioPaths: _audioPaths.where((p) => p.isNotEmpty).toList(),
+      videoPaths: _videoPaths,
+      weather: _weather,
+      mood: _mood,
+      location: _location,
+      isFavorite: _isFavorite,
+    );
+  }
+
+  Future<void> _autoSave() async {
+    if (_isSaving) return;
+    _isSaving = true;
+    try {
+      await _diaryService.autoSaveEntry(_buildEntry());
+    } catch (e) {
+      debugPrint('自动保存失败: \\${e.toString()}');
+    } finally {
+      _isSaving = false;
+    }
+  }
+
   Future<void> _pickImage() async {
     final path = await ImagePickerService.pickImage(context);
     if (path != null) {
       setState(() {
         _imagePaths.add(path);
       });
+      await _autoSave();
     }
   }
 
-  void _removeImage(int idx) {
+  void _removeImage(int idx) async {
     setState(() {
       _imagePaths.removeAt(idx);
     });
+    await _autoSave();
   }
 
-  void _addAudioBox() {
+  void _addAudioBox() async {
     setState(() {
       _audioPaths.add('');
     });
+    await _autoSave();
   }
 
-  void _updateAudioPath(int idx, String newPath) {
+  void _updateAudioPath(int idx, String newPath) async {
     setState(() {
       _audioPaths[idx] = newPath;
     });
+    await _autoSave();
   }
 
-  void _removeAudioBox(int idx) {
+  void _removeAudioBox(int idx) async {
     setState(() {
       _audioPaths.removeAt(idx);
     });
+    await _autoSave();
   }
 
-  void _save() {
-    final entry = DiaryEntry(
-      id: widget.entry?.id ?? const Uuid().v4(),
-      date: _date,
-      content: _contentController.text,
-      imagePaths: _imagePaths,
-      audioPaths: _audioPaths.where((p) => p.isNotEmpty).toList(),
-      weather: _weather,
-      mood: _mood,
-      location: _location,
-      isFavorite: _isFavorite,
-    );
-    Navigator.of(context).pop(entry);
+  Future<void> _pickVideo() async {
+    try {
+      final path = await ImagePickerService.pickVideo(context);
+      if (path != null && path.isNotEmpty) {
+        setState(() {
+          _videoPaths.add(path);
+        });
+        await _autoSave();
+      } else {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('未选择或保存视频')),
+          );
+        }
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('选择视频时发生错误：\n${e.toString()}')),
+        );
+      }
+    }
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        leading: IconButton(icon: Icon(Icons.close), onPressed: () => Navigator.of(context).pop()),
-        title: Text('${_date.month}月${_date.day}日  ${_date.hour.toString().padLeft(2, '0')}:${_date.minute.toString().padLeft(2, '0')}  ${_weekdayStr(_date.weekday)}', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 22)),
-        centerTitle: true,
-      ),
-      body: SafeArea(
-        child: SingleChildScrollView(
-          padding: EdgeInsets.symmetric(horizontal: 18, vertical: 8),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+  void _removeVideo(int idx) async {
+    setState(() {
+      _videoPaths.removeAt(idx);
+    });
+    await _autoSave();
+  }
+
+  Widget _buildVideoThumbnail(String path, int index) {
+    return FutureBuilder<File?>(
+      future: MediaService().generateVideoThumbnail(path),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.done && snapshot.hasData && snapshot.data != null) {
+          return Stack(
+            fit: StackFit.expand,
             children: [
-              TextField(
-                controller: _contentController,
-                maxLines: null,
-                style: TextStyle(fontSize: 18),
-                decoration: InputDecoration(
-                  hintText: '记录今日',
-                  border: InputBorder.none,
+              ClipRRect(
+                borderRadius: BorderRadius.circular(10),
+                child: Image.file(
+                  snapshot.data!,
+                  width: 90,
+                  height: 90,
+                  fit: BoxFit.cover,
                 ),
               ),
-              SizedBox(height: 12),
-              // 图片九宫格
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  if (_imagePaths.isNotEmpty)
-                    GestureDetector(
-                      onTap: () => showDialog(
-                        context: context,
-                        builder: (_) => Dialog(
-                          backgroundColor: Colors.black,
-                          insetPadding: EdgeInsets.zero,
-                          child: _ImageGalleryViewer(
-                            imagePaths: _imagePaths,
-                            initialIndex: 0,
-                          ),
-                        ),
-                      ),
-                      child: Stack(
-                        children: [
-                          ClipRRect(
-                            borderRadius: BorderRadius.circular(10),
-                            child: Image.file(
-                              File(_imagePaths[0]),
-                              width: 90,
-                              height: 90,
-                              fit: BoxFit.cover,
-                            ),
-                          ),
-                          Positioned(
-                            right: 0,
-                            top: 0,
-                            child: GestureDetector(
-                              onTap: () => _removeImage(0),
-                              child: Container(
-                                decoration: BoxDecoration(
-                                  color: Colors.black54,
-                                  shape: BoxShape.circle,
-                                ),
-                                child: Icon(Icons.close, color: Colors.white, size: 18),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ..._imagePaths.asMap().entries.skip(1).map((e) => Stack(
-                    children: [
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(10),
-                        child: Image.file(
-                          File(e.value),
-                          width: 90,
-                          height: 90,
-                          fit: BoxFit.cover,
-                        ),
-                      ),
-                      Positioned(
-                        right: 0,
-                        top: 0,
-                        child: GestureDetector(
-                          onTap: () => _removeImage(e.key),
-                          child: Container(
-                            decoration: BoxDecoration(
-                              color: Colors.black54,
-                              shape: BoxShape.circle,
-                            ),
-                            child: Icon(Icons.close, color: Colors.white, size: 18),
-                          ),
-                        ),
-                      ),
-                    ],
-                  )),
-                  if (_imagePaths.length < 9)
-                    GestureDetector(
-                      onTap: _pickImage,
-                      child: Container(
-                        width: 90,
-                        height: 90,
-                        decoration: BoxDecoration(
-                          color: Colors.grey[200],
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        child: Icon(Icons.add, size: 32, color: Colors.grey),
-                      ),
-                    ),
-                ],
-              ),
-              SizedBox(height: 16),
-              // 语音
-              Row(
-                children: [
-                  Text('语音：', style: TextStyle(fontSize: 16)),
-                  IconButton(
-                    icon: Icon(Icons.add_circle_outline),
-                    onPressed: _addAudioBox,
-                    tooltip: '添加语音',
+              Positioned(
+                right: 8,
+                bottom: 8,
+                child: Container(
+                  padding: const EdgeInsets.all(2),
+                  decoration: BoxDecoration(
+                    color: Colors.black45,
+                    borderRadius: BorderRadius.circular(12),
                   ),
-                ],
-              ),
-              ..._audioPaths.asMap().entries.map((entry) {
-                final idx = entry.key;
-                final path = entry.value;
-                return Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 4),
-                  child: ResizableAudioBox(
-                    audioPath: path,
-                    onIsRecording: (isRec) {},
-                    onSettingsPressed: () {
-                      showModalBottomSheet(
-                        context: context,
-                        builder: (ctx) => SafeArea(
-                          child: Wrap(
-                            children: [
-                              ListTile(
-                                leading: Icon(Icons.mic),
-                                title: Text('录制新语音'),
-                                onTap: () {
-                                  Navigator.pop(ctx);
-                                  _updateAudioPath(idx, '');
-                                },
-                              ),
-                              ListTile(
-                                leading: Icon(Icons.delete),
-                                title: Text('删除语音框'),
-                                onTap: () {
-                                  Navigator.pop(ctx);
-                                  _removeAudioBox(idx);
-                                },
-                              ),
-                            ],
-                          ),
-                        ),
-                      );
-                    },
-                    onPathUpdated: (newPath) => _updateAudioPath(idx, newPath),
+                  child: const Icon(
+                    Icons.play_arrow,
+                    size: 16,
+                    color: Colors.white,
                   ),
-                );
-              }),
-              SizedBox(height: 16),
-              // 天气和心情下拉选择
-              Row(
-                children: [
-                  Expanded(
-                    child: DropdownButtonFormField<String>(
-                      value: _mood,
-                      decoration: InputDecoration(
-                        labelText: '今天的心情',
-                        prefixIcon: _mood != null
-                            ? SvgPicture.asset(_moodSvgOptions.firstWhere((e) => e['label'] == _mood)['icon'], width: 24, height: 24)
-                            : null,
-                        border: OutlineInputBorder(),
-                      ),
-                      items: _moodSvgOptions.map((opt) => DropdownMenuItem<String>(
-                        value: opt['label'],
-                        child: Row(
-                          children: [
-                            SvgPicture.asset(opt['icon'], width: 24, height: 24),
-                            SizedBox(width: 8),
-                            Text(opt['label']),
-                          ],
-                        ),
-                      )).toList(),
-                      onChanged: (val) => setState(() => _mood = val),
+                ),
+              ),
+              Positioned(
+                right: 0,
+                top: 0,
+                child: GestureDetector(
+                  onTap: () => _removeVideo(index),
+                  child: Container(
+                    padding: const EdgeInsets.all(4),
+                    decoration: const BoxDecoration(
+                      color: Colors.black54,
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.close,
+                      color: Colors.white,
+                      size: 14,
                     ),
                   ),
-                  SizedBox(width: 16),
-                  Expanded(
-                    child: DropdownButtonFormField<String>(
-                      value: _weather,
-                      decoration: InputDecoration(
-                        labelText: '今天的天气',
-                        prefixIcon: _weather != null
-                            ? SvgPicture.asset(_weatherSvgOptions.firstWhere((e) => e['label'] == _weather)['icon'], width: 24, height: 24)
-                            : null,
-                        border: OutlineInputBorder(),
-                      ),
-                      items: _weatherSvgOptions.map((opt) => DropdownMenuItem<String>(
-                        value: opt['label'],
-                        child: Row(
-                          children: [
-                            SvgPicture.asset(opt['icon'], width: 24, height: 24),
-                            SizedBox(width: 8),
-                            Text(opt['label']),
-                          ],
-                        ),
-                      )).toList(),
-                      onChanged: (val) => setState(() => _weather = val),
-                    ),
-                  ),
-                ],
-              ),
-              SizedBox(height: 16),
-              // 收藏开关
-              Row(
-                children: [
-                  Icon(Icons.favorite, color: _isFavorite ? Colors.red : Colors.grey),
-                  SizedBox(width: 8),
-                  Text('收藏此日记'),
-                  Spacer(),
-                  Switch(
-                    value: _isFavorite,
-                    onChanged: (val) => setState(() => _isFavorite = val),
-                  ),
-                ],
-              ),
-              SizedBox(height: 16),
-              // 地点
-              Row(
-                children: [
-                  const Icon(Icons.location_on_outlined, color: Colors.grey),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: TextField(
-                      controller: TextEditingController(text: _location ?? ''),
-                      decoration: const InputDecoration(
-                        hintText: '请输入地点',
-                        border: InputBorder.none,
-                      ),
-                      onChanged: (val) => setState(() => _location = val),
-                    ),
-                  ),
-                ],
-              ),
-              SizedBox(height: 24),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  TextButton(
-                    onPressed: () => Navigator.of(context).pop(),
-                    child: Text('取消'),
-                  ),
-                  SizedBox(width: 12),
-                  ElevatedButton(
-                    onPressed: _save,
-                    child: Text('保存'),
-                  ),
-                ],
+                ),
               ),
             ],
-          ),
-        ),
-      ),
+          );
+        } else {
+          return Container(
+            width: 90,
+            height: 90,
+            decoration: BoxDecoration(
+              color: Colors.grey[300],
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: const Center(
+              child: Icon(
+                Icons.videocam,
+                size: 32,
+                color: Colors.grey,
+              ),
+            ),
+          );
+        }
+      },
+    );
+  }
+
+  Widget _buildVideoPlayer(String path) {
+    return VideoPlayerWidget(
+      file: File(path),
     );
   }
 
@@ -704,6 +888,81 @@ class _ImageGalleryViewerState extends State<_ImageGalleryViewer> {
           ),
         ],
       ),
+    );
+  }
+}
+
+// 自定义"今"字圆圈icon
+class _TodayCircleIcon extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 32,
+      height: 32,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        border: Border.all(color: Colors.blue, width: 2),
+      ),
+      child: Center(
+        child: Text('今', style: TextStyle(color: Colors.blue, fontWeight: FontWeight.bold, fontSize: 16)),
+      ),
+    );
+  }
+}
+
+// 新增视频全屏播放组件
+class _VideoPlayerViewer extends StatefulWidget {
+  final List<String> videoPaths;
+  final int initialIndex;
+  const _VideoPlayerViewer({
+    required this.videoPaths,
+    required this.initialIndex,
+  });
+
+  @override
+  State<_VideoPlayerViewer> createState() => _VideoPlayerViewerState();
+}
+
+class _VideoPlayerViewerState extends State<_VideoPlayerViewer> {
+  late PageController _pageController;
+  int _currentIndex = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _currentIndex = widget.initialIndex;
+    _pageController = PageController(initialPage: _currentIndex);
+  }
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        PageView.builder(
+          controller: _pageController,
+          itemCount: widget.videoPaths.length,
+          onPageChanged: (idx) => setState(() => _currentIndex = idx),
+          itemBuilder: (context, idx) {
+            return VideoPlayerWidget(
+              file: File(widget.videoPaths[idx]),
+            );
+          },
+        ),
+        Positioned(
+          top: 40,
+          right: 20,
+          child: IconButton(
+            icon: const Icon(Icons.close, color: Colors.white, size: 32),
+            onPressed: () => Navigator.of(context).pop(),
+          ),
+        ),
+      ],
     );
   }
 } 

@@ -8,7 +8,7 @@ import 'resizable_audio_box.dart';
 import 'global_tool_bar.dart' as toolBar;
 import 'media_player_container.dart';
 import 'video_controls_overlay.dart';
-import 'video_player_widget.dart';
+import 'widgets/video_player_widget.dart';
 import 'dart:async';
 import 'package:image_picker/image_picker.dart';
 import 'dart:io';

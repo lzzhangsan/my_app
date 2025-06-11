@@ -6,6 +6,7 @@ class DiaryEntry {
   final String content;
   final List<String> imagePaths;
   final List<String> audioPaths;
+  final List<String> videoPaths;
   final String? weather;
   final String? mood;
   final String? location;
@@ -17,6 +18,7 @@ class DiaryEntry {
     required this.content,
     this.imagePaths = const [],
     this.audioPaths = const [],
+    this.videoPaths = const [],
     this.weather,
     this.mood,
     this.location,
@@ -29,6 +31,7 @@ class DiaryEntry {
     String? content,
     List<String>? imagePaths,
     List<String>? audioPaths,
+    List<String>? videoPaths,
     String? weather,
     String? mood,
     String? location,
@@ -40,6 +43,7 @@ class DiaryEntry {
       content: content ?? this.content,
       imagePaths: imagePaths ?? this.imagePaths,
       audioPaths: audioPaths ?? this.audioPaths,
+      videoPaths: videoPaths ?? this.videoPaths,
       weather: weather ?? this.weather,
       mood: mood ?? this.mood,
       location: location ?? this.location,
@@ -54,6 +58,7 @@ class DiaryEntry {
       'content': content,
       'imagePaths': imagePaths,
       'audioPaths': audioPaths,
+      'videoPaths': videoPaths,
       'weather': weather,
       'mood': mood,
       'location': location,
@@ -68,6 +73,7 @@ class DiaryEntry {
       content: map['content'] as String,
       imagePaths: List<String>.from(map['imagePaths'] ?? []),
       audioPaths: List<String>.from(map['audioPaths'] ?? []),
+      videoPaths: List<String>.from(map['videoPaths'] ?? []),
       weather: map['weather'] as String?,
       mood: map['mood'] as String?,
       location: map['location'] as String?,

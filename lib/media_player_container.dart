@@ -6,7 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as path;
 import 'package:share_plus/share_plus.dart';
-import 'video_player_widget.dart'; // 确保正确导入 VideoPlayerWidget
+import 'widgets/video_player_widget.dart'; // 确保正确导入 VideoPlayerWidget
 import 'core/service_locator.dart';
 import 'services/database_service.dart';
 import 'media_selection_dialog.dart'; // 导入媒体选择对话框
