@@ -751,6 +751,8 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
 
   @override
   Widget build(BuildContext context) {
-    return _mediaWidget ?? Container();
+    return _mediaWidget != null
+        ? SizedBox.expand(child: _mediaWidget!)
+        : Container();
   }
 }

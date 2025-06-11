@@ -1087,7 +1087,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
                 color: _backgroundColor ?? Colors.white,
               ),
             ),
-            MediaPlayerContainer(key: _mediaPlayerKey),
+            Positioned.fill(
+              child: MediaPlayerContainer(key: _mediaPlayerKey),
+            ),
             SingleChildScrollView(
               key: ValueKey('content_scroll_view'),
               controller: _scrollController,
