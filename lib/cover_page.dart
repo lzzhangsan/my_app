@@ -5,7 +5,9 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'dart:io';
 import 'core/service_locator.dart';
 import 'services/database_service.dart';
+import 'services/backup_service.dart';
 import 'resizable_and_configurable_text_box.dart';
+import 'directory_page.dart';
 
 import 'package:uuid/uuid.dart';
 import 'package:sqflite/sqflite.dart';
@@ -575,12 +577,114 @@ class _CoverPageState extends State<CoverPage> {
 
   // 显示恢复数据库的确认对话框
   Future<void> _showRestoreConfirmationDialog() async {
-    bool confirm = await showDialog(
+    final backupService = serviceLocator.get<BackupService>();
+    final backupHistory = backupService.backupHistory;
+    
+    if (backupHistory.isEmpty) {
+      // 如果没有备份历史，显示提示并允许从文件恢复
+      final choice = await showDialog<String>(
+        context: context,
+        builder: (context) {
+          return AlertDialog(
+            title: Text('恢复数据库'),
+            content: Text('当前没有可用的备份历史。您可以选择从外部文件恢复，或者取消操作。'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop('cancel'),
+                child: Text('取消'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.of(context).pop('file'),
+                child: Text('从文件恢复'),
+              ),
+            ],
+          );
+        },
+      );
+      
+      if (choice == 'file') {
+        await _restoreFromFile();
+      }
+      return;
+    }
+    
+    // 显示备份历史选择对话框
+    final selectedBackup = await showDialog<String>(
       context: context,
       builder: (context) {
         return AlertDialog(
-          title: Text('恢复数据库'),
-          content: Text('这将恢复到最近的数据库备份，当前未保存的数据将会丢失。确定要继续吗？'),
+          title: Text('选择要恢复的备份'),
+          content: Container(
+            width: double.maxFinite,
+            height: 400,
+            child: Column(
+              children: [
+                Text('当前有 ${backupHistory.length} 个备份可用：'),
+                SizedBox(height: 16),
+                Expanded(
+                  child: ListView.builder(
+                    itemCount: backupHistory.length,
+                    itemBuilder: (context, index) {
+                      final backup = backupHistory[index];
+                      final sizeKB = (backup.fileSize / 1024).toStringAsFixed(1);
+                      return ListTile(
+                        title: Text(backup.name),
+                        subtitle: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('时间: ${backup.timestamp.toString().substring(0, 19)}'),
+                            Text('大小: ${sizeKB} KB'),
+                            if (backup.description != null) Text('描述: ${backup.description}'),
+                            Text('类型: ${backup.isAutoBackup ? "自动备份" : "手动备份"}'),
+                          ],
+                        ),
+                        leading: Icon(
+                          backup.isAutoBackup ? Icons.schedule : Icons.backup,
+                          color: backup.isAutoBackup ? Colors.blue : Colors.green,
+                        ),
+                        onTap: () => Navigator.of(context).pop(backup.id),
+                      );
+                    },
+                  ),
+                ),
+                SizedBox(height: 16),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    TextButton(
+                      onPressed: () => Navigator.of(context).pop('cancel'),
+                      child: Text('取消'),
+                    ),
+                    TextButton(
+                      onPressed: () => Navigator.of(context).pop('file'),
+                      child: Text('从文件恢复'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+    
+    if (selectedBackup == null || selectedBackup == 'cancel') {
+      return;
+    }
+    
+    if (selectedBackup == 'file') {
+      await _restoreFromFile();
+      return;
+    }
+    
+    // 确认恢复选定的备份
+    final backup = backupHistory.firstWhere((b) => b.id == selectedBackup);
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: Text('确认恢复'),
+          content: Text('确定要恢复备份 "${backup.name}" 吗？\n\n当前未保存的数据将会丢失。'),
           actions: [
             TextButton(
               onPressed: () => Navigator.of(context).pop(false),
@@ -593,30 +697,62 @@ class _CoverPageState extends State<CoverPage> {
           ],
         );
       },
-    ) ??
-        false;
-
+    ) ?? false;
+    
     if (confirm) {
-      // 选择要恢复的备份文件
-      final result = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: ['zip'],
-      );
-      
-      if (result != null && result.files.single.path != null) {
-        try {
-          await getService<DatabaseService>().restoreDatabase(result.files.single.path!);
+      try {
+        final success = await backupService.restoreBackup(selectedBackup);
+        if (success) {
           // 重新加载数据
           await _loadBackgroundImage();
           await _loadContent();
+          
+          // 刷新目录页面数据
+          DirectoryPage.refresh();
+          
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('数据库已恢复。')),
+            SnackBar(content: Text('备份 "${backup.name}" 已成功恢复。')),
           );
-        } catch (e) {
+        } else {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('恢复失败: $e')),
+            SnackBar(content: Text('恢复失败，请检查备份文件完整性。')),
           );
         }
+      } catch (e) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('恢复失败: $e')),
+        );
+      }
+    }
+  }
+  
+  // 从文件恢复的方法
+  Future<void> _restoreFromFile() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['zip'],
+    );
+    
+    if (result != null && result.files.single.path != null) {
+      try {
+        await getService<DatabaseService>().restoreDatabase(result.files.single.path!);
+        
+        // 重新初始化数据库服务以确保连接正确
+        await getService<DatabaseService>().initialize();
+        
+        // 重新加载数据
+        await _loadBackgroundImage();
+        await _loadContent();
+        // 刷新目录页面数据
+        DirectoryPage.refresh();
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('数据库已从文件恢复。')),
+        );
+      } catch (e) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('恢复失败: $e')),
+        );
       }
     }
   }
@@ -828,9 +964,21 @@ class _CoverPageState extends State<CoverPage> {
                 ),
                 
                 _buildSettingItem(
+                  icon: Icons.backup,
+                  iconColor: Colors.green[700]!,
+                  title: '备份数据库',
+                  subtitle: '创建当前数据的备份',
+                  onTap: () {
+                    Navigator.pop(context);
+                    _showBackupDialog();
+                  },
+                ),
+                
+                _buildSettingItem(
                   icon: Icons.restore,
                   iconColor: Colors.amber[800]!,
                   title: '恢复数据库',
+                  subtitle: '从备份恢复数据',
                   onTap: () {
                     Navigator.pop(context);
                     _showRestoreConfirmationDialog();
@@ -1087,6 +1235,145 @@ class _CoverPageState extends State<CoverPage> {
           SnackBar(content: Text('清空封面页时出错，请重试。')),
         );
       }
+    }
+  }
+  
+  // 显示备份对话框
+  Future<void> _showBackupDialog() async {
+    final TextEditingController nameController = TextEditingController();
+    final TextEditingController descriptionController = TextEditingController();
+    
+    // 生成默认备份名称
+    final now = DateTime.now();
+    final defaultName = 'manual_backup_${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}_${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}';
+    nameController.text = defaultName;
+    
+    final result = await showDialog<Map<String, String>>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: Text('创建备份'),
+          content: Container(
+            width: double.maxFinite,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  '将创建包含所有数据的完整备份',
+                  style: TextStyle(
+                    color: Colors.grey[600],
+                    fontSize: 14,
+                  ),
+                ),
+                SizedBox(height: 16),
+                TextField(
+                  controller: nameController,
+                  decoration: InputDecoration(
+                    labelText: '备份名称',
+                    hintText: '输入备份名称',
+                    border: OutlineInputBorder(),
+                  ),
+                  maxLength: 50,
+                ),
+                SizedBox(height: 8),
+                TextField(
+                  controller: descriptionController,
+                  decoration: InputDecoration(
+                    labelText: '备份描述（可选）',
+                    hintText: '输入备份描述',
+                    border: OutlineInputBorder(),
+                  ),
+                  maxLines: 2,
+                  maxLength: 100,
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: Text('取消'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                final name = nameController.text.trim();
+                if (name.isEmpty) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('请输入备份名称')),
+                  );
+                  return;
+                }
+                
+                Navigator.of(context).pop({
+                  'name': name,
+                  'description': descriptionController.text.trim(),
+                });
+              },
+              child: Text('创建备份'),
+            ),
+          ],
+        );
+      },
+    );
+    
+    if (result != null) {
+      await _createBackup(
+        name: result['name']!,
+        description: result['description']!.isEmpty ? null : result['description'],
+      );
+    }
+  }
+  
+  // 创建备份
+  Future<void> _createBackup({required String name, String? description}) async {
+    try {
+      // 显示加载指示器
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) {
+          return AlertDialog(
+            content: Row(
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(width: 16),
+                Text('正在创建备份...'),
+              ],
+            ),
+          );
+        },
+      );
+      
+      final backupService = serviceLocator.get<BackupService>();
+      final backupRecord = await backupService.createBackup(
+        name: name,
+        description: description,
+        isAutoBackup: false,
+      );
+      
+      // 关闭加载指示器
+      Navigator.of(context).pop();
+      
+      if (backupRecord != null) {
+        final sizeKB = (backupRecord.fileSize / 1024).toStringAsFixed(1);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('备份创建成功！\n名称: ${backupRecord.name}\n大小: ${sizeKB} KB'),
+            duration: Duration(seconds: 3),
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('备份创建失败，请重试')),
+        );
+      }
+    } catch (e) {
+      // 关闭加载指示器（如果还在显示）
+      Navigator.of(context, rootNavigator: true).pop();
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('备份创建失败: $e')),
+      );
     }
   }
 }

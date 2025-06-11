@@ -54,6 +54,7 @@ class ServiceLocator {
       
       // 注册备份服务
       registerSingleton<BackupService>(BackupService());
+      await get<BackupService>().initialize();
       
       // 初始化性能监控服务
       await get<PerformanceService>().initialize();

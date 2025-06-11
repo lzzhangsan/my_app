@@ -1725,6 +1725,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     if (mounted) {
       print('强制刷新页面状态');
       _loadBackgroundSettings();
+      _loadData(); // 重新加载目录数据
       setState(() {});
     }
   }
