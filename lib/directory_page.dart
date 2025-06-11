@@ -16,18 +16,13 @@ import 'services/image_picker_service.dart';
 class DirectoryPage extends StatefulWidget {
   final Function(String) onDocumentOpen;
 
-  static final GlobalKey<_DirectoryPageState> directoryKey = GlobalKey<_DirectoryPageState>();
-
-  DirectoryPage({Key? key, required this.onDocumentOpen})
-      : super(key: key ?? directoryKey);
+  DirectoryPage({Key? key, required this.onDocumentOpen}) : super(key: key);
 
   @override
   _DirectoryPageState createState() => _DirectoryPageState();
 
   static void refresh() {
-    if (directoryKey.currentState != null) {
-      directoryKey.currentState!.forceRefresh();
-    }
+    // 需要外部持有DirectoryPage的State引用时可用其它方式实现
   }
 }
 

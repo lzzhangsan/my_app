@@ -7,6 +7,7 @@ import 'media_manager_page.dart';
 import 'browser_page.dart';
 import 'core/service_locator.dart';
 import 'package:flutter/services.dart';
+import 'diary_page.dart';
 
 // 添加全局导航键，以便可以在应用的任何地方访问Navigator
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
@@ -45,7 +46,7 @@ class MyApp extends StatelessWidget {
       ),
       navigatorKey: navigatorKey, // 添加导航键
       debugShowCheckedModeBanner: false,
-      home: MainScreen(key: MainScreenState.mainScreenStateKey),
+      home: MainScreen(),
     );
   }
 }
@@ -77,22 +78,6 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
        debugPrint('[_MainScreenState] _isBrowserHomePage state is already $isHomePage');
     }
   }
-
-  // Add a static method to control PageView switching
-  // This method is less relevant now that we have direct state management
-  // but keeping it for potential external navigation needs.
-  static void goToBrowserPage(bool showHomePage) {
-    if (mainScreenStateKey.currentState != null) {
-      mainScreenStateKey.currentState!.goToPage(3); // Index 3 is BrowserPage
-      // The BrowserPage will update _isBrowserHomePage via callback when its build method runs after navigation
-    }
-  }
-
-  // GlobalKey for MainScreenState
-  static final GlobalKey<MainScreenState> mainScreenStateKey = GlobalKey<MainScreenState>();
-  
-  // 获取当前实例
-  static MainScreenState? get instance => mainScreenStateKey.currentState;
 
   // Method for page switching
   void goToPage(int index) {
@@ -149,6 +134,8 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         return '媒体管理';
       case 3:
         return '浏览器';
+      case 4:
+        return '日记本';
       default:
         return '未知页面';
     }
@@ -188,7 +175,7 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                 duration: const Duration(milliseconds: 300),
                 curve: Curves.easeInOut,
               );
-            } else if (event.logicalKey == LogicalKeyboardKey.arrowRight && _currentPage < 3) {
+            } else if (event.logicalKey == LogicalKeyboardKey.arrowRight && _currentPage < 4) {
               _pageController.nextPage(
                 duration: const Duration(milliseconds: 300),
                 curve: Curves.easeInOut,
@@ -253,6 +240,7 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                   DirectoryPage(onDocumentOpen: _onDocumentOpen),
                   const MediaManagerPage(),
                   BrowserPage(onBrowserHomePageChanged: _handleBrowserHomePageChanged), // Pass the callback
+                  const DiaryPage(),
                 ],
               ),
             ),

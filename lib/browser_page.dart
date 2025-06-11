@@ -1152,7 +1152,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
           TextButton(
             onPressed: () => Navigator.of(context).pop({'download': true, 'mediaType': selectedType}),
-            child: const Text('解析测试'),
+          child: const Text('解析测试'),
           ),
         ],
       ),
@@ -1714,21 +1714,9 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                 icon: const Icon(Icons.photo_library),
                 onPressed: () {
                   print('[BrowserPage] 媒体库按钮被点击');
-                  // 使用MainScreen的PageController导航到媒体管理页面（索引2）
-                  final mainScreenState = MainScreenState.instance;
-                  print('[BrowserPage] mainScreenState: $mainScreenState');
-                  if (mainScreenState != null) {
-                    print('[BrowserPage] 准备调用goToPage(2)');
-                    mainScreenState.goToPage(2); // 索引2是媒体管理页面
-                    print('[BrowserPage] 已调用goToPage(2)');
-                  } else {
-                    print('[BrowserPage] 错误: mainScreenState为null，无法导航');
-                    // 尝试使用Navigator直接导航到媒体管理页面
-                    print('[BrowserPage] 尝试使用Navigator直接导航');
-                    Navigator.of(context).push(
-                      MaterialPageRoute(builder: (context) => const MediaManagerPage()),
-                    );
-                  }
+                  Navigator.of(context).push(
+                    MaterialPageRoute(builder: (context) => const MediaManagerPage()),
+                  );
                 },
                 tooltip: '媒体库',
               ),
@@ -2238,15 +2226,9 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
             action: SnackBarAction(
               label: '查看',
               onPressed: () {
-                // 导航到媒体管理页面
-                final mainScreenState = MainScreenState.instance;
-                if (mainScreenState != null) {
-                  mainScreenState.goToPage(2);
-                } else {
-                  Navigator.of(context).push(
-                    MaterialPageRoute(builder: (context) => const MediaManagerPage()),
-                  );
-                }
+                Navigator.of(context).push(
+                  MaterialPageRoute(builder: (context) => const MediaManagerPage()),
+                );
               },
             ),
           ),
@@ -2502,11 +2484,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
               action: SnackBarAction(
                 label: '查看',
                 onPressed: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (context) => const MediaManagerPage(),
-                    ),
+                  Navigator.of(context).push(
+                    MaterialPageRoute(builder: (context) => const MediaManagerPage()),
                   );
                 },
               ),

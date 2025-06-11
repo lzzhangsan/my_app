@@ -41,6 +41,8 @@ dependencies:
   teledart: 0.6.1  # Telegram Bot API 客户端
   html: ^0.15.4  # HTML 解析支持
   mime: ^1.0.4  # MIME 类型检测
+  intl: ^0.18.1
+  flutter_svg: ^2.0.10
 
 dev_dependencies:
   flutter_test:
@@ -53,6 +55,22 @@ flutter:
   assets:
     - assets/icon/icon.png
     - assets/media/
+    - assets/icon/weather_sunny.svg
+    - assets/icon/weather_cloudy.svg
+    - assets/icon/weather_rain.svg
+    - assets/icon/weather_snow.svg
+    - assets/icon/weather_fog.svg
+    - assets/icon/weather_wind.svg
+    - assets/icon/weather_thunder.svg
+    - assets/icon/weather_haze.svg
+    - assets/icon/mood_happy.svg
+    - assets/icon/mood_calm.svg
+    - assets/icon/mood_sad.svg
+    - assets/icon/mood_angry.svg
+    - assets/icon/mood_excited.svg
+    - assets/icon/mood_depressed.svg
+    - assets/icon/mood_surprised.svg
+    - assets/icon/mood_neutral.svg
 
   # To add custom fonts to your application, add a fonts section here,
   # in this "flutter" section. Each entry in this list should have a
