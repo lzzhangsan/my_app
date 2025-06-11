@@ -129,55 +129,13 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
             children: [
               SizedBox.expand(
                 child: FittedBox(
-                  fit: BoxFit.cover,
+                  fit: BoxFit.fitWidth,
+                  alignment: Alignment.center,
                   child: SizedBox(
                     width: _controller.value.size.width,
                     height: _controller.value.size.height,
                     child: VideoPlayer(_controller),
                   ),
-                ),
-              ),
-              Container(
-                color: Colors.black.withOpacity(0.5),
-                padding: EdgeInsets.symmetric(vertical: 8),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(
-                      _formatDuration(_controller.value.position),
-                      style: TextStyle(color: Colors.white, fontSize: 12),
-                    ),
-                    SizedBox(width: 8),
-                    SizedBox(
-                      width: 200,
-                      height: 4,
-                      child: SliderTheme(
-                        data: SliderTheme.of(context).copyWith(
-                          activeTrackColor: Colors.white,
-                          inactiveTrackColor: Colors.white.withOpacity(0.3),
-                          thumbColor: Colors.white,
-                          overlayColor: Colors.white.withOpacity(0.2),
-                          trackHeight: 4,
-                          thumbShape: RoundSliderThumbShape(enabledThumbRadius: 4),
-                          overlayShape: RoundSliderOverlayShape(overlayRadius: 8),
-                        ),
-                        child: Slider(
-                          value: _controller.value.position.inMilliseconds.toDouble(),
-                          min: 0,
-                          max: _controller.value.duration.inMilliseconds.toDouble(),
-                          onChanged: (value) {
-                            final Duration position = Duration(milliseconds: value.round());
-                            _controller.seekTo(position);
-                          },
-                        ),
-                      ),
-                    ),
-                    SizedBox(width: 8),
-                    Text(
-                      _formatDuration(_controller.value.duration),
-                      style: TextStyle(color: Colors.white, fontSize: 12),
-                    ),
-                  ],
                 ),
               ),
             ],
