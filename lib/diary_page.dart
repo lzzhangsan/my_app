@@ -24,7 +24,7 @@ class _DiaryPageState extends State<DiaryPage> {
   DateTime _selectedDate = DateTime.now();
   String _searchKeyword = '';
   bool _showFavoritesOnly = false;
-  bool _calendarExpanded = true;
+  bool _calendarExpanded = false;
 
   @override
   void initState() {
@@ -95,11 +95,7 @@ class _DiaryPageState extends State<DiaryPage> {
           mainAxisAlignment: MainAxisAlignment.center,
           mainAxisSize: MainAxisSize.min,
           children: [
-            IconButton(
-              icon: const Icon(Icons.add),
-              tooltip: '新增日记',
-              onPressed: () => _addOrEditEntry(),
-            ),
+            Padding(padding: const EdgeInsets.only(left: 8.0), child: IconButton(icon: const Icon(Icons.add, color: Colors.blue), tooltip: '新增日记', onPressed: () => _addOrEditEntry())),
             const SizedBox(width: 4),
             const Text('日记本'),
           ],
@@ -182,7 +178,7 @@ class _DiaryPageState extends State<DiaryPage> {
                     ),
                   ],
                 ),
-                Text('${_selectedDate.year}年${_selectedDate.month}月', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                Text(full ? '${_selectedDate.year}年${_selectedDate.month}月' : '${_selectedDate.year}年${_selectedDate.month}月 ${_selectedDate.day}日', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                 Row(
                   children: [
                     IconButton(
@@ -273,7 +269,7 @@ class _DiaryPageState extends State<DiaryPage> {
         return Card(
           margin: const EdgeInsets.symmetric(vertical: 8),
           child: ListTile(
-            title: Text(DateFormat('HH:mm').format(entry.date)),
+            title: Text(DateFormat('yyyy年MM月dd日 HH:mm').format(entry.date)),
             subtitle: Text(entry.content, maxLines: 2, overflow: TextOverflow.ellipsis),
             leading: entry.imagePaths.isNotEmpty
                 ? ClipRRect(
