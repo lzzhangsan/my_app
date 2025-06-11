@@ -14,8 +14,14 @@ class DiaryService {
   }
 
   Future<void> saveEntries(List<DiaryEntry> entries) async {
+    // 先去重，只保留每个id的最后一条
+    final Map<String, DiaryEntry> unique = {};
+    for (final e in entries) {
+      unique[e.id] = e;
+    }
+    final uniqueList = unique.values.toList();
     final prefs = await SharedPreferences.getInstance();
-    final jsonString = json.encode(entries.map((e) => e.toMap()).toList());
+    final jsonString = json.encode(uniqueList.map((e) => e.toMap()).toList());
     await prefs.setString(_diaryKey, jsonString);
   }
 

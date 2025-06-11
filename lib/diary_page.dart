@@ -41,8 +41,8 @@ class _DiaryPageState extends State<DiaryPage> {
   List<DiaryEntry> get _entriesForSelectedDate {
     final entries = _entries.where((e) => isSameDay(e.date, _selectedDate)).toList();
     final filtered = _showFavoritesOnly ? entries.where((e) => e.isFavorite).toList() : entries;
-    if (_searchKeyword.isEmpty) return filtered;
-    return filtered.where((e) => e.content.contains(_searchKeyword)).toList();
+    if (_searchKeyword.isEmpty) return filtered..sort((a, b) => b.date.compareTo(a.date));
+    return filtered.where((e) => e.content.contains(_searchKeyword)).toList()..sort((a, b) => b.date.compareTo(a.date));
   }
 
   bool isSameDay(DateTime a, DateTime b) {
@@ -285,6 +285,7 @@ class DiaryEditPage extends StatefulWidget {
 class _DiaryEditPageState extends State<DiaryEditPage> {
   late TextEditingController _contentController;
   late DateTime _date;
+  late String _entryId;
   List<String> _imagePaths = [];
   List<String> _audioPaths = [];
   List<String> _videoPaths = [];
@@ -294,6 +295,7 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
   bool _isFavorite = false;
   final DiaryService _diaryService = DiaryService();
   bool _isSaving = false;
+  final Map<String, File?> _videoThumbnailCache = {};
 
   final List<Map<String, dynamic>> _weatherSvgOptions = [
     {'icon': 'assets/icon/weather_sunny.svg', 'label': '晴'},
@@ -319,15 +321,43 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
   @override
   void initState() {
     super.initState();
-    _date = widget.entry?.date ?? widget.date;
-    _contentController = TextEditingController(text: widget.entry?.content ?? '');
-    _imagePaths = List<String>.from(widget.entry?.imagePaths ?? []);
-    _audioPaths = List<String>.from(widget.entry?.audioPaths ?? []);
-    _videoPaths = List<String>.from(widget.entry?.videoPaths ?? []);
-    _weather = widget.entry?.weather;
-    _mood = widget.entry?.mood;
-    _location = widget.entry?.location;
-    _isFavorite = widget.entry?.isFavorite ?? false;
+    _initEntryId();
+    _loadDraftOrEntry();
+  }
+
+  void _initEntryId() {
+    if (widget.entry?.id != null) {
+      _entryId = widget.entry!.id;
+    } else {
+      _entryId = const Uuid().v4();
+    }
+  }
+
+  Future<void> _loadDraftOrEntry() async {
+    final entries = await _diaryService.loadEntries();
+    DiaryEntry? draft = entries.firstWhere((e) => e.id == _entryId, orElse: () => DiaryEntry(
+      id: _entryId,
+      date: widget.entry?.date ?? widget.date,
+      content: widget.entry?.content ?? '',
+      imagePaths: widget.entry?.imagePaths ?? [],
+      audioPaths: widget.entry?.audioPaths ?? [],
+      videoPaths: widget.entry?.videoPaths ?? [],
+      weather: widget.entry?.weather,
+      mood: widget.entry?.mood,
+      location: widget.entry?.location,
+      isFavorite: widget.entry?.isFavorite ?? false,
+    ));
+    setState(() {
+      _date = draft.date;
+      _contentController = TextEditingController(text: draft.content);
+      _imagePaths = List<String>.from(draft.imagePaths);
+      _audioPaths = List<String>.from(draft.audioPaths);
+      _videoPaths = List<String>.from(draft.videoPaths);
+      _weather = draft.weather;
+      _mood = draft.mood;
+      _location = draft.location;
+      _isFavorite = draft.isFavorite;
+    });
   }
 
   @override
@@ -396,13 +426,18 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
                         GestureDetector(
                           onTap: () => showDialog(
                             context: context,
-                            builder: (_) => Dialog(
-                              backgroundColor: Colors.black,
-                              insetPadding: EdgeInsets.zero,
-                              child: _ImageGalleryViewer(
-                                imagePaths: _imagePaths,
-                                initialIndex: e.key,
-                              ),
+                            builder: (_) => MediaPreviewDialog(
+                              mediaPaths: [..._imagePaths, ..._videoPaths],
+                              initialIndex: e.key,
+                              isVideo: false,
+                              onDelete: (idx) {
+                                if (idx < _imagePaths.length) {
+                                  _removeImage(idx);
+                                } else {
+                                  _removeVideo(idx - _imagePaths.length);
+                                }
+                                Navigator.of(context).pop();
+                              },
                             ),
                           ),
                           child: ClipRRect(
@@ -436,23 +471,51 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
                         ),
                       ],
                     )),
-                    ..._videoPaths.asMap().entries.map((e) => GestureDetector(
-                      onTap: () => showDialog(
-                        context: context,
-                        builder: (_) => Dialog(
-                          backgroundColor: Colors.black,
-                          insetPadding: EdgeInsets.zero,
-                          child: _VideoPlayerViewer(
-                            videoPaths: _videoPaths,
-                            initialIndex: e.key,
+                    ..._videoPaths.asMap().entries.map((e) => Stack(
+                      children: [
+                        GestureDetector(
+                          onTap: () => showDialog(
+                            context: context,
+                            builder: (_) => MediaPreviewDialog(
+                              mediaPaths: [..._imagePaths, ..._videoPaths],
+                              initialIndex: _imagePaths.length + e.key,
+                              isVideo: true,
+                              onDelete: (idx) {
+                                if (idx < _imagePaths.length) {
+                                  _removeImage(idx);
+                                } else {
+                                  _removeVideo(idx - _imagePaths.length);
+                                }
+                                Navigator.of(context).pop();
+                              },
+                            ),
+                          ),
+                          child: SizedBox(
+                            width: 90,
+                            height: 90,
+                            child: _buildVideoThumbnail(_videoPaths[e.key], e.key),
                           ),
                         ),
-                      ),
-                      child: SizedBox(
-                        width: 90,
-                        height: 90,
-                        child: _buildVideoThumbnail(e.value, e.key),
-                      ),
+                        Positioned(
+                          right: 0,
+                          top: 0,
+                          child: GestureDetector(
+                            onTap: () => _removeVideo(e.key),
+                            child: Container(
+                              padding: const EdgeInsets.all(4),
+                              decoration: const BoxDecoration(
+                                color: Colors.black54,
+                                shape: BoxShape.circle,
+                              ),
+                              child: const Icon(
+                                Icons.close,
+                                color: Colors.white,
+                                size: 14,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
                     )),
                     if (_imagePaths.length + _videoPaths.length < 9)
                       Row(
@@ -546,7 +609,10 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
                               ),
                             );
                           },
-                          onPathUpdated: (newPath) => _updateAudioPath(idx, newPath),
+                          onPathUpdated: (newPath) async {
+                            _updateAudioPath(idx, newPath);
+                            await _autoSave();
+                          },
                         ),
                       );
                     }),
@@ -576,9 +642,12 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
                             ],
                           ),
                         )).toList(),
-                        onChanged: (val) => setState(() {
-                          _mood = val;
-                        }),
+                        onChanged: (val) async {
+                          setState(() {
+                            _mood = val;
+                          });
+                          await _autoSave();
+                        },
                       ),
                     ),
                     SizedBox(width: 16),
@@ -602,9 +671,12 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
                             ],
                           ),
                         )).toList(),
-                        onChanged: (val) => setState(() {
-                          _weather = val;
-                        }),
+                        onChanged: (val) async {
+                          setState(() {
+                            _weather = val;
+                          });
+                          await _autoSave();
+                        },
                       ),
                     ),
                   ],
@@ -622,9 +694,12 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
                           hintText: '请输入地点',
                           border: InputBorder.none,
                         ),
-                        onChanged: (val) => setState(() {
-                          _location = val;
-                        }),
+                        onChanged: (val) async {
+                          setState(() {
+                            _location = val;
+                          });
+                          await _autoSave();
+                        },
                       ),
                     ),
                   ],
@@ -640,7 +715,7 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
 
   DiaryEntry _buildEntry() {
     return DiaryEntry(
-      id: widget.entry?.id ?? const Uuid().v4(),
+      id: _entryId,
       date: _date,
       content: _contentController.text,
       imagePaths: _imagePaths,
@@ -735,10 +810,46 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
   }
 
   Widget _buildVideoThumbnail(String path, int index) {
+    if (_videoThumbnailCache.containsKey(path)) {
+      final file = _videoThumbnailCache[path];
+      if (file != null) {
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: Image.file(
+                file,
+                width: 90,
+                height: 90,
+                fit: BoxFit.cover,
+              ),
+            ),
+            Positioned(
+              right: 8,
+              bottom: 8,
+              child: Container(
+                padding: const EdgeInsets.all(2),
+                decoration: BoxDecoration(
+                  color: Colors.black45,
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.play_arrow,
+                  size: 18,
+                  color: Colors.white,
+                ),
+              ),
+            ),
+          ],
+        );
+      }
+    }
     return FutureBuilder<File?>(
       future: MediaService().generateVideoThumbnail(path),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.done && snapshot.hasData && snapshot.data != null) {
+          _videoThumbnailCache[path] = snapshot.data;
           return Stack(
             fit: StackFit.expand,
             children: [
@@ -758,31 +869,12 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
                   padding: const EdgeInsets.all(2),
                   decoration: BoxDecoration(
                     color: Colors.black45,
-                    borderRadius: BorderRadius.circular(12),
+                    shape: BoxShape.circle,
                   ),
                   child: const Icon(
                     Icons.play_arrow,
-                    size: 16,
+                    size: 18,
                     color: Colors.white,
-                  ),
-                ),
-              ),
-              Positioned(
-                right: 0,
-                top: 0,
-                child: GestureDetector(
-                  onTap: () => _removeVideo(index),
-                  child: Container(
-                    padding: const EdgeInsets.all(4),
-                    decoration: const BoxDecoration(
-                      color: Colors.black54,
-                      shape: BoxShape.circle,
-                    ),
-                    child: const Icon(
-                      Icons.close,
-                      color: Colors.white,
-                      size: 14,
-                    ),
                   ),
                 ),
               ),
@@ -963,6 +1055,103 @@ class _VideoPlayerViewerState extends State<_VideoPlayerViewer> {
           ),
         ),
       ],
+    );
+  }
+}
+
+// 新增MediaPreviewDialog组件，支持图片/视频混合滑动预览、删除、放大、关闭等操作，操作方式与媒体管理界面一致。
+class MediaPreviewDialog extends StatefulWidget {
+  final List<String> mediaPaths;
+  final int initialIndex;
+  final bool isVideo;
+  final void Function(int idx) onDelete;
+  const MediaPreviewDialog({
+    Key? key,
+    required this.mediaPaths,
+    required this.initialIndex,
+    required this.isVideo,
+    required this.onDelete,
+  }) : super(key: key);
+
+  @override
+  State<MediaPreviewDialog> createState() => _MediaPreviewDialogState();
+}
+
+class _MediaPreviewDialogState extends State<MediaPreviewDialog> {
+  late PageController _pageController;
+  late int _currentIndex;
+
+  @override
+  void initState() {
+    super.initState();
+    _currentIndex = widget.initialIndex;
+    _pageController = PageController(initialPage: _currentIndex);
+  }
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      insetPadding: EdgeInsets.zero,
+      child: Stack(
+        children: [
+          PageView.builder(
+            controller: _pageController,
+            itemCount: widget.mediaPaths.length,
+            onPageChanged: (idx) => setState(() => _currentIndex = idx),
+            itemBuilder: (context, idx) {
+              final path = widget.mediaPaths[idx];
+              if (path.endsWith('.mp4') || path.endsWith('.mov') || path.endsWith('.avi')) {
+                // 视频
+                return SizedBox.expand(
+                  child: FittedBox(
+                    fit: BoxFit.cover,
+                    child: SizedBox(
+                      width: MediaQuery.of(context).size.width,
+                      height: MediaQuery.of(context).size.height,
+                      child: VideoPlayerWidget(file: File(path)),
+                    ),
+                  ),
+                );
+              } else {
+                // 图片
+                return SizedBox.expand(
+                  child: FittedBox(
+                    fit: BoxFit.cover,
+                    child: Image.file(
+                      File(path),
+                      width: MediaQuery.of(context).size.width,
+                      height: MediaQuery.of(context).size.height,
+                    ),
+                  ),
+                );
+              }
+            },
+          ),
+          Positioned(
+            right: 0,
+            top: 0,
+            child: IconButton(
+              icon: Icon(Icons.close, color: Colors.white, size: 28),
+              onPressed: () => Navigator.of(context).pop(),
+            ),
+          ),
+          Positioned(
+            right: 0,
+            bottom: 0,
+            child: IconButton(
+              icon: Icon(Icons.delete, color: Colors.red, size: 28),
+              onPressed: () => widget.onDelete(_currentIndex),
+            ),
+          ),
+        ],
+      ),
     );
   }
 } 
