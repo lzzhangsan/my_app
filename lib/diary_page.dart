@@ -24,6 +24,7 @@ class _DiaryPageState extends State<DiaryPage> {
   DateTime _selectedDate = DateTime.now();
   String _searchKeyword = '';
   bool _showFavoritesOnly = false;
+  bool _calendarExpanded = true;
 
   @override
   void initState() {
@@ -76,11 +77,33 @@ class _DiaryPageState extends State<DiaryPage> {
     _loadEntries();
   }
 
+  void _toggleCalendar([bool? expand]) {
+    setState(() {
+      if (expand != null) {
+        _calendarExpanded = expand;
+      } else {
+        _calendarExpanded = !_calendarExpanded;
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('日记本'),
+        title: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              icon: const Icon(Icons.add),
+              tooltip: '新增日记',
+              onPressed: () => _addOrEditEntry(),
+            ),
+            const SizedBox(width: 4),
+            const Text('日记本'),
+          ],
+        ),
         centerTitle: true,
         actions: [
           IconButton(
@@ -97,7 +120,21 @@ class _DiaryPageState extends State<DiaryPage> {
       ),
       body: Column(
         children: [
-          _buildCalendar(),
+          GestureDetector(
+            onVerticalDragUpdate: (details) {
+              if (details.delta.dy > 8) {
+                _toggleCalendar(true);
+              } else if (details.delta.dy < -8) {
+                _toggleCalendar(false);
+              }
+            },
+            child: AnimatedCrossFade(
+              duration: const Duration(milliseconds: 250),
+              crossFadeState: _calendarExpanded ? CrossFadeState.showFirst : CrossFadeState.showSecond,
+              firstChild: _buildCalendar(full: true),
+              secondChild: _buildCalendar(full: false),
+            ),
+          ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
             child: TextField(
@@ -113,15 +150,10 @@ class _DiaryPageState extends State<DiaryPage> {
           Expanded(child: _buildDiaryList()),
         ],
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: () => _addOrEditEntry(),
-        child: const Icon(Icons.add),
-        tooltip: '新增日记',
-      ),
     );
   }
 
-  Widget _buildCalendar() {
+  Widget _buildCalendar({bool full = true}) {
     final now = DateTime.now();
     final firstDayOfMonth = DateTime(_selectedDate.year, _selectedDate.month, 1);
     final lastDayOfMonth = DateTime(_selectedDate.year, _selectedDate.month + 1, 0);
@@ -166,45 +198,62 @@ class _DiaryPageState extends State<DiaryPage> {
                 ),
               ],
             ),
-            GridView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 7,
-                childAspectRatio: 1.1,
-                mainAxisSpacing: 2,
-                crossAxisSpacing: 2,
+            if (full) ...[
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceAround,
+                children: const [
+                  Text('日'), Text('一'), Text('二'), Text('三'), Text('四'), Text('五'), Text('六'),
+                ],
               ),
-              itemCount: weekDayOffset + days.length,
-              itemBuilder: (context, index) {
-                if (index < weekDayOffset) {
-                  return const SizedBox.shrink();
-                }
-                final day = days[index - weekDayOffset];
-                final isSelected = isSameDay(day, _selectedDate);
-                final hasEntry = _entries.any((e) => isSameDay(e.date, day));
-                return GestureDetector(
-                  onTap: () => _onDateSelected(day),
-                  child: Container(
-                    margin: const EdgeInsets.all(1),
-                    decoration: BoxDecoration(
-                      color: isSelected ? Colors.blueAccent : (hasEntry ? Colors.blue.withOpacity(0.2) : null),
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: Center(
-                      child: Text(
-                        '${day.day}',
-                        style: TextStyle(
-                          fontSize: 14,
-                          color: isSelected ? Colors.white : Colors.black87,
-                          fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+              GridView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 7,
+                  childAspectRatio: 1.1,
+                  mainAxisSpacing: 2,
+                  crossAxisSpacing: 2,
+                ),
+                itemCount: weekDayOffset + days.length,
+                itemBuilder: (context, index) {
+                  if (index < weekDayOffset) {
+                    return const SizedBox.shrink();
+                  }
+                  final day = days[index - weekDayOffset];
+                  final isSelected = isSameDay(day, _selectedDate);
+                  final hasEntry = _entries.any((e) => isSameDay(e.date, day));
+                  return GestureDetector(
+                    onTap: () => _onDateSelected(day),
+                    child: Container(
+                      margin: const EdgeInsets.all(1),
+                      decoration: BoxDecoration(
+                        color: isSelected ? Colors.blueAccent : (hasEntry ? Colors.blue.withOpacity(0.2) : null),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Center(
+                        child: Text(
+                          '${day.day}',
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: isSelected ? Colors.white : Colors.black87,
+                            fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                          ),
                         ),
                       ),
                     ),
-                  ),
-                );
-              },
-            ),
+                  );
+                },
+              ),
+            ] else ...[
+              const SizedBox(height: 8),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceAround,
+                children: const [
+                  Text('日'), Text('一'), Text('二'), Text('三'), Text('四'), Text('五'), Text('六'),
+                ],
+              ),
+              const SizedBox(height: 8),
+            ],
           ],
         ),
       ),
