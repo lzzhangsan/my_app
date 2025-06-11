@@ -43,9 +43,12 @@ class _ResizableImageBoxState extends State<ResizableImageBox> {
           child: widget.imagePath.isNotEmpty
               ? ClipRRect(
             borderRadius: BorderRadius.circular(10),
-            child: Image.file(
-              File(widget.imagePath),
-              fit: BoxFit.cover,
+            child: FittedBox(
+              fit: BoxFit.fitWidth,
+              alignment: Alignment.center,
+              child: Image.file(
+                File(widget.imagePath),
+              ),
             ),
           )
               : Center(child: Text('点击左上角设置按钮更改图片')),
