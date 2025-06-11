@@ -20,6 +20,8 @@ class _DiaryPageState extends State<DiaryPage> {
   final DiaryService _diaryService = DiaryService();
   List<DiaryEntry> _entries = [];
   DateTime _selectedDate = DateTime.now();
+  String _searchKeyword = '';
+  bool _showFavoritesOnly = false;
 
   @override
   void initState() {
@@ -34,7 +36,12 @@ class _DiaryPageState extends State<DiaryPage> {
     });
   }
 
-  List<DiaryEntry> get _entriesForSelectedDate => _entries.where((e) => isSameDay(e.date, _selectedDate)).toList();
+  List<DiaryEntry> get _entriesForSelectedDate {
+    final entries = _entries.where((e) => isSameDay(e.date, _selectedDate)).toList();
+    final filtered = _showFavoritesOnly ? entries.where((e) => e.isFavorite).toList() : entries;
+    if (_searchKeyword.isEmpty) return filtered;
+    return filtered.where((e) => e.content.contains(_searchKeyword)).toList();
+  }
 
   bool isSameDay(DateTime a, DateTime b) {
     return a.year == b.year && a.month == b.month && a.day == b.day;
@@ -73,10 +80,39 @@ class _DiaryPageState extends State<DiaryPage> {
       appBar: AppBar(
         title: const Text('日记本'),
         centerTitle: true,
+        actions: [
+          IconButton(
+            icon: Icon(_showFavoritesOnly ? Icons.star : Icons.star_border),
+            tooltip: _showFavoritesOnly ? '显示全部' : '只看收藏',
+            onPressed: () => setState(() => _showFavoritesOnly = !_showFavoritesOnly),
+          ),
+        ],
       ),
       body: Column(
         children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              TextButton.icon(
+                icon: Icon(Icons.today),
+                label: Text('回到今天'),
+                onPressed: () => setState(() => _selectedDate = DateTime.now()),
+              ),
+            ],
+          ),
           _buildCalendar(),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            child: TextField(
+              decoration: InputDecoration(
+                prefixIcon: Icon(Icons.search),
+                hintText: '搜索日记...',
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                contentPadding: EdgeInsets.symmetric(vertical: 0, horizontal: 8),
+              ),
+              onChanged: (value) => setState(() => _searchKeyword = value),
+            ),
+          ),
           Expanded(child: _buildDiaryList()),
         ],
       ),
@@ -172,20 +208,40 @@ class _DiaryPageState extends State<DiaryPage> {
             leading: entry.imagePaths.isNotEmpty
                 ? ClipRRect(
                     borderRadius: BorderRadius.circular(8),
-                    child: Image.asset(entry.imagePaths.first, width: 48, height: 48, fit: BoxFit.cover),
+                    child: Image.file(
+                      File(entry.imagePaths.first),
+                      width: 48,
+                      height: 48,
+                      fit: BoxFit.cover,
+                      errorBuilder: (context, error, stackTrace) => Icon(Icons.broken_image, size: 40),
+                    ),
                   )
                 : const Icon(Icons.book, size: 40),
-            trailing: PopupMenuButton<String>(
-              onSelected: (value) {
-                if (value == 'edit') {
-                  _addOrEditEntry(entry: entry);
-                } else if (value == 'delete') {
-                  _deleteEntry(entry);
-                }
-              },
-              itemBuilder: (context) => [
-                const PopupMenuItem(value: 'edit', child: Text('编辑')),
-                const PopupMenuItem(value: 'delete', child: Text('删除')),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  icon: Icon(entry.isFavorite ? Icons.star : Icons.star_border, color: entry.isFavorite ? Colors.amber : null),
+                  tooltip: entry.isFavorite ? '取消收藏' : '收藏',
+                  onPressed: () async {
+                    final updated = entry.copyWith(isFavorite: !entry.isFavorite);
+                    await _diaryService.updateEntry(updated);
+                    _loadEntries();
+                  },
+                ),
+                PopupMenuButton<String>(
+                  onSelected: (value) {
+                    if (value == 'edit') {
+                      _addOrEditEntry(entry: entry);
+                    } else if (value == 'delete') {
+                      _deleteEntry(entry);
+                    }
+                  },
+                  itemBuilder: (context) => [
+                    const PopupMenuItem(value: 'edit', child: Text('编辑')),
+                    const PopupMenuItem(value: 'delete', child: Text('删除')),
+                  ],
+                ),
               ],
             ),
             onTap: () => _addOrEditEntry(entry: entry),
@@ -213,6 +269,7 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
   String? _weather;
   String? _mood;
   String? _location;
+  bool _isFavorite = false;
 
   final List<Map<String, dynamic>> _weatherSvgOptions = [
     {'icon': 'assets/icon/weather_sunny.svg', 'label': '晴'},
@@ -245,6 +302,7 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
     _weather = widget.entry?.weather;
     _mood = widget.entry?.mood;
     _location = widget.entry?.location;
+    _isFavorite = widget.entry?.isFavorite ?? false;
   }
 
   @override
@@ -296,6 +354,7 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
       weather: _weather,
       mood: _mood,
       location: _location,
+      isFavorite: _isFavorite,
     );
     Navigator.of(context).pop(entry);
   }
@@ -331,42 +390,73 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
                 spacing: 8,
                 runSpacing: 8,
                 children: [
-                  ..._imagePaths.asMap().entries.map((e) => GestureDetector(
-                    onTap: () => showDialog(
-                      context: context,
-                      builder: (_) => Dialog(
-                        child: InteractiveViewer(
-                          child: Image.file(File(e.value)),
+                  if (_imagePaths.isNotEmpty)
+                    GestureDetector(
+                      onTap: () => showDialog(
+                        context: context,
+                        builder: (_) => Dialog(
+                          backgroundColor: Colors.black,
+                          insetPadding: EdgeInsets.zero,
+                          child: _ImageGalleryViewer(
+                            imagePaths: _imagePaths,
+                            initialIndex: 0,
+                          ),
                         ),
                       ),
-                    ),
-                    child: Stack(
-                      children: [
-                        ClipRRect(
-                          borderRadius: BorderRadius.circular(10),
-                          child: Image.file(
-                            File(e.value),
-                            width: 90,
-                            height: 90,
-                            fit: BoxFit.cover,
-                          ),
-                        ),
-                        Positioned(
-                          right: 0,
-                          top: 0,
-                          child: GestureDetector(
-                            onTap: () => _removeImage(e.key),
-                            child: Container(
-                              decoration: BoxDecoration(
-                                color: Colors.black54,
-                                shape: BoxShape.circle,
-                              ),
-                              child: Icon(Icons.close, color: Colors.white, size: 18),
+                      child: Stack(
+                        children: [
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(10),
+                            child: Image.file(
+                              File(_imagePaths[0]),
+                              width: 90,
+                              height: 90,
+                              fit: BoxFit.cover,
                             ),
                           ),
-                        ),
-                      ],
+                          Positioned(
+                            right: 0,
+                            top: 0,
+                            child: GestureDetector(
+                              onTap: () => _removeImage(0),
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  color: Colors.black54,
+                                  shape: BoxShape.circle,
+                                ),
+                                child: Icon(Icons.close, color: Colors.white, size: 18),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
+                  ..._imagePaths.asMap().entries.skip(1).map((e) => Stack(
+                    children: [
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(10),
+                        child: Image.file(
+                          File(e.value),
+                          width: 90,
+                          height: 90,
+                          fit: BoxFit.cover,
+                        ),
+                      ),
+                      Positioned(
+                        right: 0,
+                        top: 0,
+                        child: GestureDetector(
+                          onTap: () => _removeImage(e.key),
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: Colors.black54,
+                              shape: BoxShape.circle,
+                            ),
+                            child: Icon(Icons.close, color: Colors.white, size: 18),
+                          ),
+                        ),
+                      ),
+                    ],
                   )),
                   if (_imagePaths.length < 9)
                     GestureDetector(
@@ -435,28 +525,73 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
                 );
               }),
               SizedBox(height: 16),
-              // 天气选择
+              // 天气和心情下拉选择
               Row(
                 children: [
-                  Text('天气：', style: TextStyle(fontSize: 16)),
-                  ..._weatherSvgOptions.map((opt) => IconButton(
-                    icon: SvgPicture.asset(opt['icon'], width: 32, height: 32, color: _weather == opt['label'] ? Colors.blue : Colors.grey),
-                    onPressed: () => setState(() => _weather = opt['label']),
-                    tooltip: opt['label'],
-                  )),
+                  Expanded(
+                    child: DropdownButtonFormField<String>(
+                      value: _mood,
+                      decoration: InputDecoration(
+                        labelText: '今天的心情',
+                        prefixIcon: _mood != null
+                            ? SvgPicture.asset(_moodSvgOptions.firstWhere((e) => e['label'] == _mood)['icon'], width: 24, height: 24)
+                            : null,
+                        border: OutlineInputBorder(),
+                      ),
+                      items: _moodSvgOptions.map((opt) => DropdownMenuItem<String>(
+                        value: opt['label'],
+                        child: Row(
+                          children: [
+                            SvgPicture.asset(opt['icon'], width: 24, height: 24),
+                            SizedBox(width: 8),
+                            Text(opt['label']),
+                          ],
+                        ),
+                      )).toList(),
+                      onChanged: (val) => setState(() => _mood = val),
+                    ),
+                  ),
+                  SizedBox(width: 16),
+                  Expanded(
+                    child: DropdownButtonFormField<String>(
+                      value: _weather,
+                      decoration: InputDecoration(
+                        labelText: '今天的天气',
+                        prefixIcon: _weather != null
+                            ? SvgPicture.asset(_weatherSvgOptions.firstWhere((e) => e['label'] == _weather)['icon'], width: 24, height: 24)
+                            : null,
+                        border: OutlineInputBorder(),
+                      ),
+                      items: _weatherSvgOptions.map((opt) => DropdownMenuItem<String>(
+                        value: opt['label'],
+                        child: Row(
+                          children: [
+                            SvgPicture.asset(opt['icon'], width: 24, height: 24),
+                            SizedBox(width: 8),
+                            Text(opt['label']),
+                          ],
+                        ),
+                      )).toList(),
+                      onChanged: (val) => setState(() => _weather = val),
+                    ),
+                  ),
                 ],
               ),
-              // 心情选择
+              SizedBox(height: 16),
+              // 收藏开关
               Row(
                 children: [
-                  Text('心情：', style: TextStyle(fontSize: 16)),
-                  ..._moodSvgOptions.map((opt) => IconButton(
-                    icon: SvgPicture.asset(opt['icon'], width: 32, height: 32, color: _mood == opt['label'] ? Colors.orange : Colors.grey),
-                    onPressed: () => setState(() => _mood = opt['label']),
-                    tooltip: opt['label'],
-                  )),
+                  Icon(Icons.favorite, color: _isFavorite ? Colors.red : Colors.grey),
+                  SizedBox(width: 8),
+                  Text('收藏此日记'),
+                  Spacer(),
+                  Switch(
+                    value: _isFavorite,
+                    onChanged: (val) => setState(() => _isFavorite = val),
+                  ),
                 ],
               ),
+              SizedBox(height: 16),
               // 地点
               Row(
                 children: [
@@ -499,5 +634,76 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
   String _weekdayStr(int weekday) {
     const weekdays = ['一', '二', '三', '四', '五', '六', '日'];
     return '周${weekdays[(weekday - 1) % 7]}';
+  }
+}
+
+// 图片全屏滑动放大组件
+class _ImageGalleryViewer extends StatefulWidget {
+  final List<String> imagePaths;
+  final int initialIndex;
+  const _ImageGalleryViewer({required this.imagePaths, required this.initialIndex});
+  @override
+  State<_ImageGalleryViewer> createState() => _ImageGalleryViewerState();
+}
+
+class _ImageGalleryViewerState extends State<_ImageGalleryViewer> {
+  late PageController _pageController;
+  double _scale = 1.0;
+  int _currentIndex = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _currentIndex = widget.initialIndex;
+    _pageController = PageController(initialPage: _currentIndex);
+  }
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onDoubleTap: () {
+        setState(() {
+          _scale = _scale == 1.0 ? 2.0 : 1.0;
+        });
+      },
+      child: Stack(
+        children: [
+          PageView.builder(
+            controller: _pageController,
+            itemCount: widget.imagePaths.length,
+            onPageChanged: (idx) => setState(() => _currentIndex = idx),
+            itemBuilder: (context, idx) {
+              return Center(
+                child: InteractiveViewer(
+                  minScale: 1.0,
+                  maxScale: 4.0,
+                  scaleEnabled: true,
+                  child: Image.file(
+                    File(widget.imagePaths[idx]),
+                    fit: BoxFit.contain,
+                    width: MediaQuery.of(context).size.width,
+                    height: MediaQuery.of(context).size.height,
+                  ),
+                ),
+              );
+            },
+          ),
+          Positioned(
+            top: 40,
+            right: 20,
+            child: IconButton(
+              icon: Icon(Icons.close, color: Colors.white, size: 32),
+              onPressed: () => Navigator.of(context).pop(),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 } 

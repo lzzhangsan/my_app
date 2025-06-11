@@ -9,6 +9,7 @@ class DiaryEntry {
   final String? weather;
   final String? mood;
   final String? location;
+  final bool isFavorite;
 
   DiaryEntry({
     required this.id,
@@ -19,6 +20,7 @@ class DiaryEntry {
     this.weather,
     this.mood,
     this.location,
+    this.isFavorite = false,
   });
 
   DiaryEntry copyWith({
@@ -30,6 +32,7 @@ class DiaryEntry {
     String? weather,
     String? mood,
     String? location,
+    bool? isFavorite,
   }) {
     return DiaryEntry(
       id: id ?? this.id,
@@ -40,6 +43,7 @@ class DiaryEntry {
       weather: weather ?? this.weather,
       mood: mood ?? this.mood,
       location: location ?? this.location,
+      isFavorite: isFavorite ?? this.isFavorite,
     );
   }
 
@@ -53,6 +57,7 @@ class DiaryEntry {
       'weather': weather,
       'mood': mood,
       'location': location,
+      'isFavorite': isFavorite,
     };
   }
 
@@ -66,6 +71,7 @@ class DiaryEntry {
       weather: map['weather'] as String?,
       mood: map['mood'] as String?,
       location: map['location'] as String?,
+      isFavorite: map['isFavorite'] == true,
     );
   }
 } 
