@@ -91,15 +91,8 @@ class _DiaryPageState extends State<DiaryPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Padding(padding: const EdgeInsets.only(left: 8.0), child: IconButton(icon: const Icon(Icons.add, color: Colors.blue), tooltip: '新增日记', onPressed: () => _addOrEditEntry())),
-            const SizedBox(width: 4),
-            const Text('日记本'),
-          ],
-        ),
+        leading: IconButton(icon: const Icon(Icons.add, color: Colors.blue), tooltip: '新增日记', onPressed: () => _addOrEditEntry()),
+        title: const Center(child: Text('日记本')),
         centerTitle: true,
         actions: [
           IconButton(
@@ -269,7 +262,45 @@ class _DiaryPageState extends State<DiaryPage> {
         return Card(
           margin: const EdgeInsets.symmetric(vertical: 8),
           child: ListTile(
-            title: Text(DateFormat('yyyy年MM月dd日 HH:mm').format(entry.date)),
+            title: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  DateFormat('yyyy年MM月dd日').format(entry.date),
+                  style: TextStyle(fontWeight: FontWeight.w500),
+                ),
+                Padding(
+                  padding: const EdgeInsets.only(right: 8.0),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      PopupMenuButton<String>(
+                        onSelected: (value) {
+                          if (value == 'edit') {
+                            _addOrEditEntry(entry: entry);
+                          } else if (value == 'delete') {
+                            _deleteEntry(entry);
+                          }
+                        },
+                        itemBuilder: (context) => [
+                          const PopupMenuItem(value: 'edit', child: Text('编辑')),
+                          const PopupMenuItem(value: 'delete', child: Text('删除')),
+                        ],
+                      ),
+                      IconButton(
+                        icon: Icon(entry.isFavorite ? Icons.favorite : Icons.favorite_border, color: entry.isFavorite ? Colors.red : null),
+                        tooltip: entry.isFavorite ? '取消收藏' : '收藏',
+                        onPressed: () async {
+                          final updated = entry.copyWith(isFavorite: !entry.isFavorite);
+                          await _diaryService.updateEntry(updated);
+                          _loadEntries();
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
             subtitle: Text(entry.content, maxLines: 2, overflow: TextOverflow.ellipsis),
             leading: entry.imagePaths.isNotEmpty
                 ? ClipRRect(
@@ -283,33 +314,7 @@ class _DiaryPageState extends State<DiaryPage> {
                     ),
                   )
                 : const Icon(Icons.book, size: 40),
-            trailing: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                IconButton(
-                  icon: Icon(entry.isFavorite ? Icons.favorite : Icons.favorite_border, color: entry.isFavorite ? Colors.red : null),
-                  tooltip: entry.isFavorite ? '取消收藏' : '收藏',
-                  onPressed: () async {
-                    final updated = entry.copyWith(isFavorite: !entry.isFavorite);
-                    await _diaryService.updateEntry(updated);
-                    _loadEntries();
-                  },
-                ),
-                PopupMenuButton<String>(
-                  onSelected: (value) {
-                    if (value == 'edit') {
-                      _addOrEditEntry(entry: entry);
-                    } else if (value == 'delete') {
-                      _deleteEntry(entry);
-                    }
-                  },
-                  itemBuilder: (context) => [
-                    const PopupMenuItem(value: 'edit', child: Text('编辑')),
-                    const PopupMenuItem(value: 'delete', child: Text('删除')),
-                  ],
-                ),
-              ],
-            ),
+            trailing: null,
             onTap: () => _addOrEditEntry(entry: entry),
           ),
         );
