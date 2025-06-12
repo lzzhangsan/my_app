@@ -7,6 +7,8 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:crypto/crypto.dart';
+import '../core/service_locator.dart';
+import 'database_service.dart';
 
 class BackupService {
   static final BackupService _instance = BackupService._internal();
@@ -271,32 +273,37 @@ class BackupService {
         (record) => record.id == backupId,
         orElse: () => throw Exception('备份记录不存在: $backupId'),
       );
-      
       // 检查备份文件是否存在
       final backupFile = File(backupRecord.filePath);
       if (!await backupFile.exists()) {
         throw Exception('备份文件不存在: ${backupRecord.filePath}');
       }
-      
       // 验证文件完整性
       final currentHash = await _calculateFileHash(backupFile);
       if (currentHash != backupRecord.fileHash) {
         throw Exception('备份文件已损坏');
       }
-      
       // 读取并解压备份文件
       final compressedData = await backupFile.readAsBytes();
       final jsonString = utf8.decode(gzip.decode(compressedData));
       final backupContent = jsonDecode(jsonString) as Map<String, dynamic>;
-      
+      // 恢复前清空所有表和目录
+      await getService<DatabaseService>().clearAllData();
+      final appDir = await getApplicationDocumentsDirectory();
+      final List<String> dirsToClear = ['documents', 'media'];
+      for (final dirName in dirsToClear) {
+        final dir = Directory('${appDir.path}/$dirName');
+        if (await dir.exists()) {
+          await dir.delete(recursive: true);
+          await dir.create(recursive: true);
+        }
+      }
       // 恢复数据
       final data = backupContent['data'] as Map<String, dynamic>;
       await _restoreData(data);
-      
       if (kDebugMode) {
         print('备份恢复成功: ${backupRecord.name}');
       }
-      
       return true;
     } catch (e) {
       if (kDebugMode) {
@@ -310,16 +317,12 @@ class BackupService {
   Future<void> _restoreData(Map<String, dynamic> data) async {
     try {
       final appDir = await getApplicationDocumentsDirectory();
-      
       for (final entry in data.entries) {
         final pathName = entry.key;
         final pathData = entry.value as Map<String, dynamic>;
-        
         if (pathName == 'preferences') {
-          // 恢复SharedPreferences
           await _restorePreferences(pathData);
         } else {
-          // 恢复目录数据
           final targetDir = Directory('${appDir.path}/$pathName');
           await _restoreDirectory(targetDir, pathData);
         }

@@ -3427,4 +3427,21 @@ class DatabaseService {
       await backupDatabaseFileWithMeta(remark: remark, isAuto: true);
     }
   }
+
+  Future<void> clearAllData() async {
+    final db = await database;
+    // 关闭外键约束，防止级联删除冲突
+    await db.execute('PRAGMA foreign_keys = OFF');
+    await db.delete('folders');
+    await db.delete('documents');
+    await db.delete('text_boxes');
+    await db.delete('image_boxes');
+    await db.delete('audio_boxes');
+    await db.delete('document_settings');
+    await db.delete('directory_settings');
+    await db.delete('cover_settings');
+    await db.delete('cover_image');
+    // ...如有其他表可补充
+    await db.execute('PRAGMA foreign_keys = ON');
+  }
 }

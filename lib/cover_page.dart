@@ -21,6 +21,8 @@ import 'performance_monitor_page.dart';
 import 'package:file_picker/file_picker.dart';
 import 'dart:convert';
 import 'package:flutter/services.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:path/path.dart' as p;
 
 class CoverPage extends StatefulWidget {
   const CoverPage({super.key});
@@ -731,10 +733,7 @@ class _CoverPageState extends State<CoverPage> {
   
   // 从文件恢复的方法
   Future<void> _restoreFromFile() async {
-    final result = await FilePicker.platform.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: ['zip'],
-    );
+    final result = await FilePicker.platform.pickFiles(type: FileType.any);
     
     if (result != null && result.files.single.path != null) {
       try {
@@ -987,6 +986,28 @@ class _CoverPageState extends State<CoverPage> {
                     _showPhysicalRestoreDialog();
                   },
                   isLast: true,
+                ),
+                // 添加导出全部数据按钮
+                _buildSettingItem(
+                  icon: Icons.backup,
+                  iconColor: Colors.teal,
+                  title: '导出全部数据',
+                  subtitle: '一键备份所有数据到本地或分享',
+                  onTap: () async {
+                    Navigator.pop(context);
+                    await _exportAllData();
+                  },
+                ),
+                // 添加恢复全部数据按钮
+                _buildSettingItem(
+                  icon: Icons.restore,
+                  iconColor: Colors.indigo,
+                  title: '恢复全部数据',
+                  subtitle: '从zip包一键恢复所有数据',
+                  onTap: () async {
+                    Navigator.pop(context);
+                    await _importAllData();
+                  },
                 ),
               ],
             ),
@@ -1355,5 +1376,52 @@ class _CoverPageState extends State<CoverPage> {
         );
       },
     );
+  }
+
+  Future<void> _exportAllData() async {
+    try {
+      final backupService = getService<BackupService>();
+      await backupService.initialize();
+      final backupRecord = await backupService.createBackup(name: '全量导出_${DateTime.now().millisecondsSinceEpoch}');
+      if (backupRecord == null) throw Exception('导出失败');
+      await Share.shareXFiles([XFile(backupRecord.filePath)], text: '我的全部数据备份');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('全部数据已导出，可分享或保存')),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('导出失败: $e')),
+      );
+    }
+  }
+
+  Future<void> _importAllData() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(type: FileType.any);
+      if (result == null || result.files.isEmpty) return;
+      final file = File(result.files.single.path!);
+      final backupService = getService<BackupService>();
+      await backupService.initialize();
+      // 解析文件名获取备份ID
+      final fileName = p.basename(file.path);
+      final backupId = fileName.replaceAll('.backup', '');
+      // 先将文件复制到备份目录
+      final backupDir = Directory(p.join((await getApplicationDocumentsDirectory()).path, 'backups'));
+      if (!await backupDir.exists()) await backupDir.create(recursive: true);
+      final targetPath = p.join(backupDir.path, fileName);
+      await file.copy(targetPath);
+      final success = await backupService.restoreBackup(backupId);
+      if (success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('全部数据已恢复')),
+        );
+      } else {
+        throw Exception('恢复失败');
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('恢复失败: $e')),
+      );
+    }
   }
 }
