@@ -160,16 +160,16 @@ class _PerformanceMonitorPageState extends State<PerformanceMonitorPage>
 
   Widget _buildMetricsView() {
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _buildStatusCard(),
-          const SizedBox(height: 16),
+          const SizedBox(height: 12),
           _buildMetricsGrid(),
-          const SizedBox(height: 16),
+          const SizedBox(height: 12),
           _buildDetailedInfo(),
-          const SizedBox(height: 16),
+          const SizedBox(height: 12),
           _buildActionButtons(),
         ],
       ),
@@ -252,51 +252,45 @@ class _PerformanceMonitorPageState extends State<PerformanceMonitorPage>
   }
 
   Widget _buildMetricsGrid() {
-    return GridView.count(
-      crossAxisCount: 2,
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      crossAxisSpacing: 12,
-      mainAxisSpacing: 12,
-      childAspectRatio: 1.2,
+    return Row(
       children: [
-        _buildMetricCard(
-          title: '内存使用',
-          value: '${(_currentMetric!.memoryPercentage * 100).toStringAsFixed(1)}%',
-          subtitle: '${(_currentMetric!.memoryUsage / (1024 * 1024)).toStringAsFixed(0)}/${(_currentMetric!.memoryTotal / (1024 * 1024)).toStringAsFixed(0)}MB',
-          icon: Icons.memory,
-          color: _getMemoryColor(),
-          progress: _currentMetric!.memoryPercentage,
+        Expanded(
+          child: _buildCompactMetricCard(
+            title: '内存使用',
+            value: '${(_currentMetric!.memoryPercentage * 100).toStringAsFixed(1)}%',
+            subtitle: '${(_currentMetric!.memoryUsage / (1024 * 1024)).toStringAsFixed(0)}MB',
+            icon: Icons.memory,
+            color: _getMemoryColor(),
+            progress: _currentMetric!.memoryPercentage,
+          ),
         ),
-        _buildMetricCard(
-          title: 'CPU使用',
-          value: '${(_currentMetric!.cpuUsage * 100).toStringAsFixed(1)}%',
-          subtitle: '空闲状态',
-          icon: Icons.speed,
-          color: _getCpuColor(),
-          progress: _currentMetric!.cpuUsage,
+        const SizedBox(width: 8),
+        Expanded(
+          child: _buildCompactMetricCard(
+            title: 'CPU使用',
+            value: '${(_currentMetric!.cpuUsage * 100).toStringAsFixed(1)}%',
+            subtitle: _getCpuDescription(),
+            icon: Icons.speed,
+            color: _getCpuColor(),
+            progress: _currentMetric!.cpuUsage,
+          ),
         ),
-        _buildMetricCard(
-          title: '帧率',
-          value: '${_currentMetric!.frameRate.toStringAsFixed(0)} FPS',
-          subtitle: '流畅状态',
-          icon: Icons.videocam,
-          color: _getFrameRateColor(),
-          progress: _currentMetric!.frameRate / 60.0,
-        ),
-        _buildMetricCard(
-          title: '电池电量',
-          value: '${(_currentMetric!.batteryLevel * 100).toStringAsFixed(0)}%',
-          subtitle: '电量充足',
-          icon: Icons.battery_full,
-          color: _getBatteryColor(),
-          progress: _currentMetric!.batteryLevel,
+        const SizedBox(width: 8),
+        Expanded(
+          child: _buildCompactMetricCard(
+            title: '帧率',
+            value: '${_currentMetric!.frameRate.toStringAsFixed(0)} FPS',
+            subtitle: _getFrameRateDescription(),
+            icon: Icons.videocam,
+            color: _getFrameRateColor(),
+            progress: _currentMetric!.frameRate / 60.0,
+          ),
         ),
       ],
     );
   }
 
-  Widget _buildMetricCard({
+  Widget _buildCompactMetricCard({
     required String title,
     required String value,
     required String subtitle,
@@ -306,11 +300,11 @@ class _PerformanceMonitorPageState extends State<PerformanceMonitorPage>
   }) {
     return Card(
       elevation: 4,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10), // 减小内边距
+        padding: const EdgeInsets.all(8),
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(8),
           gradient: LinearGradient(
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
@@ -319,18 +313,18 @@ class _PerformanceMonitorPageState extends State<PerformanceMonitorPage>
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min, // 确保卡片高度适应内容
+          mainAxisSize: MainAxisSize.min,
           children: [
             Row(
               children: [
-                Icon(icon, color: color, size: 20), // 减小图标大小
-                const SizedBox(width: 6), // 减小间距
+                Icon(icon, color: color, size: 16),
+                const SizedBox(width: 4),
                 Expanded(
                   child: Text(
                     title,
                     style: TextStyle(
                       color: Colors.grey.shade700,
-                      fontSize: 13, // 减小字体大小
+                      fontSize: 11,
                       fontWeight: FontWeight.w500,
                     ),
                     overflow: TextOverflow.ellipsis,
@@ -338,31 +332,31 @@ class _PerformanceMonitorPageState extends State<PerformanceMonitorPage>
                 ),
               ],
             ),
-            const SizedBox(height: 6), // 减小间距
+            const SizedBox(height: 4),
             Text(
               value,
               style: TextStyle(
                 color: color,
-                fontSize: 18, // 减小字体大小
+                fontSize: 16,
                 fontWeight: FontWeight.bold,
               ),
             ),
-            const SizedBox(height: 2), // 减小间距
+            const SizedBox(height: 2),
             Text(
               subtitle,
               style: TextStyle(
                 color: Colors.grey.shade600,
-                fontSize: 11, // 减小字体大小
+                fontSize: 9,
               ),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
-            const SizedBox(height: 6), // 减小间距
+            const SizedBox(height: 4),
             LinearProgressIndicator(
               value: progress.clamp(0.0, 1.0),
               backgroundColor: Colors.grey.shade300,
               valueColor: AlwaysStoppedAnimation<Color>(color),
-              minHeight: 3, // 减小进度条高度
+              minHeight: 2,
             ),
           ],
         ),
@@ -375,39 +369,39 @@ class _PerformanceMonitorPageState extends State<PerformanceMonitorPage>
       elevation: 4,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       child: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
               children: [
-                Icon(Icons.analytics, color: Colors.blue.shade600),
-                const SizedBox(width: 8),
+                Icon(Icons.analytics, color: Colors.blue.shade600, size: 18),
+                const SizedBox(width: 6),
                 Text(
                   '详细信息',
                   style: TextStyle(
                     color: Colors.grey.shade800,
-                    fontSize: 16,
+                    fontSize: 14,
                     fontWeight: FontWeight.bold,
                   ),
                 ),
               ],
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 8),
             _buildInfoRow('监控时长', _getMonitoringDuration()),
             _buildInfoRow('数据点数', '${_performanceService.metrics.length}'),
             _buildInfoRow('更新时间', _formatTime(_currentMetric!.timestamp)),
             if (_averageMetric != null) ...[
-              const Divider(height: 20),
+              const Divider(height: 16),
               Text(
                 '5分钟平均值',
                 style: TextStyle(
                   color: Colors.grey.shade700,
-                  fontSize: 14,
+                  fontSize: 12,
                   fontWeight: FontWeight.w500,
                 ),
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 6),
               _buildInfoRow('平均内存', '${(_averageMetric!.memoryPercentage * 100).toStringAsFixed(1)}%'),
               _buildInfoRow('平均CPU', '${(_averageMetric!.cpuUsage * 100).toStringAsFixed(1)}%'),
               _buildInfoRow('平均帧率', '${_averageMetric!.frameRate.toStringAsFixed(1)} FPS'),
@@ -420,7 +414,7 @@ class _PerformanceMonitorPageState extends State<PerformanceMonitorPage>
 
   Widget _buildInfoRow(String label, String value) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
+      padding: const EdgeInsets.symmetric(vertical: 2),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
@@ -428,14 +422,14 @@ class _PerformanceMonitorPageState extends State<PerformanceMonitorPage>
             label,
             style: TextStyle(
               color: Colors.grey.shade600,
-              fontSize: 14,
+              fontSize: 12,
             ),
           ),
           Text(
             value,
             style: TextStyle(
               color: Colors.grey.shade800,
-              fontSize: 14,
+              fontSize: 12,
               fontWeight: FontWeight.w500,
             ),
           ),
@@ -522,12 +516,7 @@ class _PerformanceMonitorPageState extends State<PerformanceMonitorPage>
     return Colors.green;
   }
 
-  Color _getBatteryColor() {
-    final level = _currentMetric!.batteryLevel;
-    if (level < 0.2) return Colors.red;
-    if (level < 0.5) return Colors.orange;
-    return Colors.green;
-  }
+
 
   String _getCpuDescription() {
     final usage = _currentMetric!.cpuUsage;
@@ -545,13 +534,7 @@ class _PerformanceMonitorPageState extends State<PerformanceMonitorPage>
     return '可能卡顿';
   }
 
-  String _getBatteryDescription() {
-    final level = _currentMetric!.batteryLevel;
-    if (level >= 0.8) return '电量充足';
-    if (level >= 0.5) return '电量正常';
-    if (level >= 0.2) return '电量偏低';
-    return '电量不足';
-  }
+
 
   String _getMonitoringDuration() {
     final metrics = _performanceService.metrics;
