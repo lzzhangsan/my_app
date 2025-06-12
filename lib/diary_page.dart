@@ -572,7 +572,6 @@ class _DiaryPageState extends State<DiaryPage> {
         if (!await dataFile.exists()) throw Exception('未找到日记数据文件');
         final List<dynamic> entryList = jsonDecode(await dataFile.readAsString());
         final List<DiaryEntry> entries = entryList.map((e) => DiaryEntry.fromMap(e)).toList();
-        await _diaryService.saveEntries(entries);
         // 恢复媒体文件到原目录
         final Map<String, String> typeDirs = {
           'images': 'imagePaths',
@@ -591,6 +590,21 @@ class _DiaryPageState extends State<DiaryPage> {
             }
           }
         }
+        // 修正音频路径为新手机本地路径
+        for (final entry in entries) {
+          if (entry.audioPaths.isNotEmpty) {
+            for (int i = 0; i < entry.audioPaths.length; i++) {
+              final oldPath = entry.audioPaths[i];
+              if (oldPath.isEmpty) continue;
+              final fileName = oldPath.split(Platform.pathSeparator).last;
+              final newPath = '${appDocDir.path}/audios/$fileName';
+              if (File(newPath).existsSync()) {
+                entry.audioPaths[i] = newPath;
+              }
+            }
+          }
+        }
+        await _diaryService.saveEntries(entries);
         await tempDir.delete(recursive: true);
         if (mounted) Navigator.pop(context);
         await _loadEntries();
