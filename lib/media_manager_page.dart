@@ -1997,9 +1997,10 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           // 如果是文件夹，递归获取其中的项目
           final subItems = await _getAllMediaItemsRecursively(item['id']);
           allItems.addAll(subItems);
+        } else {
+          // 只添加非文件夹的媒体文件
+          allItems.add(item);
         }
-        // 无论是文件夹还是文件，都添加到列表中
-        allItems.add(item);
       }
     } catch (e) {
       print('递归获取媒体项时出错: $e');
