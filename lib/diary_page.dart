@@ -74,8 +74,28 @@ class _DiaryPageState extends State<DiaryPage> {
   }
 
   void _deleteEntry(DiaryEntry entry) async {
-    await _diaryService.deleteEntry(entry.id);
-    _loadEntries();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('确认删除'),
+        content: const Text('确定要删除这条日记吗？此操作无法撤销。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('删除', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+    
+    if (confirmed == true) {
+      await _diaryService.deleteEntry(entry.id);
+      _loadEntries();
+    }
   }
 
   void _toggleCalendar([bool? expand]) {
@@ -314,18 +334,10 @@ class _DiaryPageState extends State<DiaryPage> {
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      PopupMenuButton<String>(
-                        onSelected: (value) {
-                          if (value == 'edit') {
-                            _addOrEditEntry(entry: entry);
-                          } else if (value == 'delete') {
-                            _deleteEntry(entry);
-                          }
-                        },
-                        itemBuilder: (context) => [
-                          const PopupMenuItem(value: 'edit', child: Text('编辑')),
-                          const PopupMenuItem(value: 'delete', child: Text('删除')),
-                        ],
+                      IconButton(
+                        icon: const Icon(Icons.delete_outline, color: Colors.red),
+                        tooltip: '删除',
+                        onPressed: () => _deleteEntry(entry),
                       ),
                       IconButton(
                         icon: Icon(entry.isFavorite ? Icons.favorite : Icons.favorite_border, color: entry.isFavorite ? Colors.red : null),
