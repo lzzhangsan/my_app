@@ -237,7 +237,7 @@ class _DiaryPageState extends State<DiaryPage> {
                 Row(
                   children: [
                     IconButton(
-                      icon: Icon(Icons.keyboard_double_arrow_left, size: 28, weight: 800),
+                      icon: Icon(Icons.keyboard_double_arrow_left, size: 28),
                       tooltip: '上一年',
                       onPressed: () => setState(() => _selectedDate = DateTime(_selectedDate.year - 1, _selectedDate.month, 1)),
                     ),
@@ -255,7 +255,7 @@ class _DiaryPageState extends State<DiaryPage> {
                       onPressed: () => _onDateSelected(DateTime(_selectedDate.year, _selectedDate.month + 1, 1)),
                     ),
                     IconButton(
-                      icon: Icon(Icons.keyboard_double_arrow_right, size: 28, weight: 800),
+                      icon: Icon(Icons.keyboard_double_arrow_right, size: 28),
                       tooltip: '下一年',
                       onPressed: () => setState(() => _selectedDate = DateTime(_selectedDate.year + 1, _selectedDate.month, 1)),
                     ),
@@ -686,70 +686,81 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
                               ),
                             ),
                           ),
+                          const SizedBox(width: 8),
+                          GestureDetector(
+                            onTap: _addAudioBox,
+                            child: Container(
+                              width: 90,
+                              height: 90,
+                              decoration: BoxDecoration(
+                                color: Colors.grey[200],
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: const Icon(
+                                Icons.mic,
+                                size: 32,
+                                color: Colors.grey,
+                              ),
+                            ),
+                          ),
                         ],
                       ),
                   ],
                 ),
-                SizedBox(height: 16),
-                // 语音
-                Row(
-                  children: [
-                    Text('语音：', style: TextStyle(fontSize: 16)),
-                    IconButton(
-                      icon: Icon(Icons.add_circle_outline),
-                      onPressed: _addAudioBox,
-                      tooltip: '添加语音',
-                    ),
-                  ],
-                ),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    ..._audioPaths.asMap().entries.map((entry) {
-                      final idx = entry.key;
-                      final path = entry.value;
-                      return SizedBox(
-                        width: MediaQuery.of(context).size.width / 5 - 24,
-                        child: ResizableAudioBox(
-                          audioPath: path,
-                          onIsRecording: (isRec) {},
-                          onSettingsPressed: () {
-                            showModalBottomSheet(
-                              context: context,
-                              builder: (ctx) => SafeArea(
-                                child: Wrap(
-                                  children: [
-                                    ListTile(
-                                      leading: Icon(Icons.mic),
-                                      title: Text('录制新语音'),
-                                      onTap: () {
-                                        Navigator.pop(ctx);
-                                        _updateAudioPath(idx, '');
-                                      },
-                                    ),
-                                    ListTile(
-                                      leading: Icon(Icons.delete),
-                                      title: Text('删除语音框'),
-                                      onTap: () {
-                                        Navigator.pop(ctx);
-                                        _removeAudioBox(idx);
-                                      },
-                                    ),
-                                  ],
+                if (_audioPaths.isNotEmpty) ...[
+                  SizedBox(height: 16),
+                  // 语音
+                  Text('语音：', style: TextStyle(fontSize: 16)),
+                  SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      ..._audioPaths.asMap().entries.map((entry) {
+                        final idx = entry.key;
+                        final path = entry.value;
+                        return SizedBox(
+                          width: MediaQuery.of(context).size.width / 5 - 24,
+                          child: ResizableAudioBox(
+                            audioPath: path,
+                            onIsRecording: (isRec) {},
+                            onSettingsPressed: () {
+                              showModalBottomSheet(
+                                context: context,
+                                builder: (ctx) => SafeArea(
+                                  child: Wrap(
+                                    children: [
+                                      ListTile(
+                                        leading: Icon(Icons.mic),
+                                        title: Text('录制新语音'),
+                                        onTap: () {
+                                          Navigator.pop(ctx);
+                                          _updateAudioPath(idx, '');
+                                        },
+                                      ),
+                                      ListTile(
+                                        leading: Icon(Icons.delete),
+                                        title: Text('删除语音框'),
+                                        onTap: () {
+                                          Navigator.pop(ctx);
+                                          _removeAudioBox(idx);
+                                        },
+                                      ),
+                                    ],
+                                  ),
                                 ),
-                              ),
-                            );
-                          },
-                          onPathUpdated: (newPath) async {
-                            _updateAudioPath(idx, newPath);
-                            await _autoSave();
-                          },
-                        ),
-                      );
-                    }),
+                              );
+                            },
+                            onPathUpdated: (newPath) async {
+                              _updateAudioPath(idx, newPath);
+                              await _autoSave();
+                            },
+                          ),
+                        );
+                      }),
                   ],
                 ),
+                ],
                 SizedBox(height: 16),
                 // 天气和心情下拉选择
                 Row(
@@ -838,11 +849,11 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
                 ),
                 SizedBox(height: 24),
               ],
-            ),
           ),
         ),
       ),
-    );
+      ),
+  );
   }
 
   DiaryEntry _buildEntry() {
