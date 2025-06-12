@@ -313,9 +313,18 @@ class _DiaryPageState extends State<DiaryPage> {
               const SizedBox(height: 8),
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceAround,
-                children: const [
-                  Text('日'), Text('一'), Text('二'), Text('三'), Text('四'), Text('五'), Text('六'),
-                ],
+                children: List.generate(7, (index) {
+                  final weekday = ['日', '一', '二', '三', '四', '五', '六'][index];
+                  final isCurrentWeekday = (_selectedDate.weekday % 7) == index;
+                  return Text(
+                    weekday,
+                    style: TextStyle(
+                      color: isCurrentWeekday ? Colors.blue : Colors.black87,
+                      fontWeight: isCurrentWeekday ? FontWeight.bold : FontWeight.normal,
+                      fontSize: isCurrentWeekday ? 16 : 14,
+                    ),
+                  );
+                }),
               ),
               const SizedBox(height: 8),
             ],
@@ -345,27 +354,25 @@ class _DiaryPageState extends State<DiaryPage> {
                   DateFormat('yyyy年MM月dd日').format(entry.date),
                   style: TextStyle(fontWeight: FontWeight.w500),
                 ),
-                Padding(
-                  padding: const EdgeInsets.only(right: 8.0),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      IconButton(
-                        icon: const Icon(Icons.delete_outline, color: Colors.red),
-                        tooltip: '删除',
-                        onPressed: () => _deleteEntry(entry),
-                      ),
-                      IconButton(
-                        icon: Icon(entry.isFavorite ? Icons.favorite : Icons.favorite_border, color: entry.isFavorite ? Colors.red : null),
-                        tooltip: entry.isFavorite ? '取消收藏' : '收藏',
-                        onPressed: () async {
-                          final updated = entry.copyWith(isFavorite: !entry.isFavorite);
-                          await _diaryService.updateEntry(updated);
-                          _loadEntries();
-                        },
-                      ),
-                    ],
-                  ),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      icon: Icon(entry.isFavorite ? Icons.favorite : Icons.favorite_border, color: entry.isFavorite ? Colors.red : null),
+                      tooltip: entry.isFavorite ? '取消收藏' : '收藏',
+                      onPressed: () async {
+                        final updated = entry.copyWith(isFavorite: !entry.isFavorite);
+                        await _diaryService.updateEntry(updated);
+                        _loadEntries();
+                      },
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.delete_outline, color: Colors.red),
+                      tooltip: '删除',
+                      onPressed: () => _deleteEntry(entry),
+                      padding: EdgeInsets.zero,
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -1257,7 +1264,7 @@ class _MediaPreviewDialogState extends State<MediaPreviewDialog> {
               if (path.endsWith('.mp4') || path.endsWith('.mov') || path.endsWith('.avi')) {
                 // 视频
                 debugPrint('日记页面视频: $path');
-                debugPrint('屏幕尺寸: ${MediaQuery.of(context).size.width}x${MediaQuery.of(context).size.height}');
+                debugPrint('���幕尺寸: ${MediaQuery.of(context).size.width}x${MediaQuery.of(context).size.height}');
                 // 修改BoxFit.cover为BoxFit.contain，确保视频完整显示
                 debugPrint('BoxFit设置: BoxFit.contain');
                 return SizedBox.expand(
