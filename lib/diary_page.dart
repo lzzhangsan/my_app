@@ -11,6 +11,11 @@ import 'package:flutter_svg/flutter_svg.dart';
 import 'widgets/video_player_widget.dart';
 import 'services/media_service.dart';
 import 'dart:ui';
+import 'package:share_plus/share_plus.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:archive/archive_io.dart';
+import 'dart:convert';
 
 class DiaryPage extends StatefulWidget {
   const DiaryPage({Key? key}) : super(key: key);
@@ -107,10 +112,47 @@ class _DiaryPageState extends State<DiaryPage> {
     });
   }
 
+  void _showDiarySettings() {
+    showModalBottomSheet(
+      context: context,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: Icon(Icons.upload_file),
+              title: Text('导出日记本数据'),
+              onTap: () {
+                Navigator.pop(context);
+                _exportDiaryData();
+              },
+            ),
+            ListTile(
+              leading: Icon(Icons.download_rounded),
+              title: Text('导入日记本数据'),
+              onTap: () {
+                Navigator.pop(context);
+                _importDiaryData();
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
+        leading: IconButton(
+          icon: Icon(Icons.settings),
+          tooltip: '设置',
+          onPressed: _showDiarySettings,
+        ),
         title: const Text('日记本'),
         centerTitle: true,
         actions: [
@@ -395,6 +437,173 @@ class _DiaryPageState extends State<DiaryPage> {
         );
       },
     );
+  }
+
+  // 日记本数据导出
+  Future<void> _exportDiaryData() async {
+    try {
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => const AlertDialog(
+          content: Row(
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(width: 20),
+              Text('正在导出日记本数据...')
+            ],
+          ),
+        ),
+      );
+      final entries = await _diaryService.loadEntries();
+      final Directory appDocDir = await getApplicationDocumentsDirectory();
+      final String backupPath = '${appDocDir.path}/diary_backups';
+      final Directory backupDir = Directory(backupPath);
+      if (!await backupDir.exists()) {
+        await backupDir.create(recursive: true);
+      }
+      final String tempDirPath = '$backupPath/temp_diary_backup';
+      final Directory tempDir = Directory(tempDirPath);
+      if (await tempDir.exists()) {
+        await tempDir.delete(recursive: true);
+      }
+      await tempDir.create(recursive: true);
+      // 保存日记数据为json
+      final File dataFile = File('$tempDirPath/diary_data.json');
+      await dataFile.writeAsString(
+        jsonEncode(entries.map((e) => e.toMap()).toList()),
+      );
+      // 收集所有媒体文件
+      final Set<String> allMediaPaths = {};
+      for (final entry in entries) {
+        allMediaPaths.addAll(entry.imagePaths);
+        allMediaPaths.addAll(entry.audioPaths);
+        allMediaPaths.addAll(entry.videoPaths);
+      }
+      for (final path in allMediaPaths) {
+        if (path.isEmpty) continue;
+        final file = File(path);
+        if (await file.exists()) {
+          final fileName = path.split(Platform.pathSeparator).last;
+          final ext = fileName.split('.').last;
+          final typeDir = (['jpg','jpeg','png','gif','bmp','webp'].contains(ext.toLowerCase())) ? 'images' :
+                          (['mp3','aac','wav','m4a','ogg'].contains(ext.toLowerCase())) ? 'audios' :
+                          (['mp4','mov','avi','mkv','webm'].contains(ext.toLowerCase())) ? 'videos' : 'others';
+          final targetDir = Directory('$tempDirPath/$typeDir');
+          if (!await targetDir.exists()) await targetDir.create(recursive: true);
+          await file.copy('${targetDir.path}/$fileName');
+        }
+      }
+      // 打包为zip
+      final String timestamp = DateTime.now().toString().replaceAll(RegExp(r'[^0-9]'), '');
+      final String zipPath = '$backupPath/diary_backup_$timestamp.zip';
+      final encoder = ZipFileEncoder();
+      encoder.create(zipPath);
+      await encoder.addDirectory(tempDir, includeDirName: false);
+      encoder.close();
+      await tempDir.delete(recursive: true);
+      if (mounted) Navigator.pop(context);
+      await Share.shareXFiles([XFile(zipPath)], subject: '日记本数据备份');
+    } catch (e) {
+      if (mounted) Navigator.pop(context);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('导出日记本数据失败: $e')),
+      );
+    }
+  }
+
+  // 日记本数据导入
+  Future<void> _importDiaryData() async {
+    try {
+      bool? confirm = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text('警告'),
+          content: Text('导入新日记本数据将会覆盖当前所有日记，确定要继续吗？'),
+          actions: [
+            TextButton(
+              child: Text('取消'),
+              onPressed: () => Navigator.of(context).pop(false),
+            ),
+            TextButton(
+              child: Text('确定'),
+              onPressed: () => Navigator.of(context).pop(true),
+            ),
+          ],
+        ),
+      );
+      if (confirm != true) return;
+      FilePickerResult? result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['zip'],
+      );
+      if (result != null && result.files.single.path != null) {
+        showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (context) => const AlertDialog(
+            content: Row(
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(width: 20),
+                Text('正在导入日记本数据...')
+              ],
+            ),
+          ),
+        );
+        final Directory appDocDir = await getApplicationDocumentsDirectory();
+        final String tempDirPath = '${appDocDir.path}/diary_import_temp';
+        final Directory tempDir = Directory(tempDirPath);
+        if (await tempDir.exists()) await tempDir.delete(recursive: true);
+        await tempDir.create(recursive: true);
+        final bytes = await File(result.files.single.path!).readAsBytes();
+        final archive = ZipDecoder().decodeBytes(bytes);
+        for (final file in archive) {
+          final filename = file.name;
+          if (file.isFile) {
+            final data = file.content as List<int>;
+            File('$tempDirPath/$filename')
+              ..createSync(recursive: true)
+              ..writeAsBytesSync(data);
+          }
+        }
+        // 恢复日记数据
+        final File dataFile = File('$tempDirPath/diary_data.json');
+        if (!await dataFile.exists()) throw Exception('未找到日记数据文件');
+        final List<dynamic> entryList = jsonDecode(await dataFile.readAsString());
+        final List<DiaryEntry> entries = entryList.map((e) => DiaryEntry.fromMap(e)).toList();
+        await _diaryService.saveEntries(entries);
+        // 恢复媒体文件到原目录
+        final Map<String, String> typeDirs = {
+          'images': 'imagePaths',
+          'audios': 'audioPaths',
+          'videos': 'videoPaths',
+        };
+        for (final type in typeDirs.keys) {
+          final dir = Directory('$tempDirPath/$type');
+          if (await dir.exists()) {
+            for (final file in dir.listSync()) {
+              if (file is File) {
+                final appMediaDir = Directory('${appDocDir.path}/$type');
+                if (!await appMediaDir.exists()) await appMediaDir.create(recursive: true);
+                await file.copy('${appMediaDir.path}/${file.uri.pathSegments.last}');
+              }
+            }
+          }
+        }
+        await tempDir.delete(recursive: true);
+        if (mounted) Navigator.pop(context);
+        await _loadEntries();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('日记本数据导入成功')),
+        );
+      }
+    } catch (e) {
+      if (mounted) Navigator.pop(context);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('导入日记本数据失败: $e')),
+      );
+    }
   }
 }
 
@@ -1264,7 +1473,7 @@ class _MediaPreviewDialogState extends State<MediaPreviewDialog> {
               if (path.endsWith('.mp4') || path.endsWith('.mov') || path.endsWith('.avi')) {
                 // 视频
                 debugPrint('日记页面视频: $path');
-                debugPrint('���幕尺寸: ${MediaQuery.of(context).size.width}x${MediaQuery.of(context).size.height}');
+                debugPrint('幕尺寸: ${MediaQuery.of(context).size.width}x${MediaQuery.of(context).size.height}');
                 // 修改BoxFit.cover为BoxFit.contain，确保视频完整显示
                 debugPrint('BoxFit设置: BoxFit.contain');
                 return SizedBox.expand(
