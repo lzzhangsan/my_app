@@ -524,10 +524,24 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
                 TextField(
                   controller: _contentController,
                   maxLines: null,
-                  style: TextStyle(fontSize: 18),
+                  style: TextStyle(
+                    fontSize: 18,
+                  ),
                   decoration: InputDecoration(
                     hintText: '记录今日',
                     border: InputBorder.none,
+                    enabledBorder: UnderlineInputBorder(
+                      borderSide: BorderSide(
+                        color: Colors.grey.withOpacity(0.5),
+                        width: 1.0,
+                      ),
+                    ),
+                    focusedBorder: UnderlineInputBorder(
+                      borderSide: BorderSide(
+                        color: Colors.blue.withOpacity(0.7),
+                        width: 1.5,
+                      ),
+                    ),
                   ),
                   onChanged: (_) async {
                     await _autoSave();
