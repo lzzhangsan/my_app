@@ -60,10 +60,6 @@ class ServiceLocator {
       await get<PerformanceService>().initialize();
       
       _isInitialized = true;
-      
-      if (kDebugMode) {
-        print('ServiceLocator: 所有服务初始化完成');
-      }
     } catch (e, stackTrace) {
       get<ErrorService>().handleError(
         AppError(
@@ -135,14 +131,8 @@ class ServiceLocator {
       
       _services.clear();
       _isInitialized = false;
-      
-      if (kDebugMode) {
-        print('ServiceLocator: 所有服务已清理');
-      }
     } catch (e) {
-      if (kDebugMode) {
-        print('ServiceLocator dispose error: $e');
-      }
+      // 生产环境不输出调试日志
     }
   }
 

@@ -39,15 +39,8 @@ class ErrorService {
 
   /// 记录错误日志
   void _logError(AppError appError) {
-    if (kDebugMode) {
-      debugPrint('ErrorService: ${appError.severity.name.toUpperCase()} - ${appError.title}');
-      debugPrint('Message: ${appError.message}');
-      if (appError.stackTrace != null) {
-        debugPrint('StackTrace: ${appError.stackTrace}');
-      }
-    }
-    
-    // 这里可以添加其他日志记录逻辑，比如写入文件或发送到远程服务器
+    // 生产环境不输出调试日志
+    // 可集成到远程错误报告系统
   }
   
   /// 初始化错误服务

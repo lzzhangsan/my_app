@@ -71,19 +71,13 @@ class BackupService {
   /// 执行自动备份
   Future<void> _performAutoBackup() async {
     try {
-      if (kDebugMode) {
-        print('执行自动备份...');
-      }
-      
       await createBackup(
         name: 'auto_backup_${DateTime.now().millisecondsSinceEpoch}',
         description: '自动备份',
         isAutoBackup: true,
       );
     } catch (e) {
-      if (kDebugMode) {
-        print('自动备份失败: $e');
-      }
+      // 可集成到远程错误报告系统
     }
   }
 

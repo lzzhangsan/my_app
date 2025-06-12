@@ -90,14 +90,12 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
         // 检查文件是否存在
         final File videoFile = File(item.path);
         if (!await videoFile.exists()) {
-          debugPrint('视频文件不存在: ${item.path}');
           return;
         }
 
         // 验证文件大小
         final fileSize = await videoFile.length();
         if (fileSize <= 0) {
-          debugPrint('视频文件大小异常: ${item.path}, 大小: $fileSize');
           return;
         }
 
@@ -107,7 +105,6 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
         // 添加错误监听器
         controller.addListener(() {
           if (controller.value.hasError) {
-            debugPrint('视频播放器错误: ${controller.value.errorDescription}');
           }
         });
         
@@ -117,13 +114,9 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
           await controller.initialize().timeout(const Duration(seconds: 10));
           initializeSuccessful = controller.value.isInitialized;
         } catch (timeoutError) {
-          debugPrint('视频初始化超时: ${item.path}, 错误: $timeoutError');
-          // 超时时尝试处理，但继续执行后续代码
         }
         
         if (!initializeSuccessful) {
-          debugPrint('视频初始化失败: ${item.path}');
-          // 如果无法初始化，清理资源并退出
           if (_videoControllers.containsKey(index)) {
             _videoControllers[index]?.dispose();
             _videoControllers.remove(index);
@@ -183,21 +176,10 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
             ),
           );
           
-          // 添加调试信息
-          debugPrint('Chewie 控制器配置:');
-          debugPrint('showControls: ${chewieController.showControls}');
-          debugPrint('draggableProgressBar: ${chewieController.draggableProgressBar}');
-          debugPrint('视频总时长: ${controller.value.duration}');
-          debugPrint('视频是否初始化: ${controller.value.isInitialized}');
-          debugPrint('视频是否播放中: ${controller.value.isPlaying}');
-          
           _chewieControllers[index] = chewieController;
           
           // 添加视频控制器状态变化监听
           controller.addListener(() {
-            if (controller.value.hasError) {
-              debugPrint('视频播放器错误: ${controller.value.errorDescription}');
-            }
             debugPrint('视频播放位置: ${controller.value.position}');
             debugPrint('缓冲进度: ${controller.value.buffered}');
             debugPrint('播放状态: ${controller.value.isPlaying}');
@@ -208,8 +190,6 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
             await controller.play();
           }
         } catch (chewieError) {
-          debugPrint('Chewie控制器初始化错误: $chewieError');
-          // 清理资源
           if (_videoControllers.containsKey(index)) {
             await _videoControllers[index]?.pause();
             await _videoControllers[index]?.dispose();
@@ -221,8 +201,6 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
         if (mounted) setState(() {});
       }
     } catch (e) {
-      debugPrint('初始化视频播放器出错: $e');
-      // 确保出错时释放资源
       if (_videoControllers.containsKey(index)) {
         _videoControllers[index]?.dispose();
         _videoControllers.remove(index);
@@ -336,7 +314,6 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
       try {
         await _dbService.deleteMediaItem(item.id);
       } catch (e) {
-        debugPrint('从数据库删除媒体项时出错: $e');
       }
       
       // 2. 尝试删除实际文件
@@ -346,7 +323,6 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
           await file.delete();
         }
       } catch (e) {
-        debugPrint('删除媒体文件时出错: $e');
       }
       
       // 3. 从当前列表中移除
@@ -417,11 +393,9 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
             folders.addAll(subFolders);
           }
         } catch (e) {
-          debugPrint('获取子文件夹失败: $e');
         }
       }
     } catch (e) {
-      debugPrint('获取文件夹列表失败: $e');
     }
     
     // 在对话框中显示文件夹列表
@@ -524,9 +498,6 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
         throw Exception('媒体项更新失败');
       }
       
-      debugPrint('成功移动: ${item.name} 到目录: ${targetFolder.name}');
-      
-      // 关闭进度对话框
       if (mounted) {
         Navigator.of(context).pop();
       }
@@ -651,13 +622,6 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     final videoPath = item.path;
     final aspectRatio = videoController.value.aspectRatio;
     
-    debugPrint('媒体预览页视频: $videoPath');
-    debugPrint('屏幕尺寸: ${screenSize.width}x${screenSize.height}');
-    debugPrint('视频尺寸: ${videoSize.width}x${videoSize.height}');
-    debugPrint('视频宽高比: $aspectRatio');
-    debugPrint('BoxFit设置: BoxFit.contain');
-    debugPrint('SizedBox尺寸: ${videoSize.width}x${videoSize.height}');
-
     return Stack(
       children: [
         // 视频播放器

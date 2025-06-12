@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 class DiaryEntry {
   final String id;
   final DateTime date;
-  final String content;
+  final String? content;
   final List<String> imagePaths;
   final List<String> audioPaths;
   final List<String> videoPaths;
@@ -15,7 +15,7 @@ class DiaryEntry {
   DiaryEntry({
     required this.id,
     required this.date,
-    required this.content,
+    this.content,
     this.imagePaths = const [],
     this.audioPaths = const [],
     this.videoPaths = const [],
@@ -67,10 +67,16 @@ class DiaryEntry {
   }
 
   factory DiaryEntry.fromMap(Map<String, dynamic> map) {
+    DateTime safeDate;
+    try {
+      safeDate = DateTime.parse(map['date']?.toString() ?? '');
+    } catch (_) {
+      safeDate = DateTime.now();
+    }
     return DiaryEntry(
-      id: map['id'] as String,
-      date: DateTime.parse(map['date'] as String),
-      content: map['content'] as String,
+      id: map['id']?.toString() ?? '',
+      date: safeDate,
+      content: map['content'] as String?,
       imagePaths: List<String>.from(map['imagePaths'] ?? []),
       audioPaths: List<String>.from(map['audioPaths'] ?? []),
       videoPaths: List<String>.from(map['videoPaths'] ?? []),

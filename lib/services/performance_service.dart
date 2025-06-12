@@ -298,11 +298,8 @@ class PerformanceService {
 
   /// 记录性能警告
   void _logPerformanceWarning(String title, String message, PerformanceWarningLevel level) {
-    if (kDebugMode) {
-      print('[$level] $title: $message');
-    }
-    
-    // 这里可以集成到错误报告系统
+    // 生产环境不输出调试日志
+    // 可以集成到远程错误报告系统
   }
 
   /// 获取平均性能指标

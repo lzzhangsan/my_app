@@ -16,7 +16,7 @@ import '../core/service_locator.dart';
 /// 数据库服务 - 统一管理所有数据库操作
 class DatabaseService {
   static const String _databaseName = 'change_app.db';
-  static const int _databaseVersion = 9;
+  static const int _databaseVersion = 10; // 强制升级版本号
   
   Database? _database;
   final Completer<Database> _initCompleter = Completer<Database>();
@@ -44,6 +44,25 @@ class DatabaseService {
         onUpgrade: _onUpgrade,
         onConfigure: _onConfigure,
       );
+      
+      // 主动检查diary_entries表
+      final tables = await _database!.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name='diary_entries'");
+      if (tables.isEmpty) {
+        await _database!.execute('''
+          CREATE TABLE IF NOT EXISTS diary_entries(
+            id TEXT PRIMARY KEY,
+            date TEXT NOT NULL,
+            content TEXT,
+            image_paths TEXT,
+            audio_paths TEXT,
+            video_paths TEXT,
+            weather TEXT,
+            mood TEXT,
+            location TEXT,
+            is_favorite INTEGER DEFAULT 0
+          )
+        ''');
+      }
       
       _initCompleter.complete(_database!);
       _isInitialized = true;
@@ -249,6 +268,22 @@ class DatabaseService {
         )
       ''');
 
+      // 日记本表
+      await txn.execute('''
+        CREATE TABLE diary_entries(
+          id TEXT PRIMARY KEY,
+          date TEXT NOT NULL,
+          content TEXT,
+          image_paths TEXT,
+          audio_paths TEXT,
+          video_paths TEXT,
+          weather TEXT,
+          mood TEXT,
+          location TEXT,
+          is_favorite INTEGER DEFAULT 0
+        )
+      ''');
+
       // 创建索引以提高查询性能
       await _createIndexes(txn);
     });
@@ -269,6 +304,20 @@ class DatabaseService {
 
   /// 数据库升级
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS diary_entries(
+        id TEXT PRIMARY KEY,
+        date TEXT NOT NULL,
+        content TEXT,
+        image_paths TEXT,
+        audio_paths TEXT,
+        video_paths TEXT,
+        weather TEXT,
+        mood TEXT,
+        location TEXT,
+        is_favorite INTEGER DEFAULT 0
+      )
+    ''');
     if (kDebugMode) {
       print('DatabaseService: 升级数据库从版本 $oldVersion 到 $newVersion');
     }
@@ -359,12 +408,8 @@ class DatabaseService {
       getService<AppErrorState>().addError(appError);
     }
     
-    if (kDebugMode) {
-      print('DatabaseService Error: $title - $error');
-      if (stackTrace != null) {
-        print('StackTrace: $stackTrace');
-      }
-    }
+    // 生产环境不输出调试日志
+    // 可集成到远程错误报告系统
   }
 
   /// 清理资源
