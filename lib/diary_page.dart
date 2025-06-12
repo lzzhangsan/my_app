@@ -41,8 +41,7 @@ class _DiaryPageState extends State<DiaryPage> {
   }
 
   List<DiaryEntry> get _entriesForSelectedDate {
-    final entries = _entries.where((e) => isSameDay(e.date, _selectedDate)).toList();
-    final filtered = _showFavoritesOnly ? entries.where((e) => e.isFavorite).toList() : entries;
+    final filtered = _showFavoritesOnly ? _entries.where((e) => e.isFavorite).toList() : _entries;
     if (_searchKeyword.isEmpty) return filtered..sort((a, b) => b.date.compareTo(a.date));
     return filtered.where((e) => e.content.contains(_searchKeyword)).toList()..sort((a, b) => b.date.compareTo(a.date));
   }
