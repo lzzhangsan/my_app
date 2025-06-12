@@ -139,7 +139,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
             videoPlayerController: controller,
             autoPlay: shouldAutoPlay,
             looping: false,
-            allowFullScreen: false,
+            allowFullScreen: true,
             allowMuting: true,
             showControls: true,
             showControlsOnInitialize: true,
@@ -607,45 +607,36 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
   }
 
   Widget _buildVideoPreview(MediaItem item, int index) {
-    if (!_videoControllers.containsKey(index) || 
-        !_chewieControllers.containsKey(index)) {
+    if (!_videoControllers.containsKey(index) || !_chewieControllers.containsKey(index)) {
+      // 视频控制器尚未初始化，显示加载中
       return Center(
         child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
           children: [
-            const SizedBox(
-              width: 60,
-              height: 60,
-              child: CircularProgressIndicator(),
-            ),
-            const SizedBox(height: 16),
-            const Text('加载视频中...', style: TextStyle(color: Colors.white)),
+            const CircularProgressIndicator(),
             const SizedBox(height: 8),
-            Text(item.name, style: const TextStyle(color: Colors.white70)),
+            Text(
+              '正在加载视频...',
+              style: TextStyle(color: Colors.white),
+            ),
           ],
         ),
       );
     }
 
-    final chewieController = _chewieControllers[index];
-    if (chewieController == null) {
-      debugPrint('Chewie 控制器为空');
-      return const Center(
-        child: Text('视频播放器初始化失败', style: TextStyle(color: Colors.white)),
-      );
-    }
-
-    final videoController = _videoControllers[index];
-    if (videoController == null || !videoController.value.isInitialized) {
-      debugPrint('视频控制器未初始化');
+    final videoController = _videoControllers[index]!;
+    final chewieController = _chewieControllers[index]!;
+    
+    if (videoController.value.hasError) {
+      // 视频加载出错
       return Center(
         child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.error, color: Colors.red, size: 42),
+            Icon(Icons.error, color: Colors.red, size: 48),
             const SizedBox(height: 8),
-            const Text(
-              '视频加载失败',
+            Text(
+              '视频加载失败: ${videoController.value.errorDescription}',
               style: TextStyle(color: Colors.white),
               textAlign: TextAlign.center,
             ),
@@ -653,6 +644,19 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
         ),
       );
     }
+
+    // 添加详细调试信息
+    final screenSize = MediaQuery.of(context).size;
+    final videoSize = videoController.value.size;
+    final videoPath = item.path;
+    final aspectRatio = videoController.value.aspectRatio;
+    
+    debugPrint('媒体预览页视频: $videoPath');
+    debugPrint('屏幕尺寸: ${screenSize.width}x${screenSize.height}');
+    debugPrint('视频尺寸: ${videoSize.width}x${videoSize.height}');
+    debugPrint('视频宽高比: $aspectRatio');
+    debugPrint('BoxFit设置: BoxFit.contain');
+    debugPrint('SizedBox尺寸: ${videoSize.width}x${videoSize.height}');
 
     return Stack(
       children: [
@@ -670,13 +674,20 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
               },
               child: Container(
                 color: Colors.transparent,
-                child: AspectRatio(
-                  aspectRatio: videoController.value.aspectRatio,
-                  child: Theme(
-                    data: ThemeData.light().copyWith(
-                      platform: TargetPlatform.iOS,
+                child: SizedBox.expand(
+                  child: FittedBox(
+                    fit: BoxFit.contain, // 使用contain而不是cover，确保视频完整显示
+                    alignment: Alignment.center,
+                    child: SizedBox(
+                      width: videoController.value.size.width,
+                      height: videoController.value.size.height,
+                      child: Theme(
+                        data: ThemeData.light().copyWith(
+                          platform: TargetPlatform.iOS,
+                        ),
+                        child: Chewie(controller: chewieController),
+                      ),
                     ),
-                    child: Chewie(controller: chewieController),
                   ),
                 ),
               ),

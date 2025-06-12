@@ -710,7 +710,6 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
                 if (_audioPaths.isNotEmpty) ...[
                   SizedBox(height: 16),
                   // 语音
-                  Text('语音：', style: TextStyle(fontSize: 16)),
                   SizedBox(height: 8),
                   Wrap(
                     spacing: 8,
@@ -1247,14 +1246,24 @@ class _MediaPreviewDialogState extends State<MediaPreviewDialog> {
           PageView.builder(
             controller: _pageController,
             itemCount: widget.mediaPaths.length,
-            onPageChanged: (idx) => setState(() => _currentIndex = idx),
+            onPageChanged: (index) {
+              setState(() {
+                _currentIndex = index;
+              });
+              debugPrint('日记页面切换到媒体: $_currentIndex');
+            },
             itemBuilder: (context, idx) {
               final path = widget.mediaPaths[idx];
+              debugPrint('构建日记媒体项: $path');
               if (path.endsWith('.mp4') || path.endsWith('.mov') || path.endsWith('.avi')) {
                 // 视频
+                debugPrint('日记页面视频: $path');
+                debugPrint('屏幕尺寸: ${MediaQuery.of(context).size.width}x${MediaQuery.of(context).size.height}');
+                // 修改BoxFit.cover为BoxFit.contain，确保视频完整显示
+                debugPrint('BoxFit设置: BoxFit.contain');
                 return SizedBox.expand(
                   child: FittedBox(
-                    fit: BoxFit.cover,
+                    fit: BoxFit.contain, // 从cover改为contain，确保视频完整显示
                     child: SizedBox(
                       width: MediaQuery.of(context).size.width,
                       height: MediaQuery.of(context).size.height,
@@ -1264,6 +1273,7 @@ class _MediaPreviewDialogState extends State<MediaPreviewDialog> {
                 );
               } else {
                 // 图片
+                debugPrint('日记页面图片: $path');
                 return SizedBox.expand(
                   child: FittedBox(
                     fit: BoxFit.cover,

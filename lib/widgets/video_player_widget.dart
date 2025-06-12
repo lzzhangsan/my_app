@@ -30,6 +30,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   bool _isEnded = false;
   bool _hasError = false;
   Timer? _progressTimer;
+  Size? _screenSize;
 
   @override
   void initState() {
@@ -41,11 +42,19 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   void _initializeController() {
     _controller = VideoPlayerController.file(widget.file);
     
+    debugPrint('开始初始化视频: ${widget.file.path}');
+    
     _controller.initialize().then((_) {
       if (mounted) {
         setState(() {});
         _controller.play();
         _controller.setLooping(widget.looping);
+        
+        // 打印视频信息
+        debugPrint('视频初始化成功: ${widget.file.path}');
+        debugPrint('视频尺寸: ${_controller.value.size.width}x${_controller.value.size.height}');
+        debugPrint('视频宽高比: ${_controller.value.aspectRatio}');
+        debugPrint('视频时长: ${_controller.value.duration}');
         
         _progressTimer = Timer.periodic(Duration(milliseconds: 100), (_) {
           if (mounted) {
@@ -54,7 +63,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
         });
       }
     }).catchError((error) {
-      print('视频初始化错误: $error');
+      debugPrint('视频初始化错误: ${widget.file.path}, 错误: $error');
       _hasError = true;
       if (mounted) {
         setState(() {});
@@ -66,7 +75,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     
     _controller.addListener(() {
       if (_controller.value.hasError && !_hasError) {
-        print('视频播放错误: ${_controller.value.errorDescription}');
+        debugPrint('视频播放错误: ${widget.file.path}, 错误: ${_controller.value.errorDescription}');
         _hasError = true;
         if (widget.onVideoError != null) {
           widget.onVideoError!();
@@ -88,6 +97,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
 
   @override
   void dispose() {
+    debugPrint('销毁视频播放器: ${widget.file.path}');
     _progressTimer?.cancel();
     _controller.pause();
     _controller.dispose();
@@ -99,6 +109,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.file.path != widget.file.path ||
         oldWidget.looping != widget.looping) {
+      debugPrint('视频播放器更新: ${oldWidget.file.path} -> ${widget.file.path}');
       _progressTimer?.cancel();
       _controller.pause();
       _controller.dispose();
@@ -110,6 +121,8 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
 
   @override
   Widget build(BuildContext context) {
+    _screenSize = MediaQuery.of(context).size;
+    
     if (_hasError) {
       return Center(
         child: Column(
@@ -123,24 +136,33 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
       );
     }
     
-    return _controller.value.isInitialized
-        ? Stack(
-            alignment: Alignment.bottomCenter,
-            children: [
-              SizedBox.expand(
-                child: FittedBox(
-                  fit: BoxFit.fitWidth,
-                  alignment: Alignment.center,
-                  child: SizedBox(
-                    width: _controller.value.size.width,
-                    height: _controller.value.size.height,
-                    child: VideoPlayer(_controller),
-                  ),
-                ),
+    if (_controller.value.isInitialized) {
+      // 打印布局信息
+      debugPrint('视频布局信息: ${widget.file.path}');
+      debugPrint('屏幕尺寸: ${_screenSize?.width}x${_screenSize?.height}');
+      debugPrint('视频尺寸: ${_controller.value.size.width}x${_controller.value.size.height}');
+      debugPrint('视频宽高比: ${_controller.value.aspectRatio}');
+      debugPrint('BoxFit设置: BoxFit.contain');
+      
+      return Stack(
+        alignment: Alignment.bottomCenter,
+        children: [
+          SizedBox.expand(
+            child: FittedBox(
+              fit: BoxFit.contain, // 从fitWidth改为contain，确保视频完整显示
+              alignment: Alignment.center,
+              child: SizedBox(
+                width: _controller.value.size.width,
+                height: _controller.value.size.height,
+                child: VideoPlayer(_controller),
               ),
-            ],
-          )
-        : Center(child: CircularProgressIndicator());
+            ),
+          ),
+        ],
+      );
+    } else {
+      return Center(child: CircularProgressIndicator());
+    }
   }
 
   String _formatDuration(Duration duration) {
@@ -149,4 +171,4 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     final seconds = twoDigits(duration.inSeconds.remainder(60));
     return '$minutes:$seconds';
   }
-} 
+}
