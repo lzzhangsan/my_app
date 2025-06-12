@@ -92,7 +92,7 @@ class _DiaryPageState extends State<DiaryPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('日记本'),
+        title: Center(child: const Text('日记本')),
         actions: [
           IconButton(
             icon: Icon(_showFavoritesOnly ? Icons.favorite : Icons.favorite_border, color: _showFavoritesOnly ? Colors.red : null),
@@ -146,7 +146,7 @@ class _DiaryPageState extends State<DiaryPage> {
             height: 48,
             width: 48,
             decoration: BoxDecoration(
-              color: Colors.blue.withOpacity(0.2),
+              color: Colors.purple.withOpacity(0.3),
               borderRadius: BorderRadius.circular(24),
               border: Border.all(
                 color: Colors.white.withOpacity(0.15),
