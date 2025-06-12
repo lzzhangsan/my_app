@@ -2039,17 +2039,18 @@ class DatabaseService {
         final folder = await getFolderByName(parentFolder);
         parentFolderId = folder?['id'];
          // Optional: Add error handling if folder not found
-
-        List<Map<String, dynamic>> docs = await db.query(
-          'documents',
-          where: 'parent_folder = ?',
-          whereArgs: [parentFolderId], // 使用ID查询
-          orderBy: 'order_index DESC',
-          limit: 1
-        );
-        if (docs.isNotEmpty) {
-          maxOrder = docs.first['order_index'] ?? 0;
-        }
+      }
+      
+      // 查询当前目录下的最大order_index（无论是根目录还是子文件夹）
+      List<Map<String, dynamic>> docs = await db.query(
+        'documents',
+        where: 'parent_folder ${parentFolderId == null ? 'IS NULL' : '= ?'}',
+        whereArgs: parentFolderId != null ? [parentFolderId] : [],
+        orderBy: 'order_index DESC',
+        limit: 1
+      );
+      if (docs.isNotEmpty) {
+        maxOrder = docs.first['order_index'] ?? 0;
       }
       
       // 4. 插入新文档
