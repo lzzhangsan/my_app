@@ -1215,11 +1215,22 @@ class _CoverPageState extends State<CoverPage> {
         }
         
         // 3. 删除所有文本框
-        await db.delete(
-          'text_boxes',
-          where: 'documentName = ?',
+        // 首先获取封面页文档的ID
+        final List<Map<String, dynamic>> docResult = await db.query(
+          'documents',
+          columns: ['id'],
+          where: 'name = ?',
           whereArgs: [coverDocumentName],
         );
+        
+        if (docResult.isNotEmpty) {
+          final String documentId = docResult.first['id'];
+          await db.delete(
+            'text_boxes',
+            where: 'document_id = ?',
+            whereArgs: [documentId],
+          );
+        }
         
         // 更新UI
         setState(() {
