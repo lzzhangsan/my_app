@@ -10,6 +10,7 @@ import 'dart:io';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'widgets/video_player_widget.dart';
 import 'services/media_service.dart';
+import 'dart:ui';
 
 class DiaryPage extends StatefulWidget {
   const DiaryPage({Key? key}) : super(key: key);
@@ -91,9 +92,7 @@ class _DiaryPageState extends State<DiaryPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        leading: IconButton(icon: const Icon(Icons.add, color: Colors.blue), tooltip: '新增日记', onPressed: () => _addOrEditEntry()),
-        title: const Center(child: Text('日记本')),
-        centerTitle: true,
+        title: const Text('日记本'),
         actions: [
           IconButton(
             icon: Icon(_showFavoritesOnly ? Icons.favorite : Icons.favorite_border, color: _showFavoritesOnly ? Colors.red : null),
@@ -138,6 +137,46 @@ class _DiaryPageState extends State<DiaryPage> {
           ),
           Expanded(child: _buildDiaryList()),
         ],
+      ),
+      floatingActionButton: ClipRRect(
+        borderRadius: BorderRadius.circular(24),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 5, sigmaY: 5),
+          child: Container(
+            height: 48,
+            width: 48,
+            decoration: BoxDecoration(
+              color: Colors.blue.withOpacity(0.2),
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(
+                color: Colors.white.withOpacity(0.15),
+                width: 0.5,
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.1),
+                  blurRadius: 10,
+                  spreadRadius: 1,
+                ),
+              ],
+            ),
+            child: FloatingActionButton(
+              onPressed: () => _addOrEditEntry(),
+              heroTag: 'addDiaryBtn',
+              backgroundColor: Colors.transparent,
+              elevation: 0,
+              focusElevation: 0,
+              hoverElevation: 0,
+              highlightElevation: 0,
+              splashColor: Colors.white.withOpacity(0.1),
+              child: Icon(
+                Icons.add,
+                size: 24,
+                color: Colors.white.withOpacity(0.9),
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -1043,10 +1082,10 @@ class _TodayCircleIcon extends StatelessWidget {
       height: 32,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        border: Border.all(color: Colors.blue, width: 2),
+        border: Border.all(color: Colors.black, width: 2),
       ),
       child: Center(
-        child: Text('今', style: TextStyle(color: Colors.blue, fontWeight: FontWeight.bold, fontSize: 16)),
+        child: Text('今', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 16)),
       ),
     );
   }
@@ -1204,4 +1243,4 @@ class _MediaPreviewDialogState extends State<MediaPreviewDialog> {
       ),
     );
   }
-} 
+}
