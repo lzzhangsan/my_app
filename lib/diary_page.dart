@@ -115,6 +115,23 @@ class _DiaryPageState extends State<DiaryPage> {
         title: const Text('日记本'),
         centerTitle: true,
         actions: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            margin: const EdgeInsets.only(right: 8),
+            decoration: BoxDecoration(
+              color: Colors.blue.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.blue.withOpacity(0.3)),
+            ),
+            child: Text(
+              '${_entries.length}篇',
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: Colors.blue,
+              ),
+            ),
+          ),
           IconButton(
             icon: Icon(_showFavoritesOnly ? Icons.favorite : Icons.favorite_border, color: _showFavoritesOnly ? Colors.red : null),
             tooltip: _showFavoritesOnly ? '显示全部' : '只看收藏',
@@ -125,7 +142,7 @@ class _DiaryPageState extends State<DiaryPage> {
             tooltip: '回到今天',
             onPressed: () => setState(() => _selectedDate = DateTime.now()),
           ),
-        ],
+        ]
       ),
       body: Column(
         children: [
