@@ -92,7 +92,8 @@ class _DiaryPageState extends State<DiaryPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Center(child: const Text('日记本')),
+        title: const Text('日记本'),
+        centerTitle: true,
         actions: [
           IconButton(
             icon: Icon(_showFavoritesOnly ? Icons.favorite : Icons.favorite_border, color: _showFavoritesOnly ? Colors.red : null),
