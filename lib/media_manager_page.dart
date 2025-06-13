@@ -2162,7 +2162,10 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
   // 声明全量导出/导入方法（后续补充实现）
   Future<void> _exportAllMediaData() async {
+    final progress = ValueNotifier<double>(0);
+    final message = ValueNotifier<String>('准备中...');
     try {
+      showProgressDialog(context, progress, message);
       final appDir = await getApplicationDocumentsDirectory();
       final mediaDir = Directory('${appDir.path}/media');
       final tempDir = await getTemporaryDirectory();
@@ -2170,50 +2173,73 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       if (await exportDir.exists()) await exportDir.delete(recursive: true);
       await exportDir.create(recursive: true);
 
-      // 1. 拷贝所有媒体文件到临时导出目录
+      // 1. 拷贝所有媒体文件到临时导出目录（分批处理）
       if (await mediaDir.exists()) {
-        debugPrint('准备拷贝媒体目录: ${mediaDir.path}');
-        await _copyDirectory(mediaDir, Directory('${exportDir.path}/media'));
-        debugPrint('拷贝完成，导出目录内容:');
-        await for (var f in Directory('${exportDir.path}/media').list(recursive: true)) {
-          debugPrint('导出文件: ' + f.path);
+        final allFiles = await mediaDir.list(recursive: true).where((e) => e is File).toList();
+        int total = allFiles.length;
+        int done = 0;
+        for (var entity in allFiles) {
+          if (entity is File) {
+            final relativePath = path.relative(entity.path, from: mediaDir.path);
+            final newPath = path.join(exportDir.path, 'media', relativePath);
+            await File(newPath).create(recursive: true);
+            await entity.copy(newPath);
+            done++;
+            progress.value = done / (total + 2); // +2 for db/settings
+            message.value = '正在拷贝媒体文件: $done/$total';
+            await Future.delayed(const Duration(milliseconds: 10));
+          }
         }
-      } else {
-        debugPrint('未找到媒体目录: ${mediaDir.path}');
       }
 
-      // 2. 导出数据库表（media_items）
+      // 2. 导出数据库表
+      message.value = '正在导出数据库...';
       final allMediaItems = await _databaseService.getAllMediaItems();
       final mediaItemsJson = jsonEncode(allMediaItems);
       final mediaItemsFile = File('${exportDir.path}/media_items.json');
       await mediaItemsFile.writeAsString(mediaItemsJson);
-      debugPrint('已写入 media_items.json');
+      progress.value += 1 / 100; // 近似推进
+      await Future.delayed(const Duration(milliseconds: 10));
 
       // 3. 导出设置
+      message.value = '正在导出设置...';
       final prefs = await SharedPreferences.getInstance();
       final mediaVisible = prefs.getBool('media_visible') ?? true;
       final settingsFile = File('${exportDir.path}/media_settings.json');
       await settingsFile.writeAsString(jsonEncode({'media_visible': mediaVisible}));
-      debugPrint('已写入 media_settings.json');
+      progress.value += 1 / 100;
+      await Future.delayed(const Duration(milliseconds: 10));
 
-      // 4. 用内存流打包为zip
+      // 4. 打包为zip（分批添加文件）
+      message.value = '正在压缩数据...';
       final zipPath = '${tempDir.path}/media_backup.zip';
       if (File(zipPath).existsSync()) File(zipPath).deleteSync();
       final archive = Archive();
-      await for (var entity in exportDir.list(recursive: true, followLinks: false)) {
+      final exportFiles = await exportDir.list(recursive: true, followLinks: false).where((e) => e is File).toList();
+      int zipTotal = exportFiles.length;
+      int zipDone = 0;
+      for (var entity in exportFiles) {
         if (entity is File) {
           final relative = path.relative(entity.path, from: exportDir.path);
           final bytes = await entity.readAsBytes();
           archive.addFile(ArchiveFile(relative, bytes.length, bytes));
+          zipDone++;
+          progress.value = 0.8 + 0.15 * (zipDone / zipTotal);
+          message.value = '压缩: $zipDone/$zipTotal';
+          await Future.delayed(const Duration(milliseconds: 10));
         }
       }
       final zipBytes = ZipEncoder().encode(archive);
       await File(zipPath).writeAsBytes(zipBytes!);
-      debugPrint('已打包为zip: $zipPath');
+      progress.value = 1.0;
+      message.value = '导出完成，正在分享...';
+      await Future.delayed(const Duration(milliseconds: 10));
 
       // 5. 分享/保存zip
       await Share.shareXFiles([XFile(zipPath)], subject: '媒体数据备份');
+      Navigator.of(context).pop();
     } catch (e) {
+      Navigator.of(context).pop();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('导出媒体数据失败: $e')),
@@ -2223,19 +2249,25 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   }
 
   Future<void> _importAllMediaData() async {
+    final progress = ValueNotifier<double>(0);
+    final message = ValueNotifier<String>('准备中...');
     try {
       // 1. 选择zip包
       FilePickerResult? result = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['zip']);
       if (result == null || result.files.isEmpty) return;
+      showProgressDialog(context, progress, message);
       final zipFile = File(result.files.single.path!);
       final tempDir = await getTemporaryDirectory();
       final importDir = Directory('${tempDir.path}/media_import');
       if (await importDir.exists()) await importDir.delete(recursive: true);
       await importDir.create(recursive: true);
 
-      // 2. 解压zip到临时目录
+      // 2. 解压zip到临时目录（分批处理）
+      message.value = '正在解压数据...';
       final bytes = await zipFile.readAsBytes();
       final archive = ZipDecoder().decodeBytes(bytes);
+      int total = archive.length;
+      int done = 0;
       for (final file in archive) {
         final filename = file.name;
         final outFile = File('${importDir.path}/$filename');
@@ -2245,26 +2277,49 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         } else {
           await Directory(outFile.path).create(recursive: true);
         }
+        done++;
+        progress.value = done / (total + 3); // +3 for copy/db/settings
+        message.value = '解压: $done/$total';
+        await Future.delayed(const Duration(milliseconds: 10));
       }
 
       // 3. 恢复媒体文件
+      message.value = '正在恢复媒体文件...';
       final appDir = await getApplicationDocumentsDirectory();
       final mediaDir = Directory('${appDir.path}/media');
       final importMediaDir = Directory('${importDir.path}/media');
       if (await importMediaDir.exists()) {
         if (await mediaDir.exists()) await mediaDir.delete(recursive: true);
-        await _copyDirectory(importMediaDir, mediaDir);
+        final allFiles = await importMediaDir.list(recursive: true).where((e) => e is File).toList();
+        int copyTotal = allFiles.length;
+        int copyDone = 0;
+        for (var entity in allFiles) {
+          if (entity is File) {
+            final relativePath = path.relative(entity.path, from: importMediaDir.path);
+            final newPath = path.join(mediaDir.path, relativePath);
+            await File(newPath).create(recursive: true);
+            await entity.copy(newPath);
+            copyDone++;
+            progress.value = 0.7 + 0.15 * (copyDone / copyTotal);
+            message.value = '恢复媒体: $copyDone/$copyTotal';
+            await Future.delayed(const Duration(milliseconds: 10));
+          }
+        }
       }
 
       // 4. 恢复数据库表
+      message.value = '正在恢复数据库...';
       final mediaItemsFile = File('${importDir.path}/media_items.json');
       if (await mediaItemsFile.exists()) {
         final mediaItemsJson = await mediaItemsFile.readAsString();
         final List<dynamic> mediaItems = jsonDecode(mediaItemsJson);
         await _databaseService.replaceAllMediaItems(mediaItems);
       }
+      progress.value += 1 / 100;
+      await Future.delayed(const Duration(milliseconds: 10));
 
       // 5. 恢复设置
+      message.value = '正在恢复设置...';
       final settingsFile = File('${importDir.path}/media_settings.json');
       if (await settingsFile.exists()) {
         final settingsJson = await settingsFile.readAsString();
@@ -2274,15 +2329,20 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           await prefs.setBool('media_visible', settings['media_visible']);
         }
       }
+      progress.value = 1.0;
+      message.value = '导入完成，正在刷新...';
+      await Future.delayed(const Duration(milliseconds: 10));
 
       // 6. 刷新界面
       await _loadMediaItems();
+      Navigator.of(context).pop();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('导入媒体数据成功')),
         );
       }
     } catch (e) {
+      Navigator.of(context).pop();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('导入媒体数据失败: $e')),
@@ -2368,5 +2428,37 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       body: _buildMediaGrid(),
     );
   }
+}
+
+// 进度弹窗组件
+Future<void> showProgressDialog(BuildContext context, ValueNotifier<double> progress, ValueNotifier<String> message) async {
+  await showDialog(
+    context: context,
+    barrierDismissible: false,
+    builder: (context) => AlertDialog(
+      content: SizedBox(
+        width: 260,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ValueListenableBuilder<double>(
+              valueListenable: progress,
+              builder: (context, value, _) => LinearProgressIndicator(value: value),
+            ),
+            const SizedBox(height: 16),
+            ValueListenableBuilder<double>(
+              valueListenable: progress,
+              builder: (context, value, _) => Text('${(value * 100).toStringAsFixed(0)}%', style: const TextStyle(fontSize: 16)),
+            ),
+            const SizedBox(height: 8),
+            ValueListenableBuilder<String>(
+              valueListenable: message,
+              builder: (context, value, _) => Text(value, style: const TextStyle(fontSize: 13)),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
 }
 
