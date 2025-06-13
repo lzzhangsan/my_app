@@ -1041,9 +1041,9 @@ class DatabaseService {
       }
       await Directory(tempDirPath).create(recursive: true);
 
-      // 解压ZIP文件
-      final bytes = await File(zipPath).readAsBytes();
-      final archive = ZipDecoder().decodeBytes(bytes);
+      // 用流式InputFileStream解压ZIP文件
+      final inputStream = InputFileStream(zipPath);
+      final archive = ZipDecoder().decodeStream(inputStream);
       for (var file in archive) {
         final String filename = file.name;
         if (file.isFile) {
@@ -1066,6 +1066,14 @@ class DatabaseService {
       // 准备背景图片目录
       final String backgroundImagesPath = '${appDocDir.path}/background_images';
       await Directory(backgroundImagesPath).create(recursive: true);
+      
+      // 准备图片目录
+      final String imagesDirPath = '${appDocDir.path}/images';
+      await Directory(imagesDirPath).create(recursive: true);
+      
+      // 准备音频目录
+      final String audiosDirPath = '${appDocDir.path}/audios';
+      await Directory(audiosDirPath).create(recursive: true);
 
       await db.transaction((txn) async {
         // 清除现有数据
@@ -1076,6 +1084,7 @@ class DatabaseService {
         await txn.delete('audio_boxes');
         await txn.delete('document_settings');
         await txn.delete('directory_settings');
+        await txn.delete('media_items');
 
         // 导入新数据
         for (var entry in tableData.entries) {
@@ -1152,7 +1161,7 @@ class DatabaseService {
               await txn.insert(tableName, audioBox);
             }
           } else {
-            // 其他表直接插入
+            // 其他表正常导入（folders, documents, text_boxes, media_items）
             for (var row in rows) {
               await txn.insert(tableName, Map<String, dynamic>.from(row));
             }
@@ -1165,9 +1174,7 @@ class DatabaseService {
 
       print('目录数据导入完成');
     } catch (e, stackTrace) {
-      print('导入目录数据时出错: $e');
-      print('错误堆栈: $stackTrace');
-      _handleError('导入目录数据失败', e, stackTrace);
+      _handleError('导入数据失败', e, stackTrace);
       rethrow;
     }
   }
@@ -1559,8 +1566,9 @@ class DatabaseService {
       }
       await tempDir.create(recursive: true);
       
-      // 解压ZIP文件
-      final Archive archive = ZipDecoder().decodeBytes(await File(zipPath).readAsBytes());
+      // 用流式InputFileStream解压ZIP文件
+      final inputStream = InputFileStream(zipPath);
+      final archive = ZipDecoder().decodeStream(inputStream);
       for (final file in archive) {
         final filename = file.name;
         if (file.isFile) {
@@ -1568,8 +1576,6 @@ class DatabaseService {
           File('$tempDirPath/$filename')
             ..createSync(recursive: true)
             ..writeAsBytesSync(data);
-        } else {
-          Directory('$tempDirPath/$filename').create(recursive: true);
         }
       }
       
@@ -2236,9 +2242,9 @@ class DatabaseService {
       }
       await Directory(tempDirPath).create(recursive: true);
 
-      // 解压ZIP文件
-      final bytes = await File(zipPath).readAsBytes();
-      final archive = ZipDecoder().decodeBytes(bytes);
+      // 用流式InputFileStream解压ZIP文件
+      final inputStream = InputFileStream(zipPath);
+      final archive = ZipDecoder().decodeStream(inputStream);
       for (var file in archive) {
         final String filename = file.name;
         if (file.isFile) {

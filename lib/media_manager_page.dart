@@ -2299,10 +2299,10 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       if (await importDir.exists()) await importDir.delete(recursive: true);
       await importDir.create(recursive: true);
 
-      // 2. 解压zip到临时目录（分批处理）
+      // 2. 用流式InputFileStream解压zip到临时目录
       message.value = '正在解压数据...';
-      final bytes = await zipFile.readAsBytes();
-      final archive = ZipDecoder().decodeBytes(bytes);
+      final inputStream = InputFileStream(zipFile.path);
+      final archive = ZipDecoder().decodeStream(inputStream);
       int total = archive.length;
       int done = 0;
       for (final file in archive) {
