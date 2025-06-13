@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:crypto/crypto.dart';
 import '../core/service_locator.dart';
 import 'database_service.dart';
+import 'package:archive/archive_io.dart';
 
 class BackupService {
   static final BackupService _instance = BackupService._internal();
@@ -83,49 +84,79 @@ class BackupService {
     }
   }
 
-  /// 创建备份
+  /// 创建备份（分批流式导出，支持超大数据）
   Future<BackupRecord?> createBackup({
     required String name,
     String? description,
     bool isAutoBackup = false,
     List<String>? includePaths,
+    ValueNotifier<String>? progressNotifier,
   }) async {
     if (!_isInitialized || _backupDirectory == null) {
       throw Exception('BackupService 未初始化');
     }
-
     try {
       final timestamp = DateTime.now();
       final backupId = _generateBackupId();
-      final backupFileName = '$backupId.backup';
+      final backupFileName = '$backupId.backup.zip';
       final backupFile = File('${_backupDirectory!.path}/$backupFileName');
-      
-      // 收集要备份的数据
-      final backupData = await _collectBackupData(includePaths);
-      
-      // 创建备份文件
-      final backupContent = {
-        'metadata': {
-          'id': backupId,
-          'name': name,
-          'description': description,
-          'timestamp': timestamp.toIso8601String(),
-          'version': '1.0',
-          'is_auto_backup': isAutoBackup,
-          'app_version': await _getAppVersion(),
-        },
-        'data': backupData,
-      };
-      
-      // 压缩并写入文件
-      final jsonString = jsonEncode(backupContent);
-      final compressedData = gzip.encode(utf8.encode(jsonString));
-      await backupFile.writeAsBytes(compressedData);
-      
-      // 计算文件哈希
+      // 1. 创建临时目录
+      final tempDir = Directory('${_backupDirectory!.path}/temp_all_backup');
+      if (await tempDir.exists()) await tempDir.delete(recursive: true);
+      await tempDir.create(recursive: true);
+      // 2. 分批导出所有核心数据到临时目录
+      progressNotifier?.value = '正在导出数据库...';
+      final dbService = getService<DatabaseService>();
+      await dbService.exportDirectoryData(progressNotifier: progressNotifier);
+      // 3. 分批拷贝所有媒体、文档、设置等
+      final appDir = await getApplicationDocumentsDirectory();
+      final List<String> extraDirs = ['media', 'documents', 'background_images'];
+      for (final dirName in extraDirs) {
+        final srcDir = Directory('${appDir.path}/$dirName');
+        if (await srcDir.exists()) {
+          final dstDir = Directory('${tempDir.path}/$dirName');
+          await dstDir.create(recursive: true);
+          await for (final entity in srcDir.list(recursive: true)) {
+            if (entity is File) {
+              final rel = entity.path.replaceFirst('${srcDir.path}/', '');
+              final target = File('${dstDir.path}/$rel');
+              await target.parent.create(recursive: true);
+              final fileSize = await entity.length();
+              if (fileSize > 10 * 1024 * 1024) {
+                // 大文件流式复制
+                await entity.openRead().pipe(target.openWrite());
+              } else {
+                await entity.copy(target.path);
+              }
+            }
+          }
+        }
+      }
+      // 4. 导出设置/偏好等（如有）
+      // ...可扩展...
+      // 5. 流式压缩整个临时目录为ZIP（真正低内存）
+      progressNotifier?.value = '正在压缩数据...';
+      final encoder = ZipFileEncoder();
+      encoder.create(backupFile.path);
+      int fileCount = 0;
+      await for (final entity in Directory(tempDir.path).list(recursive: true)) {
+        if (entity is File) {
+          final relative = entity.path.replaceFirst(tempDir.path + '/', '');
+          encoder.addFile(entity, relative);
+          fileCount++;
+          if (fileCount % 10 == 0) {
+            progressNotifier?.value = '正在压缩文件: $fileCount';
+          }
+        }
+      }
+      encoder.close();
+      // 6. 校验并清理临时目录
+      if (!await backupFile.exists() || await backupFile.length() == 0) {
+        throw Exception('导出失败：未生成有效的全量备份文件');
+      }
+      await tempDir.delete(recursive: true);
+      // 7. 计算哈希并记录
       final fileHash = await _calculateFileHash(backupFile);
-      
-      // 创建备份记录
       final backupRecord = BackupRecord(
         id: backupId,
         name: name,
@@ -135,31 +166,23 @@ class BackupService {
         fileSize: await backupFile.length(),
         fileHash: fileHash,
         isAutoBackup: isAutoBackup,
-        dataTypes: backupData.keys.toList(),
+        dataTypes: ['all'],
       );
-      
-      // 添加到历史记录
       _backupHistory.add(backupRecord);
-      
-      // 保持历史记录在限制范围内
       if (_backupHistory.length > _maxBackupHistory) {
         final oldestBackup = _backupHistory.removeAt(0);
         await _deleteBackupFile(oldestBackup.filePath);
       }
-      
-      // 保存备份历史
       await _saveBackupHistory();
-      
       if (kDebugMode) {
-        print('备份创建成功: $name');
+        print('全量备份创建成功: $name');
         print('备份文件: ${backupFile.path}');
         print('文件大小: ${(backupRecord.fileSize / 1024).toStringAsFixed(2)} KB');
       }
-      
       return backupRecord;
     } catch (e) {
       if (kDebugMode) {
-        print('创建备份失败: $e');
+        print('创建全量备份失败: $e');
       }
       return null;
     }

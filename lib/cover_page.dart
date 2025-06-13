@@ -1379,16 +1379,42 @@ class _CoverPageState extends State<CoverPage> {
   }
 
   Future<void> _exportAllData() async {
+    final progressNotifier = ValueNotifier<String>('准备导出...');
+    bool dialogClosed = false;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        content: ValueListenableBuilder<String>(
+          valueListenable: progressNotifier,
+          builder: (context, progress, child) {
+            return Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const CircularProgressIndicator(),
+                const SizedBox(height: 20),
+                Text(progress, textAlign: TextAlign.center, style: const TextStyle(fontSize: 14)),
+              ],
+            );
+          },
+        ),
+      ),
+    ).then((_) => dialogClosed = true);
     try {
       final backupService = getService<BackupService>();
       await backupService.initialize();
-      final backupRecord = await backupService.createBackup(name: '全量导出_${DateTime.now().millisecondsSinceEpoch}');
+      final backupRecord = await backupService.createBackup(
+        name: '全量导出_${DateTime.now().millisecondsSinceEpoch}',
+        progressNotifier: progressNotifier,
+      );
       if (backupRecord == null) throw Exception('导出失败');
+      if (!dialogClosed) Navigator.of(context, rootNavigator: true).pop();
       await Share.shareXFiles([XFile(backupRecord.filePath)], text: '我的全部数据备份');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('全部数据已导出，可分享或保存')),
       );
     } catch (e) {
+      if (!dialogClosed) Navigator.of(context, rootNavigator: true).pop();
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('导出失败: $e')),
       );
@@ -1396,21 +1422,45 @@ class _CoverPageState extends State<CoverPage> {
   }
 
   Future<void> _importAllData() async {
+    final progressNotifier = ValueNotifier<String>('准备导入...');
+    bool dialogClosed = false;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        content: ValueListenableBuilder<String>(
+          valueListenable: progressNotifier,
+          builder: (context, progress, child) {
+            return Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const CircularProgressIndicator(),
+                const SizedBox(height: 20),
+                Text(progress, textAlign: TextAlign.center, style: const TextStyle(fontSize: 14)),
+              ],
+            );
+          },
+        ),
+      ),
+    ).then((_) => dialogClosed = true);
     try {
       final result = await FilePicker.platform.pickFiles(type: FileType.any);
-      if (result == null || result.files.isEmpty) return;
+      if (result == null || result.files.isEmpty) {
+        if (!dialogClosed) Navigator.of(context, rootNavigator: true).pop();
+        return;
+      }
       final file = File(result.files.single.path!);
       final backupService = getService<BackupService>();
       await backupService.initialize();
-      // 解析文件名获取备份ID
       final fileName = p.basename(file.path);
       final backupId = fileName.replaceAll('.backup', '');
-      // 先将文件复制到备份目录
       final backupDir = Directory(p.join((await getApplicationDocumentsDirectory()).path, 'backups'));
       if (!await backupDir.exists()) await backupDir.create(recursive: true);
       final targetPath = p.join(backupDir.path, fileName);
       await file.copy(targetPath);
+      progressNotifier.value = '正在恢复数据...';
       final success = await backupService.restoreBackup(backupId);
+      if (!dialogClosed) Navigator.of(context, rootNavigator: true).pop();
       if (success) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('全部数据已恢复')),
@@ -1419,6 +1469,7 @@ class _CoverPageState extends State<CoverPage> {
         throw Exception('恢复失败');
       }
     } catch (e) {
+      if (!dialogClosed) Navigator.of(context, rootNavigator: true).pop();
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('恢复失败: $e')),
       );
