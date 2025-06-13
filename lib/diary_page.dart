@@ -937,8 +937,9 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
   bool _isFavorite = false;
   final DiaryService _diaryService = DiaryService();
   bool _isSaving = false;
-  bool _isLoading = true; // 添加加载状态标志
-  final Map<String, File?> _videoThumbnailCache = {};
+  bool _isLoading = true; // 加载状态标志
+  Directory? _tempDir; // 缓存目录
+  final Map<String, File> _videoThumbnailCache = {}; // 视频缩略图内存缓存
 
   final List<Map<String, dynamic>> _weatherSvgOptions = [
     {'icon': 'assets/icon/weather_sunny.svg', 'label': '晴'},
@@ -968,7 +969,12 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
     // 初始化late变量，防止在异步加载完成前访问它们
     _date = widget.entry?.date ?? widget.date;
     _contentController = TextEditingController(text: '');
+    _initTempDir();
     _loadDraftOrEntry();
+  }
+  
+  Future<void> _initTempDir() async {
+    _tempDir = await getTemporaryDirectory();
   }
 
   void _initEntryId() {
@@ -977,6 +983,31 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
     } else {
       _entryId = const Uuid().v4();
     }
+  }
+
+  // 预加载所有缩略图的缓存，避免界面上一张一张显示的情况
+  Future<void> _preloadThumbnails(List<String> imagePaths, List<String> videoPaths) async {
+    debugPrint('开始预加载所有缩略图...');
+    
+    // 清空之前的缓存
+    _videoThumbnailCache.clear();
+    
+    // 预加载所有视频缩略图到内存缓存
+    for (final videoPath in videoPaths) {
+      try {
+        final thumbnailFile = await _getCachedVideoThumbnail(videoPath);
+        if (thumbnailFile != null) {
+          final fileName = videoPath.split(Platform.pathSeparator).last;
+          final cacheKey = 'video_thumb_$fileName';
+          _videoThumbnailCache[cacheKey] = thumbnailFile;
+          debugPrint('视频缩略图已缓存: $cacheKey');
+        }
+      } catch (e) {
+        debugPrint('预加载视频缩略图失败: $videoPath, 错误: $e');
+      }
+    }
+    
+    debugPrint('所有缩略图预加载完成，视频缓存数量: ${_videoThumbnailCache.length}');
   }
 
   Future<void> _loadDraftOrEntry() async {
@@ -998,6 +1029,12 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
         location: widget.entry?.location,
         isFavorite: widget.entry?.isFavorite ?? false,
       ));
+      
+      // 在设置状态之前预加载所有缩略图
+      await _preloadThumbnails(
+        List<String>.from(draft.imagePaths), 
+        List<String>.from(draft.videoPaths)
+      );
       
       if (mounted) {
         setState(() {
@@ -1125,12 +1162,7 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
                           ),
                           child: ClipRRect(
                             borderRadius: BorderRadius.circular(10),
-                            child: Image.file(
-                              File(e.value),
-                              width: 90,
-                              height: 90,
-                              fit: BoxFit.cover,
-                            ),
+                            child: _buildImageThumbnail(e.value, 90, 90),
                           ),
                         ),
                         Positioned(
@@ -1502,101 +1534,159 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
   }
 
   Widget _buildVideoThumbnail(String path, int index) {
-    if (_videoThumbnailCache.containsKey(path)) {
-      final file = _videoThumbnailCache[path];
-      if (file != null) {
-        return Stack(
-          fit: StackFit.expand,
-          children: [
-            ClipRRect(
-              borderRadius: BorderRadius.circular(10),
-              child: Image.file(
-                file,
-                width: 90,
-                height: 90,
-                fit: BoxFit.cover,
+    // 使用全局缓存Map存储缩略图，实现瞬间显示
+    final fileName = path.split(Platform.pathSeparator).last;
+    final cacheKey = 'video_thumb_$fileName';
+    
+    // 检查内存缓存
+    if (_videoThumbnailCache.containsKey(cacheKey) && _videoThumbnailCache[cacheKey] != null) {
+      final thumbnailFile = _videoThumbnailCache[cacheKey]!;
+      return Stack(
+        fit: StackFit.expand,
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(10),
+            child: Image.file(
+              thumbnailFile,
+              width: 90,
+              height: 90,
+              fit: BoxFit.cover,
+            ),
+          ),
+          Positioned(
+            right: 8,
+            bottom: 8,
+            child: Container(
+              padding: const EdgeInsets.all(2),
+              decoration: BoxDecoration(
+                color: Colors.black45,
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(
+                Icons.play_arrow,
+                size: 18,
+                color: Colors.white,
               ),
             ),
-            Positioned(
-              right: 8,
-              bottom: 8,
-              child: Container(
-                padding: const EdgeInsets.all(2),
-                decoration: BoxDecoration(
-                  color: Colors.black45,
-                  shape: BoxShape.circle,
-                ),
-                child: const Icon(
-                  Icons.play_arrow,
-                  size: 18,
-                  color: Colors.white,
-                ),
-              ),
-            ),
-          ],
-        );
-      }
+          ),
+        ],
+      );
+    } else {
+      // 显示占位符
+      return Container(
+        width: 90,
+        height: 90,
+        decoration: BoxDecoration(
+          color: Colors.grey[300],
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: const Center(
+          child: Icon(
+            Icons.videocam,
+            size: 32,
+            color: Colors.grey,
+          ),
+        ),
+      );
     }
-    return FutureBuilder<File?>(
-      future: MediaService().generateVideoThumbnail(path),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.done && snapshot.hasData && snapshot.data != null) {
-          _videoThumbnailCache[path] = snapshot.data;
-          return Stack(
-            fit: StackFit.expand,
-            children: [
-              ClipRRect(
-                borderRadius: BorderRadius.circular(10),
-                child: Image.file(
-                  snapshot.data!,
-                  width: 90,
-                  height: 90,
-                  fit: BoxFit.cover,
-                ),
-              ),
-              Positioned(
-                right: 8,
-                bottom: 8,
-                child: Container(
-                  padding: const EdgeInsets.all(2),
-                  decoration: BoxDecoration(
-                    color: Colors.black45,
-                    shape: BoxShape.circle,
-                  ),
-                  child: const Icon(
-                    Icons.play_arrow,
-                    size: 18,
-                    color: Colors.white,
-                  ),
-                ),
-              ),
-            ],
-          );
-        } else {
-          return Container(
-            width: 90,
-            height: 90,
-            decoration: BoxDecoration(
-              color: Colors.grey[300],
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: const Center(
-              child: Icon(
-                Icons.videocam,
-                size: 32,
-                color: Colors.grey,
-              ),
-            ),
-          );
-        }
-      },
-    );
+  }
+  
+  // 获取持久化缓存的视频缩略图
+  Future<File?> _getCachedVideoThumbnail(String videoPath) async {
+    try {
+      // 使用文件名作为缓存标识符，而不是hashCode
+      final fileName = videoPath.split(Platform.pathSeparator).last;
+      final tempDir = await getTemporaryDirectory();
+      final thumbnailPath = '${tempDir.path}/video_thumb_${fileName}.jpg';
+      final thumbnailFile = File(thumbnailPath);
+      
+      // 检查缓存是否存在
+      if (await thumbnailFile.exists() && await thumbnailFile.length() > 100) {
+        debugPrint('使用视频缩略图缓存: $thumbnailPath');
+        return thumbnailFile;
+      }
+      
+      debugPrint('生成新的视频缩略图: $videoPath');
+      // 缓存不存在，生成新的缩略图
+      final newThumbnail = await MediaService().generateVideoThumbnail(videoPath);
+      if (newThumbnail != null) {
+        // 复制到持久化缓存位置
+        await newThumbnail.copy(thumbnailPath);
+        return thumbnailFile;
+      }
+      
+      return null;
+    } catch (e) {
+      debugPrint('获取缓存视频缩略图失败: $e');
+      return null;
+    }
   }
 
   Widget _buildVideoPlayer(String path) {
     return VideoPlayerWidget(
       file: File(path),
     );
+  }
+  
+  // 构建图片缩略图，直接显示原图实现瞬间加载
+  Widget _buildImageThumbnail(String imagePath, double width, double height) {
+    // 直接显示原图，无需缓存检查，实现瞬间显示
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(10),
+      child: Image.file(
+        File(imagePath),
+        width: width,
+        height: height,
+        fit: BoxFit.cover,
+        errorBuilder: (context, error, stackTrace) {
+          return Container(
+            width: width,
+            height: height,
+            decoration: BoxDecoration(
+              color: Colors.grey[300],
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: const Icon(
+              Icons.image,
+              size: 32,
+              color: Colors.grey,
+            ),
+          );
+        },
+      ),
+    );
+  }
+  
+  // 获取持久化缓存的图片缩略图
+  Future<File?> _getCachedImageThumbnail(String imagePath) async {
+    try {
+      // 使用文件名作为缓存标识符，而不是hashCode
+      final fileName = imagePath.split(Platform.pathSeparator).last;
+      final tempDir = await getTemporaryDirectory();
+      final thumbnailPath = '${tempDir.path}/img_thumb_${fileName}';
+      final thumbnailFile = File(thumbnailPath);
+      
+      // 检查缓存是否存在
+      if (await thumbnailFile.exists() && await thumbnailFile.length() > 100) {
+        debugPrint('使用图片缩略图缓存: $thumbnailPath');
+        return thumbnailFile;
+      }
+      
+      debugPrint('生成新的图片缩略图: $imagePath');
+      // 缓存不存在，创建新的缩略图
+      final originalFile = File(imagePath);
+      if (await originalFile.exists()) {
+        // 简单地复制原图作为缩略图
+        // 在实际应用中，你可能需要使用图像处理库来调整大小和质量
+        await originalFile.copy(thumbnailPath);
+        return thumbnailFile;
+      }
+      
+      return null;
+    } catch (e) {
+      debugPrint('获取缓存图片缩略图失败: $e');
+      return null;
+    }
   }
 
   String _weekdayStr(int weekday) {
