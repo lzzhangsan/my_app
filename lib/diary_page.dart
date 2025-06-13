@@ -16,6 +16,32 @@ import 'package:file_picker/file_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:archive/archive_io.dart';
 import 'dart:convert';
+import 'package:flutter/services.dart';
+
+// 全局函数：显示进度条弹窗，支持取消操作
+void showProgressDialog(BuildContext context, ValueNotifier<double> progress, ValueNotifier<String> message, {bool barrierDismissible = false}) {
+  showDialog(
+    context: context,
+    barrierDismissible: barrierDismissible,
+    builder: (context) => AlertDialog(
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ValueListenableBuilder<double>(
+            valueListenable: progress,
+            builder: (context, value, child) => LinearProgressIndicator(value: value),
+          ),
+          const SizedBox(height: 8),
+          ValueListenableBuilder<String>(
+            valueListenable: message,
+            builder: (context, value, child) => Text(value),
+          ),
+        ],
+      ),
+      actions: barrierDismissible ? [TextButton(onPressed: () => Navigator.pop(context), child: Text('取消'))] : null,
+    ),
+  );
+}
 
 class DiaryPage extends StatefulWidget {
   const DiaryPage({Key? key}) : super(key: key);
@@ -441,182 +467,188 @@ class _DiaryPageState extends State<DiaryPage> {
 
   // 日记本数据导出
   Future<void> _exportDiaryData() async {
+    final progress = ValueNotifier<double>(0.0);
+    final message = ValueNotifier<String>("准备导出...");
     try {
-      showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (context) => const AlertDialog(
-          content: Row(
-            children: [
-              CircularProgressIndicator(),
-              SizedBox(width: 20),
-              Text('正在导出日记本数据...')
-            ],
-          ),
-        ),
-      );
+      showProgressDialog(context, progress, message, barrierDismissible: true);
       final entries = await _diaryService.loadEntries();
-      final Directory appDocDir = await getApplicationDocumentsDirectory();
-      final String backupPath = '${appDocDir.path}/diary_backups';
+      final Directory? extDir = await getExternalStorageDirectory();
+      if (extDir == null) throw Exception("无法获取外部存储目录");
+      final String backupPath = "${extDir.path}/Download/diary_backups";
       final Directory backupDir = Directory(backupPath);
       if (!await backupDir.exists()) {
         await backupDir.create(recursive: true);
       }
-      final String tempDirPath = '$backupPath/temp_diary_backup';
+      final String tempDirPath = "$backupPath/temp_diary_backup";
       final Directory tempDir = Directory(tempDirPath);
       if (await tempDir.exists()) {
         await tempDir.delete(recursive: true);
       }
       await tempDir.create(recursive: true);
       // 保存日记数据为json
-      final File dataFile = File('$tempDirPath/diary_data.json');
-      await dataFile.writeAsString(
-        jsonEncode(entries.map((e) => e.toMap()).toList()),
-      );
-      // 收集所有媒体文件
+      final File dataFile = File("$tempDirPath/diary_data.json");
+      await dataFile.writeAsString(jsonEncode(entries.map((e) => e.toMap()).toList()));
+      progress.value = 0.1;
+      message.value = "正在导出日记数据...";
+      await Future.delayed(const Duration(milliseconds: 10));
+      // 分批异步拷贝媒体文件，并实时更新进度
       final Set<String> allMediaPaths = {};
       for (final entry in entries) {
         allMediaPaths.addAll(entry.imagePaths);
         allMediaPaths.addAll(entry.audioPaths);
         allMediaPaths.addAll(entry.videoPaths);
       }
-      for (final path in allMediaPaths) {
-        if (path.isEmpty) continue;
+      final mediaList = allMediaPaths.where((path) => path.isNotEmpty).toList();
+      int total = mediaList.length;
+      int done = 0;
+      for (final path in mediaList) {
         final file = File(path);
         if (await file.exists()) {
           final fileName = path.split(Platform.pathSeparator).last;
-          final ext = fileName.split('.').last;
-          final typeDir = (['jpg','jpeg','png','gif','bmp','webp'].contains(ext.toLowerCase())) ? 'images' :
-                          (['mp3','aac','wav','m4a','ogg'].contains(ext.toLowerCase())) ? 'audios' :
-                          (['mp4','mov','avi','mkv','webm'].contains(ext.toLowerCase())) ? 'videos' : 'others';
-          final targetDir = Directory('$tempDirPath/$typeDir');
+          final ext = fileName.split('.').last.toLowerCase();
+          final typeDir = (['jpg','jpeg','png','gif','bmp','webp'].contains(ext)) ? 'images' :
+                          (['mp3','aac','wav','m4a','ogg'].contains(ext)) ? 'audios' :
+                          (['mp4','mov','avi','mkv','webm'].contains(ext)) ? 'videos' : 'others';
+          final targetDir = Directory("$tempDirPath/$typeDir");
           if (!await targetDir.exists()) await targetDir.create(recursive: true);
-          await file.copy('${targetDir.path}/$fileName');
+          await file.copy("${targetDir.path}/$fileName");
         }
+        done++;
+        progress.value = 0.1 + (done / total) * 0.7; // 进度从 0.1 到 0.8
+        message.value = "正在导出媒体文件: $done/$total";
+        await Future.delayed(const Duration(milliseconds: 10));
       }
-      // 打包为zip
+      // 打包为zip，使用 ZipFileEncoder 流式写入
+      message.value = "正在打包为zip...";
       final String timestamp = DateTime.now().toString().replaceAll(RegExp(r'[^0-9]'), '');
-      final String zipPath = '$backupPath/diary_backup_$timestamp.zip';
+      final String zipPath = "$backupPath/diary_backup_$timestamp.zip";
       final encoder = ZipFileEncoder();
       encoder.create(zipPath);
       await encoder.addDirectory(tempDir, includeDirName: false);
       encoder.close();
+      progress.value = 0.9;
+      await Future.delayed(const Duration(milliseconds: 10));
       await tempDir.delete(recursive: true);
+      progress.value = 1.0;
+      message.value = "导出完成，文件保存在: $zipPath";
+      await Future.delayed(const Duration(milliseconds: 500));
       if (mounted) Navigator.pop(context);
+      // 复制路径到剪贴板，并提示用户
+      await Clipboard.setData(ClipboardData(text: zipPath));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("导出完成，文件路径已复制到剪贴板: $zipPath")));
+      // 分享文件（可选）
       await Share.shareXFiles([XFile(zipPath)], subject: '日记本数据备份');
     } catch (e) {
       if (mounted) Navigator.pop(context);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('导出日记本数据失败: $e')),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("导出日记本数据失败: $e")));
     }
   }
 
   // 日记本数据导入
   Future<void> _importDiaryData() async {
+    bool? confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text("警告"),
+        content: Text("导入新日记本数据将会覆盖当前所有日记，确定要继续吗？"),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(false), child: Text("取消")),
+          TextButton(onPressed: () => Navigator.of(context).pop(true), child: Text("确定")),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+    FilePickerResult? result = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['zip']);
+    if (result == null || result.files.single.path == null) return;
+    final progress = ValueNotifier<double>(0.0);
+    final message = ValueNotifier<String>("准备导入...");
     try {
-      bool? confirm = await showDialog<bool>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: Text('警告'),
-          content: Text('导入新日记本数据将会覆盖当前所有日记，确定要继续吗？'),
-          actions: [
-            TextButton(
-              child: Text('取消'),
-              onPressed: () => Navigator.of(context).pop(false),
-            ),
-            TextButton(
-              child: Text('确定'),
-              onPressed: () => Navigator.of(context).pop(true),
-            ),
-          ],
-        ),
-      );
-      if (confirm != true) return;
-      FilePickerResult? result = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: ['zip'],
-      );
-      if (result != null && result.files.single.path != null) {
-        showDialog(
-          context: context,
-          barrierDismissible: false,
-          builder: (context) => const AlertDialog(
-            content: Row(
-              children: [
-                CircularProgressIndicator(),
-                SizedBox(width: 20),
-                Text('正在导入日记本数据...')
-              ],
-            ),
-          ),
-        );
-        final Directory appDocDir = await getApplicationDocumentsDirectory();
-        final String tempDirPath = '${appDocDir.path}/diary_import_temp';
-        final Directory tempDir = Directory(tempDirPath);
-        if (await tempDir.exists()) await tempDir.delete(recursive: true);
-        await tempDir.create(recursive: true);
-        final bytes = await File(result.files.single.path!).readAsBytes();
-        final archive = ZipDecoder().decodeBytes(bytes);
-        for (final file in archive) {
-          final filename = file.name;
-          if (file.isFile) {
-            final data = file.content as List<int>;
-            File('$tempDirPath/$filename')
-              ..createSync(recursive: true)
-              ..writeAsBytesSync(data);
-          }
+      showProgressDialog(context, progress, message, barrierDismissible: true);
+      final Directory? extDir = await getExternalStorageDirectory();
+      if (extDir == null) throw Exception("无法获取外部存储目录");
+      final String tempDirPath = "${extDir.path}/Download/diary_import_temp";
+      final Directory tempDir = Directory(tempDirPath);
+      if (await tempDir.exists()) await tempDir.delete(recursive: true);
+      await tempDir.create(recursive: true);
+      // 分批异步解压zip，利用 InputFileStream 流式解压
+      message.value = "正在解压文件...";
+      final inputStream = InputFileStream(result.files.single.path!);
+      final archive = ZipDecoder().decodeStream(inputStream);
+      int total = archive.length;
+      int done = 0;
+      for (final file in archive) {
+        final filename = file.name;
+        if (file.isFile) {
+          final data = file.content as List<int>;
+          File("$tempDirPath/$filename")..createSync(recursive: true)..writeAsBytesSync(data);
         }
-        // 恢复日记数据
-        final File dataFile = File('$tempDirPath/diary_data.json');
-        if (!await dataFile.exists()) throw Exception('未找到日记数据文件');
-        final List<dynamic> entryList = jsonDecode(await dataFile.readAsString());
-        final List<DiaryEntry> entries = entryList.map((e) => DiaryEntry.fromMap(e)).toList();
-        // 恢复媒体文件到原目录
-        final Map<String, String> typeDirs = {
-          'images': 'imagePaths',
-          'audios': 'audioPaths',
-          'videos': 'videoPaths',
-        };
-        for (final type in typeDirs.keys) {
-          final dir = Directory('$tempDirPath/$type');
-          if (await dir.exists()) {
-            for (final file in dir.listSync()) {
-              if (file is File) {
-                final appMediaDir = Directory('${appDocDir.path}/$type');
-                if (!await appMediaDir.exists()) await appMediaDir.create(recursive: true);
-                await file.copy('${appMediaDir.path}/${file.uri.pathSegments.last}');
-              }
-            }
-          }
-        }
-        // 修正音频路径为新手机本地路径
-        for (final entry in entries) {
-          if (entry.audioPaths.isNotEmpty) {
-            for (int i = 0; i < entry.audioPaths.length; i++) {
-              final oldPath = entry.audioPaths[i];
-              if (oldPath.isEmpty) continue;
-              final fileName = oldPath.split(Platform.pathSeparator).last;
-              final newPath = '${appDocDir.path}/audios/$fileName';
-              if (File(newPath).existsSync()) {
-                entry.audioPaths[i] = newPath;
-              }
-            }
-          }
-        }
-        await _diaryService.saveEntries(entries);
-        await tempDir.delete(recursive: true);
-        if (mounted) Navigator.pop(context);
-        await _loadEntries();
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('日记本数据导入成功')),
-        );
+        done++;
+        progress.value = (done / total) * 0.5; // 解压进度占 0.5
+        message.value = "解压中: $done/$total";
+        await Future.delayed(const Duration(milliseconds: 10));
       }
+      // 恢复日记数据
+      message.value = "正在恢复日记数据...";
+      final File dataFile = File("$tempDirPath/diary_data.json");
+      if (!await dataFile.exists()) throw Exception("未找到日记数据文件");
+      final List<dynamic> entryList = jsonDecode(await dataFile.readAsString());
+      final List<DiaryEntry> entries = entryList.map((e) => DiaryEntry.fromMap(e)).toList();
+      progress.value = 0.6;
+      await Future.delayed(const Duration(milliseconds: 10));
+      // 恢复媒体文件到原目录，分批异步拷贝
+      final Map<String, String> typeDirs = { 'images': 'imagePaths', 'audios': 'audioPaths', 'videos': 'videoPaths' };
+      int mediaTotal = 0;
+      for (final type in typeDirs.keys) {
+        final dir = Directory("$tempDirPath/$type");
+        if (await dir.exists()) {
+          final files = await dir.list().where((e) => e is File).toList();
+          mediaTotal += files.length;
+        }
+      }
+      int mediaDone = 0;
+      for (final type in typeDirs.keys) {
+        final dir = Directory("$tempDirPath/$type");
+        if (await dir.exists()) {
+          for (final file in await dir.list().where((e) => e is File).toList()) {
+            if (file is File) {
+              final appMediaDir = Directory("${extDir.path}/${type}");
+              if (!await appMediaDir.exists()) await appMediaDir.create(recursive: true);
+              await file.copy("${appMediaDir.path}/${file.uri.pathSegments.last}");
+            }
+            mediaDone++;
+            progress.value = 0.6 + (mediaDone / mediaTotal) * 0.3; // 媒体恢复进度占 0.3
+            message.value = "恢复媒体文件: $mediaDone/$mediaTotal";
+            await Future.delayed(const Duration(milliseconds: 10));
+          }
+        }
+      }
+      // 修正音频路径为新手机本地路径
+      for (final entry in entries) {
+        if (entry.audioPaths.isNotEmpty) {
+          for (int i = 0; i < entry.audioPaths.length; i++) {
+            final oldPath = entry.audioPaths[i];
+            if (oldPath.isEmpty) continue;
+            final fileName = oldPath.split(Platform.pathSeparator).last;
+            final newPath = "${extDir.path}/audios/$fileName";
+            if (File(newPath).existsSync()) {
+              entry.audioPaths[i] = newPath;
+            }
+          }
+        }
+      }
+      progress.value = 0.9;
+      message.value = "正在保存日记数据...";
+      await _diaryService.saveEntries(entries);
+      await tempDir.delete(recursive: true);
+      progress.value = 1.0;
+      message.value = "导入完成，即将刷新页面...";
+      await Future.delayed(const Duration(milliseconds: 500));
+      if (mounted) Navigator.pop(context);
+      await _loadEntries();
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("日记本数据导入成功")));
     } catch (e) {
       if (mounted) Navigator.pop(context);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('导入日记本数据失败: $e')),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("导入日记本数据失败: $e")));
     }
   }
 }
