@@ -95,32 +95,67 @@ class BackupService {
     if (!_isInitialized || _backupDirectory == null) {
       throw Exception('BackupService 未初始化');
     }
+
     try {
       final timestamp = DateTime.now();
       final backupId = _generateBackupId();
       final backupFileName = '$backupId.backup.zip';
-      final backupFile = File('${_backupDirectory!.path}/$backupFileName');
-      // 1. 创建临时目录
+      
+      // 1. 创建公开目录下的备份文件
+      final String publicDir = '/storage/emulated/0/Download';
+      final String publicPath = '$publicDir/$backupFileName';
+      File backupFile;
+      try {
+        final dir = Directory(publicDir);
+        if (!await dir.exists()) await dir.create(recursive: true);
+        backupFile = File(publicPath);
+        if (await backupFile.exists()) await backupFile.delete();
+        progressNotifier?.value = '准备导出到: $publicPath';
+      } catch (e) {
+        throw Exception('无法访问或创建下载目录: $e');
+      }
+
+      // 2. 创建临时目录
       final tempDir = Directory('${_backupDirectory!.path}/temp_all_backup');
       if (await tempDir.exists()) await tempDir.delete(recursive: true);
       await tempDir.create(recursive: true);
-      // 2. 分批导出所有核心数据到临时目录
+      progressNotifier?.value = '正在准备临时目录...';
+
+      // 3. 分批导出所有核心数据到临时目录
       progressNotifier?.value = '正在导出数据库...';
       final dbService = getService<DatabaseService>();
       await dbService.exportDirectoryData(progressNotifier: progressNotifier);
-      // 3. 分批拷贝所有媒体、文档、设置等
+
+      // 4. 分批拷贝所有媒体、文档、设置等
       final appDir = await getApplicationDocumentsDirectory();
       final List<String> extraDirs = ['media', 'documents', 'background_images'];
+      int totalDirs = extraDirs.length;
+      int currentDir = 0;
+      
       for (final dirName in extraDirs) {
+        currentDir++;
+        progressNotifier?.value = '正在导出$dirName目录 ($currentDir/$totalDirs)...';
         final srcDir = Directory('${appDir.path}/$dirName');
         if (await srcDir.exists()) {
           final dstDir = Directory('${tempDir.path}/$dirName');
           await dstDir.create(recursive: true);
+          
+          // 获取文件总数用于进度显示
+          int totalFiles = 0;
+          int processedFiles = 0;
+          await for (final _ in srcDir.list(recursive: true)) {
+            if (_ is File) totalFiles++;
+          }
+          
           await for (final entity in srcDir.list(recursive: true)) {
             if (entity is File) {
+              processedFiles++;
               final rel = entity.path.replaceFirst('${srcDir.path}/', '');
               final target = File('${dstDir.path}/$rel');
               await target.parent.create(recursive: true);
+              
+              progressNotifier?.value = '正在导出$dirName: $processedFiles/$totalFiles - $rel';
+              
               final fileSize = await entity.length();
               if (fileSize > 10 * 1024 * 1024) {
                 // 大文件流式复制
@@ -132,58 +167,78 @@ class BackupService {
           }
         }
       }
-      // 4. 导出设置/偏好等（如有）
-      // ...可扩展...
-      // 5. 流式压缩整个临时目录为ZIP（真正低内存）
+
+      // 5. 流式压缩整个临时目录为ZIP（直接写公开目录）
       progressNotifier?.value = '正在压缩数据...';
       final encoder = ZipFileEncoder();
-      encoder.create(backupFile.path);
-      int fileCount = 0;
-      await for (final entity in Directory(tempDir.path).list(recursive: true)) {
-        if (entity is File) {
-          final relative = entity.path.replaceFirst(tempDir.path + '/', '');
-          encoder.addFile(entity, relative);
-          fileCount++;
-          if (fileCount % 10 == 0) {
-            progressNotifier?.value = '正在压缩文件: $fileCount';
+      try {
+        encoder.create(publicPath);
+        
+        // 获取文件总数用于进度显示
+        int totalFiles = 0;
+        int processedFiles = 0;
+        await for (final _ in Directory(tempDir.path).list(recursive: true)) {
+          if (_ is File) totalFiles++;
+        }
+        
+        await for (final entity in Directory(tempDir.path).list(recursive: true)) {
+          if (entity is File) {
+            processedFiles++;
+            final relPath = entity.path.replaceFirst(tempDir.path + '/', '');
+            final percentage = (processedFiles * 100 / totalFiles).toStringAsFixed(1);
+            progressNotifier?.value = '正在压缩: $percentage% ($processedFiles/$totalFiles) - $relPath';
+            encoder.addFile(entity, relPath);
           }
         }
+        encoder.close();
+      } catch (e) {
+        encoder.close();
+        throw Exception('压缩数据失败: $e');
       }
-      encoder.close();
+
       // 6. 校验并清理临时目录
+      progressNotifier?.value = '正在验证备份文件...';
       if (!await backupFile.exists() || await backupFile.length() == 0) {
+        await tempDir.delete(recursive: true);
         throw Exception('导出失败：未生成有效的全量备份文件');
       }
       await tempDir.delete(recursive: true);
+
       // 7. 计算哈希并记录
+      progressNotifier?.value = '正在计算文件校验和...';
       final fileHash = await _calculateFileHash(backupFile);
       final backupRecord = BackupRecord(
         id: backupId,
         name: name,
         description: description,
         timestamp: timestamp,
-        filePath: backupFile.path,
+        filePath: publicPath, // 使用公开目录路径
         fileSize: await backupFile.length(),
         fileHash: fileHash,
+        createdAt: timestamp,
         isAutoBackup: isAutoBackup,
-        dataTypes: ['all'],
       );
+      
       _backupHistory.add(backupRecord);
       if (_backupHistory.length > _maxBackupHistory) {
         final oldestBackup = _backupHistory.removeAt(0);
         await _deleteBackupFile(oldestBackup.filePath);
       }
       await _saveBackupHistory();
-      if (kDebugMode) {
-        print('全量备份创建成功: $name');
-        print('备份文件: ${backupFile.path}');
-        print('文件大小: ${(backupRecord.fileSize / 1024).toStringAsFixed(2)} KB');
-      }
+      
+      final fileSizeMB = (await backupFile.length() / 1024 / 1024).toStringAsFixed(2);
+      progressNotifier?.value = '全量备份创建成功！\n'
+          '名称: $name\n'
+          '大小: ${fileSizeMB}MB\n'
+          '位置: $publicPath\n'
+          '请使用文件管理器查看或分享此文件';
+          
       return backupRecord;
     } catch (e) {
       if (kDebugMode) {
         print('创建全量备份失败: $e');
       }
+      progressNotifier?.value = '导出失败: $e';
       return null;
     }
   }
@@ -628,7 +683,7 @@ class BackupRecord {
   final int fileSize;
   final String fileHash;
   final bool isAutoBackup;
-  final List<String> dataTypes;
+  final DateTime createdAt;
 
   const BackupRecord({
     required this.id,
@@ -639,7 +694,7 @@ class BackupRecord {
     required this.fileSize,
     required this.fileHash,
     required this.isAutoBackup,
-    required this.dataTypes,
+    required this.createdAt,
   });
 
   Map<String, dynamic> toMap() {
@@ -652,7 +707,7 @@ class BackupRecord {
       'file_size': fileSize,
       'file_hash': fileHash,
       'is_auto_backup': isAutoBackup,
-      'data_types': dataTypes,
+      'created_at': createdAt.toIso8601String(),
     };
   }
 
@@ -666,7 +721,7 @@ class BackupRecord {
       fileSize: map['file_size'],
       fileHash: map['file_hash'],
       isAutoBackup: map['is_auto_backup'] ?? false,
-      dataTypes: List<String>.from(map['data_types'] ?? []),
+      createdAt: DateTime.parse(map['created_at']),
     );
   }
 
