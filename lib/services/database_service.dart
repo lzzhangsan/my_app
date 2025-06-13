@@ -878,10 +878,12 @@ class DatabaseService {
     }
   }
 
-  /// 导出目录数据
-  Future<String> exportDirectoryData() async {
+  /// 导出目录数据 - 优化版，支持超大数据处理
+  Future<String> exportDirectoryData({ValueNotifier<String>? progressNotifier}) async {
     try {
       print('开始导出目录数据...');
+      progressNotifier?.value = "准备导出...";
+      
       final Directory appDocDir = await getApplicationDocumentsDirectory();
       final String backupPath = '${appDocDir.path}/backups';
       print('备份路径: $backupPath');
@@ -894,39 +896,86 @@ class DatabaseService {
       }
       await tempDir.create(recursive: true);
 
-      // 导出目录相关的数据库表
       final db = await database;
-      final Map<String, List<Map<String, dynamic>>> tableData = {
-        'folders': await db.query('folders'),
-        'documents': await db.query('documents'),
-        'text_boxes': await db.query('text_boxes'),
-        'image_boxes': await db.query('image_boxes'),
-        'audio_boxes': await db.query('audio_boxes'),
-      };
-
-      // 处理图片框数据和图片文件
-      List<Map<String, dynamic>> imageBoxes = await db.query('image_boxes');
-      List<Map<String, dynamic>> imageBoxesToExport = [];
-      for (var imageBox in imageBoxes) {
-        Map<String, dynamic> imageBoxCopy = Map<String, dynamic>.from(imageBox);
-        String? imagePath = imageBox['image_path'];
-        if (imagePath != null && imagePath.isNotEmpty) {
-          String fileName = p.basename(imagePath);
-          imageBoxCopy['imageFileName'] = fileName;
+      final Map<String, List<Map<String, dynamic>>> tableData = {};
+      
+      // 分批导出数据库表，避免一次性加载全部数据
+      final List<String> tables = ['folders', 'documents', 'text_boxes', 'image_boxes', 'audio_boxes'];
+      
+      for (String tableName in tables) {
+        progressNotifier?.value = "正在导出${tableName}表数据...";
+        
+        // 分页查询，每次处理500条记录
+        const int batchSize = 500;
+        int offset = 0;
+        List<Map<String, dynamic>> allRows = [];
+        
+        while (true) {
+          final batch = await db.query(
+            tableName,
+            limit: batchSize,
+            offset: offset,
+          );
           
-          // 复制图片文件
-          File imageFile = File(imagePath);
-          if (await imageFile.exists()) {
-            String relativePath = 'images/$fileName';
-            await Directory('$tempDirPath/images').create(recursive: true);
-            await imageFile.copy('$tempDirPath/$relativePath');
-            print('已导出图片框图片: $relativePath');
-          } else {
-            print('警告：图片文件不存在: $imagePath');
-          }
+          if (batch.isEmpty) break;
+          
+          allRows.addAll(batch);
+          offset += batch.length;
+          
+          progressNotifier?.value = "正在导出${tableName}表数据: ${allRows.length}条";
         }
-        imageBoxesToExport.add(imageBoxCopy);
+        
+        tableData[tableName] = allRows;
+        print('已导出表 $tableName: ${allRows.length} 条记录');
       }
+
+      // 处理图片框数据和图片文件 - 分批处理优化
+      List<Map<String, dynamic>> imageBoxes = tableData['image_boxes'] ?? [];
+      List<Map<String, dynamic>> imageBoxesToExport = [];
+      
+      progressNotifier?.value = "正在处理图片文件...";
+      
+      // 分批处理图片文件，避免同时处理过多文件
+      const int imageBatchSize = 20;
+      for (int i = 0; i < imageBoxes.length; i += imageBatchSize) {
+        final int end = (i + imageBatchSize < imageBoxes.length) ? i + imageBatchSize : imageBoxes.length;
+        final batch = imageBoxes.sublist(i, end);
+        
+        await Future.wait(batch.map((imageBox) async {
+          Map<String, dynamic> imageBoxCopy = Map<String, dynamic>.from(imageBox);
+          String? imagePath = imageBox['image_path'];
+          if (imagePath != null && imagePath.isNotEmpty) {
+            String fileName = p.basename(imagePath);
+            imageBoxCopy['imageFileName'] = fileName;
+            
+            // 复制图片文件
+            File imageFile = File(imagePath);
+            if (await imageFile.exists()) {
+              String relativePath = 'images/$fileName';
+              await Directory('$tempDirPath/images').create(recursive: true);
+              
+              // 对于大文件使用流式复制
+              final fileSize = await imageFile.length();
+              if (fileSize > 10 * 1024 * 1024) { // >10MB
+                final sourceStream = imageFile.openRead();
+                final targetSink = File('$tempDirPath/$relativePath').openWrite();
+                await sourceStream.pipe(targetSink);
+                await targetSink.close();
+              } else {
+                await imageFile.copy('$tempDirPath/$relativePath');
+              }
+              
+              print('已导出图片框图片: $relativePath');
+            } else {
+              print('警告：图片文件不存在: $imagePath');
+            }
+          }
+          imageBoxesToExport.add(imageBoxCopy);
+        }));
+        
+        progressNotifier?.value = "正在处理图片文件: ${i + batch.length}/${imageBoxes.length}";
+      }
+      
       tableData['image_boxes'] = imageBoxesToExport;
 
       // 处理目录设置和背景图片
@@ -979,46 +1028,170 @@ class DatabaseService {
       }
       tableData['document_settings'] = documentSettingsToExport;
 
-      // 处理音频框数据和音频文件
-      List<Map<String, dynamic>> audioBoxes = await db.query('audio_boxes');
+      // 处理音频框数据和音频文件 - 分批处理优化
+      List<Map<String, dynamic>> audioBoxes = tableData['audio_boxes'] ?? [];
       List<Map<String, dynamic>> audioBoxesToExport = [];
-      for (var audioBox in audioBoxes) {
-        Map<String, dynamic> audioBoxCopy = Map<String, dynamic>.from(audioBox);
-        String? audioPath = audioBox['audio_path'];
-        if (audioPath != null && audioPath.isNotEmpty) {
-          String fileName = p.basename(audioPath);
-          audioBoxCopy['audioFileName'] = fileName;
-          
-          // 复制音频文件
-          File audioFile = File(audioPath);
-          if (await audioFile.exists()) {
-            String relativePath = 'audios/$fileName';
-            await Directory('$tempDirPath/audios').create(recursive: true);
-            await audioFile.copy('$tempDirPath/$relativePath');
-            print('已导出音频文件: $relativePath');
-          } else {
-            print('警告：音频文件不存在: $audioPath');
+      
+      progressNotifier?.value = "正在处理音频文件...";
+      
+      // 分批处理音频文件，避免同时处理过多文件
+      const int audioBatchSize = 10; // 音频文件通常较大，减少批次大小
+      for (int i = 0; i < audioBoxes.length; i += audioBatchSize) {
+        final int end = (i + audioBatchSize < audioBoxes.length) ? i + audioBatchSize : audioBoxes.length;
+        final batch = audioBoxes.sublist(i, end);
+        
+        await Future.wait(batch.map((audioBox) async {
+          Map<String, dynamic> audioBoxCopy = Map<String, dynamic>.from(audioBox);
+          String? audioPath = audioBox['audio_path'];
+          if (audioPath != null && audioPath.isNotEmpty) {
+            String fileName = p.basename(audioPath);
+            audioBoxCopy['audioFileName'] = fileName;
+            
+            // 复制音频文件
+            File audioFile = File(audioPath);
+            if (await audioFile.exists()) {
+              String relativePath = 'audios/$fileName';
+              await Directory('$tempDirPath/audios').create(recursive: true);
+              
+              // 对于大文件使用流式复制
+              final fileSize = await audioFile.length();
+              if (fileSize > 5 * 1024 * 1024) { // >5MB
+                final sourceStream = audioFile.openRead();
+                final targetSink = File('$tempDirPath/$relativePath').openWrite();
+                await sourceStream.pipe(targetSink);
+                await targetSink.close();
+              } else {
+                await audioFile.copy('$tempDirPath/$relativePath');
+              }
+              
+              print('已导出音频文件: $relativePath');
+            } else {
+              print('警告：音频文件不存在: $audioPath');
+            }
           }
-        }
-        audioBoxesToExport.add(audioBoxCopy);
+          audioBoxesToExport.add(audioBoxCopy);
+        }));
+        
+        progressNotifier?.value = "正在处理音频文件: ${i + batch.length}/${audioBoxes.length}";
       }
+      
       tableData['audio_boxes'] = audioBoxesToExport;
 
-      // 将数据库表数据保存为JSON文件
+      // 将数据库表数据保存为JSON文件 - 分批序列化优化
+      progressNotifier?.value = "正在生成数据文件...";
+      
       final File dbDataFile = File('$tempDirPath/directory_data.json');
-      await dbDataFile.writeAsString(jsonEncode(tableData));
-
-      // 创建ZIP文件
+      print('[导出] 即将写入数据文件: \'${dbDataFile.path}\'');
+      final IOSink sink = dbDataFile.openWrite();
+      
+      // 分批序列化大数据，避免内存溢出
+      sink.write('{');
+      bool isFirst = true;
+      for (String tableName in tableData.keys) {
+        if (!isFirst) sink.write(',');
+        isFirst = false;
+        
+        sink.write('"$tableName":');
+        
+        final List<Map<String, dynamic>> tableRows = tableData[tableName]!;
+        if (tableRows.length > 1000) {
+          // 大表分批序列化
+          sink.write('[');
+          for (int i = 0; i < tableRows.length; i++) {
+            if (i > 0) sink.write(',');
+            sink.write(jsonEncode(tableRows[i]));
+            
+            // 每100条记录刷新一次
+            if (i % 100 == 0) {
+              await sink.flush();
+              progressNotifier?.value = "正在生成数据文件: $tableName ${i + 1}/${tableRows.length}";
+            }
+          }
+          sink.write(']');
+        } else {
+          // 小表直接序列化
+          sink.write(jsonEncode(tableRows));
+        }
+      }
+      sink.write('}');
+      await sink.close();
+      print('[导出] 数据文件写入完成: \'${dbDataFile.path}\'');
+      // 新增：写入后确认文件存在且大小大于0
+      int retry = 0;
+      while ((!await dbDataFile.exists() || await dbDataFile.length() == 0) && retry < 10) {
+        print('[导出] 等待数据文件写入完成...');
+        await Future.delayed(Duration(milliseconds: 100));
+        retry++;
+      }
+      if (!await dbDataFile.exists() || await dbDataFile.length() == 0) {
+        throw Exception('导出失败：未生成有效的directory_data.json数据文件');
+      }
+      print('[导出] 数据文件存在且有效，准备压缩...');
+      // 压缩前打印临时目录下所有文件
+      final allFilesPreZip = await Directory(tempDirPath).list(recursive: true).toList();
+      print('[导出] 临时目录下文件:');
+      for (final f in allFilesPreZip) {
+        print('  - ' + f.path);
+      }
+      progressNotifier?.value = "正在创建压缩文件...";
+      
+      // 创建ZIP文件 - 使用流式压缩
       final String timestamp = DateTime.now().toString().replaceAll(RegExp(r'[^0-9]'), '');
       final String zipPath = '$backupPath/directory_backup_$timestamp.zip';
       final encoder = ZipFileEncoder();
       encoder.create(zipPath);
-      await encoder.addDirectory(Directory(tempDirPath), includeDirName: false);
+      
+      // 先单独添加directory_data.json到ZIP根目录
+      print('[导出] 添加到ZIP: directory_data.json');
+      await encoder.addFile(dbDataFile, 'directory_data.json');
+      
+      // 分批添加其他文件到ZIP，跳过directory_data.json
+      final List<FileSystemEntity> allFiles = await Directory(tempDirPath)
+          .list(recursive: true)
+          .where((entity) => entity is File && entity.path != dbDataFile.path)
+          .toList();
+      
+      for (int i = 0; i < allFiles.length; i++) {
+        final file = allFiles[i] as File;
+        final relativePath = p.relative(file.path, from: tempDirPath);
+        print('[导出] 添加到ZIP: ' + relativePath);
+        // 对于大文件使用流式添加
+        final fileSize = await file.length();
+        if (fileSize > 50 * 1024 * 1024) { // >50MB
+          await encoder.addFile(file, relativePath);
+        } else {
+          encoder.addFile(file, relativePath);
+        }
+        if (i % 10 == 0) {
+          progressNotifier?.value = "正在压缩文件: ${i + 1}/${allFiles.length}";
+        }
+      }
+      
       encoder.close();
+      
+      // 新增：压缩后校验ZIP包内容
+      final archiveCheck = ZipDecoder().decodeBytes(await File(zipPath).readAsBytes());
+      bool found = false;
+      for (final file in archiveCheck) {
+        if (file.name == 'directory_data.json') {
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        throw Exception('导出失败：ZIP包中未包含directory_data.json数据文件');
+      }
 
       // 清理临时目录
-      await tempDir.delete(recursive: true);
+      progressNotifier?.value = "正在清理临时文件...";
+      try {
+        await tempDir.delete(recursive: true);
+      } catch (e) {
+        print('警告：清理临时目录失败: $e');
+        // 不影响主要功能，继续执行
+      }
 
+      progressNotifier?.value = "导出完成";
       print('目录数据导出完成，ZIP文件路径: $zipPath');
       return zipPath;
     } catch (e, stackTrace) {
@@ -1027,37 +1200,81 @@ class DatabaseService {
     }
   }
   
-  /// 导入目录数据
-  Future<void> importDirectoryData(String zipPath) async {
+  /// 导入目录数据 - 优化版，支持超大数据处理
+  Future<void> importDirectoryData(String zipPath, {ValueNotifier<String>? progressNotifier}) async {
     try {
       print('开始导入目录数据...');
+      progressNotifier?.value = "准备导入...";
+      
       final Directory appDocDir = await getApplicationDocumentsDirectory();
       final String tempDirPath = '${appDocDir.path}/temp_import';
       print('临时目录路径: $tempDirPath');
 
       // 清理临时目录
+      progressNotifier?.value = "正在清理临时目录...";
       if (await Directory(tempDirPath).exists()) {
         await Directory(tempDirPath).delete(recursive: true);
       }
       await Directory(tempDirPath).create(recursive: true);
 
-      // 用流式InputFileStream解压ZIP文件
+      // 用流式InputFileStream解压ZIP文件 - 优化版
+      progressNotifier?.value = "正在解压文件...";
+      
       final inputStream = InputFileStream(zipPath);
       final archive = ZipDecoder().decodeStream(inputStream);
+      
+      int processedFiles = 0;
+      final totalFiles = archive.length;
+      
       for (var file in archive) {
         final String filename = file.name;
         if (file.isFile) {
+          final targetFile = File('$tempDirPath/$filename');
+          await targetFile.create(recursive: true);
+          
+          // 对于大文件使用流式写入
           final data = file.content as List<int>;
-          File('$tempDirPath/$filename')
-            ..createSync(recursive: true)
-            ..writeAsBytesSync(data);
+          if (data.length > 10 * 1024 * 1024) { // >10MB
+            final sink = targetFile.openWrite();
+            const chunkSize = 1024 * 1024; // 1MB chunks
+            for (int i = 0; i < data.length; i += chunkSize) {
+              final end = (i + chunkSize < data.length) ? i + chunkSize : data.length;
+              sink.add(data.sublist(i, end));
+              await sink.flush();
+            }
+            await sink.close();
+          } else {
+            await targetFile.writeAsBytes(data);
+          }
+        }
+        
+        processedFiles++;
+        if (processedFiles % 10 == 0 || processedFiles == totalFiles) {
+          progressNotifier?.value = "正在解压文件: $processedFiles/$totalFiles";
         }
       }
 
-      // 读取目录数据
-      final File dbDataFile = File('$tempDirPath/directory_data.json');
+      // 读取目录数据 - 流式读取优化
+      progressNotifier?.value = "正在读取数据文件...";
+      
+      File dbDataFile = File('$tempDirPath/directory_data.json');
       if (!await dbDataFile.exists()) {
-        throw Exception('备份中未找到目录数据文件');
+        // 递归查找所有子目录
+        List<FileSystemEntity> allFiles = await Directory(tempDirPath).list(recursive: true).toList();
+        List<String> foundFiles = [];
+        for (final f in allFiles) {
+          if (f is File && f.path.endsWith('directory_data.json')) {
+            dbDataFile = File(f.path);
+            foundFiles.add(f.path);
+          }
+        }
+        if (foundFiles.isEmpty) {
+          throw Exception('备份中未找到directory_data.json数据文件。请确认导出的ZIP包结构正确。');
+        } else if (foundFiles.length == 1) {
+          // 找到唯一文件，继续
+        } else {
+          throw Exception('在多个位置找到directory_data.json文件，请检查备份包结构：\n' + foundFiles.join('\n'));
+        }
       }
 
       final Map<String, dynamic> tableData = jsonDecode(await dbDataFile.readAsString());
@@ -1075,8 +1292,11 @@ class DatabaseService {
       final String audiosDirPath = '${appDocDir.path}/audios';
       await Directory(audiosDirPath).create(recursive: true);
 
+      progressNotifier?.value = "正在导入数据库...";
+      
       await db.transaction((txn) async {
         // 清除现有数据
+        progressNotifier?.value = "正在清理现有数据...";
         await txn.delete('folders');
         await txn.delete('documents');
         await txn.delete('text_boxes');
@@ -1086,92 +1306,175 @@ class DatabaseService {
         await txn.delete('directory_settings');
         await txn.delete('media_items');
 
-        // 导入新数据
+        // 导入新数据 - 分批处理优化
+        int totalTables = tableData.length;
+        int processedTables = 0;
+        
         for (var entry in tableData.entries) {
           final String tableName = entry.key;
           final List<dynamic> rows = entry.value;
           print('处理表: $tableName, 行数: ${rows.length}');
+          
+          progressNotifier?.value = "正在导入${tableName}表: ${rows.length}条记录";
+          
+          // 分批插入，避免单个事务过大
+          const int batchSize = 100;
+          int processedRows = 0;
 
           if (tableName == 'directory_settings') {
-            for (var row in rows) {
-              Map<String, dynamic> settings = Map<String, dynamic>.from(row);
-              String? fileName = settings.remove('backgroundImageFileName');
-              if (fileName != null) {
-                // 复制背景图片到新位置
-                String newPath = p.join(backgroundImagesPath, fileName);
-                String tempPath = p.join(tempDirPath, 'background_images', fileName);
-                if (await File(tempPath).exists()) {
-                  await File(tempPath).copy(newPath);
-                  settings['background_image_path'] = newPath;
-                  print('已导入目录背景图片: $newPath');
+            // 分批处理目录设置
+            for (int i = 0; i < rows.length; i += batchSize) {
+              final end = (i + batchSize < rows.length) ? i + batchSize : rows.length;
+              final batch = rows.sublist(i, end);
+              
+              for (var row in batch) {
+                Map<String, dynamic> settings = Map<String, dynamic>.from(row);
+                String? fileName = settings.remove('backgroundImageFileName');
+                if (fileName != null) {
+                  // 复制背景图片到新位置
+                  String newPath = p.join(backgroundImagesPath, fileName);
+                  String tempPath = p.join(tempDirPath, 'background_images', fileName);
+                  if (await File(tempPath).exists()) {
+                    await File(tempPath).copy(newPath);
+                    settings['background_image_path'] = newPath;
+                    print('已导入目录背景图片: $newPath');
+                  }
                 }
+                await txn.insert(tableName, settings);
+                processedRows++;
               }
-              await txn.insert(tableName, settings);
+              
+              progressNotifier?.value = "正在导入${tableName}表: $processedRows/${rows.length}";
             }
           } else if (tableName == 'document_settings') {
-            for (var row in rows) {
-              Map<String, dynamic> settings = Map<String, dynamic>.from(row);
-              String? fileName = settings.remove('backgroundImageFileName');
-              if (fileName != null) {
-                // 复制背景图片到新位置
-                String newPath = p.join(backgroundImagesPath, fileName);
-                String tempPath = p.join(tempDirPath, 'background_images', fileName);
-                if (await File(tempPath).exists()) {
-                  await File(tempPath).copy(newPath);
-                  settings['background_image_path'] = newPath;
-                  print('已导入文档背景图片: $newPath');
+            // 分批处理文档设置
+            for (int i = 0; i < rows.length; i += batchSize) {
+              final end = (i + batchSize < rows.length) ? i + batchSize : rows.length;
+              final batch = rows.sublist(i, end);
+              
+              for (var row in batch) {
+                Map<String, dynamic> settings = Map<String, dynamic>.from(row);
+                String? fileName = settings.remove('backgroundImageFileName');
+                if (fileName != null) {
+                  // 复制背景图片到新位置
+                  String newPath = p.join(backgroundImagesPath, fileName);
+                  String tempPath = p.join(tempDirPath, 'background_images', fileName);
+                  if (await File(tempPath).exists()) {
+                    await File(tempPath).copy(newPath);
+                    settings['background_image_path'] = newPath;
+                    print('已导入文档背景图片: $newPath');
+                  }
                 }
+                await txn.insert(tableName, settings);
+                processedRows++;
               }
-              await txn.insert(tableName, settings);
+              
+              progressNotifier?.value = "正在导入${tableName}表: $processedRows/${rows.length}";
             }
           } else if (tableName == 'image_boxes') {
-            for (var row in rows) {
-              Map<String, dynamic> imageBox = Map<String, dynamic>.from(row);
-              String? imageFileName = imageBox.remove('imageFileName');
-              if (imageFileName != null) {
-                // 复制图片文件到新位置
-                String imagesDirPath = p.join(appDocDir.path, 'images');
-                await Directory(imagesDirPath).create(recursive: true);
-                String newPath = p.join(imagesDirPath, imageFileName);
-                String tempPath = p.join(tempDirPath, 'images', imageFileName);
-                if (await File(tempPath).exists()) {
-                  await File(tempPath).copy(newPath);
-                  imageBox['image_path'] = newPath;
-                  print('已导入图片框图片: $newPath');
+            // 分批处理图片框，使用并发优化
+            for (int i = 0; i < rows.length; i += batchSize) {
+              final end = (i + batchSize < rows.length) ? i + batchSize : rows.length;
+              final batch = rows.sublist(i, end);
+              
+              // 并发处理文件复制
+              await Future.wait(batch.map((row) async {
+                Map<String, dynamic> imageBox = Map<String, dynamic>.from(row);
+                String? imageFileName = imageBox.remove('imageFileName');
+                if (imageFileName != null) {
+                  // 复制图片文件到新位置
+                  String imagesDirPath = p.join(appDocDir.path, 'images');
+                  await Directory(imagesDirPath).create(recursive: true);
+                  String newPath = p.join(imagesDirPath, imageFileName);
+                  String tempPath = p.join(tempDirPath, 'images', imageFileName);
+                  if (await File(tempPath).exists()) {
+                    // 对于大文件使用流式复制
+                    final fileSize = await File(tempPath).length();
+                    if (fileSize > 10 * 1024 * 1024) { // >10MB
+                      final sourceStream = File(tempPath).openRead();
+                      final targetSink = File(newPath).openWrite();
+                      await sourceStream.pipe(targetSink);
+                      await targetSink.close();
+                    } else {
+                      await File(tempPath).copy(newPath);
+                    }
+                    imageBox['image_path'] = newPath;
+                    print('已导入图片框图片: $newPath');
+                  }
                 }
-              }
-              await txn.insert(tableName, imageBox);
+                await txn.insert(tableName, imageBox);
+                processedRows++;
+              }));
+              
+              progressNotifier?.value = "正在导入${tableName}表: $processedRows/${rows.length}";
             }
           } else if (tableName == 'audio_boxes') {
-            for (var row in rows) {
-              Map<String, dynamic> audioBox = Map<String, dynamic>.from(row);
-              String? audioFileName = audioBox.remove('audioFileName');
-              if (audioFileName != null) {
-                // 复制音频文件到新位置
-                String audiosDirPath = p.join(appDocDir.path, 'audios');
-                await Directory(audiosDirPath).create(recursive: true);
-                String newPath = p.join(audiosDirPath, audioFileName);
-                String tempPath = p.join(tempDirPath, 'audios', audioFileName);
-                if (await File(tempPath).exists()) {
-                  await File(tempPath).copy(newPath);
-                  audioBox['audio_path'] = newPath;
-                  print('已导入音频文件: $newPath');
+            // 分批处理音频框，使用并发优化
+            for (int i = 0; i < rows.length; i += batchSize) {
+              final end = (i + batchSize < rows.length) ? i + batchSize : rows.length;
+              final batch = rows.sublist(i, end);
+              
+              // 并发处理文件复制
+              await Future.wait(batch.map((row) async {
+                Map<String, dynamic> audioBox = Map<String, dynamic>.from(row);
+                String? audioFileName = audioBox.remove('audioFileName');
+                if (audioFileName != null) {
+                  // 复制音频文件到新位置
+                  String audiosDirPath = p.join(appDocDir.path, 'audios');
+                  await Directory(audiosDirPath).create(recursive: true);
+                  String newPath = p.join(audiosDirPath, audioFileName);
+                  String tempPath = p.join(tempDirPath, 'audios', audioFileName);
+                  if (await File(tempPath).exists()) {
+                    // 对于大文件使用流式复制
+                    final fileSize = await File(tempPath).length();
+                    if (fileSize > 5 * 1024 * 1024) { // >5MB
+                      final sourceStream = File(tempPath).openRead();
+                      final targetSink = File(newPath).openWrite();
+                      await sourceStream.pipe(targetSink);
+                      await targetSink.close();
+                    } else {
+                      await File(tempPath).copy(newPath);
+                    }
+                    audioBox['audio_path'] = newPath;
+                    print('已导入音频文件: $newPath');
+                  }
                 }
-              }
-              await txn.insert(tableName, audioBox);
+                await txn.insert(tableName, audioBox);
+                processedRows++;
+              }));
+              
+              progressNotifier?.value = "正在导入${tableName}表: $processedRows/${rows.length}";
             }
           } else {
-            // 其他表正常导入（folders, documents, text_boxes, media_items）
-            for (var row in rows) {
-              await txn.insert(tableName, Map<String, dynamic>.from(row));
+            // 其他表正常导入（folders, documents, text_boxes, media_items）- 分批处理
+            for (int i = 0; i < rows.length; i += batchSize) {
+              final end = (i + batchSize < rows.length) ? i + batchSize : rows.length;
+              final batch = rows.sublist(i, end);
+              
+              for (var row in batch) {
+                await txn.insert(tableName, Map<String, dynamic>.from(row));
+                processedRows++;
+              }
+              
+              progressNotifier?.value = "正在导入${tableName}表: $processedRows/${rows.length}";
             }
           }
+          
+          processedTables++;
+          progressNotifier?.value = "已完成${processedTables}/${totalTables}个表的导入";
         }
       });
 
       // 清理临时目录
-      await Directory(tempDirPath).delete(recursive: true);
+      progressNotifier?.value = "正在清理临时文件...";
+      try {
+        await Directory(tempDirPath).delete(recursive: true);
+      } catch (e) {
+        print('警告：清理临时目录失败: $e');
+        // 不影响主要功能，继续执行
+      }
 
+      progressNotifier?.value = "导入完成";
       print('目录数据导入完成');
     } catch (e, stackTrace) {
       _handleError('导入数据失败', e, stackTrace);

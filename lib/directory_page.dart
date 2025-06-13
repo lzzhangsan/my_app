@@ -1812,22 +1812,37 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
 
   void _exportDirectoryData() async {
     try {
+      // 创建进度通知器
+      final ValueNotifier<String> progressNotifier = ValueNotifier<String>('准备导出...');
+      
       // 显示进度对话框
       showDialog(
         context: context,
         barrierDismissible: false,
-        builder: (context) => const AlertDialog(
-          content: Row(
-            children: [
-              CircularProgressIndicator(),
-              SizedBox(width: 20),
-              Text('正在导出目录数据...')
-            ],
+        builder: (context) => AlertDialog(
+          content: ValueListenableBuilder<String>(
+            valueListenable: progressNotifier,
+            builder: (context, progress, child) {
+              return Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const CircularProgressIndicator(),
+                  const SizedBox(height: 20),
+                  Text(
+                    progress,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 14),
+                  ),
+                ],
+              );
+            },
           ),
         ),
       );
 
-      final String zipPath = await getService<DatabaseService>().exportDirectoryData();
+      final String zipPath = await getService<DatabaseService>().exportDirectoryData(
+        progressNotifier: progressNotifier,
+      );
 
       // 关闭进度对话框
       if (mounted) {
@@ -1879,22 +1894,38 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       );
 
       if (result != null && result.files.single.path != null) {
+        // 创建进度通知器
+        final ValueNotifier<String> progressNotifier = ValueNotifier<String>('准备导入...');
+        
         // 显示进度对话框
         showDialog(
           context: context,
           barrierDismissible: false,
-          builder: (context) => const AlertDialog(
-            content: Row(
-              children: [
-                CircularProgressIndicator(),
-                SizedBox(width: 20),
-                Text('正在导入目录数据...')
-              ],
+          builder: (context) => AlertDialog(
+            content: ValueListenableBuilder<String>(
+              valueListenable: progressNotifier,
+              builder: (context, progress, child) {
+                return Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const CircularProgressIndicator(),
+                    const SizedBox(height: 20),
+                    Text(
+                      progress,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(fontSize: 14),
+                    ),
+                  ],
+                );
+              },
             ),
           ),
         );
 
-        await getService<DatabaseService>().importDirectoryData(result.files.single.path!);
+        await getService<DatabaseService>().importDirectoryData(
+          result.files.single.path!,
+          progressNotifier: progressNotifier,
+        );
 
         // 关闭进度对话框
         if (mounted) {
