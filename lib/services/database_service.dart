@@ -1202,14 +1202,13 @@ class DatabaseService {
   
   /// 导入目录数据 - 优化版，支持超大数据处理
   Future<void> importDirectoryData(String zipPath, {ValueNotifier<String>? progressNotifier}) async {
+    final Directory appDocDir = await getApplicationDocumentsDirectory();
+    final String tempDirPath = '${appDocDir.path}/temp_import';
+    final Directory tempDir = Directory(tempDirPath);
     try {
       print('开始导入目录数据...');
       progressNotifier?.value = "准备导入...";
       
-      final Directory appDocDir = await getApplicationDocumentsDirectory();
-      final String tempDirPath = '${appDocDir.path}/temp_import';
-      print('临时目录路径: $tempDirPath');
-
       // 清理临时目录
       progressNotifier?.value = "正在清理临时目录...";
       if (await Directory(tempDirPath).exists()) {
@@ -1479,6 +1478,14 @@ class DatabaseService {
     } catch (e, stackTrace) {
       _handleError('导入数据失败', e, stackTrace);
       rethrow;
+    } finally {
+      if (await tempDir.exists()) {
+        try {
+          await tempDir.delete(recursive: true);
+        } catch (e) {
+          print('清理导入临时目录失败: $e');
+        }
+      }
     }
   }
   
@@ -1487,8 +1494,17 @@ class DatabaseService {
     return exportDirectoryData();
   }
   
-  Future<void> importAllData(String zipPath) async {
-    return importDirectoryDataImpl(zipPath);
+  Future<void> importAllData(String zipPath, {ValueNotifier<String>? progressNotifier}) async {
+    try {
+      final file = File(zipPath);
+      if (!await file.exists()) {
+        progressNotifier?.value = '备份文件不存在: $zipPath';
+        return;
+      }
+      await importDirectoryData(zipPath, progressNotifier: progressNotifier);
+    } catch (e) {
+      progressNotifier?.value = '导入失败: $e';
+    }
   }
 
   // ==================== 文档和文件夹管理方法 ====================
