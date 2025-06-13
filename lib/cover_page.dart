@@ -1450,24 +1450,11 @@ class _CoverPageState extends State<CoverPage> {
         return;
       }
       final file = File(result.files.single.path!);
-      final backupService = getService<BackupService>();
-      await backupService.initialize();
-      final fileName = p.basename(file.path);
-      final backupId = fileName.replaceAll('.backup', '');
-      final backupDir = Directory(p.join((await getApplicationDocumentsDirectory()).path, 'backups'));
-      if (!await backupDir.exists()) await backupDir.create(recursive: true);
-      final targetPath = p.join(backupDir.path, fileName);
-      await file.copy(targetPath);
-      progressNotifier.value = '正在恢复数据...';
-      final success = await backupService.restoreBackup(backupId);
+      await getService<DatabaseService>().importAllData(file.path, progressNotifier: progressNotifier);
       if (!dialogClosed) Navigator.of(context, rootNavigator: true).pop();
-      if (success) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('全部数据已恢复')),
-        );
-      } else {
-        throw Exception('恢复失败');
-      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('全部数据已恢复')),
+      );
     } catch (e) {
       if (!dialogClosed) Navigator.of(context, rootNavigator: true).pop();
       ScaffoldMessenger.of(context).showSnackBar(
