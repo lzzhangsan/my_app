@@ -4,7 +4,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:crypto/crypto.dart';
 import 'package:archive/archive.dart';
-import 'package:archive/archive_io.dart';
+import 'package:archive/archive_io.dart'; // 新增流式zip依赖
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
@@ -18,6 +19,10 @@ import 'package:uuid/uuid.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:video_thumbnail/video_thumbnail.dart';
+import 'package:open_file/open_file.dart'; // 新增一键前往依赖
+import 'package:android_intent_plus/android_intent.dart'; // 新增
+import 'package:android_intent_plus/flag.dart'; // 新增
+import 'package:flutter/services.dart'; // 用于复制路径
 
 import 'core/service_locator.dart';
 import 'services/database_service.dart';
@@ -2168,6 +2173,13 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       showProgressDialog(context, progress, message);
       final appDir = await getApplicationDocumentsDirectory();
       final mediaDir = Directory('${appDir.path}/media');
+      // 获取Download目录
+      Directory downloadsDir;
+      if (Platform.isAndroid) {
+        downloadsDir = Directory('/storage/emulated/0/Download');
+      } else {
+        downloadsDir = await getExternalStorageDirectory() ?? await getApplicationDocumentsDirectory();
+      }
       final tempDir = await getTemporaryDirectory();
       final exportDir = Directory('${tempDir.path}/media_export');
       if (await exportDir.exists()) await exportDir.delete(recursive: true);
@@ -2212,12 +2224,6 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
       // 4. 用ZipFileEncoder流式打包，解决大文件OOM
       message.value = '正在压缩数据...';
-      Directory downloadsDir;
-      if (Platform.isAndroid) {
-        downloadsDir = Directory('/storage/emulated/0/Download');
-      } else {
-        downloadsDir = await getExternalStorageDirectory() ?? await getApplicationDocumentsDirectory();
-      }
       final zipPath = path.join(downloadsDir.path, 'media_backup.zip');
       if (File(zipPath).existsSync()) File(zipPath).deleteSync();
       final encoder = ZipFileEncoder();
@@ -2268,13 +2274,6 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         );
       }
       return;
-      progress.value = 1.0;
-      message.value = '导出完成，正在分享...';
-      await Future.delayed(const Duration(milliseconds: 10));
-
-      // 5. 分享/保存zip
-      await Share.shareXFiles([XFile(zipPath)], subject: '媒体数据备份');
-      Navigator.of(context).pop();
     } catch (e) {
       Navigator.of(context).pop();
       if (mounted) {

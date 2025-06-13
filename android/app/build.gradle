@@ -52,16 +52,10 @@ android {
     }
 }
 
-// 确保APK输出路径和文件名正确
+// 配置APK输出路径
 android.applicationVariants.all { variant ->
     variant.outputs.all {
         outputFileName = "app-${variant.name}.apk"
-        // 确保输出目录存在
-        // project.rootDir is d:\app\my_app\android
-        // project.rootDir.parentFile is d:\app\my_app
-        // project.rootDir.parentFile.parentFile is d:\app -- THIS IS WRONG
-        // Flutter default output is project_root/build/app/outputs/apk/
-        // So, it should be project.rootDir.parentFile which is d:\app\my_app
         def newOutputDir = new File(project.rootDir.parentFile, "build/app/outputs/apk/${variant.name}")
         if (!newOutputDir.exists()) {
             newOutputDir.mkdirs()
