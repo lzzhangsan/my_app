@@ -3645,7 +3645,8 @@ class DatabaseService {
   }
 
   /// 物理备份整个数据库文件（带备注和meta，自动清理只保留10个）
-  Future<void> backupDatabaseFileWithMeta({String? remark, bool isAuto = false}) async {
+  /// 物理备份整个数据库文件和媒体文件（带备注和meta，自动清理只保留10个）
+  Future<void> backupDatabaseFileWithMeta({String? remark, bool isAuto = false, bool includeMediaFiles = true}) async {
     final documentsDirectory = await getApplicationDocumentsDirectory();
     final dbPath = p.join(documentsDirectory.path, _databaseName);
     final dbFile = File(dbPath);
@@ -3661,9 +3662,94 @@ class DatabaseService {
     final now = DateTime.now();
     final timeStr = '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}_${now.hour.toString().padLeft(2, '0')}-${now.minute.toString().padLeft(2, '0')}-${now.second.toString().padLeft(2, '0')}';
     final safeRemark = (remark ?? (isAuto ? '自动备份' : '手动备份')).replaceAll(RegExp(r'[^\u4e00-\u9fa5A-Za-z0-9_-]'), '');
-    final backupFileName = '${_databaseName}_backup_${timeStr}_${safeRemark.isNotEmpty ? safeRemark : (isAuto ? 'auto' : 'manual')}.db';
-    final backupPath = p.join(backupDirPath, backupFileName);
-    await dbFile.copy(backupPath);
+    
+    // 创建备份目录
+    final backupFolderName = '${_databaseName}_backup_${timeStr}_${safeRemark.isNotEmpty ? safeRemark : (isAuto ? 'auto' : 'manual')}';
+    final backupFolderPath = p.join(backupDirPath, backupFolderName);
+    await Directory(backupFolderPath).create(recursive: true);
+    
+    // 备份数据库文件
+    final backupDbPath = p.join(backupFolderPath, _databaseName);
+    await dbFile.copy(backupDbPath);
+    
+    // 如果需要包含媒体文件
+    if (includeMediaFiles) {
+      // 备份媒体文件
+      final mediaDir = Directory(p.join(documentsDirectory.path, 'media'));
+      if (await mediaDir.exists()) {
+        final backupMediaDir = Directory(p.join(backupFolderPath, 'media'));
+        await backupMediaDir.create(recursive: true);
+        
+        // 复制所有媒体文件
+        await for (final entity in mediaDir.list(recursive: true)) {
+          if (entity is File) {
+            final relativePath = p.relative(entity.path, from: mediaDir.path);
+            final targetPath = p.join(backupMediaDir.path, relativePath);
+            await Directory(p.dirname(targetPath)).create(recursive: true);
+            await entity.copy(targetPath);
+          }
+        }
+      }
+      
+      // 备份图片文件
+      final imagesDir = Directory(p.join(documentsDirectory.path, 'images'));
+      if (await imagesDir.exists()) {
+        final backupImagesDir = Directory(p.join(backupFolderPath, 'images'));
+        await backupImagesDir.create(recursive: true);
+        
+        await for (final entity in imagesDir.list(recursive: true)) {
+          if (entity is File) {
+            final relativePath = p.relative(entity.path, from: imagesDir.path);
+            final targetPath = p.join(backupImagesDir.path, relativePath);
+            await Directory(p.dirname(targetPath)).create(recursive: true);
+            await entity.copy(targetPath);
+          }
+        }
+      }
+      
+      // 备份音频文件
+      final audiosDir = Directory(p.join(documentsDirectory.path, 'audios'));
+      if (await audiosDir.exists()) {
+        final backupAudiosDir = Directory(p.join(backupFolderPath, 'audios'));
+        await backupAudiosDir.create(recursive: true);
+        
+        await for (final entity in audiosDir.list(recursive: true)) {
+          if (entity is File) {
+            final relativePath = p.relative(entity.path, from: audiosDir.path);
+            final targetPath = p.join(backupAudiosDir.path, relativePath);
+            await Directory(p.dirname(targetPath)).create(recursive: true);
+            await entity.copy(targetPath);
+          }
+        }
+      }
+      
+      // 备份背景图片
+      final backgroundImagesDir = Directory(p.join(documentsDirectory.path, 'background_images'));
+      if (await backgroundImagesDir.exists()) {
+        final backupBackgroundImagesDir = Directory(p.join(backupFolderPath, 'background_images'));
+        await backupBackgroundImagesDir.create(recursive: true);
+        
+        await for (final entity in backgroundImagesDir.list(recursive: true)) {
+          if (entity is File) {
+            final relativePath = p.relative(entity.path, from: backgroundImagesDir.path);
+            final targetPath = p.join(backupBackgroundImagesDir.path, relativePath);
+            await Directory(p.dirname(targetPath)).create(recursive: true);
+            await entity.copy(targetPath);
+          }
+        }
+      }
+    }
+    
+    // 压缩备份文件夹
+    final backupZipPath = p.join(backupDirPath, '$backupFolderName.zip');
+    final encoder = ZipFileEncoder();
+    encoder.create(backupZipPath);
+    await encoder.addDirectory(Directory(backupFolderPath));
+    encoder.close();
+    
+    // 删除临时备份文件夹
+    await Directory(backupFolderPath).delete(recursive: true);
+    
     // 写入meta
     final metaFile = File(p.join(backupDirPath, 'backup_meta.json'));
     List<dynamic> metaList = [];
@@ -3673,11 +3759,12 @@ class DatabaseService {
       } catch (_) {}
     }
     metaList.insert(0, {
-      'file': backupFileName,
+      'file': '$backupFolderName.zip',
       'remark': remark ?? (isAuto ? '自动备份' : '手动备份'),
       'type': isAuto ? 'auto' : 'manual',
       'time': now.toIso8601String(),
-      'size': await File(backupPath).length(),
+      'size': await File(backupZipPath).length(),
+      'includeMediaFiles': includeMediaFiles,
     });
     // 只保留10个
     if (metaList.length > 10) {
@@ -3689,7 +3776,7 @@ class DatabaseService {
       metaList = metaList.sublist(0, 10);
     }
     await metaFile.writeAsString(jsonEncode(metaList));
-    print('数据库已物理备份到: $backupPath');
+    print('数据库${includeMediaFiles ? "和媒体文件" : ""}已物理备份到: $backupZipPath');
   }
 
   /// 物理恢复数据库文件（带meta）
