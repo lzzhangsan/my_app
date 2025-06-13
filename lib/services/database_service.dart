@@ -3444,4 +3444,21 @@ class DatabaseService {
     // ...如有其他表可补充
     await db.execute('PRAGMA foreign_keys = ON');
   }
+
+  /// 获取所有媒体项（递归所有目录）
+  Future<List<Map<String, dynamic>>> getAllMediaItems() async {
+    final db = await database;
+    return await db.query('media_items');
+  }
+
+  /// 替换所有媒体项（清空并批量插入）
+  Future<void> replaceAllMediaItems(List<dynamic> items) async {
+    final db = await database;
+    final batch = db.batch();
+    await db.delete('media_items');
+    for (var item in items) {
+      batch.insert('media_items', Map<String, dynamic>.from(item), conflictAlgorithm: ConflictAlgorithm.replace);
+    }
+    await batch.commit(noResult: true);
+  }
 }

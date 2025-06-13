@@ -1,7 +1,9 @@
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:async';
+import 'dart:convert';
 import 'package:crypto/crypto.dart';
+import 'package:archive/archive.dart';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
@@ -1688,6 +1690,24 @@ class _MediaManagerPageState extends State<MediaManagerPage>
               await _scanAndUpdateFileHashes();
             },
           },
+          {
+            'icon': Icons.upload_file,
+            'color': Colors.teal,
+            'title': '导出媒体数据',
+            'onTap': () async {
+              Navigator.pop(context);
+              await _exportAllMediaData();
+            },
+          },
+          {
+            'icon': Icons.download,
+            'color': Colors.indigo,
+            'title': '导入媒体数据',
+            'onTap': () async {
+              Navigator.pop(context);
+              await _importAllMediaData();
+            },
+          },
         ];
 
         if (_isMultiSelectMode && _selectedItems.isNotEmpty) {
@@ -2137,6 +2157,152 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     } catch (e) {
       debugPrint('静默删除媒体项时出错: ${item.name}, 错误: $e');
       rethrow;
+    }
+  }
+
+  // 声明全量导出/导入方法（后续补充实现）
+  Future<void> _exportAllMediaData() async {
+    try {
+      final appDir = await getApplicationDocumentsDirectory();
+      final mediaDir = Directory('${appDir.path}/media');
+      final tempDir = await getTemporaryDirectory();
+      final exportDir = Directory('${tempDir.path}/media_export');
+      if (await exportDir.exists()) await exportDir.delete(recursive: true);
+      await exportDir.create(recursive: true);
+
+      // 1. 拷贝所有媒体文件到临时导出目录
+      if (await mediaDir.exists()) {
+        debugPrint('准备拷贝媒体目录: ${mediaDir.path}');
+        await _copyDirectory(mediaDir, Directory('${exportDir.path}/media'));
+        debugPrint('拷贝完成，导出目录内容:');
+        await for (var f in Directory('${exportDir.path}/media').list(recursive: true)) {
+          debugPrint('导出文件: ' + f.path);
+        }
+      } else {
+        debugPrint('未找到媒体目录: ${mediaDir.path}');
+      }
+
+      // 2. 导出数据库表（media_items）
+      final allMediaItems = await _databaseService.getAllMediaItems();
+      final mediaItemsJson = jsonEncode(allMediaItems);
+      final mediaItemsFile = File('${exportDir.path}/media_items.json');
+      await mediaItemsFile.writeAsString(mediaItemsJson);
+      debugPrint('已写入 media_items.json');
+
+      // 3. 导出设置
+      final prefs = await SharedPreferences.getInstance();
+      final mediaVisible = prefs.getBool('media_visible') ?? true;
+      final settingsFile = File('${exportDir.path}/media_settings.json');
+      await settingsFile.writeAsString(jsonEncode({'media_visible': mediaVisible}));
+      debugPrint('已写入 media_settings.json');
+
+      // 4. 用内存流打包为zip
+      final zipPath = '${tempDir.path}/media_backup.zip';
+      if (File(zipPath).existsSync()) File(zipPath).deleteSync();
+      final archive = Archive();
+      await for (var entity in exportDir.list(recursive: true, followLinks: false)) {
+        if (entity is File) {
+          final relative = path.relative(entity.path, from: exportDir.path);
+          final bytes = await entity.readAsBytes();
+          archive.addFile(ArchiveFile(relative, bytes.length, bytes));
+        }
+      }
+      final zipBytes = ZipEncoder().encode(archive);
+      await File(zipPath).writeAsBytes(zipBytes!);
+      debugPrint('已打包为zip: $zipPath');
+
+      // 5. 分享/保存zip
+      await Share.shareXFiles([XFile(zipPath)], subject: '媒体数据备份');
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('导出媒体数据失败: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _importAllMediaData() async {
+    try {
+      // 1. 选择zip包
+      FilePickerResult? result = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['zip']);
+      if (result == null || result.files.isEmpty) return;
+      final zipFile = File(result.files.single.path!);
+      final tempDir = await getTemporaryDirectory();
+      final importDir = Directory('${tempDir.path}/media_import');
+      if (await importDir.exists()) await importDir.delete(recursive: true);
+      await importDir.create(recursive: true);
+
+      // 2. 解压zip到临时目录
+      final bytes = await zipFile.readAsBytes();
+      final archive = ZipDecoder().decodeBytes(bytes);
+      for (final file in archive) {
+        final filename = file.name;
+        final outFile = File('${importDir.path}/$filename');
+        if (file.isFile) {
+          await outFile.create(recursive: true);
+          await outFile.writeAsBytes(file.content as List<int>);
+        } else {
+          await Directory(outFile.path).create(recursive: true);
+        }
+      }
+
+      // 3. 恢复媒体文件
+      final appDir = await getApplicationDocumentsDirectory();
+      final mediaDir = Directory('${appDir.path}/media');
+      final importMediaDir = Directory('${importDir.path}/media');
+      if (await importMediaDir.exists()) {
+        if (await mediaDir.exists()) await mediaDir.delete(recursive: true);
+        await _copyDirectory(importMediaDir, mediaDir);
+      }
+
+      // 4. 恢复数据库表
+      final mediaItemsFile = File('${importDir.path}/media_items.json');
+      if (await mediaItemsFile.exists()) {
+        final mediaItemsJson = await mediaItemsFile.readAsString();
+        final List<dynamic> mediaItems = jsonDecode(mediaItemsJson);
+        await _databaseService.replaceAllMediaItems(mediaItems);
+      }
+
+      // 5. 恢复设置
+      final settingsFile = File('${importDir.path}/media_settings.json');
+      if (await settingsFile.exists()) {
+        final settingsJson = await settingsFile.readAsString();
+        final settings = jsonDecode(settingsJson);
+        final prefs = await SharedPreferences.getInstance();
+        if (settings['media_visible'] != null) {
+          await prefs.setBool('media_visible', settings['media_visible']);
+        }
+      }
+
+      // 6. 刷新界面
+      await _loadMediaItems();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('导入媒体数据成功')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('导入媒体数据失败: $e')),
+        );
+      }
+    }
+  }
+
+  // 递归拷贝目录（修正版，递归所有子目录和文件）
+  Future<void> _copyDirectory(Directory src, Directory dst) async {
+    if (!await dst.exists()) await dst.create(recursive: true);
+    await for (var entity in src.list(recursive: true)) { // 递归所有子目录
+      final relativePath = path.relative(entity.path, from: src.path);
+      final newPath = path.join(dst.path, relativePath);
+      if (entity is Directory) {
+        await Directory(newPath).create(recursive: true);
+      } else if (entity is File) {
+        await File(newPath).create(recursive: true);
+        await entity.copy(newPath);
+      }
     }
   }
 
