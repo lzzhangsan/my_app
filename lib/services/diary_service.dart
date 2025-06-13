@@ -30,6 +30,24 @@ class DiaryService {
     await migrateOldDataIfNeeded();
     final db = await getService<DatabaseService>().database;
     final maps = await db.query('diary_entries', orderBy: 'date DESC');
+    return _mapsToEntries(maps);
+  }
+  
+  // 分页加载日记数据，用于处理大量数据
+  Future<List<DiaryEntry>> loadEntriesPaged(int offset, int limit) async {
+    await migrateOldDataIfNeeded();
+    final db = await getService<DatabaseService>().database;
+    final maps = await db.query(
+      'diary_entries', 
+      orderBy: 'date DESC',
+      limit: limit,
+      offset: offset
+    );
+    return _mapsToEntries(maps);
+  }
+  
+  // 将数据库记录转换为DiaryEntry对象
+  List<DiaryEntry> _mapsToEntries(List<Map<String, dynamic>> maps) {
     return maps.map((map) => DiaryEntry(
       id: map['id']?.toString() ?? '',
       date: DateTime.parse(map['date']?.toString() ?? ''),
@@ -91,4 +109,4 @@ class DiaryService {
     'location': entry.location,
     'is_favorite': entry.isFavorite ? 1 : 0,
   };
-} 
+}
