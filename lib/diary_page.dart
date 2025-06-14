@@ -18,6 +18,8 @@ import 'package:archive/archive_io.dart';
 import 'dart:convert';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart' as path;
+import 'package:ffmpeg_kit_flutter/ffmpeg_kit.dart';
+import 'package:ffmpeg_kit_flutter/return_code.dart';
 
 // 全局函数：显示进度条弹窗，支持取消操作
 void showProgressDialog(BuildContext context, ValueNotifier<double> progress, ValueNotifier<String> message, {bool barrierDismissible = false}) {
@@ -1506,39 +1508,6 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
     await _autoSave();
   }
 
-  Future<void> _pickVideo() async {
-    try {
-      final path = await ImagePickerService.pickVideo(context);
-      if (path != null && path.isNotEmpty) {
-        setState(() {
-          _videoPaths.add(path);
-        });
-        // 新增：立即生成并缓存缩略图
-        final thumb = await _getCachedVideoThumbnail(path);
-        if (thumb != null) {
-          final fileName = path.split(Platform.pathSeparator).last;
-          final cacheKey = 'video_thumb_$fileName';
-          setState(() {
-            _videoThumbnailCache[cacheKey] = thumb;
-          });
-        }
-        await _autoSave();
-      } else {
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('未选择或保存视频')),
-          );
-        }
-      }
-    } catch (e) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('选择视频时发生错误：\n${e.toString()}')),
-        );
-      }
-    }
-  }
-
   void _removeVideo(int idx) async {
     setState(() {
       _videoPaths.removeAt(idx);
@@ -1705,6 +1674,52 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
   String _weekdayStr(int weekday) {
     const weekdays = ['一', '二', '三', '四', '五', '六', '日'];
     return '周${weekdays[(weekday - 1) % 7]}';
+  }
+
+  Future<String> _ensure30fps(String videoPath) async {
+    final dir = await getTemporaryDirectory();
+    final newPath = '${dir.path}/${DateTime.now().millisecondsSinceEpoch}_30fps.mp4';
+    final cmd = '-i "$videoPath" -r 30 -y "$newPath"';
+    final session = await FFmpegKit.execute(cmd);
+    final rc = await session.getReturnCode();
+    if (ReturnCode.isSuccess(rc)) {
+      return newPath;
+    } else {
+      return videoPath;
+    }
+  }
+
+  Future<void> _pickVideo() async {
+    try {
+      final path = await ImagePickerService.pickVideo(context);
+      if (path != null && path.isNotEmpty) {
+        final fixedPath = await _ensure30fps(path);
+        setState(() {
+          _videoPaths.add(fixedPath);
+        });
+        final thumb = await _getCachedVideoThumbnail(fixedPath);
+        if (thumb != null) {
+          final fileName = fixedPath.split(Platform.pathSeparator).last;
+          final cacheKey = 'video_thumb_$fileName';
+          setState(() {
+            _videoThumbnailCache[cacheKey] = thumb;
+          });
+        }
+        await _autoSave();
+      } else {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('未选择或保存视频')),
+          );
+        }
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('选择视频时发生错误：\n${e.toString()}')),
+        );
+      }
+    }
   }
 }
 

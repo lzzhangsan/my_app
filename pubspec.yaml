@@ -43,6 +43,7 @@ dependencies:
   mime: ^1.0.4  # MIME 类型检测
   intl: ^0.18.1
   flutter_svg: ^2.0.10
+  ffmpeg_kit_flutter: ^6.0.3
 
 dev_dependencies:
   flutter_test:
