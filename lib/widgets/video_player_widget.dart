@@ -8,12 +8,14 @@ class VideoPlayerWidget extends StatefulWidget {
   final bool looping;
   final VoidCallback? onVideoEnd;
   final VoidCallback? onVideoError;
+  final BoxFit fit;
 
   VideoPlayerWidget({
     required this.file,
     this.looping = false,
     this.onVideoEnd,
     this.onVideoError,
+    this.fit = BoxFit.contain,
     super.key,
   });
 
@@ -142,14 +144,14 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
       debugPrint('屏幕尺寸: ${_screenSize?.width}x${_screenSize?.height}');
       debugPrint('视频尺寸: ${_controller.value.size.width}x${_controller.value.size.height}');
       debugPrint('视频宽高比: ${_controller.value.aspectRatio}');
-      debugPrint('BoxFit设置: BoxFit.contain');
+      debugPrint('BoxFit设置: ${widget.fit}');
       
       return Stack(
         alignment: Alignment.bottomCenter,
         children: [
           SizedBox.expand(
             child: FittedBox(
-              fit: BoxFit.contain, // 从fitWidth改为contain，确保视频完整显示
+              fit: widget.fit,
               alignment: Alignment.center,
               child: SizedBox(
                 width: _controller.value.size.width,

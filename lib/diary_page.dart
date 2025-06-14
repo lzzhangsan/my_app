@@ -940,6 +940,7 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
   bool _isLoading = true; // 加载状态标志
   Directory? _tempDir; // 缓存目录
   final Map<String, File> _videoThumbnailCache = {}; // 视频缩略图内存缓存
+  late TextEditingController _locationController;
 
   final List<Map<String, dynamic>> _weatherSvgOptions = [
     {'icon': 'assets/icon/weather_sunny.svg', 'label': '晴'},
@@ -971,6 +972,7 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
     _contentController = TextEditingController(text: '');
     _initTempDir();
     _loadDraftOrEntry();
+    _locationController = TextEditingController(text: _location ?? '');
   }
   
   Future<void> _initTempDir() async {
@@ -1065,6 +1067,7 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
   @override
   void dispose() {
     _contentController.dispose();
+    _locationController.dispose();
     super.dispose();
   }
 
@@ -1413,7 +1416,7 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
                     const SizedBox(width: 8),
                     Expanded(
                       child: TextField(
-                        controller: TextEditingController(text: _location ?? ''),
+                        controller: _locationController,
                         decoration: const InputDecoration(
                           hintText: '请输入地点',
                           border: InputBorder.none,
@@ -1898,16 +1901,16 @@ class _MediaPreviewDialogState extends State<MediaPreviewDialog> {
               if (path.endsWith('.mp4') || path.endsWith('.mov') || path.endsWith('.avi')) {
                 // 视频
                 debugPrint('日记页面视频: $path');
-                debugPrint('幕尺寸: ${MediaQuery.of(context).size.width}x${MediaQuery.of(context).size.height}');
-                // 修改BoxFit.cover为BoxFit.contain，确保视频完整显示
-                debugPrint('BoxFit设置: BoxFit.contain');
+                debugPrint('幕尺寸: \\${MediaQuery.of(context).size.width}x\\${MediaQuery.of(context).size.height}');
+                debugPrint('BoxFit设置: BoxFit.cover');
                 return SizedBox.expand(
                   child: FittedBox(
-                    fit: BoxFit.contain, // 从cover改为contain，确保视频完整显示
+                    fit: BoxFit.cover, // 横向铺满，纵向等比缩放
+                    alignment: Alignment.center,
                     child: SizedBox(
                       width: MediaQuery.of(context).size.width,
                       height: MediaQuery.of(context).size.height,
-                      child: VideoPlayerWidget(file: File(path)),
+                      child: VideoPlayerWidget(file: File(path), fit: BoxFit.cover),
                     ),
                   ),
                 );
