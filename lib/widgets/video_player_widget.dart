@@ -145,22 +145,25 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
       debugPrint('视频尺寸: ${_controller.value.size.width}x${_controller.value.size.height}');
       debugPrint('视频宽高比: ${_controller.value.aspectRatio}');
       debugPrint('BoxFit设置: ${widget.fit}');
-      
-      return Stack(
-        alignment: Alignment.bottomCenter,
-        children: [
-          SizedBox.expand(
-            child: FittedBox(
-              fit: widget.fit,
-              alignment: Alignment.center,
+      // 新增：横向铺满屏幕，纵向等比缩放，超出部分裁剪，纵向居中
+      return LayoutBuilder(
+        builder: (context, constraints) {
+          final screenWidth = constraints.maxWidth;
+          final videoAspect = _controller.value.aspectRatio;
+          final videoHeight = screenWidth / videoAspect;
+          return Center(
+            child: ClipRect(
               child: SizedBox(
-                width: _controller.value.size.width,
-                height: _controller.value.size.height,
-                child: VideoPlayer(_controller),
+                width: screenWidth,
+                height: videoHeight,
+                child: AspectRatio(
+                  aspectRatio: videoAspect,
+                  child: VideoPlayer(_controller),
+                ),
               ),
             ),
-          ),
-        ],
+          );
+        },
       );
     } else {
       return Center(child: CircularProgressIndicator());

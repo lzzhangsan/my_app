@@ -1512,6 +1512,15 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
         setState(() {
           _videoPaths.add(path);
         });
+        // 新增：立即生成并缓存缩略图
+        final thumb = await _getCachedVideoThumbnail(path);
+        if (thumb != null) {
+          final fileName = path.split(Platform.pathSeparator).last;
+          final cacheKey = 'video_thumb_$fileName';
+          setState(() {
+            _videoThumbnailCache[cacheKey] = thumb;
+          });
+        }
         await _autoSave();
       } else {
         if (context.mounted) {
