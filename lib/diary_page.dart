@@ -1048,6 +1048,7 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
           _weather = draft.weather;
           _mood = draft.mood;
           _location = draft.location;
+          _locationController.text = draft.location ?? '';
           _isFavorite = draft.isFavorite;
           _isLoading = false;
         });

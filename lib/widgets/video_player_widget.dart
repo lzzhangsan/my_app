@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 import 'dart:io';
 import 'dart:async';
+import 'package:chewie/chewie.dart';
+import 'package:flutter/services.dart';
 
 class VideoPlayerWidget extends StatefulWidget {
   final File file;
@@ -124,7 +126,6 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   @override
   Widget build(BuildContext context) {
     _screenSize = MediaQuery.of(context).size;
-    
     if (_hasError) {
       return Center(
         child: Column(
@@ -137,33 +138,38 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
         ),
       );
     }
-    
     if (_controller.value.isInitialized) {
-      // 打印布局信息
-      debugPrint('视频布局信息: ${widget.file.path}');
-      debugPrint('屏幕尺寸: ${_screenSize?.width}x${_screenSize?.height}');
-      debugPrint('视频尺寸: ${_controller.value.size.width}x${_controller.value.size.height}');
-      debugPrint('视频宽高比: ${_controller.value.aspectRatio}');
-      debugPrint('BoxFit设置: ${widget.fit}');
-      // 新增：横向铺满屏幕，纵向等比缩放，超出部分裁剪，纵向居中
-      return LayoutBuilder(
-        builder: (context, constraints) {
-          final screenWidth = constraints.maxWidth;
-          final videoAspect = _controller.value.aspectRatio;
-          final videoHeight = screenWidth / videoAspect;
-          return Center(
-            child: ClipRect(
+      final chewieController = ChewieController(
+        videoPlayerController: _controller,
+        autoPlay: true,
+        looping: widget.looping,
+        allowFullScreen: true,
+        allowMuting: true,
+        showControls: true,
+        showControlsOnInitialize: true,
+        deviceOrientationsAfterFullScreen: [DeviceOrientation.portraitUp],
+        materialProgressColors: ChewieProgressColors(
+          playedColor: Colors.red,
+          handleColor: Colors.red,
+          backgroundColor: Colors.white.withOpacity(0.3),
+          bufferedColor: Colors.white.withOpacity(0.5),
+        ),
+      );
+      return Center(
+        child: Container(
+          color: Colors.transparent,
+          child: SizedBox.expand(
+            child: FittedBox(
+              fit: BoxFit.contain,
+              alignment: Alignment.center,
               child: SizedBox(
-                width: screenWidth,
-                height: videoHeight,
-                child: AspectRatio(
-                  aspectRatio: videoAspect,
-                  child: VideoPlayer(_controller),
-                ),
+                width: _controller.value.size.width,
+                height: _controller.value.size.height,
+                child: Chewie(controller: chewieController),
               ),
             ),
-          );
-        },
+          ),
+        ),
       );
     } else {
       return Center(child: CircularProgressIndicator());
