@@ -75,7 +75,89 @@ class _DiaryPageState extends State<DiaryPage> {
   List<DiaryEntry> get _entriesForSelectedDate {
     final filtered = _showFavoritesOnly ? _entries.where((e) => e.isFavorite).toList() : _entries;
     if (_searchKeyword.isEmpty) return filtered..sort((a, b) => b.date.compareTo(a.date));
+    
+    // 尝试解析搜索关键词中的日期信息
+    final dateSearchResult = _searchEntriesByDate(_searchKeyword, filtered);
+    if (dateSearchResult.isNotEmpty) {
+      return dateSearchResult..sort((a, b) => b.date.compareTo(a.date));
+    }
+    
+    // 如果不是日期搜索，则按内容搜索
     return filtered.where((e) => (e.content ?? '').contains(_searchKeyword)).toList()..sort((a, b) => b.date.compareTo(a.date));
+  }
+  
+  // 根据日期搜索日记条目
+  List<DiaryEntry> _searchEntriesByDate(String keyword, List<DiaryEntry> entries) {
+    // 移除所有空格
+    final cleanKeyword = keyword.replaceAll(' ', '');
+    
+    // 匹配年份：2023年、2023
+    final yearRegex = RegExp(r'(\d{4})(年)?$');
+    final yearMatch = yearRegex.firstMatch(cleanKeyword);
+    if (yearMatch != null) {
+      final year = int.parse(yearMatch.group(1)!);
+      return entries.where((e) => e.date.year == year).toList();
+    }
+    
+    // 匹配年月：2023年5月、2023-5、2023.5、2023/5
+    final yearMonthRegex = RegExp(r'(\d{4})[年\-\.\//](\d{1,2})(月)?$');
+    final yearMonthMatch = yearMonthRegex.firstMatch(cleanKeyword);
+    if (yearMonthMatch != null) {
+      final year = int.parse(yearMonthMatch.group(1)!);
+      final month = int.parse(yearMonthMatch.group(2)!);
+      if (month >= 1 && month <= 12) {
+        return entries.where((e) => e.date.year == year && e.date.month == month).toList();
+      }
+    }
+    
+    // 匹配年月日：2023年5月1日、2023-5-1、2023.5.1、2023/5/1
+    final dateRegex = RegExp(r'(\d{4})[年\-\.\//](\d{1,2})[月\-\.\//](\d{1,2})(日)?$');
+    final dateMatch = dateRegex.firstMatch(cleanKeyword);
+    if (dateMatch != null) {
+      final year = int.parse(dateMatch.group(1)!);
+      final month = int.parse(dateMatch.group(2)!);
+      final day = int.parse(dateMatch.group(3)!);
+      if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+        return entries.where((e) => 
+          e.date.year == year && 
+          e.date.month == month && 
+          e.date.day == day
+        ).toList();
+      }
+    }
+    
+    // 匹配月日：5月1日、5-1、5.1、5/1
+    final monthDayRegex = RegExp(r'^(\d{1,2})[月\-\.\//](\d{1,2})(日)?$');
+    final monthDayMatch = monthDayRegex.firstMatch(cleanKeyword);
+    if (monthDayMatch != null) {
+      final month = int.parse(monthDayMatch.group(1)!);
+      final day = int.parse(monthDayMatch.group(2)!);
+      if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+        return entries.where((e) => e.date.month == month && e.date.day == day).toList();
+      }
+    }
+    
+    // 匹配月份：5月
+    final monthRegex = RegExp(r'^(\d{1,2})(月)$');
+    final monthMatch = monthRegex.firstMatch(cleanKeyword);
+    if (monthMatch != null) {
+      final month = int.parse(monthMatch.group(1)!);
+      if (month >= 1 && month <= 12) {
+        return entries.where((e) => e.date.month == month).toList();
+      }
+    }
+    
+    // 匹配日期：1日
+    final dayRegex = RegExp(r'^(\d{1,2})(日)$');
+    final dayMatch = dayRegex.firstMatch(cleanKeyword);
+    if (dayMatch != null) {
+      final day = int.parse(dayMatch.group(1)!);
+      if (day >= 1 && day <= 31) {
+        return entries.where((e) => e.date.day == day).toList();
+      }
+    }
+    
+    return [];
   }
 
   bool isSameDay(DateTime a, DateTime b) {
@@ -234,7 +316,7 @@ class _DiaryPageState extends State<DiaryPage> {
             child: TextField(
               decoration: InputDecoration(
                 prefixIcon: Icon(Icons.search),
-                hintText: '搜索日记...',
+                hintText: '搜索日记内容或日期(如2023年、5月1日)...',
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
                 contentPadding: EdgeInsets.symmetric(vertical: 0, horizontal: 8),
               ),
