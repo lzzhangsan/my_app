@@ -446,24 +446,82 @@ class _DiaryPageState extends State<DiaryPage> {
               ],
             ),
             subtitle: Text(entry.content ?? '', maxLines: 2, overflow: TextOverflow.ellipsis),
-            leading: entry.imagePaths.isNotEmpty
-                ? ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: Image.file(
-                      File(entry.imagePaths.first),
-                      width: 48,
-                      height: 48,
-                      fit: BoxFit.cover,
-                      errorBuilder: (context, error, stackTrace) => Icon(Icons.broken_image, size: 40),
-                    ),
-                  )
-                : const Icon(Icons.book, size: 40),
+            leading: FutureBuilder<Widget>(
+              future: _getEntryThumbnail(entry),
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.done && snapshot.hasData) {
+                  return snapshot.data!;
+                } else {
+                  return const Icon(Icons.book, size: 40);
+                }
+              },
+            ),
             trailing: null,
             onTap: () => _addOrEditEntry(entry: entry),
           ),
         );
       },
     );
+  }
+
+  // 获取日记条目的缩略图
+  Future<Widget> _getEntryThumbnail(DiaryEntry entry) async {
+    // 如果有图片，优先显示第一张图片
+    if (entry.imagePaths.isNotEmpty) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: Image.file(
+          File(entry.imagePaths.first),
+          width: 48,
+          height: 48,
+          fit: BoxFit.cover,
+          errorBuilder: (context, error, stackTrace) => Icon(Icons.broken_image, size: 40),
+        ),
+      );
+    }
+    
+    // 如果有视频，显示第一个视频的缩略图
+    if (entry.videoPaths.isNotEmpty) {
+      // 尝试获取视频缩略图
+      try {
+        final videoPath = entry.videoPaths.first;
+        final mediaService = MediaService();
+        final thumbnailFile = await mediaService.generateVideoThumbnail(videoPath);
+        
+        if (thumbnailFile != null) {
+          return ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: Image.file(
+              thumbnailFile,
+              width: 48,
+              height: 48,
+              fit: BoxFit.cover,
+              errorBuilder: (context, error, stackTrace) => Icon(Icons.videocam, size: 40),
+            ),
+          );
+        }
+      } catch (e) {
+        debugPrint('获取视频缩略图失败: $e');
+      }
+      
+      // 如果获取缩略图失败，显示视频图标
+      return Container(
+        width: 48,
+        height: 48,
+        decoration: BoxDecoration(
+          color: Colors.grey[300],
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Icon(
+          Icons.videocam,
+          size: 32,
+          color: Colors.grey[700],
+        ),
+      );
+    }
+    
+    // 如果既没有图片也没有视频，显示默认图标
+    return const Icon(Icons.book, size: 40);
   }
 
   // 日记本数据导出 - 优化版，支持超大数据处理
