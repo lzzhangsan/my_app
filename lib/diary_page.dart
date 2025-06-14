@@ -1914,15 +1914,7 @@ class _MediaPreviewDialogState extends State<MediaPreviewDialog> {
                 debugPrint('幕尺寸: \\${MediaQuery.of(context).size.width}x\\${MediaQuery.of(context).size.height}');
                 debugPrint('BoxFit设置: BoxFit.cover');
                 return SizedBox.expand(
-                  child: FittedBox(
-                    fit: BoxFit.cover, // 横向铺满，纵向等比缩放
-                    alignment: Alignment.center,
-                    child: SizedBox(
-                      width: MediaQuery.of(context).size.width,
-                      height: MediaQuery.of(context).size.height,
-                      child: VideoPlayerWidget(file: File(path), fit: BoxFit.cover),
-                    ),
-                  ),
+                  child: VideoPlayerWidget(file: File(path)),
                 );
               } else {
                 // 图片
