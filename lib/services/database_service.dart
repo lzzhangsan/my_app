@@ -1031,28 +1031,25 @@ class DatabaseService {
       // 处理音频框数据和音频文件 - 分批处理优化
       List<Map<String, dynamic>> audioBoxes = tableData['audio_boxes'] ?? [];
       List<Map<String, dynamic>> audioBoxesToExport = [];
-      
       progressNotifier?.value = "正在处理音频文件...";
-      
       // 分批处理音频文件，避免同时处理过多文件
       const int audioBatchSize = 10; // 音频文件通常较大，减少批次大小
       for (int i = 0; i < audioBoxes.length; i += audioBatchSize) {
         final int end = (i + audioBatchSize < audioBoxes.length) ? i + audioBatchSize : audioBoxes.length;
         final batch = audioBoxes.sublist(i, end);
-        
         await Future.wait(batch.map((audioBox) async {
           Map<String, dynamic> audioBoxCopy = Map<String, dynamic>.from(audioBox);
           String? audioPath = audioBox['audio_path'];
-          if (audioPath != null && audioPath.isNotEmpty) {
-            String fileName = p.basename(audioPath);
+          String? audioBoxId = audioBox['id']?.toString();
+          if (audioPath != null && audioPath.isNotEmpty && audioBoxId != null && audioBoxId.isNotEmpty) {
+            String ext = p.extension(audioPath);
+            String fileName = audioBoxId + ext;
             audioBoxCopy['audioFileName'] = fileName;
-            
             // 复制音频文件
             File audioFile = File(audioPath);
             if (await audioFile.exists()) {
               String relativePath = 'audios/$fileName';
               await Directory('$tempDirPath/audios').create(recursive: true);
-              
               // 对于大文件使用流式复制
               final fileSize = await audioFile.length();
               if (fileSize > 5 * 1024 * 1024) { // >5MB
@@ -1063,7 +1060,6 @@ class DatabaseService {
               } else {
                 await audioFile.copy('$tempDirPath/$relativePath');
               }
-              
               print('已导出音频文件: $relativePath');
             } else {
               print('警告：音频文件不存在: $audioPath');
@@ -1071,10 +1067,8 @@ class DatabaseService {
           }
           audioBoxesToExport.add(audioBoxCopy);
         }));
-        
-        progressNotifier?.value = "正在处理音频文件: ${i + batch.length}/${audioBoxes.length}";
+        progressNotifier?.value = "正在处理音频文件: "+(i + batch.length).toString()+"/"+audioBoxes.length.toString();
       }
-      
       tableData['audio_boxes'] = audioBoxesToExport;
 
       // 将数据库表数据保存为JSON文件 - 分批序列化优化
@@ -2027,21 +2021,19 @@ class DatabaseService {
           String newAudioBoxId = const Uuid().v4();
           audioBoxData['id'] = newAudioBoxId;
           audioBoxData['document_id'] = newDocumentId;
-          
           // 处理音频文件
           String? audioFileName = audioBoxData['audioFileName'];
           if (audioFileName != null && audioFileName.isNotEmpty) {
             String sourcePath = '$tempDirPath/audios/$audioFileName';
             File sourceFile = File(sourcePath);
             if (await sourceFile.exists()) {
-              String targetPath = '${appDocDir.path}/audios/$newAudioBoxId.${p.extension(audioFileName).substring(1)}';
+              String targetPath = '${appDocDir.path}/audios/$audioFileName';
               await Directory(p.dirname(targetPath)).create(recursive: true);
               await sourceFile.copy(targetPath);
               audioBoxData['audio_path'] = targetPath;
               print('已导入音频: $audioFileName -> $targetPath');
             }
           }
-          
           // 移除临时字段和错误字段名
           audioBoxData.remove('audioFileName');
           audioBoxData.remove('audioPath');
