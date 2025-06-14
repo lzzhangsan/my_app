@@ -31,6 +31,7 @@ class VideoPlayerWidget extends StatefulWidget {
 
 class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   late VideoPlayerController _controller;
+  ChewieController? _chewieController;
   bool _isEnded = false;
   bool _hasError = false;
   Timer? _progressTimer;
@@ -44,94 +45,18 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   }
 
   void _initializeController() {
+    if (!widget.file.existsSync()) {
+      _handleError('视频文件不存在');
+      return;
+    }
+
     _controller = VideoPlayerController.file(widget.file);
-    debugPrint('[播放器] 初始化controller: \\${widget.file.path}');
+    debugPrint('[播放器] 初始化controller: ${widget.file.path}');
+    
     _controller.initialize().then((_) {
-      if (mounted) {
-        setState(() {});
-        _controller.play();
-        _controller.setLooping(widget.looping);
-        debugPrint('[播放器] 初始化成功, isInitialized: \\${_controller.value.isInitialized}, isPlaying: \\${_controller.value.isPlaying}');
-        _progressTimer = Timer.periodic(Duration(milliseconds: 100), (_) {
-          if (mounted) {
-            setState(() {});
-          }
-        });
-      }
-    }).catchError((error) {
-      debugPrint('视频初始化错误: \\${widget.file.path}, 错误: $error');
-      _hasError = true;
-      if (mounted) {
-        setState(() {});
-      }
-      if (widget.onVideoError != null) {
-        widget.onVideoError!();
-      }
-    });
-    _controller.addListener(() {
-      debugPrint('[播放器] 状态监听 isInitialized: \\${_controller.value.isInitialized}, isPlaying: \\${_controller.value.isPlaying}, position: \\${_controller.value.position}');
-      if (_controller.value.hasError && !_hasError) {
-        debugPrint('视频播放错误: \\${widget.file.path}, 错误: \\${_controller.value.errorDescription}');
-        _hasError = true;
-        if (widget.onVideoError != null) {
-          widget.onVideoError!();
-        }
-        return;
-      }
-      if (_controller.value.isInitialized && 
-          _controller.value.position >= _controller.value.duration &&
-          !_isEnded &&
-          !widget.looping) {
-        _isEnded = true;
-        if (widget.onVideoEnd != null) {
-          widget.onVideoEnd!();
-        }
-      }
-    });
-  }
-
-  @override
-  void dispose() {
-    debugPrint('销毁视频播放器: ${widget.file.path}');
-    _progressTimer?.cancel();
-    _controller.pause();
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  void didUpdateWidget(covariant VideoPlayerWidget oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.file.path != widget.file.path ||
-        oldWidget.looping != widget.looping) {
-      debugPrint('视频播放器更新: ${oldWidget.file.path} -> ${widget.file.path}');
-      _progressTimer?.cancel();
-      _controller.pause();
-      _controller.dispose();
-      _isEnded = false;
-      _hasError = false;
-      _initializeController();
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    _screenSize = MediaQuery.of(context).size;
-    debugPrint('[播放器] build, isInitialized: \\${_controller.value.isInitialized}, isPlaying: \\${_controller.value.isPlaying}');
-    if (_hasError) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.error, color: Colors.red, size: 48),
-            SizedBox(height: 16),
-            Text('视频无法播放', style: TextStyle(color: Colors.white))
-          ],
-        ),
-      );
-    }
-    if (_controller.value.isInitialized) {
-      final chewieController = ChewieController(
+      if (!mounted) return;
+      
+      _chewieController = ChewieController(
         videoPlayerController: _controller,
         autoPlay: true,
         looping: widget.looping,
@@ -146,26 +71,160 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
           backgroundColor: Colors.white.withOpacity(0.3),
           bufferedColor: Colors.white.withOpacity(0.5),
         ),
+        errorBuilder: (context, errorMessage) {
+          return Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.error_outline, color: Colors.red, size: 48),
+                const SizedBox(height: 16),
+                Text(
+                  '视频播放失败\n$errorMessage',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: Colors.white),
+                ),
+                const SizedBox(height: 16),
+                ElevatedButton(
+                  onPressed: () {
+                    _controller.initialize().then((_) {
+                      if (mounted) setState(() {});
+                    });
+                  },
+                  child: const Text('重试'),
+                ),
+              ],
+            ),
+          );
+        },
       );
+
+      setState(() {});
+      _controller.play();
+      _controller.setLooping(widget.looping);
+      
+      debugPrint('[播放器] 初始化成功, isInitialized: ${_controller.value.isInitialized}, isPlaying: ${_controller.value.isPlaying}');
+      
+      _progressTimer = Timer.periodic(const Duration(milliseconds: 100), (_) {
+        if (mounted) setState(() {});
+      });
+    }).catchError((error) {
+      _handleError(error.toString());
+    });
+
+    _controller.addListener(_videoListener);
+  }
+
+  void _videoListener() {
+    if (!mounted) return;
+    
+    debugPrint('[播放器] 状态监听 isInitialized: ${_controller.value.isInitialized}, isPlaying: ${_controller.value.isPlaying}, position: ${_controller.value.position}');
+    
+    if (_controller.value.hasError && !_hasError) {
+      _handleError(_controller.value.errorDescription ?? '未知错误');
+      return;
+    }
+    
+    if (_controller.value.isInitialized && 
+        _controller.value.position >= _controller.value.duration &&
+        !_isEnded &&
+        !widget.looping) {
+      _isEnded = true;
+      widget.onVideoEnd?.call();
+    }
+  }
+
+  void _handleError(String error) {
+    debugPrint('视频播放错误: ${widget.file.path}, 错误: $error');
+    _hasError = true;
+    if (mounted) setState(() {});
+    widget.onVideoError?.call();
+  }
+
+  @override
+  void dispose() {
+    debugPrint('销毁视频播放器: ${widget.file.path}');
+    _progressTimer?.cancel();
+    _chewieController?.dispose();
+    _controller.pause();
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(covariant VideoPlayerWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.file.path != widget.file.path ||
+        oldWidget.looping != widget.looping) {
+      debugPrint('视频播放器更新: ${oldWidget.file.path} -> ${widget.file.path}');
+      _progressTimer?.cancel();
+      _chewieController?.dispose();
+      _controller.pause();
+      _controller.dispose();
+      _isEnded = false;
+      _hasError = false;
+      _initializeController();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!widget.file.existsSync()) {
+      return const Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.error_outline, color: Colors.red, size: 48),
+            SizedBox(height: 16),
+            Text('视频文件不存在', style: TextStyle(color: Colors.white)),
+          ],
+        ),
+      );
+    }
+
+    if (_hasError) {
       return Center(
-        child: Container(
-          color: Colors.transparent,
-          child: SizedBox.expand(
-            child: FittedBox(
-              fit: BoxFit.contain,
-              alignment: Alignment.center,
-              child: SizedBox(
-                width: _controller.value.size.width,
-                height: _controller.value.size.height,
-                child: Chewie(controller: chewieController),
-              ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.error_outline, color: Colors.red, size: 48),
+            const SizedBox(height: 16),
+            const Text('视频无法播放', style: TextStyle(color: Colors.white)),
+            const SizedBox(height: 16),
+            ElevatedButton(
+              onPressed: () {
+                _hasError = false;
+                _initializeController();
+                if (mounted) setState(() {});
+              },
+              child: const Text('重试'),
+            ),
+          ],
+        ),
+      );
+    }
+
+    if (!_controller.value.isInitialized || _chewieController == null) {
+      return const Center(
+        child: CircularProgressIndicator(),
+      );
+    }
+
+    return Center(
+      child: Container(
+        color: Colors.black,
+        child: SizedBox.expand(
+          child: FittedBox(
+            fit: widget.fit,
+            alignment: Alignment.center,
+            child: SizedBox(
+              width: _controller.value.size.width,
+              height: _controller.value.size.height,
+              child: Chewie(controller: _chewieController!),
             ),
           ),
         ),
-      );
-    } else {
-      return Center(child: CircularProgressIndicator());
-    }
+      ),
+    );
   }
 
   String _formatDuration(Duration duration) {

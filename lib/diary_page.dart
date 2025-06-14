@@ -18,9 +18,6 @@ import 'package:archive/archive_io.dart';
 import 'dart:convert';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart' as path;
-import 'package:ffmpeg_kit_flutter/ffmpeg_kit.dart';
-import 'package:ffmpeg_kit_flutter/return_code.dart';
-import 'package:ffmpeg_kit_flutter/ffprobe_kit.dart';
 
 // 全局函数：显示进度条弹窗，支持取消操作
 void showProgressDialog(BuildContext context, ValueNotifier<double> progress, ValueNotifier<String> message, {bool barrierDismissible = false}) {
@@ -1677,30 +1674,18 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
     return '周${weekdays[(weekday - 1) % 7]}';
   }
 
-  // 智能转码：仅非30fps才转码
-  Future<String> _ensure30fpsSmart(String videoPath) async {
-    final is30fps = await _isVideo30fps(videoPath);
-    if (is30fps) {
-      debugPrint('视频已为30fps，无需转码: $videoPath');
-      return videoPath;
-    } else {
-      debugPrint('视频非30fps，开始转码: $videoPath');
-      return await _ensure30fps(videoPath);
-    }
-  }
-
   @override
   Future<void> _pickVideo() async {
     try {
       final path = await ImagePickerService.pickVideo(context);
       if (path != null && path.isNotEmpty) {
-        final fixedPath = await _ensure30fpsSmart(path);
         setState(() {
-          _videoPaths.add(fixedPath);
+          _videoPaths.add(path);
         });
-        final thumb = await _getCachedVideoThumbnail(fixedPath);
+        // 预加载缩略图
+        final thumb = await _getCachedVideoThumbnail(path);
         if (thumb != null) {
-          final fileName = fixedPath.split(Platform.pathSeparator).last;
+          final fileName = path.split(Platform.pathSeparator).last;
           final cacheKey = 'video_thumb_$fileName';
           setState(() {
             _videoThumbnailCache[cacheKey] = thumb;
@@ -1710,7 +1695,7 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
       } else {
         if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('未选择或保存视频')),
+            const SnackBar(content: Text('未选择或保存视频')),
           );
         }
       }
@@ -1721,66 +1706,6 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
         );
       }
     }
-  }
-
-  Future<String> _ensure30fps(String videoPath) async {
-    final dir = await getTemporaryDirectory();
-    final newPath = '${dir.path}/${DateTime.now().millisecondsSinceEpoch}_30fps.mp4';
-    final cmd = '-i "$videoPath" -r 30 -y "$newPath"';
-    final session = await FFmpegKit.execute(cmd);
-    final rc = await session.getReturnCode();
-    if (ReturnCode.isSuccess(rc)) {
-      return newPath;
-    } else {
-      return videoPath;
-    }
-  }
-
-  // 检查视频帧率是否为30fps
-  Future<bool> _isVideo30fps(String videoPath) async {
-    try {
-      final infoSession = await FFprobeKit.getMediaInformation(videoPath);
-      final info = await infoSession.getMediaInformation();
-      if (info == null) {
-        debugPrint('[帧率检测] FFprobeKit未获取到媒体信息');
-        return false;
-      }
-      final streams = info.getStreams();
-      if (streams == null || streams.isEmpty) {
-        debugPrint('[帧率检测] 未找到视频流');
-        return false;
-      }
-      for (final stream in streams) {
-        final codecType = stream.getAllProperties()?['codec_type'];
-        if (codecType == 'video') {
-          final rFrameRate = stream.getAllProperties()?['r_frame_rate'];
-          debugPrint('[帧率检测] r_frame_rate: $rFrameRate');
-          if (rFrameRate != null && rFrameRate is String && rFrameRate.isNotEmpty) {
-            final parts = rFrameRate.split('/');
-            double fps = 0;
-            if (parts.length == 2) {
-              final num = double.tryParse(parts[0]);
-              final den = double.tryParse(parts[1]);
-              if (num != null && den != null && den != 0) {
-                fps = num / den;
-              }
-            } else if (parts.length == 1) {
-              fps = double.tryParse(parts[0]) ?? 0;
-            }
-            debugPrint('[帧率检测] 解析后fps: $fps');
-            if (fps >= 28.0 && fps <= 32.0) {
-              debugPrint('[帧率检测] fps在28~32之间，直接通过');
-              return true;
-            } else {
-              debugPrint('[帧率检测] fps不在28~32之间，需要转码');
-            }
-          }
-        }
-      }
-    } catch (e) {
-      debugPrint('检测视频帧率失败: $e');
-    }
-    return false;
   }
 }
 
