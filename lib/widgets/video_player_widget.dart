@@ -45,21 +45,13 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
 
   void _initializeController() {
     _controller = VideoPlayerController.file(widget.file);
-    
-    debugPrint('开始初始化视频: ${widget.file.path}');
-    
+    debugPrint('[播放器] 初始化controller: \\${widget.file.path}');
     _controller.initialize().then((_) {
       if (mounted) {
         setState(() {});
         _controller.play();
         _controller.setLooping(widget.looping);
-        
-        // 打印视频信息
-        debugPrint('视频初始化成功: ${widget.file.path}');
-        debugPrint('视频尺寸: ${_controller.value.size.width}x${_controller.value.size.height}');
-        debugPrint('视频宽高比: ${_controller.value.aspectRatio}');
-        debugPrint('视频时长: ${_controller.value.duration}');
-        
+        debugPrint('[播放器] 初始化成功, isInitialized: \\${_controller.value.isInitialized}, isPlaying: \\${_controller.value.isPlaying}');
         _progressTimer = Timer.periodic(Duration(milliseconds: 100), (_) {
           if (mounted) {
             setState(() {});
@@ -67,7 +59,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
         });
       }
     }).catchError((error) {
-      debugPrint('视频初始化错误: ${widget.file.path}, 错误: $error');
+      debugPrint('视频初始化错误: \\${widget.file.path}, 错误: $error');
       _hasError = true;
       if (mounted) {
         setState(() {});
@@ -76,17 +68,16 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
         widget.onVideoError!();
       }
     });
-    
     _controller.addListener(() {
+      debugPrint('[播放器] 状态监听 isInitialized: \\${_controller.value.isInitialized}, isPlaying: \\${_controller.value.isPlaying}, position: \\${_controller.value.position}');
       if (_controller.value.hasError && !_hasError) {
-        debugPrint('视频播放错误: ${widget.file.path}, 错误: ${_controller.value.errorDescription}');
+        debugPrint('视频播放错误: \\${widget.file.path}, 错误: \\${_controller.value.errorDescription}');
         _hasError = true;
         if (widget.onVideoError != null) {
           widget.onVideoError!();
         }
         return;
       }
-      
       if (_controller.value.isInitialized && 
           _controller.value.position >= _controller.value.duration &&
           !_isEnded &&
@@ -126,6 +117,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   @override
   Widget build(BuildContext context) {
     _screenSize = MediaQuery.of(context).size;
+    debugPrint('[播放器] build, isInitialized: \\${_controller.value.isInitialized}, isPlaying: \\${_controller.value.isPlaying}');
     if (_hasError) {
       return Center(
         child: Column(
