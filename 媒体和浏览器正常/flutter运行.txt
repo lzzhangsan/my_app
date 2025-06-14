@@ -1,0 +1,45 @@
+flutter clean
+flutter pub get
+flutter build apk --release
+flutter build apk --debug
+
+flutter clean
+flutter pub get
+flutter run --verbose
+
+请你深入分析代码，理解相应代码是如何实现的。等你完全理解后再来帮我解决问题。全程请你帮我自动的解决问题，自动的帮我查找、调整优化代码，并且自动的进行编译。如果编译过程当中出现了错误，请你自动的帮我解决。直到编译成功为止。编译命令使用flutter run --verbose，便于直接将应用部署到真机上测试效果。
+
+flutter analyze
+
+flutter logs
+
+Flutter web
+flutter run -d chrome -v
+
+dart fix   
+
+flutter config --enable-web
+flutter run -d chrome
+
+
+flutter build apk --debug
+adb install -r build/app/outputs/flutter-apk/app-debug.apk
+
+"D:\app\my_app\fuben-参考"
+
+D:
+cd \app\my_flutter_app
+
+
+flutter pub get
+flutter run -d JB85PZ9TBUUC5PIB
+flutter run -d JB85PZ9TBUUC5PIB --verbose
+
+
+让远程变成和本地一样：git push origin main --force
+
+回退版本重新推送（命令行进入项目终端后）：
+git checkout main
+git reset --hard 7ef1d85
+git push -f origin main
+
