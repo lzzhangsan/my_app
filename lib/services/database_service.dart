@@ -1978,15 +1978,51 @@ class DatabaseService {
         // 处理文本框
         List<dynamic> textBoxes = importData['text_boxes'] ?? [];
         for (var textBox in List.from(textBoxes)) {
-          if (validateTextBoxData(textBox)) {
-            final data = Map<String, dynamic>.from(textBox);
-            // Remove old field if exists
+          final data = Map<String, dynamic>.from(textBox);
+          // 字段名转换：数据库风格 => 驼峰风格
+          if (data.containsKey('position_x')) {
+            data['positionX'] = data.remove('position_x');
+          }
+          if (data.containsKey('position_y')) {
+            data['positionY'] = data.remove('position_y');
+          }
+          if (data.containsKey('content')) {
+            data['text'] = data.remove('content');
+          }
+          if (data.containsKey('font_size')) {
+            data['fontSize'] = data.remove('font_size');
+          }
+          if (data.containsKey('font_color')) {
+            data['fontColor'] = data.remove('font_color');
+          }
+          if (data.containsKey('font_family')) {
+            data['fontFamily'] = data.remove('font_family');
+          }
+          if (data.containsKey('font_weight')) {
+            data['fontWeight'] = data.remove('font_weight');
+          }
+          if (data.containsKey('is_italic')) {
+            data['isItalic'] = data.remove('is_italic');
+          }
+          if (data.containsKey('is_underlined')) {
+            data['isUnderlined'] = data.remove('is_underlined');
+          }
+          if (data.containsKey('is_strike_through')) {
+            data['isStrikeThrough'] = data.remove('is_strike_through');
+          }
+          if (data.containsKey('background_color')) {
+            data['backgroundColor'] = data.remove('background_color');
+          }
+          if (data.containsKey('text_align')) {
+            data['textAlign'] = data.remove('text_align');
+          }
+          // 先转换字段名再校验
+          if (validateTextBoxData(data)) {
             data.remove('documentName');
             data['document_id'] = newDocumentId;
             data['created_at'] = DateTime.now().millisecondsSinceEpoch;
             data['updated_at'] = DateTime.now().millisecondsSinceEpoch;
-            
-            // Convert field names to match database schema
+            // 再转为数据库字段名
             if (data.containsKey('positionX')) {
               data['position_x'] = data.remove('positionX');
             }
@@ -2023,7 +2059,6 @@ class DatabaseService {
             if (data.containsKey('textAlign')) {
               data['text_align'] = data.remove('textAlign');
             }
-            
             await txn.insert(
               'text_boxes',
               data,
