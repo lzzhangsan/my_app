@@ -138,7 +138,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
             showControlsOnInitialize: true,
             deviceOrientationsAfterFullScreen: [DeviceOrientation.portraitUp],
             placeholder: Container(
-              color: Colors.black,
+              color: Colors.transparent, // 将黑色背景改为透明
               child: const Center(
                 child: CircularProgressIndicator(),
               ),
@@ -672,7 +672,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.black,
+      backgroundColor: Colors.transparent, // 将黑色背景改为透明
       body: Stack(
         fit: StackFit.expand,
         children: [

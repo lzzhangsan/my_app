@@ -211,7 +211,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
 
     return Center(
       child: Container(
-        color: Colors.black,
+        color: Colors.transparent, // 将黑色背景改为透明
         child: SizedBox.expand(
           child: FittedBox(
             fit: widget.fit,
