@@ -878,8 +878,29 @@ class DatabaseService {
     }
   }
 
+  /// 检查目录所有音频框音频文件完整性，返回丢失文件路径列表
+  Future<List<String>> checkDirectoryAudioFilesIntegrity() async {
+    final db = await database;
+    final List<Map<String, dynamic>> audioBoxes = await db.query('audio_boxes');
+    List<String> missingFiles = [];
+    for (final audioBox in audioBoxes) {
+      String? audioPath = audioBox['audio_path'];
+      if (audioPath != null && audioPath.isNotEmpty) {
+        if (!await File(audioPath).exists()) {
+          missingFiles.add(audioPath);
+        }
+      }
+    }
+    return missingFiles;
+  }
+
   /// 导出目录数据 - 优化版，支持超大数据处理
   Future<String> exportDirectoryData({ValueNotifier<String>? progressNotifier}) async {
+    // 导出前先检测音频完整性
+    final missingAudioFiles = await checkDirectoryAudioFilesIntegrity();
+    if (missingAudioFiles.isNotEmpty) {
+      throw Exception('导出失败：有音频文件丢失，需补齐后再导出。丢失文件如下：\n' + missingAudioFiles.join('\n'));
+    }
     try {
       print('开始导出目录数据...');
       progressNotifier?.value = "准备导出...";
@@ -929,34 +950,36 @@ class DatabaseService {
         print('已导出表 $tableName: ${allRows.length} 条记录');
       }
 
+      // 文件名安全化函数
+      String safeFileName(String base, String ext) {
+        String name = base.replaceAll(RegExp(r'[^A-Za-z0-9_]'), '_');
+        if (name.length > 40) name = name.substring(0, 40);
+        return name + ext;
+      }
+
       // 处理图片框数据和图片文件 - 分批处理优化
       List<Map<String, dynamic>> imageBoxes = tableData['image_boxes'] ?? [];
       List<Map<String, dynamic>> imageBoxesToExport = [];
-      
       progressNotifier?.value = "正在处理图片文件...";
-      
-      // 分批处理图片文件，避免同时处理过多文件
       const int imageBatchSize = 20;
       for (int i = 0; i < imageBoxes.length; i += imageBatchSize) {
         final int end = (i + imageBatchSize < imageBoxes.length) ? i + imageBatchSize : imageBoxes.length;
         final batch = imageBoxes.sublist(i, end);
-        
         await Future.wait(batch.map((imageBox) async {
           Map<String, dynamic> imageBoxCopy = Map<String, dynamic>.from(imageBox);
           String? imagePath = imageBox['image_path'];
-          if (imagePath != null && imagePath.isNotEmpty) {
-            String fileName = p.basename(imagePath);
+          String? imageBoxId = imageBox['id']?.toString();
+          if (imagePath != null && imagePath.isNotEmpty && imageBoxId != null && imageBoxId.isNotEmpty) {
+            String ext = p.extension(imagePath);
+            String originalFileName = p.basenameWithoutExtension(imagePath);
+            String fileName = safeFileName(imageBoxId + '_' + originalFileName, ext);
             imageBoxCopy['imageFileName'] = fileName;
-            
-            // 复制图片文件
             File imageFile = File(imagePath);
             if (await imageFile.exists()) {
               String relativePath = 'images/$fileName';
               await Directory('$tempDirPath/images').create(recursive: true);
-              
-              // 对于大文件使用流式复制
               final fileSize = await imageFile.length();
-              if (fileSize > 10 * 1024 * 1024) { // >10MB
+              if (fileSize > 10 * 1024 * 1024) {
                 final sourceStream = imageFile.openRead();
                 final targetSink = File('$tempDirPath/$relativePath').openWrite();
                 await sourceStream.pipe(targetSink);
@@ -964,7 +987,6 @@ class DatabaseService {
               } else {
                 await imageFile.copy('$tempDirPath/$relativePath');
               }
-              
               print('已导出图片框图片: $relativePath');
             } else {
               print('警告：图片文件不存在: $imagePath');
@@ -972,10 +994,8 @@ class DatabaseService {
           }
           imageBoxesToExport.add(imageBoxCopy);
         }));
-        
         progressNotifier?.value = "正在处理图片文件: ${i + batch.length}/${imageBoxes.length}";
       }
-      
       tableData['image_boxes'] = imageBoxesToExport;
 
       // 处理目录设置和背景图片
@@ -1031,9 +1051,9 @@ class DatabaseService {
       // 处理音频框数据和音频文件 - 分批处理优化
       List<Map<String, dynamic>> audioBoxes = tableData['audio_boxes'] ?? [];
       List<Map<String, dynamic>> audioBoxesToExport = [];
+      List<String> missingAudioFiles = [];
       progressNotifier?.value = "正在处理音频文件...";
-      // 分批处理音频文件，避免同时处理过多文件
-      const int audioBatchSize = 10; // 音频文件通常较大，减少批次大小
+      const int audioBatchSize = 10;
       for (int i = 0; i < audioBoxes.length; i += audioBatchSize) {
         final int end = (i + audioBatchSize < audioBoxes.length) ? i + audioBatchSize : audioBoxes.length;
         final batch = audioBoxes.sublist(i, end);
@@ -1043,16 +1063,15 @@ class DatabaseService {
           String? audioBoxId = audioBox['id']?.toString();
           if (audioPath != null && audioPath.isNotEmpty && audioBoxId != null && audioBoxId.isNotEmpty) {
             String ext = p.extension(audioPath);
-            String fileName = audioBoxId + ext;
+            String originalFileName = p.basenameWithoutExtension(audioPath);
+            String fileName = safeFileName(audioBoxId + '_' + originalFileName, ext);
             audioBoxCopy['audioFileName'] = fileName;
-            // 复制音频文件
             File audioFile = File(audioPath);
             if (await audioFile.exists()) {
               String relativePath = 'audios/$fileName';
               await Directory('$tempDirPath/audios').create(recursive: true);
-              // 对于大文件使用流式复制
               final fileSize = await audioFile.length();
-              if (fileSize > 5 * 1024 * 1024) { // >5MB
+              if (fileSize > 5 * 1024 * 1024) {
                 final sourceStream = audioFile.openRead();
                 final targetSink = File('$tempDirPath/$relativePath').openWrite();
                 await sourceStream.pipe(targetSink);
@@ -1063,6 +1082,7 @@ class DatabaseService {
               print('已导出音频文件: $relativePath');
             } else {
               print('警告：音频文件不存在: $audioPath');
+              missingAudioFiles.add(audioPath);
             }
           }
           audioBoxesToExport.add(audioBoxCopy);
@@ -1070,6 +1090,17 @@ class DatabaseService {
         progressNotifier?.value = "正在处理音频文件: "+(i + batch.length).toString()+"/"+audioBoxes.length.toString();
       }
       tableData['audio_boxes'] = audioBoxesToExport;
+
+      // 写入丢失音频文件列表到missing_audio_files.txt
+      if (missingAudioFiles.isNotEmpty) {
+        final File missingFile = File('$tempDirPath/missing_audio_files.txt');
+        await missingFile.writeAsString(missingAudioFiles.join('\n'));
+        print('[导出] 丢失音频文件数量: ${missingAudioFiles.length}');
+        print('[导出] 丢失音频文件列表:');
+        for (final f in missingAudioFiles) {
+          print('  - ' + f);
+        }
+      }
 
       // 将数据库表数据保存为JSON文件 - 分批序列化优化
       progressNotifier?.value = "正在生成数据文件...";
@@ -1129,62 +1160,45 @@ class DatabaseService {
       }
       progressNotifier?.value = "正在创建压缩文件...";
       
-      // 创建ZIP文件 - 使用流式压缩
+      // 创建ZIP文件 - 使用流式ZipEncoder递归打包所有文件，彻底解决嵌套目录丢失问题
       final String timestamp = DateTime.now().toString().replaceAll(RegExp(r'[^0-9]'), '');
       final String zipPath = '$backupPath/directory_backup_$timestamp.zip';
-      final encoder = ZipFileEncoder();
-      encoder.create(zipPath);
-      
-      // 先单独添加directory_data.json到ZIP根目录
-      print('[导出] 添加到ZIP: directory_data.json');
-      await encoder.addFile(dbDataFile, 'directory_data.json');
-      
-      // 分批添加其他文件到ZIP，跳过directory_data.json
-      final List<FileSystemEntity> allFiles = await Directory(tempDirPath)
-          .list(recursive: true)
-          .where((entity) => entity is File && entity.path != dbDataFile.path)
-          .toList();
-      
-      for (int i = 0; i < allFiles.length; i++) {
-        final file = allFiles[i] as File;
-        final relativePath = p.relative(file.path, from: tempDirPath);
-        print('[导出] 添加到ZIP: ' + relativePath);
-        // 对于大文件使用流式添加
-        final fileSize = await file.length();
-        if (fileSize > 50 * 1024 * 1024) { // >50MB
-          await encoder.addFile(file, relativePath);
-        } else {
-          encoder.addFile(file, relativePath);
-        }
-        if (i % 10 == 0) {
-          progressNotifier?.value = "正在压缩文件: ${i + 1}/${allFiles.length}";
+      final tempDirEntity = Directory(tempDirPath);
+      final archive = Archive();
+      // 递归添加所有文件到archive
+      await for (final entity in tempDirEntity.list(recursive: true, followLinks: false)) {
+        if (entity is File) {
+          final relativePath = p.relative(entity.path, from: tempDirPath);
+          final fileBytes = await entity.readAsBytes();
+          archive.addFile(ArchiveFile(relativePath, fileBytes.length, fileBytes));
+          print('[导出] 添加到ZIP: $relativePath');
         }
       }
-      
-      encoder.close();
-      
-      // 新增：压缩后校验ZIP包内容
+      // 写入ZIP文件
+      final zipFile = File(zipPath);
+      await zipFile.writeAsBytes(ZipEncoder().encode(archive)!);
+      print('[导出] ZIP文件写入完成: $zipPath');
+      // 压缩后校验ZIP包内容和音频/图片文件数量
       final archiveCheck = ZipDecoder().decodeBytes(await File(zipPath).readAsBytes());
-      bool found = false;
-      for (final file in archiveCheck) {
-        if (file.name == 'directory_data.json') {
-          found = true;
-          break;
-        }
+      // 校验图片文件数量
+      int imageBoxCount = imageBoxesToExport.length;
+      int zipImageCount = archiveCheck.where((file) => file.name.startsWith('images/') && !file.isDirectory).length;
+      if (imageBoxCount != zipImageCount) {
+        throw Exception('导出失败：图片文件数量不一致，数据库图片框$imageBoxCount个，ZIP包内$zipImageCount个，请联系开发者排查。');
       }
-      if (!found) {
-        throw Exception('导出失败：ZIP包中未包含directory_data.json数据文件');
+      // 校验音频文件数量
+      int audioBoxCount = audioBoxesToExport.length;
+      int zipAudioCount = archiveCheck.where((file) => file.name.startsWith('audios/') && !file.isDirectory).length;
+      if (audioBoxCount != zipAudioCount) {
+        throw Exception('导出失败：音频文件数量不一致，数据库音频框$audioBoxCount个，ZIP包内$zipAudioCount个，请联系开发者排查。');
       }
-
       // 清理临时目录
       progressNotifier?.value = "正在清理临时文件...";
       try {
         await tempDir.delete(recursive: true);
       } catch (e) {
         print('警告：清理临时目录失败: $e');
-        // 不影响主要功能，继续执行
       }
-
       progressNotifier?.value = "导出完成";
       print('目录数据导出完成，ZIP文件路径: $zipPath');
       return zipPath;
