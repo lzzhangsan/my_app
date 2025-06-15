@@ -598,30 +598,45 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
   }
 
   void _duplicateImageBox(String id) {
-    setState(() {
-      int index = _imageBoxes.indexWhere((imageBox) => imageBox['id'] == id);
-      if (index != -1) {
-        var uuid = Uuid();
-        Map<String, dynamic> original = _imageBoxes[index];
-        Map<String, dynamic> newImageBox = {
-          'id': uuid.v4(),
-          'documentName': widget.documentName,
-          'positionX': original['positionX'] + 20,
-          'positionY': original['positionY'] + 20,
-          'width': original['width'],
-          'height': original['height'],
-          'imagePath': original['imagePath'],
-        };
-        if (_databaseService.validateImageBoxData(newImageBox)) {
-          _imageBoxes.add(newImageBox);
-          _saveContent();
-          _saveStateToHistory();
-        } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('图片框数据无效，无法复制。')),
-          );
+    Future.microtask(() {
+      setState(() {
+        int index = _imageBoxes.indexWhere((imageBox) => imageBox['id'] == id);
+        if (index != -1) {
+          var uuid = Uuid();
+          Map<String, dynamic> original = _imageBoxes[index];
+          // 获取 document_id
+          final documentId = original['document_id'] ?? original['documentId'] ?? null;
+          // 复制时必须保证 imagePath 有效
+          if (original['imagePath'] == null || original['imagePath'].toString().isEmpty) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('图片框无图片，无法复制。')),
+            );
+            return;
+          }
+          Map<String, dynamic> newImageBox = {
+            'id': uuid.v4(),
+            'document_id': documentId,
+            'documentName': widget.documentName,
+            'position_x': (original['positionX'] ?? 0.0) + 20,
+            'position_y': (original['positionY'] ?? 0.0) + 20,
+            'positionX': (original['positionX'] ?? 0.0) + 20,
+            'positionY': (original['positionY'] ?? 0.0) + 20,
+            'width': original['width'],
+            'height': original['height'],
+            'image_path': original['imagePath'],
+            'imagePath': original['imagePath'],
+          };
+          if (_databaseService.validateImageBoxData(newImageBox)) {
+            _imageBoxes.add(newImageBox);
+            Future.microtask(() => _saveContent());
+            Future.microtask(() => _saveStateToHistory());
+          } else {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('图片框数据无效，无法复制。')),
+            );
+          }
         }
-      }
+      });
     });
   }
 
@@ -1146,7 +1161,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
                 child: Stack(
                   key: ValueKey('content_stack'),
                   children: [
-                    ..._imageBoxes.map<Widget>((data) {
+                    ...List<Map<String, dynamic>>.from(_imageBoxes).map<Widget>((data) {
                       return Positioned(
                         key: ValueKey(data['id']),
                         left: data['positionX'],

@@ -2035,7 +2035,7 @@ class DatabaseService {
         
         // 处理图片框和图片文件
         List<dynamic> imageBoxes = importData['image_boxes'] ?? [];
-        for (var imageBox in imageBoxes) {
+        for (var imageBox in List.from(imageBoxes)) {
           Map<String, dynamic> imageBoxData = Map<String, dynamic>.from(imageBox);
           String newImageBoxId = const Uuid().v4();
           imageBoxData['id'] = newImageBoxId;
@@ -2320,7 +2320,7 @@ class DatabaseService {
         whereArgs: [sourceId]
       );
       
-      for (var imageBox in imageBoxes) {
+      for (var imageBox in List.from(imageBoxes)) {
         Map<String, dynamic> newImageBox = Map<String, dynamic>.from(imageBox);
         newImageBox.remove('id');
         newImageBox['document_id'] = newDocId;
@@ -3247,7 +3247,7 @@ class DatabaseService {
         );
         
         // Insert new image boxes
-        for (var imageBox in imageBoxes) {
+        for (var imageBox in List.from(imageBoxes)) {
           final data = Map<String, dynamic>.from(imageBox);
           // Remove old field if exists
           data.remove('documentName');
