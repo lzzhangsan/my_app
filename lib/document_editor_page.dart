@@ -481,8 +481,10 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
       
       // 如果已有文本框，找到最下方的文本框
       if (_textBoxes.isNotEmpty) {
+        // 创建列表副本进行迭代，避免并发修改错误
+        List<Map<String, dynamic>> textBoxesCopy = List.from(_textBoxes);
         // 找到Y坐标最大的文本框（最下方的文本框）
-        Map<String, dynamic> bottomMostTextBox = _textBoxes.reduce((curr, next) {
+        Map<String, dynamic> bottomMostTextBox = textBoxesCopy.reduce((curr, next) {
           return (curr['positionY'] + curr['height'] > next['positionY'] + next['height']) ? curr : next;
         });
         
@@ -578,8 +580,10 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
         
         // 如果已有文本框，找到最下方的文本框
         if (_textBoxes.isNotEmpty) {
+          // 创建列表副本进行迭代，避免并发修改错误
+          List<Map<String, dynamic>> textBoxesCopy = List.from(_textBoxes);
           // 找到Y坐标最大的文本框（最下方的文本框）
-          Map<String, dynamic> bottomMostTextBox = _textBoxes.reduce((curr, next) {
+          Map<String, dynamic> bottomMostTextBox = textBoxesCopy.reduce((curr, next) {
             return (curr['positionY'] + curr['height'] > next['positionY'] + next['height']) ? curr : next;
           });
           
