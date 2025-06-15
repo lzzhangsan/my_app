@@ -1025,8 +1025,50 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
   }
 
   @override
+  // ...
+  // 计算所有内容框中最下方的位置
+  double _calculateBottomMostPosition() {
+    double maxBottom = 0.0;
+    
+    // 检查所有文本框
+    for (var textBox in _textBoxes) {
+      double bottom = (textBox['positionY'] as double) + (textBox['height'] as double);
+      if (bottom > maxBottom) {
+        maxBottom = bottom;
+      }
+    }
+    
+    // 检查所有图片框
+    for (var imageBox in _imageBoxes) {
+      double bottom = (imageBox['positionY'] as double) + (imageBox['height'] as double);
+      if (bottom > maxBottom) {
+        maxBottom = bottom;
+      }
+    }
+    
+    // 检查所有音频框
+    for (var audioBox in _audioBoxes) {
+      // 音频框假设高度为56.0
+      double bottom = (audioBox['positionY'] as double) + 56.0;
+      if (bottom > maxBottom) {
+        maxBottom = bottom;
+      }
+    }
+    
+    return maxBottom;
+  }
+
+  @override
   Widget build(BuildContext context) {
-    double totalHeight = MediaQuery.of(context).size.height * 30;
+    // 计算最下方内容的位置
+    double bottomMostPosition = _calculateBottomMostPosition();
+    // 设置文档高度为最下方内容位置加上一个屏幕的高度
+    double screenHeight = MediaQuery.of(context).size.height;
+    double totalHeight = bottomMostPosition + screenHeight;
+    
+    // 确保总高度至少为屏幕高度的两倍
+    totalHeight = totalHeight < screenHeight * 2 ? screenHeight * 2 : totalHeight;
+    
     if (_isLoading) {
       return Scaffold(
         body: Center(
