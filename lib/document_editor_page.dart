@@ -432,13 +432,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
   Future<void> _saveContent() async {
     try {
       print('正在保存文档内容...');
-
-      await _databaseService.saveTextBoxes(_textBoxes, widget.documentName);
-
-      await _databaseService.saveImageBoxes(_imageBoxes, widget.documentName);
-
-      await _databaseService.saveAudioBoxes(_audioBoxes, widget.documentName);
-
+      await _databaseService.saveTextBoxes(List<Map<String, dynamic>>.from(_textBoxes), widget.documentName);
+      await _databaseService.saveImageBoxes(List<Map<String, dynamic>>.from(_imageBoxes), widget.documentName);
+      await _databaseService.saveAudioBoxes(List<Map<String, dynamic>>.from(_audioBoxes), widget.documentName);
       if (mounted) {
         setState(() {
           _contentChanged = false;
@@ -446,20 +442,16 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
       } else {
         _contentChanged = false;
       }
-
-      widget.onSave(_textBoxes);
-
+      widget.onSave(List<Map<String, dynamic>>.from(_textBoxes));
       try {
         await _databaseService.backupDatabase();
       } catch (e) {
         print('保存内容时数据库备份出错: $e');
       }
-
       print('文档内容已保存');
     } catch (e) {
       print('保存内容时出错: $e');
       print('堆栈跟踪: $e');
-
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -472,49 +464,41 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
   }
 
   void _addNewTextBox() {
-    setState(() {
-      var uuid = Uuid();
-      
-      // 计算新文本框的位置
-      double positionX = 0.0; // 始终靠左对齐
-      double positionY = 0.0; // 默认值为左上角
-      
-      // 如果已有文本框，找到最下方的文本框
-      if (_textBoxes.isNotEmpty) {
-        // 创建列表副本进行迭代，避免并发修改错误
-        List<Map<String, dynamic>> textBoxesCopy = List.from(_textBoxes);
-        // 找到Y坐标最大的文本框（最下方的文本框）
-        Map<String, dynamic> bottomMostTextBox = textBoxesCopy.reduce((curr, next) {
-          return (curr['positionY'] + curr['height'] > next['positionY'] + next['height']) ? curr : next;
-        });
-        
-        // 计算新位置：在最下方文本框下方2mm处
-        // 将2mm转换为像素（假设1mm约等于3.779527559像素）
-        double spacing = 2 * 3.779527559;
-        positionY = bottomMostTextBox['positionY'] + bottomMostTextBox['height'] + spacing;
-      }
-      
-      Map<String, dynamic> newTextBox = {
-        'id': uuid.v4(),
-        'documentName': widget.documentName,
-        'positionX': positionX,
-        'positionY': positionY,
-        'width': 200.0,
-        'height': 100.0,
-        'text': '',
-        'fontSize': 16.0,
-        'fontColor': Colors.black.value,
-      };
-      if (_databaseService.validateTextBoxData(newTextBox)) {
-        _textBoxes.add(newTextBox);
-        _contentChanged = true;
-        _saveContent();
-        _saveStateToHistory();
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('文本框数据无效，无法添加。')),
-        );
-      }
+    Future.microtask(() {
+      setState(() {
+        var uuid = Uuid();
+        double positionX = 0.0;
+        double positionY = 0.0;
+        if (_textBoxes.isNotEmpty) {
+          List<Map<String, dynamic>> textBoxesCopy = List.from(_textBoxes);
+          Map<String, dynamic> bottomMostTextBox = textBoxesCopy.reduce((curr, next) {
+            return (curr['positionY'] + curr['height'] > next['positionY'] + next['height']) ? curr : next;
+          });
+          double spacing = 2.5 * 3.779527559;
+          positionY = bottomMostTextBox['positionY'] + bottomMostTextBox['height'] + spacing;
+        }
+        Map<String, dynamic> newTextBox = {
+          'id': uuid.v4(),
+          'documentName': widget.documentName,
+          'positionX': positionX,
+          'positionY': positionY,
+          'width': 200.0,
+          'height': 100.0,
+          'text': '',
+          'fontSize': 16.0,
+          'fontColor': Colors.black.value,
+        };
+        if (_databaseService.validateTextBoxData(newTextBox)) {
+          _textBoxes.add(newTextBox);
+          _contentChanged = true;
+          Future.microtask(() => _saveContent());
+          Future.microtask(() => _saveStateToHistory());
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('文本框数据无效，无法添加。')),
+          );
+        }
+      });
     });
   }
 
@@ -568,56 +552,48 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
   }
 
   void _duplicateTextBox(String id) {
-    setState(() {
-      int index = _textBoxes.indexWhere((textBox) => textBox['id'] == id);
-      if (index != -1) {
-        var uuid = Uuid();
-        Map<String, dynamic> original = _textBoxes[index];
-        
-        // 计算新文本框的位置
-        double positionX = 0.0; // 始终靠左对齐
-        double positionY = 0.0; // 默认值为左上角
-        
-        // 如果已有文本框，找到最下方的文本框
-        if (_textBoxes.isNotEmpty) {
-          // 创建列表副本进行迭代，避免并发修改错误
-          List<Map<String, dynamic>> textBoxesCopy = List.from(_textBoxes);
-          // 找到Y坐标最大的文本框（最下方的文本框）
-          Map<String, dynamic> bottomMostTextBox = textBoxesCopy.reduce((curr, next) {
-            return (curr['positionY'] + curr['height'] > next['positionY'] + next['height']) ? curr : next;
-          });
-          
-          // 计算新位置：在最下方文本框下方2mm处
-          // 将2mm转换为像素（假设1mm约等于3.779527559像素）
-          double spacing = 2 * 3.779527559;
-          positionY = bottomMostTextBox['positionY'] + bottomMostTextBox['height'] + spacing;
+    Future.microtask(() {
+      setState(() {
+        int index = _textBoxes.indexWhere((textBox) => textBox['id'] == id);
+        if (index != -1) {
+          var uuid = Uuid();
+          Map<String, dynamic> original = _textBoxes[index];
+          double positionX = 0.0;
+          double positionY = 0.0;
+          if (_textBoxes.isNotEmpty) {
+            List<Map<String, dynamic>> textBoxesCopy = List.from(_textBoxes);
+            Map<String, dynamic> bottomMostTextBox = textBoxesCopy.reduce((curr, next) {
+              return (curr['positionY'] + curr['height'] > next['positionY'] + next['height']) ? curr : next;
+            });
+            double spacing = 2.5 * 3.779527559;
+            positionY = bottomMostTextBox['positionY'] + bottomMostTextBox['height'] + spacing;
+          }
+          Map<String, dynamic> newTextBox = {
+            'id': uuid.v4(),
+            'documentName': widget.documentName,
+            'positionX': positionX,
+            'positionY': positionY,
+            'width': original['width'],
+            'height': original['height'],
+            'text': original['text'],
+            'fontSize': original['fontSize'],
+            'fontColor': original['fontColor'],
+            'fontWeight': original['fontWeight'],
+            'isItalic': original['isItalic'],
+            'backgroundColor': original['backgroundColor'],
+            'textAlign': original['textAlign'],
+          };
+          if (_databaseService.validateTextBoxData(newTextBox)) {
+            _textBoxes.add(newTextBox);
+            Future.microtask(() => _saveContent());
+            Future.microtask(() => _saveStateToHistory());
+          } else {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('文本框数据无效，无法复制。')),
+            );
+          }
         }
-        
-        Map<String, dynamic> newTextBox = {
-          'id': uuid.v4(),
-          'documentName': widget.documentName,
-          'positionX': positionX,
-          'positionY': positionY,
-          'width': original['width'],
-          'height': original['height'],
-          'text': original['text'],
-          'fontSize': original['fontSize'],
-          'fontColor': original['fontColor'],
-          'fontWeight': original['fontWeight'],
-          'isItalic': original['isItalic'],
-          'backgroundColor': original['backgroundColor'],
-          'textAlign': original['textAlign'],
-        };
-        if (_databaseService.validateTextBoxData(newTextBox)) {
-          _textBoxes.add(newTextBox);
-          _saveContent();
-          _saveStateToHistory();
-        } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('文本框数据无效，无法复制。')),
-          );
-        }
-      }
+      });
     });
   }
 
@@ -945,24 +921,17 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
   Future<void> _saveContentOnDispose() async {
     try {
       print('正在保存文档内容...');
-
-      await _databaseService.saveTextBoxes(_textBoxes, widget.documentName);
-
-      await _databaseService.saveImageBoxes(_imageBoxes, widget.documentName);
-
-      await _databaseService.saveAudioBoxes(_audioBoxes, widget.documentName);
-
+      await _databaseService.saveTextBoxes(List<Map<String, dynamic>>.from(_textBoxes), widget.documentName);
+      await _databaseService.saveImageBoxes(List<Map<String, dynamic>>.from(_imageBoxes), widget.documentName);
+      await _databaseService.saveAudioBoxes(List<Map<String, dynamic>>.from(_audioBoxes), widget.documentName);
       // 不调用setState，因为页面已经销毁
       _contentChanged = false;
-
-      widget.onSave(_textBoxes);
-
+      widget.onSave(List<Map<String, dynamic>>.from(_textBoxes));
       try {
         await _databaseService.backupDatabase();
       } catch (e) {
         print('保存内容时数据库备份出错: $e');
       }
-
       print('文档内容已保存');
     } catch (e) {
       print('保存内容时出错: $e');
@@ -1223,7 +1192,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
                         ),
                       );
                     }),
-                    ..._textBoxes.map<Widget>((data) {
+                    ...List<Map<String, dynamic>>.from(_textBoxes).map<Widget>((data) {
                       return Positioned(
                         key: ValueKey(data['id']),
                         left: data['positionX'],
@@ -1446,24 +1415,30 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
       initialText: data['text']?.toString() ?? '',
       initialTextStyle: customTextStyle,
       onSave: (size, text, textStyle) {
-        _updateTextBox(
-          data['id'],
-          size,
-          text,
-          textStyle,
-        );
-        _saveContent();
-        _saveStateToHistory();
+        Future.microtask(() {
+          _updateTextBox(
+            data['id'],
+            size,
+            text,
+            textStyle,
+          );
+          _saveContent();
+          _saveStateToHistory();
+        });
       },
       onDeleteCurrent: () {
-        _deleteTextBox(data['id']);
-        _saveContent();
-        _saveStateToHistory();
+        Future.microtask(() {
+          _deleteTextBox(data['id']);
+          _saveContent();
+          _saveStateToHistory();
+        });
       },
       onDuplicateCurrent: () {
-        _duplicateTextBox(data['id']);
-        _saveContent();
-        _saveStateToHistory();
+        Future.microtask(() {
+          _duplicateTextBox(data['id']);
+          _saveContent();
+          _saveStateToHistory();
+        });
       },
       globalEnhanceMode: _textEnhanceMode,
     );

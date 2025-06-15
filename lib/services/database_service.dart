@@ -1977,11 +1977,59 @@ class DatabaseService {
         
         // 处理文本框
         List<dynamic> textBoxes = importData['text_boxes'] ?? [];
-        for (var textBox in textBoxes) {
-          Map<String, dynamic> textBoxData = Map<String, dynamic>.from(textBox);
-          textBoxData['id'] = const Uuid().v4();
-          textBoxData['document_id'] = newDocumentId;
-          await txn.insert('text_boxes', textBoxData);
+        for (var textBox in List.from(textBoxes)) {
+          if (validateTextBoxData(textBox)) {
+            final data = Map<String, dynamic>.from(textBox);
+            // Remove old field if exists
+            data.remove('documentName');
+            data['document_id'] = newDocumentId;
+            data['created_at'] = DateTime.now().millisecondsSinceEpoch;
+            data['updated_at'] = DateTime.now().millisecondsSinceEpoch;
+            
+            // Convert field names to match database schema
+            if (data.containsKey('positionX')) {
+              data['position_x'] = data.remove('positionX');
+            }
+            if (data.containsKey('positionY')) {
+              data['position_y'] = data.remove('positionY');
+            }
+            if (data.containsKey('text')) {
+              data['content'] = data.remove('text');
+            }
+            if (data.containsKey('fontSize')) {
+              data['font_size'] = data.remove('fontSize');
+            }
+            if (data.containsKey('fontColor')) {
+              data['font_color'] = data.remove('fontColor');
+            }
+            if (data.containsKey('fontFamily')) {
+              data['font_family'] = data.remove('fontFamily');
+            }
+            if (data.containsKey('fontWeight')) {
+              data['font_weight'] = data.remove('fontWeight');
+            }
+            if (data.containsKey('isItalic')) {
+              data['is_italic'] = data.remove('isItalic');
+            }
+            if (data.containsKey('isUnderlined')) {
+              data['is_underlined'] = data.remove('isUnderlined');
+            }
+            if (data.containsKey('isStrikeThrough')) {
+              data['is_strike_through'] = data.remove('isStrikeThrough');
+            }
+            if (data.containsKey('backgroundColor')) {
+              data['background_color'] = data.remove('backgroundColor');
+            }
+            if (data.containsKey('textAlign')) {
+              data['text_align'] = data.remove('textAlign');
+            }
+            
+            await txn.insert(
+              'text_boxes',
+              data,
+              conflictAlgorithm: ConflictAlgorithm.replace,
+            );
+          }
         }
         print('已导入 ${textBoxes.length} 个文本框');
         
@@ -2256,7 +2304,7 @@ class DatabaseService {
         whereArgs: [sourceId]
       );
       
-      for (var textBox in textBoxes) {
+      for (var textBox in List.from(textBoxes)) {
         Map<String, dynamic> newTextBox = Map<String, dynamic>.from(textBox);
         newTextBox.remove('id');
         newTextBox['document_id'] = newDocId;
@@ -2436,7 +2484,7 @@ class DatabaseService {
         whereArgs: [templateId]
       );
       
-      for (var textBox in textBoxes) {
+      for (var textBox in List.from(textBoxes)) {
         Map<String, dynamic> newTextBox = Map<String, dynamic>.from(textBox);
         newTextBox.remove('id');
         newTextBox['document_id'] = newDocId;
@@ -3110,7 +3158,7 @@ class DatabaseService {
         );
         
         // Insert new text boxes
-        for (var textBox in textBoxes) {
+        for (var textBox in List.from(textBoxes)) {
           if (validateTextBoxData(textBox)) {
             final data = Map<String, dynamic>.from(textBox);
             // Remove old field if exists
