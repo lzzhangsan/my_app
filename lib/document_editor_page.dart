@@ -488,9 +488,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
           return (curr['positionY'] + curr['height'] > next['positionY'] + next['height']) ? curr : next;
         });
         
-        // 计算新位置：在最下方文本框下方1.5mm处
-        // 将1.5mm转换为像素（假设1mm约等于3.779527559像素）
-        double spacing = 1.5 * 3.779527559;
+        // 计算新位置：在最下方文本框下方2mm处
+        // 将2mm转换为像素（假设1mm约等于3.779527559像素）
+        double spacing = 2 * 3.779527559;
         positionY = bottomMostTextBox['positionY'] + bottomMostTextBox['height'] + spacing;
       }
       
@@ -587,9 +587,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
             return (curr['positionY'] + curr['height'] > next['positionY'] + next['height']) ? curr : next;
           });
           
-          // 计算新位置：在最下方文本框下方1.5mm处
-          // 将1.5mm转换为像素（假设1mm约等于3.779527559像素）
-          double spacing = 1.5 * 3.779527559;
+          // 计算新位置：在最下方文本框下方2mm处
+          // 将2mm转换为像素（假设1mm约等于3.779527559像素）
+          double spacing = 2 * 3.779527559;
           positionY = bottomMostTextBox['positionY'] + bottomMostTextBox['height'] + spacing;
         }
         
