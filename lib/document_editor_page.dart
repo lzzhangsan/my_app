@@ -474,14 +474,29 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
   void _addNewTextBox() {
     setState(() {
       var uuid = Uuid();
-      double screenWidth = MediaQuery.of(context).size.width;
-      double screenHeight = MediaQuery.of(context).size.height;
-      double scrollOffset = _scrollController.offset;
+      
+      // 计算新文本框的位置
+      double positionX = 0.0; // 始终靠左对齐
+      double positionY = 0.0; // 默认值为左上角
+      
+      // 如果已有文本框，找到最下方的文本框
+      if (_textBoxes.isNotEmpty) {
+        // 找到Y坐标最大的文本框（最下方的文本框）
+        Map<String, dynamic> bottomMostTextBox = _textBoxes.reduce((curr, next) {
+          return (curr['positionY'] + curr['height'] > next['positionY'] + next['height']) ? curr : next;
+        });
+        
+        // 计算新位置：在最下方文本框下方1.5mm处
+        // 将1.5mm转换为像素（假设1mm约等于3.779527559像素）
+        double spacing = 1.5 * 3.779527559;
+        positionY = bottomMostTextBox['positionY'] + bottomMostTextBox['height'] + spacing;
+      }
+      
       Map<String, dynamic> newTextBox = {
         'id': uuid.v4(),
         'documentName': widget.documentName,
-        'positionX': screenWidth / 2 - 100,
-        'positionY': scrollOffset + screenHeight / 2 - 50,
+        'positionX': positionX,
+        'positionY': positionY,
         'width': 200.0,
         'height': 100.0,
         'text': '',
@@ -556,11 +571,29 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
       if (index != -1) {
         var uuid = Uuid();
         Map<String, dynamic> original = _textBoxes[index];
+        
+        // 计算新文本框的位置
+        double positionX = 0.0; // 始终靠左对齐
+        double positionY = 0.0; // 默认值为左上角
+        
+        // 如果已有文本框，找到最下方的文本框
+        if (_textBoxes.isNotEmpty) {
+          // 找到Y坐标最大的文本框（最下方的文本框）
+          Map<String, dynamic> bottomMostTextBox = _textBoxes.reduce((curr, next) {
+            return (curr['positionY'] + curr['height'] > next['positionY'] + next['height']) ? curr : next;
+          });
+          
+          // 计算新位置：在最下方文本框下方1.5mm处
+          // 将1.5mm转换为像素（假设1mm约等于3.779527559像素）
+          double spacing = 1.5 * 3.779527559;
+          positionY = bottomMostTextBox['positionY'] + bottomMostTextBox['height'] + spacing;
+        }
+        
         Map<String, dynamic> newTextBox = {
           'id': uuid.v4(),
           'documentName': widget.documentName,
-          'positionX': original['positionX'] + 20,
-          'positionY': original['positionY'] + 20,
+          'positionX': positionX,
+          'positionY': positionY,
           'width': original['width'],
           'height': original['height'],
           'text': original['text'],
