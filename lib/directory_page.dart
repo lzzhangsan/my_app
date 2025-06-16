@@ -27,6 +27,23 @@ class DirectoryPage extends StatefulWidget {
 }
 
 class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserver {
+  // 判断folderName是否是targetFolderName的子文件夹
+  bool _isChildFolder(String folderName, String targetFolderName, List<DirectoryItem> folders) {
+    DirectoryItem? current = folders.firstWhere(
+      (f) => f.name == targetFolderName,
+      orElse: () => DirectoryItem(name: '', type: ItemType.folder, order: 0, isTemplate: false),
+    );
+    while (current != null && current.name != '') {
+      if (current.name == folderName) return true;
+      final parentName = current.parentFolder ?? '';
+      if (parentName == '') break;
+      current = folders.firstWhere(
+        (f) => f.name == parentName,
+        orElse: () => DirectoryItem(name: '', type: ItemType.folder, order: 0, isTemplate: false),
+      );
+    }
+    return false;
+  }
 
   void _showWebUnsupportedDialog() {
     if (!mounted || !kIsWeb) return; // Also check kIsWeb to be sure
@@ -601,6 +618,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
           type: ItemType.folder,
           order: folder['order_index'] ?? 0,
           isTemplate: false,
+          parentFolder: folder['parent_folder'],
           isSelected: false,
         ));
       }
@@ -620,6 +638,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
           type: ItemType.document,
           order: document['order_index'] ?? 0,
           isTemplate: document['is_template'] == 1,
+          parentFolder: document['parent_folder'],
           isSelected: false,
         ));
       }
@@ -2164,8 +2183,12 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
                     if (item.type == ItemType.folder) {
                       return DragTarget<DirectoryItem>(
                         onWillAccept: (draggedItem) {
-                          if (draggedItem?.type == ItemType.folder && draggedItem?.name == item.name) {
-                            return false;
+                          if (draggedItem == null) return false;
+                          if (draggedItem.type == ItemType.folder && draggedItem.name == item.name) return false;
+                          if (draggedItem.type == ItemType.folder) {
+                            final folders = _items.where((i) => i.type == ItemType.folder).toList();
+                            bool isChild = _isChildFolder(draggedItem.name, item.name, folders);
+                            if (isChild) return false;
                           }
                           return true;
                         },
@@ -2183,53 +2206,69 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
                           }
                         },
                         builder: (context, candidateItems, rejectedItems) {
-                          return Container(
-                            decoration: BoxDecoration(
-                              color: candidateItems.isNotEmpty 
-                                ? Colors.blue.withOpacity(0.2) 
-                                : null,
-                              borderRadius: BorderRadius.circular(4.0),
-                            ),
-                            child: Icon(
-                              Icons.folder,
-                              size: 40,
-                              color: Color(0xFFFFCA28),
+                          return GestureDetector(
+                            onLongPressStart: (_) {}, // 阻止冒泡到ListTile
+                            child: Draggable<DirectoryItem>(
+                              data: item,
+                              feedback: Material(
+                                elevation: 4.0,
+                                child: Icon(
+                                  Icons.folder,
+                                  size: 40,
+                                  color: Colors.amber,
+                                ),
+                              ),
+                              childWhenDragging: Opacity(
+                                opacity: 0.3,
+                                child: Icon(
+                                  Icons.folder,
+                                  size: 40,
+                                  color: Colors.amber,
+                                ),
+                              ),
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  color: candidateItems.isNotEmpty 
+                                    ? Colors.blue.withOpacity(0.2) 
+                                    : null,
+                                  borderRadius: BorderRadius.circular(4.0),
+                                ),
+                                child: Icon(
+                                  Icons.folder,
+                                  size: 40,
+                                  color: Colors.amber,
+                                ),
+                              ),
                             ),
                           );
                         },
                       );
                     } else {
-                      return Draggable<DirectoryItem>(
-                        data: item,
-                        feedback: Material(
-                          elevation: 4.0,
-                          child: Container(
-                            padding: EdgeInsets.all(8.0),
-                            decoration: BoxDecoration(
-                              color: Colors.white,
-                              borderRadius: BorderRadius.circular(8.0),
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(
-                                  Icons.description,
-                                  size: 24,
-                                  color: Color(0xFF4CAF50),
-                                ),
-                                SizedBox(width: 8.0),
-                                Text(
-                                  item.name,
-                                  style: TextStyle(fontWeight: FontWeight.bold),
-                                ),
-                              ],
+                      return GestureDetector(
+                        onLongPressStart: (_) {}, // 阻止冒泡到ListTile
+                        child: Draggable<DirectoryItem>(
+                          data: item,
+                          feedback: Material(
+                            elevation: 4.0,
+                            child: Icon(
+                              Icons.description,
+                              size: 40,
+                              color: Color(0xFF4CAF50),
                             ),
                           ),
-                        ),
-                        child: Icon(
-                          Icons.description,
-                          size: 40,
-                          color: Color(0xFF4CAF50),
+                          childWhenDragging: Opacity(
+                            opacity: 0.3,
+                            child: Icon(
+                              Icons.description,
+                              size: 40,
+                              color: Color(0xFF4CAF50),
+                            ),
+                          ),
+                          child: Icon(
+                            Icons.description,
+                            size: 40,
+                            color: Color(0xFF4CAF50),
+                          ),
                         ),
                       );
                     }
@@ -2363,6 +2402,7 @@ class DirectoryItem {
   final ItemType type;
   final int order;
   final bool isTemplate;
+  final String? parentFolder;
   double x;
   double y;
   bool isSelected;
@@ -2372,6 +2412,7 @@ class DirectoryItem {
     required this.type,
     required this.order,
     required this.isTemplate,
+    this.parentFolder,
     this.x = 0.0,
     this.y = 0.0,
     this.isSelected = false,
