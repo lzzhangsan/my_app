@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 class VideoPlayerWidget extends StatefulWidget {
   final File file;
   final bool looping;
+  final bool forceManualLoop;
   final VoidCallback? onVideoEnd;
   final VoidCallback? onVideoError;
   final BoxFit fit;
@@ -15,6 +16,7 @@ class VideoPlayerWidget extends StatefulWidget {
   VideoPlayerWidget({
     required this.file,
     this.looping = false,
+    this.forceManualLoop = false,
     this.onVideoEnd,
     this.onVideoError,
     this.fit = BoxFit.contain,
@@ -130,6 +132,12 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
         !widget.looping) {
       _isEnded = true;
       widget.onVideoEnd?.call();
+      if (widget.forceManualLoop) {
+        _controller.seekTo(Duration.zero).then((_) {
+          _controller.play();
+          _isEnded = false;
+        });
+      }
     }
   }
 
@@ -154,7 +162,8 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   void didUpdateWidget(covariant VideoPlayerWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.file.path != widget.file.path ||
-        oldWidget.looping != widget.looping) {
+        oldWidget.looping != widget.looping ||
+        oldWidget.forceManualLoop != widget.forceManualLoop) {
       debugPrint('视频播放器更新: ${oldWidget.file.path} -> ${widget.file.path}');
       _progressTimer?.cancel();
       _chewieController?.dispose();
