@@ -1076,13 +1076,28 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     return _getFolderFullPath(parent, allFolders) + '/' + (folder['name'] as String);
   }
 
-  /// 选择目标文件夹，excludeFolderName为需要排除的文件夹名
-  Future<String?> _selectFolder({String? excludeFolderName}) async {
+  /// 递归获取所有子文件夹id
+  List<String> _getAllSubFolderIds(String folderId, List<Map<String, dynamic>> allFolders) {
+    List<String> result = [];
+    void collect(String id) {
+      for (var f in allFolders) {
+        if (f['parent_folder'] == id) {
+          result.add(f['id'] as String);
+          collect(f['id'] as String);
+        }
+      }
+    }
+    collect(folderId);
+    return result;
+  }
+
+  /// 选择目标文件夹，excludeFolderIds为需要排除的文件夹id列表，showRoot控制是否显示根目录
+  Future<String?> _selectFolder({List<String>? excludeFolderIds, bool showRoot = true}) async {
     try {
       final folders = await getService<DatabaseService>().getAllDirectoryFolders();
-      // 排除指定文件夹
-      final availableFolders = folders.where((folder) => folder['name'] != excludeFolderName).toList();
-      if (availableFolders.isEmpty) {
+      // 排除指定id的文件夹
+      final availableFolders = folders.where((folder) => excludeFolderIds == null || !excludeFolderIds.contains(folder['id'])).toList();
+      if (availableFolders.isEmpty && !showRoot) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('没有可用的目标文件夹')),
@@ -1102,13 +1117,14 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  ListTile(
-                    title: Text('根目录'),
-                    onTap: () {
-                      selectedFolder = '';
-                      Navigator.of(context).pop();
-                    },
-                  ),
+                  if (showRoot)
+                    ListTile(
+                      title: Text('根目录'),
+                      onTap: () {
+                        selectedFolder = '';
+                        Navigator.of(context).pop();
+                      },
+                    ),
                   ...List.generate(availableFolders.length, (i) => ListTile(
                     title: Text(folderPaths[i]),
                     onTap: () {
@@ -1145,13 +1161,25 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
 
   void _moveFolderToFolder(String folderName) async {
     try {
-      final targetFolderName = await _selectFolder();
+      final dbService = getService<DatabaseService>();
+      final folders = await dbService.getAllDirectoryFolders();
+      final currentFolder = folders.firstWhere((f) => f['name'] == folderName, orElse: () => <String, dynamic>{'id': '', 'parent_folder': null, 'name': ''});
+      if (currentFolder['id'] == '') return;
+      // 递归排除自身和所有子文件夹
+      final excludeIds = <String>[currentFolder['id'] as String];
+      excludeIds.addAll(_getAllSubFolderIds(currentFolder['id'] as String, folders));
+      // 排除当前父文件夹
+      if (currentFolder['parent_folder'] != null) {
+        excludeIds.add(currentFolder['parent_folder'] as String);
+      }
+      // 根目录选项仅在当前文件夹不在根目录时显示
+      final showRoot = currentFolder['parent_folder'] != null;
+      final targetFolderName = await _selectFolder(excludeFolderIds: excludeIds, showRoot: showRoot);
       if (targetFolderName == null) return; // 取消时不做任何操作
       if (targetFolderName.isEmpty) {
-        // 移动到根目录
-        await getService<DatabaseService>().updateFolderParentFolder(folderName, null);
+        await dbService.updateFolderParentFolder(folderName, null);
       } else {
-        await getService<DatabaseService>().updateFolderParentFolder(folderName, targetFolderName);
+        await dbService.updateFolderParentFolder(folderName, targetFolderName);
       }
       if (mounted) {
         await _loadData();
@@ -1181,7 +1209,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         final folder = folders.firstWhere((f) => f['id'] == doc['parent_folder'], orElse: () => <String, dynamic>{'name': '', 'parent_folder': null, 'id': ''});
         if (folder['name'] != '') currentFolderName = folder['name'] as String;
       }
-      final targetFolderName = await _selectFolder(excludeFolderName: currentFolderName);
+      final targetFolderName = await _selectFolder(excludeFolderIds: currentFolderName != null ? [currentFolderName] : null);
       if (targetFolderName == null) return; // 取消时不做任何操作
       if (targetFolderName.isEmpty) {
         // 移动到根目录
