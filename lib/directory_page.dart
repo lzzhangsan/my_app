@@ -1065,39 +1065,33 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     }
   }
 
-  Future<String> _selectFolder() async {
+  /// 获取文件夹完整路径
+  String _getFolderFullPath(Map<String, dynamic> folder, List<Map<String, dynamic>> allFolders) {
+    if (folder['parent_folder'] == null) return folder['name'] as String;
+    final parent = allFolders.firstWhere(
+      (f) => f['id'] == folder['parent_folder'],
+      orElse: () => <String, dynamic>{'name': '', 'parent_folder': null, 'id': ''},
+    );
+    if (parent['name'] == '') return folder['name'] as String;
+    return _getFolderFullPath(parent, allFolders) + '/' + (folder['name'] as String);
+  }
+
+  /// 选择目标文件夹，excludeFolderName为需要排除的文件夹名
+  Future<String?> _selectFolder({String? excludeFolderName}) async {
     try {
       final folders = await getService<DatabaseService>().getAllDirectoryFolders();
-      final currentFolder = _currentParentFolder != null 
-          ? folders.firstWhere((f) => f['name'] == _currentParentFolder, orElse: () => {'id': '', 'name': ''})
-          : null;
-      
-      // 过滤掉当前文件夹及其子文件夹
-      final availableFolders = folders.where((folder) {
-        if (currentFolder != null && currentFolder['id'] != '') {
-          // 检查是否为当前文件夹或其子文件夹
-          String? parentId = folder['parent_folder'];
-          while (parentId != null) {
-            if (parentId == currentFolder['id']) return false;
-            final parent = folders.firstWhere(
-              (f) => f['id'] == parentId,
-              orElse: () => {'parent_folder': null},
-            );
-            parentId = parent['parent_folder'];
-          }
-        }
-        return true;
-      }).toList();
-
+      // 排除指定文件夹
+      final availableFolders = folders.where((folder) => folder['name'] != excludeFolderName).toList();
       if (availableFolders.isEmpty) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('没有可用的目标文件夹')),
           );
         }
-        return '';
+        return null;
       }
-
+      // 生成路径映射
+      final folderPaths = availableFolders.map((folder) => _getFolderFullPath(folder, folders)).toList();
       String? selectedFolder;
       await showDialog<void>(
         context: context,
@@ -1115,13 +1109,13 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
                       Navigator.of(context).pop();
                     },
                   ),
-                  ...availableFolders.map((folder) => ListTile(
-                    title: Text(folder['name'] as String),
+                  ...List.generate(availableFolders.length, (i) => ListTile(
+                    title: Text(folderPaths[i]),
                     onTap: () {
-                      selectedFolder = folder['name'] as String;
+                      selectedFolder = availableFolders[i]['name'] as String;
                       Navigator.of(context).pop();
                     },
-                  )).toList(),
+                  )),
                 ],
               ),
             ),
@@ -1129,7 +1123,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
               TextButton(
                 child: Text('取消'),
                 onPressed: () {
-                  selectedFolder = '';
+                  selectedFolder = null;
                   Navigator.of(context).pop();
                 },
               ),
@@ -1137,8 +1131,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
           );
         },
       );
-      
-      return selectedFolder ?? '';
+      return selectedFolder;
     } catch (e) {
       print('Error selecting folder: $e');
       if (mounted) {
@@ -1146,13 +1139,14 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
           SnackBar(content: Text('选择文件夹时出错')),
         );
       }
-      return '';
+      return null;
     }
   }
 
   void _moveFolderToFolder(String folderName) async {
     try {
       final targetFolderName = await _selectFolder();
+      if (targetFolderName == null) return; // 取消时不做任何操作
       if (targetFolderName.isEmpty) {
         // 移动到根目录
         await getService<DatabaseService>().updateFolderParentFolder(folderName, null);
@@ -1177,12 +1171,23 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
 
   void _moveDocumentToFolder(String documentName) async {
     try {
-      final targetFolderName = await _selectFolder();
+      // 获取当前文档信息
+      final dbService = getService<DatabaseService>();
+      final doc = await dbService.getDocumentByName(documentName);
+      String? currentFolderName;
+      if (doc != null && doc['parent_folder'] != null) {
+        // 通过id查找文件夹名
+        final folders = await dbService.getAllDirectoryFolders();
+        final folder = folders.firstWhere((f) => f['id'] == doc['parent_folder'], orElse: () => <String, dynamic>{'name': '', 'parent_folder': null, 'id': ''});
+        if (folder['name'] != '') currentFolderName = folder['name'] as String;
+      }
+      final targetFolderName = await _selectFolder(excludeFolderName: currentFolderName);
+      if (targetFolderName == null) return; // 取消时不做任何操作
       if (targetFolderName.isEmpty) {
         // 移动到根目录
-        await getService<DatabaseService>().updateDocumentParentFolder(documentName, null);
+        await dbService.updateDocumentParentFolder(documentName, null);
       } else {
-        await getService<DatabaseService>().updateDocumentParentFolder(documentName, targetFolderName);
+        await dbService.updateDocumentParentFolder(documentName, targetFolderName);
       }
       if (mounted) {
         await _loadData();
