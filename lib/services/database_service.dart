@@ -796,14 +796,10 @@ class DatabaseService {
   Future<void> updateFolderParentFolder(String folderName, String? newParentFolderName) async {
     try {
       final db = await database;
-      
-      // 获取当前文件夹信息
       final currentFolder = await getFolderByName(folderName);
       if (currentFolder == null) {
         throw Exception('文件夹不存在');
       }
-      
-      // 获取新父文件夹信息
       String? newParentFolderId;
       if (newParentFolderName != null && newParentFolderName.isNotEmpty) {
         final newParentFolder = await getFolderByName(newParentFolderName);
@@ -811,22 +807,16 @@ class DatabaseService {
           throw Exception('目标文件夹不存在');
         }
         newParentFolderId = newParentFolder['id'];
-        
-        // 检查是否会导致循环引用
         if (await _wouldCreateCircularReference(currentFolder['id'], newParentFolderId)) {
           throw Exception('不能将文件夹移动到其子文件夹中');
         }
       }
-      
-      // 获取新父文件夹下的最大顺序号
+      // 文件夹移动到同类末尾
       final List<Map<String, dynamic>> result = await db.rawQuery('''
         SELECT MAX(`order_index`) as maxOrder FROM folders 
         WHERE parent_folder ${newParentFolderId == null ? 'IS NULL' : '= ?'}
       ''', newParentFolderId != null ? [newParentFolderId] : []);
-      
       int newOrder = (result.first['maxOrder'] ?? -1) + 1;
-      
-      // 更新文件夹
       await db.update(
         'folders',
         {
@@ -872,14 +862,10 @@ class DatabaseService {
   Future<void> updateDocumentParentFolder(String documentName, String? newParentFolderName) async {
     try {
       final db = await database;
-      
-      // 获取当前文档信息
       final currentDocument = await getDocumentByName(documentName);
       if (currentDocument == null) {
         throw Exception('文档不存在');
       }
-      
-      // 获取新父文件夹信息
       String? newParentFolderId;
       if (newParentFolderName != null && newParentFolderName.isNotEmpty) {
         final newParentFolder = await getFolderByName(newParentFolderName);
@@ -888,16 +874,18 @@ class DatabaseService {
         }
         newParentFolderId = newParentFolder['id'];
       }
-      
-      // 获取新父文件夹下的最大顺序号
-      final List<Map<String, dynamic>> result = await db.rawQuery('''
+      // 文档移动到同类末尾（所有文档的最大order_index+1，且order_index大于同目录下所有文件夹的最大order_index）
+      final List<Map<String, dynamic>> folderResult = await db.rawQuery('''
+        SELECT MAX(`order_index`) as maxOrder FROM folders 
+        WHERE parent_folder ${newParentFolderId == null ? 'IS NULL' : '= ?'}
+      ''', newParentFolderId != null ? [newParentFolderId] : []);
+      final List<Map<String, dynamic>> docResult = await db.rawQuery('''
         SELECT MAX(`order_index`) as maxOrder FROM documents 
         WHERE parent_folder ${newParentFolderId == null ? 'IS NULL' : '= ?'}
       ''', newParentFolderId != null ? [newParentFolderId] : []);
-      
-      int newOrder = (result.first['maxOrder'] ?? -1) + 1;
-      
-      // 更新文档
+      int folderMax = (folderResult.first['maxOrder'] ?? -1) + 1;
+      int docOrder = (docResult.first['maxOrder'] ?? -1) + 1;
+      int newOrder = folderMax > docOrder ? folderMax : docOrder;
       await db.update(
         'documents',
         {
@@ -2988,11 +2976,18 @@ class DatabaseService {
         final folder = await getFolderByName(parentFolder);
         parentFolderId = folder?['id'];
       }
-      final List<Map<String, dynamic>> result = await db.rawQuery('''
+      // 文档插入到同类末尾（所有文档的最大order_index+1，且order_index大于同目录下所有文件夹的最大order_index）
+      final List<Map<String, dynamic>> folderResult = await db.rawQuery('''
+        SELECT MAX(`order_index`) as maxOrder FROM folders 
+        WHERE parent_folder ${parentFolderId == null ? 'IS NULL' : '= ?'}
+      ''', parentFolderId != null ? [parentFolderId] : []);
+      final List<Map<String, dynamic>> docResult = await db.rawQuery('''
         SELECT MAX(`order_index`) as maxOrder FROM documents 
         WHERE parent_folder ${parentFolderId == null ? 'IS NULL' : '= ?'}
       ''', parentFolderId != null ? [parentFolderId] : []);
-      int order = (result.first['maxOrder'] ?? -1) + 1;
+      int folderMax = (folderResult.first['maxOrder'] ?? -1) + 1;
+      int docOrder = (docResult.first['maxOrder'] ?? -1) + 1;
+      int order = folderMax > docOrder ? folderMax : docOrder;
       await db.insert(
         'documents',
         {
@@ -3032,7 +3027,6 @@ class DatabaseService {
   Future<void> insertFolder(String name, {String? parentFolder, String? position}) async {
     try {
       final db = await database;
-      
       // 获取父文件夹ID
       String? parentFolderId;
       if (parentFolder != null) {
@@ -3042,14 +3036,12 @@ class DatabaseService {
         }
         parentFolderId = folder['id'];
       }
-      
+      // 文件夹插入到同类末尾
       final List<Map<String, dynamic>> result = await db.rawQuery('''
         SELECT MAX(`order_index`) as maxOrder FROM folders 
         WHERE parent_folder ${parentFolderId == null ? 'IS NULL' : '= ?'}
       ''', parentFolderId != null ? [parentFolderId] : []);
-      
       int order = (result.first['maxOrder'] ?? -1) + 1;
-      
       await db.insert(
         'folders',
         {

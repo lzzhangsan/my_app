@@ -73,6 +73,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
   bool _isHighlightingNewItem = false;
   bool _isMultiSelectMode = false;
   final List<DirectoryItem> _selectedItems = [];
+  List<String> _folderStack = [];
 
   @override
   void initState() {
@@ -664,6 +665,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
   void _openFolder(String folderName) {
     if (mounted) {
       setState(() {
+        _folderStack.add(_currentParentFolder ?? '');
         _currentParentFolder = folderName;
         _isMultiSelectMode = false;
         _selectedItems.clear();
@@ -671,26 +673,31 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
           item.isSelected = false;
         }
       });
-
       _loadData();
     }
   }
 
   void _goBack() {
-    if (_currentParentFolder != null) {
-      _getParentFolder(_currentParentFolder!).then((parent) {
-        if (mounted) {
-          setState(() {
-            _currentParentFolder = parent;
-            _isMultiSelectMode = false;
-            _selectedItems.clear();
-            for (var item in _items) {
-              item.isSelected = false;
-            }
-          });
-          _loadData();
+    if (_folderStack.isNotEmpty) {
+      setState(() {
+        _currentParentFolder = _folderStack.removeLast();
+        _isMultiSelectMode = false;
+        _selectedItems.clear();
+        for (var item in _items) {
+          item.isSelected = false;
         }
       });
+      _loadData();
+    } else {
+      setState(() {
+        _currentParentFolder = null;
+        _isMultiSelectMode = false;
+        _selectedItems.clear();
+        for (var item in _items) {
+          item.isSelected = false;
+        }
+      });
+      _loadData();
     }
   }
 
@@ -2206,69 +2213,67 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
                           }
                         },
                         builder: (context, candidateItems, rejectedItems) {
-                          return GestureDetector(
-                            onLongPressStart: (_) {}, // 阻止冒泡到ListTile
-                            child: Draggable<DirectoryItem>(
-                              data: item,
-                              feedback: Material(
-                                elevation: 4.0,
-                                child: Icon(
-                                  Icons.folder,
-                                  size: 40,
-                                  color: Colors.amber,
-                                ),
+                          return Draggable<DirectoryItem>(
+                            data: item,
+                            feedback: Material(
+                              elevation: 8.0,
+                              color: Colors.transparent,
+                              child: Icon(
+                                Icons.folder,
+                                size: 56,
+                                color: Colors.blueAccent,
+                                shadows: [Shadow(color: Colors.black26, blurRadius: 8)],
                               ),
-                              childWhenDragging: Opacity(
-                                opacity: 0.3,
-                                child: Icon(
-                                  Icons.folder,
-                                  size: 40,
-                                  color: Colors.amber,
-                                ),
+                            ),
+                            childWhenDragging: Opacity(
+                              opacity: 0.3,
+                              child: Icon(
+                                Icons.folder,
+                                size: 40,
+                                color: Colors.amber,
                               ),
-                              child: Container(
-                                decoration: BoxDecoration(
-                                  color: candidateItems.isNotEmpty 
-                                    ? Colors.blue.withOpacity(0.2) 
-                                    : null,
-                                  borderRadius: BorderRadius.circular(4.0),
-                                ),
-                                child: Icon(
-                                  Icons.folder,
-                                  size: 40,
-                                  color: Colors.amber,
-                                ),
+                            ),
+                            child: AnimatedContainer(
+                              duration: Duration(milliseconds: 150),
+                              decoration: BoxDecoration(
+                                color: candidateItems.isNotEmpty ? Colors.blue.withOpacity(0.2) : null,
+                                border: candidateItems.isNotEmpty ? Border.all(color: Colors.blue, width: 2) : null,
+                                borderRadius: BorderRadius.circular(4.0),
+                              ),
+                              child: Icon(
+                                Icons.folder,
+                                size: 40,
+                                color: Colors.amber,
                               ),
                             ),
                           );
                         },
                       );
                     } else {
-                      return GestureDetector(
-                        onLongPressStart: (_) {}, // 阻止冒泡到ListTile
-                        child: Draggable<DirectoryItem>(
-                          data: item,
-                          feedback: Material(
-                            elevation: 4.0,
-                            child: Icon(
-                              Icons.description,
-                              size: 40,
-                              color: Color(0xFF4CAF50),
-                            ),
+                      return Draggable<DirectoryItem>(
+                        data: item,
+                        feedback: Material(
+                          elevation: 8.0,
+                          color: Colors.transparent,
+                          child: Icon(
+                            Icons.description,
+                            size: 56,
+                            color: Colors.green,
+                            shadows: [Shadow(color: Colors.black26, blurRadius: 8)],
                           ),
-                          childWhenDragging: Opacity(
-                            opacity: 0.3,
-                            child: Icon(
-                              Icons.description,
-                              size: 40,
-                              color: Color(0xFF4CAF50),
-                            ),
-                          ),
+                        ),
+                        childWhenDragging: Opacity(
+                          opacity: 0.3,
                           child: Icon(
                             Icons.description,
                             size: 40,
                             color: Color(0xFF4CAF50),
                           ),
+                        ),
+                        child: Icon(
+                          Icons.description,
+                          size: 40,
+                          color: Color(0xFF4CAF50),
                         ),
                       );
                     }
