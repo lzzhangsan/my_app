@@ -1065,21 +1065,137 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     }
   }
 
-  void _moveFolderToFolder(String folderName) async {
-    String? targetFolderName = await _selectFolder();
-    if (targetFolderName != null) {
-      try {
-        await getService<DatabaseService>().updateFolderParentFolder(folderName, targetFolderName);
-        if (mounted) {
-          await _loadData();
+  Future<String> _selectFolder() async {
+    try {
+      final folders = await getService<DatabaseService>().getAllDirectoryFolders();
+      final currentFolder = _currentParentFolder != null 
+          ? folders.firstWhere((f) => f['name'] == _currentParentFolder, orElse: () => {'id': '', 'name': ''})
+          : null;
+      
+      // 过滤掉当前文件夹及其子文件夹
+      final availableFolders = folders.where((folder) {
+        if (currentFolder != null && currentFolder['id'] != '') {
+          // 检查是否为当前文件夹或其子文件夹
+          String? parentId = folder['parent_folder'];
+          while (parentId != null) {
+            if (parentId == currentFolder['id']) return false;
+            final parent = folders.firstWhere(
+              (f) => f['id'] == parentId,
+              orElse: () => {'parent_folder': null},
+            );
+            parentId = parent['parent_folder'];
+          }
         }
-      } catch (e) {
-        print('Error moving folder to another folder: $e');
+        return true;
+      }).toList();
+
+      if (availableFolders.isEmpty) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('移动文件夹到另一个文件夹出错。请重试。')),
+            SnackBar(content: Text('没有可用的目标文件夹')),
           );
         }
+        return '';
+      }
+
+      String? selectedFolder;
+      await showDialog<void>(
+        context: context,
+        builder: (BuildContext context) {
+          return AlertDialog(
+            title: Text('选择目标文件夹'),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  ListTile(
+                    title: Text('根目录'),
+                    onTap: () {
+                      selectedFolder = '';
+                      Navigator.of(context).pop();
+                    },
+                  ),
+                  ...availableFolders.map((folder) => ListTile(
+                    title: Text(folder['name'] as String),
+                    onTap: () {
+                      selectedFolder = folder['name'] as String;
+                      Navigator.of(context).pop();
+                    },
+                  )).toList(),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                child: Text('取消'),
+                onPressed: () {
+                  selectedFolder = '';
+                  Navigator.of(context).pop();
+                },
+              ),
+            ],
+          );
+        },
+      );
+      
+      return selectedFolder ?? '';
+    } catch (e) {
+      print('Error selecting folder: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('选择文件夹时出错')),
+        );
+      }
+      return '';
+    }
+  }
+
+  void _moveFolderToFolder(String folderName) async {
+    try {
+      final targetFolderName = await _selectFolder();
+      if (targetFolderName.isEmpty) {
+        // 移动到根目录
+        await getService<DatabaseService>().updateFolderParentFolder(folderName, null);
+      } else {
+        await getService<DatabaseService>().updateFolderParentFolder(folderName, targetFolderName);
+      }
+      if (mounted) {
+        await _loadData();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('文件夹移动成功')),
+        );
+      }
+    } catch (e) {
+      print('Error moving folder: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(e.toString())),
+        );
+      }
+    }
+  }
+
+  void _moveDocumentToFolder(String documentName) async {
+    try {
+      final targetFolderName = await _selectFolder();
+      if (targetFolderName.isEmpty) {
+        // 移动到根目录
+        await getService<DatabaseService>().updateDocumentParentFolder(documentName, null);
+      } else {
+        await getService<DatabaseService>().updateDocumentParentFolder(documentName, targetFolderName);
+      }
+      if (mounted) {
+        await _loadData();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('文档移动成功')),
+        );
+      }
+    } catch (e) {
+      print('Error moving document: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(e.toString())),
+        );
       }
     }
   }
@@ -1104,54 +1220,6 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         );
       },
     ) ?? false;
-  }
-
-  Future<String?> _selectFolder() async {
-    try {
-      List<Map<String, dynamic>> allFolders = await getService<DatabaseService>().getAllDirectoryFolders();
-      if (allFolders.isEmpty) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('没有可选择的文件夹。')),
-          );
-        }
-        return null;
-      }
-
-      List<String> folderPaths = [];
-      for (var folder in allFolders) {
-        String path = await _getDirectoryFolderPath(folder['name']);
-        folderPaths.add(path);
-      }
-
-      String? selectedFolderPath = await showDialog<String>(
-        context: context,
-        builder: (BuildContext context) {
-          return SimpleDialog(
-            title: Text('选择文件夹'),
-            children: folderPaths.map((folderPath) => SimpleDialogOption(
-              child: Text(folderPath),
-              onPressed: () => Navigator.pop(context, folderPath),
-            )).toList(),
-          );
-        },
-      );
-
-      if (selectedFolderPath != null) {
-        String folderName = selectedFolderPath.split('/').last;
-        return folderName;
-      }
-
-      return null;
-    } catch (e) {
-      print('Error selecting folder: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('选择文件夹出错。请重试。')),
-        );
-      }
-      return null;
-    }
   }
 
   Future<String> _getDirectoryFolderPath(String folderName) async {
@@ -1271,25 +1339,6 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('更新顺序出错。请重试。')),
         );
-      }
-    }
-  }
-
-  void _moveDocumentToFolder(String documentName) async {
-    String? folderName = await _selectFolder();
-    if (folderName != null) {
-      try {
-        await getService<DatabaseService>().updateDocumentParentFolder(documentName, folderName);
-        if (mounted) {
-          await _loadData();
-        }
-      } catch (e) {
-        print('Error moving document: $e');
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('移动文档出错。请重试。')),
-          );
-        }
       }
     }
   }
