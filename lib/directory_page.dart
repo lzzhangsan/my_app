@@ -150,8 +150,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
   @override
   void didPopNext() {
     print('DirectoryPage重新显示 - 重新加载设置');
+    print('当前文件夹: $_currentParentFolder, 文件夹栈: $_folderStack');
     if (mounted) {
-      _loadBackgroundSettings();
+      // 重新加载数据，这会自动加载背景设置
       _loadData();
     }
   }
@@ -363,7 +364,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
               print('已加载背景颜色: $colorValue');
             } else {
               _backgroundColor = null;
-              print('背景颜色为空');
+              print('背景颜色为空，使用默认白色');
             }
           });
         }
@@ -393,19 +394,21 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
             print('背景图片路径为空');
           });
         }
-      } else if (mounted) {
-        setState(() {
-          _backgroundImage = null;
-          _backgroundColor = null;
-        });
-        print('未找到目录设置');
+      } else {
+        print('未找到目录设置，使用默认背景');
+        if (mounted) {
+          setState(() {
+            _backgroundImage = null;
+            _backgroundColor = null; // 使用默认白色
+          });
+        }
       }
     } catch (e) {
       print('加载背景设置时出错: $e');
       if (mounted) {
         setState(() {
           _backgroundImage = null;
-          _backgroundColor = Colors.white;
+          _backgroundColor = null; // 使用默认白色
         });
       }
     }
@@ -589,40 +592,41 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       print("Web environment: Skipping data load from database.");
       if (mounted) {
         setState(() {
-          _items.clear();
+          _items = [];
         });
       }
       return;
     }
-    
     try {
-      _items.clear();
-      print('清除项目列表，开始加载数据...');
-
+      print('开始加载数据 for folder: $_currentParentFolder');
+      
       // 加载文件夹数据
       List<Map<String, dynamic>> folders = await getService<DatabaseService>().getFolders(parentFolder: _currentParentFolder);
       print('从数据库加载了 ${folders.length} 个文件夹');
 
+      // 加载文档数据
+      List<Map<String, dynamic>> documents = await getService<DatabaseService>().getDocuments(parentFolder: _currentParentFolder);
+      print('从数据库加载了 ${documents.length} 个文档');
+
+      List<DirectoryItem> directoryItems = [];
+
+      // 处理文件夹数据
       for (var folder in folders) {
         if (folder['name'] != null && folder['name'].toString().isNotEmpty) {
           print('加载文件夹: ${folder['name']}, 顺序: ${folder['order_index']}');
-          _items.add(DirectoryItem(
+          directoryItems.add(DirectoryItem(
             name: folder['name'],
             type: ItemType.folder,
             order: folder['order_index'] ?? 0,
             isTemplate: false,
             parentFolder: folder['parent_folder'],
-            isSelected: false,
           ));
         } else {
           print('警告：发现无效文件夹数据: $folder');
         }
       }
 
-      // 加载文档数据
-      List<Map<String, dynamic>> documents = await getService<DatabaseService>().getDocuments(parentFolder: _currentParentFolder);
-      print('从数据库加载了 ${documents.length} 个文档');
-
+      // 处理文档数据
       for (var document in documents) {
         // 跳过封面页文档，不在目录页显示
         if (document['name'] == '__CoverPage__') {
@@ -632,44 +636,40 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         
         if (document['name'] != null && document['name'].toString().isNotEmpty) {
           print('加载文档: ${document['name']}, 顺序: ${document['order_index']}');
-          _items.add(DirectoryItem(
+          directoryItems.add(DirectoryItem(
             name: document['name'],
             type: ItemType.document,
             order: document['order_index'] ?? 0,
             isTemplate: document['is_template'] == 1,
             parentFolder: document['parent_folder'],
-            isSelected: false,
           ));
         } else {
           print('警告：发现无效文档数据: $document');
         }
       }
 
-      // 按顺序排序
-      _items.sort((a, b) => a.order.compareTo(b.order));
+      // 按order_index排序
+      directoryItems.sort((a, b) => a.order.compareTo(b.order));
 
-      print('已加载 ${_items.length} 个项目，正在更新界面...');
-      
       if (mounted) {
-        setState(() {});
+        setState(() {
+          _items = directoryItems;
+        });
       }
-
+      
+      // 在数据加载完成后，重新加载背景设置
+      await _loadBackgroundSettings();
+      
       // 加载模板文档
       await _loadTemplateDocuments();
       
       print('数据加载完成，共 ${_items.length} 个项目');
     } catch (e) {
-      print('Error loading data: $e');
+      print('加载数据时出错: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('加载数据时出错。请重试。'),
-            action: SnackBarAction(
-              label: '重试',
-              onPressed: () => _loadData(),
-            ),
-          ),
-        );
+        setState(() {
+          _items = [];
+        });
       }
     }
   }
@@ -688,6 +688,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
           item.isSelected = false;
         }
       });
+      // 加载数据时会自动加载背景设置
       _loadData();
     }
   }
@@ -702,6 +703,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
           item.isSelected = false;
         }
       });
+      // 加载数据时会自动加载背景设置
       _loadData();
       return;
     }
@@ -715,6 +717,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         item.isSelected = false;
       }
     });
+    // 加载数据时会自动加载背景设置
     _loadData();
   }
 
