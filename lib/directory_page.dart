@@ -223,7 +223,6 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       }
       return;
     }
-    // 获取所有选中项的当前父目录，排除自身和当前目录
     List<String> excludeIds = [];
     String? currentFolderId;
     final dbService = getService<DatabaseService>();
@@ -240,7 +239,6 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         }
       }
     }
-    // 仅在当前目录不为根目录时显示根目录选项
     bool showRoot = _currentParentFolder != null;
     final targetFolderName = await _selectFolder(excludeFolderIds: excludeIds, showRoot: showRoot);
     if (targetFolderName == null) return;
@@ -647,19 +645,11 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
   }
 
   void _goBack() {
-    if (_folderStack.isNotEmpty) {
-      setState(() {
-        _currentParentFolder = _folderStack.removeLast();
-        _isMultiSelectMode = false;
-        _selectedItems.clear();
-        for (var item in _items) {
-          item.isSelected = false;
-        }
-      });
-      _loadData();
-    } else {
+    // 如果已经在根目录，什么都不做
+    if (_currentParentFolder == null || _folderStack.isEmpty) {
       setState(() {
         _currentParentFolder = null;
+        _folderStack.clear();
         _isMultiSelectMode = false;
         _selectedItems.clear();
         for (var item in _items) {
@@ -667,11 +657,19 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         }
       });
       _loadData();
+      if (mounted) setState(() {});
+      return;
     }
-    // 强制刷新页面状态，确保根目录时UI同步
-    if (mounted) {
-      setState(() {});
-    }
+    setState(() {
+      _currentParentFolder = _folderStack.removeLast();
+      _isMultiSelectMode = false;
+      _selectedItems.clear();
+      for (var item in _items) {
+        item.isSelected = false;
+      }
+    });
+    _loadData();
+    if (mounted) setState(() {});
   }
 
   Future<String?> _getParentFolder(String folderName) async {
@@ -735,7 +733,6 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       if (folderName != null && folderName.isNotEmpty) {
         if (!await getService<DatabaseService>().doesNameExist(folderName)) {
           String? parentFolder = _currentParentFolder;
-          // 根目录时parentFolder应为null
           if (parentFolder == null || parentFolder.isEmpty) parentFolder = null;
           await getService<DatabaseService>().insertFolder(
             folderName,
@@ -768,12 +765,11 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       if (documentName != null && documentName.isNotEmpty) {
         if (!await getService<DatabaseService>().doesNameExist(documentName)) {
           String? parentFolder = _currentParentFolder;
-
+          if (parentFolder == null || parentFolder.isEmpty) parentFolder = null;
           await getService<DatabaseService>().insertDocument(
             documentName,
             parentFolder: parentFolder,
           );
-
           if (mounted) {
             await _loadData();
             _highlightNewItem(documentName, ItemType.document);
@@ -781,7 +777,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         } else {
           _showDuplicateNameWarning();
           if (mounted) {
-            await _loadData(); // Refresh data even if name is duplicate
+            await _loadData();
           }
         }
       }
@@ -2341,11 +2337,6 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
                         icon: const Icon(Icons.folder),
                         onPressed: _moveSelectedItemsToFolder,
                         tooltip: '移动到文件夹',
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.share),
-                        onPressed: _exportSelectedItems,
-                        tooltip: '导出',
                       ),
                     ],
                   ),
