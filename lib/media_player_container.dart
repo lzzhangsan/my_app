@@ -323,8 +323,8 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
                   _showRandomMedia();
                 }
               },
-              looping: _mediaMode == MediaMode.auto, // 自动模式下原生循环
-              forceManualLoop: _mediaMode == MediaMode.manual, // 手动模式下强制无限循环
+              looping: false, // 始终为false，onVideoEnd才能被触发
+              forceManualLoop: _mediaMode == MediaMode.manual, // 仅手动模式下无限循环
             );
             _mediaWidget = _currentVideoWidget;
           });
