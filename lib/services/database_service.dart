@@ -1693,7 +1693,10 @@ class DatabaseService {
         
         final folderId = folderToDelete.first['id'] as String;
         
-        // 在事务内部获取子文档和子文件夹，使用事务对象
+        // 递归删除文件夹及其所有子内容
+        await _deleteFolderRecursive(txn, folderId, folderName);
+
+        // 重新排序剩余文件夹
         String? parentFolderId;
         if (parentFolder != null) {
           final parentFolderData = await txn.query(
@@ -1704,48 +1707,6 @@ class DatabaseService {
           parentFolderId = parentFolderData.isNotEmpty ? parentFolderData.first['id'] as String? : null;
         }
         
-        // 获取子文档
-        List<Map<String, dynamic>> documents = await txn.query(
-          'documents',
-          where: parentFolderId == null ? 'parent_folder IS NULL' : 'parent_folder = ?',
-          whereArgs: parentFolderId == null ? null : [parentFolderId],
-        );
-        
-        // 删除子文档
-        for (var doc in documents) {
-          final docId = doc['id'] as String;
-          // 删除文档相关的所有数据
-          await txn.delete('text_boxes', where: 'document_id = ?', whereArgs: [docId]);
-          await txn.delete('image_boxes', where: 'document_id = ?', whereArgs: [docId]);
-          await txn.delete('audio_boxes', where: 'document_id = ?', whereArgs: [docId]);
-          await txn.delete('document_settings', where: 'document_id = ?', whereArgs: [docId]);
-          await txn.delete('documents', where: 'id = ?', whereArgs: [docId]);
-        }
-
-        // 获取子文件夹
-        List<Map<String, dynamic>> subFolders = await txn.query(
-          'folders',
-          where: parentFolderId == null ? 'parent_folder IS NULL' : 'parent_folder = ?',
-          whereArgs: parentFolderId == null ? null : [parentFolderId],
-        );
-        
-        // 递归删除子文件夹（在事务内部）
-        for (var subFolder in subFolders) {
-          final subFolderId = subFolder['id'] as String;
-          final subFolderName = subFolder['name'] as String;
-          
-          // 递归删除子文件夹的内容
-          await _deleteFolderRecursive(txn, subFolderId, subFolderName);
-        }
-
-        // 删除文件夹本身
-        await txn.delete(
-          'folders',
-          where: 'id = ?',
-          whereArgs: [folderId],
-        );
-
-        // 重新排序剩余文件夹
         List<Map<String, dynamic>> remainingFolders = await txn.query(
           'folders',
           where: parentFolderId == null ? 'parent_folder IS NULL' : 'parent_folder = ?',
@@ -1774,6 +1735,10 @@ class DatabaseService {
 
   /// 在事务内部递归删除文件夹
   Future<void> _deleteFolderRecursive(Transaction txn, String folderId, String folderName) async {
+    if (kDebugMode) {
+      print('开始递归删除文件夹: $folderName (ID: $folderId)');
+    }
+    
     // 获取子文档
     List<Map<String, dynamic>> documents = await txn.query(
       'documents',
@@ -1781,9 +1746,17 @@ class DatabaseService {
       whereArgs: [folderId],
     );
     
+    if (kDebugMode) {
+      print('文件夹 $folderName 包含 ${documents.length} 个文档');
+    }
+    
     // 删除子文档
     for (var doc in documents) {
       final docId = doc['id'] as String;
+      final docName = doc['name'] as String;
+      if (kDebugMode) {
+        print('删除文档: $docName (ID: $docId)');
+      }
       await txn.delete('text_boxes', where: 'document_id = ?', whereArgs: [docId]);
       await txn.delete('image_boxes', where: 'document_id = ?', whereArgs: [docId]);
       await txn.delete('audio_boxes', where: 'document_id = ?', whereArgs: [docId]);
@@ -1798,14 +1771,24 @@ class DatabaseService {
       whereArgs: [folderId],
     );
     
+    if (kDebugMode) {
+      print('文件夹 $folderName 包含 ${subFolders.length} 个子文件夹');
+    }
+    
     // 递归删除子文件夹
     for (var subFolder in subFolders) {
       final subFolderId = subFolder['id'] as String;
       final subFolderName = subFolder['name'] as String;
+      if (kDebugMode) {
+        print('递归删除子文件夹: $subFolderName (ID: $subFolderId)');
+      }
       await _deleteFolderRecursive(txn, subFolderId, subFolderName);
     }
 
     // 删除当前文件夹
+    if (kDebugMode) {
+      print('删除文件夹本身: $folderName (ID: $folderId)');
+    }
     await txn.delete('folders', where: 'id = ?', whereArgs: [folderId]);
   }
 
