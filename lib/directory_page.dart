@@ -773,10 +773,12 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     }
   }
 
-  void _addFolder() async {
+  Future<void> _addFolder() async {
     try {
-      String? folderName = await _showFolderNameDialog(hintText: "文件夹名称");
-      if (folderName != null && folderName.isNotEmpty) {
+      String? folderName = '';
+      while (true) {
+        folderName = await _showFolderNameDialog(hintText: "文件夹名称", initialValue: folderName);
+        if (folderName == null || folderName.isEmpty) return; // 用户取消或未输入
         if (!await getService<DatabaseService>().doesNameExist(folderName)) {
           String? parentFolder = _currentParentFolder;
           if (parentFolder == null || parentFolder.isEmpty) parentFolder = null;
@@ -788,11 +790,10 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
             await _loadData();
             _highlightNewItem(folderName, ItemType.folder);
           }
+          break;
         } else {
-          _showDuplicateNameWarning();
-          if (mounted) {
-            await _loadData();
-          }
+          await _showDuplicateNameWarning();
+          // 循环继续，保留上次输入
         }
       }
     } catch (e) {
@@ -805,10 +806,12 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     }
   }
 
-  void _addDocument() async {
+  Future<void> _addDocument() async {
     try {
-      String? documentName = await _showFolderNameDialog(hintText: "文档名称");
-      if (documentName != null && documentName.isNotEmpty) {
+      String? documentName = '';
+      while (true) {
+        documentName = await _showFolderNameDialog(hintText: "文档名称", initialValue: documentName);
+        if (documentName == null || documentName.isEmpty) return; // 用户取消或未输入
         if (!await getService<DatabaseService>().doesNameExist(documentName)) {
           String? parentFolder = _currentParentFolder;
           if (parentFolder == null || parentFolder.isEmpty) parentFolder = null;
@@ -820,11 +823,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
             await _loadData();
             _highlightNewItem(documentName, ItemType.document);
           }
+          break;
         } else {
-          _showDuplicateNameWarning();
-          if (mounted) {
-            await _loadData();
-          }
+          await _showDuplicateNameWarning();
         }
       }
     } catch (e) {
@@ -837,7 +838,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     }
   }
 
-  void _importDocument() async {
+  Future<void> _importDocument() async {
     try {
       FilePickerResult? result = await FilePicker.platform.pickFiles(
         type: FileType.custom,
@@ -1363,8 +1364,8 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     return result;
   }
 
-  void _showDuplicateNameWarning() {
-    showDialog(
+  Future<void> _showDuplicateNameWarning() async {
+    return showDialog<void>(
       context: context,
       builder: (BuildContext context) {
         return AlertDialog(
