@@ -18,6 +18,9 @@ import 'package:archive/archive_io.dart';
 import 'dart:convert';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart' as path;
+import 'package:flutter_colorpicker/flutter_colorpicker.dart';
+import 'services/database_service.dart';
+import 'core/service_locator.dart';
 
 // 全局函数：显示进度条弹窗，支持取消操作
 void showProgressDialog(BuildContext context, ValueNotifier<double> progress, ValueNotifier<String> message, {bool barrierDismissible = false}) {
@@ -59,10 +62,99 @@ class _DiaryPageState extends State<DiaryPage> {
   bool _showFavoritesOnly = false;
   bool _calendarExpanded = false;
 
+  // 新增：日记本背景图片和颜色
+  File? _diaryBgImage;
+  Color? _diaryBgColor;
+
   @override
   void initState() {
     super.initState();
     _loadEntries();
+    _loadDiarySettings();
+  }
+
+  Future<void> _loadDiarySettings() async {
+    final db = getService<DatabaseService>();
+    final settings = await db.getDiarySettings();
+    if (mounted) {
+      setState(() {
+        if (settings != null) {
+          final imagePath = settings['background_image_path'] as String?;
+          final colorValue = settings['background_color'] as int?;
+          if (imagePath != null && imagePath.isNotEmpty && File(imagePath).existsSync()) {
+            _diaryBgImage = File(imagePath);
+          } else {
+            _diaryBgImage = null;
+          }
+          if (colorValue != null) {
+            _diaryBgColor = Color(colorValue);
+          } else {
+            _diaryBgColor = null;
+          }
+        } else {
+          _diaryBgImage = null;
+          _diaryBgColor = null;
+        }
+      });
+    }
+  }
+
+  Future<void> _pickDiaryBackgroundImage() async {
+    final imagePath = await ImagePickerService.pickImage(context);
+    if (imagePath != null) {
+      final appDir = await getApplicationDocumentsDirectory();
+      final bgDir = Directory('${appDir.path}/diary_backgrounds');
+      if (!await bgDir.exists()) await bgDir.create(recursive: true);
+      final fileName = 'diary_bg_${DateTime.now().millisecondsSinceEpoch}${path.extension(imagePath)}';
+      final destPath = '${bgDir.path}/$fileName';
+      final newImage = await File(imagePath).copy(destPath);
+      await getService<DatabaseService>().insertOrUpdateDiarySettings(imagePath: destPath, colorValue: _diaryBgColor?.value);
+      setState(() {
+        _diaryBgImage = newImage;
+      });
+    }
+  }
+
+  Future<void> _removeDiaryBackgroundImage() async {
+    await getService<DatabaseService>().deleteDiaryBackgroundImage();
+    setState(() {
+      _diaryBgImage = null;
+    });
+  }
+
+  Future<void> _pickDiaryBackgroundColor() async {
+    Color tempColor = _diaryBgColor ?? Colors.white;
+    final pickedColor = await showDialog<Color>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: Text('选择背景颜色'),
+          content: SingleChildScrollView(
+            child: ColorPicker(
+              pickerColor: tempColor,
+              onColorChanged: (Color color) {
+                tempColor = color;
+              },
+              colorPickerWidth: 300.0,
+              pickerAreaHeightPercent: 0.7,
+              enableAlpha: false,
+              displayThumbColor: true,
+              paletteType: PaletteType.hsv,
+            ),
+          ),
+          actions: [
+            TextButton(child: Text('取消'), onPressed: () => Navigator.of(context).pop()),
+            TextButton(child: Text('确定'), onPressed: () => Navigator.of(context).pop(tempColor)),
+          ],
+        );
+      },
+    );
+    if (pickedColor != null) {
+      await getService<DatabaseService>().insertOrUpdateDiarySettings(imagePath: _diaryBgImage?.path, colorValue: pickedColor.value);
+      setState(() {
+        _diaryBgColor = pickedColor;
+      });
+    }
   }
 
   Future<void> _loadEntries() async {
@@ -232,6 +324,32 @@ class _DiaryPageState extends State<DiaryPage> {
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
+              leading: Icon(Icons.image),
+              title: Text('设置背景图片'),
+              onTap: () async {
+                Navigator.pop(context);
+                await _pickDiaryBackgroundImage();
+              },
+            ),
+            ListTile(
+              leading: Icon(Icons.color_lens),
+              title: Text('设置背景颜色'),
+              onTap: () async {
+                Navigator.pop(context);
+                await _pickDiaryBackgroundColor();
+              },
+            ),
+            if (_diaryBgImage != null)
+              ListTile(
+                leading: Icon(Icons.delete, color: Colors.red),
+                title: Text('清除背景图片'),
+                onTap: () async {
+                  Navigator.pop(context);
+                  await _removeDiaryBackgroundImage();
+                },
+              ),
+            Divider(),
+            ListTile(
               leading: Icon(Icons.upload_file),
               title: Text('导出日记本数据'),
               onTap: () {
@@ -255,117 +373,130 @@ class _DiaryPageState extends State<DiaryPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        leading: IconButton(
-          icon: Icon(Icons.settings),
-          tooltip: '设置',
-          onPressed: _showDiarySettings,
-        ),
-        title: const Text('日记本'),
-        centerTitle: true,
-        actions: [
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            margin: const EdgeInsets.only(right: 8),
-            decoration: BoxDecoration(
-              color: Colors.blue.withOpacity(0.1),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.blue.withOpacity(0.3)),
+    return Stack(
+      children: [
+        // 背景层：优先显示图片，其次颜色
+        if (_diaryBgColor != null)
+          Container(color: _diaryBgColor),
+        if (_diaryBgImage != null)
+          Positioned.fill(
+            child: Image.file(_diaryBgImage!, fit: BoxFit.cover),
+          ),
+        // 主内容层
+        Scaffold(
+          backgroundColor: Colors.transparent,
+          appBar: AppBar(
+            leading: IconButton(
+              icon: Icon(Icons.settings),
+              tooltip: '设置',
+              onPressed: _showDiarySettings,
             ),
-            child: Text(
-              '${_entries.length}篇',
-              style: const TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w500,
-                color: Colors.blue,
-              ),
-            ),
-          ),
-          IconButton(
-            icon: Icon(_showFavoritesOnly ? Icons.favorite : Icons.favorite_border, color: _showFavoritesOnly ? Colors.red : null),
-            tooltip: _showFavoritesOnly ? '显示全部' : '只看收藏',
-            onPressed: () => setState(() => _showFavoritesOnly = !_showFavoritesOnly),
-          ),
-          IconButton(
-            icon: _TodayCircleIcon(),
-            tooltip: '回到今天',
-            onPressed: () => setState(() => _selectedDate = DateTime.now()),
-          ),
-        ]
-      ),
-      body: Column(
-        children: [
-          GestureDetector(
-            onVerticalDragUpdate: (details) {
-              if (details.delta.dy > 8) {
-                _toggleCalendar(true);
-              } else if (details.delta.dy < -8) {
-                _toggleCalendar(false);
-              }
-            },
-            child: AnimatedCrossFade(
-              duration: const Duration(milliseconds: 250),
-              crossFadeState: _calendarExpanded ? CrossFadeState.showFirst : CrossFadeState.showSecond,
-              firstChild: _buildCalendar(full: true),
-              secondChild: _buildCalendar(full: false),
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-            child: TextField(
-              decoration: InputDecoration(
-                prefixIcon: Icon(Icons.search),
-                hintText: '搜索日记内容或日期(如2023年、5月1日)...',
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                contentPadding: EdgeInsets.symmetric(vertical: 0, horizontal: 8),
-              ),
-              onChanged: (value) => setState(() => _searchKeyword = value),
-            ),
-          ),
-          Expanded(child: _buildDiaryList()),
-        ],
-      ),
-      floatingActionButton: ClipRRect(
-        borderRadius: BorderRadius.circular(24),
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 5, sigmaY: 5),
-          child: Container(
-            height: 48,
-            width: 48,
-            decoration: BoxDecoration(
-              color: Colors.purple.withOpacity(0.3),
-              borderRadius: BorderRadius.circular(24),
-              border: Border.all(
-                color: Colors.white.withOpacity(0.15),
-                width: 0.5,
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.1),
-                  blurRadius: 10,
-                  spreadRadius: 1,
+            title: const Text('日记本'),
+            centerTitle: true,
+            actions: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                margin: const EdgeInsets.only(right: 8),
+                decoration: BoxDecoration(
+                  color: Colors.blue.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.blue.withOpacity(0.3)),
                 ),
-              ],
-            ),
-            child: FloatingActionButton(
-              onPressed: () => _addOrEditEntry(),
-              heroTag: 'addDiaryBtn',
-              backgroundColor: Colors.transparent,
-              elevation: 0,
-              focusElevation: 0,
-              hoverElevation: 0,
-              highlightElevation: 0,
-              splashColor: Colors.white.withOpacity(0.1),
-              child: Icon(
-                Icons.add,
-                size: 24,
-                color: Colors.white.withOpacity(0.9),
+                child: Text(
+                  '${_entries.length}篇',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                    color: Colors.blue,
+                  ),
+                ),
+              ),
+              IconButton(
+                icon: Icon(_showFavoritesOnly ? Icons.favorite : Icons.favorite_border, color: _showFavoritesOnly ? Colors.red : null),
+                tooltip: _showFavoritesOnly ? '显示全部' : '只看收藏',
+                onPressed: () => setState(() => _showFavoritesOnly = !_showFavoritesOnly),
+              ),
+              IconButton(
+                icon: _TodayCircleIcon(),
+                tooltip: '回到今天',
+                onPressed: () => setState(() => _selectedDate = DateTime.now()),
+              ),
+            ]
+          ),
+          body: Column(
+            children: [
+              GestureDetector(
+                onVerticalDragUpdate: (details) {
+                  if (details.delta.dy > 8) {
+                    _toggleCalendar(true);
+                  } else if (details.delta.dy < -8) {
+                    _toggleCalendar(false);
+                  }
+                },
+                child: AnimatedCrossFade(
+                  duration: const Duration(milliseconds: 250),
+                  crossFadeState: _calendarExpanded ? CrossFadeState.showFirst : CrossFadeState.showSecond,
+                  firstChild: _buildCalendar(full: true),
+                  secondChild: _buildCalendar(full: false),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                child: TextField(
+                  decoration: InputDecoration(
+                    prefixIcon: Icon(Icons.search),
+                    hintText: '搜索日记内容或日期(如2023年、5月1日)...',
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                    contentPadding: EdgeInsets.symmetric(vertical: 0, horizontal: 8),
+                  ),
+                  onChanged: (value) => setState(() => _searchKeyword = value),
+                ),
+              ),
+              Expanded(child: _buildDiaryList()),
+            ],
+          ),
+          floatingActionButton: ClipRRect(
+            borderRadius: BorderRadius.circular(24),
+            child: BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: 5, sigmaY: 5),
+              child: Container(
+                height: 48,
+                width: 48,
+                decoration: BoxDecoration(
+                  color: Colors.purple.withOpacity(0.3),
+                  borderRadius: BorderRadius.circular(24),
+                  border: Border.all(
+                    color: Colors.white.withOpacity(0.15),
+                    width: 0.5,
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.1),
+                      blurRadius: 10,
+                      spreadRadius: 1,
+                    ),
+                  ],
+                ),
+                child: FloatingActionButton(
+                  onPressed: () => _addOrEditEntry(),
+                  heroTag: 'addDiaryBtn',
+                  backgroundColor: Colors.transparent,
+                  elevation: 0,
+                  focusElevation: 0,
+                  hoverElevation: 0,
+                  highlightElevation: 0,
+                  splashColor: Colors.white.withOpacity(0.1),
+                  child: Icon(
+                    Icons.add,
+                    size: 24,
+                    color: Colors.white.withOpacity(0.9),
+                  ),
+                ),
               ),
             ),
           ),
         ),
-      ),
+      ],
     );
   }
 

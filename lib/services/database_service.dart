@@ -284,6 +284,17 @@ class DatabaseService {
         )
       ''');
 
+      // 日记本设置表
+      await txn.execute('''
+        CREATE TABLE diary_settings(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          background_image_path TEXT,
+          background_color INTEGER,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      ''');
+
       // 创建索引以提高查询性能
       await _createIndexes(txn);
     });
@@ -316,6 +327,16 @@ class DatabaseService {
         mood TEXT,
         location TEXT,
         is_favorite INTEGER DEFAULT 0
+      )
+    ''');
+    // 新增：确保 diary_settings 表升级时自动创建
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS diary_settings(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        background_image_path TEXT,
+        background_color INTEGER,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
       )
     ''');
     if (kDebugMode) {
@@ -3999,5 +4020,61 @@ class DatabaseService {
       batch.insert('media_items', Map<String, dynamic>.from(item), conflictAlgorithm: ConflictAlgorithm.replace);
     }
     await batch.commit(noResult: true);
+  }
+
+  /// 获取日记本设置
+  Future<Map<String, dynamic>?> getDiarySettings() async {
+    try {
+      final db = await database;
+      final result = await db.query('diary_settings');
+      if (result.isNotEmpty) {
+        return result.first;
+      }
+      return null;
+    } catch (e, stackTrace) {
+      _handleError('获取日记本设置失败', e, stackTrace);
+      return null;
+    }
+  }
+
+  /// 插入或更新日记本设置
+  Future<void> insertOrUpdateDiarySettings({String? imagePath, int? colorValue}) async {
+    try {
+      final db = await database;
+      Map<String, dynamic> data = {
+        'updated_at': DateTime.now().millisecondsSinceEpoch,
+      };
+      if (imagePath == null) {
+        data['background_image_path'] = null;
+      } else {
+        data['background_image_path'] = imagePath;
+      }
+      if (colorValue != null) {
+        data['background_color'] = colorValue;
+      }
+      // 查询是否已有设置
+      final existing = await db.query('diary_settings');
+      if (existing.isEmpty) {
+        data['created_at'] = DateTime.now().millisecondsSinceEpoch;
+        await db.insert('diary_settings', data);
+      } else {
+        data['created_at'] = existing.first['created_at'];
+        await db.update('diary_settings', data);
+      }
+    } catch (e, stackTrace) {
+      _handleError('插入或更新日记本设置失败', e, stackTrace);
+      rethrow;
+    }
+  }
+
+  /// 删除日记本背景图片
+  Future<void> deleteDiaryBackgroundImage() async {
+    try {
+      final db = await database;
+      await db.update('diary_settings', {'background_image_path': null});
+    } catch (e, stackTrace) {
+      _handleError('删除日记本背景图片失败', e, stackTrace);
+      rethrow;
+    }
   }
 }
