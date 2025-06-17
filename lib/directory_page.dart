@@ -632,7 +632,10 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
   void _openFolder(String folderName) {
     if (mounted) {
       setState(() {
-        _folderStack.add(_currentParentFolder ?? '');
+        // 只有当前不是根目录时才入栈
+        if (_currentParentFolder != null) {
+          _folderStack.add(_currentParentFolder!);
+        }
         _currentParentFolder = folderName;
         _isMultiSelectMode = false;
         _selectedItems.clear();
@@ -645,8 +648,8 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
   }
 
   void _goBack() {
-    // 如果已经在根目录，什么都不做
-    if (_currentParentFolder == null || _folderStack.isEmpty) {
+    // 返回到根目录时，强制清空栈并设为null
+    if (_folderStack.isEmpty || _currentParentFolder == null) {
       setState(() {
         _currentParentFolder = null;
         _folderStack.clear();
@@ -657,11 +660,15 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         }
       });
       _loadData();
-      if (mounted) setState(() {});
       return;
     }
     setState(() {
       _currentParentFolder = _folderStack.removeLast();
+      // 如果已经到根目录，强制清空
+      if (_currentParentFolder == null || _folderStack.isEmpty) {
+        _currentParentFolder = null;
+        _folderStack.clear();
+      }
       _isMultiSelectMode = false;
       _selectedItems.clear();
       for (var item in _items) {
@@ -669,7 +676,6 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       }
     });
     _loadData();
-    if (mounted) setState(() {});
   }
 
   Future<String?> _getParentFolder(String folderName) async {
