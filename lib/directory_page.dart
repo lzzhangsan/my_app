@@ -12,6 +12,7 @@ import 'package:path_provider/path_provider.dart';
 import 'dart:async'; // For Timer
 import 'package:path/path.dart' as path;
 import 'services/image_picker_service.dart';
+import 'package:archive/archive_io.dart';
 
 class DirectoryPage extends StatefulWidget {
   final Function(String) onDocumentOpen;
@@ -222,81 +223,49 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       }
       return;
     }
-
-    String? targetFolderName = await _selectFolder();
-    if (targetFolderName != null) {
-      try {
-        // 检查是否存在循环依赖
-        for (var item in _selectedItems) {
-          if (item.type == ItemType.folder) {
-            // 不能将文件夹移动到自身
-            if (item.name == targetFolderName) {
-              if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('不能将文件夹移动到自身')),
-                );
-              }
-              return;
-            }
-            
-            // 不能将文件夹移动到其子文件夹中
-            String itemPath = await _getDirectoryFolderPath(targetFolderName);
-            if (itemPath.contains('${item.name}/') || itemPath.endsWith('/${item.name}')) {
-              if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('不能将文件夹移动到其子文件夹中')),
-                );
-              }
-              return;
-            }
-          }
+    // 获取所有选中项的当前父目录，排除自身和当前目录
+    List<String> excludeIds = [];
+    String? currentFolderId;
+    final dbService = getService<DatabaseService>();
+    final folders = await dbService.getAllDirectoryFolders();
+    for (var item in _selectedItems) {
+      if (item.type == ItemType.folder) {
+        final folder = folders.firstWhere((f) => f['name'] == item.name, orElse: () => <String, dynamic>{'id': '', 'parent_folder': null, 'name': ''});
+        if (folder['id'] != '') excludeIds.add(folder['id'] as String);
+      } else if (item.type == ItemType.document) {
+        final doc = await dbService.getDocumentByName(item.name);
+        if (doc != null && doc['parent_folder'] != null) {
+          currentFolderId = doc['parent_folder'] as String;
+          excludeIds.add(currentFolderId);
         }
-
-        // 批量移动操作
-        final dbService = getService<DatabaseService>();
-        
-        // 获取目标文件夹信息
-        print('获取目标文件夹信息: $targetFolderName');
-        Map<String, dynamic>? targetFolder = await dbService.getFolderByName(targetFolderName);
-        if (targetFolder == null) {
-          throw Exception('目标文件夹不存在: $targetFolderName');
+      }
+    }
+    // 仅在当前目录不为根目录时显示根目录选项
+    bool showRoot = _currentParentFolder != null;
+    final targetFolderName = await _selectFolder(excludeFolderIds: excludeIds, showRoot: showRoot);
+    if (targetFolderName == null) return;
+    try {
+      for (var item in _selectedItems) {
+        if (item.type == ItemType.document) {
+          await dbService.updateDocumentParentFolder(item.name, targetFolderName.isEmpty ? null : targetFolderName);
+        } else if (item.type == ItemType.folder) {
+          await dbService.updateFolderParentFolder(item.name, targetFolderName.isEmpty ? null : targetFolderName);
         }
-        
-        for (var item in _selectedItems) {
-          if (item.type == ItemType.document) {
-            print('移动文档 ${item.name} 到文件夹 $targetFolderName');
-            await dbService.updateDocumentParentFolder(item.name, targetFolderName);
-          } else if (item.type == ItemType.folder) {
-            print('移动文件夹 ${item.name} 到文件夹 $targetFolderName');
-            await dbService.updateFolderParentFolder(item.name, targetFolderName);
-          }
-        }
-        
-        _selectedItems.clear();
-        _isMultiSelectMode = false;
-        if (mounted) {
-          print('移动完成，重新加载数据...');
-          await _loadData();
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('已将选中的项目移动到 $targetFolderName')),
-          );
-        }
-      } catch (e) {
-        print('批量移动出错: $e');
-        if (mounted) {
-          String errorMsg = '批量移动出错，请重试';
-          if (e.toString().isNotEmpty) {
-            // 截取错误信息的前50个字符，避免过长
-            String errorDetails = e.toString();
-            if (errorDetails.length > 50) {
-              errorDetails = '${errorDetails.substring(0, 50)}...';
-            }
-            errorMsg = '批量移动出错: $errorDetails';
-          }
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(errorMsg)),
-          );
-        }
+      }
+      _selectedItems.clear();
+      _isMultiSelectMode = false;
+      if (mounted) {
+        await _loadData();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('已将选中的项目移动到${targetFolderName.isEmpty ? '根目录' : targetFolderName}')),
+        );
+      }
+    } catch (e) {
+      print('批量移动出错: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('批量移动出错，请重试')),
+        );
       }
     }
   }
@@ -699,6 +668,10 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       });
       _loadData();
     }
+    // 强制刷新页面状态，确保根目录时UI同步
+    if (mounted) {
+      setState(() {});
+    }
   }
 
   Future<String?> _getParentFolder(String folderName) async {
@@ -762,12 +735,12 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       if (folderName != null && folderName.isNotEmpty) {
         if (!await getService<DatabaseService>().doesNameExist(folderName)) {
           String? parentFolder = _currentParentFolder;
-
+          // 根目录时parentFolder应为null
+          if (parentFolder == null || parentFolder.isEmpty) parentFolder = null;
           await getService<DatabaseService>().insertFolder(
             folderName,
             parentFolder: parentFolder,
           );
-
           if (mounted) {
             await _loadData();
             _highlightNewItem(folderName, ItemType.folder);
@@ -775,7 +748,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         } else {
           _showDuplicateNameWarning();
           if (mounted) {
-            await _loadData(); // Refresh data even if name is duplicate
+            await _loadData();
           }
         }
       }
@@ -1228,14 +1201,15 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       // 获取当前文档信息
       final dbService = getService<DatabaseService>();
       final doc = await dbService.getDocumentByName(documentName);
-      String? currentFolderName;
+      String? currentFolderId;
+      bool showRoot = true;
       if (doc != null && doc['parent_folder'] != null) {
-        // 通过id查找文件夹名
-        final folders = await dbService.getAllDirectoryFolders();
-        final folder = folders.firstWhere((f) => f['id'] == doc['parent_folder'], orElse: () => <String, dynamic>{'name': '', 'parent_folder': null, 'id': ''});
-        if (folder['name'] != '') currentFolderName = folder['name'] as String;
+        currentFolderId = doc['parent_folder'] as String;
+      } else {
+        // 文档在根目录，不显示根目录选项
+        showRoot = false;
       }
-      final targetFolderName = await _selectFolder(excludeFolderIds: currentFolderName != null ? [currentFolderName] : null);
+      final targetFolderName = await _selectFolder(excludeFolderIds: currentFolderId != null ? [currentFolderId] : null, showRoot: showRoot);
       if (targetFolderName == null) return; // 取消时不做任何操作
       if (targetFolderName.isEmpty) {
         // 移动到根目录
@@ -1842,7 +1816,6 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       }
       return;
     }
-
     try {
       // 显示进度对话框
       showDialog(
@@ -1858,57 +1831,45 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
           ),
         ),
       );
-
-      // 收集所有选中的文件
-      List<XFile> filesToShare = [];
-      List<String> missingFiles = [];
-
+      // 1. 收集所有选中文档的导出路径
+      List<String> exportPaths = [];
       for (var item in _selectedItems) {
         if (item.type == ItemType.document) {
           try {
             String exportPath = await getService<DatabaseService>().exportDocument(item.name);
             if (await File(exportPath).exists()) {
-              filesToShare.add(XFile(exportPath));
-            } else {
-              missingFiles.add(item.name);
+              exportPaths.add(exportPath);
             }
           } catch (e) {
             print('导出文档 ${item.name} 时出错: $e');
-            missingFiles.add(item.name);
           }
         }
       }
-
-      // 关闭进度对话框
-      if (mounted) {
-        Navigator.pop(context);
-      }
-
-      if (filesToShare.isEmpty) {
+      // 2. 打包为ZIP
+      if (exportPaths.isEmpty) {
         if (mounted) {
+          Navigator.pop(context);
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('没有找到可导出的文件')),
           );
         }
         return;
       }
-
-      // 分享文件
-      await Share.shareXFiles(
-        filesToShare,
-        subject: '分享: ${filesToShare.length} 个文件',
-      );
-
-      // 如果有文件丢失，显示提示
-      if (missingFiles.isNotEmpty) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('以下文件导出失败：${missingFiles.join(", ")}')),
-          );
-        }
+      final tempDir = await getTemporaryDirectory();
+      final zipPath = '${tempDir.path}/exported_docs_${DateTime.now().millisecondsSinceEpoch}.zip';
+      final encoder = ZipFileEncoder();
+      encoder.create(zipPath);
+      for (final path in exportPaths) {
+        encoder.addFile(File(path));
       }
+      encoder.close();
+      if (mounted) {
+        Navigator.pop(context);
+      }
+      await Share.shareXFiles([
+        XFile(zipPath)
+      ], subject: '批量导出文档');
     } catch (e) {
-      // 确保关闭进度对话框
       if (mounted) {
         Navigator.of(context).pop();
         ScaffoldMessenger.of(context).showSnackBar(
@@ -2380,11 +2341,6 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
                         icon: const Icon(Icons.folder),
                         onPressed: _moveSelectedItemsToFolder,
                         tooltip: '移动到文件夹',
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.drive_folder_upload),
-                        onPressed: _moveSelectedItemsToDirectory,
-                        tooltip: '移动到目录',
                       ),
                       IconButton(
                         icon: const Icon(Icons.share),
