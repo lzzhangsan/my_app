@@ -648,11 +648,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
   }
 
   void _goBack() {
-    // 返回到根目录时，强制清空栈并设为null
-    if (_folderStack.isEmpty || _currentParentFolder == null) {
+    if (_folderStack.isNotEmpty) {
       setState(() {
-        _currentParentFolder = null;
-        _folderStack.clear();
+        _currentParentFolder = _folderStack.removeLast();
         _isMultiSelectMode = false;
         _selectedItems.clear();
         for (var item in _items) {
@@ -662,13 +660,10 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       _loadData();
       return;
     }
+    // 栈为空时才回到根目录
     setState(() {
-      _currentParentFolder = _folderStack.removeLast();
-      // 如果已经到根目录，强制清空
-      if (_currentParentFolder == null || _folderStack.isEmpty) {
-        _currentParentFolder = null;
-        _folderStack.clear();
-      }
+      _currentParentFolder = null;
+      _folderStack.clear();
       _isMultiSelectMode = false;
       _selectedItems.clear();
       for (var item in _items) {
