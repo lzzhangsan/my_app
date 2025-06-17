@@ -1564,58 +1564,84 @@ class DatabaseService {
 
   Future<void> deleteDocument(String documentName, {String? parentFolder}) async {
     final db = await database;
-    await db.delete(
-      'documents',
-      where: 'name = ?',
-      whereArgs: [documentName],
-    );
-    // 首先获取文档ID
-    List<Map<String, dynamic>> documents = await db.query(
-      'documents',
-      columns: ['id'],
-      where: 'name = ?',
-      whereArgs: [documentName],
-    );
     
-    if (documents.isNotEmpty) {
-      String documentId = documents.first['id'];
+    try {
+      await db.transaction((txn) async {
+        // 首先获取文档ID
+        List<Map<String, dynamic>> documents = await txn.query(
+          'documents',
+          columns: ['id'],
+          where: 'name = ?',
+          whereArgs: [documentName],
+        );
+        
+        if (documents.isNotEmpty) {
+          String documentId = documents.first['id'] as String;
+          
+          // 删除文档相关的所有数据
+          await txn.delete(
+            'text_boxes',
+            where: 'document_id = ?',
+            whereArgs: [documentId],
+          );
+          await txn.delete(
+            'image_boxes',
+            where: 'document_id = ?',
+            whereArgs: [documentId],
+          );
+          await txn.delete(
+            'audio_boxes',
+            where: 'document_id = ?',
+            whereArgs: [documentId],
+          );
+          await txn.delete(
+            'document_settings',
+            where: 'document_id = ?',
+            whereArgs: [documentId],
+          );
+          
+          // 删除文档本身
+          await txn.delete(
+            'documents',
+            where: 'id = ?',
+            whereArgs: [documentId],
+          );
+        }
+
+        // 重新排序剩余文档
+        String? parentFolderId;
+        if (parentFolder != null) {
+          final parentFolderData = await txn.query(
+            'folders',
+            where: 'name = ?',
+            whereArgs: [parentFolder],
+          );
+          parentFolderId = parentFolderData.isNotEmpty ? parentFolderData.first['id'] as String? : null;
+        }
+        
+        List<Map<String, dynamic>> remainingDocuments = await txn.query(
+          'documents',
+          where: parentFolderId == null ? 'parent_folder IS NULL' : 'parent_folder = ?',
+          whereArgs: parentFolderId == null ? null : [parentFolderId],
+          orderBy: 'order_index ASC',
+        );
+        
+        for (int i = 0; i < remainingDocuments.length; i++) {
+          await txn.update(
+            'documents',
+            {'order_index': i},
+            where: 'id = ?',
+            whereArgs: [remainingDocuments[i]['id']],
+          );
+        }
+      });
       
-      await db.delete(
-        'text_boxes',
-        where: 'document_id = ?',
-        whereArgs: [documentId],
-      );
-      await db.delete(
-        'image_boxes',
-        where: 'document_id = ?',
-        whereArgs: [documentId],
-      );
-      await db.delete(
-        'audio_boxes',
-        where: 'document_id = ?',
-        whereArgs: [documentId],
-      );
-
-      await db.delete(
-        'document_settings',
-        where: 'document_id = ?',
-        whereArgs: [documentId],
-      );
-    }
-
-    List<Map<String, dynamic>> remainingDocuments = await db.query(
-      'documents',
-      where: parentFolder == null ? 'parent_folder IS NULL' : 'parent_folder = ?',
-      whereArgs: parentFolder == null ? null : [parentFolder],
-      orderBy: 'order_index ASC',
-    );
-    for (int i = 0; i < remainingDocuments.length; i++) {
-      await db.update(
-        'documents',
-        {'order_index': i},
-        where: 'name = ?',
-        whereArgs: [remainingDocuments[i]['name']],
-      );
+      if (kDebugMode) {
+        print('成功删除文档: $documentName');
+      }
+    } catch (e, stackTrace) {
+      _handleError('删除文档失败: $documentName', e, stackTrace);
+      rethrow;
     }
   }
 
@@ -1650,34 +1676,138 @@ class DatabaseService {
 
   Future<void> deleteFolder(String folderName, {String? parentFolder}) async {
     final db = await database;
-    await db.delete(
-      'folders',
-      where: 'name = ?',
-      whereArgs: [folderName],
-    );
+    
+    try {
+      // 使用事务确保数据一致性
+      await db.transaction((txn) async {
+        // 首先获取要删除的文件夹信息
+        final folderToDelete = await txn.query(
+          'folders',
+          where: 'name = ?',
+          whereArgs: [folderName],
+        );
+        
+        if (folderToDelete.isEmpty) {
+          throw Exception('文件夹不存在: $folderName');
+        }
+        
+        final folderId = folderToDelete.first['id'] as String;
+        
+        // 在事务内部获取子文档和子文件夹，使用事务对象
+        String? parentFolderId;
+        if (parentFolder != null) {
+          final parentFolderData = await txn.query(
+            'folders',
+            where: 'name = ?',
+            whereArgs: [parentFolder],
+          );
+          parentFolderId = parentFolderData.isNotEmpty ? parentFolderData.first['id'] as String? : null;
+        }
+        
+        // 获取子文档
+        List<Map<String, dynamic>> documents = await txn.query(
+          'documents',
+          where: parentFolderId == null ? 'parent_folder IS NULL' : 'parent_folder = ?',
+          whereArgs: parentFolderId == null ? null : [parentFolderId],
+        );
+        
+        // 删除子文档
+        for (var doc in documents) {
+          final docId = doc['id'] as String;
+          // 删除文档相关的所有数据
+          await txn.delete('text_boxes', where: 'document_id = ?', whereArgs: [docId]);
+          await txn.delete('image_boxes', where: 'document_id = ?', whereArgs: [docId]);
+          await txn.delete('audio_boxes', where: 'document_id = ?', whereArgs: [docId]);
+          await txn.delete('document_settings', where: 'document_id = ?', whereArgs: [docId]);
+          await txn.delete('documents', where: 'id = ?', whereArgs: [docId]);
+        }
 
-    List<Map<String, dynamic>> documents = await getDocuments(parentFolder: folderName);
-    for (var doc in documents) {
-      await deleteDocument(doc['name'], parentFolder: folderName);
-    }
+        // 获取子文件夹
+        List<Map<String, dynamic>> subFolders = await txn.query(
+          'folders',
+          where: parentFolderId == null ? 'parent_folder IS NULL' : 'parent_folder = ?',
+          whereArgs: parentFolderId == null ? null : [parentFolderId],
+        );
+        
+        // 递归删除子文件夹（在事务内部）
+        for (var subFolder in subFolders) {
+          final subFolderId = subFolder['id'] as String;
+          final subFolderName = subFolder['name'] as String;
+          
+          // 递归删除子文件夹的内容
+          await _deleteFolderRecursive(txn, subFolderId, subFolderName);
+        }
 
-    List<Map<String, dynamic>> subFolders = await getFolders(parentFolder: folderName);
-    for (var subFolder in subFolders) {
-      await deleteFolder(subFolder['name'], parentFolder: folderName);
-    }
+        // 删除文件夹本身
+        await txn.delete(
+          'folders',
+          where: 'id = ?',
+          whereArgs: [folderId],
+        );
 
-    List<Map<String, dynamic>> remainingFolders = await getFolders(parentFolder: parentFolder);
-    for (int i = 0; i < remainingFolders.length; i++) {
-      await db.update(
-        'folders',
-        {'order_index': i},
-        where: 'name = ?',
-        whereArgs: [remainingFolders[i]['name']],
-      );
+        // 重新排序剩余文件夹
+        List<Map<String, dynamic>> remainingFolders = await txn.query(
+          'folders',
+          where: parentFolderId == null ? 'parent_folder IS NULL' : 'parent_folder = ?',
+          whereArgs: parentFolderId == null ? null : [parentFolderId],
+          orderBy: 'order_index ASC',
+        );
+        
+        for (int i = 0; i < remainingFolders.length; i++) {
+          await txn.update(
+            'folders',
+            {'order_index': i},
+            where: 'id = ?',
+            whereArgs: [remainingFolders[i]['id']],
+          );
+        }
+      });
+      
+      if (kDebugMode) {
+        print('成功删除文件夹: $folderName');
+      }
+    } catch (e, stackTrace) {
+      _handleError('删除文件夹失败: $folderName', e, stackTrace);
+      rethrow;
     }
   }
 
+  /// 在事务内部递归删除文件夹
+  Future<void> _deleteFolderRecursive(Transaction txn, String folderId, String folderName) async {
+    // 获取子文档
+    List<Map<String, dynamic>> documents = await txn.query(
+      'documents',
+      where: 'parent_folder = ?',
+      whereArgs: [folderId],
+    );
+    
+    // 删除子文档
+    for (var doc in documents) {
+      final docId = doc['id'] as String;
+      await txn.delete('text_boxes', where: 'document_id = ?', whereArgs: [docId]);
+      await txn.delete('image_boxes', where: 'document_id = ?', whereArgs: [docId]);
+      await txn.delete('audio_boxes', where: 'document_id = ?', whereArgs: [docId]);
+      await txn.delete('document_settings', where: 'document_id = ?', whereArgs: [docId]);
+      await txn.delete('documents', where: 'id = ?', whereArgs: [docId]);
+    }
 
+    // 获取子文件夹
+    List<Map<String, dynamic>> subFolders = await txn.query(
+      'folders',
+      where: 'parent_folder = ?',
+      whereArgs: [folderId],
+    );
+    
+    // 递归删除子文件夹
+    for (var subFolder in subFolders) {
+      final subFolderId = subFolder['id'] as String;
+      final subFolderName = subFolder['name'] as String;
+      await _deleteFolderRecursive(txn, subFolderId, subFolderName);
+    }
+
+    // 删除当前文件夹
+    await txn.delete('folders', where: 'id = ?', whereArgs: [folderId]);
+  }
 
   Future<List<Map<String, dynamic>>> getFolders({String? parentFolder}) async {
     final db = await database;
@@ -1693,8 +1823,26 @@ class DatabaseService {
         whereArgs: parentFolderId == null ? null : [parentFolderId],
         orderBy: 'order_index ASC',
       );
-      return result.map((map) => Map<String, dynamic>.from(map)).toList();
-    } catch (e) {
+      
+      // 数据验证和清理
+      List<Map<String, dynamic>> validResults = [];
+      for (var folder in result) {
+        if (folder['name'] != null && folder['name'].toString().isNotEmpty) {
+          validResults.add(Map<String, dynamic>.from(folder));
+        } else {
+          if (kDebugMode) {
+            print('警告：发现无效文件夹数据，已跳过: $folder');
+          }
+        }
+      }
+      
+      if (kDebugMode) {
+        print('获取文件夹成功: ${validResults.length} 个有效文件夹');
+      }
+      
+      return validResults;
+    } catch (e, stackTrace) {
+      _handleError('获取文件夹时出错', e, stackTrace);
       print('获取文件夹时出错: $e');
       return [];
     }
@@ -1708,12 +1856,31 @@ class DatabaseService {
         final folder = await getFolderByName(parentFolder);
         parentFolderId = folder?['id'];
       }
-      return await db.query(
+      
+      List<Map<String, dynamic>> result = await db.query(
         'documents',
         where: parentFolderId == null ? 'parent_folder IS NULL' : 'parent_folder = ?',
         whereArgs: parentFolderId == null ? null : [parentFolderId],
         orderBy: 'order_index ASC',
       );
+      
+      // 数据验证和清理
+      List<Map<String, dynamic>> validResults = [];
+      for (var document in result) {
+        if (document['name'] != null && document['name'].toString().isNotEmpty) {
+          validResults.add(Map<String, dynamic>.from(document));
+        } else {
+          if (kDebugMode) {
+            print('警告：发现无效文档数据，已跳过: $document');
+          }
+        }
+      }
+      
+      if (kDebugMode) {
+        print('获取文档成功: ${validResults.length} 个有效文档');
+      }
+      
+      return validResults;
     } catch (e, stackTrace) {
       _handleError('获取文档时出错', e, stackTrace);
       print('获取文档时出错: $e');
@@ -4074,6 +4241,127 @@ class DatabaseService {
       await db.update('diary_settings', {'background_image_path': null});
     } catch (e, stackTrace) {
       _handleError('删除日记本背景图片失败', e, stackTrace);
+      rethrow;
+    }
+  }
+
+  /// 检查数据完整性
+  Future<Map<String, dynamic>> checkDataIntegrity() async {
+    final db = await database;
+    Map<String, dynamic> report = {
+      'isValid': true,
+      'issues': [],
+      'folderCount': 0,
+      'documentCount': 0,
+    };
+    
+    try {
+      // 检查文件夹数据完整性
+      final folders = await db.query('folders');
+      report['folderCount'] = folders.length;
+      
+      for (var folder in folders) {
+        if (folder['name'] == null || folder['name'].toString().isEmpty) {
+          report['isValid'] = false;
+          report['issues'].add('发现无效文件夹名称: ${folder['id']}');
+        }
+        
+        // 检查父文件夹引用
+        if (folder['parent_folder'] != null) {
+          final parentExists = await db.query(
+            'folders',
+            where: 'id = ?',
+            whereArgs: [folder['parent_folder']],
+          );
+          if (parentExists.isEmpty) {
+            report['isValid'] = false;
+            report['issues'].add('文件夹 ${folder['name']} 的父文件夹引用无效');
+          }
+        }
+      }
+      
+      // 检查文档数据完整性
+      final documents = await db.query('documents');
+      report['documentCount'] = documents.length;
+      
+      for (var document in documents) {
+        if (document['name'] == null || document['name'].toString().isEmpty) {
+          report['isValid'] = false;
+          report['issues'].add('发现无效文档名称: ${document['id']}');
+        }
+        
+        // 检查父文件夹引用
+        if (document['parent_folder'] != null) {
+          final parentExists = await db.query(
+            'folders',
+            where: 'id = ?',
+            whereArgs: [document['parent_folder']],
+          );
+          if (parentExists.isEmpty) {
+            report['isValid'] = false;
+            report['issues'].add('文档 ${document['name']} 的父文件夹引用无效');
+          }
+        }
+      }
+      
+      if (kDebugMode) {
+        print('数据完整性检查完成: ${report['isValid'] ? '通过' : '发现问题'}');
+        if (report['issues'].isNotEmpty) {
+          print('发现的问题:');
+          for (var issue in report['issues']) {
+            print('  - $issue');
+          }
+        }
+      }
+      
+    } catch (e, stackTrace) {
+      _handleError('数据完整性检查失败', e, stackTrace);
+      report['isValid'] = false;
+      report['issues'].add('检查过程出错: $e');
+    }
+    
+    return report;
+  }
+
+  /// 修复数据完整性问题
+  Future<void> repairDataIntegrity() async {
+    final db = await database;
+    
+    try {
+      await db.transaction((txn) async {
+        // 修复无效的文件夹名称
+        await txn.update(
+          'folders',
+          {'name': '未命名文件夹_${DateTime.now().millisecondsSinceEpoch}'},
+          where: 'name IS NULL OR name = ""',
+        );
+        
+        // 修复无效的文档名称
+        await txn.update(
+          'documents',
+          {'name': '未命名文档_${DateTime.now().millisecondsSinceEpoch}'},
+          where: 'name IS NULL OR name = ""',
+        );
+        
+        // 清理无效的父文件夹引用
+        await txn.update(
+          'folders',
+          {'parent_folder': null},
+          where: 'parent_folder NOT IN (SELECT id FROM folders)',
+        );
+        
+        await txn.update(
+          'documents',
+          {'parent_folder': null},
+          where: 'parent_folder NOT IN (SELECT id FROM folders)',
+        );
+      });
+      
+      if (kDebugMode) {
+        print('数据完整性修复完成');
+      }
+    } catch (e, stackTrace) {
+      _handleError('数据完整性修复失败', e, stackTrace);
       rethrow;
     }
   }

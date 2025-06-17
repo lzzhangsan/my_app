@@ -84,6 +84,8 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       _loadData();
       _loadBackgroundSettings();
       _loadTemplateDocuments();
+      // 启动时检查数据完整性
+      _checkDataIntegrityOnStartup();
     } else {
       print("Web environment detected: Database-dependent features in initState are skipped.");
       // Initialize with empty or default states for web
@@ -94,6 +96,26 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
           _backgroundColor = Colors.white; // Default background for web
         });
       }
+    }
+  }
+
+  /// 启动时检查数据完整性
+  Future<void> _checkDataIntegrityOnStartup() async {
+    try {
+      final report = await getService<DatabaseService>().checkDataIntegrity();
+      if (!report['isValid']) {
+        print('启动时发现数据完整性问题: ${report['issues']}');
+        // 自动修复数据完整性问题
+        await getService<DatabaseService>().repairDataIntegrity();
+        print('已自动修复数据完整性问题');
+        
+        // 重新加载数据
+        if (mounted) {
+          await _loadData();
+        }
+      }
+    } catch (e) {
+      print('启动时数据完整性检查失败: $e');
     }
   }
 
@@ -198,6 +220,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         _selectedItems.clear();
         _isMultiSelectMode = false;
         if (mounted) {
+          // 删除后重新加载数据，确保界面和数据库状态一致
           await _loadData();
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('已删除选中的项目')),
@@ -567,30 +590,36 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       if (mounted) {
         setState(() {
           _items.clear();
-          // _isLoading = false; // Assuming _isLoading is handled elsewhere or not critical for web if no data loads
         });
       }
       return;
     }
+    
     try {
       _items.clear();
       print('清除项目列表，开始加载数据...');
 
+      // 加载文件夹数据
       List<Map<String, dynamic>> folders = await getService<DatabaseService>().getFolders(parentFolder: _currentParentFolder);
       print('从数据库加载了 ${folders.length} 个文件夹');
 
       for (var folder in folders) {
-        print('加载文件夹: ${folder['name']}, 顺序: ${folder['order_index']}');
-        _items.add(DirectoryItem(
-          name: folder['name'],
-          type: ItemType.folder,
-          order: folder['order_index'] ?? 0,
-          isTemplate: false,
-          parentFolder: folder['parent_folder'],
-          isSelected: false,
-        ));
+        if (folder['name'] != null && folder['name'].toString().isNotEmpty) {
+          print('加载文件夹: ${folder['name']}, 顺序: ${folder['order_index']}');
+          _items.add(DirectoryItem(
+            name: folder['name'],
+            type: ItemType.folder,
+            order: folder['order_index'] ?? 0,
+            isTemplate: false,
+            parentFolder: folder['parent_folder'],
+            isSelected: false,
+          ));
+        } else {
+          print('警告：发现无效文件夹数据: $folder');
+        }
       }
 
+      // 加载文档数据
       List<Map<String, dynamic>> documents = await getService<DatabaseService>().getDocuments(parentFolder: _currentParentFolder);
       print('从数据库加载了 ${documents.length} 个文档');
 
@@ -600,30 +629,46 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
           print('跳过封面页文档，不在目录页显示');
           continue;
         }
-        print('加载文档: ${document['name']}, 顺序: ${document['order_index']}');
-        _items.add(DirectoryItem(
-          name: document['name'],
-          type: ItemType.document,
-          order: document['order_index'] ?? 0,
-          isTemplate: document['is_template'] == 1,
-          parentFolder: document['parent_folder'],
-          isSelected: false,
-        ));
+        
+        if (document['name'] != null && document['name'].toString().isNotEmpty) {
+          print('加载文档: ${document['name']}, 顺序: ${document['order_index']}');
+          _items.add(DirectoryItem(
+            name: document['name'],
+            type: ItemType.document,
+            order: document['order_index'] ?? 0,
+            isTemplate: document['is_template'] == 1,
+            parentFolder: document['parent_folder'],
+            isSelected: false,
+          ));
+        } else {
+          print('警告：发现无效文档数据: $document');
+        }
       }
 
+      // 按顺序排序
       _items.sort((a, b) => a.order.compareTo(b.order));
 
       print('已加载 ${_items.length} 个项目，正在更新界面...');
+      
       if (mounted) {
         setState(() {});
       }
 
-      _loadTemplateDocuments();
+      // 加载模板文档
+      await _loadTemplateDocuments();
+      
+      print('数据加载完成，共 ${_items.length} 个项目');
     } catch (e) {
       print('Error loading data: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('加载数据时出错。请重试。')),
+          SnackBar(
+            content: Text('加载数据时出错。请重试。'),
+            action: SnackBarAction(
+              label: '重试',
+              onPressed: () => _loadData(),
+            ),
+          ),
         );
       }
     }
@@ -924,9 +969,11 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         String? parentFolder = _currentParentFolder;
         await getService<DatabaseService>().deleteFolder(folderName, parentFolder: parentFolder);
         if (mounted) {
-          setState(() {
-            _items.removeWhere((item) => item.type == ItemType.folder && item.name == folderName);
-          });
+          // 删除后重新加载数据，确保界面和数据库状态一致
+          await _loadData();
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('文件夹 "$folderName" 已删除')),
+          );
         }
       } catch (e) {
         print('Error deleting folder: $e');
@@ -1624,6 +1671,23 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
                 _importDirectoryData();
               },
             ),
+            Divider(),
+            ListTile(
+              leading: Icon(Icons.health_and_safety),
+              title: Text('检查数据完整性'),
+              onTap: () {
+                Navigator.pop(context);
+                _checkDataIntegrity();
+              },
+            ),
+            ListTile(
+              leading: Icon(Icons.build),
+              title: Text('修复数据问题'),
+              onTap: () {
+                Navigator.pop(context);
+                _repairDataIntegrity();
+              },
+            ),
           ],
         );
       },
@@ -2013,6 +2077,103 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         Navigator.pop(context); // 关闭进度对话框
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('导入数据时出错：$e')),
+        );
+      }
+    }
+  }
+
+  /// 手动检查数据完整性
+  Future<void> _checkDataIntegrity() async {
+    try {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('正在检查数据完整性...')),
+        );
+      }
+      
+      final report = await getService<DatabaseService>().checkDataIntegrity();
+      
+      if (mounted) {
+        if (report['isValid']) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('数据完整性检查通过！文件夹: ${report['folderCount']}, 文档: ${report['documentCount']}'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        } else {
+          showDialog(
+            context: context,
+            builder: (context) => AlertDialog(
+              title: Text('发现数据完整性问题'),
+              content: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text('发现 ${report['issues'].length} 个问题:'),
+                    SizedBox(height: 8),
+                    ...report['issues'].map((issue) => Padding(
+                      padding: EdgeInsets.only(bottom: 4),
+                      child: Text('• $issue', style: TextStyle(fontSize: 12)),
+                    )).toList(),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: Text('关闭'),
+                ),
+                TextButton(
+                  onPressed: () {
+                    Navigator.pop(context);
+                    _repairDataIntegrity();
+                  },
+                  child: Text('修复问题'),
+                ),
+              ],
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      print('检查数据完整性时出错: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('检查数据完整性时出错: $e')),
+        );
+      }
+    }
+  }
+
+  /// 手动修复数据完整性问题
+  Future<void> _repairDataIntegrity() async {
+    try {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('正在修复数据问题...')),
+        );
+      }
+      
+      await getService<DatabaseService>().repairDataIntegrity();
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('数据问题修复完成！'),
+            backgroundColor: Colors.green,
+          ),
+        );
+        
+        // 重新加载数据
+        await _loadData();
+      }
+    } catch (e) {
+      print('修复数据完整性问题时出错: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('修复数据问题时出错: $e')),
         );
       }
     }
