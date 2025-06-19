@@ -9,6 +9,7 @@ import '../services/cache_service.dart';
 import '../services/performance_service.dart';
 import '../services/error_service.dart';
 import '../services/backup_service.dart';
+import '../services/background_media_service.dart';
 import 'app_state.dart';
 
 /// 服务定位器 - 管理所有服务的单例实例
@@ -19,6 +20,9 @@ class ServiceLocator {
 
   final Map<Type, dynamic> _services = {};
   bool _isInitialized = false;
+
+  /// 检查服务是否已初始化
+  bool get isInitialized => _isInitialized;
 
   /// 初始化所有服务
   Future<void> initialize() async {
@@ -55,6 +59,10 @@ class ServiceLocator {
       // 注册备份服务
       registerSingleton<BackupService>(BackupService());
       await get<BackupService>().initialize();
+      
+      // 注册后台媒体服务
+      registerSingleton<BackgroundMediaService>(BackgroundMediaService());
+      await get<BackgroundMediaService>().initialize();
       
       // 初始化性能监控服务
       await get<PerformanceService>().initialize();

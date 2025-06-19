@@ -6,6 +6,7 @@ import 'cover_page.dart';
 import 'media_manager_page.dart';
 import 'browser_page.dart';
 import 'core/service_locator.dart';
+import 'services/background_media_service.dart';
 import 'package:flutter/services.dart';
 import 'diary_page.dart';
 
@@ -20,6 +21,12 @@ void main() async {
   try {
     await serviceLocator.initialize();
     print('服务架构初始化成功');
+    
+    // 启动后台媒体服务
+    final backgroundService = getService<BackgroundMediaService>();
+    if (backgroundService.isInitialized) {
+      print('后台媒体服务已启动');
+    }
   } catch (e) {
     print('服务架构初始化失败: $e');
   }

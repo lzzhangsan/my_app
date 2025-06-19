@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">变化</string>
+    <string name="app_name">change_copy</string>
+    <string name="media_auto_import_channel_name">媒体自动导入</string>
+    <string name="media_auto_import_channel_description">监听媒体库变化并自动导入新媒体</string>
 </resources> 
