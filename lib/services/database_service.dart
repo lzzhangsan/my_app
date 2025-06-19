@@ -1356,7 +1356,7 @@ class DatabaseService {
         await txn.delete('audio_boxes');
         await txn.delete('document_settings');
         await txn.delete('directory_settings');
-        await txn.delete('media_items');
+        // await txn.delete('media_items'); // 修复：目录数据导入时不再清空媒体表
 
         // 导入新数据 - 分批处理优化
         int totalTables = tableData.length;
@@ -1498,12 +1498,14 @@ class DatabaseService {
               progressNotifier?.value = "正在导入${tableName}表: $processedRows/${rows.length}";
             }
           } else {
-            // 其他表正常导入（folders, documents, text_boxes, media_items）- 分批处理
+            // 其他表正常导入（folders, documents, text_boxes）- 分批处理
             for (int i = 0; i < rows.length; i += batchSize) {
               final end = (i + batchSize < rows.length) ? i + batchSize : rows.length;
               final batch = rows.sublist(i, end);
               
               for (var row in batch) {
+                // 修复：目录数据导入时不再导入media_items表
+                if (tableName == 'media_items') continue;
                 await txn.insert(tableName, Map<String, dynamic>.from(row));
                 processedRows++;
               }
@@ -2888,7 +2890,7 @@ class DatabaseService {
         await txn.delete('audio_boxes');
         await txn.delete('document_settings');
         await txn.delete('directory_settings');
-        await txn.delete('media_items');
+        // await txn.delete('media_items'); // 修复：目录数据导入时不再清空媒体表
 
         // 导入新数据
         for (var entry in tableData.entries) {
@@ -2961,8 +2963,10 @@ class DatabaseService {
               await txn.insert(tableName, audioBox);
             }
           } else {
-            // 其他表正常导入（folders, documents, text_boxes, media_items）
+            // 其他表正常导入（folders, documents, text_boxes）
             for (var row in rows) {
+              // 修复：目录数据导入时不再导入media_items表
+              if (tableName == 'media_items') continue;
               await txn.insert(tableName, Map<String, dynamic>.from(row));
             }
           }
