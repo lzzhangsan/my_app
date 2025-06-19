@@ -54,6 +54,11 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   final Set<String> _itemsToCleanup = {};
   Timer? _cleanupTimer;
 
+  /// 启动时的媒体ID快照，仅用于自动导入逻辑
+  Set<String> _initialAssetIds = {};
+  /// 是否正在自动处理，防止重复
+  bool _isAutoProcessing = false;
+
   @override
   void initState() {
     super.initState();
@@ -63,6 +68,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       _loadSettings();
       _checkPermissions().then((_) {
         _ensureMediaTable();
+        _initPhotoAutoImport(); // 初始化自动导入监听
       });
     } else {
       print("Web environment: Skipping database and permission operations in MediaManagerPage");
@@ -80,6 +86,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   void dispose() {
     _progressController.close();
     _cleanupTimer?.cancel(); // Cancel the cleanup timer
+    // 注销媒体库监听
+    PhotoManager.removeChangeCallback(_onPhotoLibraryChanged);
+    PhotoManager.stopChangeNotify();
     super.dispose();
   }
 
@@ -2400,6 +2409,75 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         await File(newPath).create(recursive: true);
         await entity.copy(newPath);
       }
+    }
+  }
+
+  /// 初始化自动导入监听
+  Future<void> _initPhotoAutoImport() async {
+    try {
+      // 获取当前所有图片/视频的assetId快照
+      final List<AssetPathEntity> imgPaths = await PhotoManager.getAssetPathList(type: RequestType.image);
+      final List<AssetPathEntity> vidPaths = await PhotoManager.getAssetPathList(type: RequestType.video);
+      final List<AssetEntity> allAssets = [];
+      for (final p in [...imgPaths, ...vidPaths]) {
+        allAssets.addAll(await p.getAssetListRange(start: 0, end: 100000));
+      }
+      _initialAssetIds = allAssets.map((e) => e.id).toSet();
+
+      // 注册媒体库变化监听
+      PhotoManager.addChangeCallback(_onPhotoLibraryChanged);
+      PhotoManager.startChangeNotify(); // 必须调用，确保监听生效
+      print('已注册媒体库变更监听，初始媒体数量: ${_initialAssetIds.length}');
+    } catch (e) {
+      print('初始化自动导入监听失败: $e');
+    }
+  }
+
+  /// 媒体库变更回调
+  Future<void> _onPhotoLibraryChanged([MethodCall? call]) async {
+    print('[自动导入] 媒体库变更回调被触发');
+    if (_isAutoProcessing) return;
+    _isAutoProcessing = true;
+    try {
+      // 获取最新所有图片/视频assetId
+      final List<AssetPathEntity> imgPaths = await PhotoManager.getAssetPathList(type: RequestType.image);
+      final List<AssetPathEntity> vidPaths = await PhotoManager.getAssetPathList(type: RequestType.video);
+      final List<AssetEntity> allAssets = [];
+      for (final p in [...imgPaths, ...vidPaths]) {
+        allAssets.addAll(await p.getAssetListRange(start: 0, end: 100000));
+      }
+      final Set<String> currentIds = allAssets.map((e) => e.id).toSet();
+      // 找出新增的assetId
+      final Set<String> newIds = currentIds.difference(_initialAssetIds);
+      if (newIds.isNotEmpty) {
+        print('检测到新增媒体: ${newIds.length} 个');
+        for (final asset in allAssets.where((e) => newIds.contains(e.id))) {
+          await _autoImportAndDeleteAsset(asset);
+        }
+        // 更新快照，只保留应用打开期间的新增
+        _initialAssetIds = currentIds;
+      }
+    } catch (e) {
+      print('自动导入处理异常: $e');
+    } finally {
+      _isAutoProcessing = false;
+    }
+  }
+
+  /// 自动导入并彻底删除本地媒体
+  Future<void> _autoImportAndDeleteAsset(AssetEntity asset) async {
+    try {
+      final file = await asset.file;
+      if (file == null) return;
+      // 仅处理图片/视频
+      if (asset.type != AssetType.image && asset.type != AssetType.video) return;
+      // 导入到应用媒体库
+      await _saveMultipleMediaToAppDirectory([file], asset.type == AssetType.image ? MediaType.image : MediaType.video);
+      // 删除本地媒体（彻底删除，包括已删除文件夹）
+      final bool deleted = await PhotoManager.editor.deleteWithIds([asset.id]) == 1;
+      print('自动导入并彻底删除: ${file.path}，删除结果: $deleted');
+    } catch (e) {
+      print('自动导入并删除媒体失败: $e');
     }
   }
 
