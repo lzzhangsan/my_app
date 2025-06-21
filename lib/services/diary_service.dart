@@ -69,13 +69,19 @@ class DiaryService {
   }
 
   Future<void> saveEntries(List<DiaryEntry> entries) async {
+    await migrateOldDataIfNeeded();
     final db = await getService<DatabaseService>().database;
-    await db.transaction((txn) async {
-      await txn.delete('diary_entries');
-      for (final entry in entries) {
-        await txn.insert('diary_entries', _entryToDbMap(entry));
-      }
-    });
+    final batch = db.batch();
+    await db.delete('diary_entries');
+    for (var entry in entries) {
+      batch.insert('diary_entries', _entryToDbMap(entry), conflictAlgorithm: ConflictAlgorithm.replace);
+    }
+    await batch.commit(noResult: true);
+  }
+
+  Future<void> replaceAllEntries(List<DiaryEntry> entries) async {
+    final dbService = getService<DatabaseService>();
+    await dbService.replaceAllDiaryEntries(entries);
   }
 
   Future<void> addEntry(DiaryEntry entry) async {

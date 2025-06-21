@@ -12,6 +12,7 @@ import 'package:archive/archive_io.dart';
 import 'package:uuid/uuid.dart';
 import '../core/app_state.dart';
 import '../core/service_locator.dart';
+import '../models/diary_entry.dart';
 
 /// 数据库服务 - 统一管理所有数据库操作
 class DatabaseService {
@@ -1288,33 +1289,21 @@ class DatabaseService {
       int processedFiles = 0;
       final totalFiles = archive.length;
       
-      for (var file in archive) {
-        final String filename = file.name;
+      for (final file in archive) {
+        final filename = file.name;
         if (file.isFile) {
-          final targetFile = File('$tempDirPath/$filename');
-          await targetFile.create(recursive: true);
-          
-          // 对于大文件使用流式写入
-          final data = file.content as List<int>;
-          if (data.length > 10 * 1024 * 1024) { // >10MB
-            final sink = targetFile.openWrite();
-            const chunkSize = 1024 * 1024; // 1MB chunks
-            for (int i = 0; i < data.length; i += chunkSize) {
-              final end = (i + chunkSize < data.length) ? i + chunkSize : data.length;
-              sink.add(data.sublist(i, end));
-              await sink.flush();
-            }
-            await sink.close();
-          } else {
-            await targetFile.writeAsBytes(data);
-          }
+          final outFile = File('$tempDirPath/$filename');
+          await outFile.create(recursive: true);
+          final outputStream = OutputFileStream(outFile.path);
+          file.writeContent(outputStream);
+          await outputStream.close();
+        } else {
+          await Directory('$tempDirPath/$filename').create(recursive: true);
         }
-        
         processedFiles++;
-        if (processedFiles % 10 == 0 || processedFiles == totalFiles) {
-          progressNotifier?.value = "正在解压文件: $processedFiles/$totalFiles";
-        }
+        progressNotifier?.value = "正在解压: $processedFiles/$totalFiles";
       }
+      await inputStream.close();
 
       // 读取目录数据 - 流式读取优化
       progressNotifier?.value = "正在读取数据文件...";
@@ -1357,175 +1346,68 @@ class DatabaseService {
       progressNotifier?.value = "正在导入数据库...";
       
       await db.transaction((txn) async {
-        // 清除现有数据
-        progressNotifier?.value = "正在清理现有数据...";
-        await txn.delete('folders');
-        await txn.delete('documents');
-        await txn.delete('text_boxes');
-        await txn.delete('image_boxes');
-        await txn.delete('audio_boxes');
-        await txn.delete('document_settings');
-        await txn.delete('directory_settings');
-        // await txn.delete('media_items'); // 修复：目录数据导入时不再清空媒体表
-
-        // 导入新数据 - 分批处理优化
-        int totalTables = tableData.length;
-        int processedTables = 0;
+        // 定义所有相关表的列表
+        const List<String> tableNames = [
+          'folders', 'documents', 'text_boxes', 'image_boxes', 'audio_boxes', 
+          'document_settings', 'directory_settings'
+        ];
         
+        // 为每个表创建临时表
+        for (final tableName in tableNames) {
+          await txn.execute('DROP TABLE IF EXISTS ${tableName}_temp');
+          await txn.execute('CREATE TABLE ${tableName}_temp AS SELECT * FROM $tableName WHERE 0');
+        }
+
+        // 导入新数据到临时表
+        final int batchSize = 100;
         for (var entry in tableData.entries) {
           final String tableName = entry.key;
           final List<dynamic> rows = entry.value;
-          print('处理表: $tableName, 行数: ${rows.length}');
-          
-          progressNotifier?.value = "正在导入$tableName表: ${rows.length}条记录";
-          
-          // 分批插入，避免单个事务过大
-          const int batchSize = 100;
-          int processedRows = 0;
 
-          if (tableName == 'directory_settings') {
-            // 分批处理目录设置
+          if (tableNames.contains(tableName)) {
+            int processedRows = 0;
             for (int i = 0; i < rows.length; i += batchSize) {
               final end = (i + batchSize < rows.length) ? i + batchSize : rows.length;
               final batch = rows.sublist(i, end);
               
               for (var row in batch) {
-                Map<String, dynamic> settings = Map<String, dynamic>.from(row);
-                String? fileName = settings.remove('backgroundImageFileName');
-                if (fileName != null) {
-                  // 复制背景图片到新位置
-                  String newPath = p.join(backgroundImagesPath, fileName);
-                  String tempPath = p.join(tempDirPath, 'background_images', fileName);
-                  if (await File(tempPath).exists()) {
-                    await File(tempPath).copy(newPath);
-                    settings['background_image_path'] = newPath;
-                    print('已导入目录背景图片: $newPath');
-                  }
-                }
-                await txn.insert(tableName, settings);
-                processedRows++;
+                 if (tableName == 'media_items') continue;
+                 Map<String, dynamic> newRow = Map<String, dynamic>.from(row);
+
+                 // --- 开始路径修正逻辑 ---
+                 if (tableName == 'image_boxes' && newRow.containsKey('imageFileName')) {
+                   String newPath = p.join(imagesDirPath, newRow['imageFileName']);
+                   if(await File(p.join(tempDirPath, 'images', newRow['imageFileName'])).exists()) {
+                     newRow['image_path'] = newPath;
+                   }
+                   newRow.remove('imageFileName');
+                 } else if (tableName == 'audio_boxes' && newRow.containsKey('audioFileName')) {
+                   String newPath = p.join(audiosDirPath, newRow['audioFileName']);
+                   if(await File(p.join(tempDirPath, 'audios', newRow['audioFileName'])).exists()) {
+                     newRow['audio_path'] = newPath;
+                   }
+                   newRow.remove('audioFileName');
+                 } else if ((tableName == 'directory_settings' || tableName == 'document_settings') && newRow.containsKey('backgroundImageFileName')) {
+                   String newPath = p.join(backgroundImagesPath, newRow['backgroundImageFileName']);
+                   if(await File(p.join(tempDirPath, 'background_images', newRow['backgroundImageFileName'])).exists()) {
+                     newRow['background_image_path'] = newPath;
+                   }
+                   newRow.remove('backgroundImageFileName');
+                 }
+                 // --- 结束路径修正逻辑 ---
+
+                 await txn.insert('${tableName}_temp', newRow);
+                 processedRows++;
               }
-              
-              progressNotifier?.value = "正在导入$tableName表: $processedRows/${rows.length}";
-            }
-          } else if (tableName == 'document_settings') {
-            // 分批处理文档设置
-            for (int i = 0; i < rows.length; i += batchSize) {
-              final end = (i + batchSize < rows.length) ? i + batchSize : rows.length;
-              final batch = rows.sublist(i, end);
-              
-              for (var row in batch) {
-                Map<String, dynamic> settings = Map<String, dynamic>.from(row);
-                String? fileName = settings.remove('backgroundImageFileName');
-                if (fileName != null) {
-                  // 复制背景图片到新位置
-                  String newPath = p.join(backgroundImagesPath, fileName);
-                  String tempPath = p.join(tempDirPath, 'background_images', fileName);
-                  if (await File(tempPath).exists()) {
-                    await File(tempPath).copy(newPath);
-                    settings['background_image_path'] = newPath;
-                    print('已导入文档背景图片: $newPath');
-                  }
-                }
-                await txn.insert(tableName, settings);
-                processedRows++;
-              }
-              
-              progressNotifier?.value = "正在导入$tableName表: $processedRows/${rows.length}";
-            }
-          } else if (tableName == 'image_boxes') {
-            // 分批处理图片框，使用并发优化
-            for (int i = 0; i < rows.length; i += batchSize) {
-              final end = (i + batchSize < rows.length) ? i + batchSize : rows.length;
-              final batch = rows.sublist(i, end);
-              
-              // 并发处理文件复制
-              await Future.wait(batch.map((row) async {
-                Map<String, dynamic> imageBox = Map<String, dynamic>.from(row);
-                String? imageFileName = imageBox.remove('imageFileName');
-                if (imageFileName != null) {
-                  // 复制图片文件到新位置
-                  String imagesDirPath = p.join(appDocDir.path, 'images');
-                  await Directory(imagesDirPath).create(recursive: true);
-                  String newPath = p.join(imagesDirPath, imageFileName);
-                  String tempPath = p.join(tempDirPath, 'images', imageFileName);
-                  if (await File(tempPath).exists()) {
-                    // 对于大文件使用流式复制
-                    final fileSize = await File(tempPath).length();
-                    if (fileSize > 10 * 1024 * 1024) { // >10MB
-                      final sourceStream = File(tempPath).openRead();
-                      final targetSink = File(newPath).openWrite();
-                      await sourceStream.pipe(targetSink);
-                      await targetSink.close();
-                    } else {
-                      await File(tempPath).copy(newPath);
-                    }
-                    imageBox['image_path'] = newPath;
-                    print('已导入图片框图片: $newPath');
-                  }
-                }
-                await txn.insert(tableName, imageBox);
-                processedRows++;
-              }));
-              
-              progressNotifier?.value = "正在导入$tableName表: $processedRows/${rows.length}";
-            }
-          } else if (tableName == 'audio_boxes') {
-            // 分批处理音频框，使用并发优化
-            for (int i = 0; i < rows.length; i += batchSize) {
-              final end = (i + batchSize < rows.length) ? i + batchSize : rows.length;
-              final batch = rows.sublist(i, end);
-              
-              // 并发处理文件复制
-              await Future.wait(batch.map((row) async {
-                Map<String, dynamic> audioBox = Map<String, dynamic>.from(row);
-                String? audioFileName = audioBox.remove('audioFileName');
-                if (audioFileName != null) {
-                  // 复制音频文件到新位置
-                  String audiosDirPath = p.join(appDocDir.path, 'audios');
-                  await Directory(audiosDirPath).create(recursive: true);
-                  String newPath = p.join(audiosDirPath, audioFileName);
-                  String tempPath = p.join(tempDirPath, 'audios', audioFileName);
-                  if (await File(tempPath).exists()) {
-                    // 对于大文件使用流式复制
-                    final fileSize = await File(tempPath).length();
-                    if (fileSize > 5 * 1024 * 1024) { // >5MB
-                      final sourceStream = File(tempPath).openRead();
-                      final targetSink = File(newPath).openWrite();
-                      await sourceStream.pipe(targetSink);
-                      await targetSink.close();
-                    } else {
-                      await File(tempPath).copy(newPath);
-                    }
-                    audioBox['audio_path'] = newPath;
-                    print('已导入音频文件: $newPath');
-                  }
-                }
-                await txn.insert(tableName, audioBox);
-                processedRows++;
-              }));
-              
-              progressNotifier?.value = "正在导入$tableName表: $processedRows/${rows.length}";
-            }
-          } else {
-            // 其他表正常导入（folders, documents, text_boxes）- 分批处理
-            for (int i = 0; i < rows.length; i += batchSize) {
-              final end = (i + batchSize < rows.length) ? i + batchSize : rows.length;
-              final batch = rows.sublist(i, end);
-              
-              for (var row in batch) {
-                // 修复：目录数据导入时不再导入media_items表
-                if (tableName == 'media_items') continue;
-                await txn.insert(tableName, Map<String, dynamic>.from(row));
-                processedRows++;
-              }
-              
               progressNotifier?.value = "正在导入$tableName表: $processedRows/${rows.length}";
             }
           }
-          
-          processedTables++;
-          progressNotifier?.value = "已完成$processedTables/$totalTables个表的导入";
+        }
+        
+        // 所有数据成功导入临时表后，替换旧表
+        for (final tableName in tableNames) {
+          await txn.execute('DROP TABLE $tableName');
+          await txn.execute('ALTER TABLE ${tableName}_temp RENAME TO $tableName');
         }
       });
 
@@ -4175,15 +4057,83 @@ class DatabaseService {
     return await db.query('media_items');
   }
 
-  /// 替换所有媒体项（清空并批量插入）
+  /// 替换所有媒体项（清空并批量插入）- 使用临时表保证事务安全
   Future<void> replaceAllMediaItems(List<dynamic> items) async {
     final db = await database;
-    final batch = db.batch();
-    await db.delete('media_items');
-    for (var item in items) {
-      batch.insert('media_items', Map<String, dynamic>.from(item), conflictAlgorithm: ConflictAlgorithm.replace);
-    }
-    await batch.commit(noResult: true);
+    const tempTable = 'media_items_temp';
+
+    await db.transaction((txn) async {
+      await txn.execute('DROP TABLE IF EXISTS $tempTable');
+      await txn.execute('''
+        CREATE TABLE $tempTable (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          path TEXT NOT NULL,
+          type INTEGER NOT NULL,
+          directory TEXT NOT NULL,
+          date_added TEXT NOT NULL,
+          file_size INTEGER DEFAULT 0,
+          duration INTEGER DEFAULT 0,
+          thumbnail_path TEXT,
+          file_hash TEXT,
+          telegram_file_id TEXT,
+          is_favorite INTEGER DEFAULT 0,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      ''');
+
+      final batch = txn.batch();
+      for (var item in items) {
+        batch.insert(tempTable, Map<String, dynamic>.from(item), conflictAlgorithm: ConflictAlgorithm.replace);
+      }
+      await batch.commit(noResult: true);
+
+      await txn.execute('DROP TABLE IF EXISTS media_items');
+      await txn.execute('ALTER TABLE $tempTable RENAME TO media_items');
+    });
+  }
+
+  /// 替换所有日记条目（清空并批量插入）- 使用临时表保证事务安全
+  Future<void> replaceAllDiaryEntries(List<DiaryEntry> entries) async {
+    final db = await database;
+    const tempTable = 'diary_entries_temp';
+
+    await db.transaction((txn) async {
+      // 0. 如果上次操作意外中断，先删除可能存在的旧临时表
+      await txn.execute('DROP TABLE IF EXISTS $tempTable');
+
+      // 1. 创建一个与原表结构相同的临时表
+      await txn.execute('''
+        CREATE TABLE $tempTable (
+          id TEXT PRIMARY KEY,
+          date TEXT NOT NULL,
+          content TEXT,
+          image_paths TEXT,
+          audio_paths TEXT,
+          video_paths TEXT,
+          weather TEXT,
+          mood TEXT,
+          location TEXT,
+          is_favorite INTEGER DEFAULT 0
+        )
+      ''');
+      
+      // 2. 将所有新数据批量插入临时表
+      final batch = txn.batch();
+      for (var entry in entries) {
+        batch.insert(tempTable, entry.toMap(), conflictAlgorithm: ConflictAlgorithm.replace);
+      }
+      await batch.commit(noResult: true);
+
+      // 3. (可选) 在这里可以增加数据校验步骤，确保临时表数据正确无误
+
+      // 4. 删除旧表
+      await txn.execute('DROP TABLE IF EXISTS diary_entries');
+
+      // 5. 将临时表重命名为正式表
+      await txn.execute('ALTER TABLE $tempTable RENAME TO diary_entries');
+    });
   }
 
   /// 获取日记本设置

@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'dart:convert';
 
 class DiaryEntry {
   final String id;
@@ -56,13 +56,13 @@ class DiaryEntry {
       'id': id,
       'date': date.toIso8601String(),
       'content': content,
-      'imagePaths': imagePaths,
-      'audioPaths': audioPaths,
-      'videoPaths': videoPaths,
+      'image_paths': jsonEncode(imagePaths),
+      'audio_paths': jsonEncode(audioPaths),
+      'video_paths': jsonEncode(videoPaths),
       'weather': weather,
       'mood': mood,
       'location': location,
-      'isFavorite': isFavorite,
+      'is_favorite': isFavorite ? 1 : 0,
     };
   }
 
