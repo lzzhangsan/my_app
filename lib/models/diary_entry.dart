@@ -73,17 +73,35 @@ class DiaryEntry {
     } catch (_) {
       safeDate = DateTime.now();
     }
+    
+    // 处理媒体路径，支持多种字段名格式
+    List<String> parseMediaPaths(dynamic paths) {
+      if (paths == null) return [];
+      if (paths is List) {
+        return paths.map((p) => p.toString()).toList();
+      }
+      if (paths is String) {
+        try {
+          final decoded = jsonDecode(paths) as List;
+          return decoded.map((p) => p.toString()).toList();
+        } catch (_) {
+          return [paths];
+        }
+      }
+      return [];
+    }
+    
     return DiaryEntry(
       id: map['id']?.toString() ?? '',
       date: safeDate,
       content: map['content'] as String?,
-      imagePaths: List<String>.from(map['imagePaths'] ?? []),
-      audioPaths: List<String>.from(map['audioPaths'] ?? []),
-      videoPaths: List<String>.from(map['videoPaths'] ?? []),
+      imagePaths: parseMediaPaths(map['imagePaths'] ?? map['image_paths']),
+      audioPaths: parseMediaPaths(map['audioPaths'] ?? map['audio_paths']),
+      videoPaths: parseMediaPaths(map['videoPaths'] ?? map['video_paths']),
       weather: map['weather'] as String?,
       mood: map['mood'] as String?,
       location: map['location'] as String?,
-      isFavorite: map['isFavorite'] == true,
+      isFavorite: map['isFavorite'] == true || map['is_favorite'] == 1,
     );
   }
 } 

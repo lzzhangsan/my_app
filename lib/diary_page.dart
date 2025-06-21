@@ -795,12 +795,77 @@ class _DiaryPageState extends State<DiaryPage> {
 
       int mediaDone = 0;
       int mediaTotal = mediaPathsToExport.isEmpty ? 1 : mediaPathsToExport.length;
+      final Map<String, String> mediaPathMapping = {}; // 记录原始路径到新文件名的映射
+      
       for (var mediaPath in mediaPathsToExport) {
-        final fileName = path.basename(mediaPath);
-        await File(mediaPath).copy(path.join(tempMediaDir.path, fileName));
+        final originalFileName = path.basename(mediaPath);
+        final fileExtension = path.extension(originalFileName);
+        final baseName = path.basenameWithoutExtension(originalFileName);
+        
+        // 生成唯一的文件名，避免冲突
+        String uniqueFileName = originalFileName;
+        int counter = 1;
+        while (mediaPathMapping.values.contains(uniqueFileName)) {
+          uniqueFileName = '${baseName}_$counter$fileExtension';
+          counter++;
+        }
+        
+        final targetPath = path.join(tempMediaDir.path, uniqueFileName);
+        await File(mediaPath).copy(targetPath);
+        mediaPathMapping[mediaPath] = uniqueFileName;
         mediaDone++;
         progress.value = 0.3 + (mediaDone / mediaTotal) * 0.5; // 30%-80% for media copy
+        print('已复制媒体文件: $originalFileName -> $uniqueFileName');
       }
+
+      // 5.5. 更新JSON数据中的媒体路径
+      message.value = '正在更新媒体路径...';
+      for (var entry in entriesForJson) {
+        // 更新图片路径
+        if (entry['image_paths'] != null) {
+          final List<String> updatedImagePaths = [];
+          final originalImagePaths = jsonDecode(entry['image_paths']) as List;
+          for (var imagePath in originalImagePaths) {
+            if (mediaPathMapping.containsKey(imagePath)) {
+              updatedImagePaths.add('media/${mediaPathMapping[imagePath]}');
+            } else {
+              updatedImagePaths.add(imagePath);
+            }
+          }
+          entry['image_paths'] = jsonEncode(updatedImagePaths);
+        }
+        
+        // 更新视频路径
+        if (entry['video_paths'] != null) {
+          final List<String> updatedVideoPaths = [];
+          final originalVideoPaths = jsonDecode(entry['video_paths']) as List;
+          for (var videoPath in originalVideoPaths) {
+            if (mediaPathMapping.containsKey(videoPath)) {
+              updatedVideoPaths.add('media/${mediaPathMapping[videoPath]}');
+            } else {
+              updatedVideoPaths.add(videoPath);
+            }
+          }
+          entry['video_paths'] = jsonEncode(updatedVideoPaths);
+        }
+        
+        // 更新音频路径
+        if (entry['audio_paths'] != null) {
+          final List<String> updatedAudioPaths = [];
+          final originalAudioPaths = jsonDecode(entry['audio_paths']) as List;
+          for (var audioPath in originalAudioPaths) {
+            if (mediaPathMapping.containsKey(audioPath)) {
+              updatedAudioPaths.add('media/${mediaPathMapping[audioPath]}');
+            } else {
+              updatedAudioPaths.add(audioPath);
+            }
+          }
+          entry['audio_paths'] = jsonEncode(updatedAudioPaths);
+        }
+      }
+      
+      // 重新写入更新后的JSON文件
+      await jsonFile.writeAsString(jsonEncode(entriesForJson));
 
       // 6. 从临时目录创建zip文件
       message.value = '正在压缩文件...';
@@ -894,19 +959,79 @@ class _DiaryPageState extends State<DiaryPage> {
       final List<DiaryEntry> entriesToImport = [];
       final permanentMediaDir = await _getPermanentMediaDirectory();
 
-      for (final item in entriesJson) {
+      print('开始处理JSON数据，共 ${entriesJson.length} 个条目');
+      
+      for (int i = 0; i < entriesJson.length; i++) {
+        final item = entriesJson[i];
         final entryMap = item as Map<String, dynamic>;
         
-        // 路径重映射
-        List<String> remapPaths(List<dynamic> originalPaths) {
-          return originalPaths.map((p) => path.join(permanentMediaDir.path, path.basename(p.toString()))).toList();
-        }
-
-        entryMap['imagePaths'] = remapPaths(entryMap['imagePaths'] ?? []);
-        entryMap['videoPaths'] = remapPaths(entryMap['videoPaths'] ?? []);
-        entryMap['audioPaths'] = remapPaths(entryMap['audioPaths'] ?? []);
+        print('处理第 $i 个条目:');
+        print('  原始imagePaths: ${entryMap['image_paths']}');
+        print('  原始videoPaths: ${entryMap['video_paths']}');
+        print('  原始audioPaths: ${entryMap['audio_paths']}');
         
-        entriesToImport.add(DiaryEntry.fromMap(entryMap));
+        // 路径重映射 - 处理media/前缀的路径
+        List<String> remapPaths(List<dynamic> originalPaths) {
+          return originalPaths.map((p) {
+            final pathStr = p.toString();
+            print('处理媒体路径: $pathStr');
+            
+            if (pathStr.startsWith('media/')) {
+              // 如果是media/开头的路径，提取文件名并映射到永久目录
+              final fileName = path.basename(pathStr);
+              final mappedPath = path.join(permanentMediaDir.path, fileName);
+              print('映射 media/ 路径: $pathStr -> $mappedPath');
+              return mappedPath;
+            } else if (pathStr.contains('media/')) {
+              // 如果路径中包含media/，提取media/后面的部分
+              final mediaIndex = pathStr.indexOf('media/');
+              final mediaPath = pathStr.substring(mediaIndex + 6); // 去掉"media/"
+              final fileName = path.basename(mediaPath);
+              final mappedPath = path.join(permanentMediaDir.path, fileName);
+              print('映射包含media/的路径: $pathStr -> $mappedPath');
+              return mappedPath;
+            } else {
+              // 如果是完整路径，直接使用文件名
+              final fileName = path.basename(pathStr);
+              final mappedPath = path.join(permanentMediaDir.path, fileName);
+              print('映射完整路径: $pathStr -> $mappedPath');
+              return mappedPath;
+            }
+          }).toList();
+        }
+        
+        // 解析媒体路径
+        List<String> parseMediaPaths(dynamic paths) {
+          if (paths == null) return [];
+          if (paths is List) {
+            return paths.map((p) => p.toString()).toList();
+          }
+          if (paths is String) {
+            try {
+              final decoded = jsonDecode(paths) as List;
+              return decoded.map((p) => p.toString()).toList();
+            } catch (_) {
+              return [paths];
+            }
+          }
+          return [];
+        }
+        
+        final imagePaths = remapPaths(parseMediaPaths(entryMap['image_paths']));
+        final videoPaths = remapPaths(parseMediaPaths(entryMap['video_paths']));
+        final audioPaths = remapPaths(parseMediaPaths(entryMap['audio_paths']));
+        
+        print('  映射后imagePaths: $imagePaths');
+        print('  映射后videoPaths: $videoPaths');
+        print('  映射后audioPaths: $audioPaths');
+        
+        // 创建临时Map，使用已处理的媒体路径
+        final processedEntryMap = Map<String, dynamic>.from(entryMap);
+        processedEntryMap['imagePaths'] = imagePaths;
+        processedEntryMap['videoPaths'] = videoPaths;
+        processedEntryMap['audioPaths'] = audioPaths;
+        
+        entriesToImport.add(DiaryEntry.fromMap(processedEntryMap));
       }
       progress.value = 0.7;
 
@@ -919,15 +1044,96 @@ class _DiaryPageState extends State<DiaryPage> {
       message.value = '正在迁移媒体文件...';
       final tempMediaDir = Directory(path.join(tempImportDir.path, 'media'));
       if (await tempMediaDir.exists()) {
-        await for (var file in tempMediaDir.list()) {
-          if (file is File) {
-            await file.copy(path.join(permanentMediaDir.path, path.basename(file.path)));
+        final mediaFiles = await tempMediaDir.list().toList();
+        int mediaCount = 0;
+        int skippedCount = 0;
+        
+        for (var entity in mediaFiles) {
+          if (entity is File) {
+            final fileName = path.basename(entity.path);
+            final targetPath = path.join(permanentMediaDir.path, fileName);
+            
+            try {
+              // 检查源文件是否存在且可读
+              if (await entity.exists()) {
+                // 如果目标文件已存在，先删除
+                final targetFile = File(targetPath);
+                if (await targetFile.exists()) {
+                  await targetFile.delete();
+                }
+                
+                // 复制文件
+                await entity.copy(targetPath);
+                
+                // 验证复制是否成功
+                if (await File(targetPath).exists()) {
+                  mediaCount++;
+                  print('已迁移媒体文件: $fileName');
+                } else {
+                  print('警告：媒体文件复制失败: $fileName');
+                  skippedCount++;
+                }
+              } else {
+                print('警告：源媒体文件不存在: ${entity.path}');
+                skippedCount++;
+              }
+            } catch (e) {
+              print('警告：迁移媒体文件时出错: $fileName, 错误: $e');
+              skippedCount++;
+            }
           }
         }
+        print('总共迁移了 $mediaCount 个媒体文件，跳过 $skippedCount 个文件');
+        
+        // 验证迁移结果
+        if (mediaCount == 0 && mediaFiles.isNotEmpty) {
+          print('警告：没有成功迁移任何媒体文件，可能存在权限或路径问题');
+        }
+      } else {
+        print('临时媒体目录不存在，跳过媒体文件迁移');
       }
       progress.value = 0.95;
 
-      // 7. 刷新UI
+      // 7. 验证媒体文件映射
+      message.value = '正在验证媒体文件...';
+      int validMediaCount = 0;
+      int invalidMediaCount = 0;
+      
+      print('开始验证媒体文件映射...');
+      print('永久媒体目录: ${permanentMediaDir.path}');
+      
+      for (var entry in entriesToImport) {
+        final allMediaPaths = [...entry.imagePaths, ...entry.videoPaths, ...entry.audioPaths];
+        print('日记条目 ${entry.id} 的媒体路径: $allMediaPaths');
+        
+        for (var mediaPath in allMediaPaths) {
+          if (mediaPath.isNotEmpty) {
+            final mediaFile = File(mediaPath);
+            print('检查媒体文件: $mediaPath');
+            
+            if (await mediaFile.exists()) {
+              validMediaCount++;
+              print('✓ 媒体文件存在: $mediaPath');
+            } else {
+              invalidMediaCount++;
+              print('✗ 媒体文件不存在: $mediaPath');
+              
+              // 尝试列出永久媒体目录中的所有文件
+              try {
+                final files = await permanentMediaDir.list().toList();
+                print('永久媒体目录中的文件: ${files.map((f) => path.basename(f.path)).toList()}');
+              } catch (e) {
+                print('无法列出永久媒体目录: $e');
+              }
+            }
+          }
+        }
+      }
+      
+      print('媒体文件验证完成: $validMediaCount 个有效, $invalidMediaCount 个无效');
+      progress.value = 0.98;
+
+      // 8. 刷新UI
       message.value = '导入完成!';
       await _loadEntries();
       progress.value = 1.0;
