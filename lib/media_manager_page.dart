@@ -2266,65 +2266,89 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   Future<void> _importAllMediaData() async {
     final progress = ValueNotifier<double>(0.0);
     final message = ValueNotifier<String>('准备中...');
-    
-    FilePickerResult? result;
-    try {
-      // 1. 选择zip包
-      result = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['zip']);
-      if (result == null || result.files.isEmpty) return;
-      
-      showProgressDialog(context, progress, message);
-      
-      final zipFile = File(result.files.single.path!);
-      final appDir = await getApplicationDocumentsDirectory();
-      final mediaDir = Directory(path.join(appDir.path, 'media'));
-      if (!await mediaDir.exists()) await mediaDir.create(recursive: true);
 
-      // 2. 用流式InputFileStream解压zip
+    // 1. 创建一个唯一的临时目录用于解压
+    final Directory appDir = await getApplicationDocumentsDirectory();
+    final String tempImportPath = path.join(appDir.path, 'temp_media_import_${const Uuid().v4()}');
+    final Directory tempImportDir = Directory(tempImportPath);
+
+    try {
+      await tempImportDir.create(recursive: true);
+
+      // 2. 选择zip包
+      FilePickerResult? result = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['zip']);
+      if (result == null || result.files.isEmpty) {
+        // 用户取消选择，静默退出
+        return; 
+      }
+
+      showProgressDialog(context, progress, message);
+
+      final zipFile = File(result.files.single.path!);
+
+      // 3. 用流式InputFileStream解压zip到临时目录
       message.value = '正在解压数据...';
       final inputStream = InputFileStream(zipFile.path);
       final archive = ZipDecoder().decodeStream(inputStream);
-      
+
       int total = archive.files.length;
       int done = 0;
-      
+
+      final tempMediaDir = Directory(path.join(tempImportDir.path, 'media'));
+      if (!await tempMediaDir.exists()) {
+        await tempMediaDir.create(recursive: true);
+      }
+
+      for (final file in archive.files) {
+        final outPath = path.join(tempImportDir.path, file.name);
+        if (file.isFile) {
+          final outFile = File(outPath);
+          // 确保父目录存在
+          await outFile.parent.create(recursive: true);
+          final outputStream = OutputFileStream(outFile.path);
+          file.writeContent(outputStream);
+          await outputStream.close();
+        } else {
+          await Directory(outPath).create(recursive: true);
+        }
+
+        done++;
+        progress.value = (done / total) * 0.7; // 70% for unzipping
+        message.value = '解压: $done/$total';
+      }
+      await inputStream.close();
+
+      // 4. 从临时目录中读取元数据和设置
       List<dynamic>? mediaItemsToImport;
       Map<String, dynamic>? settingsToImport;
 
-      for (final file in archive.files) {
-        final filename = file.name;
-        
-        if (file.isFile) {
-          if (filename == 'media_items.json') {
-            final data = await file.readBytes() as Uint8List;
-            mediaItemsToImport = jsonDecode(utf8.decode(data));
-          } else if (filename == 'media_settings.json') {
-            final data = await file.readBytes() as Uint8List;
-            settingsToImport = jsonDecode(utf8.decode(data));
-          } else if (filename.startsWith('media/')) {
-            final outFile = File(path.join(mediaDir.path, path.basename(filename)));
-            // 使用库提供的OutputFileStream进行流式写入
-            final outputStream = OutputFileStream(outFile.path);
-            file.writeContent(outputStream);
-            await outputStream.close();
-          }
-        }
-        
-        done++;
-        progress.value = (done / total) * 0.8; // 80% for unzipping
-        message.value = '解压: $done/$total';
+      final jsonFile = File(path.join(tempImportDir.path, 'media_items.json'));
+      if (!await jsonFile.exists()) {
+        throw Exception("关键错误: 压缩包中未找到 'media_items.json' 文件。");
       }
-      
-      await inputStream.close();
+      mediaItemsToImport = jsonDecode(await jsonFile.readAsString());
 
-      // 3. 恢复数据库表
-      message.value = '正在恢复数据库...';
-      if (mediaItemsToImport != null) {
-        await _databaseService.replaceAllMediaItems(mediaItemsToImport);
+      final settingsFile = File(path.join(tempImportDir.path, 'media_settings.json'));
+      if (await settingsFile.exists()){
+        settingsToImport = jsonDecode(await settingsFile.readAsString());
       }
-      progress.value = 0.9;
       
-      // 4. 恢复设置
+      // 5. 恢复数据库表 (事务性)
+      message.value = '正在恢复数据库...';
+      await _databaseService.replaceAllMediaItems(mediaItemsToImport!);
+      progress.value = 0.8;
+
+      // 6. 替换媒体文件
+      message.value = '正在迁移媒体文件...';
+      final Directory finalMediaDir = Directory(path.join(appDir.path, 'media'));
+      if (await finalMediaDir.exists()) {
+        await finalMediaDir.delete(recursive: true);
+      }
+      await finalMediaDir.create(recursive: true);
+      await _copyDirectory(tempMediaDir, finalMediaDir);
+      progress.value = 0.9;
+
+      // 7. 恢复设置
       message.value = '正在恢复设置...';
       if (settingsToImport != null) {
         final prefs = await SharedPreferences.getInstance();
@@ -2334,12 +2358,12 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       }
       progress.value = 0.95;
 
-      // 5. 刷新界面
+      // 8. 刷新界面
       message.value = '导入完成，正在刷新...';
       await _loadMediaItems();
       progress.value = 1.0;
-      
-      if (mounted) Navigator.of(context).pop();
+
+      if (mounted) Navigator.of(context).pop(); // 关闭进度对话框
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('导入媒体数据成功')),
@@ -2352,6 +2376,16 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('导入媒体数据失败: $e')),
         );
+      }
+    } finally {
+      // 关键: 无论成功或失败，都必须清理临时目录
+      if (await tempImportDir.exists()) {
+        try {
+          await tempImportDir.delete(recursive: true);
+          print('成功清理媒体导入临时文件: ${tempImportDir.path}');
+        } catch (e) {
+          print('警告：清理媒体导入临时目录时失败: $e');
+        }
       }
     }
   }
