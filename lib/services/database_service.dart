@@ -944,7 +944,7 @@ class DatabaseService {
     // 导出前先检测音频完整性
     final missingAudioFiles = await checkDirectoryAudioFilesIntegrity();
     if (missingAudioFiles.isNotEmpty) {
-      throw Exception('导出失败：有音频文件丢失，需补齐后再导出。丢失文件如下：\n' + missingAudioFiles.join('\n'));
+      throw Exception('导出失败：有音频文件丢失，需补齐后再导出。丢失文件如下：\n${missingAudioFiles.join('\n')}');
     }
     try {
       print('开始导出目录数据...');
@@ -969,7 +969,7 @@ class DatabaseService {
       final List<String> tables = ['folders', 'documents', 'text_boxes', 'image_boxes', 'audio_boxes'];
       
       for (String tableName in tables) {
-        progressNotifier?.value = "正在导出${tableName}表数据...";
+        progressNotifier?.value = "正在导出$tableName表数据...";
         
         // 分页查询，每次处理500条记录
         const int batchSize = 500;
@@ -988,7 +988,7 @@ class DatabaseService {
           allRows.addAll(batch);
           offset += batch.length;
           
-          progressNotifier?.value = "正在导出${tableName}表数据: ${allRows.length}条";
+          progressNotifier?.value = "正在导出$tableName表数据: ${allRows.length}条";
         }
         
         tableData[tableName] = allRows;
@@ -1017,7 +1017,7 @@ class DatabaseService {
           if (imagePath != null && imagePath.isNotEmpty && imageBoxId != null && imageBoxId.isNotEmpty) {
             String ext = p.extension(imagePath);
             String originalFileName = p.basenameWithoutExtension(imagePath);
-            String fileName = safeFileName(imageBoxId + '_' + originalFileName, ext);
+            String fileName = safeFileName('${imageBoxId}_$originalFileName', ext);
             imageBoxCopy['imageFileName'] = fileName;
             File imageFile = File(imagePath);
             if (await imageFile.exists()) {
@@ -1109,7 +1109,7 @@ class DatabaseService {
           if (audioPath != null && audioPath.isNotEmpty && audioBoxId != null && audioBoxId.isNotEmpty) {
             String ext = p.extension(audioPath);
             String originalFileName = p.basenameWithoutExtension(audioPath);
-            String fileName = safeFileName(audioBoxId + '_' + originalFileName, ext);
+            String fileName = safeFileName('${audioBoxId}_$originalFileName', ext);
             audioBoxCopy['audioFileName'] = fileName;
             File audioFile = File(audioPath);
             if (await audioFile.exists()) {
@@ -1132,7 +1132,7 @@ class DatabaseService {
           }
           audioBoxesToExport.add(audioBoxCopy);
         }));
-        progressNotifier?.value = "正在处理音频文件: "+(i + batch.length).toString()+"/"+audioBoxes.length.toString();
+        progressNotifier?.value = "正在处理音频文件: ${i + batch.length}/${audioBoxes.length}";
       }
       tableData['audio_boxes'] = audioBoxesToExport;
 
@@ -1143,7 +1143,7 @@ class DatabaseService {
         print('[导出] 丢失音频文件数量: ${missingAudioFiles.length}');
         print('[导出] 丢失音频文件列表:');
         for (final f in missingAudioFiles) {
-          print('  - ' + f);
+          print('  - $f');
         }
       }
 
@@ -1201,7 +1201,7 @@ class DatabaseService {
       final allFilesPreZip = await Directory(tempDirPath).list(recursive: true).toList();
       print('[导出] 临时目录下文件:');
       for (final f in allFilesPreZip) {
-        print('  - ' + f.path);
+        print('  - ${f.path}');
       }
       progressNotifier?.value = "正在创建压缩文件...";
       
@@ -1209,34 +1209,44 @@ class DatabaseService {
       final String timestamp = DateTime.now().toString().replaceAll(RegExp(r'[^0-9]'), '');
       final String zipPath = '$backupPath/directory_backup_$timestamp.zip';
       final tempDirEntity = Directory(tempDirPath);
-      final archive = Archive();
-      // 递归添加所有文件到archive
+      
+      // 使用流式ZipEncoder避免内存溢出
+      final encoder = ZipFileEncoder();
+      encoder.create(zipPath);
+      
       await for (final entity in tempDirEntity.list(recursive: true, followLinks: false)) {
         if (entity is File) {
           final relativePath = p.relative(entity.path, from: tempDirPath);
-          final fileBytes = await entity.readAsBytes();
-          archive.addFile(ArchiveFile(relativePath, fileBytes.length, fileBytes));
           print('[导出] 添加到ZIP: $relativePath');
+          // addFile会以流的方式处理文件，避免读入内存
+          await encoder.addFile(entity, relativePath);
         }
       }
-      // 写入ZIP文件
-      final zipFile = File(zipPath);
-      await zipFile.writeAsBytes(ZipEncoder().encode(archive)!);
+      encoder.close();
+
       print('[导出] ZIP文件写入完成: $zipPath');
-      // 压缩后校验ZIP包内容和音频/图片文件数量
-      final archiveCheck = ZipDecoder().decodeBytes(await File(zipPath).readAsBytes());
-      // 校验图片文件数量
-      int imageBoxCount = imageBoxesToExport.length;
-      int zipImageCount = archiveCheck.where((file) => file.name.startsWith('images/') && !file.isDirectory).length;
-      if (imageBoxCount != zipImageCount) {
-        throw Exception('导出失败：图片文件数量不一致，数据库图片框$imageBoxCount个，ZIP包内$zipImageCount个，请联系开发者排查。');
+
+      // 压缩后校验ZIP包内容和音频/图片文件数量 - 使用流式解码避免内存溢出
+      final inputStream = InputFileStream(zipPath);
+      final archiveCheck = ZipDecoder().decodeStream(inputStream);
+
+      try {
+        // 校验图片文件数量
+        int imageBoxCount = imageBoxesToExport.length;
+        int zipImageCount = archiveCheck.where((file) => file.name.startsWith('images/') && !file.isDirectory).length;
+        if (imageBoxCount != zipImageCount) {
+          throw Exception('导出失败：图片文件数量不一致，数据库图片框$imageBoxCount个，ZIP包内$zipImageCount个，请联系开发者排查。');
+        }
+        // 校验音频文件数量
+        int audioBoxCount = audioBoxesToExport.length;
+        int zipAudioCount = archiveCheck.where((file) => file.name.startsWith('audios/') && !file.isDirectory).length;
+        if (audioBoxCount != zipAudioCount) {
+          throw Exception('导出失败：音频文件数量不一致，数据库音频框$audioBoxCount个，ZIP包内$zipAudioCount个，请联系开发者排查。');
+        }
+      } finally {
+        await inputStream.close();
       }
-      // 校验音频文件数量
-      int audioBoxCount = audioBoxesToExport.length;
-      int zipAudioCount = archiveCheck.where((file) => file.name.startsWith('audios/') && !file.isDirectory).length;
-      if (audioBoxCount != zipAudioCount) {
-        throw Exception('导出失败：音频文件数量不一致，数据库音频框$audioBoxCount个，ZIP包内$zipAudioCount个，请联系开发者排查。');
-      }
+
       // 清理临时目录
       progressNotifier?.value = "正在清理临时文件...";
       try {
@@ -1325,7 +1335,7 @@ class DatabaseService {
         } else if (foundFiles.length == 1) {
           // 找到唯一文件，继续
         } else {
-          throw Exception('在多个位置找到directory_data.json文件，请检查备份包结构：\n' + foundFiles.join('\n'));
+          throw Exception('在多个位置找到directory_data.json文件，请检查备份包结构：\n${foundFiles.join('\n')}');
         }
       }
 
@@ -1367,7 +1377,7 @@ class DatabaseService {
           final List<dynamic> rows = entry.value;
           print('处理表: $tableName, 行数: ${rows.length}');
           
-          progressNotifier?.value = "正在导入${tableName}表: ${rows.length}条记录";
+          progressNotifier?.value = "正在导入$tableName表: ${rows.length}条记录";
           
           // 分批插入，避免单个事务过大
           const int batchSize = 100;
@@ -1396,7 +1406,7 @@ class DatabaseService {
                 processedRows++;
               }
               
-              progressNotifier?.value = "正在导入${tableName}表: $processedRows/${rows.length}";
+              progressNotifier?.value = "正在导入$tableName表: $processedRows/${rows.length}";
             }
           } else if (tableName == 'document_settings') {
             // 分批处理文档设置
@@ -1421,7 +1431,7 @@ class DatabaseService {
                 processedRows++;
               }
               
-              progressNotifier?.value = "正在导入${tableName}表: $processedRows/${rows.length}";
+              progressNotifier?.value = "正在导入$tableName表: $processedRows/${rows.length}";
             }
           } else if (tableName == 'image_boxes') {
             // 分批处理图片框，使用并发优化
@@ -1458,7 +1468,7 @@ class DatabaseService {
                 processedRows++;
               }));
               
-              progressNotifier?.value = "正在导入${tableName}表: $processedRows/${rows.length}";
+              progressNotifier?.value = "正在导入$tableName表: $processedRows/${rows.length}";
             }
           } else if (tableName == 'audio_boxes') {
             // 分批处理音频框，使用并发优化
@@ -1495,7 +1505,7 @@ class DatabaseService {
                 processedRows++;
               }));
               
-              progressNotifier?.value = "正在导入${tableName}表: $processedRows/${rows.length}";
+              progressNotifier?.value = "正在导入$tableName表: $processedRows/${rows.length}";
             }
           } else {
             // 其他表正常导入（folders, documents, text_boxes）- 分批处理
@@ -1510,12 +1520,12 @@ class DatabaseService {
                 processedRows++;
               }
               
-              progressNotifier?.value = "正在导入${tableName}表: $processedRows/${rows.length}";
+              progressNotifier?.value = "正在导入$tableName表: $processedRows/${rows.length}";
             }
           }
           
           processedTables++;
-          progressNotifier?.value = "已完成${processedTables}/${totalTables}个表的导入";
+          progressNotifier?.value = "已完成$processedTables/$totalTables个表的导入";
         }
       });
 
@@ -2349,7 +2359,7 @@ class DatabaseService {
             String sourcePath = '$tempDirPath/background_images/$backgroundImageFileName';
             File sourceFile = File(sourcePath);
             if (await sourceFile.exists()) {
-              String targetPath = '${appDocDir.path}/background_images/${newDocumentId}_${backgroundImageFileName}';
+              String targetPath = '${appDocDir.path}/background_images/${newDocumentId}_$backgroundImageFileName';
               await Directory(p.dirname(targetPath)).create(recursive: true);
               await sourceFile.copy(targetPath);
               settingsData['background_image_path'] = targetPath;
@@ -2648,7 +2658,7 @@ class DatabaseService {
     } catch (e, stackTrace) {
       _handleError('复制文档时出错', e, stackTrace);
       print('复制文档时出错: $e');
-      throw e;
+      rethrow;
     }
   }
 
@@ -4128,16 +4138,16 @@ class DatabaseService {
     final now = DateTime.now();
     if (lastAuto == null || now.difference(lastAuto).inHours >= 24) {
       final n = autoCount + 1;
-      final sizeMB = () async {
+      sizeMB() async {
         final dbPath = p.join(documentsDirectory.path, _databaseName);
         final dbFile = File(dbPath);
         if (await dbFile.exists()) {
           return (await dbFile.length() / 1024 / 1024).toStringAsFixed(2);
         }
         return '0.00';
-      };
+      }
       final size = await sizeMB();
-      final remark = '自动备份-第${n}版-${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')} ${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')} ${size}MB';
+      final remark = '自动备份-第$n版-${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')} ${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')} ${size}MB';
       await backupDatabaseFileWithMeta(remark: remark, isAuto: true);
     }
   }
