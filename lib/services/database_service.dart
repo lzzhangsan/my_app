@@ -1389,8 +1389,15 @@ class DatabaseService {
                    newRow.remove('imageFileName');
                  } else if (tableName == 'audio_boxes' && newRow.containsKey('audioFileName')) {
                    String newPath = p.join(audiosDirPath, newRow['audioFileName']);
-                   if(await File(p.join(tempDirPath, 'audios', newRow['audioFileName'])).exists()) {
+                   String tempAudioPath = p.join(tempDirPath, 'audios', newRow['audioFileName']);
+                   if (await File(tempAudioPath).exists()) {
+                     await Directory(p.dirname(newPath)).create(recursive: true);
+                     await File(tempAudioPath).copy(newPath);
                      newRow['audio_path'] = newPath;
+                     print('[导入] 已导入音频文件: $newPath');
+                   } else {
+                     print('[导入] 警告：未找到音频文件: $tempAudioPath');
+                     newRow['audio_path'] = null;
                    }
                    newRow.remove('audioFileName');
                  } else if ((tableName == 'directory_settings' || tableName == 'document_settings') && newRow.containsKey('backgroundImageFileName')) {
@@ -2851,19 +2858,31 @@ class DatabaseService {
               await txn.insert(tableName, imageBox);
             }
           } else if (tableName == 'audio_boxes') {
+            print('[导入调试] 正在导入audio_boxes, 行数: '+rows.length.toString());
             for (var row in rows) {
               Map<String, dynamic> audioBox = Map<String, dynamic>.from(row);
               String? audioFileName = audioBox.remove('audioFileName');
+              print('[导入调试] audioBox: '+audioBox.toString()+', audioFileName: '+(audioFileName??'null'));
               if (audioFileName != null) {
-                // 复制音频文件到新位置
+                String audiosDirPath = p.join(appDocDir.path, 'audios');
+                await Directory(audiosDirPath).create(recursive: true);
                 String newPath = p.join(audiosDirPath, audioFileName);
                 String tempPath = p.join(tempDirPath, 'audios', audioFileName);
+                print('[导入音频] audioFileName: $audioFileName');
+                print('[导入音频] tempPath: $tempPath');
+                print('[导入音频] tempPath文件是否存在: ${await File(tempPath).exists()}');
                 if (await File(tempPath).exists()) {
                   await File(tempPath).copy(newPath);
-                  audioBox['audio_path'] = newPath; // 修正字段名称为audio_path
-                  print('已导入音频文件: $newPath');
+                  print('[导入音频] 已复制音频文件: $tempPath -> $newPath');
+                  audioBox['audio_path'] = newPath;
+                } else {
+                  print('[导入音频] 警告：未找到音频文件: $tempPath');
+                  audioBox['audio_path'] = null;
                 }
+              } else {
+                print('[导入音频] audioFileName字段为null');
               }
+              audioBox.remove('audioPath');
               await txn.insert(tableName, audioBox);
             }
           } else {
@@ -2876,6 +2895,21 @@ class DatabaseService {
           }
         }
       });
+
+      // 导入完成后再次校验所有音频文件存在性
+      final db2 = await database;
+      final List<Map<String, dynamic>> audioBoxes = await db2.query('audio_boxes');
+      for (final audioBox in audioBoxes) {
+        String? audioPath = audioBox['audio_path'];
+        if (audioPath != null && audioPath.isNotEmpty) {
+          if (!await File(audioPath).exists()) {
+            print('[导入后校验] 音频文件不存在，清空路径: $audioPath');
+            await db2.update('audio_boxes', {'audio_path': null}, where: 'id = ?', whereArgs: [audioBox['id']]);
+          } else {
+            print('[导入后校验] 音频文件存在: $audioPath');
+          }
+        }
+      }
 
       // 清理临时目录
       await Directory(tempDirPath).delete(recursive: true);
@@ -3853,17 +3887,23 @@ class DatabaseService {
               Map<String, dynamic> audioBox = Map<String, dynamic>.from(row);
               String? audioFileName = audioBox.remove('audioFileName');
               if (audioFileName != null) {
-                // 复制音频文件到新位置
                 String audiosDirPath = p.join(appDocDir.path, 'audios');
                 await Directory(audiosDirPath).create(recursive: true);
                 String newPath = p.join(audiosDirPath, audioFileName);
                 String tempPath = p.join(tempDirPath, 'audios', audioFileName);
                 if (await File(tempPath).exists()) {
                   await File(tempPath).copy(newPath);
+                  print('[导入音频] 已复制音频文件: $tempPath -> $newPath');
                   audioBox['audio_path'] = newPath;
-                  print('已导入音频文件: $newPath');
+                } else {
+                  print('[导入音频] 警告：未找到音频文件: $tempPath');
+                  audioBox['audio_path'] = null;
                 }
+              } else if (audioBox['audio_path'] != null && !(await File(audioBox['audio_path']).exists())) {
+                print('[导入音频] 警告：音频路径无效: ${audioBox['audio_path']}');
+                audioBox['audio_path'] = null;
               }
+              audioBox.remove('audioPath');
               await txn.insert(tableName, audioBox);
             }
           } else {
@@ -3874,6 +3914,21 @@ class DatabaseService {
           }
         }
       });
+      
+      // 导入完成后再次校验所有音频文件存在性
+      final db2 = await database;
+      final List<Map<String, dynamic>> audioBoxes = await db2.query('audio_boxes');
+      for (final audioBox in audioBoxes) {
+        String? audioPath = audioBox['audio_path'];
+        if (audioPath != null && audioPath.isNotEmpty) {
+          if (!await File(audioPath).exists()) {
+            print('[导入后校验] 音频文件不存在，清空路径: $audioPath');
+            await db2.update('audio_boxes', {'audio_path': null}, where: 'id = ?', whereArgs: [audioBox['id']]);
+          } else {
+            print('[导入后校验] 音频文件存在: $audioPath');
+          }
+        }
+      }
       
       // 清理临时目录
       await Directory(tempDirPath).delete(recursive: true);

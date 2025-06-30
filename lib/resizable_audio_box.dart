@@ -106,6 +106,8 @@ class _ResizableAudioBoxState extends State<ResizableAudioBox> with SingleTicker
   // 播放音频
   Future<void> _togglePlay() async {
     try {
+      print('[音频播放调试] audioPath: $_recordedPath');
+      print('[音频播放调试] 文件是否存在: ${File(_recordedPath).existsSync()}');
       if (_isPlaying) {
         await _player.stop();
         setState(() {
@@ -114,17 +116,14 @@ class _ResizableAudioBoxState extends State<ResizableAudioBox> with SingleTicker
       } else {
         if (_recordedPath.isNotEmpty && File(_recordedPath).existsSync()) {
           HapticFeedback.mediumImpact();
-          
-          // 更新为使用新版AudioPlayer API
           final source = DeviceFileSource(_recordedPath);
           await _player.play(source);
-          
           setState(() {
             _isPlaying = true;
-            // 生成随机波形
             _generateRandomWaves();
           });
         } else {
+          print('[音频播放调试] 找不到音频文件或路径无效: $_recordedPath');
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('找不到音频文件或路径无效')),
           );
