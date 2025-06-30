@@ -67,8 +67,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
           _updateScrollPercentage();
         });
       });
-    _loadContent();
-    _loadBackgroundSettings();
+    _loadBackgroundSettingsAndEnhanceMode().then((_) {
+      _loadContent();
+    });
     _checkIsTemplate();
 
     _databaseService.ensureAudioBoxesTableExists();
@@ -100,13 +101,17 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
     }
   }
 
-  Future<void> _loadBackgroundSettings() async {
+  Future<void> _loadBackgroundSettingsAndEnhanceMode() async {
     try {
       Map<String, dynamic>? settings =
       await _databaseService.getDocumentSettings(widget.documentName);
       if (settings != null) {
         String? imagePath = settings['background_image_path'];
         int? colorValue = settings['background_color'];
+        bool textEnhanceMode = false;
+        if (settings.containsKey('text_enhance_mode')) {
+          textEnhanceMode = settings['text_enhance_mode'] == 1;
+        }
         if (imagePath != null && imagePath.isNotEmpty && await File(imagePath).exists()) {
           setState(() {
             _backgroundImage = File(imagePath);
@@ -121,9 +126,12 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
             _backgroundColor = Color(colorValue);
           });
         }
+        setState(() {
+          _textEnhanceMode = textEnhanceMode;
+        });
       }
     } catch (e) {
-      print('加载背景设置时出错: $e');
+      print('加载背景设置和增强模式时出错: $e');
     } finally {
       setState(() {
         _isLoading = false;
@@ -342,11 +350,8 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
       Map<String, dynamic>? docSettings =
       await _databaseService.getDocumentSettings(widget.documentName);
       print('✅ 文档设置: ${docSettings?.keys.toList() ?? "无设置"}');
-      bool textEnhanceMode = false;
-      if (docSettings != null && docSettings.containsKey('text_enhance_mode')) {
-        textEnhanceMode = docSettings['text_enhance_mode'] == 1;
-      }
-      print('📝 文本增强模式: $textEnhanceMode');
+      // 注意：textEnhanceMode已经在_loadBackgroundSettingsAndEnhanceMode中加载，这里不再重复加载
+      print('📝 当前文本增强模式: $_textEnhanceMode');
 
       print('🔄 正在更新UI状态...');
       setState(() {
@@ -356,7 +361,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
         _deletedTextBoxIds.clear();
         _deletedImageBoxIds.clear();
         _deletedAudioBoxIds.clear();
-        _textEnhanceMode = textEnhanceMode;
+        // 保持现有的_textEnhanceMode值，不覆盖
         _isLoading = false;
       });
       print('✅ UI状态更新完成');
@@ -605,7 +610,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
           var uuid = Uuid();
           Map<String, dynamic> original = _imageBoxes[index];
           // 获取 document_id
-          final documentId = original['document_id'] ?? original['documentId'] ?? null;
+          final documentId = original['document_id'] ?? original['documentId'];
           // 复制时必须保证 imagePath 有效
           if (original['imagePath'] == null || original['imagePath'].toString().isEmpty) {
             ScaffoldMessenger.of(context).showSnackBar(
@@ -923,6 +928,13 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
 
   @override
   void dispose() {
+    // 页面销毁前强制保存增强模式状态
+    _databaseService.insertOrUpdateDocumentSettings(
+      widget.documentName,
+      imagePath: _backgroundImage?.path,
+      colorValue: _backgroundColor?.value,
+      textEnhanceMode: _textEnhanceMode,
+    );
     if (_contentChanged) {
       print('页面销毁前保存文档内容...');
       _saveContentOnDispose();
@@ -1502,27 +1514,25 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
   }
 
   void _toggleTextEnhanceMode() {
+    final newMode = !_textEnhanceMode;
     setState(() {
-      _textEnhanceMode = !_textEnhanceMode;
+      _textEnhanceMode = newMode;
       _contentChanged = true;
-
       _saveContent();
       _saveStateToHistory();
-
-      _databaseService.insertOrUpdateDocumentSettings(
-        widget.documentName,
-        imagePath: _backgroundImage?.path,
-        colorValue: _backgroundColor?.value,
-        textEnhanceMode: _textEnhanceMode,
-      );
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(_textEnhanceMode ? '已开启文字增强模式' : '已关闭文字增强模式'),
-          duration: Duration(seconds: 2),
-        ),
-      );
     });
+    _databaseService.insertOrUpdateDocumentSettings(
+      widget.documentName,
+      imagePath: _backgroundImage?.path,
+      colorValue: _backgroundColor?.value,
+      textEnhanceMode: newMode,
+    );
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(newMode ? '已开启文字增强模式' : '已关闭文字增强模式'),
+        duration: Duration(seconds: 2),
+      ),
+    );
   }
 
   void _undo() {

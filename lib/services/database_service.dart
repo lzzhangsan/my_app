@@ -3538,6 +3538,9 @@ class DatabaseService {
     bool? textEnhanceMode,
   }) async {
     try {
+      print('🔧 [DB] 开始插入或更新文档设置，文档名: $documentName');
+      print('🔧 [DB] 传入参数 - imagePath: $imagePath, colorValue: $colorValue, textEnhanceMode: $textEnhanceMode');
+      
       final db = await database;
       
       // Get document ID
@@ -3553,6 +3556,7 @@ class DatabaseService {
       }
       
       final documentId = docResult.first['id'] as String;
+      print('🔧 [DB] 找到文档ID: $documentId');
       
       // Check if settings exist
       List<Map<String, dynamic>> existingSettings = await db.query(
@@ -3560,6 +3564,11 @@ class DatabaseService {
         where: 'document_id = ?',
         whereArgs: [documentId],
       );
+      
+      print('🔧 [DB] 现有设置数量: ${existingSettings.length}');
+      if (existingSettings.isNotEmpty) {
+        print('🔧 [DB] 现有设置: ${existingSettings.first}');
+      }
       
       Map<String, dynamic> settingsData = {
         'document_id': documentId,
@@ -3575,19 +3584,46 @@ class DatabaseService {
             : existing['text_enhance_mode'];
         // 保留原有的created_at字段
         settingsData['created_at'] = existing['created_at'];
+        print('🔧 [DB] 更新现有设置 - text_enhance_mode: ${settingsData['text_enhance_mode']}');
       } else {
         settingsData['background_image_path'] = imagePath;
         settingsData['background_color'] = colorValue;
         settingsData['text_enhance_mode'] = textEnhanceMode != null ? (textEnhanceMode ? 1 : 0) : 0;
         settingsData['created_at'] = DateTime.now().millisecondsSinceEpoch;
+        print('🔧 [DB] 创建新设置 - text_enhance_mode: ${settingsData['text_enhance_mode']}');
       }
       
-      await db.insert(
+      print('🔧 [DB] 最终写入数据: $settingsData');
+      
+      if (existingSettings.isNotEmpty) {
+        // 使用UPDATE操作更新现有记录
+        await db.update(
+          'document_settings',
+          settingsData,
+          where: 'document_id = ?',
+          whereArgs: [documentId],
+        );
+        print('🔧 [DB] UPDATE操作完成');
+      } else {
+        // 使用INSERT操作创建新记录
+        await db.insert('document_settings', settingsData);
+        print('🔧 [DB] INSERT操作完成');
+      }
+      
+      print('🔧 [DB] 数据库写入完成');
+      
+      // 验证写入结果
+      List<Map<String, dynamic>> verifySettings = await db.query(
         'document_settings',
-        settingsData,
-        conflictAlgorithm: ConflictAlgorithm.replace,
+        where: 'document_id = ?',
+        whereArgs: [documentId],
       );
+      if (verifySettings.isNotEmpty) {
+        print('🔧 [DB] 验证写入结果: ${verifySettings.first}');
+      }
+      
     } catch (e, stackTrace) {
+      print('❌ [DB] 插入或更新文档设置失败: $e');
       _handleError('插入或更新文档设置失败', e, stackTrace);
       rethrow;
     }
