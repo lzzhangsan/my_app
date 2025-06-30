@@ -1377,8 +1377,14 @@ class DatabaseService {
                  // --- 开始路径修正逻辑 ---
                  if (tableName == 'image_boxes' && newRow.containsKey('imageFileName')) {
                    String newPath = p.join(imagesDirPath, newRow['imageFileName']);
-                   if(await File(p.join(tempDirPath, 'images', newRow['imageFileName'])).exists()) {
+                   String tempPath = p.join(tempDirPath, 'images', newRow['imageFileName']);
+                   if(await File(tempPath).exists()) {
+                     await File(tempPath).copy(newPath);
                      newRow['image_path'] = newPath;
+                     print('[导入] 已导入图片框图片: $newPath');
+                   } else {
+                     print('[导入] 警告：未找到图片框图片文件: $tempPath');
+                     newRow['image_path'] = null;
                    }
                    newRow.remove('imageFileName');
                  } else if (tableName == 'audio_boxes' && newRow.containsKey('audioFileName')) {
