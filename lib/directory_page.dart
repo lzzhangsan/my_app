@@ -2070,6 +2070,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         if (mounted) {
           await _loadData();
           await _loadBackgroundSettings();
+          forceRefresh(); // 强制刷新页面，确保背景图片立即生效
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('数据导入成功')),
           );

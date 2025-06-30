@@ -1389,8 +1389,14 @@ class DatabaseService {
                    newRow.remove('audioFileName');
                  } else if ((tableName == 'directory_settings' || tableName == 'document_settings') && newRow.containsKey('backgroundImageFileName')) {
                    String newPath = p.join(backgroundImagesPath, newRow['backgroundImageFileName']);
-                   if(await File(p.join(tempDirPath, 'background_images', newRow['backgroundImageFileName'])).exists()) {
+                   String tempPath = p.join(tempDirPath, 'background_images', newRow['backgroundImageFileName']);
+                   if(await File(tempPath).exists()) {
+                     await File(tempPath).copy(newPath);
                      newRow['background_image_path'] = newPath;
+                     print('[导入] 已导入背景图片: $newPath');
+                   } else {
+                     print('[导入] 警告：未找到背景图片文件: $tempPath');
+                     newRow['background_image_path'] = null;
                    }
                    newRow.remove('backgroundImageFileName');
                  }
