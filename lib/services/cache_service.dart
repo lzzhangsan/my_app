@@ -410,6 +410,125 @@ class CacheService {
     }
   }
 
+  /// 智能清理大缓存文件
+  /// 删除大于指定大小的非缩略图文件，保留必要的缓存
+  Future<Map<String, dynamic>> cleanLargeCacheFiles({int maxSizeMB = 10}) async {
+    if (!_isInitialized || _cacheDirectory == null) {
+      return {'success': false, 'error': 'CacheService未初始化'};
+    }
+
+    try {
+      int totalDeleted = 0;
+      int totalSize = 0;
+      final List<String> deletedFiles = [];
+      final List<String> protectedFiles = [];
+      
+      // 需要保护的文件关键词（缩略图等）
+      final List<String> protectedKeywords = [
+        'thumbnail', 'thumb', '_thumb_', 'video_thumb_', 'img_thumb_',
+        'waveform', 'ocr', 'cache_', 'temp_thumb'
+      ];
+      
+      // 递归扫描cache目录
+      await for (final entity in _cacheDirectory!.list(recursive: true)) {
+        if (entity is File) {
+          try {
+            final fileSize = await entity.length();
+            final fileName = entity.path.split('/').last.toLowerCase();
+            final filePath = entity.path.toLowerCase();
+            
+            // 检查文件大小是否超过限制
+            if (fileSize > maxSizeMB * 1024 * 1024) {
+              // 检查是否为需要保护的文件
+              bool isProtected = protectedKeywords.any((keyword) => 
+                fileName.contains(keyword) || filePath.contains(keyword)
+              );
+              
+              if (isProtected) {
+                protectedFiles.add('${entity.path} (${(fileSize / 1024 / 1024).toStringAsFixed(1)}MB)');
+                continue;
+              }
+              
+              // 删除大文件
+              await entity.delete();
+              totalDeleted++;
+              totalSize += fileSize;
+              deletedFiles.add('${entity.path} (${(fileSize / 1024 / 1024).toStringAsFixed(1)}MB)');
+              
+              if (kDebugMode) {
+                debugPrint('已删除大缓存文件: ${entity.path} (${(fileSize / 1024 / 1024).toStringAsFixed(1)}MB)');
+              }
+            }
+          } catch (e) {
+            if (kDebugMode) {
+              debugPrint('处理文件时出错: ${entity.path}, 错误: $e');
+            }
+          }
+        }
+      }
+      
+      if (kDebugMode) {
+        debugPrint('智能清理完成: 删除 $totalDeleted 个文件，释放 ${(totalSize / 1024 / 1024).toStringAsFixed(1)}MB 空间');
+        if (protectedFiles.isNotEmpty) {
+          debugPrint('保护的文件: ${protectedFiles.length} 个');
+        }
+      }
+      
+      return {
+        'success': true,
+        'deletedCount': totalDeleted,
+        'freedSizeMB': (totalSize / 1024 / 1024).toStringAsFixed(1),
+        'deletedFiles': deletedFiles,
+        'protectedFiles': protectedFiles,
+      };
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('智能清理缓存失败: $e');
+      }
+      return {'success': false, 'error': e.toString()};
+    }
+  }
+
+  /// 获取缓存目录详细信息
+  Future<Map<String, dynamic>> getCacheInfo() async {
+    if (!_isInitialized || _cacheDirectory == null) {
+      return {'error': 'CacheService未初始化'};
+    }
+
+    try {
+      int totalFiles = 0;
+      int totalSize = 0;
+      int largeFiles = 0;
+      int largeFilesSize = 0;
+      final List<String> largeFileList = [];
+      
+      await for (final entity in _cacheDirectory!.list(recursive: true)) {
+        if (entity is File) {
+          totalFiles++;
+          final fileSize = await entity.length();
+          totalSize += fileSize;
+          
+          // 统计大于10MB的文件
+          if (fileSize > 10 * 1024 * 1024) {
+            largeFiles++;
+            largeFilesSize += fileSize;
+            largeFileList.add('${entity.path} (${(fileSize / 1024 / 1024).toStringAsFixed(1)}MB)');
+          }
+        }
+      }
+      
+      return {
+        'totalFiles': totalFiles,
+        'totalSizeMB': (totalSize / 1024 / 1024).toStringAsFixed(1),
+        'largeFiles': largeFiles,
+        'largeFilesSizeMB': (largeFilesSize / 1024 / 1024).toStringAsFixed(1),
+        'largeFileList': largeFileList,
+      };
+    } catch (e) {
+      return {'error': e.toString()};
+    }
+  }
+
   /// 设置内存缓存
   void _setMemoryCache(String key, dynamic value, [Duration? expiry]) {
     // 如果内存缓存已满，删除最旧的项

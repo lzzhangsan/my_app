@@ -26,6 +26,7 @@ import 'media_preview_page.dart';
 import 'create_folder_dialog.dart';
 import 'models/media_type.dart';
 import 'browser_page.dart';
+import 'services/cache_service.dart';
 
 class MediaManagerPage extends StatefulWidget {
   const MediaManagerPage({super.key});
@@ -2158,9 +2159,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     try {
       await _databaseService.deleteMediaItem(item.id);
       final file = File(item.path);
-      if (await file.exists()) {
-        await file.delete();
-      }
+      if (await file.exists()) await file.delete();
     } catch (e) {
       debugPrint('静默删除媒体项时出错: ${item.name}, 错误: $e');
       rethrow;
@@ -2364,6 +2363,20 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       progress.value = 1.0;
 
       if (mounted) Navigator.of(context).pop(); // 关闭进度对话框
+      
+      // 导入成功后自动清理大缓存文件
+      try {
+        final cacheService = CacheService();
+        final result = await cacheService.cleanLargeCacheFiles(maxSizeMB: 10);
+        if (result['success'] == true && result['deletedCount'] > 0) {
+          final deletedCount = result['deletedCount'] as int;
+          final freedSize = result['freedSizeMB'] as String;
+          debugPrint('导入后自动清理完成: 删除 $deletedCount 个大文件，释放 $freedSize MB 空间');
+        }
+      } catch (e) {
+        debugPrint('导入后自动清理失败: $e');
+      }
+      
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('导入媒体数据成功')),
@@ -2378,13 +2391,23 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         );
       }
     } finally {
-      // 关键: 无论成功或失败，都必须清理临时目录
+      // 关键：无论成功或失败，都强制彻底清理本次导入的临时目录
       if (await tempImportDir.exists()) {
         try {
           await tempImportDir.delete(recursive: true);
-          print('成功清理媒体导入临时文件: ${tempImportDir.path}');
+          debugPrint('已彻底清理媒体导入临时目录: [32m${tempImportDir.path}[0m');
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('临时导入文件已清理')),
+            );
+          }
         } catch (e) {
-          print('警告：清理媒体导入临时目录时失败: $e');
+          debugPrint('警告：清理媒体导入临时目录失败: $e');
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('警告：部分临时导入文件未能清理: $e')),
+            );
+          }
         }
       }
     }

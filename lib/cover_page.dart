@@ -23,6 +23,7 @@ import 'dart:convert';
 import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:path/path.dart' as p;
+import 'services/cache_service.dart';
 
 class CoverPage extends StatefulWidget {
   const CoverPage({super.key});
@@ -774,6 +775,17 @@ class _CoverPageState extends State<CoverPage> {
                     _addNewTextBox();
                   },
                 ),
+                // 新增：清理空间选项
+                _buildSettingItem(
+                  icon: Icons.cleaning_services,
+                  iconColor: Colors.deepOrange,
+                  title: '清理空间',
+                  subtitle: '一键清理导入临时大文件和无效缓存',
+                  onTap: () {
+                    Navigator.pop(context);
+                    _showCleanDialog();
+                  },
+                ),
                 
                 // 添加清空所有的选项
                 _buildSettingItem(
@@ -1049,5 +1061,135 @@ class _CoverPageState extends State<CoverPage> {
         );
       }
     }
+  }
+
+  // 新增：清理空间弹窗
+  void _showCleanDialog() async {
+    try {
+      // 获取缓存信息
+      final cacheService = CacheService();
+      final cacheInfo = await cacheService.getCacheInfo();
+      
+      String content = '智能清理大缓存文件，释放存储空间。\n\n';
+      
+      if (cacheInfo.containsKey('error')) {
+        content += '无法获取缓存信息: ${cacheInfo['error']}';
+      } else {
+        final totalSize = cacheInfo['totalSizeMB'] as String;
+        final largeFiles = cacheInfo['largeFiles'] as int;
+        final largeFilesSize = cacheInfo['largeFilesSizeMB'] as String;
+        
+        content += '当前缓存总大小: $totalSize MB\n';
+        content += '大文件(>10MB)数量: $largeFiles 个\n';
+        content += '大文件总大小: $largeFilesSize MB\n\n';
+        content += '将删除大于10MB的非缩略图文件，保留所有必要缓存。';
+      }
+      
+      showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('智能空间清理'),
+          content: Text(content),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('取消'),
+            ),
+            TextButton(
+              onPressed: () async {
+                Navigator.pop(context);
+                await _cleanImportTempFiles();
+              },
+              child: const Text('立即清理'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      // 如果获取缓存信息失败，显示简化版对话框
+      showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('智能空间清理'),
+          content: const Text('一键清理导入临时大文件和无效缓存，释放存储空间。\n不会影响缩略图等有用缓存。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('取消'),
+            ),
+            TextButton(
+              onPressed: () async {
+                Navigator.pop(context);
+                await _cleanImportTempFiles();
+              },
+              child: const Text('立即清理'),
+            ),
+          ],
+        ),
+      );
+    }
+  }
+
+  // 新增：智能清理逻辑
+  Future<void> _cleanImportTempFiles() async {
+    try {
+      // 显示进度对话框
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => const AlertDialog(
+          content: Row(
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(width: 20),
+              Text('正在智能清理缓存...')
+            ],
+          ),
+        ),
+      );
+
+      // 使用CacheService进行智能清理
+      final cacheService = CacheService();
+      final result = await cacheService.cleanLargeCacheFiles(maxSizeMB: 10);
+      
+      if (mounted) {
+        Navigator.of(context).pop(); // 关闭进度对话框
+      }
+
+      if (result['success'] == true) {
+        final deletedCount = result['deletedCount'] as int;
+        final freedSize = result['freedSizeMB'] as String;
+        
+        String message = '智能清理完成！\n';
+        message += '删除 $deletedCount 个大文件，释放 $freedSize MB 空间\n';
+        message += '保留了所有缩略图等必要缓存';
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(message),
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('清理失败: ${result['error']}')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        Navigator.of(context).pop(); // 关闭进度对话框
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('清理失败: $e')),
+        );
+      }
+    }
+  }
+
+  Future<int> _dirSize(Directory dir) async {
+    int size = 0;
+    await for (final entity in dir.list(recursive: true)) {
+      if (entity is File) size += await entity.length();
+    }
+    return size;
   }
 }
