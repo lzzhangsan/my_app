@@ -925,6 +925,9 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   }
 
   Widget _buildWebsiteCard(Map<String, dynamic> website, int index) {
+    // 根据 iconCode 获取对应的图标
+    IconData iconData = _getIconFromCode(website['iconCode']);
+    
     return InkWell(
       key: ValueKey(website['url']),
       onTap: () => _loadUrl(website['url']),
@@ -934,7 +937,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(Icons.public, size: 40, color: Colors.blue),
+            Icon(iconData, size: 40, color: Colors.blue),
             const SizedBox(height: 8),
             Text(website['name'], style: const TextStyle(fontSize: 16), textAlign: TextAlign.center),
           ],
@@ -2836,8 +2839,9 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
             _commonWebsites.clear();
             for (final item in websitesData) {
               final Map<String, dynamic> website = Map<String, dynamic>.from(item);
-              if (website['iconCode'] != null) {
-                website['icon'] = IconData(website['iconCode'], fontFamily: 'MaterialIcons');
+              // 只保存 iconCode，不动态创建 IconData 实例
+              if (website['iconCode'] == null) {
+                website['iconCode'] = Icons.public.codePoint;
               }
               _commonWebsites.add(website);
             }
@@ -2920,6 +2924,71 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         ),
       ),
     );
+  }
+
+  // 根据 iconCode 获取对应的图标（使用常量映射避免动态创建）
+  IconData _getIconFromCode(int? iconCode) {
+    if (iconCode == null) return Icons.public;
+    
+    // 使用常量图标映射，避免动态创建 IconData
+    switch (iconCode) {
+      case 0xe3c3: return Icons.public; // public
+      case 0xe3c4: return Icons.public_off; // public_off
+      case 0xe3c5: return Icons.publish; // publish
+      case 0xe3c6: return Icons.query_builder; // query_builder
+      case 0xe3c7: return Icons.question_answer; // question_answer
+      case 0xe3c8: return Icons.queue; // queue
+      case 0xe3c9: return Icons.queue_music; // queue_music
+      case 0xe3ca: return Icons.queue_play_next; // queue_play_next
+      case 0xe3cb: return Icons.radio; // radio
+      case 0xe3cc: return Icons.radio_button_checked; // radio_button_checked
+      case 0xe3cd: return Icons.radio_button_unchecked; // radio_button_unchecked
+      case 0xe3ce: return Icons.rate_review; // rate_review
+      case 0xe3cf: return Icons.receipt; // receipt
+      case 0xe3d0: return Icons.recent_actors; // recent_actors
+      case 0xe3d1: return Icons.record_voice_over; // record_voice_over
+      case 0xe3d2: return Icons.redeem; // redeem
+      case 0xe3d3: return Icons.redo; // redo
+      case 0xe3d4: return Icons.refresh; // refresh
+      case 0xe3d5: return Icons.remove; // remove
+      case 0xe3d6: return Icons.remove_circle; // remove_circle
+      case 0xe3d7: return Icons.remove_circle_outline; // remove_circle_outline
+      case 0xe3d8: return Icons.remove_from_queue; // remove_from_queue
+      case 0xe3d9: return Icons.visibility; // visibility
+      case 0xe3da: return Icons.visibility_off; // visibility_off
+      case 0xe3db: return Icons.voice_chat; // voice_chat
+      case 0xe3dc: return Icons.voicemail; // voicemail
+      case 0xe3dd: return Icons.volume_down; // volume_down
+      case 0xe3de: return Icons.volume_mute; // volume_mute
+      case 0xe3df: return Icons.volume_off; // volume_off
+      case 0xe3e0: return Icons.volume_up; // volume_up
+      case 0xe3e1: return Icons.vpn_key; // vpn_key
+      case 0xe3e2: return Icons.vpn_lock; // vpn_lock
+      case 0xe3e3: return Icons.wallpaper; // wallpaper
+      case 0xe3e4: return Icons.warning; // warning
+      case 0xe3e5: return Icons.watch; // watch
+      case 0xe3e6: return Icons.watch_later; // watch_later
+      case 0xe3e7: return Icons.wb_auto; // wb_auto
+      case 0xe3e8: return Icons.wb_incandescent; // wb_incandescent
+      case 0xe3e9: return Icons.wb_iridescent; // wb_iridescent
+      case 0xe3ea: return Icons.wb_sunny; // wb_sunny
+      case 0xe3eb: return Icons.wc; // wc
+      case 0xe3ec: return Icons.web; // web
+      case 0xe3ed: return Icons.web_asset; // web_asset
+      case 0xe3ee: return Icons.weekend; // weekend
+      case 0xe3ef: return Icons.whatshot; // whatshot
+      case 0xe3f0: return Icons.widgets; // widgets
+      case 0xe3f1: return Icons.wifi; // wifi
+      case 0xe3f2: return Icons.wifi_lock; // wifi_lock
+      case 0xe3f3: return Icons.wifi_tethering; // wifi_tethering
+      case 0xe3f4: return Icons.work; // work
+      case 0xe3f5: return Icons.wrap_text; // wrap_text
+      case 0xe3f6: return Icons.youtube_searched_for; // youtube_searched_for
+      case 0xe3f7: return Icons.zoom_in; // zoom_in
+      case 0xe3f8: return Icons.zoom_out; // zoom_out
+      case 0xe3f9: return Icons.zoom_out_map; // zoom_out_map
+      default: return Icons.public; // 默认图标
+    }
   }
 
   // 将 _onPageFinished 标记为 async

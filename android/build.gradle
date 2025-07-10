@@ -32,22 +32,8 @@ allprojects {
     }
 }
 
-// 直接配置所有子项目的 Java 和 Kotlin 版本，不使用 afterEvaluate
+// 强制统一所有子项目的 Java 和 Kotlin 版本
 subprojects {
-    if (project.hasProperty('android')) {
-        project.android {
-            compileOptions {
-                sourceCompatibility JavaVersion.VERSION_17
-                targetCompatibility JavaVersion.VERSION_17
-            }
-            tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
-                kotlinOptions {
-                    jvmTarget = '17'
-                }
-            }
-        }
-    }
-    
     // 应用FFmpeg Kit修复补丁
     if (project.name == "ffmpeg_kit_flutter_full") {
         try {
@@ -58,10 +44,26 @@ subprojects {
     }
 
     afterEvaluate { project ->
-        if (project.hasProperty('kotlin')) {
-            project.tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
-                kotlinOptions {
-                    jvmTarget = "17"
+        // 强制设置所有Java编译任务的目标版本为17
+        project.tasks.withType(JavaCompile).configureEach {
+            sourceCompatibility = JavaVersion.VERSION_17
+            targetCompatibility = JavaVersion.VERSION_17
+            options.compilerArgs += ['-source', '17', '-target', '17']
+        }
+        
+        // 强制设置所有Kotlin编译任务的目标版本为17
+        project.tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+            kotlinOptions {
+                jvmTarget = "17"
+            }
+        }
+        
+        // 如果项目有android配置，也强制设置
+        if (project.hasProperty('android')) {
+            project.android {
+                compileOptions {
+                    sourceCompatibility JavaVersion.VERSION_17
+                    targetCompatibility JavaVersion.VERSION_17
                 }
             }
         }
