@@ -15,6 +15,7 @@ import 'media_service.dart';
 import '../models/media_item.dart';
 import '../models/media_type.dart';
 
+@pragma('vm:entry-point')
 /// 后台媒体服务 - 全局媒体库监听和自动导入
 class BackgroundMediaService {
   static final BackgroundMediaService _instance = BackgroundMediaService._internal();
