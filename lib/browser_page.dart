@@ -16,6 +16,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/foundation.dart';
 import 'package:reorderable_grid_view/reorderable_grid_view.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:archive/archive.dart';
 
 import 'core/service_locator.dart';
 import 'services/database_service.dart';
@@ -1738,6 +1741,11 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                 tooltip: '添加书签',
               ),
             IconButton(
+              icon: const Icon(Icons.import_export),
+              onPressed: _showExportImportMenu,
+              tooltip: '导入/导出数据',
+            ),
+            IconButton(
               icon: const Icon(Icons.telegram),
               onPressed: _showTelegramDownloadDialog,
               tooltip: 'Telegram 下载',
@@ -2520,6 +2528,304 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       // 例如通知MediaManagerPage刷新数据
     } catch (e) {
       debugPrint('刷新媒体库失败: $e');
+    }
+  }
+
+  /// 显示导入导出菜单
+  void _showExportImportMenu() {
+    showModalBottomSheet(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.upload_file),
+              title: const Text('导出浏览器数据'),
+              subtitle: const Text('导出书签和常用网站'),
+              onTap: () {
+                Navigator.pop(context);
+                _exportBrowserData();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.download),
+              title: const Text('导入浏览器数据'),
+              subtitle: const Text('导入书签和常用网站'),
+              onTap: () {
+                Navigator.pop(context);
+                _importBrowserData();
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 导出浏览器数据
+  Future<void> _exportBrowserData() async {
+    try {
+      // 创建进度通知器
+      final ValueNotifier<String> progressNotifier = ValueNotifier<String>('准备导出浏览器数据...');
+      
+      // 显示进度对话框
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => AlertDialog(
+          content: ValueListenableBuilder<String>(
+            valueListenable: progressNotifier,
+            builder: (context, progress, child) {
+              return Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const CircularProgressIndicator(),
+                  const SizedBox(height: 20),
+                  Text(
+                    progress,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 14),
+                  ),
+                ],
+              );
+            },
+          ),
+        ),
+      );
+
+      // 获取导出目录
+      final Directory? externalDir = await getExternalStorageDirectory();
+      if (externalDir == null) {
+        throw Exception('无法访问外部存储目录');
+      }
+
+      final String exportDir = '${externalDir.path}/browser_backups';
+      final Directory backupDir = Directory(exportDir);
+      if (!await backupDir.exists()) {
+        await backupDir.create(recursive: true);
+      }
+
+      progressNotifier.value = '收集浏览器数据...';
+
+      // 收集浏览器数据
+      final Map<String, dynamic> browserData = {
+        'bookmarks': _bookmarks,
+        'common_websites': _commonWebsites,
+        'export_time': DateTime.now().toIso8601String(),
+        'version': '1.0',
+      };
+
+      progressNotifier.value = '创建数据文件...';
+
+      // 创建JSON文件
+      final String jsonPath = '$exportDir/browser_data.json';
+      final File jsonFile = File(jsonPath);
+      await jsonFile.writeAsString(jsonEncode(browserData));
+
+      progressNotifier.value = '创建ZIP文件...';
+
+      // 创建ZIP文件
+      final String zipPath = '$exportDir/browser_backup_${DateTime.now().millisecondsSinceEpoch}.zip';
+      final Archive archive = Archive();
+      archive.addFile(ArchiveFile('browser_data.json', jsonFile.lengthSync(), jsonFile.readAsBytesSync()));
+      final List<int> zipData = ZipEncoder().encode(archive);
+
+      if (zipData == null) {
+        throw Exception('创建ZIP文件失败');
+      }
+
+      final File zipFile = File(zipPath);
+      await zipFile.writeAsBytes(zipData);
+
+      // 删除临时JSON文件
+      await jsonFile.delete();
+
+      progressNotifier.value = '导出完成！';
+
+      // 关闭进度对话框
+      if (mounted) {
+        Navigator.pop(context);
+      }
+
+      // 分享文件
+      await Share.shareXFiles(
+        [XFile(zipPath)],
+        subject: '浏览器数据备份',
+        text: '浏览器数据备份文件，包含书签和常用网站数据。',
+      );
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('浏览器数据导出成功！文件已保存到: ${zipPath.split('/').last}'),
+            action: SnackBarAction(
+              label: '打开文件',
+              onPressed: () async {
+                // 打开文件管理器到导出目录
+                final result = await FilePicker.platform.clearTemporaryFiles();
+                debugPrint('清理临时文件结果: $result');
+              },
+            ),
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('导出浏览器数据时出错: $e');
+      if (mounted) {
+        Navigator.pop(context); // 关闭进度对话框
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('导出浏览器数据时出错：$e')),
+        );
+      }
+    }
+  }
+
+  /// 导入浏览器数据
+  Future<void> _importBrowserData() async {
+    try {
+      // 显示警告对话框
+      bool? confirm = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('警告'),
+          content: const Text('导入浏览器数据将会覆盖当前的书签和常用网站，确定要继续吗？'),
+          actions: [
+            TextButton(
+              child: const Text('取消'),
+              onPressed: () => Navigator.of(context).pop(false),
+            ),
+            TextButton(
+              child: const Text('确定'),
+              onPressed: () => Navigator.of(context).pop(true),
+            ),
+          ],
+        ),
+      );
+
+      if (confirm != true) return;
+
+      // 选择ZIP文件
+      FilePickerResult? result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['zip'],
+      );
+
+      if (result != null && result.files.single.path != null) {
+        // 创建进度通知器
+        final ValueNotifier<String> progressNotifier = ValueNotifier<String>('准备导入...');
+        
+        // 显示进度对话框
+        showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (context) => AlertDialog(
+            content: ValueListenableBuilder<String>(
+              valueListenable: progressNotifier,
+              builder: (context, progress, child) {
+                return Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const CircularProgressIndicator(),
+                    const SizedBox(height: 20),
+                    Text(
+                      progress,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(fontSize: 14),
+                    ),
+                  ],
+                );
+              },
+            ),
+          ),
+        );
+
+        progressNotifier.value = '解压文件...';
+
+        // 读取ZIP文件
+        final File zipFile = File(result.files.single.path!);
+        final List<int> zipBytes = await zipFile.readAsBytes();
+        final Archive? archive = ZipDecoder().decodeBytes(zipBytes);
+
+        if (archive == null) {
+          throw Exception('无法解析ZIP文件');
+        }
+
+        progressNotifier.value = '解析数据...';
+
+        // 查找并解析JSON文件
+        ArchiveFile? jsonFile;
+        for (final file in archive) {
+          if (file.name == 'browser_data.json') {
+            jsonFile = file;
+            break;
+          }
+        }
+
+        if (jsonFile == null) {
+          throw Exception('ZIP文件中未找到浏览器数据文件');
+        }
+
+        // 解析JSON数据
+        final String jsonContent = utf8.decode(jsonFile.content as List<int>);
+        final Map<String, dynamic> browserData = jsonDecode(jsonContent);
+
+        progressNotifier.value = '导入数据...';
+
+        // 验证数据格式
+        if (browserData['version'] == null) {
+          throw Exception('数据格式不支持，缺少版本信息');
+        }
+
+        // 导入书签
+        if (browserData['bookmarks'] != null) {
+          final List<dynamic> bookmarksData = browserData['bookmarks'];
+          setState(() {
+            _bookmarks = bookmarksData.map((item) => Map<String, String>.from(item)).toList();
+          });
+          await _saveBookmarks();
+        }
+
+        // 导入常用网站
+        if (browserData['common_websites'] != null) {
+          final List<dynamic> websitesData = browserData['common_websites'];
+          setState(() {
+            _commonWebsites.clear();
+            for (final item in websitesData) {
+              final Map<String, dynamic> website = Map<String, dynamic>.from(item);
+              if (website['iconCode'] != null) {
+                website['icon'] = IconData(website['iconCode'], fontFamily: 'MaterialIcons');
+              }
+              _commonWebsites.add(website);
+            }
+          });
+          await _saveCommonWebsites();
+        }
+
+        progressNotifier.value = '导入完成！';
+
+        // 关闭进度对话框
+        if (mounted) {
+          Navigator.pop(context);
+        }
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('浏览器数据导入成功！'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      debugPrint('导入浏览器数据时出错: $e');
+      if (mounted) {
+        Navigator.pop(context); // 关闭进度对话框
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('导入浏览器数据时出错：$e')),
+        );
+      }
     }
   }
 }
