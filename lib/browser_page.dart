@@ -452,7 +452,43 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       }
 
       document.addEventListener('touchstart', function(e) {
-        pressedElement = e.target.closest('a[href*="progressive/document"], a[href*="media"], a[href*="video"], [class*="download"], div[role="menuitem"][aria-label*="download"], video[src], img[src]');
+        // 更全面的媒体元素选择器
+        pressedElement = e.target.closest(`
+          a[href*="progressive/document"], 
+          a[href*="media"], 
+          a[href*="video"], 
+          a[href*="image"], 
+          a[href*="photo"], 
+          a[href*="picture"], 
+          a[href*="download"], 
+          a[href*=".jpg"], 
+          a[href*=".jpeg"], 
+          a[href*=".png"], 
+          a[href*=".gif"], 
+          a[href*=".webp"], 
+          a[href*=".mp4"], 
+          a[href*=".webm"], 
+          a[href*=".mov"], 
+          a[href*=".avi"], 
+          a[href*=".mkv"], 
+          a[href*=".m3u8"], 
+          a[href*=".mp3"], 
+          a[href*=".wav"], 
+          a[href*=".ogg"], 
+          [class*="download"], 
+          [class*="media"], 
+          [class*="video"], 
+          [class*="image"], 
+          [class*="photo"], 
+          [class*="picture"], 
+          div[role="menuitem"][aria-label*="download"], 
+          video[src], 
+          img[src], 
+          audio[src], 
+          source[src], 
+          picture source[srcset]
+        `);
+        
         if (pressedElement) {
           const touch = e.touches[0];
           const touchX = touch.clientX;
@@ -506,21 +542,54 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           return;
         }
         
-        let url = target.href || target.getAttribute('data-href') || target.getAttribute('data-url') || target.src;
+        // 更全面的URL提取逻辑
+        let url = target.href || 
+                  target.getAttribute('data-href') || 
+                  target.getAttribute('data-url') || 
+                  target.getAttribute('data-src') ||
+                  target.src || 
+                  target.srcset ||
+                  target.getAttribute('data-original') ||
+                  target.getAttribute('data-lazy-src') ||
+                  target.getAttribute('data-srcset');
+        
+        // 如果是srcset，取第一个URL
+        if (url && url.includes(',')) {
+          url = url.split(',')[0].trim().split(' ')[0];
+        }
+        
         if (!url) {
           updateFeedbackStatus('未找到下载链接', false);
           return;
         }
 
         if (!window.processedMediaUrls.has(url)) {
+          // 更准确的媒体类型检测
+          let mediaType = 'video';
+          const tagName = target.tagName.toLowerCase();
+          const urlLower = url.toLowerCase();
+          
+          if (tagName === 'img' || urlLower.includes('.jpg') || urlLower.includes('.jpeg') || 
+              urlLower.includes('.png') || urlLower.includes('.gif') || urlLower.includes('.webp') ||
+              urlLower.includes('.bmp') || urlLower.includes('.svg')) {
+            mediaType = 'image';
+          } else if (tagName === 'audio' || urlLower.includes('.mp3') || urlLower.includes('.wav') ||
+                     urlLower.includes('.ogg') || urlLower.includes('.m4a') || urlLower.includes('.aac')) {
+            mediaType = 'audio';
+          } else if (tagName === 'video' || urlLower.includes('.mp4') || urlLower.includes('.webm') ||
+                     urlLower.includes('.mov') || urlLower.includes('.avi') || urlLower.includes('.mkv') ||
+                     urlLower.includes('.flv') || urlLower.includes('.wmv') || urlLower.includes('.m3u8')) {
+            mediaType = 'video';
+          }
+          
           if (isBlobUrl(url)) {
             updateFeedbackStatus('正在处理媒体...', true);
-            resolveBlobUrl(url, target.tagName.toLowerCase() === 'img' ? 'image' : 'video').then(resolved => {
+            resolveBlobUrl(url, mediaType).then(resolved => {
               if (resolved) {
                 window.processedMediaUrls.add(url);
                 Flutter.postMessage(JSON.stringify({
                   type: 'media',
-                  mediaType: resolved.mediaType || 'video',
+                  mediaType: resolved.mediaType || mediaType,
                   url: resolved.resolvedUrl,
                   isBase64: resolved.isBase64,
                   action: 'download'
@@ -534,7 +603,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
             window.processedMediaUrls.add(url);
             Flutter.postMessage(JSON.stringify({
               type: 'media',
-              mediaType: target.tagName.toLowerCase() === 'img' ? 'image' : 'video',
+              mediaType: mediaType,
               url: url,
               isBase64: false,
               action: 'download'
@@ -2991,12 +3060,31 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     }
   }
 
-  // 将 _onPageFinished 标记为 async
+  // 页面加载完成后的处理
   void _onPageFinished(String url) async {
-    // ... existing code ...
-    String title = await _controller.getTitle() ?? url;
-    await _addHistory(title, url);
-    // ... existing code ...
+    try {
+      // 注入媒体下载处理程序
+      _injectDownloadHandlers();
+      
+      // 添加历史记录
+      String title = await _controller.getTitle() ?? url;
+      await _addHistory(title, url);
+      
+      // 更新状态
+      setState(() {
+        _isLoading = false;
+        _currentUrl = url;
+        _urlController.text = url;
+        _showHomePage = false;
+      });
+      
+      // 通知父组件浏览器状态变化
+      widget.onBrowserHomePageChanged?.call(_showHomePage);
+      
+      debugPrint('页面加载完成: $url, 标题: $title');
+    } catch (e) {
+      debugPrint('页面加载完成处理时出错: $e');
+    }
   }
 }
 
