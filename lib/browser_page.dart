@@ -1776,16 +1776,18 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                 onPressed: () => _addBookmark(_currentUrl),
                 tooltip: '添加书签',
               ),
-            IconButton(
-              icon: const Icon(Icons.import_export),
-              onPressed: _showExportImportMenu,
-              tooltip: '导入/导出数据',
-            ),
-            IconButton(
-              icon: const Icon(Icons.telegram),
-              onPressed: _showTelegramDownloadDialog,
-              tooltip: 'Telegram 下载',
-            ),
+            if (_showHomePage) ...[
+              IconButton(
+                icon: const Icon(Icons.import_export),
+                onPressed: _showExportImportMenu,
+                tooltip: '导入/导出数据',
+              ),
+              IconButton(
+                icon: const Icon(Icons.telegram),
+                onPressed: _showTelegramDownloadDialog,
+                tooltip: 'Telegram 下载',
+              ),
+            ],
             if (!_showHomePage)
               IconButton(
                 icon: const Icon(Icons.close, color: Colors.red),
