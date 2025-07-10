@@ -67,6 +67,9 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   ValueNotifier<double?> _videoDownloadProgress = ValueNotifier(null);
   ValueNotifier<bool> _isDownloadingVideo = ValueNotifier(false);
 
+  // 1. 新增历史记录变量
+  List<Map<String, dynamic>> _history = [];
+
   Future<void> _launchExternalApp(String url) async {
     debugPrint('尝试启动外部应用: $url');
     try {
@@ -146,6 +149,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     _loadBookmarks();
     _loadCommonWebsites();
     _initializeTelegramService();
+    _loadHistory();
   }
   
   /// 初始化 Telegram 服务
@@ -203,15 +207,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
               _showHomePage = false;
             });
           },
-          onPageFinished: (url) {
-            setState(() => _isLoading = false);
-            _controller.runJavaScript('''
-              document.querySelectorAll('input').forEach(function(input) {
-                input.autocomplete = 'on';
-              });
-            ''');
-            _injectDownloadHandlers();
-          },
+          onPageFinished: _onPageFinished,
           onWebResourceError: (error) => debugPrint('WebView错误: ${error.description}'),
           onNavigationRequest: (NavigationRequest request) {
             final url = request.url;
@@ -1690,6 +1686,36 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     }
   }
 
+  // 2. 加载历史记录
+  Future<void> _loadHistory() async {
+    final prefs = await SharedPreferences.getInstance();
+    final historyString = prefs.getString('browser_history');
+    if (historyString != null) {
+      _history = List<Map<String, dynamic>>.from(json.decode(historyString));
+    }
+  }
+
+  // 3. 保存历史记录
+  Future<void> _saveHistory() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('browser_history', json.encode(_history));
+  }
+
+  // 4. 添加历史记录（在网页加载成功时调用）
+  Future<void> _addHistory(String title, String url) async {
+    if (url.isEmpty) return;
+    // 去重：如果已存在则先移除
+    _history.removeWhere((item) => item['url'] == url);
+    _history.insert(0, {
+      'title': title,
+      'url': url,
+      'datetime': DateTime.now().toIso8601String(),
+    });
+    // 限制最大条数
+    if (_history.length > 200) _history = _history.sublist(0, 200);
+    await _saveHistory();
+  }
+
   @override
   Widget build(BuildContext context) {
     debugPrint('[_BrowserPage.build] _showHomePage: $_showHomePage, _isBrowsingWebPage: $_isBrowsingWebPage, _shouldKeepWebPageState: $_shouldKeepWebPageState');
@@ -1766,6 +1792,11 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                 onPressed: _exitWebPage,
                 tooltip: '退出网页',
               ),
+            IconButton(
+              icon: const Icon(Icons.history),
+              onPressed: _showHistory,
+              tooltip: '历史记录',
+            ),
           ],
         ),
         body: Stack( // Wrap the body in a Stack
@@ -2837,6 +2868,64 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         );
       }
     }
+  }
+
+  // 8. 历史记录弹窗
+  void _showHistory() {
+    showModalBottomSheet(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setState) => SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.delete_forever),
+                title: const Text('清空全部历史记录'),
+                onTap: () async {
+                  Navigator.pop(context);
+                  _history.clear();
+                  await _saveHistory();
+                  setState(() {});
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('历史记录已清空')));
+                },
+              ),
+              const Divider(),
+              Expanded(
+                child: ListView.builder(
+                  itemCount: _history.length,
+                  itemBuilder: (context, index) {
+                    final item = _history[index];
+                    return ListTile(
+                      title: Text(item['title'] ?? item['url']),
+                      subtitle: Text(item['url']),
+                      trailing: Text(item['datetime']?.substring(0, 19).replaceAll('T', ' ') ?? ''),
+                      onTap: () {
+                        Navigator.pop(context);
+                        _loadUrl(item['url']);
+                      },
+                      onLongPress: () async {
+                        _history.removeAt(index);
+                        await _saveHistory();
+                        setState(() {});
+                      },
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // 将 _onPageFinished 标记为 async
+  void _onPageFinished(String url) async {
+    // ... existing code ...
+    String title = await _controller.getTitle() ?? url;
+    await _addHistory(title, url);
+    // ... existing code ...
   }
 }
 
