@@ -1111,51 +1111,6 @@ class _ResizableAndConfigurableTextBoxState
 
   // 构建自定义文本框，确保字体正确应用
   Widget _buildCustomTextField() {
-    if (widget.globalEnhanceMode) {
-      // 增强模式下，采用“描边+填充”双层文本渲染，所有字符描边以本体为中心
-      final text = _controller.text;
-      return Container(
-        alignment: Alignment.topLeft,
-        padding: EdgeInsets.all(5.0),
-        child: SingleChildScrollView(
-          controller: _textScrollController,
-          child: Stack(
-            children: [
-              // 第一层：白色描边
-              Text(
-                text,
-                textAlign: _textStyle.textAlign,
-                style: TextStyle(
-                  fontSize: _textStyle.fontSize,
-                  fontWeight: FontWeight.bold,
-                  fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
-                  backgroundColor: _textStyle.backgroundColor,
-                  height: 1.2,
-                  foreground: Paint()
-                    ..style = PaintingStyle.stroke
-                    ..strokeWidth = 2.5
-                    ..color = Colors.white,
-                ),
-              ),
-              // 第二层：正常填充
-              Text(
-                text,
-                textAlign: _textStyle.textAlign,
-                style: TextStyle(
-                  color: _textStyle.fontColor,
-                  fontSize: _textStyle.fontSize,
-                  fontWeight: FontWeight.bold,
-                  fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
-                  backgroundColor: _textStyle.backgroundColor,
-                  height: 1.2,
-                ),
-              ),
-            ],
-          ),
-        ),
-      );
-    }
-    // 非增强模式，保持原有TextField
     return TextField(
       controller: _controller,
       focusNode: _focusNode,
@@ -1166,10 +1121,16 @@ class _ResizableAndConfigurableTextBoxState
       style: TextStyle(
         color: _textStyle.fontColor,
         fontSize: _textStyle.fontSize,
-        fontWeight: _textStyle.fontWeight,
+        fontWeight: widget.globalEnhanceMode ? FontWeight.bold : _textStyle.fontWeight,
         fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
         backgroundColor: _textStyle.backgroundColor,
         height: 1.2,
+        shadows: widget.globalEnhanceMode ? [
+          Shadow(color: _getContrastingColor(_textStyle.fontColor), offset: Offset(1, 1), blurRadius: 1),
+          Shadow(color: _getContrastingColor(_textStyle.fontColor), offset: Offset(-1, 1), blurRadius: 1),
+          Shadow(color: _getContrastingColor(_textStyle.fontColor), offset: Offset(1, -1), blurRadius: 1),
+          Shadow(color: _getContrastingColor(_textStyle.fontColor), offset: Offset(-1, -1), blurRadius: 1),
+        ] : null,
       ),
       decoration: InputDecoration(
         border: InputBorder.none,
