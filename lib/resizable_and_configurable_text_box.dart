@@ -34,7 +34,7 @@ class Config {
     Colors.brown,
     Colors.grey,
   ];
-  
+
   // 常用背景颜色 - 移除const，因为shade100不是常量表达式
   static List<Color> backgroundColors = [
     Colors.pink.shade100,
@@ -96,7 +96,7 @@ class CustomTextStyle {
   final bool isItalic;
   final Color? backgroundColor;
   final TextAlign textAlign;
-  
+
   CustomTextStyle({
     required this.fontSize,
     required this.fontColor,
@@ -105,7 +105,7 @@ class CustomTextStyle {
     this.backgroundColor,
     this.textAlign = TextAlign.left,
   });
-  
+
   CustomTextStyle copyWith({
     double? fontSize,
     Color? fontColor,
@@ -231,7 +231,7 @@ class ResizableAndConfigurableTextBox extends StatefulWidget {
   final Function() onDeleteCurrent;
   final Function() onDuplicateCurrent;
   final bool globalEnhanceMode; // 添加全局增强模式参数
-  
+
   const ResizableAndConfigurableTextBox({
     super.key,
     required this.initialSize,
@@ -257,7 +257,7 @@ class _ResizableAndConfigurableTextBoxState
   late ScrollController _textScrollController;
   final double _minWidth = 25.0;
   final double _minHeight = 25.0;
-  
+
   // 选择文本的相关变量
   int? _selectionStart;
   int? _selectionEnd;
@@ -318,7 +318,7 @@ class _ResizableAndConfigurableTextBoxState
   final List<String> _chineseFonts = [
     '宋体',
     '黑体',
-    '楷体', 
+    '楷体',
     '仿宋',
     '微软雅黑',
     '华文楷体',
@@ -335,20 +335,20 @@ class _ResizableAndConfigurableTextBoxState
   void initState() {
     super.initState();
     _size = widget.initialSize;
-    
+
     // 确保使用完整的CustomTextStyle对象，填充所有属性
     _textStyle = widget.initialTextStyle;
-    
+
     // 打印初始样式，用于调试
     print('初始化文本框样式: 字体大小=${_textStyle.fontSize}, '
-          '颜色=${_textStyle.fontColor}, '
-          '粗体=${_textStyle.fontWeight}, '
-          '斜体=${_textStyle.isItalic}, '
-          '背景色=${_textStyle.backgroundColor}, '
-          '对齐=${_textStyle.textAlign}');
-    
+        '颜色=${_textStyle.fontColor}, '
+        '粗体=${_textStyle.fontWeight}, '
+        '斜体=${_textStyle.isItalic}, '
+        '背景色=${_textStyle.backgroundColor}, '
+        '对齐=${_textStyle.textAlign}');
+
     _controller = TextEditingController(text: widget.initialText);
-    
+
     _focusNode = FocusNode();
     _focusNode.addListener(() {
       // 移除自动显示设置面板的逻辑
@@ -356,18 +356,18 @@ class _ResizableAndConfigurableTextBoxState
       setState(() {});
     });
     _textScrollController = ScrollController();
-    
+
     // 监听文本选择变化
     _controller.addListener(_handleTextChange);
   }
-  
+
   // 处理文本变化和选择
   void _handleTextChange() {
     if (_controller.selection.isValid) {
       setState(() {
         _selectionStart = _controller.selection.start;
         _selectionEnd = _controller.selection.end;
-        
+
         // 只记录选择状态，不自动弹出面板
         // 面板将通过左上角的设置按钮显示
       });
@@ -386,37 +386,37 @@ class _ResizableAndConfigurableTextBoxState
   void _saveChanges() {
     // 打印保存的样式信息，用于调试
     print('保存文本框样式更改: 字体大小=${_textStyle.fontSize}, '
-          '颜色=${_textStyle.fontColor}, '
-          '粗体=${_textStyle.fontWeight}, '
-          '斜体=${_textStyle.isItalic}, '
-          '背景色=${_textStyle.backgroundColor}, '
-          '对齐=${_textStyle.textAlign}');
-    
+        '颜色=${_textStyle.fontColor}, '
+        '粗体=${_textStyle.fontWeight}, '
+        '斜体=${_textStyle.isItalic}, '
+        '背景色=${_textStyle.backgroundColor}, '
+        '对齐=${_textStyle.textAlign}');
+
     // 调用父组件提供的保存方法
     widget.onSave(_size, _controller.text, _textStyle);
   }
 
   void _increaseFontSize() {
-      setState(() {
-        _textStyle = _textStyle.copyWith(fontSize: _textStyle.fontSize + 2);
-      });
-      _saveChanges();
+    setState(() {
+      _textStyle = _textStyle.copyWith(fontSize: _textStyle.fontSize + 2);
+    });
+    _saveChanges();
   }
 
   void _decreaseFontSize() {
-      setState(() {
-        if (_textStyle.fontSize > 8) {
-          _textStyle = _textStyle.copyWith(fontSize: _textStyle.fontSize - 2);
-        }
-      });
-      _saveChanges();
+    setState(() {
+      if (_textStyle.fontSize > 8) {
+        _textStyle = _textStyle.copyWith(fontSize: _textStyle.fontSize - 2);
+      }
+    });
+    _saveChanges();
   }
 
   void _showColorPicker() {
     // 保存当前文本样式，以便在取消时恢复
     final CustomTextStyle originalStyle = _textStyle;
     Color pickerColor = _textStyle.fontColor;
-    
+
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -472,7 +472,7 @@ class _ResizableAndConfigurableTextBoxState
           TextButton(
             onPressed: () {
               Navigator.of(context).pop();
-                _saveChanges();
+              _saveChanges();
             },
             child: Text('确定'),
           ),
@@ -485,7 +485,7 @@ class _ResizableAndConfigurableTextBoxState
     // 保存当前文本样式，以便在取消时恢复
     final CustomTextStyle originalStyle = _textStyle;
     Color pickerColor = _textStyle.backgroundColor ?? Colors.transparent;
-    
+
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -542,7 +542,7 @@ class _ResizableAndConfigurableTextBoxState
           TextButton(
             onPressed: () {
               Navigator.of(context).pop();
-                _saveChanges();
+              _saveChanges();
             },
             child: Text('确定'),
           ),
@@ -552,21 +552,21 @@ class _ResizableAndConfigurableTextBoxState
   }
 
   void _toggleFontWeight() {
-      setState(() {
-        _textStyle = _textStyle.copyWith(
-          fontWeight: _textStyle.fontWeight == FontWeight.normal
-              ? FontWeight.bold
-              : FontWeight.normal,
-        );
-      });
-      _saveChanges();
+    setState(() {
+      _textStyle = _textStyle.copyWith(
+        fontWeight: _textStyle.fontWeight == FontWeight.normal
+            ? FontWeight.bold
+            : FontWeight.normal,
+      );
+    });
+    _saveChanges();
   }
 
   void _toggleItalic() {
-      setState(() {
-        _textStyle = _textStyle.copyWith(isItalic: !_textStyle.isItalic);
-      });
-      _saveChanges();
+    setState(() {
+      _textStyle = _textStyle.copyWith(isItalic: !_textStyle.isItalic);
+    });
+    _saveChanges();
   }
 
   void _changeTextAlign(TextAlign align) {
@@ -580,14 +580,14 @@ class _ResizableAndConfigurableTextBoxState
   // 完全重新实现的强制维持选择状态方法 - 更简单，更可靠
   void _forceMaintainSelection(TextSelection selection) {
     if (!selection.isValid || selection.start == selection.end) return;
-    
+
     print('强制维持选择状态: ${selection.start}-${selection.end}');
-    
+
     // 立即应用选择状态
     _controller.selection = selection;
     _selectionStart = selection.start;
     _selectionEnd = selection.end;
-    
+
     // 只用一次延迟应用，避免过度更新
     Future.delayed(Duration(milliseconds: 100), () {
       if (mounted) {
@@ -599,7 +599,7 @@ class _ResizableAndConfigurableTextBoxState
   // 显示设置面板 - 修改为只显示文本框设置面板，增强磨砂效果
   void _showSettingsPanel(BuildContext context) {
     print('显示设置面板');
-    
+
     // 显示底部面板，使用正确的参数结构
     showModalBottomSheet<void>(
       context: context,
@@ -610,11 +610,11 @@ class _ResizableAndConfigurableTextBoxState
       ),
       builder: (BuildContext context) {
         return Container(
-      constraints: BoxConstraints(
+          constraints: BoxConstraints(
             maxHeight: 260, // 删除字体部分后降低高度 (原来350)
-      ),
+          ),
           child: StatefulBuilder(
-          builder: (BuildContext context, StateSetter setModalState) {
+            builder: (BuildContext context, StateSetter setModalState) {
               // 始终返回文本框设置面板
               return _buildTextBoxSettings(setModalState);
             },
@@ -643,13 +643,13 @@ class _ResizableAndConfigurableTextBoxState
               ),
             ],
           ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
               // 第一行：对齐方式按钮和文本操作按钮(删除、复制)
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
+                children: [
                   // 对齐方式按钮组
                   Row(
                     children: [
@@ -682,113 +682,113 @@ class _ResizableAndConfigurableTextBoxState
               ),
 
               Divider(height: 12),
-              
+
               // 第二行：简化的文本样式按钮组（保留A-/A+/B/I）和清除样式按钮
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                _buildToolButton(
-                  null, 
-                    () {
-                      setState(() {
-                        if (_textStyle.fontSize > 8) {
-                          _textStyle = _textStyle.copyWith(fontSize: _textStyle.fontSize - 2);
-                        }
-                      });
-                      // 确保立即保存更改
-                      Future.microtask(() => _saveChanges());
-                    },
-                    false, text: "A-", width: 40
+                  _buildToolButton(
+                      null,
+                          () {
+                        setState(() {
+                          if (_textStyle.fontSize > 8) {
+                            _textStyle = _textStyle.copyWith(fontSize: _textStyle.fontSize - 2);
+                          }
+                        });
+                        // 确保立即保存更改
+                        Future.microtask(() => _saveChanges());
+                      },
+                      false, text: "A-", width: 40
                   ),
                   SizedBox(width: 8),
-                _buildToolButton(
-                  null, 
-                    () {
-                      setState(() {
-                        _textStyle = _textStyle.copyWith(fontSize: _textStyle.fontSize + 2);
-                      });
-                      // 确保立即保存更改
-                      Future.microtask(() => _saveChanges());
-                    },
-                    false, text: "A+", width: 40
+                  _buildToolButton(
+                      null,
+                          () {
+                        setState(() {
+                          _textStyle = _textStyle.copyWith(fontSize: _textStyle.fontSize + 2);
+                        });
+                        // 确保立即保存更改
+                        Future.microtask(() => _saveChanges());
+                      },
+                      false, text: "A+", width: 40
                   ),
                   SizedBox(width: 8),
-                _buildToolButton(
-                  null, 
-                    () {
-                      print('点击加粗按钮');
-                      final newFontWeight = _textStyle.fontWeight == FontWeight.normal
-                          ? FontWeight.bold
-                          : FontWeight.normal;
-                      setState(() {
-                        _textStyle = _textStyle.copyWith(
-                          fontWeight: newFontWeight,
-                        );
-                        print('设置加粗状态为: $newFontWeight');
-                      });
-                      // 确保立即保存更改
-                      Future.microtask(() => _saveChanges());
-                    },
-                    _textStyle.fontWeight == FontWeight.bold,
-                    text: "B", width: 40
+                  _buildToolButton(
+                      null,
+                          () {
+                        print('点击加粗按钮');
+                        final newFontWeight = _textStyle.fontWeight == FontWeight.normal
+                            ? FontWeight.bold
+                            : FontWeight.normal;
+                        setState(() {
+                          _textStyle = _textStyle.copyWith(
+                            fontWeight: newFontWeight,
+                          );
+                          print('设置加粗状态为: $newFontWeight');
+                        });
+                        // 确保立即保存更改
+                        Future.microtask(() => _saveChanges());
+                      },
+                      _textStyle.fontWeight == FontWeight.bold,
+                      text: "B", width: 40
                   ),
                   SizedBox(width: 8),
-                _buildToolButton(
-                  null, 
-                    () {
-                      print('点击斜体按钮');
-                      final newItalicState = !_textStyle.isItalic;
-                      setState(() {
-                        _textStyle = _textStyle.copyWith(isItalic: newItalicState);
-                        print('设置斜体状态为: $newItalicState');
-                      });
-                      // 确保立即保存更改
-                      Future.microtask(() => _saveChanges());
-                    },
-                    _textStyle.isItalic,
-                    text: "I", width: 40, isItalic: true
+                  _buildToolButton(
+                      null,
+                          () {
+                        print('点击斜体按钮');
+                        final newItalicState = !_textStyle.isItalic;
+                        setState(() {
+                          _textStyle = _textStyle.copyWith(isItalic: newItalicState);
+                          print('设置斜体状态为: $newItalicState');
+                        });
+                        // 确保立即保存更改
+                        Future.microtask(() => _saveChanges());
+                      },
+                      _textStyle.isItalic,
+                      text: "I", width: 40, isItalic: true
                   ),
                   SizedBox(width: 12), // 增加间距使红色按钮更加明显
                   // 清除样式按钮，改为红色并放大
-                _buildToolButton(
-                  Icons.format_clear, 
-                    () {
-                      setState(() {
-                        // 重置样式回默认状态
-                        _textStyle = CustomTextStyle(
-                          fontSize: 16.0, // 默认字体大小
-                          fontColor: Colors.black,
-                          fontWeight: FontWeight.normal,
-                          isItalic: false,
-                          backgroundColor: null,
-                          textAlign: TextAlign.left,
-                        );
-                      });
-                      _saveChanges();
-                    },
-                    false, width: 45, color: Colors.red
+                  _buildToolButton(
+                      Icons.format_clear,
+                          () {
+                        setState(() {
+                          // 重置样式回默认状态
+                          _textStyle = CustomTextStyle(
+                            fontSize: 16.0, // 默认字体大小
+                            fontColor: Colors.black,
+                            fontWeight: FontWeight.normal,
+                            isItalic: false,
+                            backgroundColor: null,
+                            textAlign: TextAlign.left,
+                          );
+                        });
+                        _saveChanges();
+                      },
+                      false, width: 45, color: Colors.red
                   ),
                 ],
               ),
-              
+
               SizedBox(height: 12),
-              
+
               // 第三行：文本颜色选择（10个经典颜色）
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   for (Color color in [
-                      Colors.black, 
-                      Colors.white, 
-                      Colors.red, 
-                      Colors.orange,
-                      Colors.yellow, 
-                      Colors.green, 
-                      Colors.blue, 
-                      Colors.indigo,
-                      Colors.purple, 
-                      Colors.pink,
-                    ])
+                    Colors.black,
+                    Colors.white,
+                    Colors.red,
+                    Colors.orange,
+                    Colors.yellow,
+                    Colors.green,
+                    Colors.blue,
+                    Colors.indigo,
+                    Colors.purple,
+                    Colors.pink,
+                  ])
                     Padding(
                       padding: EdgeInsets.symmetric(horizontal: 4),
                       child: InkWell(
@@ -809,23 +809,23 @@ class _ResizableAndConfigurableTextBoxState
                             color: color,
                             shape: BoxShape.circle,
                             border: Border.all(
-                              color: _compareColors(_textStyle.fontColor, color) ? 
-                                Colors.blue : Colors.grey.shade300,
+                              color: _compareColors(_textStyle.fontColor, color) ?
+                              Colors.blue : Colors.grey.shade300,
                               width: _compareColors(_textStyle.fontColor, color) ? 2 : 1,
                             ),
-                            boxShadow: _compareColors(_textStyle.fontColor, color) ? 
-                                [BoxShadow(color: Colors.blue.withOpacity(0.5), blurRadius: 4)] : null,
+                            boxShadow: _compareColors(_textStyle.fontColor, color) ?
+                            [BoxShadow(color: Colors.blue.withOpacity(0.5), blurRadius: 4)] : null,
                           ),
                           child: _compareColors(_textStyle.fontColor, color) ?
-                            Icon(Icons.check, color: _getContrastColor(color), size: 12) : null,
+                          Icon(Icons.check, color: _getContrastColor(color), size: 12) : null,
                         ),
                       ),
                     ),
                 ],
               ),
-              
+
               SizedBox(height: 12),
-              
+
               // 第四行：背景颜色选择（正方形，10个颜色）
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
@@ -851,8 +851,8 @@ class _ResizableAndConfigurableTextBoxState
                         decoration: BoxDecoration(
                           borderRadius: BorderRadius.circular(4),
                           border: Border.all(
-                            color: _textStyle.backgroundColor == null || _textStyle.backgroundColor == Colors.transparent ? 
-                                  Colors.blue : Colors.grey.shade300,
+                            color: _textStyle.backgroundColor == null || _textStyle.backgroundColor == Colors.transparent ?
+                            Colors.blue : Colors.grey.shade300,
                             width: _textStyle.backgroundColor == null || _textStyle.backgroundColor == Colors.transparent ? 2 : 1,
                           ),
                           // 透明背景标志 - 棋盘格图案
@@ -861,17 +861,17 @@ class _ResizableAndConfigurableTextBoxState
                             begin: Alignment.topLeft,
                             end: Alignment.bottomRight,
                           ),
-                          boxShadow: _textStyle.backgroundColor == null || _textStyle.backgroundColor == Colors.transparent ? 
-                              [BoxShadow(color: Colors.blue.withOpacity(0.5), blurRadius: 4)] : null,
+                          boxShadow: _textStyle.backgroundColor == null || _textStyle.backgroundColor == Colors.transparent ?
+                          [BoxShadow(color: Colors.blue.withOpacity(0.5), blurRadius: 4)] : null,
                         ),
                         child: _textStyle.backgroundColor == null || _textStyle.backgroundColor == Colors.transparent ?
-                          Icon(Icons.check, color: Colors.blue, size: 12) : null,
+                        Icon(Icons.check, color: Colors.blue, size: 12) : null,
                       ),
                     ),
                   ),
-                  
+
                   // 彩色背景选项 - 正方形
-                for (Color color in [
+                  for (Color color in [
                     Colors.white,
                     Colors.pink.shade100,
                     Colors.yellow.shade100,
@@ -882,41 +882,41 @@ class _ResizableAndConfigurableTextBoxState
                     Colors.grey.shade200,
                     Colors.teal.shade100,
                   ])
-                  Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 4),
-                    child: InkWell(
-                      onTap: () {
-                        print('点击背景颜色: $color');
-                        setState(() {
-                          _textStyle = _textStyle.copyWith(backgroundColor: color);
-                          print('设置背景颜色为: $color');
-                        });
-                        setModalState(() {}); // 更新底部面板状态
-                        // 确保立即保存更改
-                        Future.microtask(() => _saveChanges());
-                      },
-                      child: Container(
-                        width: 24,
-                        height: 24,
-                        decoration: BoxDecoration(
-                          color: color,
-                          borderRadius: BorderRadius.circular(4),
-                          border: Border.all(
-                            color: _compareColors(_textStyle.backgroundColor, color) ? 
+                    Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 4),
+                      child: InkWell(
+                        onTap: () {
+                          print('点击背景颜色: $color');
+                          setState(() {
+                            _textStyle = _textStyle.copyWith(backgroundColor: color);
+                            print('设置背景颜色为: $color');
+                          });
+                          setModalState(() {}); // 更新底部面板状态
+                          // 确保立即保存更改
+                          Future.microtask(() => _saveChanges());
+                        },
+                        child: Container(
+                          width: 24,
+                          height: 24,
+                          decoration: BoxDecoration(
+                            color: color,
+                            borderRadius: BorderRadius.circular(4),
+                            border: Border.all(
+                              color: _compareColors(_textStyle.backgroundColor, color) ?
                               Colors.blue : Colors.grey.shade300,
-                            width: _compareColors(_textStyle.backgroundColor, color) ? 2 : 1,
+                              width: _compareColors(_textStyle.backgroundColor, color) ? 2 : 1,
+                            ),
+                            boxShadow: _compareColors(_textStyle.backgroundColor, color) ?
+                            [BoxShadow(color: Colors.blue.withOpacity(0.5), blurRadius: 4)] : null,
                           ),
-                          boxShadow: _compareColors(_textStyle.backgroundColor, color) ? 
-                              [BoxShadow(color: Colors.blue.withOpacity(0.5), blurRadius: 4)] : null,
-                        ),
-                        child: _compareColors(_textStyle.backgroundColor, color) ?
+                          child: _compareColors(_textStyle.backgroundColor, color) ?
                           Icon(Icons.check, color: Colors.blue, size: 12) : null,
+                        ),
                       ),
                     ),
-                  ),
                 ],
               ),
-              
+
               // 添加一个小把手，使其看起来更像抽屉
               Container(
                 height: 4,
@@ -938,7 +938,7 @@ class _ResizableAndConfigurableTextBoxState
   Widget _buildToolButton(IconData? icon, VoidCallback onPressed, bool isActive, {String? text, double width = 32, bool isItalic = false, Color? color}) {
     final Color buttonColor = color ?? (isActive ? Colors.blue : Colors.black);
     final double iconSize = color == Colors.red ? 24 : 20; // 如果是红色清除按钮，则放大图标
-    
+
     return SizedBox(
       width: width,
       child: Material(
@@ -953,17 +953,17 @@ class _ResizableAndConfigurableTextBoxState
               borderRadius: BorderRadius.circular(4),
             ),
             alignment: Alignment.center,
-            child: text != null 
-              ? Text(
-                  text,
-                  style: TextStyle(
-                    fontSize: 16, 
-                    fontWeight: FontWeight.bold,
-                    fontStyle: isItalic ? FontStyle.italic : FontStyle.normal,
-                    color: buttonColor
-                  ),
-                )
-              : Icon(icon, size: iconSize, color: buttonColor),
+            child: text != null
+                ? Text(
+              text,
+              style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  fontStyle: isItalic ? FontStyle.italic : FontStyle.normal,
+                  color: buttonColor
+              ),
+            )
+                : Icon(icon, size: iconSize, color: buttonColor),
           ),
         ),
       ),
@@ -973,7 +973,7 @@ class _ResizableAndConfigurableTextBoxState
   // 对齐方式按钮
   Widget _buildAlignmentButton(IconData icon, TextAlign align) {
     final bool isActive = _textStyle.textAlign == align;
-    
+
     return IconButton(
       icon: Icon(
         icon,
@@ -1009,7 +1009,7 @@ class _ResizableAndConfigurableTextBoxState
   Widget build(BuildContext context) {
     // 判断是否有文本选择
     bool hasTextSelection = _selectionStart != null && _selectionEnd != null && _selectionStart != _selectionEnd;
-    
+
     return Focus(
       // 使用Focus小部件来禁用键盘弹出
       onKeyEvent: (node, event) {
@@ -1019,7 +1019,7 @@ class _ResizableAndConfigurableTextBoxState
         onTap: () {
           // 使 TextField 获取焦点
           FocusScope.of(context).requestFocus(_focusNode);
-          
+
           // 点击空白处时关闭底部设置面板
           if (_showBottomSettings) {
             setState(() {
@@ -1053,9 +1053,9 @@ class _ResizableAndConfigurableTextBoxState
               child: _buildCustomTextField(),
             ),
             // 设置按钮 - 使其更加透明
-              Positioned(
-                left: -10,
-                top: -12,
+            Positioned(
+              left: -10,
+              top: -12,
               child: Opacity(
                 opacity: 0.125, // 降低到之前的一半透明度
                 child: IconButton(
@@ -1064,7 +1064,7 @@ class _ResizableAndConfigurableTextBoxState
                   constraints: BoxConstraints(),
                   iconSize: 20,
                   onPressed: () {
-                    // 显示设置面板并关闭键盘
+                    // 显示设置面板关闭键盘并
                     setState(() {
                       _showBottomSettings = true;
                       _settingsMode = SettingsMode.textBox;
@@ -1078,118 +1078,121 @@ class _ResizableAndConfigurableTextBoxState
                 ),
               ),
             ),
-            // 调整大小的手柄 - 使其更加透明
-              Positioned(
-                right: 0,
-                bottom: 0,
-                child: GestureDetector(
-                  onPanUpdate: (details) {
-                    double newWidth = _size.width + details.delta.dx;
-                    double newHeight = _size.height + details.delta.dy;
-                    if (newWidth >= _minWidth && newHeight >= _minHeight) {
-                      setState(() {
-                        _size = Size(newWidth, newHeight);
-                      });
-                      _saveChanges();
-                    }
-                  },
-                  child: Opacity(
+            // 调整大小的手柄设置更加透明
+            Positioned(
+              right: 0,
+              bottom: 0,
+              child: GestureDetector(
+                onPanUpdate: (details) {
+                  double newWidth = _size.width + details.delta.dx;
+                  double newHeight = _size.height + details.delta.dy;
+                  if (newWidth >= _minWidth && newHeight >= _minHeight) {
+                    setState(() {
+                      _size = Size(newWidth, newHeight);
+                    });
+                    _saveChanges();
+                  }
+                },
+                child: Opacity(
                   opacity: 0.25, // 降低到之前的一半透明度
-                    child: Icon(
-                      Icons.zoom_out_map,
-                      size: 24,
-                      color: Colors.grey,
-                    ),
+                  child: Icon(
+                    Icons.zoom_out_map,
+                    size: 24,
+                    color: Colors.grey,
                   ),
                 ),
               ),
+            ),
           ],
         ),
       ),
     );
   }
 
-  // 构建自定义文本框，确保字体正确应用
+  // 优化的核心方法：根据焦点状态动态切换
   Widget _buildCustomTextField() {
-    if (widget.globalEnhanceMode) {
-      // 增强模式下，采用“描边+填充”双层文本渲染，所有字符描边以本体为中心
-      final text = _controller.text;
-      return Container(
-        alignment: Alignment.topLeft,
-        padding: EdgeInsets.all(5.0),
-        child: SingleChildScrollView(
-          controller: _textScrollController,
-          child: Stack(
-            children: [
-              // 第一层：白色描边
-              Text(
-                text,
-                textAlign: _textStyle.textAlign,
-                style: TextStyle(
-                  fontSize: _textStyle.fontSize,
-                  fontWeight: FontWeight.bold,
-                  fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
-                  backgroundColor: _textStyle.backgroundColor,
-                  height: 1.2,
-                  foreground: Paint()
-                    ..style = PaintingStyle.stroke
-                    ..strokeWidth = 2.5
-                    ..color = Colors.white,
-                ),
-              ),
-              // 第二层：正常填充
-              Text(
-                text,
-                textAlign: _textStyle.textAlign,
-                style: TextStyle(
-                  color: _textStyle.fontColor,
-                  fontSize: _textStyle.fontSize,
-                  fontWeight: FontWeight.bold,
-                  fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
-                  backgroundColor: _textStyle.backgroundColor,
-                  height: 1.2,
-                ),
-              ),
-            ],
-          ),
+    // 如果非增强模式，或增强模式但有焦点（编辑中），使用可编辑的 TextField
+    if (!widget.globalEnhanceMode || _focusNode.hasFocus) {
+      print('渲染编辑模式或增强编辑模式: TextField');
+      return TextField(
+        controller: _controller,
+        focusNode: _focusNode,
+        scrollController: _textScrollController,
+        maxLines: null,
+        expands: true,
+        textAlign: _textStyle.textAlign,
+        style: TextStyle(
+          color: _textStyle.fontColor,
+          fontSize: _textStyle.fontSize,
+          fontWeight: _textStyle.fontWeight,  // 编辑时保持用户设置的 fontWeight
+          fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
+          backgroundColor: _textStyle.backgroundColor,
+          height: 1.2,
         ),
+        decoration: InputDecoration(
+          border: InputBorder.none,
+          contentPadding: EdgeInsets.all(5.0),
+          fillColor: Colors.transparent,
+        ),
+        onChanged: (text) {
+          _saveChanges();
+        },
+        onTap: () {
+          if (_showBottomSettings) {
+            setState(() {
+              _showBottomSettings = false;
+            });
+          }
+        },
+        cursorWidth: 2.0,
+        cursorColor: _textStyle.fontColor,
+        enableInteractiveSelection: true,
       );
-    }
-    // 非增强模式，保持原有TextField
-    return TextField(
-      controller: _controller,
-      focusNode: _focusNode,
-      scrollController: _textScrollController,
-      maxLines: null,
-      expands: true,
-      textAlign: _textStyle.textAlign,
-      style: TextStyle(
-        color: _textStyle.fontColor,
-        fontSize: _textStyle.fontSize,
-        fontWeight: _textStyle.fontWeight,
-        fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
-        backgroundColor: _textStyle.backgroundColor,
-        height: 1.2,
-      ),
-      decoration: InputDecoration(
-        border: InputBorder.none,
-        contentPadding: EdgeInsets.all(5.0),
-        fillColor: Colors.transparent,
-      ),
-      onChanged: (text) {
-        _saveChanges();
-      },
-      onTap: () {
-        if (_showBottomSettings) {
-          setState(() {
-            _showBottomSettings = false;
-          });
-        }
-      },
-      cursorWidth: 2.0,
-      cursorColor: _textStyle.fontColor,
-      enableInteractiveSelection: true,
+    } else {
+    // 增强模式且无焦点时，使用只读的描边 + 填充效果
+    print('渲染增强显示模式: Stack<Text>');
+    final text = _controller.text;
+    return Container(
+    alignment: Alignment.topLeft,
+    padding: EdgeInsets.all(5.0),
+    child: SingleChildScrollView(
+    controller: _textScrollController,
+    child: Stack(
+    children: [
+    // 第一层：白色描边
+    Text(
+    text,
+    textAlign: _textStyle.textAlign,
+    style: TextStyle(
+    fontSize: _textStyle.fontSize,
+    fontWeight: FontWeight.bold,  // 强制 bold 以匹配描边效果
+    fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
+    backgroundColor: _textStyle.backgroundColor,
+    height: 1.2,
+    foreground: Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 2.5
+    ..color = Colors.white,
+    ),
+    ),
+    // 第二层：正常填充
+    Text(
+    text,
+    textAlign: _textStyle.textAlign,
+    style: TextStyle(
+    color: _textStyle.fontColor,
+    fontSize: _textStyle.fontSize,
+    fontWeight: FontWeight.bold,  // 强制 bold 以匹配描边效果
+    fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
+    backgroundColor: _textStyle.backgroundColor,
+    height: 1.2,
+    ),
+    ),
+    ],
+    ),
+    ),
     );
+    }
   }
 
   // 安全比较颜色 - 修复透明背景比较问题
@@ -1214,24 +1217,24 @@ class _ResizableAndConfigurableTextBoxState
 // 添加三角形绘制类
 class TrianglePainter extends CustomPainter {
   final Color color;
-  
+
   TrianglePainter(this.color);
-  
+
   @override
   void paint(Canvas canvas, Size size) {
     final Paint paint = Paint()
       ..color = color
       ..style = PaintingStyle.fill;
-      
+
     final Path path = Path()
       ..moveTo(0, 0)
       ..lineTo(size.width, 0)
       ..lineTo(size.width / 2, size.height)
       ..close();
-      
+
     canvas.drawPath(path, paint);
   }
-  
+
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) {
     return oldDelegate is TrianglePainter && oldDelegate.color != color;
