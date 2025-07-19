@@ -3,6 +3,8 @@ package com.example.change_copy2
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import io.flutter.plugins.videoplayer.VideoPlayerPlugin  // 添加VideoPlayerPlugin导入
+import com.google.android.exoplayer2.util.Util  // 添加ExoPlayer工具类导入
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
@@ -13,6 +15,12 @@ class MainActivity: FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        
+        // 添加VideoPlayerPlugin实例
+        flutterEngine.plugins.add(VideoPlayerPlugin())
+        
+        // 强制ExoPlayer使用软件解码fallback
+        System.setProperty("exo.prefer.software.decoder", "true")  // 强制软件解码
         
         // 创建通知渠道
         createNotificationChannel()
@@ -45,4 +53,4 @@ class MainActivity: FlutterActivity() {
             notificationManager.createNotificationChannel(channel)
         }
     }
-} 
+}

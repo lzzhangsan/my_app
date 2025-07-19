@@ -9,6 +9,7 @@ import 'core/service_locator.dart';
 import 'services/background_media_service.dart';
 import 'package:flutter/services.dart';
 import 'diary_page.dart';
+import 'video_config_helper.dart';  // 导入视频配置辅助文件
 
 // 添加全局导航键，以便可以在应用的任何地方访问Navigator
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
@@ -16,6 +17,10 @@ final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 void main() async {
   // 确保Flutter绑定初始化
   WidgetsFlutterBinding.ensureInitialized();
+  
+  // 初始化视频配置
+  await VideoConfigHelper.instance.initialize();
+  VideoMemoryManager.instance.startMemoryMonitoring();
 
   // 初始化服务架构
   try {

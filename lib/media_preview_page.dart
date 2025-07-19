@@ -1,15 +1,24 @@
 import 'dart:io';
 import 'dart:async';
+
+// Flutter框架核心包
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+
+// 第三方库
+import 'package:chewie/chewie.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:video_player/video_player.dart';
-import 'package:chewie/chewie.dart';
+
+// 本地模块
 import 'core/service_locator.dart';
 import 'services/database_service.dart';
 import 'models/media_item.dart';
 import 'models/media_type.dart';
 
+// 视频相关模块
+import 'video_config_helper.dart';
+import 'video_memory_manager.dart';
 
 enum MediaMode { none, manual, auto }
 
@@ -43,6 +52,9 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     _dbService = getService<DatabaseService>();
     _currentIndex = widget.initialIndex;
     _pageController = PageController(initialPage: widget.initialIndex);
+    
+    // 启动内存监控
+    VideoMemoryManager.instance.startMemoryMonitoring();
     
     // 预初始化当前页和相邻页的视频控制器
     _initializeVideoControllerAt(_currentIndex);
@@ -99,6 +111,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
           return;
         }
 
+        // 获取视频配置建议
         final controller = VideoPlayerController.file(videoFile);
         _videoControllers[index] = controller;
         
@@ -116,6 +129,20 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
         } catch (timeoutError) {
         }
         
+        // 在初始化视频控制器时应用视频配置
+        final config = VideoConfigHelper.instance.getRecommendedConfig(
+          videoWidth: controller.value.size.width.toInt(),
+          videoHeight: controller.value.size.height.toInt(),
+          videoDuration: controller.value.duration,
+        );
+        
+        if (config.forceCompatibilityMode) {
+          // 应用配置，如限制并发
+          if (!VideoConfigHelper.instance.canCreateNewVideoController(index.toString())) {
+            return;
+          }
+        }
+        
         if (!initializeSuccessful) {
           if (_videoControllers.containsKey(index)) {
             _videoControllers[index]?.dispose();
@@ -124,13 +151,11 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
           return;
         }
         
-        // 自动播放当前视频
-        final bool shouldAutoPlay = index == _currentIndex;
-        
+        // 创建Chewie控制器
         try {
           final chewieController = ChewieController(
             videoPlayerController: controller,
-            autoPlay: shouldAutoPlay,
+            autoPlay: index == _currentIndex, // 只播放当前页面的视频
             looping: false,
             allowFullScreen: true,
             allowMuting: true,
@@ -178,6 +203,9 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
           
           _chewieControllers[index] = chewieController;
           
+          // 注册视频控制器
+          VideoConfigHelper.instance.registerVideoController(index.toString());
+          
           // 添加视频控制器状态变化监听
           controller.addListener(() {
             debugPrint('视频播放位置: ${controller.value.position}');
@@ -186,7 +214,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
           });
           
           // 如果是当前页面，立即开始播放
-          if (shouldAutoPlay && controller.value.isInitialized) {
+          if (index == _currentIndex && controller.value.isInitialized) {
             await controller.play();
           }
         } catch (chewieError) {
@@ -199,20 +227,22 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
         }
         
         if (mounted) setState(() {});
+      } catch (e) {
+        if (_videoControllers.containsKey(index)) {
+          _videoControllers[index]?.dispose();
+          _videoControllers.remove(index);
+        }
+        if (_chewieControllers.containsKey(index)) {
+          _chewieControllers[index]?.dispose();
+          _chewieControllers.remove(index);
+        }
       }
-    } catch (e) {
-      if (_videoControllers.containsKey(index)) {
-        _videoControllers[index]?.dispose();
-        _videoControllers.remove(index);
-      }
-      if (_chewieControllers.containsKey(index)) {
-        _chewieControllers[index]?.dispose();
-        _chewieControllers.remove(index);
-      }
-    }
   }
 
   void _disposeVideoControllerAt(int index) {
+    // 注销视频控制器
+    VideoConfigHelper.instance.unregisterVideoController(index.toString());
+    
     if (_videoControllers.containsKey(index)) {
       _videoControllers[index]?.pause();
     }
