@@ -5,8 +5,11 @@ import 'dart:async';  // 新增：Timer
 import 'package:chewie/chewie.dart';
 import 'package:flutter/services.dart';
 import 'package:device_info_plus/device_info_plus.dart';
+<<<<<<< HEAD
 import 'package:ffmpeg_kit_flutter/ffmpeg_kit.dart';  // 新增：用于转码
 import 'package:path_provider/path_provider.dart';  // 新增：getTemporaryDirectory
+=======
+>>>>>>> 94af8244a75491cca8885d0c57c65e9493280110
 
 class VideoPlayerWidget extends StatefulWidget {
   final File file;
@@ -42,14 +45,22 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   Timer? _progressTimer;
   Size? _screenSize;
   bool _useCompatibilityMode = false;
+<<<<<<< HEAD
   bool _useSoftwareDecoder = false;  // 新增：软件解码标志
   int _retryCount = 0;
   static const int maxRetries = 3;
+=======
+  int _retryCount = 0;
+  static const int maxRetries = 2;
+>>>>>>> 94af8244a75491cca8885d0c57c65e9493280110
 
   // 设备兼容性检查
   bool _isLowEndDevice = false;
   String _deviceModel = '';
+<<<<<<< HEAD
   File? _transcodedFile;  // 新增：转码后的临时文件
+=======
+>>>>>>> 94af8244a75491cca8885d0c57c65e9493280110
 
   @override
   void initState() {
@@ -78,6 +89,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   }
 
   bool _checkIfLowEndDevice(AndroidDeviceInfo androidInfo) {
+<<<<<<< HEAD
     // 已知问题设备列表（基于搜索结果扩展）
     final problematicDevices = [
       'SM-J105H', 'POCO F1', 'beryllium', 'santoni', 'land', 'rolex', 'riva', // 从搜索扩展
@@ -91,10 +103,36 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     for (String device in problematicDevices) {
       if (androidInfo.model.toLowerCase().contains(device.toLowerCase()) ||
           androidInfo.hardware.toLowerCase().contains(device.toLowerCase())) {
+=======
+    // 检查已知有硬件解码器问题的设备
+    final problematicDevices = [
+      'SM-J105H', // Samsung Galaxy J1 Mini
+      'POCO F1',
+      'beryllium',
+    ];
+
+    // 检查Android版本（5.1有已知问题）
+    if (androidInfo.version.sdkInt == 22) {
+      return true;
+    }
+
+    // 检查设备型号
+    for (String device in problematicDevices) {
+      if (_deviceModel.contains(device) || androidInfo.model.contains(device)) {
+>>>>>>> 94af8244a75491cca8885d0c57c65e9493280110
         return true;
       }
     }
 
+<<<<<<< HEAD
+=======
+    // 检查内存（小于2GB认为是低端设备）
+    if (androidInfo.version.sdkInt >= 19) {
+      // 可以通过其他方式检查内存，这里简化处理
+      return false;
+    }
+
+>>>>>>> 94af8244a75491cca8885d0c57c65e9493280110
     return false;
   }
 
@@ -104,8 +142,13 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
       return;
     }
 
+<<<<<<< HEAD
     _controller = VideoPlayerController.file(_transcodedFile ?? widget.file);  // 使用转码文件如果存在
     debugPrint('[播放器] 初始化controller: ${widget.file.path}, 兼容模式: $_useCompatibilityMode, 软件解码: $_useSoftwareDecoder');
+=======
+    _controller = VideoPlayerController.file(widget.file);
+    debugPrint('[播放器] 初始化controller: ${widget.file.path}, 兼容模式: $_useCompatibilityMode');
+>>>>>>> 94af8244a75491cca8885d0c57c65e9493280110
 
     _controller.initialize().then((_) {
       if (!mounted) return;
@@ -115,11 +158,18 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
       final duration = _controller.value.duration;
       debugPrint('[播放器] 视频信息: ${videoSize.width}x${videoSize.height}, 时长: ${duration.inSeconds}s');
 
+<<<<<<< HEAD
       // 决定是否启用兼容/软件模式
       if (_shouldUseCompatibilityMode(videoSize)) {
         _useCompatibilityMode = true;
         _useSoftwareDecoder = true;  // 在兼容模式下启用软件解码
         debugPrint('[播放器] 启用兼容模式和软件解码');
+=======
+      // 对于高分辨率视频或低端设备，启用兼容模式
+      if (_shouldUseCompatibilityMode(videoSize)) {
+        _useCompatibilityMode = true;
+        debugPrint('[播放器] 启用兼容模式');
+>>>>>>> 94af8244a75491cca8885d0c57c65e9493280110
       }
 
       _createChewieController();
@@ -143,6 +193,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   }
 
   bool _shouldUseCompatibilityMode(Size videoSize) {
+<<<<<<< HEAD
     // 如果是低端设备，总是使用
     if (_isLowEndDevice) return true;
 
@@ -150,6 +201,15 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     if (videoSize.width > 1920 || videoSize.height > 1080) return true;
 
     // 如果已经重试过，使用
+=======
+    // 如果是低端设备，总是使用兼容模式
+    if (_isLowEndDevice) return true;
+
+    // 如果视频分辨率过高（大于1080p），使用兼容模式
+    if (videoSize.width > 1920 || videoSize.height > 1080) return true;
+
+    // 如果已经重试过，使用兼容模式
+>>>>>>> 94af8244a75491cca8885d0c57c65e9493280110
     if (_retryCount > 0) return true;
 
     return false;
@@ -214,11 +274,15 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
               ElevatedButton(
                 onPressed: () {
                   _useCompatibilityMode = true;
+<<<<<<< HEAD
                   _useSoftwareDecoder = true;  // 启用软件解码
+=======
+>>>>>>> 94af8244a75491cca8885d0c57c65e9493280110
                   _retryInitialization();
                 },
                 child: const Text('兼容模式'),
               ),
+<<<<<<< HEAD
               const SizedBox(height: 8),
               ElevatedButton(
                 onPressed: () async {
@@ -227,6 +291,8 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
                 },
                 child: const Text('转码视频'),
               ),
+=======
+>>>>>>> 94af8244a75491cca8885d0c57c65e9493280110
             ],
           ],
         ),
@@ -234,6 +300,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     );
   }
 
+<<<<<<< HEAD
   Future<void> _transcodeVideo() async {
     try {
       // 使用 FFmpegKit 转码为兼容格式
@@ -270,6 +337,15 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
 
     _retryCount++;
     debugPrint('[播放器] 重试初始化 (第${_retryCount}次), 兼容模式: $_useCompatibilityMode, 软件解码: $_useSoftwareDecoder');
+=======
+  void _retryInitialization() {
+    if (_retryCount >= maxRetries) {
+      _useCompatibilityMode = true;
+    }
+
+    _retryCount++;
+    debugPrint('[播放器] 重试初始化 (第${_retryCount}次), 兼容模式: $_useCompatibilityMode');
+>>>>>>> 94af8244a75491cca8885d0c57c65e9493280110
 
     // 清理旧的控制器
     _progressTimer?.cancel();
@@ -293,6 +369,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     if (errorString.contains('MediaCodecRenderer') ||
         errorString.contains('DecoderInitializationException') ||
         errorString.contains('OMX.') ||
+<<<<<<< HEAD
         errorString.contains('EXCEEDS_CAPABILITIES') ||
         errorString.contains('NO_EXCEEDS_CAPABILITIES')) {
 
@@ -310,6 +387,17 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
         _transcodeVideo().then((_) => _retryInitialization());
         return;
       }
+=======
+        errorString.contains('EXCEEDS_CAPABILITIES')) {
+
+      debugPrint('[播放器] 检测到硬件解码器错误，切换到兼容模式');
+
+      if (_retryCount < maxRetries) {
+        _useCompatibilityMode = true;
+        Timer(const Duration(milliseconds: 500), _retryInitialization);
+        return;
+      }
+>>>>>>> 94af8244a75491cca8885d0c57c65e9493280110
     }
 
     _handleError('初始化失败: $errorString');
@@ -329,6 +417,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
           errorDescription.contains('DecoderInitializationException') ||
           errorDescription.contains('EXCEEDS_CAPABILITIES')) {
 
+<<<<<<< HEAD
         if (_retryCount < maxRetries && !_useSoftwareDecoder) {
           debugPrint('[播放器] 检测到硬件解码器错误，尝试软件模式');
           _useCompatibilityMode = true;
@@ -342,6 +431,14 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
           _transcodeVideo().then((_) => _retryInitialization());
           return;
         }
+=======
+        if (_retryCount < maxRetries && !_useCompatibilityMode) {
+          debugPrint('[播放器] 检测到硬件解码器错误，尝试兼容模式');
+          _useCompatibilityMode = true;
+          Timer(const Duration(milliseconds: 500), _retryInitialization);
+          return;
+        }
+>>>>>>> 94af8244a75491cca8885d0c57c65e9493280110
       }
 
       _handleError(errorDescription);
@@ -397,9 +494,12 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
       _hasError = false;
       _retryCount = 0; // 重置重试计数
       _useCompatibilityMode = _isLowEndDevice; // 重置兼容模式
+<<<<<<< HEAD
       _useSoftwareDecoder = false; // 重置软件解码
       _transcodedFile?.delete(); // 清理旧临时文件
       _transcodedFile = null;
+=======
+>>>>>>> 94af8244a75491cca8885d0c57c65e9493280110
       _initializeController();
     }
   }
