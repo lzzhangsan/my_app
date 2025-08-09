@@ -10,6 +10,7 @@ import '../services/performance_service.dart';
 import '../services/error_service.dart';
 import '../services/backup_service.dart';
 import '../services/background_media_service.dart';
+import '../services/directory_check_service.dart';
 import 'app_state.dart';
 
 /// 服务定位器 - 管理所有服务的单例实例
@@ -63,6 +64,9 @@ class ServiceLocator {
       // 注册后台媒体服务
       registerSingleton<BackgroundMediaService>(BackgroundMediaService());
       await get<BackgroundMediaService>().initialize();
+      
+      // 注册目录检查服务
+      registerSingleton<DirectoryCheckService>(DirectoryCheckService());
       
       // 初始化性能监控服务
       await get<PerformanceService>().initialize();
@@ -121,26 +125,45 @@ class ServiceLocator {
   Future<void> dispose() async {
     try {
       // 按依赖顺序清理服务
+      if (isRegistered<BackgroundMediaService>()) {
+        await get<BackgroundMediaService>().dispose();
+      }
+      
       if (isRegistered<MediaService>()) {
         await get<MediaService>().dispose();
+      }
+
+      if (isRegistered<BackupService>()) {
+        await get<BackupService>().dispose();
       }
       
       if (!kIsWeb && isRegistered<DatabaseService>()) {
         await get<DatabaseService>().dispose();
       }
       
-      if (isRegistered<FileService>()) {
+      if (isRegistered<FileService>() && get<FileService>().isInitialized) {
         await get<FileService>().dispose();
       }
       
       if (isRegistered<CacheService>()) {
         await get<CacheService>().dispose();
       }
+
+      if (isRegistered<PerformanceService>()) {
+        await get<PerformanceService>().dispose();
+      }
+      
+      if (isRegistered<ErrorService>()) {
+        await get<ErrorService>().dispose();
+      }
       
       _services.clear();
       _isInitialized = false;
-    } catch (e) {
-      // 生产环境不输出调试日志
+    } catch (e, stackTrace) {
+      // 记录错误但不重新抛出，确保清理过程完成
+      if (kDebugMode) {
+        print('服务清理时发生错误: $e\n$stackTrace');
+      }
     }
   }
 

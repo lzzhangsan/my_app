@@ -7,8 +7,11 @@ import 'media_manager_page.dart';
 import 'browser_page.dart';
 import 'core/service_locator.dart';
 import 'services/background_media_service.dart';
+import 'services/directory_check_service.dart';
 import 'package:flutter/services.dart';
 import 'diary_page.dart';
+import 'package:flutter/foundation.dart'; // 添加这一行以引入 kDebugMode
+import 'services/file_service.dart'; // 确保正确导入 FileService
 
 // 添加全局导航键，以便可以在应用的任何地方访问Navigator
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
@@ -27,11 +30,50 @@ void main() async {
     if (backgroundService.isInitialized) {
       print('后台媒体服务已启动');
     }
+    
+    // 仅在开发模式下检查目录写入权限
+    if (WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed) {
+      _checkDirectories();
+    }
   } catch (e) {
     print('服务架构初始化失败: $e');
   }
 
   runApp(const MyApp());
+}
+
+/// 检查项目所需目录的写入权限（仅开发时使用）
+Future<void> _checkDirectories() async {
+  // 只在调试模式下执行检查
+  if (!kDebugMode) return;
+  
+  try {
+    final directoryCheckService = getService<DirectoryCheckService>();
+    final fileService = getService<FileService>(); // 确保 FileService 正确导入
+    
+    // 获取应用文档目录
+    final documentsDir = fileService.documentsDirectory;
+    if (documentsDir == null) return;
+    
+    // 检查需要的目录
+    final directoriesToCheck = [
+      '${documentsDir.path}/backups',
+      '${documentsDir.path}/temp_export',
+      '${documentsDir.path}/temp_import',
+    ];
+    
+    for (final dirPath in directoriesToCheck) {
+      final result = await directoryCheckService.checkDirectoryWriteAccess(
+        directoryPath: dirPath,
+      );
+      
+      if (!result['success']) {
+        print('目录检查失败 $dirPath: ${result['message']}');
+      }
+    }
+  } catch (e) {
+    print('目录检查过程中发生错误: $e');
+  }
 }
 
 class MyApp extends StatelessWidget {

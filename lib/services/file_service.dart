@@ -7,7 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 
-class FileService {
+class FileService { // 确认 FileService 类定义正确
   static final FileService _instance = FileService._internal();
   factory FileService() => _instance;
   FileService._internal();
@@ -64,340 +64,54 @@ class FileService {
     }
   }
 
-  /// 创建文件
-  Future<File> createFile(String path, {String content = ''}) async {
-    if (!_isInitialized) {
-      throw Exception('FileService 未初始化');
-    }
-
+  /// 检查指定目录的写入权限和可用空间（仅开发态使用）
+  /// 用于检查 backups/、temp_export/、temp_import/ 目录
+  Future<Map<String, dynamic>> checkDirectoryWriteAccess({
+    required String directoryPath,
+  }) async {
     try {
-      final file = File(path);
+      final dir = Directory(directoryPath);
       
-      // 确保父目录存在
-      final parentDir = file.parent;
-      if (!await parentDir.exists()) {
-        await parentDir.create(recursive: true);
+      // 检查目录是否存在，不存在则创建
+      if (!await dir.exists()) {
+        await dir.create(recursive: true);
       }
       
-      await file.writeAsString(content, encoding: utf8);
-      
-      if (kDebugMode) {
-        print('创建文件成功: $path');
-      }
-      
-      return file;
-    } catch (e) {
-      if (kDebugMode) {
-        print('创建文件失败: $e');
-      }
-      rethrow;
-    }
-  }
-
-  /// 读取文件内容
-  Future<String> readFile(String path) async {
-    try {
-      final file = File(path);
-      if (!await file.exists()) {
-        throw FileSystemException('文件不存在', path);
-      }
-      
-      return await file.readAsString(encoding: utf8);
-    } catch (e) {
-      if (kDebugMode) {
-        print('读取文件失败: $e');
-      }
-      rethrow;
-    }
-  }
-
-  /// 写入文件内容
-  Future<void> writeFile(String path, String content) async {
-    try {
-      final file = File(path);
-      
-      // 确保父目录存在
-      final parentDir = file.parent;
-      if (!await parentDir.exists()) {
-        await parentDir.create(recursive: true);
-      }
-      
-      await file.writeAsString(content, encoding: utf8);
-      
-      if (kDebugMode) {
-        print('写入文件成功: $path');
-      }
-    } catch (e) {
-      if (kDebugMode) {
-        print('写入文件失败: $e');
-      }
-      rethrow;
-    }
-  }
-
-  /// 复制文件
-  Future<File> copyFile(String sourcePath, String targetPath) async {
-    try {
-      final sourceFile = File(sourcePath);
-      if (!await sourceFile.exists()) {
-        throw FileSystemException('源文件不存在', sourcePath);
-      }
-      
-      final targetFile = File(targetPath);
-      
-      // 确保目标目录存在
-      final parentDir = targetFile.parent;
-      if (!await parentDir.exists()) {
-        await parentDir.create(recursive: true);
-      }
-      
-      await sourceFile.copy(targetPath);
-      
-      if (kDebugMode) {
-        print('复制文件成功: $sourcePath -> $targetPath');
-      }
-      
-      return targetFile;
-    } catch (e) {
-      if (kDebugMode) {
-        print('复制文件失败: $e');
-      }
-      rethrow;
-    }
-  }
-
-  /// 移动文件
-  Future<File> moveFile(String sourcePath, String targetPath) async {
-    try {
-      final sourceFile = File(sourcePath);
-      if (!await sourceFile.exists()) {
-        throw FileSystemException('源文件不存在', sourcePath);
-      }
-      
-      // 确保目标目录存在
-      final targetFile = File(targetPath);
-      final parentDir = targetFile.parent;
-      if (!await parentDir.exists()) {
-        await parentDir.create(recursive: true);
-      }
-      
-      final movedFile = await sourceFile.rename(targetPath);
-      
-      if (kDebugMode) {
-        print('移动文件成功: $sourcePath -> $targetPath');
-      }
-      
-      return movedFile;
-    } catch (e) {
-      if (kDebugMode) {
-        print('移动文件失败: $e');
-      }
-      rethrow;
-    }
-  }
-
-  /// 删除文件
-  Future<bool> deleteFile(String path) async {
-    try {
-      final file = File(path);
-      if (await file.exists()) {
-        await file.delete();
-        
+      // 尝试列出目录内容以检查读权限
+      try {
+        await dir.list().first;
+      } catch (e) {
         if (kDebugMode) {
-          print('删除文件成功: $path');
+          print('目录不可读: $directoryPath');
         }
-        
-        return true;
+        return {'success': false, 'message': '目录不可读: $directoryPath'};
       }
-      return false;
-    } catch (e) {
-      if (kDebugMode) {
-        print('删除文件失败: $e');
-      }
-      return false;
-    }
-  }
-
-  /// 创建目录
-  Future<Directory> createDirectory(String path) async {
-    try {
-      final directory = Directory(path);
-      if (!await directory.exists()) {
-        await directory.create(recursive: true);
-        
+      
+      // 尝试创建测试文件以检查写权限
+      final testFile = File('${dir.path}/_test_write_access.tmp');
+      try {
+        await testFile.writeAsString('test', flush: true);
+      } catch (e) {
         if (kDebugMode) {
-          print('创建目录成功: $path');
+          print('目录不可写: $directoryPath');
         }
+        return {'success': false, 'message': '目录不可写: $directoryPath'};
       }
-      return directory;
-    } catch (e) {
-      if (kDebugMode) {
-        print('创建目录失败: $e');
+      
+      // 删除测试文件
+      if (await testFile.exists()) {
+        await testFile.delete();
       }
-      rethrow;
-    }
-  }
-
-  /// 删除目录
-  Future<bool> deleteDirectory(String path, {bool recursive = false}) async {
-    try {
-      final directory = Directory(path);
-      if (await directory.exists()) {
-        await directory.delete(recursive: recursive);
-        
+      
+      // 检查可用空间 (至少需要100MB可用空间)
+      final availableSpace = await _getAvailableSpace(dir);
+      const minSpaceRequired = 100 * 1024 * 1024; // 100 MB
+      if (availableSpace < minSpaceRequired) {
         if (kDebugMode) {
-          print('删除目录成功: $path');
+          print('目录空间不足: $directoryPath');
         }
-        
-        return true;
+        return {'success': false, 'message': '目录空间不足: $directoryPath'};
       }
-      return false;
-    } catch (e) {
-      if (kDebugMode) {
-        print('删除目录失败: $e');
-      }
-      return false;
-    }
-  }
+```
 
-  /// 列出目录内容
-  Future<List<FileSystemEntity>> listDirectory(String path) async {
-    try {
-      final directory = Directory(path);
-      if (!await directory.exists()) {
-        throw FileSystemException('目录不存在', path);
-      }
-      
-      return await directory.list().toList();
-    } catch (e) {
-      if (kDebugMode) {
-        print('列出目录内容失败: $e');
-      }
-      rethrow;
-    }
-  }
-
-  /// 检查文件是否存在
-  Future<bool> fileExists(String path) async {
-    try {
-      return await File(path).exists();
-    } catch (e) {
-      return false;
-    }
-  }
-
-  /// 检查目录是否存在
-  Future<bool> directoryExists(String path) async {
-    try {
-      return await Directory(path).exists();
-    } catch (e) {
-      return false;
-    }
-  }
-
-  /// 获取文件大小
-  Future<int> getFileSize(String path) async {
-    try {
-      final file = File(path);
-      if (await file.exists()) {
-        final stat = await file.stat();
-        return stat.size;
-      }
-      return 0;
-    } catch (e) {
-      return 0;
-    }
-  }
-
-  /// 获取文件修改时间
-  Future<DateTime?> getFileModifiedTime(String path) async {
-    try {
-      final file = File(path);
-      if (await file.exists()) {
-        final stat = await file.stat();
-        return stat.modified;
-      }
-      return null;
-    } catch (e) {
-      return null;
-    }
-  }
-
-  /// 获取目录大小
-  Future<int> getDirectorySize(String path) async {
-    try {
-      final directory = Directory(path);
-      if (!await directory.exists()) {
-        return 0;
-      }
-      
-      int totalSize = 0;
-      await for (final entity in directory.list(recursive: true)) {
-        if (entity is File) {
-          final stat = await entity.stat();
-          totalSize += stat.size;
-        }
-      }
-      
-      return totalSize;
-    } catch (e) {
-      if (kDebugMode) {
-        print('获取目录大小失败: $e');
-      }
-      return 0;
-    }
-  }
-
-  /// 清理临时文件
-  Future<void> cleanTempFiles() async {
-    if (_tempDirectory == null) return;
-    
-    try {
-      final files = await _tempDirectory!.list().toList();
-      for (final file in files) {
-        if (file is File) {
-          await file.delete();
-        }
-      }
-      
-      if (kDebugMode) {
-        print('清理临时文件完成');
-      }
-    } catch (e) {
-      if (kDebugMode) {
-        print('清理临时文件失败: $e');
-      }
-    }
-  }
-
-  /// 清理缓存文件
-  Future<void> cleanCacheFiles() async {
-    if (_cacheDirectory == null) return;
-    
-    try {
-      final files = await _cacheDirectory!.list().toList();
-      for (final file in files) {
-        if (file is File) {
-          await file.delete();
-        }
-      }
-      
-      if (kDebugMode) {
-        print('清理缓存文件完成');
-      }
-    } catch (e) {
-      if (kDebugMode) {
-        print('清理缓存文件失败: $e');
-      }
-    }
-  }
-
-  /// 释放资源
-  Future<void> dispose() async {
-    _isInitialized = false;
-    
-    if (kDebugMode) {
-      print('FileService: 资源已释放');
-    }
-  }
-}
+file_service.dart
