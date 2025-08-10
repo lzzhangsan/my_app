@@ -2173,10 +2173,10 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     try {
       showProgressDialog(context, progress, message);
 
-      // 1. 获取所有媒体项的数据库记录
-      message.value = '正在查询媒体文件...';
-      final allMediaItems = await _databaseService.getAllMediaItems();
-      if (allMediaItems.isEmpty) {
+      // 1. 查询总数用于进度
+      message.value = '正在统计媒体文件...';
+      final int totalFiles = await _databaseService.getMediaItemsCount();
+      if (totalFiles == 0) {
         if (mounted) Navigator.of(context).pop();
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -2185,8 +2185,8 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         }
         return;
       }
-      
-      // 2. 设置导出路径
+
+      // 2. 准备导出目录
       final Directory downloadsDir;
       if (Platform.isAndroid) {
         downloadsDir = Directory('/storage/emulated/0/Download');
@@ -2197,42 +2197,54 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       await Directory(backupPath).create(recursive: true);
       final String timestamp = DateTime.now().toIso8601String().replaceAll(':', '-');
       final zipFilePath = path.join(backupPath, 'media_backup_$timestamp.zip');
-      
-      // 3. 使用流式ZipFileEncoder，直接打包原始文件，避免临时拷贝
+
+      // 临时导出目录（仅存放元数据文件，避免内存占用）
+      final Directory appDir = await getApplicationDocumentsDirectory();
+      final String tempExportPath = path.join(appDir.path, 'temp_media_export_${const Uuid().v4()}');
+      final Directory tempExportDir = Directory(tempExportPath);
+      await tempExportDir.create(recursive: true);
+
+      // 3. 创建压缩文件（流式）
       final encoder = ZipFileEncoder();
       encoder.create(zipFilePath);
-      
-      int totalFiles = allMediaItems.length;
+
+      // 3.1 流式写出媒体索引为 JSONL 并加入压缩包
+      message.value = '正在生成媒体索引...';
+      final String jsonlPath = path.join(tempExportDir.path, 'media_items.jsonl');
+      await _databaseService.writeAllMediaItemsAsJsonLines(jsonlPath, progressNotifier: ValueNotifier<String>(''));
+      await encoder.addFile(File(jsonlPath), 'media_items.jsonl');
+      progress.value = 0.1;
+
+      // 3.2 分批将媒体文件加入压缩包（流式，不占内存）
+      const int batchSize = 1000;
       int processedFiles = 0;
-
-      for (final item in allMediaItems) {
-        final mediaFile = File(item['path']);
-        if (await mediaFile.exists()) {
-          final relativePath = 'media/${item['path'].split('/').last}';
-          await encoder.addFile(mediaFile, relativePath);
-          processedFiles++;
-          progress.value = (processedFiles / totalFiles) * 0.9; // 90% for files
-          message.value = '正在压缩: $processedFiles/$totalFiles';
-        } else {
-          print('警告: 文件不存在，跳过导出: ${item['path']}');
-          totalFiles--; // 更新总数以保证进度条准确
+      int offset = 0;
+      while (true) {
+        final rows = await _databaseService.getMediaItemsBatch(limit: batchSize, offset: offset);
+        if (rows.isEmpty) break;
+        for (final row in rows) {
+          final File mediaFile = File(row['path'] as String);
+          if (await mediaFile.exists()) {
+            final relativePath = 'media/${(row['id'] ?? path.basename(mediaFile.path))}_${path.basename(mediaFile.path)}';
+            await encoder.addFile(mediaFile, relativePath);
+            processedFiles++;
+            if (processedFiles % 50 == 0 || processedFiles == totalFiles) {
+              progress.value = 0.1 + (processedFiles / totalFiles) * 0.85; // 文件打包占比85%
+              message.value = '正在压缩: $processedFiles/$totalFiles';
+            }
+          }
         }
+        offset += rows.length;
       }
-      
-      // 4. 导出数据库和设置文件
-      message.value = '正在导出数据库...';
-      final mediaItemsJson = jsonEncode(allMediaItems);
-      encoder.addArchiveFile(ArchiveFile('media_items.json', mediaItemsJson.length, utf8.encode(mediaItemsJson)));
-      progress.value = 0.95;
 
+      // 3.3 导出设置
       message.value = '正在导出设置...';
       final prefs = await SharedPreferences.getInstance();
       final mediaVisible = prefs.getBool('media_visible') ?? true;
       final settingsJson = jsonEncode({'media_visible': mediaVisible});
       encoder.addArchiveFile(ArchiveFile('media_settings.json', settingsJson.length, utf8.encode(settingsJson)));
-      progress.value = 0.98;
 
-      // 5. 完成打包
+      // 4. 完成
       message.value = '正在完成...';
       encoder.close();
       progress.value = 1.0;
@@ -2242,15 +2254,12 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('媒体数据已成功导出到: $zipFilePath'),
-            action: SnackBarAction(
-              label: '打开',
-              onPressed: () {
-                // 这里可以添加打开文件或目录的功能
-              },
-            ),
           ),
         );
       }
+
+      // 清理临时导出目录
+      try { await tempExportDir.delete(recursive: true); } catch (_) {}
     } catch (e) {
       if (mounted) Navigator.of(context).pop();
       debugPrint('导出媒体数据时出错: $e');
@@ -2277,8 +2286,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       // 2. 选择zip包
       FilePickerResult? result = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['zip']);
       if (result == null || result.files.isEmpty) {
-        // 用户取消选择，静默退出
-        return; 
+        return;
       }
 
       showProgressDialog(context, progress, message);
@@ -2302,7 +2310,6 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         final outPath = path.join(tempImportDir.path, file.name);
         if (file.isFile) {
           final outFile = File(outPath);
-          // 确保父目录存在
           await outFile.parent.create(recursive: true);
           final outputStream = OutputFileStream(outFile.path);
           file.writeContent(outputStream);
@@ -2317,27 +2324,23 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       }
       await inputStream.close();
 
-      // 4. 从临时目录中读取元数据和设置
-      List<dynamic>? mediaItemsToImport;
-      Map<String, dynamic>? settingsToImport;
+      // 4. 从临时目录中读取元数据与设置（优先使用 JSONL 流式导入）
+      final File jsonlFile = File(path.join(tempImportDir.path, 'media_items.jsonl'));
+      final File jsonArrayFile = File(path.join(tempImportDir.path, 'media_items.json'));
 
-      final jsonFile = File(path.join(tempImportDir.path, 'media_items.json'));
-      if (!await jsonFile.exists()) {
-        throw Exception("关键错误: 压缩包中未找到 'media_items.json' 文件。");
-      }
-      mediaItemsToImport = jsonDecode(await jsonFile.readAsString());
-
-      final settingsFile = File(path.join(tempImportDir.path, 'media_settings.json'));
-      if (await settingsFile.exists()){
-        settingsToImport = jsonDecode(await settingsFile.readAsString());
-      }
-      
-      // 5. 恢复数据库表 (事务性)
       message.value = '正在恢复数据库...';
-      await _databaseService.replaceAllMediaItems(mediaItemsToImport!);
-      progress.value = 0.8;
+      if (await jsonlFile.exists()) {
+        await _databaseService.replaceAllMediaItemsFromJsonLines(jsonlFile.path, progressNotifier: ValueNotifier<String>(''));
+      } else if (await jsonArrayFile.exists()) {
+        // 兼容旧备份：小数据场景直接读入
+        final mediaItems = jsonDecode(await jsonArrayFile.readAsString()) as List<dynamic>;
+        await _databaseService.replaceAllMediaItems(mediaItems);
+      } else {
+        throw Exception("关键错误: 未找到 'media_items.jsonl' 或 'media_items.json'。");
+      }
+      progress.value = 0.85;
 
-      // 6. 替换媒体文件
+      // 5. 替换媒体文件
       message.value = '正在迁移媒体文件...';
       final Directory finalMediaDir = Directory(path.join(appDir.path, 'media'));
       if (await finalMediaDir.exists()) {
@@ -2345,25 +2348,26 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       }
       await finalMediaDir.create(recursive: true);
       await _copyDirectory(tempMediaDir, finalMediaDir);
-      progress.value = 0.9;
+      progress.value = 0.95;
 
-      // 7. 恢复设置
+      // 6. 恢复设置
       message.value = '正在恢复设置...';
-      if (settingsToImport != null) {
+      final settingsFile = File(path.join(tempImportDir.path, 'media_settings.json'));
+      if (await settingsFile.exists()){
+        final settingsToImport = jsonDecode(await settingsFile.readAsString()) as Map<String, dynamic>;
         final prefs = await SharedPreferences.getInstance();
         if (settingsToImport['media_visible'] != null) {
           await prefs.setBool('media_visible', settingsToImport['media_visible']);
         }
       }
-      progress.value = 0.95;
 
-      // 8. 刷新界面
+      // 7. 刷新界面
       message.value = '导入完成，正在刷新...';
       await _loadMediaItems();
       progress.value = 1.0;
 
       if (mounted) Navigator.of(context).pop(); // 关闭进度对话框
-      
+
       // 导入成功后自动清理大缓存文件
       try {
         final cacheService = CacheService();
@@ -2376,7 +2380,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       } catch (e) {
         debugPrint('导入后自动清理失败: $e');
       }
-      
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('导入媒体数据成功')),
@@ -2391,24 +2395,8 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         );
       }
     } finally {
-      // 关键：无论成功或失败，都强制彻底清理本次导入的临时目录
       if (await tempImportDir.exists()) {
-        try {
-          await tempImportDir.delete(recursive: true);
-          debugPrint('已彻底清理媒体导入临时目录: [32m${tempImportDir.path}[0m');
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('临时导入文件已清理')),
-            );
-          }
-        } catch (e) {
-          debugPrint('警告：清理媒体导入临时目录失败: $e');
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('警告：部分临时导入文件未能清理: $e')),
-            );
-          }
-        }
+        try { await tempImportDir.delete(recursive: true); } catch (e) { debugPrint('警告：清理媒体导入临时目录失败: $e'); }
       }
     }
   }
