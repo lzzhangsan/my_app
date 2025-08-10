@@ -2242,23 +2242,16 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       final File settingsFile = File(path.join(exportDir.path, 'media_settings.json'));
       await settingsFile.writeAsString(settingsJson);
 
-      // 6. 使用原生Zip流式打包导出的目录，便于迁移
-      final String zipPath = path.join(backupRoot, 'media_backup_$timestamp.zip');
-      message.value = '正在打包为ZIP(原生)...';
-      await _zipDirectoryNative(exportDirPath, zipPath);
-      progress.value = 0.98;
-
-      // 7. 完成
+      // 6. 完成（不再打包ZIP，避免内存峰值）
       progress.value = 1.0;
       if (mounted) Navigator.of(context).pop();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('媒体数据已导出为: $zipPath')),
+          SnackBar(content: Text('媒体数据已导出到目录: $exportDirPath')),
         );
       }
 
-      // 可选：清理导出目录，仅保留ZIP
-      try { await exportDir.delete(recursive: true); } catch (_) {}
+      // 保留导出目录，便于直接迁移或使用系统文件管理器手动压缩为ZIP进行迁移
     } catch (e) {
       if (mounted) Navigator.of(context).pop();
       debugPrint('导出媒体数据时出错: $e');
