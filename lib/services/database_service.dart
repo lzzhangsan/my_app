@@ -4491,4 +4491,79 @@ class DatabaseService {
       rethrow;
     }
   }
+
+  /// 复制文件夹（包含其子文件夹与文档）
+  /// - sourceFolderName: 要复制的源文件夹名称
+  /// - targetParentFolder: 复制后的新文件夹应放到的父文件夹名称；若为空，则与源文件夹同级
+  Future<String> copyFolder(String sourceFolderName, {String? targetParentFolder}) async {
+    final db = await database;
+
+    // 1) 获取源文件夹信息
+    final Map<String, dynamic>? sourceFolder = await getFolderByName(sourceFolderName);
+    if (sourceFolder == null) {
+      throw Exception('源文件夹不存在: $sourceFolderName');
+    }
+
+    // 2) 计算新文件夹的父级（名称）
+    String? newParentFolderName = targetParentFolder;
+    if (newParentFolderName == null) {
+      final String? parentFolderId = sourceFolder['parent_folder'] as String?;
+      if (parentFolderId != null) {
+        final List<Map<String, dynamic>> parentRows = await db.query(
+          'folders',
+          where: 'id = ?',
+          whereArgs: [parentFolderId],
+          limit: 1,
+        );
+        if (parentRows.isNotEmpty) {
+          newParentFolderName = parentRows.first['name'] as String?;
+        }
+      }
+    }
+
+    // 3) 生成唯一的新文件夹名称（如 名称-副本, 名称-副本(2) ...）
+    String baseName = '$sourceFolderName-副本';
+    String finalNewFolderName = baseName;
+    int attempt = 0;
+    while (await doesNameExist(finalNewFolderName)) {
+      attempt++;
+      finalNewFolderName = attempt > 1 ? '$baseName($attempt)' : baseName;
+      if (attempt > 100) {
+        throw Exception('无法为文件夹复制生成唯一名称');
+      }
+    }
+
+    // 4) 创建新文件夹
+    await insertFolder(finalNewFolderName, parentFolder: newParentFolderName);
+
+    // 5) 复制目录设置（如背景图与颜色）
+    try {
+      final Map<String, dynamic>? settings = await getDirectorySettings(sourceFolderName);
+      if (settings != null) {
+        await insertOrUpdateDirectorySettings(
+          folderName: finalNewFolderName,
+          imagePath: settings['background_image_path'] as String?,
+          colorValue: settings['background_color'] as int?,
+        );
+      }
+    } catch (_) {
+      // 忽略目录设置复制失败，不影响主体复制
+    }
+
+    // 6) 复制该文件夹下的文档
+    final List<Map<String, dynamic>> docs = await getDocuments(parentFolder: sourceFolderName);
+    for (final doc in docs) {
+      final String docName = doc['name'] as String;
+      await copyDocument(docName, parentFolder: finalNewFolderName);
+    }
+
+    // 7) 递归复制子文件夹
+    final List<Map<String, dynamic>> subFolders = await getFolders(parentFolder: sourceFolderName);
+    for (final folder in subFolders) {
+      final String childFolderName = folder['name'] as String;
+      await copyFolder(childFolderName, targetParentFolder: finalNewFolderName);
+    }
+
+    return finalNewFolderName;
+  }
 }

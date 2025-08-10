@@ -2563,6 +2563,27 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       ),
     );
   }
+
+  Future<void> _copyFolder(String folderName) async {
+    try {
+      // 调用数据层复制，并保持在当前父级下创建副本
+      final String newFolderName = await getService<DatabaseService>().copyFolder(folderName);
+      if (mounted) {
+        await _loadData();
+        _highlightNewItem(newFolderName, ItemType.folder);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('文件夹已复制为: $newFolderName')),
+        );
+      }
+    } catch (e) {
+      print('复制文件夹出错: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('复制文件夹出错，请重试。')),
+        );
+      }
+    }
+  }
 }
 
 class DirectoryItem {
