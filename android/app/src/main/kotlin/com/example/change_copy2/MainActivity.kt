@@ -82,10 +82,17 @@ class MainActivity: FlutterActivity() {
         if (!sourceDir.exists()) throw IllegalArgumentException("sourceDir not exists: ${sourceDir.path}")
         zipFile.parentFile?.mkdirs()
         ZipOutputStream(BufferedOutputStream(FileOutputStream(zipFile))).use { zos ->
-            val basePathLength = sourceDir.absolutePath.length + 1
+            val basePath = sourceDir.canonicalPath
             sourceDir.walkTopDown().forEach { file ->
-                val name = file.absolutePath.substring(basePathLength).replace("\\", "/")
+                val abs = file.canonicalPath
+                if (abs == basePath) return@forEach // 跳过根目录本身，避免越界
+
+                // 安全计算相对路径
+                var name = if (abs.startsWith(basePath)) abs.substring(basePath.length) else abs
+                if (name.startsWith(File.separator)) name = name.substring(1)
+                name = name.replace("\\", "/")
                 if (name.isEmpty()) return@forEach
+
                 if (file.isDirectory) {
                     val entryName = if (name.endsWith('/')) name else "$name/"
                     val entry = ZipEntry(entryName)
