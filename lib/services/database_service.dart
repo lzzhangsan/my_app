@@ -2383,7 +2383,7 @@ class DatabaseService {
   }
 
   // Future<void> copyDocument(String sourceName, String targetName) async { // OLD SIGNATURE
-  Future<String> copyDocument(String sourceDocumentName, {String? parentFolder}) async { // NEW SIGNATURE
+  Future<String> copyDocument(String sourceDocumentName, {String? parentFolder, String? targetFolderId, bool isFolder = false}) async { // NEW SIGNATURE
     print('copyDocument called for $sourceDocumentName, parentFolder: $parentFolder');
     final db = await database;
     
@@ -2422,12 +2422,18 @@ class DatabaseService {
       // 3. 创建新文档记录
       int maxOrder = 0;
       String? parentFolderId; // 新增：用于存储父文件夹ID
-      if (parentFolder != null) {
+      
+      // 优先使用targetFolderId，如果没有则使用parentFolder
+      if (targetFolderId != null) {
+        parentFolderId = targetFolderId;
+      } else if (parentFolder != null) {
         // 查找父文件夹ID
         final folder = await getFolderByName(parentFolder);
         parentFolderId = folder?['id'];
         // Optional: Add error handling if folder not found, though getFolderByName handles some cases
-
+      }
+      
+      if (parentFolderId != null) {
         List<Map<String, dynamic>> docs = await db.query(
           'documents',
           where: 'parent_folder = ?',
@@ -2741,6 +2747,76 @@ class DatabaseService {
     } catch (e, stackTrace) {
       _handleError('从模板创建文档时出错', e, stackTrace);
       print('从模板创建文档时出错: $e');
+      rethrow;
+    }
+  }
+
+  // 复制文件夹
+  Future<String> copyFolder(String folderId, String directoryId) async {
+    try {
+      final db = await database;
+      
+      // 查询源文件夹信息
+      final List<Map<String, dynamic>> folderResult = await db.query(
+        'folders',
+        where: 'id = ?',
+        whereArgs: [folderId],
+      );
+      
+      if (folderResult.isEmpty) {
+        throw Exception('源文件夹不存在');
+      }
+      
+      final Map<String, dynamic> sourceFolder = folderResult.first;
+      final String originalName = sourceFolder['name'];
+      
+      // 生成唯一的文件夹名称
+      String finalNewFolderName = originalName;
+      int counter = 1;
+      while (true) {
+        final List<Map<String, dynamic>> existingFolders = await db.query(
+          'folders',
+          where: 'name = ? AND directory_id = ?',
+          whereArgs: [finalNewFolderName, directoryId],
+        );
+        
+        if (existingFolders.isEmpty) {
+          break;
+        }
+        
+        finalNewFolderName = '$originalName($counter)';
+        counter++;
+      }
+      
+      // 创建新文件夹记录
+      final String newFolderId = const Uuid().v4();
+      final Map<String, dynamic> newFolder = {
+        'id': newFolderId,
+        'name': finalNewFolderName,
+        'directory_id': directoryId,
+        'created_at': DateTime.now().toIso8601String(),
+        'updated_at': DateTime.now().toIso8601String(),
+        'order_index': sourceFolder['order_index'],
+      };
+      
+      await db.insert('folders', newFolder);
+      
+      // 复制文件夹中的所有文档
+      final List<Map<String, dynamic>> documents = await db.query(
+        'documents',
+        where: 'folder_id = ?',
+        whereArgs: [folderId],
+      );
+      
+      for (final document in documents) {
+        await copyDocument(document['id'], newFolderId, isFolder: true);
+      }
+      
+      print('Successfully copied folder: $originalName -> $finalNewFolderName');
+      return finalNewFolderName;
+    } catch (e, stackTrace) {
+      _handleError('复制文件夹时出错', e, stackTrace);
+      print('复制文件夹时出错: $e');
       rethrow;
     }
   }

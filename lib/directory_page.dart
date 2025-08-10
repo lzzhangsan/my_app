@@ -990,6 +990,47 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     }
   }
 
+  void _copyFolder(String folderName) async {
+    try {
+      // 获取当前目录ID
+      String currentDirectoryId = _currentDirectoryId ?? '';
+      
+      // 调用数据库服务复制文件夹
+      String newFolderName = await getService<DatabaseService>().copyFolder(
+        await _getFolderIdByName(folderName),
+        currentDirectoryId,
+      );
+      
+      if (mounted) {
+        await _loadData();
+        _highlightNewItem(newFolderName, ItemType.folder);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('文件夹已复制为: $newFolderName')),
+        );
+      }
+    } catch (e) {
+      print('复制文件夹出错: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('复制文件夹出错，请重试。')),
+        );
+      }
+    }
+  }
+
+  Future<String> _getFolderIdByName(String folderName) async {
+    try {
+      final folder = await getService<DatabaseService>().getFolderByName(folderName);
+      if (folder != null && folder['id'] != null) {
+        return folder['id'] as String;
+      }
+      throw Exception('文件夹不存在或ID为空');
+    } catch (e) {
+      print('获取文件夹ID出错: $e');
+      rethrow;
+    }
+  }
+
   Future<bool> _showDeleteConfirmationDialog(String type, String name) async {
     return await showDialog<bool>(
       context: context,
@@ -1611,6 +1652,14 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
               onTap: () {
                 Navigator.pop(context);
                 _moveFolderToDirectoryOption(folderName);
+              },
+            ),
+            ListTile(
+              leading: Icon(Icons.copy),
+              title: Text('复制'),
+              onTap: () {
+                Navigator.pop(context);
+                _copyFolder(folderName);
               },
             ),
             ListTile(
