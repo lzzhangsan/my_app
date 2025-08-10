@@ -18,6 +18,7 @@ import 'package:uuid/uuid.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:video_thumbnail/video_thumbnail.dart';
+import 'package:flutter/services.dart' show MethodChannel, PlatformException;
 
 import 'core/service_locator.dart';
 import 'services/database_service.dart';
@@ -2225,7 +2226,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
             await _copyFileStreamed(mediaFile, File(outPath));
             processedFiles++;
             if (processedFiles % 50 == 0 || processedFiles == totalFiles) {
-              progress.value = 0.1 + (processedFiles / totalFiles) * 0.85;
+              progress.value = 0.1 + (processedFiles / totalFiles) * 0.75;
               message.value = '正在复制: $processedFiles/$totalFiles';
             }
           }
@@ -2241,14 +2242,23 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       final File settingsFile = File(path.join(exportDir.path, 'media_settings.json'));
       await settingsFile.writeAsString(settingsJson);
 
-      // 6. 完成
+      // 6. 使用原生Zip流式打包导出的目录，便于迁移
+      final String zipPath = path.join(backupRoot, 'media_backup_$timestamp.zip');
+      message.value = '正在打包为ZIP(原生)...';
+      await _zipDirectoryNative(exportDirPath, zipPath);
+      progress.value = 0.98;
+
+      // 7. 完成
       progress.value = 1.0;
       if (mounted) Navigator.of(context).pop();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('媒体数据已导出到目录: $exportDirPath')),
+          SnackBar(content: Text('媒体数据已导出为: $zipPath')),
         );
       }
+
+      // 可选：清理导出目录，仅保留ZIP
+      try { await exportDir.delete(recursive: true); } catch (_) {}
     } catch (e) {
       if (mounted) Navigator.of(context).pop();
       debugPrint('导出媒体数据时出错: $e');
@@ -2266,6 +2276,22 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     final targetSink = dst.openWrite();
     await sourceStream.pipe(targetSink);
     await targetSink.close();
+  }
+
+  Future<void> _zipDirectoryNative(String sourceDir, String zipPath) async {
+    if (!Platform.isAndroid) {
+      // 非Android保持目录备份，或后续接入iOS实现
+      return;
+    }
+    const channel = MethodChannel('native_zip');
+    try {
+      await channel.invokeMethod('zipDirectory', {
+        'sourceDir': sourceDir,
+        'zipPath': zipPath,
+      });
+    } on PlatformException catch (e) {
+      throw Exception('原生ZIP失败: ${e.message}');
+    }
   }
 
   Future<void> _importAllMediaData() async {
@@ -2296,24 +2322,10 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         // 目录备份：直接使用所选目录
         workingDir = Directory(chosenDirectory);
       } else {
-        // ZIP 备份：解压到临时目录
-        final zipFile = File(result!.files.single.path!);
-        message.value = '正在解压数据...';
-        final inputStream = InputFileStream(zipFile.path);
-        final archive = ZipDecoder().decodeStream(inputStream);
-        for (final file in archive.files) {
-          final outPath = path.join(tempImportDir.path, file.name);
-          if (file.isFile) {
-            final outFile = File(outPath);
-            await outFile.parent.create(recursive: true);
-            final outputStream = OutputFileStream(outFile.path);
-            file.writeContent(outputStream);
-            await outputStream.close();
-          } else {
-            await Directory(outPath).create(recursive: true);
-          }
-        }
-        await inputStream.close();
+        // ZIP 备份：用原生UNZIP流式解压到临时目录
+        final String zipPath = result!.files.single.path!;
+        message.value = '正在解压数据(原生)...';
+        await _unzipToDirectoryNative(zipPath, tempImportDir.path);
         workingDir = tempImportDir;
       }
 
@@ -2389,6 +2401,22 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       if (await tempImportDir.exists()) {
         try { await tempImportDir.delete(recursive: true); } catch (e) { debugPrint('警告：清理媒体导入临时目录失败: $e'); }
       }
+    }
+  }
+
+  Future<void> _unzipToDirectoryNative(String zipPath, String targetDir) async {
+    if (!Platform.isAndroid) {
+      // 非Android继续使用Dart解压（此处已改为走原生，仅Android实现）
+      return;
+    }
+    const channel = MethodChannel('native_zip');
+    try {
+      await channel.invokeMethod('unzipToDirectory', {
+        'zipPath': zipPath,
+        'targetDir': targetDir,
+      });
+    } on PlatformException catch (e) {
+      throw Exception('原生UNZIP失败: ${e.message}');
     }
   }
 
