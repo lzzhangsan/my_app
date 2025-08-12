@@ -24,6 +24,7 @@ import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:path/path.dart' as p;
 import 'services/cache_service.dart';
+import 'core/app_state.dart';
 
 class CoverPage extends StatefulWidget {
   const CoverPage({super.key});
@@ -42,11 +43,14 @@ class _CoverPageState extends State<CoverPage> {
   final List<String> _deletedTextBoxIds = [];
   static const String coverDocumentName = '__CoverPage__';
   late final DatabaseService _databaseService;
+  late final AppThemeState _themeState;
 
   @override
   void initState() {
     super.initState();
     print('CoverPage initState: ${DateTime.now()}'); // 添加日志
+    
+    _themeState = getService<AppThemeState>();
     
     if (!kIsWeb) {
       _databaseService = getService<DatabaseService>();
@@ -737,6 +741,57 @@ class _CoverPageState extends State<CoverPage> {
                   onTap: () {
                     Navigator.pop(context);
                     _showColorPickerDialog();
+                  },
+                ),
+                // 主题与外观
+                _buildSettingItem(
+                  icon: _themeState.isDarkMode ? Icons.dark_mode : Icons.light_mode,
+                  iconColor: Colors.teal,
+                  title: _themeState.isDarkMode ? '切换到浅色主题' : '切换到深色主题',
+                  onTap: () {
+                    Navigator.pop(context);
+                    setState(() {
+                      _themeState.toggleThemeMode();
+                    });
+                  },
+                ),
+                _buildSettingItem(
+                  icon: Icons.palette,
+                  iconColor: Colors.indigo,
+                  title: '选择主题主色',
+                  subtitle: '影响全局按钮/强调色',
+                  onTap: () async {
+                    Navigator.pop(context);
+                    Color picker = _themeState.primaryColor;
+                    await showDialog(
+                      context: context,
+                      builder: (context) {
+                        return AlertDialog(
+                          title: const Text('选择主题主色'),
+                          content: SingleChildScrollView(
+                            child: ColorPicker(
+                              pickerColor: picker,
+                              onColorChanged: (c) => picker = c,
+                              pickerAreaHeightPercent: 0.8,
+                              enableAlpha: false,
+                              paletteType: PaletteType.hsv,
+                            ),
+                          ),
+                          actions: [
+                            TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
+                            TextButton(
+                              onPressed: () {
+                                Navigator.pop(context);
+                                setState(() {
+                                  _themeState.setPrimaryColor(picker);
+                                });
+                              },
+                              child: const Text('确定'),
+                            ),
+                          ],
+                        );
+                      },
+                    );
                   },
                 ),
                 
