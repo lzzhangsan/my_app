@@ -31,6 +31,7 @@ void main() async {
     print('服务架构初始化失败: $e');
   }
 
+  await getService<AppThemeState>().initialize();
   runApp(const MyApp());
 }
 
@@ -41,19 +42,20 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: '变化',
-      theme: ThemeData(
-        primarySwatch: Colors.blue,
-        fontFamily: 'Roboto',
-        appBarTheme: const AppBarTheme(
-          backgroundColor: Colors.transparent,
-          elevation: 0,
-        ),
-      ),
-      navigatorKey: navigatorKey, // 添加导航键
-      debugShowCheckedModeBanner: false,
-      home: MainScreen(),
+    final theme = getService<AppThemeState>();
+    return AnimatedBuilder(
+      animation: theme,
+      builder: (context, _) {
+        return MaterialApp(
+          title: '变化',
+          theme: theme.lightTheme,
+          darkTheme: theme.darkTheme,
+          themeMode: theme.themeMode,
+          navigatorKey: navigatorKey,
+          debugShowCheckedModeBanner: false,
+          home: MainScreen(),
+        );
+      },
     );
   }
 }
