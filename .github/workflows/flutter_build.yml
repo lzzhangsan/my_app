@@ -26,11 +26,18 @@ jobs:
           flutter-version: '3.32.0'  # 指定Flutter版本
           channel: 'stable'
 
-      - name: Setup Android NDK
-        id: setup_ndk
+      # 安装并接受 Android SDK 34（与项目 buildToolsVersion 34.0.0 匹配）
+      - name: Install Android SDK components
+        shell: bash
+        run: |
+          echo "y" | sdkmanager --licenses || true
+          sdkmanager "platforms;android-34" "build-tools;34.0.0" || true
+
+      # 安装 Android NDK r26d（匹配 app/build.gradle 中 ndkVersion 26.1.10909125）
+      - name: Setup Android NDK r26d
         uses: nttld/setup-ndk@v1
         with:
-          ndk-version: 'r23c' # 对应 23.x.xxxxxxx 版本系列，更稳定
+          ndk-version: r26d
           add-to-path: true
       
       - name: Cache Flutter dependencies
@@ -76,7 +83,7 @@ jobs:
           sed -i 's/ext.kotlin_version = .*$/ext.kotlin_version = "1.9.10"/g' build.gradle
           
           # 优化gradle.properties配置
-          cat > gradle.properties << EOF
+          cat > gradle.properties << 'EOF'
           # JVM内存配置
           org.gradle.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=1g -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8
           
@@ -86,7 +93,7 @@ jobs:
           android.nonTransitiveRClass=false
           android.nonFinalResIds=false
           
-          # Gradle优化（禁用以提高稳定性）
+          # Gradle稳定性
           org.gradle.daemon=false
           org.gradle.parallel=false
           org.gradle.caching=false
@@ -94,17 +101,9 @@ jobs:
           android.enableBuildCache=false
           EOF
           
-          # 确保app/build.gradle使用声明式方式应用Flutter插件
-          if ! grep -q "id 'dev.flutter.flutter-gradle-plugin'" app/build.gradle; then
-            sed -i '/id .com.android.application./a\\    id "dev.flutter.flutter-gradle-plugin"' app/build.gradle
-          fi
-          
-          # 移除旧的apply方式
-          sed -i '/apply from: "\$flutterRoot\/packages\/flutter_tools\/gradle\/flutter.gradle"/d' app/build.gradle
-          
-          # 确保使用稳定的SDK版本
-          sed -i 's/compileSdkVersion 35/compileSdkVersion 34/g' app/build.gradle
-          sed -i 's/targetSdkVersion 35/targetSdkVersion 34/g' app/build.gradle
+          # 确保使用稳定的SDK版本（34），匹配安装的SDK
+          sed -i 's/compileSdk[ ]\+35/compileSdk 34/g' app/build.gradle || true
+          sed -i 's/targetSdkVersion 35/targetSdkVersion 34/g' app/build.gradle || true
 
       # 验证Flutter配置
       - name: Make gradlew executable
@@ -123,38 +122,19 @@ jobs:
           flutter clean
           flutter pub get
           
-      # 检查依赖冲突
-      - name: Check for dependency conflicts
-        continue-on-error: true
-        run: |
-          flutter pub deps
-          flutter analyze --no-fatal-infos
-
-      - name: Build Debug APK
-        run: flutter build apk --debug
-        env:
-          ANDROID_NDK_HOME: ${{ steps.setup_ndk.outputs.ndk-path }}
-          
-      # 备用构建方案（如果主构建失败）
-      - name: Fallback build
+      # 构建 Release APK（使用 app 中的 signingConfigs.debug，仅供个人使用）
+      - name: Build Release APK
+        run: flutter build apk --release --no-shrink
+      
+      # 备用构建方案（如果主构建失败则尝试 Debug）
+      - name: Fallback build (Debug)
         if: failure()
         continue-on-error: true
         run: |
-          echo "主构建失败，尝试备用构建方案..."
-          
-          # 重置到原始配置
-          cd android
-          cp build.gradle.bak build.gradle 2>/dev/null || true
-          cp gradle.properties.bak gradle.properties 2>/dev/null || true
-          cp app/build.gradle.bak app/build.gradle 2>/dev/null || true
-          
-          cd ..
+          echo "主构建失败，尝试 Debug 构建..."
           flutter clean
           flutter pub get
-          
-          # 使用更保守的构建选项
-          export GRADLE_OPTS="-Xmx4g -Dorg.gradle.jvmargs=-Xmx4g"
-          flutter build apk --debug --no-shrink
+          flutter build apk --debug
 
       # 查找生成的APK文件
       - name: Find APK files
@@ -171,14 +151,13 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug
+          name: app-release
           path: |
-            build/app/outputs/flutter-apk/app-debug.apk
-            build/app/outputs/apk/debug/app-debug.apk
-            build/app/outputs/apk/debug/*.apk
             build/app/outputs/flutter-apk/app-release.apk
             build/app/outputs/apk/release/app-release.apk
             build/app/outputs/apk/release/*.apk
+            build/app/outputs/flutter-apk/app-debug.apk
+            build/app/outputs/apk/debug/app-debug.apk
           retention-days: 7
           if-no-files-found: warn
           
@@ -191,12 +170,14 @@ jobs:
           echo "Java版本: $(java -version 2>&1 | head -1)"
           echo "Gradle版本: $(cd android && ./gradlew --version | grep Gradle || echo '未知')"
           
-          if [ -f "build/app/outputs/flutter-apk/app-debug.apk" ]; then
-            echo "✅ Debug APK构建成功"
-            ls -lh build/app/outputs/flutter-apk/app-debug.apk
-          elif [ -f "build/app/outputs/apk/debug/app-debug.apk" ]; then
-            echo "✅ Debug APK构建成功（备用路径）"
-            ls -lh build/app/outputs/apk/debug/app-debug.apk
+          if [ -f "build/app/outputs/flutter-apk/app-release.apk" ]; then
+            echo "✅ Release APK构建成功"
+            ls -lh build/app/outputs/flutter-apk/app-release.apk
+          elif [ -f "build/app/outputs/apk/release/app-release.apk" ]; then
+            echo "✅ Release APK构建成功（备用路径）"
+            ls -lh build/app/outputs/apk/release/app-release.apk
+          elif [ -f "build/app/outputs/flutter-apk/app-debug.apk" ] || [ -f "build/app/outputs/apk/debug/app-debug.apk" ]; then
+            echo "⚠️ 已回退到 Debug APK"
           else
             echo "❌ APK构建失败"
           fi
