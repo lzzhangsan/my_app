@@ -2,6 +2,7 @@
 import 'package:flutter/material.dart';
 import 'dart:ui' as ui;
 import 'package:uuid/uuid.dart';
+import 'dart:convert';
 
 // 配置类，定义常用的颜色和其他配置
 class Config {
@@ -46,6 +47,105 @@ class Config {
     Colors.orange.shade100,
     Colors.deepOrange.shade100,
   ];
+}
+
+// 轻量富文本区间
+class _AttributedRange {
+  int start;
+  int end; // 不包含 end
+  TextStyle style;
+  _AttributedRange({required this.start, required this.end, required this.style});
+}
+
+class _RichTextController extends TextEditingController {
+  final List<_AttributedRange> _ranges = [];
+  final TextStyle defaultStyle;
+
+  _RichTextController({required String text, required this.defaultStyle}) : super(text: text);
+
+  void clearRanges() => _ranges.clear();
+
+  void applyStyle(int start, int end, TextStyle style) {
+    if (start >= end) return;
+    // 简单合并：先移除覆盖区间，再插入
+    _ranges.removeWhere((r) => !(end <= r.start || start >= r.end));
+    _ranges.add(_AttributedRange(start: start, end: end, style: style));
+    _ranges.sort((a, b) => a.start.compareTo(b.start));
+    notifyListeners();
+  }
+
+  @override
+  TextSpan buildTextSpan({required BuildContext context, TextStyle? style, bool? withComposing}) {
+    final String full = text;
+    if (_ranges.isEmpty) {
+      return TextSpan(text: full, style: defaultStyle);
+    }
+    final List<TextSpan> children = [];
+    int index = 0;
+    for (final r in _ranges) {
+      if (index < r.start) {
+        children.add(TextSpan(text: full.substring(index, r.start), style: defaultStyle));
+      }
+      children.add(TextSpan(text: full.substring(r.start, r.end), style: r.style));
+      index = r.end;
+    }
+    if (index < full.length) {
+      children.add(TextSpan(text: full.substring(index), style: defaultStyle));
+    }
+    return TextSpan(style: defaultStyle, children: children);
+  }
+
+  // 导出富文本JSON（带前缀以兼容旧版本）
+  String exportRichJson() {
+    final Map<String, dynamic> data = {
+      'type': 'rich_text',
+      'text': text,
+      'defaultStyle': _textStyleToMap(defaultStyle),
+      'ranges': _ranges
+          .map((r) => {
+                'start': r.start,
+                'end': r.end,
+                'style': _textStyleToMap(r.style),
+              })
+          .toList(),
+    };
+    return '__RICH__' + jsonEncode(data);
+  }
+
+  static Map<String, dynamic> _textStyleToMap(TextStyle s) => {
+        'fontSize': s.fontSize ?? 16.0,
+        'fontColor': (s.color ?? Colors.black).value,
+        'fontWeight': (s.fontWeight ?? FontWeight.normal).index,
+        'isItalic': (s.fontStyle ?? FontStyle.normal) == FontStyle.italic,
+        'backgroundColor': (s.backgroundColor ?? Colors.transparent).value,
+        'textAlign': 0,
+      };
+
+  static TextStyle _mapToTextStyle(Map<String, dynamic> m) => TextStyle(
+        fontSize: (m['fontSize'] as num?)?.toDouble() ?? 16.0,
+        color: Color((m['fontColor'] as int?) ?? Colors.black.value),
+        fontWeight: FontWeight.values[(m['fontWeight'] as int?) ?? 0],
+        fontStyle: (m['isItalic'] == true) ? FontStyle.italic : FontStyle.normal,
+        backgroundColor: Color((m['backgroundColor'] as int?) ?? Colors.transparent.value),
+      );
+
+  // 解析富文本
+  static ({String text, TextStyle defaultStyle, List<_AttributedRange> ranges}) parseRich(String s) {
+    final Map<String, dynamic> data = jsonDecode(s) as Map<String, dynamic>;
+    final String plain = data['text'] as String? ?? '';
+    final TextStyle def = _mapToTextStyle((data['defaultStyle'] as Map).cast<String, dynamic>());
+    final List<_AttributedRange> ranges = [];
+    final List list = data['ranges'] as List? ?? [];
+    for (final item in list) {
+      final map = (item as Map).cast<String, dynamic>();
+      ranges.add(_AttributedRange(
+        start: (map['start'] as num).toInt(),
+        end: (map['end'] as num).toInt(),
+        style: _mapToTextStyle((map['style'] as Map).cast<String, dynamic>()),
+      ));
+    }
+    return (text: plain, defaultStyle: def, ranges: ranges);
+  }
 }
 
 // 文本片段的样式和内容
@@ -100,6 +200,14 @@ class CustomTextStyle {
     this.textAlign = TextAlign.left,
   });
 
+  TextStyle toTextStyle() => TextStyle(
+        fontSize: fontSize,
+        color: fontColor,
+        fontWeight: fontWeight,
+        fontStyle: isItalic ? FontStyle.italic : FontStyle.normal,
+        backgroundColor: backgroundColor,
+      );
+
   CustomTextStyle copyWith({
     double? fontSize,
     Color? fontColor,
@@ -142,9 +250,9 @@ class CustomTextStyle {
 
   static int _getArgb(Color color) {
     return ((color.a * 255).round() << 24) |
-    ((color.r * 255).round() << 16) |
-    ((color.g * 255).round() << 8) |
-    (color.b * 255).round();
+        ((color.r * 255).round() << 16) |
+        ((color.g * 255).round() << 8) |
+        (color.b * 255).round();
   }
 }
 
@@ -253,7 +361,7 @@ class _ResizableAndConfigurableTextBoxState
     extends State<ResizableAndConfigurableTextBox> {
   late Size _size;
   late CustomTextStyle _textStyle;
-  late TextEditingController _controller;
+  late _RichTextController _controller;
   late FocusNode _focusNode;
   late ScrollController _textScrollController;
   final double _minWidth = 25.0;
@@ -271,18 +379,30 @@ class _ResizableAndConfigurableTextBoxState
     super.initState();
     _size = widget.initialSize;
 
-    // 确保使用完整的CustomTextStyle对象，填充所有属性
     _textStyle = widget.initialTextStyle;
 
-    // 打印初始样式，用于调试
-    print('初始化文本框样式: 字体大小=${_textStyle.fontSize}, '
-        '颜色=${_textStyle.fontColor}, '
-        '粗体=${_textStyle.fontWeight}, '
-        '斜体=${_textStyle.isItalic}, '
-        '背景色=${_textStyle.backgroundColor}, '
-        '对齐=${_textStyle.textAlign}');
-
-    _controller = TextEditingController(text: widget.initialText);
+    // 解析初始文本是否为富文本
+    if (widget.initialText.startsWith('__RICH__')) {
+      try {
+        final parsed = _RichTextController.parseRich(widget.initialText.substring(8));
+        _textStyle = CustomTextStyle(
+          fontSize: parsed.defaultStyle.fontSize ?? _textStyle.fontSize,
+          fontColor: parsed.defaultStyle.color ?? _textStyle.fontColor,
+          fontWeight: parsed.defaultStyle.fontWeight ?? _textStyle.fontWeight,
+          isItalic: (parsed.defaultStyle.fontStyle == FontStyle.italic),
+          backgroundColor: parsed.defaultStyle.backgroundColor,
+          textAlign: _textStyle.textAlign,
+        );
+        _controller = _RichTextController(text: parsed.text, defaultStyle: _textStyle.toTextStyle());
+        for (final r in parsed.ranges) {
+          _controller.applyStyle(r.start, r.end, r.style);
+        }
+      } catch (_) {
+        _controller = _RichTextController(text: widget.initialText, defaultStyle: _textStyle.toTextStyle());
+      }
+    } else {
+      _controller = _RichTextController(text: widget.initialText, defaultStyle: _textStyle.toTextStyle());
+    }
 
     _focusNode = FocusNode();
     _focusNode.addListener(() {
@@ -314,30 +434,24 @@ class _ResizableAndConfigurableTextBoxState
   }
 
   void _saveChanges() {
-    print('保存文本框样式更改: 字体大小=${_textStyle.fontSize}, '
-        '颜色=${_textStyle.fontColor}, '
-        '粗体=${_textStyle.fontWeight}, '
-        '斜体=${_textStyle.isItalic}, '
-        '背景色=${_textStyle.backgroundColor}, '
-        '对齐=${_textStyle.textAlign}');
-
-    widget.onSave(_size, _controller.text, _textStyle);
+    // 若存在任何区间样式，则导出为富文本JSON
+    final rich = _controller._ranges.isNotEmpty;
+    final textToSave = rich ? _controller.exportRichJson() : _controller.text;
+    widget.onSave(_size, textToSave, _textStyle);
   }
 
   // 显示设置面板
   void _showSettingsPanel(BuildContext context) {
-    print('显示设置面板');
-
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      shape: RoundedRectangleBorder(
+      shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(10)),
       ),
       builder: (BuildContext context) {
         return Container(
-          constraints: BoxConstraints(maxHeight: 260),
+          constraints: const BoxConstraints(maxHeight: 260),
           child: StatefulBuilder(
             builder: (BuildContext context, StateSetter setModalState) {
               return _buildTextBoxSettings(setModalState);
@@ -348,22 +462,23 @@ class _ResizableAndConfigurableTextBoxState
     );
   }
 
-  // 文本框设置面板
+  // 文本框设置面板（当有选区时对选区生效，否则对整体生效）
   Widget _buildTextBoxSettings(StateSetter setModalState) {
+    bool hasSelection = _selectionStart != null && _selectionEnd != null && _selectionStart != _selectionEnd;
     return ClipRRect(
-      borderRadius: BorderRadius.vertical(top: Radius.circular(10)),
+      borderRadius: const BorderRadius.vertical(top: Radius.circular(10)),
       child: BackdropFilter(
         filter: ui.ImageFilter.blur(sigmaX: 15.0, sigmaY: 15.0),
         child: Container(
-          padding: EdgeInsets.symmetric(vertical: 8, horizontal: 15),
+          padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 15),
           decoration: BoxDecoration(
             color: Colors.white.withOpacity(0.35),
-            borderRadius: BorderRadius.vertical(top: Radius.circular(10)),
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(10)),
             boxShadow: [
               BoxShadow(
                 color: Colors.black.withOpacity(0.1),
                 blurRadius: 10,
-                offset: Offset(0, -1),
+                offset: const Offset(0, -1),
               ),
             ],
           ),
@@ -384,33 +499,39 @@ class _ResizableAndConfigurableTextBoxState
                   Row(
                     children: [
                       IconButton(
-                        icon: Icon(Icons.content_copy, color: Colors.blue),
+                        icon: const Icon(Icons.content_copy, color: Colors.blue),
                         onPressed: widget.onDuplicateCurrent,
                         iconSize: 22,
-                        padding: EdgeInsets.all(4),
-                        constraints: BoxConstraints(),
+                        padding: const EdgeInsets.all(4),
+                        constraints: const BoxConstraints(),
                       ),
                       IconButton(
-                        icon: Icon(Icons.delete, color: Colors.red),
+                        icon: const Icon(Icons.delete, color: Colors.red),
                         onPressed: widget.onDeleteCurrent,
                         iconSize: 22,
-                        padding: EdgeInsets.all(4),
-                        constraints: BoxConstraints(),
+                        padding: const EdgeInsets.all(4),
+                        constraints: const BoxConstraints(),
                       ),
                     ],
                   ),
                 ],
               ),
-              Divider(height: 12),
+              const Divider(height: 12),
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   _buildToolButton(
                     null,
-                        () {
+                    () {
                       setState(() {
-                        if (_textStyle.fontSize > 8) {
-                          _textStyle = _textStyle.copyWith(fontSize: _textStyle.fontSize - 2);
+                        if (hasSelection && _selectionStart != null && _selectionEnd != null) {
+                          final st = (_textStyle.copyWith(fontSize: (_textStyle.fontSize - 2).clamp(8.0, 300.0)));
+                          _controller.applyStyle(_selectionStart!, _selectionEnd!, st.toTextStyle());
+                        } else {
+                          if (_textStyle.fontSize > 8) {
+                            _textStyle = _textStyle.copyWith(fontSize: _textStyle.fontSize - 2);
+                            _controller.defaultStyle = _textStyle.toTextStyle();
+                          }
                         }
                       });
                       Future.microtask(() => _saveChanges());
@@ -419,12 +540,18 @@ class _ResizableAndConfigurableTextBoxState
                     text: "A-",
                     width: 40,
                   ),
-                  SizedBox(width: 8),
+                  const SizedBox(width: 8),
                   _buildToolButton(
                     null,
-                        () {
+                    () {
                       setState(() {
-                        _textStyle = _textStyle.copyWith(fontSize: _textStyle.fontSize + 2);
+                        if (hasSelection && _selectionStart != null && _selectionEnd != null) {
+                          final st = _textStyle.copyWith(fontSize: _textStyle.fontSize + 2);
+                          _controller.applyStyle(_selectionStart!, _selectionEnd!, st.toTextStyle());
+                        } else {
+                          _textStyle = _textStyle.copyWith(fontSize: _textStyle.fontSize + 2);
+                          _controller.defaultStyle = _textStyle.toTextStyle();
+                        }
                       });
                       Future.microtask(() => _saveChanges());
                     },
@@ -432,15 +559,19 @@ class _ResizableAndConfigurableTextBoxState
                     text: "A+",
                     width: 40,
                   ),
-                  SizedBox(width: 8),
+                  const SizedBox(width: 8),
                   _buildToolButton(
                     null,
-                        () {
-                      print('点击加粗按钮');
-                      final newFontWeight = _textStyle.fontWeight == FontWeight.normal ? FontWeight.bold : FontWeight.normal;
+                    () {
+                      final newWeight = _textStyle.fontWeight == FontWeight.normal ? FontWeight.bold : FontWeight.normal;
                       setState(() {
-                        _textStyle = _textStyle.copyWith(fontWeight: newFontWeight);
-                        print('设置加粗状态为: $newFontWeight');
+                        if (hasSelection && _selectionStart != null && _selectionEnd != null) {
+                          final st = _textStyle.copyWith(fontWeight: newWeight);
+                          _controller.applyStyle(_selectionStart!, _selectionEnd!, st.toTextStyle());
+                        } else {
+                          _textStyle = _textStyle.copyWith(fontWeight: newWeight);
+                          _controller.defaultStyle = _textStyle.toTextStyle();
+                        }
                       });
                       Future.microtask(() => _saveChanges());
                     },
@@ -448,15 +579,19 @@ class _ResizableAndConfigurableTextBoxState
                     text: "B",
                     width: 40,
                   ),
-                  SizedBox(width: 8),
+                  const SizedBox(width: 8),
                   _buildToolButton(
                     null,
-                        () {
-                      print('点击斜体按钮');
-                      final newItalicState = !_textStyle.isItalic;
+                    () {
+                      final newItalic = !_textStyle.isItalic;
                       setState(() {
-                        _textStyle = _textStyle.copyWith(isItalic: newItalicState);
-                        print('设置斜体状态为: $newItalicState');
+                        if (hasSelection && _selectionStart != null && _selectionEnd != null) {
+                          final st = _textStyle.copyWith(isItalic: newItalic);
+                          _controller.applyStyle(_selectionStart!, _selectionEnd!, st.toTextStyle());
+                        } else {
+                          _textStyle = _textStyle.copyWith(isItalic: newItalic);
+                          _controller.defaultStyle = _textStyle.toTextStyle();
+                        }
                       });
                       Future.microtask(() => _saveChanges());
                     },
@@ -465,19 +600,26 @@ class _ResizableAndConfigurableTextBoxState
                     width: 40,
                     isItalic: true,
                   ),
-                  SizedBox(width: 12),
+                  const SizedBox(width: 12),
                   _buildToolButton(
                     Icons.format_clear,
-                        () {
+                    () {
                       setState(() {
-                        _textStyle = CustomTextStyle(
-                          fontSize: 16.0,
-                          fontColor: Colors.black,
-                          fontWeight: FontWeight.normal,
-                          isItalic: false,
-                          backgroundColor: null,
-                          textAlign: TextAlign.left,
-                        );
+                        if (hasSelection && _selectionStart != null && _selectionEnd != null) {
+                          // 清除选择区间样式 -> 还原为默认样式
+                          _controller.applyStyle(_selectionStart!, _selectionEnd!, _textStyle.toTextStyle());
+                        } else {
+                          _textStyle = CustomTextStyle(
+                            fontSize: 16.0,
+                            fontColor: Colors.black,
+                            fontWeight: FontWeight.normal,
+                            isItalic: false,
+                            backgroundColor: null,
+                            textAlign: TextAlign.left,
+                          );
+                          _controller.defaultStyle = _textStyle.toTextStyle();
+                          _controller.clearRanges();
+                        }
                       });
                       _saveChanges();
                     },
@@ -487,7 +629,7 @@ class _ResizableAndConfigurableTextBoxState
                   ),
                 ],
               ),
-              SizedBox(height: 12),
+              const SizedBox(height: 12),
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
@@ -504,13 +646,17 @@ class _ResizableAndConfigurableTextBoxState
                     Colors.pink,
                   ])
                     Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 4),
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
                       child: InkWell(
                         onTap: () {
-                          print('点击文本颜色: $color');
                           setState(() {
-                            _textStyle = _textStyle.copyWith(fontColor: color);
-                            print('设置文本颜色为: $color');
+                            if (hasSelection && _selectionStart != null && _selectionEnd != null) {
+                              final st = _textStyle.copyWith(fontColor: color);
+                              _controller.applyStyle(_selectionStart!, _selectionEnd!, st.toTextStyle());
+                            } else {
+                              _textStyle = _textStyle.copyWith(fontColor: color);
+                              _controller.defaultStyle = _textStyle.toTextStyle();
+                            }
                           });
                           setModalState(() {});
                           Future.microtask(() => _saveChanges());
@@ -533,18 +679,22 @@ class _ResizableAndConfigurableTextBoxState
                     ),
                 ],
               ),
-              SizedBox(height: 12),
+              const SizedBox(height: 12),
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 4),
+                    padding: const EdgeInsets.symmetric(horizontal: 4),
                     child: InkWell(
                       onTap: () {
-                        print("设置透明背景");
                         setState(() {
-                          _textStyle = _textStyle.copyWith(backgroundColor: Colors.transparent);
-                          print('背景颜色已设置为透明');
+                          if (hasSelection && _selectionStart != null && _selectionEnd != null) {
+                            final st = _textStyle.copyWith(backgroundColor: Colors.transparent);
+                            _controller.applyStyle(_selectionStart!, _selectionEnd!, st.toTextStyle());
+                          } else {
+                            _textStyle = _textStyle.copyWith(backgroundColor: Colors.transparent);
+                            _controller.defaultStyle = _textStyle.toTextStyle();
+                          }
                         });
                         setModalState(() {});
                         Future.microtask(() => _saveChanges());
@@ -565,7 +715,7 @@ class _ResizableAndConfigurableTextBoxState
                           ),
                           boxShadow: _textStyle.backgroundColor == null || _textStyle.backgroundColor == Colors.transparent ? [BoxShadow(color: Colors.blue.withOpacity(0.5), blurRadius: 4)] : null,
                         ),
-                        child: _textStyle.backgroundColor == null || _textStyle.backgroundColor == Colors.transparent ? Icon(Icons.check, color: Colors.blue, size: 12) : null,
+                        child: _textStyle.backgroundColor == null || _textStyle.backgroundColor == Colors.transparent ? const Icon(Icons.check, color: Colors.blue, size: 12) : null,
                       ),
                     ),
                   ),
@@ -581,13 +731,17 @@ class _ResizableAndConfigurableTextBoxState
                     Colors.teal.shade100,
                   ])
                     Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 4),
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
                       child: InkWell(
                         onTap: () {
-                          print('点击背景颜色: $color');
                           setState(() {
-                            _textStyle = _textStyle.copyWith(backgroundColor: color);
-                            print('设置背景颜色为: $color');
+                            if (hasSelection && _selectionStart != null && _selectionEnd != null) {
+                              final st = _textStyle.copyWith(backgroundColor: color);
+                              _controller.applyStyle(_selectionStart!, _selectionEnd!, st.toTextStyle());
+                            } else {
+                              _textStyle = _textStyle.copyWith(backgroundColor: color);
+                              _controller.defaultStyle = _textStyle.toTextStyle();
+                            }
                           });
                           setModalState(() {});
                           Future.microtask(() => _saveChanges());
@@ -604,7 +758,7 @@ class _ResizableAndConfigurableTextBoxState
                             ),
                             boxShadow: _compareColors(_textStyle.backgroundColor, color) ? [BoxShadow(color: Colors.blue.withOpacity(0.5), blurRadius: 4)] : null,
                           ),
-                          child: _compareColors(_textStyle.backgroundColor, color) ? Icon(Icons.check, color: Colors.blue, size: 12) : null,
+                          child: _compareColors(_textStyle.backgroundColor, color) ? const Icon(Icons.check, color: Colors.blue, size: 12) : null,
                         ),
                       ),
                     ),
@@ -613,7 +767,7 @@ class _ResizableAndConfigurableTextBoxState
               Container(
                 height: 4,
                 width: 40,
-                margin: EdgeInsets.only(top: 12, bottom: 8),
+                margin: const EdgeInsets.only(top: 12, bottom: 8),
                 decoration: BoxDecoration(
                   color: Colors.grey.withOpacity(0.5),
                   borderRadius: BorderRadius.circular(2),
@@ -647,14 +801,14 @@ class _ResizableAndConfigurableTextBoxState
             alignment: Alignment.center,
             child: text != null
                 ? Text(
-              text,
-              style: TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.bold,
-                fontStyle: isItalic ? FontStyle.italic : FontStyle.normal,
-                color: buttonColor,
-              ),
-            )
+                    text,
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      fontStyle: isItalic ? FontStyle.italic : FontStyle.normal,
+                      color: buttonColor,
+                    ),
+                  )
                 : Icon(icon, size: iconSize, color: buttonColor),
           ),
         ),
@@ -672,10 +826,8 @@ class _ResizableAndConfigurableTextBoxState
         color: isActive ? Colors.blue.shade700 : Colors.blue.shade300,
       ),
       onPressed: () {
-        print('点击对齐按钮: $align');
         setState(() {
           _textStyle = _textStyle.copyWith(textAlign: align);
-          print('设置文本对齐为: $align');
         });
         Future.microtask(() => _saveChanges());
       },
@@ -689,8 +841,6 @@ class _ResizableAndConfigurableTextBoxState
 
   @override
   Widget build(BuildContext context) {
-    bool hasTextSelection = _selectionStart != null && _selectionEnd != null && _selectionStart != _selectionEnd;
-
     return Focus(
       onKeyEvent: (node, event) {
         return _showBottomSettings ? KeyEventResult.handled : KeyEventResult.ignored;
@@ -718,10 +868,10 @@ class _ResizableAndConfigurableTextBoxState
                 color: _textStyle.backgroundColor,
                 boxShadow: [
                   BoxShadow(
-                    color: Color(0xFFD2B48C).withOpacity(0.2),
+                    color: const Color(0xFFD2B48C).withOpacity(0.2),
                     blurRadius: 3.5,
                     spreadRadius: 0.3,
-                    offset: Offset(1, 1),
+                    offset: const Offset(1, 1),
                   ),
                 ],
               ),
@@ -733,9 +883,9 @@ class _ResizableAndConfigurableTextBoxState
               child: Opacity(
                 opacity: 0.125,
                 child: IconButton(
-                  icon: Icon(Icons.settings, size: 24),
-                  padding: EdgeInsets.all(4),
-                  constraints: BoxConstraints(),
+                  icon: const Icon(Icons.settings, size: 24),
+                  padding: const EdgeInsets.all(4),
+                  constraints: const BoxConstraints(),
                   iconSize: 20,
                   onPressed: () {
                     setState(() {
@@ -762,7 +912,7 @@ class _ResizableAndConfigurableTextBoxState
                     _saveChanges();
                   }
                 },
-                child: Opacity(
+                child: const Opacity(
                   opacity: 0.25,
                   child: Icon(
                     Icons.zoom_out_map,
@@ -780,80 +930,42 @@ class _ResizableAndConfigurableTextBoxState
 
   Widget _buildCustomTextField() {
     if (!widget.globalEnhanceMode || _focusNode.hasFocus) {
-      print('渲染编辑模式或增强编辑模式: TextField');
-      return TextField(
+      return EditableText(
         controller: _controller,
         focusNode: _focusNode,
         scrollController: _textScrollController,
         maxLines: null,
         expands: true,
         textAlign: _textStyle.textAlign,
-        style: TextStyle(
-          color: _textStyle.fontColor,
-          fontSize: _textStyle.fontSize,
-          fontWeight: _textStyle.fontWeight,
-          fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
-          backgroundColor: _textStyle.backgroundColor,
-          height: 1.2,
-        ),
-        decoration: InputDecoration(
-          border: InputBorder.none,
-          contentPadding: EdgeInsets.all(5.0),
-          fillColor: Colors.transparent,
-        ),
-        onChanged: (text) {
-          _saveChanges();
-        },
-        onTap: () {
-          if (_showBottomSettings) {
-            setState(() {
-              _showBottomSettings = false;
-            });
-          }
-        },
+        style: _textStyle.toTextStyle(),
         cursorWidth: 2.0,
         cursorColor: _textStyle.fontColor,
-        enableInteractiveSelection: true,
+        backgroundCursorColor: Colors.transparent,
+        selectionColor: _textStyle.fontColor.withOpacity(0.25),
+        onChanged: (text) => _saveChanges(),
       );
     } else {
-      print('渲染增强显示模式: Stack<Text>');
-      final text = _controller.text;
+      // 只读视图：用 RichText 展示区间样式
+      final full = _controller.text;
+      final List<InlineSpan> spans = [];
+      int index = 0;
+      final ranges = List<_AttributedRange>.from(_controller._ranges)..sort((a, b) => a.start.compareTo(b.start));
+      for (final r in ranges) {
+        if (index < r.start) {
+          spans.add(TextSpan(text: full.substring(index, r.start), style: _textStyle.toTextStyle()));
+        }
+        spans.add(TextSpan(text: full.substring(r.start, r.end), style: r.style));
+        index = r.end;
+      }
+      if (index < full.length) {
+        spans.add(TextSpan(text: full.substring(index), style: _textStyle.toTextStyle()));
+      }
       return Container(
         alignment: Alignment.topLeft,
-        padding: EdgeInsets.all(5.0),
+        padding: const EdgeInsets.all(5.0),
         child: SingleChildScrollView(
           controller: _textScrollController,
-          child: Stack(
-            children: [
-              Text(
-                text,
-                textAlign: _textStyle.textAlign,
-                style: TextStyle(
-                  fontSize: _textStyle.fontSize,
-                  fontWeight: FontWeight.bold,
-                  fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
-                  backgroundColor: _textStyle.backgroundColor,
-                  height: 1.2,
-                  foreground: Paint()
-                    ..style = PaintingStyle.stroke
-                    ..strokeWidth = 2.5
-                    ..color = Colors.white,
-                ),
-              ),
-              Text(
-                text,
-                textAlign: _textStyle.textAlign,
-                style: TextStyle(
-                  color: _textStyle.fontColor,
-                  fontSize: _textStyle.fontSize,
-                  fontWeight: FontWeight.bold,
-                  fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
-                  backgroundColor: _textStyle.backgroundColor,
-                  height: 1.2,
-                ),
-              ),
-            ],
-          ),
+          child: RichText(text: TextSpan(children: spans)),
         ),
       );
     }
