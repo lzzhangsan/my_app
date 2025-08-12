@@ -2,9 +2,11 @@ name: Flutter Build APK
 
 on:
   push:
-    branches: [ main, master ]
+    branches:
+      - '**'
   pull_request:
-    branches: [ main, master ]
+    branches:
+      - '**'
   workflow_dispatch:  # 允许手动触发工作流
 
 jobs:
