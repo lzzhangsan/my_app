@@ -28,12 +28,12 @@ jobs:
           flutter-version: '3.32.0'  # 指定Flutter版本
           channel: 'stable'
 
-      # 安装并接受 Android SDK 34（与项目 buildToolsVersion 34.0.0 匹配）
+      # 安装并接受 Android SDK 35（与项目 compile/targetSdk 35 匹配）
       - name: Install Android SDK components
         shell: bash
         run: |
           echo "y" | sdkmanager --licenses || true
-          sdkmanager "platforms;android-34" "build-tools;34.0.0" || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.0" || true
 
       # 安装 Android NDK r26d（匹配 app/build.gradle 中 ndkVersion 26.1.10909125）
       - name: Setup Android NDK r26d
@@ -69,7 +69,7 @@ jobs:
       - name: Get dependencies
         run: flutter pub get
       
-      # 更新Android构建配置
+      # 更新Android构建配置（稳定Gradle设置）
       - name: Update Android build configurations
         run: |
           cd android
@@ -102,21 +102,12 @@ jobs:
           org.gradle.configureondemand=false
           android.enableBuildCache=false
           EOF
-          
-          # 确保使用稳定的SDK版本（34），匹配安装的SDK
-          sed -i 's/compileSdk[ ]\+35/compileSdk 34/g' app/build.gradle || true
-          sed -i 's/targetSdkVersion 35/targetSdkVersion 34/g' app/build.gradle || true
 
-      # 验证Flutter配置
-      - name: Make gradlew executable
-        run: |
-          chmod +x android/gradlew
-
+      # 验证Flutter配置（打印版本即可）
       - name: Verify Flutter configuration
         run: |
           flutter doctor -v
           flutter --version
-          cd android && ./gradlew --version
           
       # 清理并重新获取依赖
       - name: Clean and get dependencies
@@ -170,7 +161,6 @@ jobs:
           echo "\n=== 构建摘要 ==="
           echo "Flutter版本: $(flutter --version | head -1)"
           echo "Java版本: $(java -version 2>&1 | head -1)"
-          echo "Gradle版本: $(cd android && ./gradlew --version | grep Gradle || echo '未知')"
           
           if [ -f "build/app/outputs/flutter-apk/app-release.apk" ]; then
             echo "✅ Release APK构建成功"
