@@ -59,7 +59,7 @@ class _AttributedRange {
 
 class _RichTextController extends TextEditingController {
   final List<_AttributedRange> _ranges = [];
-  final TextStyle defaultStyle;
+  TextStyle defaultStyle;
 
   _RichTextController({required String text, required this.defaultStyle}) : super(text: text);
 
