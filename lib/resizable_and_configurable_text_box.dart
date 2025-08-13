@@ -937,7 +937,7 @@ class _ResizableAndConfigurableTextBoxState
 
   Widget _buildCustomTextField() {
     if (!widget.globalEnhanceMode || _focusNode.hasFocus) {
-      return EditableText(
+      return TextField(
         controller: _controller,
         focusNode: _focusNode,
         scrollController: _textScrollController,
@@ -947,8 +947,7 @@ class _ResizableAndConfigurableTextBoxState
         style: _textStyle.toTextStyle(),
         cursorWidth: 2.0,
         cursorColor: _textStyle.fontColor,
-        backgroundCursorColor: Colors.transparent,
-        selectionColor: _textStyle.fontColor.withOpacity(0.25),
+        enableInteractiveSelection: true,
         onChanged: (text) => _saveChanges(),
       );
     } else {

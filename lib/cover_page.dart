@@ -755,45 +755,7 @@ class _CoverPageState extends State<CoverPage> {
                     });
                   },
                 ),
-                _buildSettingItem(
-                  icon: Icons.palette,
-                  iconColor: Colors.indigo,
-                  title: '选择主题主色',
-                  subtitle: '影响全局按钮/强调色',
-                  onTap: () async {
-                    Navigator.pop(context);
-                    Color picker = _themeState.primaryColor;
-                    await showDialog(
-                      context: context,
-                      builder: (context) {
-                        return AlertDialog(
-                          title: const Text('选择主题主色'),
-                          content: SingleChildScrollView(
-                            child: ColorPicker(
-                              pickerColor: picker,
-                              onColorChanged: (c) => picker = c,
-                              pickerAreaHeightPercent: 0.8,
-                              enableAlpha: false,
-                              paletteType: PaletteType.hsv,
-                            ),
-                          ),
-                          actions: [
-                            TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
-                            TextButton(
-                              onPressed: () {
-                                Navigator.pop(context);
-                                setState(() {
-                                  _themeState.setPrimaryColor(picker);
-                                });
-                              },
-                              child: const Text('确定'),
-                            ),
-                          ],
-                        );
-                      },
-                    );
-                  },
-                ),
+
                 
                 // 只删除背景图片的选项
                 if (_backgroundImage != null)
