@@ -9,6 +9,7 @@ import 'core/service_locator.dart';
 import 'services/background_media_service.dart';
 import 'package:flutter/services.dart';
 import 'diary_page.dart';
+import 'core/app_state.dart';
 
 // 添加全局导航键，以便可以在应用的任何地方访问Navigator
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
