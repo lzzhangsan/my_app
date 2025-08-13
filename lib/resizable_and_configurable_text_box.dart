@@ -129,8 +129,8 @@ class _RichTextController extends TextEditingController {
         backgroundColor: Color((m['backgroundColor'] as int?) ?? Colors.transparent.value),
       );
 
-  // 解析富文本
-  static ({String text, TextStyle defaultStyle, List<_AttributedRange> ranges}) parseRich(String s) {
+  // 解析富文本（兼容 Dart < 3.0，无 record）
+  static _ParsedRich parseRich(String s) {
     final Map<String, dynamic> data = jsonDecode(s) as Map<String, dynamic>;
     final String plain = data['text'] as String? ?? '';
     final TextStyle def = _mapToTextStyle((data['defaultStyle'] as Map).cast<String, dynamic>());
@@ -144,8 +144,15 @@ class _RichTextController extends TextEditingController {
         style: _mapToTextStyle((map['style'] as Map).cast<String, dynamic>()),
       ));
     }
-    return (text: plain, defaultStyle: def, ranges: ranges);
+    return _ParsedRich(text: plain, defaultStyle: def, ranges: ranges);
   }
+}
+
+class _ParsedRich {
+  final String text;
+  final TextStyle defaultStyle;
+  final List<_AttributedRange> ranges;
+  _ParsedRich({required this.text, required this.defaultStyle, required this.ranges});
 }
 
 // 文本片段的样式和内容
@@ -384,7 +391,7 @@ class _ResizableAndConfigurableTextBoxState
     // 解析初始文本是否为富文本
     if (widget.initialText.startsWith('__RICH__')) {
       try {
-        final parsed = _RichTextController.parseRich(widget.initialText.substring(8));
+        final _ParsedRich parsed = _RichTextController.parseRich(widget.initialText.substring(8));
         _textStyle = CustomTextStyle(
           fontSize: parsed.defaultStyle.fontSize ?? _textStyle.fontSize,
           fontColor: parsed.defaultStyle.color ?? _textStyle.fontColor,
