@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
+import 'core/app_state.dart';
+import 'core/service_locator.dart';
 
 class GlobalToolBar extends StatefulWidget {
   final VoidCallback? onNewTextBox;
@@ -34,6 +36,14 @@ class GlobalToolBar extends StatefulWidget {
 }
 
 class _GlobalToolBarState extends State<GlobalToolBar> {
+  late final AppThemeState _themeState;
+
+  @override
+  void initState() {
+    super.initState();
+    _themeState = getService<AppThemeState>();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Padding(
@@ -52,7 +62,7 @@ class _GlobalToolBarState extends State<GlobalToolBar> {
                   widget.onNewAudioBox!();
                 }
               },
-              child: Icon(
+              child: const Icon(
                 Icons.note_add,
                 color: Colors.blueAccent,
                 size: 31.2,
@@ -86,7 +96,7 @@ class _GlobalToolBarState extends State<GlobalToolBar> {
               onLongPress: () {
                 if (widget.onMediaStop != null) widget.onMediaStop!();
               },
-              child: Icon(
+              child: const Icon(
                 Icons.play_circle_filled,
                 color: Colors.redAccent,
                 size: 31.2,
@@ -102,13 +112,24 @@ class _GlobalToolBarState extends State<GlobalToolBar> {
               onLongPress: () {
                 if (widget.onMediaMove != null) widget.onMediaMove!();
               },
-              child: Icon(
+              child: const Icon(
                 Icons.settings,
                 color: Colors.green,
                 size: 31.2,
               ),
             ),
-
+            IconButton(
+              tooltip: _themeState.isDarkMode ? '切换到浅色' : '切换到深色',
+              icon: Icon(
+                _themeState.isDarkMode ? Icons.dark_mode : Icons.light_mode,
+                size: 28,
+              ),
+              onPressed: () {
+                setState(() {
+                  _themeState.toggleThemeMode();
+                });
+              },
+            ),
           ],
         ),
       ),

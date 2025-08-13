@@ -98,3 +98,7 @@
 ---
 
 **注意**: 这种方案完美解决了本地Gradle同步问题，让您专注于应用开发而不是环境配置。
+
+## Personal-use release builds
+
+The GitHub Actions workflow builds a release-signed APK using the Android debug keystore so the artifact is easy to install for personal testing. This APK is not intended for distribution on app stores. If you need a production-ready signature, create a proper keystore and update `android/app/build.gradle` signing configs and store secrets in the repository settings.

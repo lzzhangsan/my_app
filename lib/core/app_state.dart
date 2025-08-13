@@ -2,9 +2,13 @@
 // 全局应用状态管理
 
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 /// 应用主题状态
 class AppThemeState extends ChangeNotifier {
+  static const String _kThemeModeKey = 'app_theme_mode';
+  static const String _kPrimaryColorValueKey = 'app_primary_color_value';
+
   ThemeMode _themeMode = ThemeMode.system;
   Color _primaryColor = Colors.blue;
   bool _isDarkMode = false;
@@ -13,15 +17,58 @@ class AppThemeState extends ChangeNotifier {
   Color get primaryColor => _primaryColor;
   bool get isDarkMode => _isDarkMode;
 
+  Future<void> initialize() async {
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    final String? themeModeStr = prefs.getString(_kThemeModeKey);
+    final int? primaryColorValue = prefs.getInt(_kPrimaryColorValueKey);
+
+    if (themeModeStr != null) {
+      switch (themeModeStr) {
+        case 'light':
+          _themeMode = ThemeMode.light;
+          break;
+        case 'dark':
+          _themeMode = ThemeMode.dark;
+          break;
+        case 'system':
+        default:
+          _themeMode = ThemeMode.system;
+      }
+      _isDarkMode = _themeMode == ThemeMode.dark;
+    }
+
+    if (primaryColorValue != null) {
+      _primaryColor = Color(primaryColorValue);
+    }
+
+    notifyListeners();
+  }
+
+  Future<void> _persist() async {
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kThemeModeKey, _themeMode.name);
+    await prefs.setInt(_kPrimaryColorValueKey, _primaryColor.value);
+  }
+
   void setThemeMode(ThemeMode mode) {
     _themeMode = mode;
     _isDarkMode = mode == ThemeMode.dark;
     notifyListeners();
+    _persist();
+  }
+
+  void toggleThemeMode() {
+    if (_themeMode == ThemeMode.dark) {
+      setThemeMode(ThemeMode.light);
+    } else {
+      setThemeMode(ThemeMode.dark);
+    }
   }
 
   void setPrimaryColor(Color color) {
     _primaryColor = color;
     notifyListeners();
+    _persist();
   }
 
   ThemeData get lightTheme => ThemeData(
