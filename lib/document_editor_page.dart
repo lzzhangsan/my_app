@@ -52,8 +52,8 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
   bool _isTemplate = false;
   Timer? _autoSaveTimer;
   bool _contentChanged = false;
-  bool _textEnhanceMode = false;
-  bool _isPositionLocked = false;
+  bool _textEnhanceMode = true;
+  bool _isPositionLocked = true;
   String? _recordingAudioBoxId;
   late final DatabaseService _databaseService;
 
@@ -109,14 +109,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
       if (settings != null) {
         String? imagePath = settings['background_image_path'];
         int? colorValue = settings['background_color'];
-        bool textEnhanceMode = false;
-        if (settings.containsKey('text_enhance_mode')) {
-          textEnhanceMode = settings['text_enhance_mode'] == 1;
-        }
-        bool positionLocked = false;
-        if (settings.containsKey('position_locked')) {
-          positionLocked = settings['position_locked'] == 1;
-        }
+        // 强制设置为true，确保所有文档都默认启用这两个功能
+        bool textEnhanceMode = true;
+        bool positionLocked = true;
         if (imagePath != null && imagePath.isNotEmpty && await File(imagePath).exists()) {
           setState(() {
             _backgroundImage = File(imagePath);
@@ -135,6 +130,28 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
           _textEnhanceMode = textEnhanceMode;
           _isPositionLocked = positionLocked;
         });
+        
+        // 保存默认值到数据库，确保所有文档都有统一的默认设置
+        await _databaseService.insertOrUpdateDocumentSettings(
+          widget.documentName,
+          imagePath: imagePath,
+          colorValue: colorValue,
+          textEnhanceMode: textEnhanceMode,
+          positionLocked: positionLocked,
+        );
+      } else {
+        // 如果没有设置记录，创建默认设置
+        setState(() {
+          _textEnhanceMode = true;
+          _isPositionLocked = true;
+        });
+        
+        // 保存默认值到数据库
+        await _databaseService.insertOrUpdateDocumentSettings(
+          widget.documentName,
+          textEnhanceMode: true,
+          positionLocked: true,
+        );
       }
     } catch (e) {
       print('加载背景设置和增强模式时出错: $e');
@@ -1538,6 +1555,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
       imagePath: _backgroundImage?.path,
       colorValue: _backgroundColor?.value,
       textEnhanceMode: newMode,
+      positionLocked: _isPositionLocked,
     );
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -1560,6 +1578,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
       imagePath: _backgroundImage?.path,
       colorValue: _backgroundColor?.value,
       textEnhanceMode: _textEnhanceMode,
+      positionLocked: newLockState,
     );
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(

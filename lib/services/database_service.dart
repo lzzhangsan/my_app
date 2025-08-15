@@ -3626,8 +3626,8 @@ class DatabaseService {
       } else {
         settingsData['background_image_path'] = imagePath;
         settingsData['background_color'] = colorValue;
-        settingsData['text_enhance_mode'] = textEnhanceMode != null ? (textEnhanceMode ? 1 : 0) : 0;
-        settingsData['position_locked'] = positionLocked != null ? (positionLocked ? 1 : 0) : 0;
+        settingsData['text_enhance_mode'] = textEnhanceMode != null ? (textEnhanceMode ? 1 : 0) : 1;
+        settingsData['position_locked'] = positionLocked != null ? (positionLocked ? 1 : 0) : 1;
         settingsData['created_at'] = DateTime.now().millisecondsSinceEpoch;
         print('🔧 [DB] 创建新设置 - text_enhance_mode: ${settingsData['text_enhance_mode']}, position_locked: ${settingsData['position_locked']}');
       }
