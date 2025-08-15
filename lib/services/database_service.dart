@@ -17,7 +17,7 @@ import '../models/diary_entry.dart';
 /// 数据库服务 - 统一管理所有数据库操作
 class DatabaseService {
   static const String _databaseName = 'change_app.db';
-  static const int _databaseVersion = 10; // 强制升级版本号
+  static const int _databaseVersion = 11; // 强制升级版本号
   
   Database? _database;
   final Completer<Database> _initCompleter = Completer<Database>();
@@ -64,6 +64,9 @@ class DatabaseService {
           )
         ''');
       }
+      
+      // 检查document_settings表是否存在position_locked字段
+      await _ensurePositionLockedColumn();
       
       _initCompleter.complete(_database!);
       _isInitialized = true;
@@ -231,6 +234,7 @@ class DatabaseService {
           background_image_path TEXT,
           background_color INTEGER,
           text_enhance_mode INTEGER DEFAULT 0,
+          position_locked INTEGER DEFAULT 1,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL,
           FOREIGN KEY (document_id) REFERENCES documents (id) ON DELETE CASCADE
@@ -378,6 +382,54 @@ class DatabaseService {
           }
         }
         break;
+      case 10:
+        // 为document_settings表添加position_locked字段
+        try {
+          await db.execute('ALTER TABLE document_settings ADD COLUMN position_locked INTEGER DEFAULT 1');
+          if (kDebugMode) {
+            print('已添加position_locked列到document_settings表');
+          }
+        } catch (e) {
+          if (kDebugMode) {
+            print('添加position_locked列失败: $e');
+          }
+        }
+        break;
+    }
+  }
+
+  /// 确保document_settings表存在position_locked字段
+  Future<void> _ensurePositionLockedColumn() async {
+    try {
+      // 检查position_locked字段是否存在
+      final columns = await _database!.rawQuery("PRAGMA table_info(document_settings)");
+      bool hasPositionLocked = false;
+      
+      for (final column in columns) {
+        if (column['name'] == 'position_locked') {
+          hasPositionLocked = true;
+          break;
+        }
+      }
+      
+      if (!hasPositionLocked) {
+        if (kDebugMode) {
+          print('🔧 [DB] document_settings表缺少position_locked字段，正在添加...');
+        }
+        await _database!.execute('ALTER TABLE document_settings ADD COLUMN position_locked INTEGER DEFAULT 1');
+        if (kDebugMode) {
+          print('✅ [DB] 已成功添加position_locked字段到document_settings表');
+        }
+      } else {
+        if (kDebugMode) {
+          print('✅ [DB] document_settings表已存在position_locked字段');
+        }
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        print('❌ [DB] 检查或添加position_locked字段失败: $e');
+      }
+      // 不抛出异常，避免影响数据库初始化
     }
   }
 
