@@ -563,16 +563,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
         if (index != -1) {
           var uuid = Uuid();
           Map<String, dynamic> original = _textBoxes[index];
-          double positionX = 0.0;
-          double positionY = 0.0;
-          if (_textBoxes.isNotEmpty) {
-            List<Map<String, dynamic>> textBoxesCopy = List.from(_textBoxes);
-            Map<String, dynamic> bottomMostTextBox = textBoxesCopy.reduce((curr, next) {
-              return (curr['positionY'] + curr['height'] > next['positionY'] + next['height']) ? curr : next;
-            });
-            double spacing = 2.5 * 3.779527559;
-            positionY = bottomMostTextBox['positionY'] + bottomMostTextBox['height'] + spacing;
-          }
+          // 复制的文本框出现在原文本框的正下方
+          double positionX = 0.0; // 水平位置：文档最左边
+          double positionY = original['positionY'] + original['height'] + 9.45; // 垂直位置：原文本框下方加9.45像素间距
           Map<String, dynamic> newTextBox = {
             'id': uuid.v4(),
             'documentName': widget.documentName,
