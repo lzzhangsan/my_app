@@ -3570,10 +3570,11 @@ class DatabaseService {
     String? imagePath,
     int? colorValue,
     bool? textEnhanceMode,
+    bool? positionLocked,
   }) async {
     try {
       print('🔧 [DB] 开始插入或更新文档设置，文档名: $documentName');
-      print('🔧 [DB] 传入参数 - imagePath: $imagePath, colorValue: $colorValue, textEnhanceMode: $textEnhanceMode');
+      print('🔧 [DB] 传入参数 - imagePath: $imagePath, colorValue: $colorValue, textEnhanceMode: $textEnhanceMode, positionLocked: $positionLocked');
       
       final db = await database;
       
@@ -3616,15 +3617,19 @@ class DatabaseService {
         settingsData['text_enhance_mode'] = textEnhanceMode != null
             ? (textEnhanceMode ? 1 : 0)
             : existing['text_enhance_mode'];
+        settingsData['position_locked'] = positionLocked != null
+            ? (positionLocked ? 1 : 0)
+            : existing['position_locked'];
         // 保留原有的created_at字段
         settingsData['created_at'] = existing['created_at'];
-        print('🔧 [DB] 更新现有设置 - text_enhance_mode: ${settingsData['text_enhance_mode']}');
+        print('🔧 [DB] 更新现有设置 - text_enhance_mode: ${settingsData['text_enhance_mode']}, position_locked: ${settingsData['position_locked']}');
       } else {
         settingsData['background_image_path'] = imagePath;
         settingsData['background_color'] = colorValue;
         settingsData['text_enhance_mode'] = textEnhanceMode != null ? (textEnhanceMode ? 1 : 0) : 0;
+        settingsData['position_locked'] = positionLocked != null ? (positionLocked ? 1 : 0) : 0;
         settingsData['created_at'] = DateTime.now().millisecondsSinceEpoch;
-        print('🔧 [DB] 创建新设置 - text_enhance_mode: ${settingsData['text_enhance_mode']}');
+        print('🔧 [DB] 创建新设置 - text_enhance_mode: ${settingsData['text_enhance_mode']}, position_locked: ${settingsData['position_locked']}');
       }
       
       print('🔧 [DB] 最终写入数据: $settingsData');

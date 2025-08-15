@@ -53,6 +53,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
   Timer? _autoSaveTimer;
   bool _contentChanged = false;
   bool _textEnhanceMode = false;
+  bool _isPositionLocked = false;
   String? _recordingAudioBoxId;
   late final DatabaseService _databaseService;
 
@@ -112,6 +113,10 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
         if (settings.containsKey('text_enhance_mode')) {
           textEnhanceMode = settings['text_enhance_mode'] == 1;
         }
+        bool positionLocked = false;
+        if (settings.containsKey('position_locked')) {
+          positionLocked = settings['position_locked'] == 1;
+        }
         if (imagePath != null && imagePath.isNotEmpty && await File(imagePath).exists()) {
           setState(() {
             _backgroundImage = File(imagePath);
@@ -128,6 +133,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
         }
         setState(() {
           _textEnhanceMode = textEnhanceMode;
+          _isPositionLocked = positionLocked;
         });
       }
     } catch (e) {
@@ -927,6 +933,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
       imagePath: _backgroundImage?.path,
       colorValue: _backgroundColor?.value,
       textEnhanceMode: _textEnhanceMode,
+      positionLocked: _isPositionLocked,
     );
     if (_contentChanged) {
       print('页面销毁前保存文档内容...');
@@ -1122,6 +1129,15 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
                       tooltip: '文字增强模式',
                     ),
                     IconButton(
+                      icon: Icon(
+                        _isPositionLocked ? Icons.lock : Icons.lock_open,
+                        size: 20,
+                        color: _isPositionLocked ? Colors.red : Colors.black,
+                      ),
+                      onPressed: _togglePositionLock,
+                      tooltip: _isPositionLocked ? '解锁位置' : '锁定位置',
+                    ),
+                    IconButton(
                       icon: Icon(Icons.settings,
                           size: 20, color: Colors.black),
                       onPressed: _showSettingsMenu,
@@ -1174,6 +1190,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
                         child: GestureDetector(
                           behavior: HitTestBehavior.translucent,
                           onPanUpdate: (details) {
+                            if (_isPositionLocked) return;
                             setState(() {
                               double newDx =
                                   data['positionX'] + details.delta.dx;
@@ -1220,6 +1237,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
                         child: GestureDetector(
                           behavior: HitTestBehavior.translucent,
                           onPanUpdate: (details) {
+                            if (_isPositionLocked) return;
                             setState(() {
                               double newDx =
                                   data['positionX'] + details.delta.dx;
@@ -1256,6 +1274,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
                         child: GestureDetector(
                           behavior: HitTestBehavior.translucent,
                           onPanUpdate: (details) {
+                            if (_isPositionLocked) return;
                             setState(() {
                               double newDx =
                                   data['positionX'] + details.delta.dx;
@@ -1523,6 +1542,28 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(newMode ? '已开启文字增强模式' : '已关闭文字增强模式'),
+        duration: Duration(seconds: 2),
+      ),
+    );
+  }
+
+  void _togglePositionLock() {
+    final newLockState = !_isPositionLocked;
+    setState(() {
+      _isPositionLocked = newLockState;
+      _contentChanged = true;
+      _saveContent();
+      _saveStateToHistory();
+    });
+    _databaseService.insertOrUpdateDocumentSettings(
+      widget.documentName,
+      imagePath: _backgroundImage?.path,
+      colorValue: _backgroundColor?.value,
+      textEnhanceMode: _textEnhanceMode,
+    );
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(newLockState ? '已锁定所有元素位置' : '已解锁所有元素位置'),
         duration: Duration(seconds: 2),
       ),
     );
