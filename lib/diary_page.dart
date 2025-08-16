@@ -137,7 +137,7 @@ class _DiaryPageState extends State<DiaryPage> {
               },
               colorPickerWidth: 300.0,
               pickerAreaHeightPercent: 0.7,
-              enableAlpha: false,
+              enableAlpha: true,
               displayThumbColor: true,
               paletteType: PaletteType.hsv,
             ),
@@ -375,13 +375,14 @@ class _DiaryPageState extends State<DiaryPage> {
   Widget build(BuildContext context) {
     return Stack(
       children: [
-        // 背景层：优先显示图片，其次颜色
-        if (_diaryBgColor != null)
-          Container(color: _diaryBgColor),
+        // 第一层：背景图片层（最底层）
         if (_diaryBgImage != null)
           Positioned.fill(
             child: Image.file(_diaryBgImage!, fit: BoxFit.cover),
           ),
+        // 第二层：背景颜色层（在背景图片之上）
+        if (_diaryBgColor != null)
+          Container(color: _diaryBgColor),
         // 主内容层
         Scaffold(
           backgroundColor: Colors.transparent,

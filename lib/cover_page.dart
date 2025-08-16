@@ -599,12 +599,7 @@ class _CoverPageState extends State<CoverPage> {
       extendBodyBehindAppBar: true, // 让body延伸到顶部
       body: Stack(
         children: [
-          // 第一层：背景颜色层
-          Container(
-            color: _backgroundColor,
-          ),
-          
-          // 第二层：背景图片层
+          // 第一层：背景图片层（最底层）
           if (_backgroundImage != null)
             Container(
               decoration: BoxDecoration(
@@ -614,6 +609,11 @@ class _CoverPageState extends State<CoverPage> {
                 ),
               ),
             ),
+          
+          // 第二层：背景颜色层（在背景图片之上）
+          Container(
+            color: _backgroundColor,
+          ),
           
           // 第三层：文本框层
           if (_textBoxes.isEmpty && _backgroundImage == null && !_hasCustomBackgroundColor)

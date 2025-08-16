@@ -550,7 +550,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
               },
               colorPickerWidth: 300.0,
               pickerAreaHeightPercent: 0.7,
-              enableAlpha: false,
+              enableAlpha: true,
               displayThumbColor: true,
               paletteType: PaletteType.hsv,
             ),
@@ -2247,16 +2247,24 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       ),
       body: Stack(
         children: [
-          Container(
-            decoration: BoxDecoration(
-              image: _backgroundImage != null
-                  ? DecorationImage(
-                image: FileImage(_backgroundImage!),
-                fit: BoxFit.cover,
-              )
-                  : null,
-              color: _backgroundColor ?? Colors.white,
+          // 第一层：背景图片层（最底层）
+          if (_backgroundImage != null)
+            Container(
+              decoration: BoxDecoration(
+                image: DecorationImage(
+                  image: FileImage(_backgroundImage!),
+                  fit: BoxFit.cover,
+                ),
+              ),
             ),
+          
+          // 第二层：背景颜色层（在背景图片之上）
+          Container(
+            color: _backgroundColor ?? Colors.white,
+          ),
+          
+          // 第三层：内容层
+          Container(
             child: _items.isEmpty
                 ? Center(
               child: Text(
