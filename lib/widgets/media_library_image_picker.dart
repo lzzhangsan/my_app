@@ -92,12 +92,17 @@ class _MediaLibraryImagePickerState extends State<MediaLibraryImagePicker> {
                 color: Colors.amber,
               ),
               SizedBox(height: 4),
-              Text(
-                item['name'],
-                style: TextStyle(fontSize: 12),
-                textAlign: TextAlign.center,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
+              Expanded(
+                child: Container(
+                  width: double.infinity,
+                  child: Text(
+                    item['name'],
+                    style: TextStyle(fontSize: 12),
+                    textAlign: TextAlign.center,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
               ),
             ],
           ),
