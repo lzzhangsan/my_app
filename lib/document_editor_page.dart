@@ -1149,7 +1149,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
                       icon: Icon(
                         _isPositionLocked ? Icons.lock : Icons.lock_open,
                         size: 20,
-                        color: _isPositionLocked ? Colors.red : Colors.black,
+                        color: _isPositionLocked ? Colors.blue : Colors.black,
                       ),
                       onPressed: _togglePositionLock,
                       tooltip: _isPositionLocked ? '解锁位置' : '锁定位置',
