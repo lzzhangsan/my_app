@@ -436,9 +436,6 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
 
         final File newImage = await File(imagePath).copy(permanentPath);
 
-        Map<String, dynamic>? settings = await getService<DatabaseService>().getDirectorySettings(_currentParentFolder);
-        int? colorValue = settings != null ? settings['background_color'] : null;
-
         if (mounted) {
           setState(() {
             _backgroundImage = newImage;
@@ -448,7 +445,6 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         await getService<DatabaseService>().insertOrUpdateDirectorySettings(
           folderName: _currentParentFolder,
           imagePath: permanentPath,
-          colorValue: colorValue,
         );
 
         print('已持久化保存背景图片: $permanentPath');
@@ -471,16 +467,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     final shouldDelete = await _showDeleteConfirmationDialog("背景图像", "目录的背景图像");
     if (shouldDelete) {
       try {
-        Map<String, dynamic>? settings = await getService<DatabaseService>().getDirectorySettings(_currentParentFolder);
-        int? colorValue = settings != null ? settings['background_color'] : null;
-
         await getService<DatabaseService>().deleteDirectoryBackgroundImage(_currentParentFolder);
-
-        await getService<DatabaseService>().insertOrUpdateDirectorySettings(
-          folderName: _currentParentFolder,
-          imagePath: null,
-          colorValue: colorValue,
-        );
 
         if (mounted) {
           setState(() {
@@ -514,12 +501,8 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
           });
         }
 
-        Map<String, dynamic>? settings = await getService<DatabaseService>().getDirectorySettings(_currentParentFolder);
-        String? currentImagePath = settings != null ? settings['background_image_path'] : null;
-
         await getService<DatabaseService>().insertOrUpdateDirectorySettings(
           folderName: _currentParentFolder,
-          imagePath: currentImagePath,
           colorValue: _backgroundColor!.value,
         );
 

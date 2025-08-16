@@ -3043,6 +3043,7 @@ class DatabaseService {
     String? imagePath,
     int? colorValue,
     int? isFreeSortMode,
+    bool? clearImagePath, // 新增参数，明确指示是否要清除背景图片
   }) async {
     try {
       final db = await database;
@@ -3052,11 +3053,13 @@ class DatabaseService {
         'updated_at': DateTime.now().millisecondsSinceEpoch,
       };
       
-      if (imagePath == null) {
+      // 只有在明确传递imagePath参数或clearImagePath为true时才更新背景图片字段
+      if (clearImagePath == true) {
         data['background_image_path'] = null;
-      } else {
+      } else if (imagePath != null) {
         data['background_image_path'] = imagePath;
       }
+      // 如果imagePath为null且clearImagePath不为true，则不更新background_image_path字段
       
       if (colorValue != null) {
         data['background_color'] = colorValue;
@@ -3111,21 +3114,11 @@ class DatabaseService {
   /// Delete directory background image
   Future<void> deleteDirectoryBackgroundImage([String? folderName]) async {
     try {
-      final db = await database;
-      if (folderName != null) {
-        await db.update(
-          'directory_settings',
-          {'background_image_path': null},
-          where: 'folder_name = ?',
-          whereArgs: [folderName],
-        );
-      } else {
-        await db.update(
-          'directory_settings',
-          {'background_image_path': null},
-          where: 'folder_name IS NULL',
-        );
-      }
+      // 使用新的insertOrUpdateDirectorySettings方法，明确指示清除背景图片
+      await insertOrUpdateDirectorySettings(
+        folderName: folderName,
+        clearImagePath: true,
+      );
     } catch (e, stackTrace) {
       _handleError('删除目录背景图片失败', e, stackTrace);
       rethrow;
