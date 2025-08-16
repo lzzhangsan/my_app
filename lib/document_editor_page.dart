@@ -1176,15 +1176,21 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
         body: Stack(
           key: ValueKey('main_stack'),
           children: [
+            // 背景图片层（底层）
+            if (_backgroundImage != null)
+              Container(
+                key: ValueKey('background_image_container'),
+                decoration: BoxDecoration(
+                  image: DecorationImage(
+                    image: FileImage(_backgroundImage!),
+                    fit: BoxFit.cover,
+                  ),
+                ),
+              ),
+            // 背景颜色层（上层）
             Container(
-              key: ValueKey('background_container'),
+              key: ValueKey('background_color_container'),
               decoration: BoxDecoration(
-                image: _backgroundImage != null
-                    ? DecorationImage(
-                  image: FileImage(_backgroundImage!),
-                  fit: BoxFit.cover,
-                )
-                    : null,
                 color: _backgroundColor ?? Colors.white,
               ),
             ),
