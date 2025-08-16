@@ -163,9 +163,6 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
   }
 
   Future<void> _pickBackgroundImage() async {
-    // 保存原始背景图片，用于取消时恢复
-    final originalBackgroundImage = _backgroundImage;
-    
     try {
       final imagePath = await ImagePickerService.pickImage(context);
       if (imagePath != null) {
@@ -194,100 +191,30 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
           finalImagePath = destinationPath;
         }
 
-        // 实时预览：立即显示选中的图片
+        // 删除旧的背景图片文件
+        if (_backgroundImage != null && _backgroundImage!.path != finalImagePath) {
+          try {
+            await _backgroundImage!.delete();
+          } catch (e) {
+            print('删除旧背景图片时出错: $e');
+          }
+        }
+
+        // 直接设置背景图片并保存到数据库
         setState(() {
           _backgroundImage = File(finalImagePath);
+          _contentChanged = true;
         });
-
-        // 显示确认对话框
-        final confirmed = await showDialog<bool>(
-          context: context,
-          builder: (context) {
-            return AlertDialog(
-              title: Text('确认背景图片'),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text('您要使用这张图片作为背景吗？'),
-                  SizedBox(height: 16),
-                  Container(
-                    height: 200,
-                    width: double.infinity,
-                    decoration: BoxDecoration(
-                      border: Border.all(color: Colors.grey),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(8),
-                      child: Image.file(
-                        File(finalImagePath),
-                        fit: BoxFit.cover,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              actions: [
-                TextButton(
-                  child: Text('取消'),
-                  onPressed: () {
-                    // 恢复原始背景图片
-                    setState(() {
-                      _backgroundImage = originalBackgroundImage;
-                    });
-                    Navigator.of(context).pop(false);
-                  },
-                ),
-                TextButton(
-                  child: Text('确定'),
-                  onPressed: () => Navigator.of(context).pop(true),
-                ),
-              ],
-            );
-          },
+        
+        await _databaseService.insertOrUpdateDocumentSettings(
+          widget.documentName,
+          imagePath: finalImagePath,
+          colorValue: _backgroundColor?.value,
         );
-
-        if (confirmed == true) {
-          // 用户确认，删除旧的背景图片文件并保存新设置
-          if (originalBackgroundImage != null && originalBackgroundImage.path != finalImagePath) {
-            try {
-              await originalBackgroundImage.delete();
-            } catch (e) {
-              print('删除旧背景图片时出错: $e');
-            }
-          }
-
-          setState(() {
-            _backgroundImage = File(finalImagePath);
-            _contentChanged = true;
-          });
-          await _databaseService.insertOrUpdateDocumentSettings(
-            widget.documentName,
-            imagePath: finalImagePath,
-            colorValue: _backgroundColor?.value,
-          );
-          _saveStateToHistory();
-        } else {
-          // 用户取消，删除临时复制的文件（如果是从相机或相册选择的）
-          if (!imagePath.contains(appDir.path) && File(finalImagePath).existsSync()) {
-            try {
-              await File(finalImagePath).delete();
-            } catch (e) {
-              print('删除临时图片文件时出错: $e');
-            }
-          }
-          // 确保背景图片已恢复到原始状态
-          setState(() {
-            _backgroundImage = originalBackgroundImage;
-          });
-        }
+        _saveStateToHistory();
       }
     } catch (e) {
       print('选择背景图片时出错: $e');
-      // 发生错误时恢复原始背景图片
-      setState(() {
-        _backgroundImage = originalBackgroundImage;
-      });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('选择背景图片时出错，请重试。')),
       );
@@ -358,7 +285,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
                     showLabel: false,
                     paletteType: PaletteType.hsv,
                   ),
-                  SizedBox(height: 4), // 更紧凑间距
+                  SizedBox(height: 2), // 进一步紧凑间距
                   // 按钮行，向上移动
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceEvenly,

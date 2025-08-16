@@ -885,7 +885,7 @@ class _CoverPageState extends State<CoverPage> {
                     showLabel: false,
                     paletteType: PaletteType.hsv,
                   ),
-                  SizedBox(height: 4), // 更紧凑间距
+                  SizedBox(height: 2), // 进一步紧凑间距
                   // 按钮行，向上移动
                   Row(
                     children: [
