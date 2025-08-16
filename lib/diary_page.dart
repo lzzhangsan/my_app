@@ -123,29 +123,52 @@ class _DiaryPageState extends State<DiaryPage> {
   }
 
   Future<void> _pickDiaryBackgroundColor() async {
-    Color tempColor = _diaryBgColor ?? Colors.white;
+    // 保存原始颜色，用于取消时恢复
+    final originalColor = _diaryBgColor;
+    
     final pickedColor = await showDialog<Color>(
       context: context,
       builder: (context) {
-        return AlertDialog(
-          title: Text('选择背景颜色'),
-          content: SingleChildScrollView(
-            child: ColorPicker(
-              pickerColor: tempColor,
-              onColorChanged: (Color color) {
-                tempColor = color;
-              },
-              colorPickerWidth: 300.0,
-              pickerAreaHeightPercent: 0.7,
-              enableAlpha: true,
-              displayThumbColor: true,
-              paletteType: PaletteType.hsv,
-            ),
-          ),
-          actions: [
-            TextButton(child: Text('取消'), onPressed: () => Navigator.of(context).pop()),
-            TextButton(child: Text('确定'), onPressed: () => Navigator.of(context).pop(tempColor)),
-          ],
+        Color tempColor = _diaryBgColor ?? Colors.white;
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: Text('选择背景颜色'),
+              content: SingleChildScrollView(
+                child: ColorPicker(
+                  pickerColor: tempColor,
+                  onColorChanged: (Color color) {
+                    tempColor = color;
+                    // 实时预览：立即更新背景颜色
+                    setState(() {
+                      _diaryBgColor = color;
+                    });
+                  },
+                  colorPickerWidth: 300.0,
+                  pickerAreaHeightPercent: 0.7,
+                  enableAlpha: true,
+                  displayThumbColor: true,
+                  paletteType: PaletteType.hsv,
+                ),
+              ),
+              actions: [
+                TextButton(
+                  child: Text('取消'),
+                  onPressed: () {
+                    // 恢复原始颜色
+                    setState(() {
+                      _diaryBgColor = originalColor;
+                    });
+                    Navigator.of(context).pop();
+                  },
+                ),
+                TextButton(
+                  child: Text('确定'),
+                  onPressed: () => Navigator.of(context).pop(tempColor),
+                ),
+              ],
+            );
+          },
         );
       },
     );

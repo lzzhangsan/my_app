@@ -852,39 +852,58 @@ class _CoverPageState extends State<CoverPage> {
 
   // 使用flutter_colorpicker库的颜色选择器
   void _showColorPickerDialog() {
-    Color pickerColor = _backgroundColor;
+    // 保存原始颜色，用于取消时恢复
+    final originalColor = _backgroundColor;
+    final originalHasCustomColor = _hasCustomBackgroundColor;
     
     showDialog(
       context: context,
       builder: (context) {
-        return AlertDialog(
-          title: Text('选择背景颜色'),
-          content: SingleChildScrollView(
-            child: ColorPicker(
-              pickerColor: pickerColor,
-              onColorChanged: (color) {
-                pickerColor = color;
-              },
-              pickerAreaHeightPercent: 0.8,
-              enableAlpha: true,
-              displayThumbColor: true,
-              showLabel: true,
-              paletteType: PaletteType.hsv,
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: Text('取消'),
-            ),
-            TextButton(
-              onPressed: () {
-                Navigator.pop(context);
-                _setBackgroundColor(pickerColor);
-              },
-              child: Text('确定'),
-            ),
-          ],
+        Color pickerColor = _backgroundColor;
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: Text('选择背景颜色'),
+              content: SingleChildScrollView(
+                child: ColorPicker(
+                  pickerColor: pickerColor,
+                  onColorChanged: (color) {
+                    pickerColor = color;
+                    // 实时预览：立即更新背景颜色
+                    setState(() {
+                      _backgroundColor = color;
+                      _hasCustomBackgroundColor = true;
+                    });
+                  },
+                  pickerAreaHeightPercent: 0.8,
+                  enableAlpha: true,
+                  displayThumbColor: true,
+                  showLabel: true,
+                  paletteType: PaletteType.hsv,
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    // 恢复原始颜色
+                    setState(() {
+                      _backgroundColor = originalColor;
+                      _hasCustomBackgroundColor = originalHasCustomColor;
+                    });
+                    Navigator.pop(context);
+                  },
+                  child: Text('取消'),
+                ),
+                TextButton(
+                  onPressed: () {
+                    Navigator.pop(context);
+                    _setBackgroundColor(pickerColor);
+                  },
+                  child: Text('确定'),
+                ),
+              ],
+            );
+          },
         );
       },
     );

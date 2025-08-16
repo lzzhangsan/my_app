@@ -163,6 +163,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
   }
 
   Future<void> _pickBackgroundImage() async {
+    // 保存原始背景图片，用于取消时恢复
+    final originalBackgroundImage = _backgroundImage;
+    
     try {
       final imagePath = await ImagePickerService.pickImage(context);
       if (imagePath != null) {
@@ -171,15 +174,6 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
         final backgroundDir = Directory('${appDir.path}/backgrounds');
         if (!await backgroundDir.exists()) {
           await backgroundDir.create(recursive: true);
-        }
-
-        // 删除旧的背景图片文件
-        if (_backgroundImage != null) {
-          try {
-            await _backgroundImage!.delete();
-          } catch (e) {
-            print('删除旧背景图片时出错: $e');
-          }
         }
 
         String finalImagePath;
@@ -200,19 +194,100 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
           finalImagePath = destinationPath;
         }
 
+        // 实时预览：立即显示选中的图片
         setState(() {
           _backgroundImage = File(finalImagePath);
-          _contentChanged = true;
         });
-        await _databaseService.insertOrUpdateDocumentSettings(
-          widget.documentName,
-          imagePath: finalImagePath,
-          colorValue: _backgroundColor?.value,
+
+        // 显示确认对话框
+        final confirmed = await showDialog<bool>(
+          context: context,
+          builder: (context) {
+            return AlertDialog(
+              title: Text('确认背景图片'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text('您要使用这张图片作为背景吗？'),
+                  SizedBox(height: 16),
+                  Container(
+                    height: 200,
+                    width: double.infinity,
+                    decoration: BoxDecoration(
+                      border: Border.all(color: Colors.grey),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: Image.file(
+                        File(finalImagePath),
+                        fit: BoxFit.cover,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  child: Text('取消'),
+                  onPressed: () {
+                    // 恢复原始背景图片
+                    setState(() {
+                      _backgroundImage = originalBackgroundImage;
+                    });
+                    Navigator.of(context).pop(false);
+                  },
+                ),
+                TextButton(
+                  child: Text('确定'),
+                  onPressed: () => Navigator.of(context).pop(true),
+                ),
+              ],
+            );
+          },
         );
-        _saveStateToHistory();
+
+        if (confirmed == true) {
+          // 用户确认，删除旧的背景图片文件并保存新设置
+          if (originalBackgroundImage != null && originalBackgroundImage.path != finalImagePath) {
+            try {
+              await originalBackgroundImage.delete();
+            } catch (e) {
+              print('删除旧背景图片时出错: $e');
+            }
+          }
+
+          setState(() {
+            _backgroundImage = File(finalImagePath);
+            _contentChanged = true;
+          });
+          await _databaseService.insertOrUpdateDocumentSettings(
+            widget.documentName,
+            imagePath: finalImagePath,
+            colorValue: _backgroundColor?.value,
+          );
+          _saveStateToHistory();
+        } else {
+          // 用户取消，删除临时复制的文件（如果是从相机或相册选择的）
+          if (!imagePath.contains(appDir.path) && File(finalImagePath).existsSync()) {
+            try {
+              await File(finalImagePath).delete();
+            } catch (e) {
+              print('删除临时图片文件时出错: $e');
+            }
+          }
+          // 确保背景图片已恢复到原始状态
+          setState(() {
+            _backgroundImage = originalBackgroundImage;
+          });
+        }
       }
     } catch (e) {
       print('选择背景图片时出错: $e');
+      // 发生错误时恢复原始背景图片
+      setState(() {
+        _backgroundImage = originalBackgroundImage;
+      });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('选择背景图片时出错，请重试。')),
       );
@@ -252,35 +327,52 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
   }
 
   Future<void> _pickBackgroundColor() async {
+    // 保存原始颜色，用于取消时恢复
+    final originalColor = _backgroundColor;
+    
     Color? pickedColor = await showDialog<Color>(
       context: context,
       builder: (context) {
         Color tempColor = _backgroundColor ?? Colors.white;
-        return AlertDialog(
-          title: Text('选择背景颜色'),
-          content: SingleChildScrollView(
-            child: ColorPicker(
-              pickerColor: tempColor,
-              onColorChanged: (Color color) {
-                tempColor = color;
-              },
-              pickerAreaHeightPercent: 0.8,
-              enableAlpha: true,
-              displayThumbColor: true,
-              showLabel: false,
-              paletteType: PaletteType.hsv,
-            ),
-          ),
-          actions: [
-            TextButton(
-              child: Text('取消'),
-              onPressed: () => Navigator.of(context).pop(),
-            ),
-            TextButton(
-              child: Text('确定'),
-              onPressed: () => Navigator.of(context).pop(tempColor),
-            ),
-          ],
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: Text('选择背景颜色'),
+              content: SingleChildScrollView(
+                child: ColorPicker(
+                  pickerColor: tempColor,
+                  onColorChanged: (Color color) {
+                    tempColor = color;
+                    // 实时预览：立即更新背景颜色
+                    setState(() {
+                      _backgroundColor = color;
+                    });
+                  },
+                  pickerAreaHeightPercent: 0.8,
+                  enableAlpha: true,
+                  displayThumbColor: true,
+                  showLabel: false,
+                  paletteType: PaletteType.hsv,
+                ),
+              ),
+              actions: [
+                TextButton(
+                  child: Text('取消'),
+                  onPressed: () {
+                    // 恢复原始颜色
+                    setState(() {
+                      _backgroundColor = originalColor;
+                    });
+                    Navigator.of(context).pop();
+                  },
+                ),
+                TextButton(
+                  child: Text('确定'),
+                  onPressed: () => Navigator.of(context).pop(tempColor),
+                ),
+              ],
+            );
+          },
         );
       },
     );
@@ -303,6 +395,11 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
           SnackBar(content: Text('设置背景颜色时出错，请重试。')),
         );
       }
+    } else {
+      // 如果用户没有确定选择，确保颜色已恢复到原始状态
+      setState(() {
+        _backgroundColor = originalColor;
+      });
     }
   }
 

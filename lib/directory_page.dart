@@ -536,38 +536,91 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
   }
 
   Future<Color?> _showColorPickerDialog() async {
-    Color tempColor = _backgroundColor ?? Colors.white;
-    return showDialog<Color>(
+    // 保存原始颜色，用于取消时恢复
+    final originalColor = _backgroundColor;
+    
+    Color? pickedColor = await showDialog<Color>(
       context: context,
       builder: (context) {
-        return AlertDialog(
-          title: Text('选择背景颜色'),
-          content: SingleChildScrollView(
-            child: ColorPicker(
-              pickerColor: tempColor,
-              onColorChanged: (Color color) {
-                tempColor = color;
-              },
-              colorPickerWidth: 300.0,
-              pickerAreaHeightPercent: 0.7,
-              enableAlpha: true,
-              displayThumbColor: true,
-              paletteType: PaletteType.hsv,
-            ),
-          ),
-          actions: [
-            TextButton(
-              child: Text('取消'),
-              onPressed: () => Navigator.of(context).pop(),
-            ),
-            TextButton(
-              child: Text('确定'),
-              onPressed: () => Navigator.of(context).pop(tempColor),
-            ),
-          ],
+        Color tempColor = _backgroundColor ?? Colors.white;
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: Text('选择背景颜色'),
+              content: SingleChildScrollView(
+                child: ColorPicker(
+                  pickerColor: tempColor,
+                  onColorChanged: (Color color) {
+                    tempColor = color;
+                    // 实时预览：立即更新背景颜色
+                    setState(() {
+                      _backgroundColor = color;
+                    });
+                  },
+                  colorPickerWidth: 300.0,
+                  pickerAreaHeightPercent: 0.7,
+                  enableAlpha: true,
+                  displayThumbColor: true,
+                  paletteType: PaletteType.hsv,
+                ),
+              ),
+              actions: [
+                TextButton(
+                  child: Text('取消'),
+                  onPressed: () {
+                    // 恢复原始颜色
+                    setState(() {
+                      _backgroundColor = originalColor;
+                    });
+                    Navigator.of(context).pop();
+                  },
+                ),
+                TextButton(
+                  child: Text('确定'),
+                  onPressed: () => Navigator.of(context).pop(tempColor),
+                ),
+              ],
+            );
+          },
         );
       },
     );
+    
+    // 如果用户选择了颜色，保存到数据库
+    if (pickedColor != null) {
+      await _saveBackgroundColor(pickedColor);
+    }
+    
+    return pickedColor;
+  }
+
+  /// 保存背景颜色到数据库
+  Future<void> _saveBackgroundColor(Color color) async {
+    try {
+      await getService<DatabaseService>().insertOrUpdateDirectorySettings(
+        folderName: _currentParentFolder,
+        colorValue: color.value,
+      );
+      
+      setState(() {
+        _backgroundColor = color;
+      });
+      
+      print('目录背景颜色已保存: ${color.value}');
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('背景颜色已更新')),
+        );
+      }
+    } catch (e) {
+      print('保存背景颜色时出错: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('保存背景颜色失败: $e')),
+        );
+      }
+    }
   }
 
   Future<void> _loadTemplateDocuments() async {
