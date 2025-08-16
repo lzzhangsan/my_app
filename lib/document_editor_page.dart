@@ -182,22 +182,31 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
           }
         }
 
-        // 生成唯一的文件名
-        final uuid = const Uuid().v4();
-        final extension = path.extension(imagePath);
-        final fileName = '$uuid$extension';
-        final destinationPath = '${backgroundDir.path}/$fileName';
-
-        // 复制文件到应用私有目录
-        await File(imagePath).copy(destinationPath);
+        String finalImagePath;
+        
+        // 检查是否是媒体库中的图片（已经在应用目录中）
+        if (imagePath.contains(appDir.path)) {
+          // 媒体库图片，直接使用原路径
+          finalImagePath = imagePath;
+        } else {
+          // 相机或相册图片，需要复制到backgrounds目录
+          final uuid = const Uuid().v4();
+          final extension = path.extension(imagePath);
+          final fileName = '$uuid$extension';
+          final destinationPath = '${backgroundDir.path}/$fileName';
+          
+          // 复制文件到应用私有目录
+          await File(imagePath).copy(destinationPath);
+          finalImagePath = destinationPath;
+        }
 
         setState(() {
-          _backgroundImage = File(destinationPath);
+          _backgroundImage = File(finalImagePath);
           _contentChanged = true;
         });
         await _databaseService.insertOrUpdateDocumentSettings(
           widget.documentName,
-          imagePath: destinationPath,
+          imagePath: finalImagePath,
           colorValue: _backgroundColor?.value,
         );
         _saveStateToHistory();

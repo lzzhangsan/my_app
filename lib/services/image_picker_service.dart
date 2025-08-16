@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
+import '../widgets/media_library_image_picker.dart';
 
 class ImagePickerService {
   static Future<String?> pickImage(BuildContext context) async {
@@ -26,6 +27,11 @@ class ImagePickerService {
                 title: Text('相册'),
                 onTap: () => Navigator.of(context).pop(ImageSource.gallery),
               ),
+              ListTile(
+                leading: Icon(Icons.folder, color: Colors.orange),
+                title: Text('媒体库'),
+                onTap: () => Navigator.of(context).pop('media_library'),
+              ),
               SizedBox(height: 8),
               TextButton(
                 onPressed: () => Navigator.of(context).pop(null),
@@ -39,6 +45,19 @@ class ImagePickerService {
 
     if (source == null) {
       return null;
+    }
+
+    // 如果选择的是媒体库
+    if (source == 'media_library') {
+      final selectedImagePath = await showDialog<String>(
+        context: context,
+        builder: (context) => MediaLibraryImagePicker(
+          onImageSelected: (String imagePath) {
+            Navigator.of(context).pop(imagePath);
+          },
+        ),
+      );
+      return selectedImagePath;
     }
 
     try {
@@ -128,4 +147,4 @@ class ImagePickerService {
       return null;
     }
   }
-} 
+}
