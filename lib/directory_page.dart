@@ -546,40 +546,55 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         return StatefulBuilder(
           builder: (context, setDialogState) {
             return AlertDialog(
-              title: Text('选择背景颜色'),
-              content: SingleChildScrollView(
-                child: ColorPicker(
-                  pickerColor: tempColor,
-                  onColorChanged: (Color color) {
-                    tempColor = color;
-                    // 实时预览：立即更新背景颜色
-                    setState(() {
-                      _backgroundColor = color;
-                    });
-                  },
-                  colorPickerWidth: 300.0,
-                  pickerAreaHeightPercent: 0.7,
-                  enableAlpha: true,
-                  displayThumbColor: true,
-                  paletteType: PaletteType.hsv,
-                ),
+              contentPadding: EdgeInsets.all(8.0),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // 颜色选择器，增加高度
+                  ColorPicker(
+                    pickerColor: tempColor,
+                    onColorChanged: (Color color) {
+                      tempColor = color;
+                      // 实时预览：立即更新背景颜色
+                      setState(() {
+                        _backgroundColor = color;
+                      });
+                    },
+                    colorPickerWidth: 280.0, // 加长滑块条
+                    pickerAreaHeightPercent: 0.6, // 增加颜色选择区域高度
+                    enableAlpha: true,
+                    displayThumbColor: true,
+                    showLabel: false,
+                    paletteType: PaletteType.hsv,
+                  ),
+                  SizedBox(height: 4), // 更紧凑间距
+                  // 按钮行，向上移动
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      Expanded(
+                        child: TextButton(
+                          child: Text('取消', style: TextStyle(fontSize: 14)),
+                          onPressed: () {
+                            // 恢复原始颜色
+                            setState(() {
+                              _backgroundColor = originalColor;
+                            });
+                            Navigator.of(context).pop();
+                          },
+                        ),
+                      ),
+                      SizedBox(width: 8),
+                      Expanded(
+                        child: TextButton(
+                          child: Text('确定', style: TextStyle(fontSize: 14)),
+                          onPressed: () => Navigator.of(context).pop(tempColor),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ),
-              actions: [
-                TextButton(
-                  child: Text('取消'),
-                  onPressed: () {
-                    // 恢复原始颜色
-                    setState(() {
-                      _backgroundColor = originalColor;
-                    });
-                    Navigator.of(context).pop();
-                  },
-                ),
-                TextButton(
-                  child: Text('确定'),
-                  onPressed: () => Navigator.of(context).pop(tempColor),
-                ),
-              ],
             );
           },
         );
