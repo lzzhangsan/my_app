@@ -2233,11 +2233,30 @@ class DatabaseService {
             if (data.containsKey('textAlign')) {
               data['text_align'] = data.remove('textAlign');
             }
-            await txn.insert(
+            // Check if text box exists
+            final existing = await txn.query(
               'text_boxes',
-              data,
-              conflictAlgorithm: ConflictAlgorithm.replace,
+              where: 'document_id = ? AND id = ?',
+              whereArgs: [newDocumentId, data['id']],
             );
+            
+            if (existing.isNotEmpty) {
+              // Update existing text box
+              data['updated_at'] = DateTime.now().millisecondsSinceEpoch;
+              await txn.update(
+                'text_boxes',
+                data,
+                where: 'document_id = ? AND id = ?',
+                whereArgs: [newDocumentId, data['id']],
+              );
+            } else {
+              // Insert new text box
+              await txn.insert(
+                'text_boxes',
+                data,
+                conflictAlgorithm: ConflictAlgorithm.replace,
+              );
+            }
           }
         }
         print('已导入 ${textBoxes.length} 个文本框');
@@ -3395,14 +3414,27 @@ class DatabaseService {
         
         final documentId = docResult.first['id'] as String;
         
-        // Delete existing text boxes
-        await txn.delete(
+        // Get existing text boxes for comparison
+        final existingBoxes = await txn.query(
           'text_boxes',
           where: 'document_id = ?',
           whereArgs: [documentId],
         );
         
-        // Insert new text boxes
+        final existingIds = existingBoxes.map((box) => box['id'] as String).toSet();
+        final newIds = textBoxes.map((box) => box['id'] as String).toSet();
+        
+        // Delete removed text boxes
+        final idsToDelete = existingIds.difference(newIds);
+        for (final id in idsToDelete) {
+          await txn.delete(
+            'text_boxes',
+            where: 'document_id = ? AND id = ?',
+            whereArgs: [documentId, id],
+          );
+        }
+        
+        // Insert or update text boxes
         for (var textBox in List.from(textBoxes)) {
           if (validateTextBoxData(textBox)) {
             final data = Map<String, dynamic>.from(textBox);
@@ -3450,11 +3482,30 @@ class DatabaseService {
               data['text_align'] = data.remove('textAlign');
             }
             
-            await txn.insert(
+            // Check if text box exists
+            final existing = await txn.query(
               'text_boxes',
-              data,
-              conflictAlgorithm: ConflictAlgorithm.replace,
+              where: 'document_id = ? AND id = ?',
+              whereArgs: [documentId, data['id']],
             );
+            
+            if (existing.isNotEmpty) {
+              // Update existing text box
+              data['updated_at'] = DateTime.now().millisecondsSinceEpoch;
+              await txn.update(
+                'text_boxes',
+                data,
+                where: 'document_id = ? AND id = ?',
+                whereArgs: [documentId, data['id']],
+              );
+            } else {
+              // Insert new text box
+              await txn.insert(
+                'text_boxes',
+                data,
+                conflictAlgorithm: ConflictAlgorithm.replace,
+              );
+            }
           }
         }
       });
@@ -3484,14 +3535,27 @@ class DatabaseService {
         
         final documentId = docResult.first['id'] as String;
         
-        // Delete existing image boxes
-        await txn.delete(
+        // Get existing image boxes for comparison
+        final existingBoxes = await txn.query(
           'image_boxes',
           where: 'document_id = ?',
           whereArgs: [documentId],
         );
         
-        // Insert new image boxes
+        final existingIds = existingBoxes.map((box) => box['id'] as String).toSet();
+        final newIds = imageBoxes.map((box) => box['id'] as String).toSet();
+        
+        // Delete removed image boxes
+        final idsToDelete = existingIds.difference(newIds);
+        for (final id in idsToDelete) {
+          await txn.delete(
+            'image_boxes',
+            where: 'document_id = ? AND id = ?',
+            whereArgs: [documentId, id],
+          );
+        }
+        
+        // Insert or update image boxes
         for (var imageBox in List.from(imageBoxes)) {
           final data = Map<String, dynamic>.from(imageBox);
           // Remove old field if exists
@@ -3511,11 +3575,30 @@ class DatabaseService {
             data['image_path'] = data.remove('imagePath');
           }
           
-          await txn.insert(
+          // Check if image box exists
+          final existing = await txn.query(
             'image_boxes',
-            data,
-            conflictAlgorithm: ConflictAlgorithm.replace,
+            where: 'document_id = ? AND id = ?',
+            whereArgs: [documentId, data['id']],
           );
+          
+          if (existing.isNotEmpty) {
+            // Update existing image box
+            data['updated_at'] = DateTime.now().millisecondsSinceEpoch;
+            await txn.update(
+              'image_boxes',
+              data,
+              where: 'document_id = ? AND id = ?',
+              whereArgs: [documentId, data['id']],
+            );
+          } else {
+            // Insert new image box
+            await txn.insert(
+              'image_boxes',
+              data,
+              conflictAlgorithm: ConflictAlgorithm.replace,
+            );
+          }
         }
       });
     } catch (e, stackTrace) {
@@ -3544,14 +3627,27 @@ class DatabaseService {
         
         final documentId = docResult.first['id'] as String;
         
-        // Delete existing audio boxes
-        await txn.delete(
+        // Get existing audio boxes for comparison
+        final existingBoxes = await txn.query(
           'audio_boxes',
           where: 'document_id = ?',
           whereArgs: [documentId],
         );
         
-        // Insert new audio boxes
+        final existingIds = existingBoxes.map((box) => box['id'] as String).toSet();
+        final newIds = audioBoxes.map((box) => box['id'] as String).toSet();
+        
+        // Delete removed audio boxes
+        final idsToDelete = existingIds.difference(newIds);
+        for (final id in idsToDelete) {
+          await txn.delete(
+            'audio_boxes',
+            where: 'document_id = ? AND id = ?',
+            whereArgs: [documentId, id],
+          );
+        }
+        
+        // Insert or update audio boxes
         for (var audioBox in audioBoxes) {
           final data = Map<String, dynamic>.from(audioBox);
           // Remove old field if exists
@@ -3571,11 +3667,30 @@ class DatabaseService {
             data['audio_path'] = data.remove('audioPath');
           }
           
-          await txn.insert(
+          // Check if audio box exists
+          final existing = await txn.query(
             'audio_boxes',
-            data,
-            conflictAlgorithm: ConflictAlgorithm.replace,
+            where: 'document_id = ? AND id = ?',
+            whereArgs: [documentId, data['id']],
           );
+          
+          if (existing.isNotEmpty) {
+            // Update existing audio box
+            data['updated_at'] = DateTime.now().millisecondsSinceEpoch;
+            await txn.update(
+              'audio_boxes',
+              data,
+              where: 'document_id = ? AND id = ?',
+              whereArgs: [documentId, data['id']],
+            );
+          } else {
+            // Insert new audio box
+            await txn.insert(
+              'audio_boxes',
+              data,
+              conflictAlgorithm: ConflictAlgorithm.replace,
+            );
+          }
         }
       });
     } catch (e, stackTrace) {

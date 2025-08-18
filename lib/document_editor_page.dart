@@ -51,10 +51,12 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
   bool _isLoading = true;
   bool _isTemplate = false;
   Timer? _autoSaveTimer;
+  Timer? _debounceTimer; // 防抖定时器
   bool _contentChanged = false;
   bool _textEnhanceMode = true;
   bool _isPositionLocked = true;
   String? _recordingAudioBoxId;
+  bool _isSaving = false; // 添加保存状态标志，防止重复保存
   late final DatabaseService _databaseService;
 
   @override
@@ -75,11 +77,11 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
 
     _databaseService.ensureAudioBoxesTableExists();
 
+    // 优化自动保存：减少频率到30秒，并添加防抖机制
     _autoSaveTimer = Timer.periodic(Duration(seconds: 30), (timer) {
-      if (_contentChanged) {
+      if (_contentChanged && !_isSaving) {
         print('自动保存文档内容...');
         _saveContent();
-        _contentChanged = false;
       }
     });
   }
@@ -87,7 +89,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    if (_contentChanged) {
+    if (_contentChanged && !_isSaving) {
       print('依赖变化时保存文档内容...');
       _saveContent();
     }
@@ -505,7 +507,24 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
     }
   }
 
+  // 防抖保存方法，避免频繁保存
+  void _debouncedSave() {
+    _debounceTimer?.cancel();
+    _debounceTimer = Timer(Duration(milliseconds: 2000), () {
+      if (_contentChanged && !_isSaving) {
+        _saveContent();
+      }
+    });
+  }
+
   Future<void> _saveContent() async {
+    // 防重入机制：如果正在保存，则跳过本次保存
+    if (_isSaving) {
+      print('保存操作正在进行中，跳过本次保存请求');
+      return;
+    }
+    
+    _isSaving = true;
     try {
       print('正在保存文档内容...');
       await _databaseService.saveTextBoxes(List<Map<String, dynamic>>.from(_textBoxes), widget.documentName);
@@ -536,6 +555,8 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
           ),
         );
       }
+    } finally {
+      _isSaving = false; // 确保保存状态被重置
     }
   }
 
@@ -567,7 +588,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
         if (_databaseService.validateTextBoxData(newTextBox)) {
           _textBoxes.add(newTextBox);
           _contentChanged = true;
-          Future.microtask(() => _saveContent());
+          Future.microtask(() {
+            _debouncedSave();
+          });
           Future.microtask(() => _saveStateToHistory());
         } else {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -608,7 +631,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
           int index = _imageBoxes.indexWhere((box) => box['id'] == id);
           if (index != -1) {
             _imageBoxes[index]['imagePath'] = imagePath;
-            _saveContent();
+            _debouncedSave();
             _saveStateToHistory();
           }
         });
@@ -616,7 +639,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
         setState(() {
           _imageBoxes.removeWhere((imageBox) => imageBox['id'] == id);
         });
-        _saveContent();
+        _debouncedSave();
         _saveStateToHistory();
       }
     } catch (e) {
@@ -654,7 +677,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
           };
           if (_databaseService.validateTextBoxData(newTextBox)) {
             _textBoxes.add(newTextBox);
-            Future.microtask(() => _saveContent());
+            Future.microtask(() {
+              _debouncedSave();
+            });
             Future.microtask(() => _saveStateToHistory());
           } else {
             ScaffoldMessenger.of(context).showSnackBar(
@@ -697,7 +722,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
           };
           if (_databaseService.validateImageBoxData(newImageBox)) {
             _imageBoxes.add(newImageBox);
-            Future.microtask(() => _saveContent());
+            Future.microtask(() {
+              _debouncedSave();
+            });
             Future.microtask(() => _saveStateToHistory());
           } else {
             ScaffoldMessenger.of(context).showSnackBar(
@@ -800,7 +827,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
 
       _audioBoxes.add(newAudioBox);
       _contentChanged = true;
-      _saveContent();
+      _debouncedSave();
       _saveStateToHistory();
     });
   }
@@ -851,7 +878,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
                     _audioBoxes.removeAt(index);
                     _contentChanged = true;
                   });
-                  _saveContent();
+                  _debouncedSave();
                   _saveStateToHistory();
                 }
               },
@@ -884,7 +911,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
 
           _recordingAudioBoxId = null;
 
-          _saveContent();
+          _debouncedSave();
           _saveStateToHistory();
         }
       });
@@ -1005,12 +1032,31 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
       _saveContentOnDispose();
     }
     _autoSaveTimer?.cancel();
+    _debounceTimer?.cancel();
     _scrollController.dispose();
     super.dispose();
   }
 
   // 页面销毁时的保存方法，不调用setState和UI相关方法
   Future<void> _saveContentOnDispose() async {
+    // 防重入机制：如果正在保存，则等待当前保存完成
+    if (_isSaving) {
+      print('等待当前保存操作完成...');
+      // 等待最多3秒，避免无限等待
+      int waitCount = 0;
+      while (_isSaving && waitCount < 30) {
+        await Future.delayed(Duration(milliseconds: 100));
+        waitCount++;
+      }
+      if (_isSaving) {
+        print('等待保存超时，强制执行保存');
+      } else {
+        print('当前保存操作已完成，无需重复保存');
+        return;
+      }
+    }
+    
+    _isSaving = true;
     try {
       print('正在保存文档内容...');
       await _databaseService.saveTextBoxes(List<Map<String, dynamic>>.from(_textBoxes), widget.documentName);
@@ -1029,6 +1075,8 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
       print('保存内容时出错: $e');
       print('堆栈跟踪: $e');
       // 不显示SnackBar，因为页面已经销毁
+    } finally {
+      _isSaving = false;
     }
   }
 
@@ -1174,15 +1222,51 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
-                    IconButton(
-                      icon: Icon(Icons.save, size: 20, color: Colors.blue),
-                      onPressed: () {
-                        _saveContent().then((_) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(content: Text('文档已保存')),
-                          );
-                        });
-                      },
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          icon: Icon(Icons.save, size: 20, color: Colors.blue),
+                          onPressed: () {
+                            _saveContent().then((_) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text('文档已保存')),
+                              );
+                            });
+                          },
+                        ),
+                        // 保存状态指示器
+                        if (_isSaving)
+                          Container(
+                            width: 16,
+                            height: 16,
+                            margin: EdgeInsets.only(right: 8),
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
+                            ),
+                          )
+                        else if (_contentChanged)
+                          Container(
+                            width: 8,
+                            height: 8,
+                            margin: EdgeInsets.only(right: 8),
+                            decoration: BoxDecoration(
+                              color: Colors.orange,
+                              shape: BoxShape.circle,
+                            ),
+                          )
+                        else
+                          Container(
+                            width: 8,
+                            height: 8,
+                            margin: EdgeInsets.only(right: 8),
+                            decoration: BoxDecoration(
+                              color: Colors.green,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                      ],
                     ),
                     IconButton(
                       icon: Icon(
@@ -1283,7 +1367,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
                             });
                           },
                           onPanEnd: (_) {
-                            _saveContent();
+                            _debouncedSave();
                             _saveStateToHistory();
                           },
                           child: ResizableImageBox(
@@ -1291,7 +1375,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
                             imagePath: data['imagePath'],
                             onResize: (size) {
                               _updateImageBox(data['id'], size);
-                              _saveContent();
+                              _debouncedSave();
                               _saveStateToHistory();
                             },
                             onSettingsPressed: () =>
@@ -1330,7 +1414,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
                             });
                           },
                           onPanEnd: (_) {
-                            _saveContent();
+                            _debouncedSave();
                             _saveStateToHistory();
                           },
                           child: _buildTextBox(data),
@@ -1365,7 +1449,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
                             });
                           },
                           onPanEnd: (_) {
-                            _saveContent();
+                            if (!_isSaving) {
+                              _debouncedSave();
+                            }
                             _saveStateToHistory();
                           },
                           child: ResizableAudioBox(
@@ -1477,7 +1563,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
                 onTap: () {
                   Navigator.pop(context);
                   _deleteImageBox(id);
-                  _saveContent();
+                  _debouncedSave();
                   _saveStateToHistory();
                 },
               ),
@@ -1532,21 +1618,21 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
             text,
             textStyle,
           );
-          _saveContent();
+          _debouncedSave();
           _saveStateToHistory();
         });
       },
       onDeleteCurrent: () {
         Future.microtask(() {
           _deleteTextBox(data['id']);
-          _saveContent();
+          _debouncedSave();
           _saveStateToHistory();
         });
       },
       onDuplicateCurrent: () {
         Future.microtask(() {
           _duplicateTextBox(data['id']);
-          _saveContent();
+          _debouncedSave();
           _saveStateToHistory();
         });
       },
@@ -1601,7 +1687,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
     setState(() {
       _textEnhanceMode = newMode;
       _contentChanged = true;
-      _saveContent();
+      _debouncedSave();
       _saveStateToHistory();
     });
     _databaseService.insertOrUpdateDocumentSettings(
@@ -1624,7 +1710,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
     setState(() {
       _isPositionLocked = newLockState;
       _contentChanged = true;
-      _saveContent();
+      _debouncedSave();
       _saveStateToHistory();
     });
     _databaseService.insertOrUpdateDocumentSettings(
@@ -1669,7 +1755,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
         _audioBoxes[index]['audioPath'] = path;
         _contentChanged = true;
       });
-      _saveContent();
+      _debouncedSave();
       _saveStateToHistory();
     }
   }
