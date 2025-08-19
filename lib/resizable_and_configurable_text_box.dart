@@ -231,7 +231,6 @@ class ResizableAndConfigurableTextBox extends StatefulWidget {
   final Function(Size, String, CustomTextStyle) onSave;
   final Function() onDeleteCurrent;
   final Function() onDuplicateCurrent;
-  final bool globalEnhanceMode; // 添加全局增强模式参数
 
   const ResizableAndConfigurableTextBox({
     super.key,
@@ -241,7 +240,6 @@ class ResizableAndConfigurableTextBox extends StatefulWidget {
     required this.onSave,
     required this.onDeleteCurrent,
     required this.onDuplicateCurrent,
-    this.globalEnhanceMode = false, // 默认为false
   });
 
   @override
@@ -779,137 +777,94 @@ class _ResizableAndConfigurableTextBoxState
   }
 
   Widget _buildCustomTextField() {
-    if (!widget.globalEnhanceMode) {
-      // 非增强模式：使用普通TextField
-      print('渲染普通模式: TextField');
-      return TextField(
-        controller: _controller,
-        focusNode: _focusNode,
-        scrollController: _textScrollController,
-        maxLines: null,
-        expands: true,
-        textAlign: _textStyle.textAlign,
-        style: TextStyle(
-          color: _textStyle.fontColor,
-          fontSize: _textStyle.fontSize,
-          fontWeight: _textStyle.fontWeight,
-          fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
-          backgroundColor: _textStyle.backgroundColor,
-          height: 1.2,
-        ),
-        decoration: InputDecoration(
-          border: InputBorder.none,
-          contentPadding: EdgeInsets.all(5.0),
-          fillColor: Colors.transparent,
-        ),
-        onChanged: (text) {
-          _saveChanges();
-        },
-        onTap: () {
-          if (_showBottomSettings) {
-            setState(() {
-              _showBottomSettings = false;
-            });
-          }
-        },
-        cursorWidth: 2.0,
-        cursorColor: _textStyle.fontColor,
-        enableInteractiveSelection: true,
-      );
-    } else {
-      // 增强模式：重新设计布局，确保Text和TextField使用完全相同的布局条件
-      print('渲染增强模式: ${_focusNode.hasFocus ? "编辑状态" : "显示状态"}');
-      final text = _controller.text;
-      
-      // 将ScrollView移到最外层，让Text和TextField都在相同的滚动容器中
-      return SingleChildScrollView(
-        controller: _textScrollController,
-        child: Container(
-          alignment: Alignment.topLeft,
-          constraints: BoxConstraints(
-            minHeight: _size.height,
+    // 统一增强模式：基于TextField结构，添加背景增强文字效果
+    print('渲染增强模式: ${_focusNode.hasFocus ? "编辑状态" : "显示状态"}');
+    final text = _controller.text;
+    
+    return Stack(
+      children: [
+        // 背景增强文字层（描边效果）
+        TextField(
+          controller: TextEditingController(text: text),
+          enabled: false, // 禁用交互，仅用于显示
+          maxLines: null,
+          expands: true,
+          textAlign: _textStyle.textAlign,
+          style: TextStyle(
+            fontSize: _textStyle.fontSize,
+            fontWeight: FontWeight.bold,
+            fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
+            backgroundColor: _textStyle.backgroundColor,
+            height: 1.2,
+            foreground: Paint()
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 2.5
+              ..color = Colors.white,
           ),
-          child: Stack(
-            children: [
-              // 增强文字显示层（描边）- 使用与TextField完全相同的布局和padding
-              Container(
-                alignment: Alignment.topLeft,
-                padding: EdgeInsets.all(5.0), // 与TextField的contentPadding保持一致
-                child: Text(
-                  text,
-                  textAlign: _textStyle.textAlign,
-                  style: TextStyle(
-                    fontSize: _textStyle.fontSize,
-                    fontWeight: FontWeight.bold,
-                    fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
-                    backgroundColor: _textStyle.backgroundColor,
-                    height: 1.2,
-                    foreground: Paint()
-                      ..style = PaintingStyle.stroke
-                      ..strokeWidth = 2.5
-                      ..color = Colors.white,
-                  ),
-                ),
-              ),
-              // 增强文字显示层（填充）- 使用与TextField完全相同的布局和padding
-              Container(
-                alignment: Alignment.topLeft,
-                padding: EdgeInsets.all(5.0), // 与TextField的contentPadding保持一致
-                child: Text(
-                  text,
-                  textAlign: _textStyle.textAlign,
-                  style: TextStyle(
-                    color: _textStyle.fontColor,
-                    fontSize: _textStyle.fontSize,
-                    fontWeight: FontWeight.bold,
-                    fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
-                    backgroundColor: _textStyle.backgroundColor,
-                    height: 1.2,
-                  ),
-                ),
-              ),
-              // 透明TextField层 - 使用与Text完全相同的布局结构和padding
-              Container(
-                alignment: Alignment.topLeft,
-                child: TextField(
-                  controller: _controller,
-                  focusNode: _focusNode,
-                  maxLines: null,
-                  textAlign: _textStyle.textAlign,
-                  style: TextStyle(
-                    color: Colors.transparent, // 文字透明，只显示光标
-                    fontSize: _textStyle.fontSize,
-                    fontWeight: FontWeight.bold, // 与Text保持一致
-                    fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
-                    height: 1.2,
-                  ),
-                  decoration: InputDecoration(
-                    border: InputBorder.none,
-                    contentPadding: EdgeInsets.all(5.0), // 与Text的padding保持完全一致
-                    fillColor: Colors.transparent,
-                    isDense: true,
-                  ),
-                  onChanged: (text) {
-                    setState(() {}); // 更新增强文字显示
-                    _saveChanges();
-                  },
-                  onTap: () {
-                    if (_showBottomSettings) {
-                      setState(() {
-                        _showBottomSettings = false;
-                      });
-                    }
-                  },
-                  cursorWidth: 2.0,
-                  cursorColor: _textStyle.fontColor,
-                  enableInteractiveSelection: true,
-                ),
-              ),
-            ],
+          decoration: InputDecoration(
+            border: InputBorder.none,
+            contentPadding: EdgeInsets.all(5.0),
+            fillColor: Colors.transparent,
           ),
         ),
-      );
-    }
+        // 背景增强文字层（填充效果）
+        TextField(
+          controller: TextEditingController(text: text),
+          enabled: false, // 禁用交互，仅用于显示
+          maxLines: null,
+          expands: true,
+          textAlign: _textStyle.textAlign,
+          style: TextStyle(
+            color: _textStyle.fontColor,
+            fontSize: _textStyle.fontSize,
+            fontWeight: FontWeight.bold,
+            fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
+            backgroundColor: _textStyle.backgroundColor,
+            height: 1.2,
+          ),
+          decoration: InputDecoration(
+            border: InputBorder.none,
+            contentPadding: EdgeInsets.all(5.0),
+            fillColor: Colors.transparent,
+          ),
+        ),
+        // 前景交互TextField层（透明文字，精确光标定位）
+        TextField(
+          controller: _controller,
+          focusNode: _focusNode,
+          scrollController: _textScrollController,
+          maxLines: null,
+          expands: true,
+          textAlign: _textStyle.textAlign,
+          style: TextStyle(
+            color: Colors.transparent, // 文字透明，只显示光标
+            fontSize: _textStyle.fontSize,
+            fontWeight: FontWeight.bold, // 与背景文字保持一致
+            fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
+            height: 1.2,
+          ),
+          decoration: InputDecoration(
+            border: InputBorder.none,
+            contentPadding: EdgeInsets.all(5.0), // 与背景文字完全一致
+            fillColor: Colors.transparent,
+          ),
+          onChanged: (text) {
+            setState(() {}); // 更新背景增强文字显示
+            _saveChanges();
+          },
+          onTap: () {
+            if (_showBottomSettings) {
+              setState(() {
+                _showBottomSettings = false;
+              });
+            }
+          },
+          cursorWidth: 2.0,
+          cursorColor: _textStyle.fontColor,
+          enableInteractiveSelection: true,
+        ),
+      ],
+    );
   }
 
   bool _compareColors(Color? color1, Color? color2) {

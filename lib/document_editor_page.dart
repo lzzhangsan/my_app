@@ -1636,7 +1636,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
           _saveStateToHistory();
         });
       },
-      globalEnhanceMode: _textEnhanceMode,
+
     );
   }
 
