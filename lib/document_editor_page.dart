@@ -1268,15 +1268,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
                           ),
                       ],
                     ),
-                    IconButton(
-                      icon: Icon(
-                        Icons.text_format,
-                        size: 20,
-                        color: _textEnhanceMode ? Colors.blue : Colors.black,
-                      ),
-                      onPressed: _toggleTextEnhanceMode,
-                      tooltip: '文字增强模式',
-                    ),
+
                     IconButton(
                       icon: Icon(
                         _isPositionLocked ? Icons.lock : Icons.lock_open,

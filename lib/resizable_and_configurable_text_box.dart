@@ -685,6 +685,20 @@ class _ResizableAndConfigurableTextBoxState
     return Color.fromARGB((color.a * 255).round(), d, d, d);
   }
 
+  // 智能描边颜色计算函数
+  Color _getSmartStrokeColor(Color textColor) {
+    // 计算文字颜色的亮度
+    double luminance = textColor.computeLuminance();
+    
+    // 如果文字颜色较亮（亮度 > 0.5），使用黑色描边
+    // 如果文字颜色较暗（亮度 <= 0.5），使用白色描边
+    if (luminance > 0.5) {
+      return Colors.black;
+    } else {
+      return Colors.white;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     bool hasTextSelection = _selectionStart != null && _selectionEnd != null && _selectionStart != _selectionEnd;
@@ -799,7 +813,7 @@ class _ResizableAndConfigurableTextBoxState
             foreground: Paint()
               ..style = PaintingStyle.stroke
               ..strokeWidth = 2.5
-              ..color = Colors.white,
+              ..color = _getSmartStrokeColor(_textStyle.fontColor),
           ),
           decoration: InputDecoration(
             border: InputBorder.none,
