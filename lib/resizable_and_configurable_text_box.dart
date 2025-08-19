@@ -779,8 +779,9 @@ class _ResizableAndConfigurableTextBoxState
   }
 
   Widget _buildCustomTextField() {
-    if (!widget.globalEnhanceMode || _focusNode.hasFocus) {
-      print('渲染编辑模式或增强编辑模式: TextField');
+    if (!widget.globalEnhanceMode) {
+      // 非增强模式：使用普通TextField
+      print('渲染普通模式: TextField');
       return TextField(
         controller: _controller,
         focusNode: _focusNode,
@@ -816,40 +817,91 @@ class _ResizableAndConfigurableTextBoxState
         enableInteractiveSelection: true,
       );
     } else {
-      print('渲染增强显示模式: Stack<Text>');
+      // 增强模式：重新设计布局，确保Text和TextField使用完全相同的布局条件
+      print('渲染增强模式: ${_focusNode.hasFocus ? "编辑状态" : "显示状态"}');
       final text = _controller.text;
-      return Container(
-        alignment: Alignment.topLeft,
-        padding: EdgeInsets.all(5.0),
-        child: SingleChildScrollView(
-          controller: _textScrollController,
+      
+      // 将ScrollView移到最外层，让Text和TextField都在相同的滚动容器中
+      return SingleChildScrollView(
+        controller: _textScrollController,
+        child: Container(
+          alignment: Alignment.topLeft,
+          padding: EdgeInsets.all(5.0),
+          constraints: BoxConstraints(
+            minHeight: _size.height - 10, // 减去padding
+          ),
           child: Stack(
             children: [
-              Text(
-                text,
-                textAlign: _textStyle.textAlign,
-                style: TextStyle(
-                  fontSize: _textStyle.fontSize,
-                  fontWeight: FontWeight.bold,
-                  fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
-                  backgroundColor: _textStyle.backgroundColor,
-                  height: 1.2,
-                  foreground: Paint()
-                    ..style = PaintingStyle.stroke
-                    ..strokeWidth = 2.5
-                    ..color = Colors.white,
+              // 增强文字显示层（描边）- 使用与TextField完全相同的布局
+              Container(
+                alignment: Alignment.topLeft,
+                child: Text(
+                  text,
+                  textAlign: _textStyle.textAlign,
+                  style: TextStyle(
+                    fontSize: _textStyle.fontSize,
+                    fontWeight: FontWeight.bold,
+                    fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
+                    backgroundColor: _textStyle.backgroundColor,
+                    height: 1.2,
+                    foreground: Paint()
+                      ..style = PaintingStyle.stroke
+                      ..strokeWidth = 2.5
+                      ..color = Colors.white,
+                  ),
                 ),
               ),
-              Text(
-                text,
-                textAlign: _textStyle.textAlign,
-                style: TextStyle(
-                  color: _textStyle.fontColor,
-                  fontSize: _textStyle.fontSize,
-                  fontWeight: FontWeight.bold,
-                  fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
-                  backgroundColor: _textStyle.backgroundColor,
-                  height: 1.2,
+              // 增强文字显示层（填充）- 使用与TextField完全相同的布局
+              Container(
+                alignment: Alignment.topLeft,
+                child: Text(
+                  text,
+                  textAlign: _textStyle.textAlign,
+                  style: TextStyle(
+                    color: _textStyle.fontColor,
+                    fontSize: _textStyle.fontSize,
+                    fontWeight: FontWeight.bold,
+                    fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
+                    backgroundColor: _textStyle.backgroundColor,
+                    height: 1.2,
+                  ),
+                ),
+              ),
+              // 透明TextField层 - 使用与Text完全相同的布局结构
+              Container(
+                alignment: Alignment.topLeft,
+                child: TextField(
+                  controller: _controller,
+                  focusNode: _focusNode,
+                  maxLines: null,
+                  textAlign: _textStyle.textAlign,
+                  style: TextStyle(
+                    color: Colors.transparent, // 文字透明，只显示光标
+                    fontSize: _textStyle.fontSize,
+                    fontWeight: FontWeight.bold, // 与Text保持一致
+                    fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
+                    height: 1.2,
+                  ),
+                  decoration: InputDecoration(
+                    border: InputBorder.none,
+                    contentPadding: EdgeInsets.zero, // 移除内边距，让Text和TextField完全对齐
+                    fillColor: Colors.transparent,
+                    isDense: true,
+                  ),
+                  onChanged: (text) {
+                    setState(() {}); // 更新增强文字显示
+                    _saveChanges();
+                  },
+                  onTap: () {
+                    if (_showBottomSettings) {
+                      setState(() {
+                        _showBottomSettings = false;
+                      });
+                    }
+                  },
+                  cursorWidth: 2.0,
+                  cursorColor: _textStyle.fontColor,
+                  enableInteractiveSelection: true,
                 ),
               ),
             ],
