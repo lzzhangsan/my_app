@@ -795,89 +795,88 @@ class _ResizableAndConfigurableTextBoxState
     print('渲染增强模式: ${_focusNode.hasFocus ? "编辑状态" : "显示状态"}');
     final text = _controller.text;
     
-    return Stack(
-      children: [
-        // 背景增强文字层（描边效果）
-        TextField(
-          controller: TextEditingController(text: text),
-          enabled: false, // 禁用交互，仅用于显示
-          maxLines: null,
-          expands: true,
-          textAlign: _textStyle.textAlign,
-          style: TextStyle(
-            fontSize: _textStyle.fontSize,
-            fontWeight: FontWeight.bold,
-            fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
-            backgroundColor: _textStyle.backgroundColor,
-            height: 1.2,
-            foreground: Paint()
-              ..style = PaintingStyle.stroke
-              ..strokeWidth = 2.5
-              ..color = _getSmartStrokeColor(_textStyle.fontColor),
+    return SingleChildScrollView(
+      controller: _textScrollController,
+      child: Stack(
+        children: [
+          // 背景增强文字层（描边效果）
+          TextField(
+            controller: TextEditingController(text: text),
+            enabled: false, // 禁用交互，仅用于显示
+            maxLines: null,
+            textAlign: _textStyle.textAlign,
+            style: TextStyle(
+              fontSize: _textStyle.fontSize,
+              fontWeight: FontWeight.bold,
+              fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
+              backgroundColor: _textStyle.backgroundColor,
+              height: 1.2,
+              foreground: Paint()
+                ..style = PaintingStyle.stroke
+                ..strokeWidth = 2.5
+                ..color = _getSmartStrokeColor(_textStyle.fontColor),
+            ),
+            decoration: InputDecoration(
+              border: InputBorder.none,
+              contentPadding: EdgeInsets.all(5.0),
+              fillColor: Colors.transparent,
+            ),
           ),
-          decoration: InputDecoration(
-            border: InputBorder.none,
-            contentPadding: EdgeInsets.all(5.0),
-            fillColor: Colors.transparent,
+          // 背景增强文字层（填充效果）
+          TextField(
+            controller: TextEditingController(text: text),
+            enabled: false, // 禁用交互，仅用于显示
+            maxLines: null,
+            textAlign: _textStyle.textAlign,
+            style: TextStyle(
+              color: _textStyle.fontColor,
+              fontSize: _textStyle.fontSize,
+              fontWeight: FontWeight.bold,
+              fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
+              backgroundColor: _textStyle.backgroundColor,
+              height: 1.2,
+            ),
+            decoration: InputDecoration(
+              border: InputBorder.none,
+              contentPadding: EdgeInsets.all(5.0),
+              fillColor: Colors.transparent,
+            ),
           ),
-        ),
-        // 背景增强文字层（填充效果）
-        TextField(
-          controller: TextEditingController(text: text),
-          enabled: false, // 禁用交互，仅用于显示
-          maxLines: null,
-          expands: true,
-          textAlign: _textStyle.textAlign,
-          style: TextStyle(
-            color: _textStyle.fontColor,
-            fontSize: _textStyle.fontSize,
-            fontWeight: FontWeight.bold,
-            fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
-            backgroundColor: _textStyle.backgroundColor,
-            height: 1.2,
+          // 前景交互TextField层（透明文字，精确光标定位）
+          TextField(
+            controller: _controller,
+            focusNode: _focusNode,
+            maxLines: null,
+            textAlign: _textStyle.textAlign,
+            style: TextStyle(
+              color: Colors.transparent, // 文字透明，只显示光标
+              fontSize: _textStyle.fontSize,
+              fontWeight: FontWeight.bold, // 与背景文字保持一致
+              fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
+              height: 1.2,
+            ),
+            decoration: InputDecoration(
+              border: InputBorder.none,
+              contentPadding: EdgeInsets.all(5.0), // 与背景文字完全一致
+              fillColor: Colors.transparent,
+            ),
+            onChanged: (text) {
+              setState(() {}); // 更新背景增强文字显示
+              _saveChanges();
+            },
+            onTap: () {
+              if (_showBottomSettings) {
+                setState(() {
+                  _showBottomSettings = false;
+                });
+              }
+            },
+            cursorWidth: 2.0,
+            cursorColor: _textStyle.fontColor,
+            enableInteractiveSelection: true,
           ),
-          decoration: InputDecoration(
-            border: InputBorder.none,
-            contentPadding: EdgeInsets.all(5.0),
-            fillColor: Colors.transparent,
-          ),
-        ),
-        // 前景交互TextField层（透明文字，精确光标定位）
-        TextField(
-          controller: _controller,
-          focusNode: _focusNode,
-          scrollController: _textScrollController,
-          maxLines: null,
-          expands: true,
-          textAlign: _textStyle.textAlign,
-          style: TextStyle(
-            color: Colors.transparent, // 文字透明，只显示光标
-            fontSize: _textStyle.fontSize,
-            fontWeight: FontWeight.bold, // 与背景文字保持一致
-            fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
-            height: 1.2,
-          ),
-          decoration: InputDecoration(
-            border: InputBorder.none,
-            contentPadding: EdgeInsets.all(5.0), // 与背景文字完全一致
-            fillColor: Colors.transparent,
-          ),
-          onChanged: (text) {
-            setState(() {}); // 更新背景增强文字显示
-            _saveChanges();
-          },
-          onTap: () {
-            if (_showBottomSettings) {
-              setState(() {
-                _showBottomSettings = false;
-              });
-            }
-          },
-          cursorWidth: 2.0,
-          cursorColor: _textStyle.fontColor,
-          enableInteractiveSelection: true,
-        ),
-      ],
+        ],
+      ),
     );
   }
 
