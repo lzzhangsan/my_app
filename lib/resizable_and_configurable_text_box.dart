@@ -826,15 +826,15 @@ class _ResizableAndConfigurableTextBoxState
         controller: _textScrollController,
         child: Container(
           alignment: Alignment.topLeft,
-          padding: EdgeInsets.all(5.0),
           constraints: BoxConstraints(
-            minHeight: _size.height - 10, // 减去padding
+            minHeight: _size.height,
           ),
           child: Stack(
             children: [
-              // 增强文字显示层（描边）- 使用与TextField完全相同的布局
+              // 增强文字显示层（描边）- 使用与TextField完全相同的布局和padding
               Container(
                 alignment: Alignment.topLeft,
+                padding: EdgeInsets.all(5.0), // 与TextField的contentPadding保持一致
                 child: Text(
                   text,
                   textAlign: _textStyle.textAlign,
@@ -851,9 +851,10 @@ class _ResizableAndConfigurableTextBoxState
                   ),
                 ),
               ),
-              // 增强文字显示层（填充）- 使用与TextField完全相同的布局
+              // 增强文字显示层（填充）- 使用与TextField完全相同的布局和padding
               Container(
                 alignment: Alignment.topLeft,
+                padding: EdgeInsets.all(5.0), // 与TextField的contentPadding保持一致
                 child: Text(
                   text,
                   textAlign: _textStyle.textAlign,
@@ -867,7 +868,7 @@ class _ResizableAndConfigurableTextBoxState
                   ),
                 ),
               ),
-              // 透明TextField层 - 使用与Text完全相同的布局结构
+              // 透明TextField层 - 使用与Text完全相同的布局结构和padding
               Container(
                 alignment: Alignment.topLeft,
                 child: TextField(
@@ -884,7 +885,7 @@ class _ResizableAndConfigurableTextBoxState
                   ),
                   decoration: InputDecoration(
                     border: InputBorder.none,
-                    contentPadding: EdgeInsets.zero, // 移除内边距，让Text和TextField完全对齐
+                    contentPadding: EdgeInsets.all(5.0), // 与Text的padding保持完全一致
                     fillColor: Colors.transparent,
                     isDense: true,
                   ),
