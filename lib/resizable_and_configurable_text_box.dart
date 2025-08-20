@@ -142,9 +142,9 @@ class CustomTextStyle {
 
   static int _getArgb(Color color) {
     return ((color.a * 255).round() << 24) |
-    ((color.r * 255).round() << 16) |
-    ((color.g * 255).round() << 8) |
-    (color.b * 255).round();
+        ((color.r * 255).round() << 16) |
+        ((color.g * 255).round() << 8) |
+        (color.b * 255).round();
   }
 }
 
@@ -405,7 +405,7 @@ class _ResizableAndConfigurableTextBoxState
                 children: [
                   _buildToolButton(
                     null,
-                        () {
+                    () {
                       setState(() {
                         if (_textStyle.fontSize > 8) {
                           _textStyle = _textStyle.copyWith(fontSize: _textStyle.fontSize - 2);
@@ -420,7 +420,7 @@ class _ResizableAndConfigurableTextBoxState
                   SizedBox(width: 8),
                   _buildToolButton(
                     null,
-                        () {
+                    () {
                       setState(() {
                         _textStyle = _textStyle.copyWith(fontSize: _textStyle.fontSize + 2);
                       });
@@ -433,7 +433,7 @@ class _ResizableAndConfigurableTextBoxState
                   SizedBox(width: 8),
                   _buildToolButton(
                     null,
-                        () {
+                    () {
                       print('点击加粗按钮');
                       final newFontWeight = _textStyle.fontWeight == FontWeight.normal ? FontWeight.bold : FontWeight.normal;
                       setState(() {
@@ -449,7 +449,7 @@ class _ResizableAndConfigurableTextBoxState
                   SizedBox(width: 8),
                   _buildToolButton(
                     null,
-                        () {
+                    () {
                       print('点击斜体按钮');
                       final newItalicState = !_textStyle.isItalic;
                       setState(() {
@@ -466,7 +466,7 @@ class _ResizableAndConfigurableTextBoxState
                   SizedBox(width: 12),
                   _buildToolButton(
                     Icons.format_clear,
-                        () {
+                    () {
                       setState(() {
                         _textStyle = CustomTextStyle(
                           fontSize: 16.0,
@@ -645,14 +645,14 @@ class _ResizableAndConfigurableTextBoxState
             alignment: Alignment.center,
             child: text != null
                 ? Text(
-              text,
-              style: TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.bold,
-                fontStyle: isItalic ? FontStyle.italic : FontStyle.normal,
-                color: buttonColor,
-              ),
-            )
+                    text,
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      fontStyle: isItalic ? FontStyle.italic : FontStyle.normal,
+                      color: buttonColor,
+                    ),
+                  )
                 : Icon(icon, size: iconSize, color: buttonColor),
           ),
         ),
@@ -689,7 +689,7 @@ class _ResizableAndConfigurableTextBoxState
   Color _getSmartStrokeColor(Color textColor) {
     // 计算文字颜色的亮度
     double luminance = textColor.computeLuminance();
-    
+
     // 如果文字颜色较亮（亮度 > 0.5），使用黑色描边
     // 如果文字颜色较暗（亮度 <= 0.5），使用白色描边
     if (luminance > 0.5) {
@@ -794,7 +794,7 @@ class _ResizableAndConfigurableTextBoxState
     // 统一增强模式：基于TextField结构，添加背景增强文字效果
     print('渲染增强模式: ${_focusNode.hasFocus ? "编辑状态" : "显示状态"}');
     final text = _controller.text;
-    
+
     return SingleChildScrollView(
       controller: _textScrollController,
       child: Stack(
@@ -803,8 +803,11 @@ class _ResizableAndConfigurableTextBoxState
           TextField(
             controller: TextEditingController(text: text),
             enabled: false, // 禁用交互，仅用于显示
+            minLines: 1,
             maxLines: null,
             textAlign: _textStyle.textAlign,
+            textAlignVertical: TextAlignVertical.top,
+            strutStyle: const StrutStyle(height: 1.2, forceStrutHeight: true),
             style: TextStyle(
               fontSize: _textStyle.fontSize,
               fontWeight: FontWeight.bold,
@@ -816,7 +819,8 @@ class _ResizableAndConfigurableTextBoxState
                 ..strokeWidth = 2.5
                 ..color = _getSmartStrokeColor(_textStyle.fontColor),
             ),
-            decoration: InputDecoration(
+            decoration: const InputDecoration(
+              isCollapsed: true,
               border: InputBorder.none,
               contentPadding: EdgeInsets.all(5.0),
               fillColor: Colors.transparent,
@@ -826,8 +830,11 @@ class _ResizableAndConfigurableTextBoxState
           TextField(
             controller: TextEditingController(text: text),
             enabled: false, // 禁用交互，仅用于显示
+            minLines: 1,
             maxLines: null,
             textAlign: _textStyle.textAlign,
+            textAlignVertical: TextAlignVertical.top,
+            strutStyle: const StrutStyle(height: 1.2, forceStrutHeight: true),
             style: TextStyle(
               color: _textStyle.fontColor,
               fontSize: _textStyle.fontSize,
@@ -836,7 +843,8 @@ class _ResizableAndConfigurableTextBoxState
               backgroundColor: _textStyle.backgroundColor,
               height: 1.2,
             ),
-            decoration: InputDecoration(
+            decoration: const InputDecoration(
+              isCollapsed: true,
               border: InputBorder.none,
               contentPadding: EdgeInsets.all(5.0),
               fillColor: Colors.transparent,
@@ -846,8 +854,11 @@ class _ResizableAndConfigurableTextBoxState
           TextField(
             controller: _controller,
             focusNode: _focusNode,
+            minLines: 1,
             maxLines: null,
             textAlign: _textStyle.textAlign,
+            textAlignVertical: TextAlignVertical.top,
+            strutStyle: const StrutStyle(height: 1.2, forceStrutHeight: true),
             style: TextStyle(
               color: Colors.transparent, // 文字透明，只显示光标
               fontSize: _textStyle.fontSize,
@@ -855,7 +866,8 @@ class _ResizableAndConfigurableTextBoxState
               fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
               height: 1.2,
             ),
-            decoration: InputDecoration(
+            decoration: const InputDecoration(
+              isCollapsed: true,
               border: InputBorder.none,
               contentPadding: EdgeInsets.all(5.0), // 与背景文字完全一致
               fillColor: Colors.transparent,
