@@ -816,6 +816,12 @@ class _ResizableAndConfigurableTextBoxState
                 ..strokeWidth = 2.5
                 ..color = _getSmartStrokeColor(_textStyle.fontColor),
             ),
+            // 通过强制使用相同的行高，保证单行与多行的顶部间距一致
+            strutStyle: StrutStyle(
+              forceStrutHeight: true,
+              height: 1.2,
+              fontSize: _textStyle.fontSize,
+            ),
             decoration: InputDecoration(
               border: InputBorder.none,
               contentPadding: EdgeInsets.all(5.0),
@@ -836,6 +842,12 @@ class _ResizableAndConfigurableTextBoxState
               backgroundColor: _textStyle.backgroundColor,
               height: 1.2,
             ),
+            // 通过强制使用相同的行高，保证单行与多行的顶部间距一致
+            strutStyle: StrutStyle(
+              forceStrutHeight: true,
+              height: 1.2,
+              fontSize: _textStyle.fontSize,
+            ),
             decoration: InputDecoration(
               border: InputBorder.none,
               contentPadding: EdgeInsets.all(5.0),
@@ -854,6 +866,12 @@ class _ResizableAndConfigurableTextBoxState
               fontWeight: FontWeight.bold, // 与背景文字保持一致
               fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
               height: 1.2,
+            ),
+            // 通过强制使用相同的行高，保证单行与多行的顶部间距一致
+            strutStyle: StrutStyle(
+              forceStrutHeight: true,
+              height: 1.2,
+              fontSize: _textStyle.fontSize,
             ),
             decoration: InputDecoration(
               border: InputBorder.none,
