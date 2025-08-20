@@ -4160,6 +4160,111 @@ class DatabaseService {
     return await db.query('media_items');
   }
 
+  /// 统计媒体项数量（用于进度与分批导出）
+  Future<int> getMediaItemsCount() async {
+    final db = await database;
+    final result = await db.rawQuery('SELECT COUNT(*) as cnt FROM media_items');
+    return (result.first['cnt'] as int?) ?? 0;
+  }
+
+  /// 分页获取媒体项
+  Future<List<Map<String, dynamic>>> getMediaItemsBatch({required int limit, required int offset}) async {
+    final db = await database;
+    return await db.query('media_items', limit: limit, offset: offset);
+  }
+
+  /// 将所有媒体项以 JSON Lines 格式流式写入到文件，避免一次性占用大量内存
+  Future<void> writeAllMediaItemsAsJsonLines(String outFilePath, {ValueNotifier<String>? progressNotifier, int batchSize = 1000}) async {
+    final db = await database;
+    final int total = await getMediaItemsCount();
+    int processed = 0;
+
+    final File outFile = File(outFilePath);
+    if (await outFile.exists()) {
+      await outFile.delete();
+    }
+    final IOSink sink = outFile.openWrite();
+
+    try {
+      int offset = 0;
+      while (true) {
+        final rows = await db.query('media_items', limit: batchSize, offset: offset);
+        if (rows.isEmpty) break;
+        for (final row in rows) {
+          sink.writeln(jsonEncode(row));
+          processed++;
+          if (processed % 500 == 0) {
+            await sink.flush();
+            progressNotifier?.value = '正在写入媒体索引: $processed/$total';
+          }
+        }
+        offset += rows.length;
+      }
+    } finally {
+      await sink.close();
+    }
+  }
+
+  /// 从 JSON Lines 文件流式导入媒体项（高可靠，适合超大数据集）
+  Future<void> replaceAllMediaItemsFromJsonLines(String filePath, {ValueNotifier<String>? progressNotifier, int batchSize = 1000}) async {
+    final db = await database;
+    const tempTable = 'media_items_temp';
+
+    await db.transaction((txn) async {
+      await txn.execute('DROP TABLE IF EXISTS $tempTable');
+      await txn.execute('''
+        CREATE TABLE $tempTable (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          path TEXT NOT NULL,
+          type INTEGER NOT NULL,
+          directory TEXT NOT NULL,
+          date_added TEXT NOT NULL,
+          file_size INTEGER DEFAULT 0,
+          duration INTEGER DEFAULT 0,
+          thumbnail_path TEXT,
+          file_hash TEXT,
+          telegram_file_id TEXT,
+          is_favorite INTEGER DEFAULT 0,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      ''');
+
+      final IOSink? _ = null; // 占位，避免未使用警告（某些分析器）
+      final Stream<String> lines = File(filePath).openRead().transform(utf8.decoder).transform(const LineSplitter());
+
+      int processed = 0;
+      List<Map<String, dynamic>> buffer = [];
+      await for (final line in lines) {
+        if (line.trim().isEmpty) continue;
+        final Map<String, dynamic> item = jsonDecode(line) as Map<String, dynamic>;
+        buffer.add(item);
+        processed++;
+        if (buffer.length >= batchSize) {
+          final batch = txn.batch();
+          for (final row in buffer) {
+            batch.insert(tempTable, row, conflictAlgorithm: ConflictAlgorithm.replace);
+          }
+          await batch.commit(noResult: true);
+          buffer.clear();
+          progressNotifier?.value = '正在导入媒体索引: 已处理 $processed 条';
+        }
+      }
+
+      if (buffer.isNotEmpty) {
+        final batch2 = txn.batch();
+        for (final row in buffer) {
+          batch2.insert(tempTable, row, conflictAlgorithm: ConflictAlgorithm.replace);
+        }
+        await batch2.commit(noResult: true);
+      }
+
+      await txn.execute('DROP TABLE IF EXISTS media_items');
+      await txn.execute('ALTER TABLE $tempTable RENAME TO media_items');
+    });
+  }
+
   /// 替换所有媒体项（清空并批量插入）- 使用临时表保证事务安全
   Future<void> replaceAllMediaItems(List<dynamic> items) async {
     final db = await database;
