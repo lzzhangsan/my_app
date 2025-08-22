@@ -17,7 +17,7 @@ import '../models/diary_entry.dart';
 /// 数据库服务 - 统一管理所有数据库操作
 class DatabaseService {
   static const String _databaseName = 'change_app.db';
-  static const int _databaseVersion = 11; // 强制升级版本号
+  static const int _databaseVersion = 12; // 强制升级版本号
   
   Database? _database;
   final Completer<Database> _initCompleter = Completer<Database>();
@@ -171,6 +171,7 @@ class DatabaseService {
           is_strike_through INTEGER DEFAULT 0,
           background_color INTEGER,
           text_align INTEGER DEFAULT 0,
+                    text_segments TEXT,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL,
           FOREIGN KEY (document_id) REFERENCES documents (id) ON DELETE CASCADE
@@ -1406,6 +1407,20 @@ class DatabaseService {
         
         // 为每个表创建临时表
         for (final tableName in tableNames) {
+
+        // 确保目标表结构包含 text_segments 列（如缺）
+        try {
+          final cols = await txn.rawQuery("PRAGMA table_info(text_boxes)");
+          final has = cols.any((c) => (c['name'] as String).toLowerCase() == 'text_segments');
+          if (!has) {
+            await txn.execute('ALTER TABLE text_boxes ADD COLUMN text_segments TEXT');
+          }
+        } catch (e) {
+          if (kDebugMode) {
+            print('检查/添加text_segments列失败: $e');
+          }
+        }
+
           await txn.execute('DROP TABLE IF EXISTS ${tableName}_temp');
           await txn.execute('CREATE TABLE ${tableName}_temp AS SELECT * FROM $tableName WHERE 0');
         }
@@ -3293,6 +3308,16 @@ class DatabaseService {
         if (convertedMap.containsKey('text_align')) {
           convertedMap['textAlign'] = convertedMap.remove('text_align');
         }
+        // Map text_segments (DB) -> textSegments (UI List)
+        if (convertedMap.containsKey('text_segments')) {
+          try {
+            final raw = convertedMap.remove('text_segments');
+            convertedMap['textSegments'] = (raw == null || raw == '') ? [] : jsonDecode(raw as String);
+          } catch (_) {
+            convertedMap['textSegments'] = [];
+          }
+        }
+
         return convertedMap;
       }).toList();
     } catch (e, stackTrace) {
@@ -3481,6 +3506,16 @@ class DatabaseService {
             if (data.containsKey('textAlign')) {
               data['text_align'] = data.remove('textAlign');
             }
+            // Map textSegments (UI) -> text_segments (DB JSON string)
+            if (data.containsKey('textSegments')) {
+              try {
+                final seg = data.remove('textSegments');
+                data['text_segments'] = jsonEncode(seg);
+              } catch (_) {
+                data['text_segments'] = '[]';
+              }
+            }
+
             
             // Check if text box exists
             final existing = await txn.query(
