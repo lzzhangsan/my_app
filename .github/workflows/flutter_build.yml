@@ -134,16 +134,13 @@ jobs:
       - name: Create temporary keystore
         run: |
           cd android/app
-          keytool -genkey -v -keystore temp-keystore.jks -keyalg RSA -keysize 2048 -validity 10000 -alias temp -storepass temppass -keypass temppass -dname "CN=Temp, OU=Temp, O=Temp, L=Temp, S=Temp, C=US"
-          
-          # 创建key.properties文件在android根目录
-          cd ..
-          cat > key.properties << EOF
-          storePassword=temppass
-          keyPassword=temppass
-          keyAlias=temp
-          storeFile=app/temp-keystore.jks
-          EOF
+          rm -f temp-keystore.jks
+          rm -f ../key.properties
+          keytool -genkey -v -keystore temp-keystore.jks -keyalg RSA -keysize 2048 -validity 10000 -alias temp -storepass 123456 -keypass 123456 -dname "CN=Test, OU=Test, O=Test, L=Test, S=Test, C=US"
+          echo "storePassword=123456" > ../key.properties
+          echo "keyPassword=123456" >> ../key.properties
+          echo "keyAlias=temp" >> ../key.properties
+          echo "storeFile=temp-keystore.jks" >> ../key.properties
 
       - name: Build Release APK
         run: flutter build apk --release
