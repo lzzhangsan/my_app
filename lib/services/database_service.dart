@@ -1425,7 +1425,16 @@ class DatabaseService {
           await txn.execute('CREATE TABLE ${tableName}_temp AS SELECT * FROM $tableName WHERE 0');
         }
 
-        // 导入新数据到临时表
+        
+
+        // === 读取每个临时表的列集合（白名单） ===
+        final Map<String, Set<String>> allowedCols = {};
+        for (final t in tableNames) {
+          final cols = await txn.rawQuery('PRAGMA table_info(' + t + '_temp)');
+          allowedCols[t] = { for (final r in cols) r['name'] as String };
+        }
+
+// 导入新数据到临时表
         final int batchSize = 100;
         for (var entry in tableData.entries) {
           final String tableName = entry.key;
@@ -1482,7 +1491,27 @@ class DatabaseService {
                  }
                  // --- 结束路径修正逻辑 ---
 
-                 await txn.insert('${tableName}_temp', newRow);
+                 // === textBoxes 兼容旧字段名：textSegments -> text_segments，并统一为 JSON 字符串 ===
+                 if (tableName == 'text_boxes') {
+                   if (newRow.containsKey('textSegments') && !newRow.containsKey('text_segments')) {
+                     newRow['text_segments'] = newRow['textSegments'];
+                   }
+                   if (newRow.containsKey('text_segments') && newRow['text_segments'] != null && newRow['text_segments'] is! String) {
+                     try { newRow['text_segments'] = jsonEncode(newRow['text_segments']); } catch (_) {}
+                   }
+                   // 无论如何移除旧字段名，避免插入不存在的列
+                   newRow.remove('textSegments');
+                 }
+
+                 // === 白名单过滤：仅保留目标表真实存在的列，杜绝 no column named ... ===
+                 final allowed = allowedCols[tableName] ?? const <String>{};
+                 final clean = <String, dynamic>{};
+                 for (final k in newRow.keys) {
+                   if (allowed.contains(k)) clean[k] = newRow[k];
+                 }
+
+                 await txn.insert('${tableName}_temp', clean);
+
                  processedRows++;
               }
               progressNotifier?.value = "正在导入$tableName表: $processedRows/${rows.length}";
