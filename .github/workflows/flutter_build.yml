@@ -130,8 +130,22 @@ jobs:
           flutter pub deps
           flutter analyze --no-fatal-infos
 
-      - name: Build Debug APK
-        run: flutter build apk --debug
+      # 创建临时签名密钥（仅用于CI构建）
+      - name: Create temporary keystore
+        run: |
+          cd android
+          keytool -genkey -v -keystore temp-keystore.jks -keyalg RSA -keysize 2048 -validity 10000 -alias temp -storepass temppass -keypass temppass -dname "CN=Temp, OU=Temp, O=Temp, L=Temp, S=Temp, C=US"
+          
+          # 创建key.properties文件
+          cat > key.properties << EOF
+          storePassword=temppass
+          keyPassword=temppass
+          keyAlias=temp
+          storeFile=temp-keystore.jks
+          EOF
+
+      - name: Build Release APK
+        run: flutter build apk --release
         env:
           ANDROID_NDK_HOME: ${{ steps.setup_ndk.outputs.ndk-path }}
           
@@ -154,7 +168,7 @@ jobs:
           
           # 使用更保守的构建选项
           export GRADLE_OPTS="-Xmx4g -Dorg.gradle.jvmargs=-Xmx4g"
-          flutter build apk --debug --no-shrink
+          flutter build apk --release --no-shrink
 
       # 查找生成的APK文件
       - name: Find APK files
@@ -162,24 +176,24 @@ jobs:
           echo "=== 查找所有APK文件 ==="
           find . -name "*.apk" -type f 2>/dev/null || echo "没有找到APK文件"
           
-          echo "\n=== 检查主要输出目录 ==="
+          echo "=== 检查主要输出目录 ==="
           ls -la build/app/outputs/flutter-apk/ 2>/dev/null || echo "flutter-apk目录不存在"
-          ls -la build/app/outputs/apk/debug/ 2>/dev/null || echo "apk/debug目录不存在"
           ls -la build/app/outputs/apk/release/ 2>/dev/null || echo "apk/release目录不存在"
+          ls -la build/app/outputs/apk/debug/ 2>/dev/null || echo "apk/debug目录不存在"
 
       # 上传APK
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug
+          name: app-release
           path: |
-            build/app/outputs/flutter-apk/app-debug.apk
-            build/app/outputs/apk/debug/app-debug.apk
-            build/app/outputs/apk/debug/*.apk
             build/app/outputs/flutter-apk/app-release.apk
             build/app/outputs/apk/release/app-release.apk
             build/app/outputs/apk/release/*.apk
-          retention-days: 7
+            build/app/outputs/flutter-apk/app-debug.apk
+            build/app/outputs/apk/debug/app-debug.apk
+            build/app/outputs/apk/debug/*.apk
+          retention-days: 30
           if-no-files-found: warn
           
       # 构建摘要
@@ -191,12 +205,12 @@ jobs:
           echo "Java版本: $(java -version 2>&1 | head -1)"
           echo "Gradle版本: $(cd android && ./gradlew --version | grep Gradle || echo '未知')"
           
-          if [ -f "build/app/outputs/flutter-apk/app-debug.apk" ]; then
-            echo "✅ Debug APK构建成功"
-            ls -lh build/app/outputs/flutter-apk/app-debug.apk
-          elif [ -f "build/app/outputs/apk/debug/app-debug.apk" ]; then
-            echo "✅ Debug APK构建成功（备用路径）"
-            ls -lh build/app/outputs/apk/debug/app-debug.apk
+          if [ -f "build/app/outputs/flutter-apk/app-release.apk" ]; then
+            echo "✅ Release APK构建成功"
+            ls -lh build/app/outputs/flutter-apk/app-release.apk
+          elif [ -f "build/app/outputs/apk/release/app-release.apk" ]; then
+            echo "✅ Release APK构建成功（备用路径）"
+            ls -lh build/app/outputs/apk/release/app-release.apk
           else
             echo "❌ APK构建失败"
           fi
