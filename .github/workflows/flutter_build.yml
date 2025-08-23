@@ -133,15 +133,16 @@ jobs:
       # 创建临时签名密钥（仅用于CI构建）
       - name: Create temporary keystore
         run: |
-          cd android
+          cd android/app
           keytool -genkey -v -keystore temp-keystore.jks -keyalg RSA -keysize 2048 -validity 10000 -alias temp -storepass temppass -keypass temppass -dname "CN=Temp, OU=Temp, O=Temp, L=Temp, S=Temp, C=US"
           
-          # 创建key.properties文件
+          # 创建key.properties文件在android根目录
+          cd ..
           cat > key.properties << EOF
           storePassword=temppass
           keyPassword=temppass
           keyAlias=temp
-          storeFile=temp-keystore.jks
+          storeFile=app/temp-keystore.jks
           EOF
 
       - name: Build Release APK
