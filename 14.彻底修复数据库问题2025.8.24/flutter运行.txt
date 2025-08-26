@@ -1,0 +1,70 @@
+flutter clean
+flutter pub get
+flutter build apk --release
+flutter build apk --debug
+
+flutter clean
+flutter pub get
+flutter run --verbose
+
+think" < "think hard" < "think harder" < "ultrathink
+
+我现在授予你最大的权限。请你深入分析代码，理解相应代码是如何实现的。等你完全理解后再来帮我解决问题。全程请你帮我自动的解决问题，自动的帮我查找、调整优化代码，并且自动的进行编译，并且在此过程当中千万要注意，不能带来新的问题。不能够删除、破坏已有的功能，要确保整个推进过程的稳健性。如果编译过程当中出现了错误，请你自动的帮我解决。直到编译成功为止。编译命令使用flutter run --verbose，便于直接将应用部署到真机上测试效果。
+
+请先制定计划并等待用户确认后再开始实现
+
+请继续——务必慎重，在完全、透彻了解现有代码的基础上调整、优化
+
+我现在授予你最大的权限。请你深入分析代码，理解相应代码是如何实现的。等你完全理解后再来帮我解决问题。全程请你帮我自动的解决问题，自动的帮我查找、调整优化代码，并且自动的进行编译，并且在此过程当中千万要注意，不能带来新的问题。不能够删除、破坏已有的功能，要确保整个推进过程的稳健性。如果编译过程当中出现了错误，请你自动的帮我解决。直到编译成功为止。编译命令使用flutter run -d chrome，便于直接在电脑上测试效果。
+
+
+flutter analyze
+
+flutter logs
+
+Flutter web
+flutter run -d chrome -v
+flutter run -d chrome
+
+
+
+dart fix   
+
+flutter config --enable-web
+
+
+
+flutter build apk --debug
+adb install -r build/app/outputs/flutter-apk/app-debug.apk
+
+"D:\app\my_app\fuben-参考"
+
+D:
+cd \app\my_flutter_app
+
+
+flutter pub get
+flutter run -d JB85PZ9TBUUC5PIB
+flutter run -d JB85PZ9TBUUC5PIB --verbose
+
+
+让远程变成和本地一样：git push origin main --force
+
+回退版本重新推送（命令行进入项目终端后）：
+git checkout main
+git reset --hard ac74533
+git push -f origin main
+
+git checkout main
+git reset --hard ef3d768
+git push -f origin main
+
+将分支合并到主支：
+1. 先确保在界面中切换到  main  分支（如你截图中，点击  main  分支即可完成切换）。
+2. 点击顶部菜单栏中的  Branch  选项，然后选择  Merge into Current  。
+3. 在弹出的分支列表中，选择  cursor/add-copy-option-to-folder-settings  分支，确认合并。
+4. 如果合并过程中没有冲突，合并完成后，点击界面中的  Push origin  按钮，将合并后的代码推送到远程仓库的  main  分支。
+
+
+
+当前这个应用开发已经接近尾声了。现在是最后的完善以及查漏补缺阶段。请你以专业的角度全面的评估当前这个应用。当前这个应用是否还存在着明显的bug或者是可以提升的地方？他的水平到底怎么样？对应人类的程序员来说，他处于哪个水平？他在数据处理方面是否达到了绝对的安全可靠？尤其是目录、媒体、日记本三大数据块是否做到了就算是超大数据量也能够正常顺畅的导出导入，能够便于用户在另外一部新手机上完整的迁移这些数据进来。用户是否能够绝对放心的去使用当前这个应用而不用担心应用崩溃或者是数据丢失。他的开发时长大概要多长时间？市场价值多少？这个应用到底值多少钱？比如说将它外包给当前市场行情当中的其他程序员或者团队来做的话，大概要多少钱呢？和同类应用相比它有哪些优缺点？现在是否已经到达了可以封装以及生成正式版APP进入生产环节的阶段？或者你还有哪些优化的建议你也可以提出来。在正式上架之前，我们希望将这个应用打磨到尽善尽美。能够给到用户最强大，丰富，舒适的使用体验。
