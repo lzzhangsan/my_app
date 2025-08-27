@@ -82,6 +82,7 @@ android.applicationVariants.all { variant ->
     }
 }
 
+
 dependencies {
     implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.9.10"  // 更新Kotlin版本
     implementation 'com.google.android.material:material:1.9.0'
@@ -93,4 +94,25 @@ dependencies {
 }
 
 // Flutter Gradle 插件已在 plugins 块中声明，无需重复应用
+
+// 添加国内镜像源
+allprojects {
+    repositories {
+        maven { url 'https://maven.aliyun.com/repository/google' }
+        maven { url 'https://maven.aliyun.com/repository/public' }
+        maven { url 'https://repo.huaweicloud.com/repository/maven/' }
+        maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
+        google()
+        mavenCentral()
+    }
+}
+
+// 修复photo_manager插件的Kotlin版本问题
+configurations.all {
+    resolutionStrategy {
+        force 'org.jetbrains.kotlin:kotlin-stdlib:1.9.10'
+        force 'org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.9.10'
+        force 'org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.9.10'
+    }
+}
 
