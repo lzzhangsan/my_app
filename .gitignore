@@ -41,3 +41,13 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Gradle wrapper files (these are automatically downloaded by gradlew)
+android/gradle-*.zip
+android/gradle-*/
+android/.gradle/
+
+# Large dependency files
+**/*.jar
+android/build/
+android/app/build/
