@@ -12,6 +12,7 @@ import 'package:archive/archive_io.dart';
 import 'package:uuid/uuid.dart';
 import '../core/app_state.dart';
 import '../core/service_locator.dart';
+import 'file_cleanup_service.dart';
 import '../models/diary_entry.dart';
 
 /// 数据库服务 - 统一管理所有数据库操作
@@ -1644,6 +1645,18 @@ class DatabaseService {
           );
         }
       });
+      
+      // 使用文件清理服务彻底删除文档文件
+      try {
+        final fileCleanupService = getService<FileCleanupService>();
+        if (fileCleanupService.isInitialized) {
+          await fileCleanupService.deleteDocumentCompletely(documentName);
+        }
+      } catch (e) {
+        if (kDebugMode) {
+          print('文件清理服务删除文档失败: $e');
+        }
+      }
       
       if (kDebugMode) {
         print('成功删除文档: $documentName');

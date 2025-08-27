@@ -21,12 +21,14 @@ import 'package:video_thumbnail/video_thumbnail.dart';
 
 import 'core/service_locator.dart';
 import 'services/database_service.dart';
+import 'services/file_cleanup_service.dart';
 import 'models/media_item.dart';
 import 'media_preview_page.dart';
 import 'create_folder_dialog.dart';
 import 'models/media_type.dart';
 import 'browser_page.dart';
 import 'services/cache_service.dart';
+import 'storage_management_page.dart';
 
 class MediaManagerPage extends StatefulWidget {
   const MediaManagerPage({super.key});
@@ -602,13 +604,26 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
     if (shouldDelete) {
       try {
+        // 使用文件清理服务彻底删除文件
+        final fileCleanupService = getService<FileCleanupService>();
+        if (fileCleanupService.isInitialized) {
+          await fileCleanupService.deleteMediaFileCompletely(item.path);
+        } else {
+          // 如果清理服务未初始化，使用传统方法删除
+          final file = File(item.path);
+          if (await file.exists()) await file.delete();
+        }
+        
+        // 从数据库中删除
         await _databaseService.deleteMediaItem(item.id);
-        final file = File(item.path);
-        if (await file.exists()) await file.delete();
+        
         await _loadMediaItems();
         if (mounted) {
           ScaffoldMessenger.of(context)
-              .showSnackBar(SnackBar(content: Text('已删除: ${item.name}')));
+              .showSnackBar(SnackBar(
+                content: Text('已删除: ${item.name} 并释放存储空间'),
+                backgroundColor: Colors.green,
+              ));
         }
       } catch (e) {
         debugPrint('删除媒体项时出错: $e');
@@ -2608,6 +2623,16 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     }
   }
 
+  /// 显示存储管理页面
+  void _showStorageManagement() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => const StorageManagementPage(),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -2651,6 +2676,12 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                 _mediaVisible ? Icons.visibility : Icons.visibility_off),
             onPressed: _toggleMediaVisibility,
             tooltip: '切换媒体可见性',
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+          ),
+          IconButton(
+            icon: const Icon(Icons.storage),
+            onPressed: _showStorageManagement,
+            tooltip: '存储管理',
             padding: const EdgeInsets.symmetric(horizontal: 4),
           ),
           IconButton(

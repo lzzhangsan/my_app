@@ -10,6 +10,7 @@ import '../services/performance_service.dart';
 import '../services/error_service.dart';
 import '../services/backup_service.dart';
 import '../services/background_media_service.dart';
+import '../services/file_cleanup_service.dart';
 import 'app_state.dart';
 
 /// 服务定位器 - 管理所有服务的单例实例
@@ -51,6 +52,10 @@ class ServiceLocator {
       // 注册文件服务
       registerSingleton<FileService>(FileService());
       await get<FileService>().initialize();
+      
+      // 注册文件清理服务
+      registerSingleton<FileCleanupService>(FileCleanupService());
+      await get<FileCleanupService>().initialize();
       
       // 注册媒体服务
       registerSingleton<MediaService>(MediaService());

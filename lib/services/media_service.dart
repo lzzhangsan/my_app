@@ -7,6 +7,8 @@ import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../models/media_item.dart';
 import '../models/media_type.dart';
+import '../core/service_locator.dart';
+import 'file_cleanup_service.dart';
 import 'package:video_thumbnail/video_thumbnail.dart';
 
 class MediaService {
@@ -172,9 +174,16 @@ class MediaService {
   /// 删除媒体文件
   Future<bool> deleteMediaFile(MediaItem mediaItem) async {
     try {
-      final file = File(mediaItem.path);
-      if (await file.exists()) {
-        await file.delete();
+      // 使用文件清理服务彻底删除文件
+      final fileCleanupService = getService<FileCleanupService>();
+      if (fileCleanupService.isInitialized) {
+        await fileCleanupService.deleteMediaFileCompletely(mediaItem.path);
+      } else {
+        // 如果清理服务未初始化，使用传统方法删除
+        final file = File(mediaItem.path);
+        if (await file.exists()) {
+          await file.delete();
+        }
       }
       
       _mediaCache.removeWhere((item) => item.id == mediaItem.id);

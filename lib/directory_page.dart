@@ -12,6 +12,7 @@ import 'package:path_provider/path_provider.dart';
 import 'dart:async'; // For Timer
 import 'package:path/path.dart' as path;
 import 'services/image_picker_service.dart';
+import 'services/file_cleanup_service.dart';
 import 'package:archive/archive_io.dart';
 
 class DirectoryPage extends StatefulWidget {
@@ -1000,11 +1001,31 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     if (confirmDelete) {
       try {
         String? parentFolder = _currentParentFolder;
+        
+        // 使用文件清理服务彻底删除文档文件
+        try {
+          final fileCleanupService = getService<FileCleanupService>();
+          if (fileCleanupService.isInitialized) {
+            await fileCleanupService.deleteDocumentCompletely(documentName);
+          }
+        } catch (e) {
+          print('文件清理服务删除文档失败: $e');
+        }
+        
+        // 从数据库中删除
         await getService<DatabaseService>().deleteDocument(documentName, parentFolder: parentFolder);
+        
         if (mounted) {
           setState(() {
             _items.removeWhere((item) => item.type == ItemType.document && item.name == documentName);
           });
+          
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('已删除文档 "$documentName" 并释放存储空间'),
+              backgroundColor: Colors.green,
+            ),
+          );
         }
       } catch (e) {
         print('Error deleting document: $e');
@@ -1022,12 +1043,28 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     if (confirmDelete) {
       try {
         String? parentFolder = _currentParentFolder;
+        
+        // 使用文件清理服务彻底删除文件夹
+        try {
+          final fileCleanupService = getService<FileCleanupService>();
+          if (fileCleanupService.isInitialized) {
+            await fileCleanupService.deleteFolderCompletely(folderName);
+          }
+        } catch (e) {
+          print('文件清理服务删除文件夹失败: $e');
+        }
+        
+        // 从数据库中删除
         await getService<DatabaseService>().deleteFolder(folderName, parentFolder: parentFolder);
+        
         if (mounted) {
           // 删除后重新加载数据，确保界面和数据库状态一致
           await _loadData();
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('文件夹 "$folderName" 已删除')),
+            SnackBar(
+              content: Text('文件夹 "$folderName" 已删除并释放存储空间'),
+              backgroundColor: Colors.green,
+            ),
           );
         }
       } catch (e) {
