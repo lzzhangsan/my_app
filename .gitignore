@@ -51,3 +51,22 @@ android/.gradle/
 **/*.jar
 android/build/
 android/app/build/
+
+# Flutter build artifacts and large files
+**/build/
+**/*.apk
+**/*.aab
+**/*.so
+**/*.dll
+**/*.dylib
+**/*.bin
+**/*.dill
+**/kernel_blob.bin
+**/app.dill
+**/libflutter.so
+**/libVkLayer_khronos_validation.so
+
+# Gradle wrapper and distribution files
+**/gradle-*.zip
+**/gradle-*/
+**/.gradle/
