@@ -2170,10 +2170,11 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   Future<void> _exportAllMediaData() async {
     final progress = ValueNotifier<double>(0);
     final message = ValueNotifier<String>('准备中...');
+    
     try {
       showProgressDialog(context, progress, message);
 
-      // 1. 获取所有媒体项的数据库记录
+      // 1. 获取所有媒体项的数据库记录（分批处理）
       message.value = '正在查询媒体文件...';
       final allMediaItems = await _databaseService.getAllMediaItems();
       if (allMediaItems.isEmpty) {
@@ -2198,39 +2199,82 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       final String timestamp = DateTime.now().toIso8601String().replaceAll(':', '-');
       final zipFilePath = path.join(backupPath, 'media_backup_$timestamp.zip');
       
-      // 3. 使用流式ZipFileEncoder，直接打包原始文件，避免临时拷贝
+      // 3. 使用流式ZIP处理，避免内存溢出
+      message.value = '正在创建压缩包...';
       final encoder = ZipFileEncoder();
       encoder.create(zipFilePath);
       
       int totalFiles = allMediaItems.length;
       int processedFiles = 0;
-
+      int totalSize = 0;
+      
+      // 计算总大小用于进度显示
       for (final item in allMediaItems) {
         final mediaFile = File(item['path']);
         if (await mediaFile.exists()) {
-          final relativePath = 'media/${item['path'].split('/').last}';
-          await encoder.addFile(mediaFile, relativePath);
-          processedFiles++;
-          progress.value = (processedFiles / totalFiles) * 0.9; // 90% for files
-          message.value = '正在压缩: $processedFiles/$totalFiles';
-        } else {
-          print('警告: 文件不存在，跳过导出: ${item['path']}');
-          totalFiles--; // 更新总数以保证进度条准确
+          totalSize += await mediaFile.length();
+        }
+      }
+      
+      int processedSize = 0;
+      
+      // 分批处理文件，避免内存溢出
+      const int batchSize = 10; // 每批处理10个文件
+      for (int i = 0; i < allMediaItems.length; i += batchSize) {
+        final endIndex = math.min(i + batchSize, allMediaItems.length);
+        final batch = allMediaItems.sublist(i, endIndex);
+        
+        for (final item in batch) {
+          try {
+            final mediaFile = File(item['path']);
+            if (await mediaFile.exists()) {
+              final fileName = path.basename(item['path']);
+              final relativePath = 'media/$fileName';
+              
+              // 使用ZipFileEncoder的addFile方法，它会自动处理流式写入
+              await encoder.addFile(mediaFile, relativePath);
+              
+              processedFiles++;
+              processedSize += await mediaFile.length();
+              progress.value = (processedSize / totalSize) * 0.8; // 80% for files
+              message.value = '正在压缩: $processedFiles/$totalFiles (${_formatFileSize(processedSize)}/${_formatFileSize(totalSize)})';
+              
+              // 定期清理内存
+              if (processedFiles % 50 == 0) {
+                await Future.delayed(Duration(milliseconds: 50));
+              }
+            } else {
+              print('警告: 文件不存在，跳过导出: ${item['path']}');
+              totalFiles--; // 更新总数以保证进度条准确
+            }
+          } catch (e) {
+            print('导出文件失败: ${item['path']}, 错误: $e');
+            // 继续处理其他文件
+          }
+        }
+        
+        // 每批处理完后稍作延迟，让系统有时间进行内存管理
+        if (endIndex < allMediaItems.length) {
+          await Future.delayed(Duration(milliseconds: 100));
         }
       }
       
       // 4. 导出数据库和设置文件
       message.value = '正在导出数据库...';
       final mediaItemsJson = jsonEncode(allMediaItems);
-      encoder.addArchiveFile(ArchiveFile('media_items.json', mediaItemsJson.length, utf8.encode(mediaItemsJson)));
-      progress.value = 0.95;
+      final mediaItemsBytes = utf8.encode(mediaItemsJson);
+      final mediaItemsFile = ArchiveFile('media_items.json', mediaItemsBytes.length, mediaItemsBytes);
+      encoder.addArchiveFile(mediaItemsFile);
+      progress.value = 0.85;
 
       message.value = '正在导出设置...';
       final prefs = await SharedPreferences.getInstance();
       final mediaVisible = prefs.getBool('media_visible') ?? true;
       final settingsJson = jsonEncode({'media_visible': mediaVisible});
-      encoder.addArchiveFile(ArchiveFile('media_settings.json', settingsJson.length, utf8.encode(settingsJson)));
-      progress.value = 0.98;
+      final settingsBytes = utf8.encode(settingsJson);
+      final settingsFile = ArchiveFile('media_settings.json', settingsBytes.length, settingsBytes);
+      encoder.addArchiveFile(settingsFile);
+      progress.value = 0.9;
 
       // 5. 完成打包
       message.value = '正在完成...';
@@ -2260,6 +2304,14 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         );
       }
     }
+  }
+
+  // 格式化文件大小的辅助方法
+  String _formatFileSize(int bytes) {
+    if (bytes < 1024) return '${bytes}B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)}KB';
+    if (bytes < 1024 * 1024 * 1024) return '${(bytes / (1024 * 1024)).toStringAsFixed(1)}MB';
+    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)}GB';
   }
 
   Future<void> _importAllMediaData() async {
@@ -2413,18 +2465,77 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     }
   }
 
-  // 递归拷贝目录（修正版，递归所有子目录和文件）
+  // 优化后的递归拷贝目录方法 - 使用流式处理避免内存溢出，支持大文件
   Future<void> _copyDirectory(Directory src, Directory dst) async {
     if (!await dst.exists()) await dst.create(recursive: true);
-    await for (var entity in src.list(recursive: true)) { // 递归所有子目录
+    
+    int totalFiles = 0;
+    int processedFiles = 0;
+    
+    // 首先计算总文件数
+    await for (var entity in src.list(recursive: true)) {
+      if (entity is File) totalFiles++;
+    }
+    
+    // 然后执行实际的复制操作
+    await for (var entity in src.list(recursive: true)) {
       final relativePath = path.relative(entity.path, from: src.path);
       final newPath = path.join(dst.path, relativePath);
+      
       if (entity is Directory) {
         await Directory(newPath).create(recursive: true);
       } else if (entity is File) {
-        await File(newPath).create(recursive: true);
-        await entity.copy(newPath);
+        try {
+          await File(newPath).create(recursive: true);
+          
+          // 使用流式复制，避免内存溢出
+          final sourceFile = File(entity.path);
+          final targetFile = File(newPath);
+          
+          if (await sourceFile.exists()) {
+            final fileSize = await sourceFile.length();
+            
+            // 对于大文件（超过10MB），使用分块复制
+            if (fileSize > 10 * 1024 * 1024) {
+              await _copyLargeFile(sourceFile, targetFile);
+            } else {
+              // 小文件直接复制
+              await sourceFile.copy(newPath);
+            }
+          }
+          
+          processedFiles++;
+          
+          // 每处理10个文件后稍作延迟，让系统有时间进行内存管理
+          if (processedFiles % 10 == 0) {
+            await Future.delayed(Duration(milliseconds: 50));
+          }
+          
+        } catch (e) {
+          print('复制文件失败: ${entity.path} -> $newPath, 错误: $e');
+          // 继续处理其他文件
+        }
       }
+    }
+  }
+
+  // 分块复制大文件，避免内存溢出
+  Future<void> _copyLargeFile(File source, File target) async {
+    const int chunkSize = 64 * 1024; // 64KB chunks
+    final sourceStream = source.openRead();
+    final targetStream = target.openWrite();
+    
+    try {
+      await for (final chunk in sourceStream) {
+        targetStream.add(chunk);
+        
+        // 每处理一定大小的数据后稍作延迟
+        if (chunk.length > 0) {
+          await Future.delayed(Duration(milliseconds: 1));
+        }
+      }
+    } finally {
+      await targetStream.close();
     }
   }
 
