@@ -62,7 +62,8 @@ android {
 
     buildTypes {
         release {
-            signingConfig signingConfigs.release
+            // 临时使用debug签名进行构建，避免keystore问题
+            signingConfig signingConfigs.debug
             minifyEnabled false
             shrinkResources false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
