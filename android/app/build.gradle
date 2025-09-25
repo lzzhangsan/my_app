@@ -6,11 +6,11 @@ plugins {
     id 'dev.flutter.flutter-gradle-plugin'
 }
 
-// 强制禁用路径检查
+// Force-disable Gradle path check for long paths
 project.ext.set("android.overridePathCheck", true)
 System.setProperty("android.overridePathCheck", "true")
 
-// 读取签名配置
+// Load keystore configuration if available
 def keystoreProperties = new Properties()
 def keystorePropertiesFile = rootProject.file('key.properties')
 if (keystorePropertiesFile.exists()) {
@@ -20,7 +20,7 @@ if (keystorePropertiesFile.exists()) {
 android {
     namespace "com.example.change_copy2"
     compileSdk 36
-        ndkVersion "26.1.10909125"  // 使用更新的 NDK 版本
+    ndkVersion "26.1.10909125"  // Use a recent NDK build
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
@@ -61,7 +61,7 @@ android {
 
     buildTypes {
         release {
-            // 临时使用debug签名进行构建，避免keystore问题
+            // Use the debug keystore for now to avoid signing blockers
             signingConfig signingConfigs.debug
             minifyEnabled false
             shrinkResources false
@@ -70,7 +70,7 @@ android {
     }
 }
 
-// 配置APK输出路径
+// Place APK outputs under build/app/outputs/apk/{variant}
 android.applicationVariants.all { variant ->
     variant.outputs.all {
         outputFileName = "app-${variant.name}.apk"
@@ -84,18 +84,18 @@ android.applicationVariants.all { variant ->
 
 
 dependencies {
-    implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.9.10"  // 更新Kotlin版本
+    implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.9.10"  // Align Kotlin runtime
     implementation 'com.google.android.material:material:1.9.0'
     implementation 'androidx.multidex:multidex:2.0.1'
-    // Flutter 插件会自动管理其他依赖项
+    // Flutter plugins will pull the remaining dependencies automatically
     implementation "com.github.bumptech.glide:glide:4.15.1"
     annotationProcessor "com.github.bumptech.glide:compiler:4.15.1"
-    implementation "androidx.webkit:webkit:1.9.0"  // 添加 WebView 支持
+    implementation "androidx.webkit:webkit:1.9.0"  // Enable WebView features
 }
 
-// Flutter Gradle 插件已在 plugins 块中声明，无需重复应用
+// Flutter Gradle plugin already declared in the plugins block
 
-// 添加国内镜像源
+// Add mainland China mirror repositories for faster sync
 allprojects {
     repositories {
         maven { url 'https://maven.aliyun.com/repository/google' }
@@ -107,46 +107,11 @@ allprojects {
     }
 }
 
-// 修复photo_manager插件的Kotlin版本问题
+// Keep Kotlin stdlib pinned to avoid photo_manager mismatches
 configurations.all {
     resolutionStrategy {
         force 'org.jetbrains.kotlin:kotlin-stdlib:1.9.10'
         force 'org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.9.10'
         force 'org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.9.10'
     }
-}
-
-
-def patchGeneratedPluginRegistrantAction = {
-    File registrant = file("$projectDir/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java")
-    if (!registrant.exists()) {
-        return
-    }
-    String originalLine = "      flutterEngine.getPlugins().add(new io.flutter.plugins.videoplayer.VideoPlayerPlugin());"
-    String content = registrant.getText("UTF-8")
-    if (!content.contains(originalLine)) {
-        return
-    }
-    String replacement = """      try {
-        Class<?> pluginClass = Class.forName("io.flutter.plugins.videoplayer.VideoPlayerPlugin");
-        Object plugin = pluginClass.getDeclaredConstructor().newInstance();
-        if (plugin instanceof io.flutter.embedding.engine.plugins.FlutterPlugin) {
-          flutterEngine.getPlugins().add((io.flutter.embedding.engine.plugins.FlutterPlugin) plugin);
-        } else {
-          Log.w(TAG, "video_player_android plugin is present but does not implement FlutterPlugin.");
-        }
-      } catch (ClassNotFoundException e) {
-        Log.w(TAG, "video_player_android plugin not found. It will be skipped.");
-      } catch (Exception e) {
-        Log.e(TAG, "Error registering plugin video_player_android via reflection.", e);
-      }"""
-    registrant.setText(content.replace(originalLine, replacement), "UTF-8")
-}
-
-tasks.register("patchGeneratedPluginRegistrant") {
-    doLast patchGeneratedPluginRegistrantAction
-}
-
-tasks.withType(JavaCompile).configureEach {
-    doFirst patchGeneratedPluginRegistrantAction
 }

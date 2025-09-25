@@ -1,59 +1,56 @@
-name: change_copy  # 项目标识名，可以保持不变或改为 change
+name: change_copy  # Project identifier; keep unchanged for compatibility
 description: "A second copy of the original app."
 publish_to: 'none'
 
 version: 1.0.0+3
 
 environment:
-  sdk: ">=2.17.0 <3.0.0"
+  sdk: ">=3.7.0 <4.0.0"
 
 dependencies:
   flutter:
     sdk: flutter
   font_awesome_flutter: ^10.1.0
   cupertino_icons: ^1.0.2
-  uuid: ^3.0.4  # 调整为 3.0.4（之前的代码使用此版本）
+  uuid: ^3.0.4  # Matches legacy data assumptions
   shared_preferences: ^2.3.2
-  path_provider: ^2.0.0  # 调整为 2.0.0
-  permission_handler: ^11.3.0  # 添加权限处理包
+  path_provider: ^2.0.0  # Keep aligned with existing path helpers
+  permission_handler: ^11.3.0  # Runtime permission handling
   device_info_plus: ^11.3.0
-  sqflite: ^2.0.0+4  # 调整为 2.0.0+4
-  path: ^1.8.0  # 调整为 1.8.0
-  image_picker: ^1.2.0  # 更新到最新版本以解决兼容性问题
+  sqflite: ^2.0.0+4  # Stable with current SQL schema
+  path: ^1.8.0
+  image_picker: ^1.2.0  # Latest compatible picker
   photo_manager: ^3.5.1
-  video_player: 2.9.3
+  video_player: ^2.10.0
   url_launcher: ^6.2.5
   video_thumbnail: ^0.5.3
-  chewie: ^1.7.1  # 添加chewie视频播放UI组件
-  flutter_colorpicker: ^1.0.3  # 调整为 1.0.3
+  chewie: ^1.7.1  # Material video controls
+  flutter_colorpicker: ^1.0.3
   archive: ^4.0.4
   file_picker: ^9.0.2
   share_plus: ^10.1.1
   win32: ^5.8.0
   audioplayers: ^6.4.0
   record: ^5.2.1
-  crypto: ^3.0.3  # 添加crypto包用于生成哈希值
-  webview_flutter: ^4.4.4  # 添加WebView支持
-  flutter_downloader: ^1.11.6  # 添加文件下载支持
-  http: ^1.2.0  # 添加HTTP请求支持
-  dio: ^5.4.0  # 添加Dio网络请求库支持
+  crypto: ^3.0.3  # Hash utilities
+  webview_flutter: ^4.4.4
+  flutter_downloader: ^1.11.6
+  http: ^1.2.0
+  dio: ^5.4.0
   reorderable_grid_view: ^2.2.8
-  teledart: 0.6.1  # Telegram Bot API 客户端
-  html: ^0.15.4  # HTML 解析支持
-  mime: ^1.0.4  # MIME 类型检测
+  teledart: 0.6.1  # Telegram bot client
+  html: ^0.15.4
+  mime: ^1.0.4
   intl: ^0.18.1
   flutter_svg: ^2.0.10
-  flutter_background_service: ^5.0.5  # 添加后台服务支持
-  flutter_background_service_android: ^6.2.2  # Android平台后台服务
+  flutter_background_service: ^5.0.5
+  flutter_background_service_android: ^6.2.2
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^5.0.0
   flutter_launcher_icons: ^0.14.1
-
-dependency_overrides:
-  video_player_android: 2.7.16
 
 flutter:
   uses-material-design: true
@@ -77,23 +74,8 @@ flutter:
     - assets/icon/mood_surprised.svg
     - assets/icon/mood_neutral.svg
 
-  # To add custom fonts to your application, add a fonts section here,
-  # in this "flutter" section. Each entry in this list should have a
-  # "family" key with the font family name, and a "fonts" key with a
-  # list giving the asset and other descriptors for the font. For
-  # example:
-  # fonts:
-  #   - family: Schyler
-  #     fonts:
-  #       - asset: fonts/Schyler-Regular.ttf
-  #       - asset: fonts/Schyler-Italic.ttf
-  #         style: italic
-  #   For details regarding fonts from package dependencies,
-  #   see https://flutter.dev/custom-fonts/#from-packages
-
 flutter_icons:
   android: true
   ios: true
   image_path: "assets/icon/icon.png"
-  remove_alpha_ios: true  # 添加此行以移除 iOS 图标的 alpha 通道
-
+  remove_alpha_ios: true
