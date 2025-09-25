@@ -19,9 +19,8 @@ if (keystorePropertiesFile.exists()) {
 
 android {
     namespace "com.example.change_copy2"
-    compileSdk 35
-    buildToolsVersion "34.0.0" // 明确指定 buildToolsVersion
-    ndkVersion "26.1.10909125"  // 使用更新的 NDK 版本
+    compileSdk 36
+        ndkVersion "26.1.10909125"  // 使用更新的 NDK 版本
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
@@ -42,7 +41,7 @@ android {
         // You can update the following values to match your application needs.
         // For more information, see: https://docs.flutter.dev/deployment/android#reviewing-the-gradle-build-configuration.
         minSdkVersion 24
-        targetSdkVersion 35
+        targetSdkVersion 36
         versionCode 1
         versionName "1.0"
 
@@ -117,3 +116,37 @@ configurations.all {
     }
 }
 
+
+def patchGeneratedPluginRegistrantAction = {
+    File registrant = file("$projectDir/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java")
+    if (!registrant.exists()) {
+        return
+    }
+    String originalLine = "      flutterEngine.getPlugins().add(new io.flutter.plugins.videoplayer.VideoPlayerPlugin());"
+    String content = registrant.getText("UTF-8")
+    if (!content.contains(originalLine)) {
+        return
+    }
+    String replacement = """      try {
+        Class<?> pluginClass = Class.forName("io.flutter.plugins.videoplayer.VideoPlayerPlugin");
+        Object plugin = pluginClass.getDeclaredConstructor().newInstance();
+        if (plugin instanceof io.flutter.embedding.engine.plugins.FlutterPlugin) {
+          flutterEngine.getPlugins().add((io.flutter.embedding.engine.plugins.FlutterPlugin) plugin);
+        } else {
+          Log.w(TAG, "video_player_android plugin is present but does not implement FlutterPlugin.");
+        }
+      } catch (ClassNotFoundException e) {
+        Log.w(TAG, "video_player_android plugin not found. It will be skipped.");
+      } catch (Exception e) {
+        Log.e(TAG, "Error registering plugin video_player_android via reflection.", e);
+      }"""
+    registrant.setText(content.replace(originalLine, replacement), "UTF-8")
+}
+
+tasks.register("patchGeneratedPluginRegistrant") {
+    doLast patchGeneratedPluginRegistrantAction
+}
+
+tasks.withType(JavaCompile).configureEach {
+    doFirst patchGeneratedPluginRegistrantAction
+}
