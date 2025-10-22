@@ -1,4 +1,4 @@
-﻿import 'dart:io';
+import 'dart:io';
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
@@ -38,6 +38,26 @@ class BrowserPage extends StatefulWidget {
 }
 
 class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClientMixin {
+
+  Future<String> _resolveFinalUrl(String url, {Map<String, String>? headers}) async {
+    try {
+      final dio = Dio(BaseOptions(
+        followRedirects: true,
+        maxRedirects: 5,
+        validateStatus: (s) => s != null && s < 400,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36',
+          ...?headers,
+        },
+      ));
+      final resp = await dio.head(url, options: Options(method: 'HEAD'));
+      final finalUrl = resp.realUri.toString();
+      return finalUrl.isNotEmpty ? finalUrl : url;
+    } catch (_) {
+      return url;
+    }
+  }
+
   @override
   bool get wantKeepAlive => true;
 
@@ -46,49 +66,47 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   bool _isLoading = false;
   double _loadingProgress = 0.0;
   String _currentUrl = 'https://www.baidu.com';
-  String _currentUserAgent =
-      'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36';
   late final DatabaseService _databaseService;
   List<Map<String, String>> _bookmarks = [];
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   final TelegramDownloadServiceV2 _telegramService = TelegramDownloadServiceV2.instance;
   
-  // 娣诲姞杞鐩稿叧鍙橀噺
+  // 添加轮询相关变量
   Timer? _telegramPollingTimer;
   int _lastUpdateId = 0;
   bool _isPollingActive = false;
   
-  // 娣诲姞宸蹭笅杞芥枃浠禝D闆嗗悎
+  // 添加已下载文件ID集合
   final Set<String> _downloadedFileIds = <String>{};
   static const String _downloadedFileIdsKey = 'telegram_downloaded_file_ids';
 
   bool _showHomePage = true;
   bool _isBrowsingWebPage = false;
 
-  // 娣诲姞瑙嗛涓嬭浇杩涘害鍜岀姸鎬佺殑ValueNotifier
+  // 添加视频下载进度和状态的ValueNotifier
   ValueNotifier<double?> _videoDownloadProgress = ValueNotifier(null);
   ValueNotifier<bool> _isDownloadingVideo = ValueNotifier(false);
 
-  // 1. 鏂板鍘嗗彶璁板綍鍙橀噺
+  // 1. 新增历史记录变量
   List<Map<String, dynamic>> _history = [];
 
   Future<void> _launchExternalApp(String url) async {
-    debugPrint('灏濊瘯鍚姩澶栭儴搴旂敤: $url');
+    debugPrint('尝试启动外部应用: $url');
     try {
       final Uri uri = Uri.parse(url);
       if (await canLaunchUrl(uri)) {
         await launchUrl(uri, mode: LaunchMode.externalApplication);
-        debugPrint('鎴愬姛鍚姩澶栭儴搴旂敤');
+        debugPrint('成功启动外部应用');
       } else {
-        debugPrint('鏃犳硶鍚姩澶栭儴搴旂敤: $url');
+        debugPrint('无法启动外部应用: $url');
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('鏃犳硶鎵撳紑: $url')),
+          SnackBar(content: Text('无法打开: $url')),
         );
       }
     } catch (e) {
-      debugPrint('鍚姩澶栭儴搴旂敤鏃跺嚭閿? $e');
+      debugPrint('启动外部应用时出错: $e');
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('鎵撳紑閾炬帴鏃跺嚭閿? $e')),
+        SnackBar(content: Text('打开链接时出错: $e')),
       );
     }
   }
@@ -98,30 +116,33 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   final List<Map<String, dynamic>> _commonWebsites = [
     {'name': 'Google', 'url': 'https://www.google.com', 'icon': Icons.search},
     {'name': 'Telegram', 'url': 'https://web.telegram.org', 'icon': Icons.send},
-    {'name': '鐧惧害', 'url': 'https://www.baidu.com', 'icon': Icons.search},
+    {'name': '百度', 'url': 'https://www.baidu.com', 'icon': Icons.search},
   ];
 
-  // 绉婚櫎缂栬緫妯″紡鐘舵€佸彉閲?  // bool _isEditMode = false;
+  // 移除编辑模式状态变量
+  // bool _isEditMode = false;
 
-  // 淇濈暀姝ゆ柟娉曚絾绠€鍖栧姛鑳斤紝鍥犱负鎴戜滑宸茬Щ闄ょ紪杈戞ā寮?  Future<void> _saveWebsites() async {
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('姝ｅ湪淇濆瓨甯哥敤缃戠珯...')));
+  // 保留此方法但简化功能，因为我们已移除编辑模式
+  Future<void> _saveWebsites() async {
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('正在保存常用网站...')));
     await _saveCommonWebsites();
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('甯哥敤缃戠珯宸蹭繚瀛?)));
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('常用网站已保存')));
   }
 
   Future<void> _removeWebsite(int index) async {
     final removedSite = _commonWebsites[index]['name'];
     setState(() => _commonWebsites.removeAt(index));
     await _saveCommonWebsites();
-    debugPrint('宸插垹闄ゅ苟淇濆瓨缃戠珯: $removedSite');
+    debugPrint('已删除并保存网站: $removedSite');
   }
 
   Future<void> _reorderWebsites(int oldIndex, int newIndex) async {
-    // 濡傛灉鏄坊鍔犵綉绔欐寜閽紝涓嶅厑璁告嫋鍔?    if (oldIndex >= _commonWebsites.length || newIndex > _commonWebsites.length) {
+    // 如果是添加网站按钮，不允许拖动
+    if (oldIndex >= _commonWebsites.length || newIndex > _commonWebsites.length) {
       return;
     }
     
-    // 璋冩暣newIndex锛屽洜涓篟eorderableGridView鐨刵ewIndex璁＄畻鏂瑰紡涓嶳eorderableListView涓嶅悓
+    // 调整newIndex，因为ReorderableGridView的newIndex计算方式与ReorderableListView不同
     if (newIndex > _commonWebsites.length) newIndex = _commonWebsites.length;
     
     setState(() {
@@ -130,13 +151,13 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       _commonWebsites.insert(newIndex, item);
     });
     await _saveCommonWebsites();
-    debugPrint('宸茬Щ鍔ㄥ苟淇濆瓨缃戠珯浠庝綅缃?$oldIndex 鍒?$newIndex');
+    debugPrint('已移动并保存网站从位置 $oldIndex 到 $newIndex');
   }
 
   Future<void> _addWebsite(String name, String url, IconData icon) async {
     setState(() => _commonWebsites.add({'name': name, 'url': url, 'iconCode': icon.codePoint}));
     await _saveCommonWebsites();
-    debugPrint('宸叉坊鍔犲苟绔嬪嵆淇濆瓨缃戠珯: $name');
+    debugPrint('已添加并立即保存网站: $name');
   }
 
   @override
@@ -151,15 +172,16 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     _loadHistory();
   }
   
-  /// 鍒濆鍖?Telegram 鏈嶅姟
+  /// 初始化 Telegram 服务
   Future<void> _initializeTelegramService() async {
     await _telegramService.initialize();
     
-    // 鍔犺浇宸蹭笅杞界殑鏂囦欢ID鍜屾渶鍚庢洿鏂癐D
+    // 加载已下载的文件ID和最后更新ID
     await _loadDownloadedFileIds();
     await _loadLastUpdateId();
     
-    // 濡傛灉宸查厤缃瓸ot Token锛屽惎鍔ㄨ疆璇?    if (_telegramService.isConfigured) {
+    // 如果已配置Bot Token，启动轮询
+    if (_telegramService.isConfigured) {
       await _startTelegramPolling();
     }
   }
@@ -171,19 +193,19 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
   Future<void> _requestPermissions() async {
     var storageStatus = await Permission.storage.request();
-    debugPrint('瀛樺偍鏉冮檺鐘舵€? $storageStatus');
+    debugPrint('存储权限状态: $storageStatus');
     if (Platform.isAndroid) {
       var manageStorageStatus = await Permission.manageExternalStorage.request();
-      debugPrint('绠＄悊澶栭儴瀛樺偍鏉冮檺鐘舵€? $manageStorageStatus');
+      debugPrint('管理外部存储权限状态: $manageStorageStatus');
     }
     var recordStatus = await Permission.microphone.request();
-    debugPrint('褰曢煶鏉冮檺鐘舵€? $recordStatus');
+    debugPrint('录音权限状态: $recordStatus');
   }
 
   void _initializeWebView() {
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setUserAgent(_currentUserAgent)
+      ..setUserAgent('Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36')
       ..setBackgroundColor(const Color(0x00000000))
       ..runJavaScript('''
         document.body.style.overflowX = 'hidden';
@@ -206,18 +228,18 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
             });
           },
           onPageFinished: _onPageFinished,
-          onWebResourceError: (error) => debugPrint('WebView閿欒: ${error.description}'),
+          onWebResourceError: (error) => debugPrint('WebView错误: ${error.description}'),
           onNavigationRequest: (NavigationRequest request) {
             final url = request.url;
-            debugPrint('瀵艰埅璇锋眰: $url');
+            debugPrint('导航请求: $url');
             if (_isDownloadableLink(url) || _isTelegramMediaLink(url) || _isYouTubeLink(url)) {
-              debugPrint('妫€娴嬪埌鍙兘鐨勪笅杞介摼鎺? $url');
+              debugPrint('检测到可能的下载链接: $url');
               _handleDownload(url, '', _guessMimeType(url));
               return NavigationDecision.prevent;
             }
-            // 澶勭悊鑷畾涔塙RL鍗忚
+            // 处理自定义URL协议
             if (!url.startsWith('http://') && !url.startsWith('https://')) {
-              debugPrint('妫€娴嬪埌鑷畾涔塙RL鍗忚: $url');
+              debugPrint('检测到自定义URL协议: $url');
               _launchExternalApp(url);
               return NavigationDecision.prevent;
             }
@@ -228,19 +250,14 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       ..addJavaScriptChannel(
         'Flutter',
         onMessageReceived: (JavaScriptMessage message) {
-          debugPrint('鏉ヨ嚜JavaScript鐨勬秷鎭? ${message.message}');
+          debugPrint('来自JavaScript的消息: ${message.message}');
           _handleJavaScriptMessage(message.message);
         },
       );
   }
 
-  void _setUserAgent(String ua) {
-    _currentUserAgent = ua;
-    _controller.setUserAgent(ua);
-  }
-
   bool _isTelegramMediaLink(String url) {
-    // 鎺掗櫎blob閾炬帴锛岃鍏剁敱JavaScript澶勭悊
+    // 排除blob链接，让其由JavaScript处理
     if (url.startsWith('blob:')) return false;
     
     final telegramMediaPatterns = [
@@ -276,7 +293,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   final Set<String> _processedUrls = {};
 
   void _injectDownloadHandlers() {
-    debugPrint('涓烘墍鏈夌綉绔欐敞鍏ヨ秴寮哄獟浣撲笅杞藉鐞嗙▼搴?- 95%鎴愬姛鐜囩増鏈?);
+    debugPrint('为所有网站注入超强媒体下载处理程序 - 95%成功率版本');
     _controller.runJavaScript('''
       window.MediaInterceptor = window.MediaInterceptor || {
         processedUrls: new Set(),
@@ -289,29 +306,31 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         dynamicContent: new Set()
       };
 
-      // 澧炲己鐨凚lob URL妫€娴?      function isBlobUrl(url) {
+      // 增强的Blob URL检测
+      function isBlobUrl(url) {
         return url && typeof url === 'string' && url.startsWith('blob:');
       }
 
-      // 澧炲己鐨勫獟浣揢RL妫€娴?- 鏀寔鏇村鏍煎紡鍜屾ā寮?      function isMediaUrl(url) {
+      // 增强的媒体URL检测 - 支持更多格式和模式
+      function isMediaUrl(url) {
         if (!url) return false;
         
-        // 鎵╁睍鐨勫獟浣撴枃浠舵墿灞曞悕
+        // 扩展的媒体文件扩展名
         const mediaExtensions = [
-          // 鍥剧墖鏍煎紡
+          // 图片格式
           '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg', '.ico', '.tiff', '.tif', '.heic', '.heif',
-          // 瑙嗛鏍煎紡
+          // 视频格式
           '.mp4', '.webm', '.mov', '.avi', '.mkv', '.flv', '.wmv', '.m3u8', '.ts', '.m4v', '.3gp', '.ogv',
-          // 闊抽鏍煎紡
+          // 音频格式
           '.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac', '.wma', '.opus'
         ];
         
         const lowerUrl = url.toLowerCase();
         
-        // 妫€鏌ユ枃浠舵墿灞曞悕
+        // 检查文件扩展名
         if (mediaExtensions.some(ext => lowerUrl.includes(ext))) return true;
         
-        // 妫€鏌RL妯″紡
+        // 检查URL模式
         const mediaPatterns = [
           'image', 'video', 'audio', 'media', 'photo', 'picture', 'thumbnail', 'preview',
           'cdn', 'static', 'assets', 'uploads', 'files', 'content', 'stream', 'play',
@@ -321,7 +340,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         
         if (mediaPatterns.some(pattern => lowerUrl.includes(pattern))) return true;
         
-        // 妫€鏌ユ煡璇㈠弬鏁?        const mediaParams = ['image', 'video', 'audio', 'media', 'file', 'download'];
+        // 检查查询参数
+        const mediaParams = ['image', 'video', 'audio', 'media', 'file', 'download'];
         const urlParams = new URLSearchParams(url.split('?')[1] || '');
         for (const param of mediaParams) {
           if (urlParams.has(param)) return true;
@@ -330,12 +350,12 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         return false;
       }
 
-      // 澧炲己鐨凚lob URL瑙ｆ瀽
+      // 增强的Blob URL解析
       async function resolveBlobUrl(blobUrl, mediaType) {
         try {
-          console.log('姝ｅ湪瑙ｆ瀽Blob URL:', blobUrl);
+          console.log('正在解析Blob URL:', blobUrl);
           
-          // 灏濊瘯澶氱鏂规硶鑾峰彇blob鍐呭
+          // 尝试多种方法获取blob内容
           let response;
           try {
             response = await fetch(blobUrl, { 
@@ -349,8 +369,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
               credentials: 'omit'
             });
           } catch (fetchError) {
-            console.log('Fetch澶辫触锛屽皾璇昘MLHttpRequest:', fetchError);
-            // 澶囩敤鏂规硶锛氫娇鐢╔MLHttpRequest
+            console.log('Fetch失败，尝试XMLHttpRequest:', fetchError);
+            // 备用方法：使用XMLHttpRequest
             response = await new Promise((resolve, reject) => {
               const xhr = new XMLHttpRequest();
               xhr.open('GET', blobUrl, true);
@@ -384,50 +404,59 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         }
       }
 
-      // 娣卞害鎵弿DOM鏍戞煡鎵惧獟浣撳厓绱?      function deepScanForMediaElements(root = document) {
+      // 深度扫描DOM树查找媒体元素
+      function deepScanForMediaElements(root = document) {
         const mediaElements = [];
         
-        // 閫掑綊鎵弿鍑芥暟
+        // 递归扫描函数
         function scanNode(node) {
           if (!node) return;
           
-          // 妫€鏌hadow DOM
+          // 检查Shadow DOM
           if (node.shadowRoot) {
             scanNode(node.shadowRoot);
           }
           
-          // 妫€鏌frame鍐呭
+          // 检查iframe内容
           if (node.tagName === 'IFRAME' && node.contentDocument) {
             try {
               scanNode(node.contentDocument);
             } catch (e) {
-              console.log('鏃犳硶璁块棶iframe鍐呭:', e);
+              console.log('无法访问iframe内容:', e);
             }
           }
           
-          // 妫€鏌ュ綋鍓嶈妭鐐?          const tagName = node.tagName ? node.tagName.toLowerCase() : '';
+          // 检查当前节点
+          const tagName = node.tagName ? node.tagName.toLowerCase() : '';
           const nodeName = node.nodeName ? node.nodeName.toLowerCase() : '';
           
-          // 濯掍綋鍏冪礌妫€娴?          if (['img', 'video', 'audio', 'source', 'picture'].includes(tagName)) {
+          // 媒体元素检测
+          if (['img', 'video', 'audio', 'source', 'picture'].includes(tagName)) {
             mediaElements.push(node);
           }
           
-          // 閾炬帴鍏冪礌妫€娴?          if (tagName === 'a' && node.href && isMediaUrl(node.href)) {
+          // 链接元素检测
+          if (tagName === 'a' && node.href && isMediaUrl(node.href)) {
             mediaElements.push(node);
           }
           
-          // 鑳屾櫙鍥剧墖妫€娴嬶紙computed style锛?          try {
-            const style = window.getComputedStyle(node);
-            const bgImage = style && style.backgroundImage;
-            if (bgImage && bgImage !== 'none' && bgImage.includes('url(')) {
-              const urlMatch = bgImage.match(/url\(['"]?([^'"\)]+)['"]?\)/);
+          // 背景图片检测
+          if (node.style && node.style.backgroundImage) {
+            const bgImage = node.style.backgroundImage;
+            if (bgImage !== 'none' && bgImage.includes('url(')) {
+              const urlMatch = bgImage.match(/url\(['"]?([^'")]+)['"]?\)/);
               if (urlMatch && isMediaUrl(urlMatch[1])) {
-                mediaElements.push({ tagName: 'div', href: urlMatch[1] });
+                mediaElements.push({
+                  tagName: 'div',
+                  href: urlMatch[1],
+                  style: { backgroundImage: bgImage }
+                });
               }
             }
-          } catch (_) {}
+          }
           
-          // 閫掑綊鎵弿瀛愯妭鐐?          if (node.childNodes) {
+          // 递归扫描子节点
+          if (node.childNodes) {
             for (const child of node.childNodes) {
               scanNode(child);
             }
@@ -438,7 +467,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         return mediaElements;
       }
 
-      // 鐩戝惉鍔ㄦ€佸唴瀹瑰彉鍖?      function observeDynamicContent() {
+      // 监听动态内容变化
+      function observeDynamicContent() {
         const observer = new MutationObserver((mutations) => {
           mutations.forEach((mutation) => {
             mutation.addedNodes.forEach((node) => {
@@ -462,9 +492,81 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         return observer;
       }
 
-      // 鍙栨秷鍏ㄥ眬XHR鎷︽埅锛岄伩鍏嶈鍒ゅ拰鎬ц兘闂
+      (function() {
+        const originalXHROpen = XMLHttpRequest.prototype.open;
+        XMLHttpRequest.prototype.open = function(method, url, async, user, password) {
+          this._interceptedUrl = url;
+          this._interceptedMethod = method;
+          return originalXHROpen.apply(this, arguments);
+        };
 
-      // 鍙栨秷鍏ㄥ眬Fetch鎷︽埅锛岄伩鍏嶈鍒ゅ拰鎬ц兘闂
+        const originalXHRSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.send = function(data) {
+          const xhr = this;
+          const url = this._interceptedUrl;
+          if (isMediaUrl(url)) {
+            console.log('拦截到媒体请求 (XHR):', url);
+            window.MediaInterceptor.interceptedRequests.set(url, {
+              method: this._interceptedMethod,
+              timestamp: Date.now(),
+              type: 'xhr'
+            });
+            if (!window.MediaInterceptor.processedUrls.has(url)) {
+              window.MediaInterceptor.processedUrls.add(url);
+              Flutter.postMessage(JSON.stringify({
+                type: 'media',
+                mediaType: 'video',
+                url: url,
+                isBase64: false,
+                source: 'xhr_intercept',
+                action: 'download'
+              }));
+            }
+          }
+          const originalOnLoad = this.onload;
+          this.onload = function() {
+            if (isMediaUrl(url) && this.response) console.log('媒体请求完成 (XHR):', url);
+            if (originalOnLoad) originalOnLoad.apply(this, arguments);
+          };
+          return originalXHRSend.apply(this, arguments);
+        };
+      })();
+
+      (function() {
+        const originalFetch = window.fetch;
+        window.fetch = async function(input, init) {
+          const url = typeof input === 'string' ? input : input.url;
+          if (isMediaUrl(url)) {
+            console.log('拦截到媒体请求 (Fetch):', url);
+            window.MediaInterceptor.interceptedRequests.set(url, {
+              method: (init && init.method) || 'GET',
+              timestamp: Date.now(),
+              type: 'fetch'
+            });
+            if (!window.MediaInterceptor.processedUrls.has(url)) {
+              window.MediaInterceptor.processedUrls.add(url);
+              const response = await originalFetch.apply(this, arguments);
+              const ct = (response.headers.get('content-type') || '').toLowerCase();
+              if (response.ok && (ct.startsWith('video/') || ct.startsWith('image/') || ct.startsWith('audio/'))) {
+                const blob = await response.blob();
+                const blobUrl = URL.createObjectURL(blob);
+                const resolved = await resolveBlobUrl(blobUrl, response.headers.get('content-type')?.startsWith('image') ? 'image' : 'video');
+                if (resolved) {
+                  Flutter.postMessage(JSON.stringify({
+                    type: 'media',
+                    mediaType: resolved.mediaType || 'video',
+                    url: resolved.resolvedUrl,
+                    isBase64: resolved.isBase64,
+                    action: 'download'
+                  }));
+                }
+              }
+              return response;
+            }
+          }
+          return originalFetch.apply(this, arguments);
+        };
+      })();
 
       window.processedMediaUrls = window.MediaInterceptor.processedUrls;
 
@@ -492,7 +594,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         feedbackElement.style.transition = 'transform 0.5s, opacity 0.5s';
         feedbackElement.style.transform = 'scale(0.5)';
         feedbackElement.style.opacity = '0.7';
-        feedbackElement.innerText = '姝ｅ湪妫€娴嬪獟浣?..';
+        feedbackElement.innerText = '正在检测媒体...';
         document.body.appendChild(feedbackElement);
         setTimeout(() => {
           if (feedbackElement) {
@@ -523,13 +625,14 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         }
       }
 
-      // 澧炲己鐨勯暱鎸夋娴?- 鏀寔鏇村濯掍綋鍏冪礌绫诲瀷
+      // 增强的长按检测 - 支持更多媒体元素类型
       document.addEventListener('touchstart', function(e) {
-        // 瓒呭叏闈㈢殑濯掍綋鍏冪礌閫夋嫨鍣?- 95%鎴愬姛鐜?        const mediaSelectors = [
-          // 鐩存帴濯掍綋鍏冪礌
+        // 超全面的媒体元素选择器 - 95%成功率
+        const mediaSelectors = [
+          // 直接媒体元素
           'img[src]', 'video[src]', 'audio[src]', 'source[src]', 'picture source[srcset]',
           
-          // 閾炬帴鍏冪礌 - 鎵╁睍妯″紡鍖归厤
+          // 链接元素 - 扩展模式匹配
           'a[href*="progressive/document"]', 'a[href*="media"]', 'a[href*="video"]', 
           'a[href*="image"]', 'a[href*="photo"]', 'a[href*="picture"]', 'a[href*="download"]',
           'a[href*=".jpg"]', 'a[href*=".jpeg"]', 'a[href*=".png"]', 'a[href*=".gif"]', 
@@ -539,63 +642,68 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           'a[href*=".mp3"]', 'a[href*=".wav"]', 'a[href*=".ogg"]', 'a[href*=".m4a"]',
           'a[href*=".aac"]', 'a[href*=".flac"]', 'a[href*=".wma"]', 'a[href*=".opus"]',
           
-          // 绫诲悕鍖归厤
+          // 类名匹配
           '[class*="download"]', '[class*="media"]', '[class*="video"]', '[class*="image"]', 
           '[class*="photo"]', '[class*="picture"]', '[class*="thumbnail"]', '[class*="preview"]',
           '[class*="player"]', '[class*="stream"]', '[class*="content"]', '[class*="asset"]',
           
-          // ID鍖归厤
+          // ID匹配
           '[id*="download"]', '[id*="media"]', '[id*="video"]', '[id*="image"]', 
           '[id*="photo"]', '[id*="picture"]', '[id*="player"]', '[id*="stream"]',
           
-          // 鏁版嵁灞炴€у尮閰?          '[data-src]', '[data-href]', '[data-url]', '[data-media]', '[data-video]', '[data-image]',
+          // 数据属性匹配
+          '[data-src]', '[data-href]', '[data-url]', '[data-media]', '[data-video]', '[data-image]',
           '[data-original]', '[data-lazy-src]', '[data-srcset]', '[data-poster]',
           
-          // 瑙掕壊鍜屾爣绛惧尮閰?          'div[role="menuitem"][aria-label*="download"]', 'div[role="button"][aria-label*="download"]',
+          // 角色和标签匹配
+          'div[role="menuitem"][aria-label*="download"]', 'div[role="button"][aria-label*="download"]',
           'button[aria-label*="download"]', 'button[aria-label*="media"]', 'button[aria-label*="video"]',
           
-          // 鐗规畩缃戠珯閫傞厤
+          // 特殊网站适配
           '[data-testid*="media"]', '[data-testid*="video"]', '[data-testid*="image"]',
           '[aria-label*="media"]', '[aria-label*="video"]', '[aria-label*="image"]',
           '[title*="download"]', '[title*="media"]', '[title*="video"]', '[title*="image"]',
           
-          // 鑳屾櫙鍥剧墖鍏冪礌
+          // 背景图片元素
           'div[style*="background-image"]', 'div[style*="background: url"]',
           'span[style*="background-image"]', 'span[style*="background: url"]',
           
-          // 绀句氦濯掍綋鐗瑰畾閫夋嫨鍣?          '[data-testid="tweetPhoto"]', '[data-testid="tweetVideo"]',
+          // 社交媒体特定选择器
+          '[data-testid="tweetPhoto"]', '[data-testid="tweetVideo"]',
           '[data-testid="instagram-media"]', '[data-testid="ig-media"]',
           '[data-testid="fb-media"]', '[data-testid="fb-video"]',
           
-          // 閫氱敤濯掍綋瀹瑰櫒
+          // 通用媒体容器
           '.media-container', '.video-container', '.image-container', '.photo-container',
           '.player-container', '.stream-container', '.content-container'
         ];
         
-        // 灏濊瘯鎵惧埌濯掍綋鍏冪礌
+        // 尝试找到媒体元素
         let foundElement = null;
         
-        // 鏂规硶1: 浣跨敤closest鏌ユ壘鏈€杩戠殑濯掍綋鍏冪礌
+        // 方法1: 使用closest查找最近的媒体元素
         for (const selector of mediaSelectors) {
           foundElement = e.target.closest(selector);
           if (foundElement) break;
         }
         
-        // 鏂规硶2: 濡傛灉娌℃壘鍒帮紝妫€鏌ュ綋鍓嶅厓绱犲強鍏剁埗鍏冪礌
+        // 方法2: 如果没找到，检查当前元素及其父元素
         if (!foundElement) {
           let currentElement = e.target;
           while (currentElement && currentElement !== document.body) {
-            // 妫€鏌ュ厓绱犲睘鎬?            const hasMediaAttr = currentElement.src || currentElement.href || 
+            // 检查元素属性
+            const hasMediaAttr = currentElement.src || currentElement.href || 
                                currentElement.getAttribute('data-src') || 
                                currentElement.getAttribute('data-href') ||
                                currentElement.getAttribute('data-url') ||
                                currentElement.getAttribute('data-original');
             
-            // 妫€鏌ユ牱寮?            const hasMediaStyle = currentElement.style && 
+            // 检查样式
+            const hasMediaStyle = currentElement.style && 
                                 (currentElement.style.backgroundImage || 
                                  currentElement.style.background);
             
-            // 妫€鏌ョ被鍚嶅拰ID
+            // 检查类名和ID
             const className = currentElement.className || '';
             const id = currentElement.id || '';
             const hasMediaClass = /(media|video|image|photo|picture|download|player|stream)/i.test(className + ' ' + id);
@@ -609,17 +717,18 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           }
         }
         
-        // 鏂规硶3: 娣卞害鎵弿鍛ㄥ洿鍖哄煙
+        // 方法3: 深度扫描周围区域
         if (!foundElement) {
           const rect = e.target.getBoundingClientRect();
           const centerX = rect.left + rect.width / 2;
           const centerY = rect.top + rect.height / 2;
           
-          // 鎵弿鐐瑰嚮浣嶇疆鍛ㄥ洿鐨勫厓绱?          const nearbyElements = document.elementsFromPoint(centerX, centerY);
+          // 扫描点击位置周围的元素
+          const nearbyElements = document.elementsFromPoint(centerX, centerY);
           for (const element of nearbyElements) {
             if (element === e.target) continue;
             
-            // 妫€鏌ユ槸鍚︽槸濯掍綋鍏冪礌
+            // 检查是否是媒体元素
             const hasMediaContent = element.src || element.href || 
                                   element.getAttribute('data-src') ||
                                   element.getAttribute('data-href') ||
@@ -657,13 +766,13 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         pressedElement = null;
       }, true);
 
-      // 娣诲姞鐐瑰嚮浜嬩欢鐩戝惉鍣ㄥ鐞哹lob URL
+      // 添加点击事件监听器处理blob URL
       document.addEventListener('click', function(e) {
         const target = e.target;
         const link = target.closest('a');
         if (link && link.href && isBlobUrl(link.href)) {
           e.preventDefault();
-          console.log('妫€娴嬪埌blob URL鐐瑰嚮:', link.href);
+          console.log('检测到blob URL点击:', link.href);
           resolveBlobUrl(link.href, 'video').then(resolved => {
             if (resolved) {
               Flutter.postMessage(JSON.stringify({
@@ -673,27 +782,29 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                 isBase64: resolved.isBase64,
                 action: 'download'
               }));
-              console.log('宸插彂閫乥lob URL涓嬭浇璇锋眰');
+              console.log('已发送blob URL下载请求');
             } else {
-              console.error('瑙ｆ瀽blob URL澶辫触');
+              console.error('解析blob URL失败');
             }
           });
         }
       }, true);
 
-      // 澧炲己鐨勫獟浣撲笅杞藉鐞?- 杩?00%鎴愬姛鐜?      function handleMediaDownload(target, e) {
+      // 增强的媒体下载处理 - 近100%成功率
+      function handleMediaDownload(target, e) {
         if (!target) {
-          updateFeedbackStatus('鏈壘鍒板獟浣撳厓绱?, false);
+          updateFeedbackStatus('未找到媒体元素', false);
           return;
         }
         
-        // 鎳掑姞杞借嚜鍔ㄨЕ鍙?        try {
+        // 懒加载自动触发
+        try {
           if (typeof target.loading !== 'undefined') target.loading = 'eager';
           if (typeof target.decode === 'function') target.decode();
           if (typeof target.scrollIntoView === 'function') target.scrollIntoView({block: 'center'});
-        } catch (err) { console.log('鎳掑姞杞借Е鍙戝け璐?, err); }
+        } catch (err) { console.log('懒加载触发失败', err); }
         
-        // canvas鎴浘鍏滃簳
+        // canvas截图兜底
         if (target.tagName && target.tagName.toLowerCase() === 'canvas') {
           try {
             const dataUrl = target.toDataURL('image/png');
@@ -703,36 +814,47 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                 mediaType: 'image',
                 url: dataUrl.split(',')[1],
                 isBase64: true,
-                pageUrl: window.location.href,
                 action: 'download'
               }));
-              updateFeedbackStatus('宸叉埅鍥句繚瀛榗anvas', true);
+              updateFeedbackStatus('已截图保存canvas', true);
               return;
             }
           } catch (err) {
-            updateFeedbackStatus('canvas鎴浘澶辫触', false);
+            updateFeedbackStatus('canvas截图失败', false);
           }
         }
         
-        // 绮惧噯URL鎻愬彇閫昏緫
+        // 超全面的URL提取逻辑
         let url = null;
-        const tag = target.tagName ? target.tagName.toLowerCase() : '';
         const urlSources = [
-          () => (tag === 'img' || tag === 'video') ? (target.currentSrc || target.src) : null,
           () => target.href,
-          () => target.getAttribute && target.getAttribute('src'),
-          () => target.getAttribute && target.getAttribute('data-src'),
-          () => target.getAttribute && target.getAttribute('data-original'),
-          () => target.getAttribute && target.getAttribute('poster'),
+          () => target.src,
+          () => target.srcset,
+          () => target.getAttribute('data-href'),
+          () => target.getAttribute('data-url'),
+          () => target.getAttribute('data-src'),
+          () => target.getAttribute('data-original'),
+          () => target.getAttribute('data-lazy-src'),
+          () => target.getAttribute('data-srcset'),
+          () => target.getAttribute('data-poster'),
+          () => target.getAttribute('data-media'),
+          () => target.getAttribute('data-video'),
+          () => target.getAttribute('data-image'),
+          () => target.getAttribute('content'),
+          () => target.getAttribute('value'),
+          () => target.getAttribute('title'),
           () => {
-            try {
-              const style = window.getComputedStyle(target);
-              const bg = style && style.backgroundImage;
-              if (bg && bg !== 'none') {
-                const m = bg.match(/url\(['"]?([^'"\)]+)['"]?\)/);
-                return m ? m[1] : null;
-              }
-            } catch (_) {}
+            if (target.style && target.style.backgroundImage) {
+              const match = target.style.backgroundImage.match(/url\(['"]?([^'")]+)['"]?\)/);
+              return match ? match[1] : null;
+            }
+            return null;
+          },
+          () => {
+            if (target.style && target.style.background) {
+              const match = target.style.background.match(/url\(['"]?([^'")]+)['"]?\)/);
+              return match ? match[1] : null;
+            }
             return null;
           }
         ];
@@ -743,7 +865,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
               url = url.trim();
               break;
             }
-          } catch (e) { console.log('URL鎻愬彇澶辫触:', e); }
+          } catch (e) { console.log('URL提取失败:', e); }
         }
         if (url && url.includes(',')) {
           const srcsetParts = url.split(',');
@@ -761,16 +883,16 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           url = bestUrl;
         }
         if (url && !url.startsWith('http') && !url.startsWith('blob:') && !url.startsWith('data:')) {
-          try { url = new URL(url, window.location.href).href; } catch (e) { console.log('URL瑙ｆ瀽澶辫触:', e); }
+          try { url = new URL(url, window.location.href).href; } catch (e) { console.log('URL解析失败:', e); }
         }
         if (!url) {
-          updateFeedbackStatus('鏈壘鍒颁笅杞介摼鎺?, false);
+          updateFeedbackStatus('未找到下载链接', false);
           return;
         }
-        // 澶氶噸澶勭悊blob/data url
+        // 多重处理blob/data url
         function tryBlobOrDataUrl(url, mediaType) {
           if (isBlobUrl(url)) {
-            updateFeedbackStatus('姝ｅ湪澶勭悊blob...', true);
+            updateFeedbackStatus('正在处理blob...', true);
             resolveBlobUrl(url, mediaType).then(resolved => {
               if (resolved) {
                 window.processedMediaUrls.add(url);
@@ -779,12 +901,11 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                   mediaType: resolved.mediaType || mediaType,
                   url: resolved.resolvedUrl,
                   isBase64: resolved.isBase64,
-                  pageUrl: window.location.href,
                   action: 'download'
                 }));
-                updateFeedbackStatus('宸插彂閫佷笅杞借姹?, true);
+                updateFeedbackStatus('已发送下载请求', true);
               } else {
-                // blob澶辫触锛屽皾璇昪anvas鎴浘鍏滃簳
+                // blob失败，尝试canvas截图兜底
                 if (target.tagName && target.tagName.toLowerCase() === 'canvas') {
                   try {
                     const dataUrl = target.toDataURL('image/png');
@@ -796,33 +917,32 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                         isBase64: true,
                         action: 'download'
                       }));
-                      updateFeedbackStatus('宸叉埅鍥句繚瀛榗anvas', true);
+                      updateFeedbackStatus('已截图保存canvas', true);
                       return;
                     }
-                  } catch (err) { updateFeedbackStatus('canvas鎴浘澶辫触', false); }
+                  } catch (err) { updateFeedbackStatus('canvas截图失败', false); }
                 }
-                updateFeedbackStatus('blob瑙ｆ瀽澶辫触', false);
+                updateFeedbackStatus('blob解析失败', false);
               }
             });
             return true;
           } else if (url.startsWith('data:image/') || url.startsWith('data:video/')) {
-            // data url鐩存帴base64瑙ｇ爜
+            // data url直接base64解码
             try {
               Flutter.postMessage(JSON.stringify({
                 type: 'media',
                 mediaType: url.startsWith('data:image/') ? 'image' : 'video',
                 url: url.split(',')[1],
                 isBase64: true,
-                pageUrl: window.location.href,
                 action: 'download'
               }));
-              updateFeedbackStatus('宸蹭繚瀛榙ata url', true);
+              updateFeedbackStatus('已保存data url', true);
               return true;
-            } catch (err) { updateFeedbackStatus('data url瑙ｆ瀽澶辫触', false); }
+            } catch (err) { updateFeedbackStatus('data url解析失败', false); }
           }
           return false;
         }
-        let mediaType = (tagName === 'img' || (url && url.match(/\.(png|jpe?g|gif|webp|bmp|svg|ico|tiff?|heic|heif)(\?|$)/i))) ? 'image' : 'video';
+        let mediaType = 'video';
         const tagName = target.tagName ? target.tagName.toLowerCase() : '';
         const urlLower = url.toLowerCase();
         const className = target.className ? target.className.toLowerCase() : '';
@@ -840,66 +960,74 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
             mediaType: mediaType,
             url: url,
             isBase64: false,
-            pageUrl: window.location.href,
             action: 'download'
           }));
-          updateFeedbackStatus('宸插彂閫佷笅杞借姹?, true);
+          updateFeedbackStatus('已发送下载请求', true);
           e.preventDefault();
         } else {
-          updateFeedbackStatus('璇ュ獟浣撳凡鍦ㄥ鐞嗕腑', false);
+          updateFeedbackStatus('该媒体已在处理中', false);
         }
       }
 
-      // 鍚姩鍔ㄦ€佸唴瀹圭洃鍚?      const dynamicObserver = observeDynamicContent();
+      // 启动动态内容监听
+      const dynamicObserver = observeDynamicContent();
       
-      // 鍒濆鎵弿椤甸潰濯掍綋鍏冪礌
+      // 初始扫描页面媒体元素
       setTimeout(() => {
         const initialMediaElements = deepScanForMediaElements();
         initialMediaElements.forEach(element => {
           window.MediaInterceptor.mediaElements.add(element);
         });
-        console.log('鍒濆鎵弿瀹屾垚锛屾壘鍒?, initialMediaElements.length, '涓獟浣撳厓绱?);
+        console.log('初始扫描完成，找到', initialMediaElements.length, '个媒体元素');
       }, 1000);
     ''');
   }
 
-  void _handleJavaScriptMessage(String message) {
+  Future<void> _handleJavaScriptMessage(String message) async {
     try {
       final data = jsonDecode(message);
-      if (data is Map && data.containsKey('type')) {
-        final type = data['type'];
-        final url = data['url'];
-        final isBase64 = data['isBase64'] ?? false;
-        final action = data['action'];
-          final mediaType = data['mediaType'] ?? (_guessMimeType(url).startsWith('image/') ? 'image' : (_guessMimeType(url).startsWith('video/') ? 'video' : 'audio'));
-          final pageUrl = data['pageUrl'] as String?;
+      if (data is! Map || !data.containsKey('type')) return;
 
-        if (url != null && url is String) {
-          if (_processedUrls.contains(url)) return;
-          _processedUrls.add(url);
+      final dynamic urlValue = data['url'];
+      final bool isBase64 = data['isBase64'] ?? false;
+      final String? action = data['action'];
+      final String mediaType = data['mediaType'] ??
+          (_guessMimeType(urlValue is String ? urlValue : '').startsWith('image/')
+              ? 'image'
+              : (_guessMimeType(urlValue is String ? urlValue : '').startsWith('video/') ? 'video' : 'audio'));
 
-          if (action == 'download') {
-            debugPrint('Received URL from JavaScript with download action: $url, type: $mediaType, isBase64: $isBase64');
-            if (isBase64) {
-              _handleBlobUrl(url, mediaType);
-            } else {
-              MediaType selectedType = _determineMediaType(_guessMimeType(url));
-              if (pageUrl != null && pageUrl.isNotEmpty) {
-                _currentUrl = pageUrl;
-              }
-              _performBackgroundDownload(url, selectedType);
-            }
-          }
-        }
+      if (urlValue is! String) return;
+      if (_processedUrls.contains(urlValue)) return;
+      _processedUrls.add(urlValue);
+
+      if (action != 'download') return;
+
+      debugPrint('Received URL from JavaScript with download action: $urlValue, type: $mediaType, isBase64: $isBase64');
+
+      if (isBase64) {
+        await _handleBlobUrl(urlValue, mediaType);
+        return;
       }
-    } catch (e) {
+
+      final resolvedUrl = await _resolveFinalUrl(
+        urlValue,
+        headers: {
+          'Referer': _urlController.text.trim(),
+          'Accept': '*/*',
+        },
+      );
+      final mimeType = _guessMimeType(resolvedUrl);
+      final MediaType selectedType = _determineMediaType(mimeType);
+      _performBackgroundDownload(resolvedUrl, selectedType);
+    } catch (e, stackTrace) {
       debugPrint('Error handling JavaScript message: $e');
+      debugPrint('Trace: $stackTrace');
     }
   }
 
-  void _handleBlobUrl(String base64Data, String mediaType) async {
+  Future<void> _handleBlobUrl(String base64Data, String mediaType) async {
     try {
-      debugPrint('澶勭悊Base64鏁版嵁浠ョ洿鎺ヤ繚瀛? $mediaType');
+      debugPrint('处理Base64数据以直接保存: $mediaType');
       final bytes = base64Decode(base64Data);
       final appDir = await getApplicationDocumentsDirectory();
       final mediaDir = Directory('${appDir.path}/media');
@@ -909,21 +1037,21 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       final filePath = '${mediaDir.path}/$uuid$extension';
       final file = File(filePath);
       await file.writeAsBytes(bytes);
-      debugPrint('宸蹭粠Base64淇濆瓨鏂囦欢: $filePath');
+      debugPrint('已从Base64保存文件: $filePath');
       await _saveToMediaLibrary(file, mediaType == 'image' ? MediaType.image : MediaType.video);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('濯掍綋宸叉垚鍔熶繚瀛樺埌濯掍綋搴? ${file.path.split('/').last}'),
+            content: Text('媒体已成功保存到媒体库: ${file.path.split('/').last}'),
             duration: const Duration(seconds: 5),
-            action: SnackBarAction(label: '鏌ョ湅', onPressed: () => Navigator.pushNamed(context, '/media_manager')),
+            action: SnackBarAction(label: '查看', onPressed: () => Navigator.pushNamed(context, '/media_manager')),
           ),
         );
       }
     } catch (e, stackTrace) {
-      debugPrint('澶勭悊Base64鏁版嵁鏃跺嚭閿? $e');
-      debugPrint('閿欒鍫嗘爤: $stackTrace');
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('涓嬭浇澶辫触: $e')));
+      debugPrint('处理Base64数据时出错: $e');
+      debugPrint('错误堆栈: $stackTrace');
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('下载失败: $e')));
     }
   }
 
@@ -931,12 +1059,12 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     String processedUrl = url;
     if (!url.startsWith('http://') && !url.startsWith('https://')) processedUrl = 'https://$url';
     if (processedUrl.contains('telegram.org') || processedUrl.contains('t.me') || processedUrl.contains('web.telegram.org')) {
-      _setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 13_2_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0.3 Mobile/15E148 Safari/604.1');
+      _controller.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 13_2_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0.3 Mobile/15E148 Safari/604.1');
       if (processedUrl.contains('web.telegram.org')) processedUrl = 'https://web.telegram.org/a/';
     } else if (processedUrl.contains('youtube.com') || processedUrl.contains('youtu.be')) {
-      _setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
+      _controller.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
     } else {
-      _setUserAgent('Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36');
+      _controller.setUserAgent('Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36');
     }
     _controller.loadRequest(Uri.parse(processedUrl));
     setState(() {
@@ -955,10 +1083,12 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       await _saveCommonWebsites();
       await _loadBookmarks();
       
-      // 纭繚甯哥敤缃戠珯鍒楄〃琚纭姞杞?      await _loadCommonWebsites();
+      // 确保常用网站列表被正确加载
+      await _loadCommonWebsites();
       
-      // 濡傛灉甯哥敤缃戠珯鍒楄〃涓虹┖锛屽己鍒跺姞杞介粯璁ょ綉绔?      if (_commonWebsites.isEmpty) {
-        debugPrint('甯哥敤缃戠珯鍒楄〃涓虹┖锛屽姞杞介粯璁ょ綉绔?);
+      // 如果常用网站列表为空，强制加载默认网站
+      if (_commonWebsites.isEmpty) {
+        debugPrint('常用网站列表为空，加载默认网站');
         setState(() {
           _commonWebsites.addAll([
             {'name': 'Google', 'url': 'https://www.google.com', 'iconCode': Icons.public.codePoint},
@@ -966,7 +1096,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
             {'name': 'X', 'url': 'https://twitter.com', 'iconCode': Icons.public.codePoint},
             {'name': 'Facebook', 'url': 'https://www.facebook.com', 'iconCode': Icons.public.codePoint},
             {'name': 'Telegram', 'url': 'https://web.telegram.org', 'iconCode': Icons.public.codePoint},
-            {'name': '鐧惧害', 'url': 'https://www.baidu.com', 'iconCode': Icons.public.codePoint}
+            {'name': '百度', 'url': 'https://www.baidu.com', 'iconCode': Icons.public.codePoint}
           ]);
         });
         await _saveCommonWebsites();
@@ -999,8 +1129,9 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   }
 
   Widget _buildHomePage() {
-    // 纭繚_commonWebsites涓嶄负绌?    if (_commonWebsites.isEmpty) {
-      debugPrint('鏋勫缓涓婚〉鏃跺彂鐜板父鐢ㄧ綉绔欏垪琛ㄤ负绌猴紝鍔犺浇榛樿缃戠珯');
+    // 确保_commonWebsites不为空
+    if (_commonWebsites.isEmpty) {
+      debugPrint('构建主页时发现常用网站列表为空，加载默认网站');
       _loadCommonWebsites();
     }
     
@@ -1008,7 +1139,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       children: [
         Column(
           children: [
-            // 绉婚櫎浜嗛《閮ㄥ伐鍏锋爮
+            // 移除了顶部工具栏
             Expanded(
               child: ReorderableGridView.builder(
                 padding: const EdgeInsets.all(16.0),
@@ -1021,7 +1152,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                 itemCount: _commonWebsites.length + 1, // +1 for the add button
                 itemBuilder: (context, index) {
                   if (index == _commonWebsites.length) {
-                    // 娣诲姞鏂扮綉绔欑殑鎸夐挳
+                    // 添加新网站的按钮
                     return InkWell(
                       key: const ValueKey('add_website'),
                       onTap: () => _showAddWebsiteDialog(context),
@@ -1032,7 +1163,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                           children: const [
                             Icon(Icons.add_circle_outline, size: 40, color: Colors.green),
                             SizedBox(height: 8),
-                            Text('娣诲姞缃戠珯', style: TextStyle(fontSize: 16), textAlign: TextAlign.center),
+                            Text('添加网站', style: TextStyle(fontSize: 16), textAlign: TextAlign.center),
                           ],
                         ),
                       ),
@@ -1043,12 +1174,13 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                 },
                 onReorder: _reorderWebsites,
                 dragStartBehavior: DragStartBehavior.start,
-                // 绉婚櫎 dragEnabled 鍑芥暟鍙傛暟锛屾敼涓哄湪 _reorderWebsites 鏂规硶涓鐞?                // 绉婚櫎 onReorderStart 鍙傛暟锛屽洜涓?ReorderableGridView 涓嶆敮鎸佹鍙傛暟
+                // 移除 dragEnabled 函数参数，改为在 _reorderWebsites 方法中处理
+                // 移除 onReorderStart 参数，因为 ReorderableGridView 不支持此参数
               ),
             ),
           ],
         ),
-        // 绉婚櫎搴曢儴娴姩鎸夐挳锛屾敼涓哄湪椤堕儴鏄剧ず
+        // 移除底部浮动按钮，改为在顶部显示
       ],
     );
   }
@@ -1057,74 +1189,78 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     final nameController = TextEditingController();
     final urlController = TextEditingController();
 
-    // 璁剧疆榛樿URL锛堝鏋滃湪娴忚缃戦〉锛屽垯浣跨敤褰撳墠URL锛?    if (!_showHomePage && _isBrowsingWebPage) {
+    // 设置默认URL（如果在浏览网页，则使用当前URL）
+    if (!_showHomePage && _isBrowsingWebPage) {
       urlController.text = _currentUrl;
     }
 
-    // 鍏堟樉绀哄璇濇锛岀劧鍚庡紓姝ヨ幏鍙栨爣棰?    showDialog(
+    // 先显示对话框，然后异步获取标题
+    showDialog(
       context: context,
       builder: (dialogContext) {
-        // 濡傛灉鍦ㄦ祻瑙堢綉椤碉紝寮傛鑾峰彇缃戦〉鏍囬
+        // 如果在浏览网页，异步获取网页标题
         if (!_showHomePage && _isBrowsingWebPage) {
-          // 鏄剧ず"鑾峰彇涓?.."浣滀负涓存椂鏍囬
-          nameController.text = "鑾峰彇涓?..";
+          // 显示"获取中..."作为临时标题
+          nameController.text = "获取中...";
 
-          // 寮傛鑾峰彇缃戦〉鏍囬
+          // 异步获取网页标题
           _controller.getTitle().then((title) {
-            if (title != null && title.isNotEmpty && nameController.text == "鑾峰彇涓?..") {
-              // 鐩存帴鏇存柊鏂囨湰鎺у埗鍣紝鑰屼笉浣跨敤setState
+            if (title != null && title.isNotEmpty && nameController.text == "获取中...") {
+              // 直接更新文本控制器，而不使用setState
               nameController.text = title;
-              // 鑷姩閫変腑鏂囨湰锛屾柟渚跨敤鎴风紪杈?              nameController.selection = TextSelection(
+              // 自动选中文本，方便用户编辑
+              nameController.selection = TextSelection(
                 baseOffset: 0,
                 extentOffset: title.length,
               );
             }
           }).catchError((error) {
-            debugPrint('鑾峰彇缃戦〉鏍囬鍑洪敊: $error');
-            if (nameController.text == "鑾峰彇涓?..") {
+            debugPrint('获取网页标题出错: $error');
+            if (nameController.text == "获取中...") {
               nameController.text = "";
             }
           });
         }
 
         return AlertDialog(
-          title: const Text('娣诲姞缃戠珯鍒版爣绛?),
+          title: const Text('添加网站到标签'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               TextField(
                 controller: nameController,
                 decoration: const InputDecoration(
-                  labelText: '缃戠珯鍚嶇О',
-                  hintText: '杈撳叆鑷畾涔夊悕绉?,
-                  helperText: '涓虹綉绔欒缃竴涓畝鐭槗璁扮殑鍚嶇О',
+                  labelText: '网站名称',
+                  hintText: '输入自定义名称',
+                  helperText: '为网站设置一个简短易记的名称',
                 ),
                 autofocus: true,
               ),
               TextField(
                 controller: urlController,
                 decoration: const InputDecoration(
-                  labelText: '缃戠珯鍦板潃',
-                  hintText: '渚嬪锛歨ttps://www.google.com',
+                  labelText: '网站地址',
+                  hintText: '例如：https://www.google.com',
                 ),
-                enabled: !_isBrowsingWebPage, // 濡傛灉鍦ㄦ祻瑙堢綉椤碉紝鍒欑鐢║RL杈撳叆妗?              ),
+                enabled: !_isBrowsingWebPage, // 如果在浏览网页，则禁用URL输入框
+              ),
             ],
           ),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('鍙栨秷'),
+              child: const Text('取消'),
             ),
             TextButton(
               onPressed: () async {
                 if (nameController.text.isNotEmpty &&
                     urlController.text.isNotEmpty &&
-                    nameController.text != "鑾峰彇涓?..") {
+                    nameController.text != "获取中...") {
 
-                  // 鍒涘缓涓€涓彉閲忓瓨鍌ㄥ姞杞藉璇濇鐨刢ontext
+                  // 创建一个变量存储加载对话框的context
                   BuildContext? loadingDialogContext;
 
-                  // 鏄剧ず鍔犺浇瀵硅瘽妗嗗苟淇濆瓨context
+                  // 显示加载对话框并保存context
                   showDialog(
                     context: dialogContext,
                     barrierDismissible: false,
@@ -1135,7 +1271,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                           children: [
                             CircularProgressIndicator(),
                             SizedBox(width: 20),
-                            Text('娣诲姞涓?..'),
+                            Text('添加中...'),
                           ],
                         ),
                       );
@@ -1145,37 +1281,37 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                   await _addWebsite(nameController.text, urlController.text, Icons.web);
                   await _saveCommonWebsites();
 
-                  // 瀹夊叏鍦板叧闂姞杞藉璇濇
+                  // 安全地关闭加载对话框
                   if (loadingDialogContext != null && Navigator.canPop(loadingDialogContext!)) {
                     Navigator.pop(loadingDialogContext!);
                   }
 
-                  // 鍏抽棴涓诲璇濇
+                  // 关闭主对话框
                   Navigator.of(dialogContext).pop();
 
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
-                      content: Text('宸插皢"${nameController.text}"娣诲姞鍒版爣绛炬爮'),
+                      content: Text('已将"${nameController.text}"添加到标签栏'),
                       duration: const Duration(seconds: 2),
                     ),
                   );
-                } else if (nameController.text == "鑾峰彇涓?..") {
+                } else if (nameController.text == "获取中...") {
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
-                      content: Text('璇风瓑寰呯綉椤垫爣棰樿幏鍙栧畬鎴愶紝鎴栬緭鍏ヨ嚜瀹氫箟鍚嶇О'),
+                      content: Text('请等待网页标题获取完成，或输入自定义名称'),
                       duration: Duration(seconds: 2),
                     ),
                   );
                 } else {
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
-                      content: Text('璇疯緭鍏ョ綉绔欏悕绉板拰鍦板潃'),
+                      content: Text('请输入网站名称和地址'),
                       duration: Duration(seconds: 2),
                     ),
                   );
                 }
               },
-              child: const Text('娣诲姞'),
+              child: const Text('添加'),
             ),
           ],
         );
@@ -1183,29 +1319,29 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     );
   }
 
-  // 绉婚櫎_buildEditableWebsiteItem鏂规硶锛屽洜涓烘垜浠凡缁忕Щ闄や簡缂栬緫妯″紡
+  // 移除_buildEditableWebsiteItem方法，因为我们已经移除了编辑模式
 
   void _showRenameWebsiteDialog(BuildContext context, Map<String, dynamic> website, int index) {
     final nameController = TextEditingController(text: website['name']);
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('閲嶅懡鍚嶇綉绔?),
+        title: const Text('重命名网站'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             TextField(
               controller: nameController,
-              decoration: const InputDecoration(labelText: '缃戠珯鍚嶇О', hintText: '杈撳叆鏂扮殑缃戠珯鍚嶇О'),
+              decoration: const InputDecoration(labelText: '网站名称', hintText: '输入新的网站名称'),
               autofocus: true,
             ),
             const SizedBox(height: 8),
-            Text('褰撳墠URL: ${website['url']}', style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+            Text('当前URL: ${website['url']}', style: TextStyle(fontSize: 12, color: Colors.grey[600])),
           ],
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('鍙栨秷')),
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
           TextButton(
             onPressed: () async {
               if (nameController.text.isNotEmpty && nameController.text != website['name']) {
@@ -1214,7 +1350,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                   barrierDismissible: false,
                   builder: (context) => const AlertDialog(
                     content: Row(
-                      children: [CircularProgressIndicator(), SizedBox(width: 20), Text('淇濆瓨涓?..')],
+                      children: [CircularProgressIndicator(), SizedBox(width: 20), Text('保存中...')],
                     ),
                   ),
                 );
@@ -1222,12 +1358,12 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                 await _saveCommonWebsites();
                 Navigator.of(context).pop();
                 Navigator.of(context).pop();
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('缃戠珯鍚嶇О宸叉洿鏂?)));
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('网站名称已更新')));
               } else {
                 Navigator.pop(context);
               }
             },
-            child: const Text('淇濆瓨'),
+            child: const Text('保存'),
           ),
         ],
       ),
@@ -1235,7 +1371,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   }
 
   Widget _buildWebsiteCard(Map<String, dynamic> website, int index) {
-    // 鏍规嵁 iconCode 鑾峰彇瀵瑰簲鐨勫浘鏍?    IconData iconData = _getIconFromCode(website['iconCode']);
+    // 根据 iconCode 获取对应的图标
+    IconData iconData = _getIconFromCode(website['iconCode']);
     
     return InkWell(
       key: ValueKey(website['url']),
@@ -1263,7 +1400,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         children: [
           ListTile(
             leading: const Icon(Icons.edit, color: Colors.blue),
-            title: const Text('閲嶅懡鍚?),
+            title: const Text('重命名'),
             onTap: () {
               Navigator.pop(context);
               _showRenameWebsiteDialog(context, website, index);
@@ -1271,17 +1408,17 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           ),
           ListTile(
             leading: const Icon(Icons.delete, color: Colors.red),
-            title: const Text('鍒犻櫎'),
+            title: const Text('删除'),
             onTap: () async {
               Navigator.pop(context);
               final shouldDelete = await showDialog<bool>(
                 context: context,
                 builder: (context) => AlertDialog(
-                  title: const Text('鍒犻櫎缃戠珯'),
-                  content: Text('纭畾瑕佸垹闄?${website['name']} 鍚楋紵'),
+                  title: const Text('删除网站'),
+                  content: Text('确定要删除 ${website['name']} 吗？'),
                   actions: [
-                    TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('鍙栨秷')),
-                    TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('鍒犻櫎')),
+                    TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+                    TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('删除')),
                   ],
                 ),
               ) ?? false;
@@ -1291,13 +1428,13 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                   barrierDismissible: false,
                   builder: (context) => const AlertDialog(
                     content: Row(
-                      children: [CircularProgressIndicator(), SizedBox(width: 20), Text('鍒犻櫎涓?..')],
+                      children: [CircularProgressIndicator(), SizedBox(width: 20), Text('删除中...')],
                     ),
                   ),
                 );
                 await _removeWebsite(index);
                 Navigator.of(context).pop();
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('缃戠珯宸插垹闄?)));
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('网站已删除')));
               }
             },
           ),
@@ -1326,7 +1463,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         }
         if (_bookmarks.isEmpty) {
           _bookmarks = [
-            {'name': '鐧惧害', 'url': 'https://www.baidu.com'},
+            {'name': '百度', 'url': 'https://www.baidu.com'},
             {'name': 'Bilibili', 'url': 'https://www.bilibili.com'}
           ];
           _saveBookmarks();
@@ -1339,12 +1476,13 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
   Future<void> _saveCommonWebsites() async {
     try {
-      // 纭繚_commonWebsites涓嶄负绌?      if (_commonWebsites.isEmpty) {
-        debugPrint('璀﹀憡锛氬皾璇曚繚瀛樼┖鐨勫父鐢ㄧ綉绔欏垪琛紝灏嗗姞杞介粯璁ょ綉绔?);
+      // 确保_commonWebsites不为空
+      if (_commonWebsites.isEmpty) {
+        debugPrint('警告：尝试保存空的常用网站列表，将加载默认网站');
         _commonWebsites.addAll([
           {'name': 'Google', 'url': 'https://www.google.com', 'iconCode': Icons.public.codePoint},
           {'name': 'Telegram', 'url': 'https://web.telegram.org', 'iconCode': Icons.public.codePoint},
-          {'name': '鐧惧害', 'url': 'https://www.baidu.com', 'iconCode': Icons.public.codePoint}
+          {'name': '百度', 'url': 'https://www.baidu.com', 'iconCode': Icons.public.codePoint}
         ]);
       }
       
@@ -1356,16 +1494,16 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       }).toList();
       final jsonString = jsonEncode(cleanedWebsites);
       
-      // 鍏堣幏鍙栨棫鏁版嵁浣滀负澶囦唤
+      // 先获取旧数据作为备份
       final oldJsonString = prefs.getString('common_websites');
       
-      // 鐩存帴璁剧疆鏂版暟鎹紝涓嶅厛绉婚櫎
+      // 直接设置新数据，不先移除
       final success = await prefs.setString('common_websites', jsonString);
       
       if (success) {
-        debugPrint('鎴愬姛淇濆瓨浜?{cleanedWebsites.length}涓父鐢ㄧ綉绔?);
+        debugPrint('成功保存了${cleanedWebsites.length}个常用网站');
       } else {
-        debugPrint('淇濆瓨甯哥敤缃戠珯澶辫触锛屽皾璇曟仮澶嶆棫鏁版嵁');
+        debugPrint('保存常用网站失败，尝试恢复旧数据');
         if (oldJsonString != null) {
           await prefs.setString('common_websites', oldJsonString);
         }
@@ -1377,15 +1515,15 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
   Future<void> _handleDownload(String url, String contentDisposition, String mimeType, {MediaType? selectedType}) async {
     try {
-      debugPrint('寮€濮嬪鐞嗕笅杞? $url, MIME绫诲瀷: $mimeType');
+      debugPrint('开始处理下载: $url, MIME类型: $mimeType');
       if (_downloadingUrls.contains(url)) {
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('璇ユ枃浠舵鍦ㄤ笅杞戒腑锛岃绋嶅€?..')));
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('该文件正在下载中，请稍候...')));
         return;
       }
 
       String processedUrl = url;
       if (url.startsWith('blob:https://web.telegram.org/')) {
-        // Blob URL 鐢?JavaScript 澶勭悊锛屼笉鐩存帴涓嬭浇
+        // Blob URL 由 JavaScript 处理，不直接下载
         return;
       } else if (url.contains('telegram.org') || url.contains('t.me')) {
         if (!url.startsWith('http')) processedUrl = url.startsWith('//') ? 'https:$url' : 'https://$url';
@@ -1405,53 +1543,53 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           final bool shouldDownload = result['download'];
           final MediaType mediaType = result['mediaType'];
           if (shouldDownload) {
-            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('寮€濮嬩笅杞斤紝灏嗗湪鍚庡彴杩涜...'), duration: Duration(seconds: 2)));
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('开始下载，将在后台进行...'), duration: Duration(seconds: 2)));
             unawaited(_performBackgroundDownload(processedUrl, mediaType));
           }
         }
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('寮€濮嬩笅杞斤紝灏嗗湪鍚庡彴杩涜...'), duration: Duration(seconds: 2)));
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('开始下载，将在后台进行...'), duration: Duration(seconds: 2)));
         unawaited(_performBackgroundDownload(processedUrl, selectedType));
       }
     } catch (e, stackTrace) {
-      debugPrint('澶勭悊涓嬭浇鏃跺嚭閿? $e');
-      debugPrint('閿欒鍫嗘爤: $stackTrace');
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('涓嬭浇鍑洪敊: $e')));
+      debugPrint('处理下载时出错: $e');
+      debugPrint('错误堆栈: $stackTrace');
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('下载出错: $e')));
     }
   }
 
   Future<String> _resolveYouTubeUrl(String url) async {
-    return url; // 鍗犱綅绗︼紝闇€闆嗘垚 youtube_explode_dart
+    return url; // 占位符，需集成 youtube_explode_dart
   }
 
   Widget _buildDownloadDialog(String url, String mimeType) {
     MediaType selectedType = _determineMediaType(mimeType);
     return StatefulBuilder(
       builder: (context, setState) => AlertDialog(
-        title: const Text('涓嬭浇濯掍綋'),
+        title: const Text('下载媒体'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('鎮ㄦ兂涓嬭浇杩欎釜鏂囦欢鍚楋紵'),
+            Text('您想下载这个文件吗？'),
             const SizedBox(height: 8),
             Text('URL: $url', style: TextStyle(fontSize: 12, color: Colors.grey[600])),
             const SizedBox(height: 16),
-            const Text('閫夋嫨濯掍綋绫诲瀷:'),
+            const Text('选择媒体类型:'),
             RadioListTile<MediaType>(
-              title: const Text('鍥剧墖'),
+              title: const Text('图片'),
               value: MediaType.image,
               groupValue: selectedType,
               onChanged: (value) => setState(() => selectedType = value!),
             ),
             RadioListTile<MediaType>(
-              title: const Text('瑙嗛'),
+              title: const Text('视频'),
               value: MediaType.video,
               groupValue: selectedType,
               onChanged: (value) => setState(() => selectedType = value!),
             ),
             RadioListTile<MediaType>(
-              title: const Text('闊抽'),
+              title: const Text('音频'),
               value: MediaType.audio,
               groupValue: selectedType,
               onChanged: (value) => setState(() => selectedType = value!),
@@ -1459,10 +1597,10 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           ],
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('鍙栨秷')),
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
           TextButton(
             onPressed: () => Navigator.of(context).pop({'download': true, 'mediaType': selectedType}),
-          child: const Text('瑙ｆ瀽娴嬭瘯'),
+          child: const Text('解析测试'),
           ),
         ],
       ),
@@ -1477,8 +1615,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   }
 
   bool _isDownloadableLink(String url) {
-    debugPrint('妫€鏌RL鏄惁涓哄彲涓嬭浇閾炬帴: $url');
-    if (url.startsWith('blob:https://web.telegram.org/')) return false; // Blob URL 鐢?JavaScript 澶勭悊
+    debugPrint('检查URL是否为可下载链接: $url');
+    if (url.startsWith('blob:https://web.telegram.org/')) return false; // Blob URL 由 JavaScript 处理
     final fileExtensions = [
       '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg', '.ico',
       '.mp4', '.avi', '.mov', '.wmv', '.flv', '.mkv', '.webm', '.m3u8', '.ts',
@@ -1532,74 +1670,30 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     return 'application/octet-stream';
   }
 
-  static const MethodChannel _cookieChannel = MethodChannel('browser_cookies');
-
-  Future<String?> _getCookiesForUrl(String url) async {
-    try {
-      final cookies = await _cookieChannel.invokeMethod<String>('getCookies', {'url': url});
-      return cookies;
-    } catch (e) {
-      debugPrint('鑾峰彇Cookies澶辫触: $e');
-      return null;
-    }
-  }
-
-  Future<Map<String, dynamic>?> _headInfo(String url, Map<String, String> headers) async {
-    try {
-      final dio = Dio();
-      dio.options.followRedirects = true;
-      dio.options.maxRedirects = 5;
-      final response = await dio.request(
-        url,
-        options: Options(method: 'HEAD', headers: headers, validateStatus: (s) => s != null && s < 500),
-      );
-      return {
-        'url': response.realUri.toString(),
-        'contentType': response.headers['content-type']?.first,
-        'contentDisposition': response.headers['content-disposition']?.first,
-      };
-    } catch (_) {
-      return null;
-    }
-  }
-
-  String? _filenameFromContentDisposition(String? cd) {
-    if (cd == null) return null;
-    final lower = cd.toLowerCase();
-    final filenameStar = RegExp(r"filename\*=['"]?[^']*'[^']*'([^;'"]+)").firstMatch(lower);
-    if (filenameStar != null) return Uri.decodeFull(filenameStar.group(1)!);
-    final filename = RegExp(r'filename="?([^";]+)"?').firstMatch(cd);
-    if (filename != null) return filename.group(1);
-    return null;
-  }
-
   Future<File?> _downloadFile(String url, MediaType mediaType) async { // Added mediaType parameter
     try {
-      debugPrint('寮€濮嬩笅杞芥枃浠讹紝URL: $url');
+      debugPrint('开始下载文件，URL: $url');
       final dio = Dio();
       dio.options.connectTimeout = const Duration(seconds: 60);
       dio.options.receiveTimeout = const Duration(seconds: 300);
       dio.options.sendTimeout = const Duration(seconds: 60);
 
       dio.options.headers = {
-        'User-Agent': _currentUserAgent,
+        'User-Agent': 'Mozilla/5.5 (iPhone; CPU iPhone OS 13_2_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0.3 Mobile/15E148 Safari/604.1',
         'Accept': '*/*',
         'Accept-Language': 'en-US,en;q=0.9',
         'Accept-Encoding': 'gzip, deflate, br',
         'Connection': 'keep-alive',
       };
 
-      // Attach Referer of the current page when available
-      if (_currentUrl.isNotEmpty) {
-        dio.options.headers['Referer'] = _currentUrl;
+      if (url.contains('telegram.org') || url.contains('t.me')) {
+        dio.options.headers['Referer'] = 'https://web.telegram.org/a/';
+        dio.options.headers['Origin'] = 'https://web.telegram.org';
+        // 注意：webview_flutter 不支持直接获取 cookies
+        // 如果需要 cookies，可以考虑其他方案
+      } else if (url.contains('youtube.com') || url.contains('youtu.be')) {
+        dio.options.headers['Referer'] = 'https://www.youtube.com';
       }
-      // Attach cookies from webview if possible
-      try {
-        final cookies = await _getCookiesForUrl(_currentUrl);
-        if (cookies != null && cookies.isNotEmpty) {
-          dio.options.headers['Cookie'] = cookies;
-        }
-      } catch (_) {}
 
       final appDir = await getApplicationDocumentsDirectory();
       final mediaDir = Directory('${appDir.path}/media');
@@ -1609,24 +1703,15 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       final uri = Uri.parse(url);
       String extension = _getFileExtension(uri.path);
 
-      // HEAD to refine filename/extension
-      final head = await _headInfo(url, Map<String, String>.from(dio.options.headers));
-      String? serverFilename = _filenameFromContentDisposition(head?['contentDisposition']);
-      String? contentType = head?['contentType'];
-
       if (extension.isEmpty) {
-        final mimeType = contentType ?? _guessMimeType(url);
+        final mimeType = _guessMimeType(url);
         extension = mimeType.startsWith('image/') ? '.jpg' :
                     mimeType.startsWith('video/') || mimeType == 'application/x-mpegURL' ? '.mp4' :
                     mimeType.startsWith('audio/') ? '.mp3' : '.bin';
       }
 
-      String fileName = serverFilename ?? '$uuid$extension';
-      if (!fileName.toLowerCase().endsWith(extension.toLowerCase())) {
-        fileName = '$fileName$extension';
-      }
-      final filePath = '${mediaDir.path}/$fileName';
-      debugPrint('灏嗕笅杞藉埌鏂囦欢璺緞: $filePath');
+      final filePath = '${mediaDir.path}/$uuid$extension';
+      debugPrint('将下载到文件路径: $filePath');
 
       int retryCount = 0;
       const maxRetries = 3;
@@ -1646,7 +1731,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
             onReceiveProgress: (received, total) {
               if (total != -1) {
                 final progress = received / total;
-                debugPrint('涓嬭浇杩涘害: ${(progress * 100).toStringAsFixed(2)}%');
+                debugPrint('下载进度: ${(progress * 100).toStringAsFixed(2)}%');
                 if (mediaType == MediaType.video) { // Only update for video downloads
                   _videoDownloadProgress.value = progress;
                 }
@@ -1657,26 +1742,26 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           break;
         } catch (e, stackTrace) {
           retryCount++;
-          debugPrint('涓嬭浇澶辫触 (灏濊瘯 $retryCount/$maxRetries): $e');
+          debugPrint('下载失败 (尝试 $retryCount/$maxRetries): $e');
           if (e is DioException) {
             if (e.type == DioExceptionType.connectionTimeout || e.type == DioExceptionType.receiveTimeout || e.type == DioExceptionType.sendTimeout) {
-              debugPrint('涓嬭浇瓒呮椂閿欒: $e');
-              if (retryCount >= maxRetries) throw Exception('涓嬭浇瓒呮椂锛岃妫€鏌ョ綉缁滆繛鎺ユ垨绋嶅悗閲嶈瘯');
+              debugPrint('下载超时错误: $e');
+              if (retryCount >= maxRetries) throw Exception('下载超时，请检查网络连接或稍后重试');
             } else if (e.type == DioExceptionType.badResponse) {
-              debugPrint('涓嬭浇鍝嶅簲閿欒: 鐘舵€佺爜 ${e.response?.statusCode}, 閿欒: ${e.response?.data}');
+              debugPrint('下载响应错误: 状态码 ${e.response?.statusCode}, 错误: ${e.response?.data}');
               if (e.response?.statusCode == 400) {
-                if (retryCount >= maxRetries) throw Exception('涓嬭浇澶辫触: 鏂囦欢鏃犳硶璁块棶鎴朆ot鏉冮檺涓嶈冻');
+                if (retryCount >= maxRetries) throw Exception('下载失败: 文件无法访问或Bot权限不足');
               } else {
-                if (retryCount >= maxRetries) throw Exception('涓嬭浇澶辫触: 鏈嶅姟鍣ㄨ繑鍥為敊璇?${e.response?.statusCode}');
+                if (retryCount >= maxRetries) throw Exception('下载失败: 服务器返回错误 ${e.response?.statusCode}');
               }
             } else if (e.type == DioExceptionType.unknown) {
-              debugPrint('涓嬭浇鏈煡閿欒 (鍙兘鏄綉缁滈棶棰?: $e');
-              if (retryCount >= maxRetries) throw Exception('涓嬭浇澶辫触: 缃戠粶杩炴帴寮傚父鎴栨湭鐭ラ敊璇?);
+              debugPrint('下载未知错误 (可能是网络问题): $e');
+              if (retryCount >= maxRetries) throw Exception('下载失败: 网络连接异常或未知错误');
             } else {
-              if (retryCount >= maxRetries) throw Exception('涓嬭浇澶辫触: ${e.message}');
+              if (retryCount >= maxRetries) throw Exception('下载失败: ${e.message}');
             }
           } else {
-            if (retryCount >= maxRetries) throw Exception('涓嬭浇澶辫触: $e');
+            if (retryCount >= maxRetries) throw Exception('下载失败: $e');
           }
           await Future.delayed(Duration(seconds: retryCount * 3)); // Increased delay
         }
@@ -1687,8 +1772,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       await file.delete();
       return null;
     } catch (e, stackTrace) {
-      debugPrint('涓嬭浇鏂囦欢鏃跺嚭閿? $e');
-      debugPrint('閿欒鍫嗘爤: $stackTrace');
+      debugPrint('下载文件时出错: $e');
+      debugPrint('错误堆栈: $stackTrace');
       return null;
     }
   }
@@ -1698,7 +1783,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     final response = await dio.get(url);
     final segments = response.data.toString().split('\n').where((line) => line.startsWith('http')).toList();
     if (segments.isNotEmpty) {
-      final outputPath = m3u8Path.replaceAll('.m3u8', '.ts');
+      final outputPath = '${m3u8Path.replaceAll('.m3u8', '.mp4')}';
       final file = File(outputPath)..createSync();
       final sink = file.openWrite();
       for (final segment in segments) {
@@ -1720,7 +1805,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       final fileName = file.path.split('/').last;
       final fileHash = await _calculateFileHash(file);
       final duplicate = await _databaseService.findDuplicateMediaItem(fileHash, fileName);
-      if (duplicate != null) throw Exception('鏂囦欢宸插瓨鍦ㄤ簬濯掍綋搴撲腑');
+      if (duplicate != null) throw Exception('文件已存在于媒体库中');
       final uuid = const Uuid().v4();
       final mediaItem = MediaItem(
         id: uuid,
@@ -1734,7 +1819,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       mediaItemMap['file_hash'] = fileHash;
       await _databaseService.insertMediaItem(mediaItemMap);
     } catch (e) {
-      debugPrint('淇濆瓨鍒板獟浣撳簱鏃跺嚭閿? $e');
+      debugPrint('保存到媒体库时出错: $e');
       rethrow;
     }
   }
@@ -1744,34 +1829,36 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       final bytes = await file.readAsBytes();
       return md5.convert(bytes).toString();
     } catch (e) {
-      debugPrint('璁＄畻鏂囦欢鍝堝笇鍊兼椂鍑洪敊: $e');
+      debugPrint('计算文件哈希值时出错: $e');
       return '';
     }
   }
 
   void _addBookmark(String url) {
-    // 妫€鏌ユ槸鍚﹀凡瀛樺湪鐩稿悓URL鐨勪功绛?    if (_bookmarks.any((bookmark) => bookmark['url'] == url)) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('涔︾宸插瓨鍦?)));
+    // 检查是否已存在相同URL的书签
+    if (_bookmarks.any((bookmark) => bookmark['url'] == url)) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('书签已存在')));
       return;
     }
 
-    // 鍒涘缓涓€涓枃鏈帶鍒跺櫒锛屽垵濮嬪€艰涓哄綋鍓嶇綉椤电殑鏍囬鎴朥RL
+    // 创建一个文本控制器，初始值设为当前网页的标题或URL
     final nameController = TextEditingController();
     
-    // 濡傛灉鍦ㄦ祻瑙堢綉椤碉紝灏濊瘯鑾峰彇缃戦〉鏍囬
+    // 如果在浏览网页，尝试获取网页标题
     if (!_showHomePage && _isBrowsingWebPage) {
-      nameController.text = "鑾峰彇涓?..";
+      nameController.text = "获取中...";
       _controller.getTitle().then((title) {
-        if (title != null && title.isNotEmpty && nameController.text == "鑾峰彇涓?..") {
+        if (title != null && title.isNotEmpty && nameController.text == "获取中...") {
           nameController.text = title;
-          // 鑷姩閫変腑鏂囨湰锛屾柟渚跨敤鎴风紪杈?          nameController.selection = TextSelection(
+          // 自动选中文本，方便用户编辑
+          nameController.selection = TextSelection(
             baseOffset: 0,
             extentOffset: title.length,
           );
         }
       }).catchError((error) {
-        debugPrint('鑾峰彇缃戦〉鏍囬鍑洪敊: $error');
-        if (nameController.text == "鑾峰彇涓?..") {
+        debugPrint('获取网页标题出错: $error');
+        if (nameController.text == "获取中...") {
           nameController.text = "";
         }
       });
@@ -1780,16 +1867,16 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('娣诲姞涔︾'),
+        title: const Text('添加书签'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             TextField(
               controller: nameController,
               decoration: const InputDecoration(
-                labelText: '涔︾鍚嶇О',
-                hintText: '杈撳叆鑷畾涔夊悕绉?,
-                helperText: '涓轰功绛捐缃竴涓畝鐭槗璁扮殑鍚嶇О',
+                labelText: '书签名称',
+                hintText: '输入自定义名称',
+                helperText: '为书签设置一个简短易记的名称',
               ),
               autofocus: true,
             ),
@@ -1800,15 +1887,15 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('鍙栨秷'),
+            child: const Text('取消'),
           ),
           TextButton(
             onPressed: () async {
-              if (nameController.text.isNotEmpty && nameController.text != "鑾峰彇涓?..") {
-                // 鍒涘缓涓€涓彉閲忓瓨鍌ㄥ姞杞藉璇濇鐨刢ontext
+              if (nameController.text.isNotEmpty && nameController.text != "获取中...") {
+                // 创建一个变量存储加载对话框的context
                 BuildContext? loadingDialogContext;
 
-                // 鏄剧ず鍔犺浇瀵硅瘽妗嗗苟淇濆瓨context
+                // 显示加载对话框并保存context
                 showDialog(
                   context: context,
                   barrierDismissible: false,
@@ -1819,7 +1906,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                         children: [
                           CircularProgressIndicator(),
                           SizedBox(width: 20),
-                          Text('娣诲姞涓?..'),
+                          Text('添加中...'),
                         ],
                       ),
                     );
@@ -1832,37 +1919,37 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                 }));
                 await _saveBookmarks();
 
-                // 瀹夊叏鍦板叧闂姞杞藉璇濇
+                // 安全地关闭加载对话框
                 if (loadingDialogContext != null && Navigator.canPop(loadingDialogContext!)) {
                   Navigator.pop(loadingDialogContext!);
                 }
 
-                // 鍏抽棴涓诲璇濇
+                // 关闭主对话框
                 Navigator.of(context).pop();
 
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
-                    content: Text('宸插皢"${nameController.text}"娣诲姞鍒颁功绛?),
+                    content: Text('已将"${nameController.text}"添加到书签'),
                     duration: const Duration(seconds: 2),
                   ),
                 );
-              } else if (nameController.text == "鑾峰彇涓?..") {
+              } else if (nameController.text == "获取中...") {
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(
-                    content: Text('璇风瓑寰呯綉椤垫爣棰樿幏鍙栧畬鎴愶紝鎴栬緭鍏ヨ嚜瀹氫箟鍚嶇О'),
+                    content: Text('请等待网页标题获取完成，或输入自定义名称'),
                     duration: Duration(seconds: 2),
                   ),
                 );
               } else {
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(
-                    content: Text('璇疯緭鍏ヤ功绛惧悕绉?),
+                    content: Text('请输入书签名称'),
                     duration: Duration(seconds: 2),
                   ),
                 );
               }
             },
-            child: const Text('娣诲姞'),
+            child: const Text('添加'),
           ),
         ],
       ),
@@ -1902,7 +1989,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                             Navigator.pop(context);
                             _showRenameBookmarkDialog(context, index);
                           },
-                          tooltip: '閲嶅懡鍚?,
+                          tooltip: '重命名',
                         ),
                         IconButton(
                           icon: const Icon(Icons.delete, color: Colors.red),
@@ -1910,11 +1997,11 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                             final shouldDelete = await showDialog<bool>(
                               context: context,
                               builder: (context) => AlertDialog(
-                                title: const Text('鍒犻櫎涔︾'),
-                                content: Text('纭畾瑕佸垹闄や功绛?"${_bookmarks[index]['name']}" 鍚楋紵'),
+                                title: const Text('删除书签'),
+                                content: Text('确定要删除书签 "${_bookmarks[index]['name']}" 吗？'),
                                 actions: [
-                                  TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('鍙栨秷')),
-                                  TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('鍒犻櫎')),
+                                  TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+                                  TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('删除')),
                                 ],
                               ),
                             ) ?? false;
@@ -1923,7 +2010,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                                 _bookmarks.removeAt(index);
                               });
                               await _saveBookmarks();
-                              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('宸插垹闄や功绛?)));
+                              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已删除书签')));
                             }
                           },
                         ),
@@ -1944,14 +2031,14 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('閲嶅懡鍚嶄功绛?),
+        title: const Text('重命名书签'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             TextField(
               controller: nameController,
-              decoration: const InputDecoration(labelText: '涔︾鍚嶇О', hintText: '杈撳叆鏂扮殑涔︾鍚嶇О'),
+              decoration: const InputDecoration(labelText: '书签名称', hintText: '输入新的书签名称'),
               autofocus: true,
             ),
             const SizedBox(height: 8),
@@ -1959,7 +2046,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           ],
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('鍙栨秷')),
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
           TextButton(
             onPressed: () async {
               if (nameController.text.isNotEmpty && nameController.text != bookmark['name']) {
@@ -1968,7 +2055,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                   barrierDismissible: false,
                   builder: (context) => const AlertDialog(
                     content: Row(
-                      children: [CircularProgressIndicator(), SizedBox(width: 20), Text('淇濆瓨涓?..')],
+                      children: [CircularProgressIndicator(), SizedBox(width: 20), Text('保存中...')],
                     ),
                   ),
                 );
@@ -1976,12 +2063,12 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                 await _saveBookmarks();
                 Navigator.of(context).pop();
                 Navigator.of(context).pop();
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('涔︾鍚嶇О宸叉洿鏂?)));
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('书签名称已更新')));
               } else {
                 Navigator.pop(context);
               }
             },
-            child: const Text('淇濆瓨'),
+            child: const Text('保存'),
           ),
         ],
       ),
@@ -2015,39 +2102,40 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
               'iconCode': Icons.public.codePoint,
             }).toList());
           });
-          debugPrint('浠嶴haredPreferences鍔犺浇浜?{_commonWebsites.length}涓父鐢ㄧ綉绔?);
+          debugPrint('从SharedPreferences加载了${_commonWebsites.length}个常用网站');
           return;
         }
       }
       
-      // 濡傛灉娌℃湁浠嶴haredPreferences鍔犺浇鍒版暟鎹紝鎴栬€呭姞杞界殑鏁版嵁涓虹┖锛屽垯鍔犺浇榛樿缃戠珯
+      // 如果没有从SharedPreferences加载到数据，或者加载的数据为空，则加载默认网站
       setState(() {
         _commonWebsites.clear();
         _commonWebsites.addAll([
           {'name': 'Google', 'url': 'https://www.google.com', 'iconCode': Icons.public.codePoint},
           {'name': 'Telegram', 'url': 'https://web.telegram.org', 'iconCode': Icons.public.codePoint},
-          {'name': '鐧惧害', 'url': 'https://www.baidu.com', 'iconCode': Icons.public.codePoint}
+          {'name': '百度', 'url': 'https://www.baidu.com', 'iconCode': Icons.public.codePoint}
         ]);
       });
-      debugPrint('鍔犺浇浜嗛粯璁ゅ父鐢ㄧ綉绔?);
+      debugPrint('加载了默认常用网站');
       await _saveCommonWebsites();
     } catch (e) {
       debugPrint('Error loading common websites: $e');
-      // 鍑洪敊鏃跺姞杞介粯璁ょ綉绔?      setState(() {
+      // 出错时加载默认网站
+      setState(() {
         _commonWebsites.clear();
         _commonWebsites.addAll([
           {'name': 'Google', 'url': 'https://www.google.com', 'iconCode': Icons.public.codePoint},
           {'name': 'Telegram', 'url': 'https://web.telegram.org', 'iconCode': Icons.public.codePoint},
-          {'name': '鐧惧害', 'url': 'https://www.baidu.com', 'iconCode': Icons.public.codePoint}
+          {'name': '百度', 'url': 'https://www.baidu.com', 'iconCode': Icons.public.codePoint}
         ]);
       });
-      debugPrint('鍔犺浇鍑洪敊锛屼娇鐢ㄩ粯璁ゅ父鐢ㄧ綉绔?);
+      debugPrint('加载出错，使用默认常用网站');
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove('common_websites');
     }
   }
 
-  // 2. 鍔犺浇鍘嗗彶璁板綍
+  // 2. 加载历史记录
   Future<void> _loadHistory() async {
     final prefs = await SharedPreferences.getInstance();
     final historyString = prefs.getString('browser_history');
@@ -2056,23 +2144,24 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     }
   }
 
-  // 3. 淇濆瓨鍘嗗彶璁板綍
+  // 3. 保存历史记录
   Future<void> _saveHistory() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('browser_history', json.encode(_history));
   }
 
-  // 4. 娣诲姞鍘嗗彶璁板綍锛堝湪缃戦〉鍔犺浇鎴愬姛鏃惰皟鐢級
+  // 4. 添加历史记录（在网页加载成功时调用）
   Future<void> _addHistory(String title, String url) async {
     if (url.isEmpty) return;
-    // 鍘婚噸锛氬鏋滃凡瀛樺湪鍒欏厛绉婚櫎
+    // 去重：如果已存在则先移除
     _history.removeWhere((item) => item['url'] == url);
     _history.insert(0, {
       'title': title,
       'url': url,
       'datetime': DateTime.now().toIso8601String(),
     });
-    // 闄愬埗鏈€澶ф潯鏁?    if (_history.length > 200) _history = _history.sublist(0, 200);
+    // 限制最大条数
+    if (_history.length > 200) _history = _history.sublist(0, 200);
     await _saveHistory();
   }
 
@@ -2097,66 +2186,67 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         key: _scaffoldKey,
         appBar: AppBar(
           titleSpacing: 0,
-          title: _showHomePage ? const Text('娴忚鍣?) : const SizedBox.shrink(),
+          title: _showHomePage ? const Text('浏览器') : const SizedBox.shrink(),
           leading: _showHomePage
               ? null
               : IconButton(
                   icon: const Icon(Icons.home),
                   onPressed: _goToHomePage,
-                  tooltip: '鍥炲埌涓婚〉',
+                  tooltip: '回到主页',
                 ),
           centerTitle: true,
           actions: [
-            // 娣诲姞濯掍綋搴撴寜閽埌actions鍒楄〃鐨勭涓€涓綅缃?            if (!_showHomePage)
+            // 添加媒体库按钮到actions列表的第一个位置
+            if (!_showHomePage)
               IconButton(
                 icon: const Icon(Icons.photo_library),
                 onPressed: () {
-                  print('[BrowserPage] 濯掍綋搴撴寜閽鐐瑰嚮');
+                  print('[BrowserPage] 媒体库按钮被点击');
                   Navigator.of(context).push(
                     MaterialPageRoute(builder: (context) => const MediaManagerPage()),
                   );
                 },
-                tooltip: '濯掍綋搴?,
+                tooltip: '媒体库',
               ),
             if (_isBrowsingWebPage && _shouldKeepWebPageState && _showHomePage)
               IconButton(
                 icon: const Icon(Icons.arrow_right_alt),
                 onPressed: _restoreWebPage,
-                tooltip: '杩斿洖涓婃娴忚鐨勭綉椤?,
+                tooltip: '返回上次浏览的网页',
               ),
             IconButton(
               icon: const Icon(Icons.bookmark),
               onPressed: _showBookmarks,
-              tooltip: '鏄剧ず涔︾',
+              tooltip: '显示书签',
             ),
             if (!_showHomePage)
               IconButton(
                 icon: const Icon(Icons.bookmark_add),
                 onPressed: () => _addBookmark(_currentUrl),
-                tooltip: '娣诲姞涔︾',
+                tooltip: '添加书签',
               ),
             if (_showHomePage) ...[
               IconButton(
                 icon: const Icon(Icons.import_export),
                 onPressed: _showExportImportMenu,
-                tooltip: '瀵煎叆/瀵煎嚭鏁版嵁',
+                tooltip: '导入/导出数据',
               ),
               IconButton(
                 icon: const Icon(Icons.telegram),
                 onPressed: _showTelegramDownloadDialog,
-                tooltip: 'Telegram 涓嬭浇',
+                tooltip: 'Telegram 下载',
               ),
             ],
             if (!_showHomePage)
               IconButton(
                 icon: const Icon(Icons.close, color: Colors.red),
                 onPressed: _exitWebPage,
-                tooltip: '閫€鍑虹綉椤?,
+                tooltip: '退出网页',
               ),
             IconButton(
               icon: const Icon(Icons.history),
               onPressed: _showHistory,
-              tooltip: '鍘嗗彶璁板綍',
+              tooltip: '历史记录',
             ),
           ],
         ),
@@ -2175,25 +2265,25 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                               onPressed: () async {
                                 if (await _controller.canGoBack()) _controller.goBack();
                               },
-                              tooltip: '鍚庨€€',
+                              tooltip: '后退',
                             ),
                             IconButton(
                               icon: const Icon(Icons.arrow_forward),
                               onPressed: () async {
                                 if (await _controller.canGoForward()) _controller.goForward();
                               },
-                              tooltip: '鍓嶈繘',
+                              tooltip: '前进',
                             ),
                             IconButton(
                               icon: const Icon(Icons.refresh),
                               onPressed: () => _controller.reload(),
-                              tooltip: '鍒锋柊',
+                              tooltip: '刷新',
                             ),
                             Expanded(
                               child: TextField(
                                 controller: _urlController,
                                 decoration: const InputDecoration(
-                                  hintText: '杈撳叆缃戝潃',
+                                  hintText: '输入网址',
                                   contentPadding: EdgeInsets.symmetric(horizontal: 8),
                                   border: OutlineInputBorder(),
                                 ),
@@ -2204,7 +2294,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                             IconButton(
                               icon: const Icon(Icons.search),
                               onPressed: () => _loadUrl(_urlController.text),
-                              tooltip: '鍓嶅線',
+                              tooltip: '前往',
                             ),
                           ],
                         ),
@@ -2283,8 +2373,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     _urlController.dispose();
     _videoDownloadProgress.dispose(); // Dispose ValueNotifier
     _isDownloadingVideo.dispose(); // Dispose ValueNotifier
-    _saveBookmarks().then((_) => debugPrint('涔︾淇濆瓨瀹屾垚')).catchError((error) => debugPrint('淇濆瓨涔︾鏃跺嚭閿? $error'));
-    _saveCommonWebsites().then((_) => debugPrint('甯哥敤缃戠珯淇濆瓨瀹屾垚')).catchError((error) => debugPrint('淇濆瓨甯哥敤缃戠珯鏃跺嚭閿? $error'));
+    _saveBookmarks().then((_) => debugPrint('书签保存完成')).catchError((error) => debugPrint('保存书签时出错: $error'));
+    _saveCommonWebsites().then((_) => debugPrint('常用网站保存完成')).catchError((error) => debugPrint('保存常用网站时出错: $error'));
     widget.onBrowserHomePageChanged?.call(true);
     super.dispose();
   }
@@ -2292,7 +2382,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   Future<void> _performBackgroundDownload(String url, MediaType mediaType) async {
     _downloadingUrls.add(url);
     try {
-      debugPrint('寮€濮嬪悗鍙颁笅杞? $url, 濯掍綋绫诲瀷: $mediaType');
+      debugPrint('开始后台下载: $url, 媒体类型: $mediaType');
       
       if (mediaType == MediaType.video) {
         _isDownloadingVideo.value = true;
@@ -2302,14 +2392,14 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       final file = await _downloadFile(url, mediaType);
 
       if (file != null) {
-        debugPrint('鏂囦欢涓嬭浇鎴愬姛: ${file.path}');
+        debugPrint('文件下载成功: ${file.path}');
         await _saveToMediaLibrary(file, mediaType);
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('${mediaType == MediaType.video ? "瑙嗛" : mediaType == MediaType.image ? "鍥剧墖" : "闊抽"}宸叉垚鍔熶繚瀛樺埌濯掍綋搴? ${file.path.split('/').last}'),
+              content: Text('${mediaType == MediaType.video ? "视频" : mediaType == MediaType.image ? "图片" : "音频"}已成功保存到媒体库: ${file.path.split('/').last}'),
               duration: const Duration(seconds: 5),
-              action: SnackBarAction(label: '鏌ョ湅', onPressed: () => Navigator.pushNamed(context, '/media_manager')),
+              action: SnackBarAction(label: '查看', onPressed: () => Navigator.pushNamed(context, '/media_manager')),
             ),
           );
         }
@@ -2317,18 +2407,18 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('${mediaType == MediaType.video ? "瑙嗛" : mediaType == MediaType.image ? "鍥剧墖" : "闊抽"}涓嬭浇澶辫触锛岃妫€鏌ョ綉缁滆繛鎺ユ垨绋嶅悗閲嶈瘯'),
+              content: Text('${mediaType == MediaType.video ? "视频" : mediaType == MediaType.image ? "图片" : "音频"}下载失败，请检查网络连接或稍后重试'),
               duration: const Duration(seconds: 3),
             ),
           );
         }
       }
     } catch (e) {
-      debugPrint('鍚庡彴涓嬭浇鍑洪敊: $url, 閿欒: $e');
+      debugPrint('后台下载出错: $url, 错误: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('${mediaType == MediaType.video ? "瑙嗛" : mediaType == MediaType.image ? "鍥剧墖" : "闊抽"}涓嬭浇鍑洪敊: $e'),
+            content: Text('${mediaType == MediaType.video ? "视频" : mediaType == MediaType.image ? "图片" : "音频"}下载出错: $e'),
             duration: const Duration(seconds: 3),
           ),
         );
@@ -2342,7 +2432,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     }
   }
   
-  /// 鏄剧ず Telegram 涓嬭浇瀵硅瘽妗?  void _showTelegramDownloadDialog() {
+  /// 显示 Telegram 下载对话框
+  void _showTelegramDownloadDialog() {
     if (!_telegramService.isConfigured) {
       _showBotTokenConfigDialog();
     } else {
@@ -2350,23 +2441,24 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     }
   }
   
-  /// 鏄剧ず Bot Token 閰嶇疆瀵硅瘽妗?  void _showBotTokenConfigDialog() {
+  /// 显示 Bot Token 配置对话框
+  void _showBotTokenConfigDialog() {
     final tokenController = TextEditingController();
     
     showDialog(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: const Text('閰嶇疆 Telegram Bot'),
+        title: const Text('配置 Telegram Bot'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
-              '璇峰厛閰嶇疆 Telegram Bot Token 浠ヤ娇鐢ㄤ笅杞藉姛鑳斤細\n\n'
-              '1. 鍦?Telegram 涓壘鍒?@BotFather\n'
-              '2. 鍙戦€?/newbot 鍒涘缓鏂版満鍣ㄤ汉\n'
-              '3. 鎸夋彁绀鸿缃満鍣ㄤ汉鍚嶇О\n'
-              '4. 澶嶅埗鑾峰緱鐨?Token 骞剁矘璐村埌涓嬫柟',
+              '请先配置 Telegram Bot Token 以使用下载功能：\n\n'
+              '1. 在 Telegram 中找到 @BotFather\n'
+              '2. 发送 /newbot 创建新机器人\n'
+              '3. 按提示设置机器人名称\n'
+              '4. 复制获得的 Token 并粘贴到下方',
               style: TextStyle(fontSize: 14),
             ),
             const SizedBox(height: 16),
@@ -2374,13 +2466,13 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
               controller: tokenController,
               decoration: const InputDecoration(
                 labelText: 'Bot Token',
-                hintText: '渚嬪: 123456789:ABCdefGHIjklMNOpqrSTUVwxyz',
+                hintText: '例如: 123456789:ABCdefGHIjklMNOpqrSTUVwxyz',
                 border: OutlineInputBorder(),
-                // 纭繚鍐呭鍙互鑷姩鎹㈣
+                // 确保内容可以自动换行
                 helperMaxLines: 3,
                 errorMaxLines: 3,
               ),
-              // 澧炲姞鏈€澶ц鏁帮紝闃叉婧㈠嚭
+              // 增加最大行数，防止溢出
               maxLines: 3,
             ),
           ],
@@ -2388,26 +2480,28 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('鍙栨秷'),
+            child: const Text('取消'),
           ),
           ElevatedButton(
             onPressed: () async {
               final token = tokenController.text.trim();
               if (token.isEmpty) {
                 ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('璇疯緭鍏?Bot Token')),
+                  const SnackBar(content: Text('请输入 Bot Token')),
                 );
                 return;
               }
               
-              // 鍏抽棴褰撳墠閰嶇疆瀵硅瘽妗?              Navigator.pop(dialogContext);
-              // 娣诲姞鐭殏寤惰繜锛岀‘淇濆璇濇宸插畬鍏ㄥ叧闂?              await Future.delayed(const Duration(milliseconds: 100));
-              if (!mounted) return; // 濡傛灉缁勪欢宸插嵏杞斤紝鐩存帴杩斿洖
+              // 关闭当前配置对话框
+              Navigator.pop(dialogContext);
+              // 添加短暂延迟，确保对话框已完全关闭
+              await Future.delayed(const Duration(milliseconds: 100));
+              if (!mounted) return; // 如果组件已卸载，直接返回
 
-              // 鍒涘缓涓€涓彉閲忓瓨鍌ㄥ姞杞藉璇濇鐨刢ontext
+              // 创建一个变量存储加载对话框的context
               BuildContext? loadingDialogContext;
 
-              // 鏄剧ず鍔犺浇瀵硅瘽妗嗗苟淇濆瓨context
+              // 显示加载对话框并保存context
               showDialog(
                 context: context, // Use the main context here
                 barrierDismissible: false,
@@ -2418,7 +2512,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                       children: [
                         CircularProgressIndicator(),
                         SizedBox(width: 16),
-                        Text('楠岃瘉 Bot Token...'),
+                        Text('验证 Bot Token...'),
                       ],
                     ),
                   );
@@ -2427,46 +2521,50 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
               
               bool isValid = false;
               try {
-                // 娣诲姞瓒呮椂澶勭悊
+                // 添加超时处理
                 isValid = await _telegramService.validateBotToken(token).timeout(
                   const Duration(seconds: 15),
                   onTimeout: () {
-                    print('楠岃瘉 Bot Token 瓒呮椂');
+                    print('验证 Bot Token 超时');
                     return false;
                   },
                 );
               } catch (e) {
-                print('楠岃瘉 Bot Token 杩囩▼涓彂鐢熼敊璇? $e');
+                print('验证 Bot Token 过程中发生错误: $e');
                 isValid = false;
               }
 
-              // 瀹夊叏鍦板叧闂姞杞藉璇濇
+              // 安全地关闭加载对话框
               if (loadingDialogContext != null && mounted) {
                 try {
-                  Navigator.pop(loadingDialogContext!); // 鍏抽棴鍔犺浇瀵硅瘽妗?                } catch (e) {
-                  // 蹇界暐瀵艰埅閿欒锛屽彲鑳芥槸鍥犱负widget宸茬粡琚攢姣?                }
+                  Navigator.pop(loadingDialogContext!); // 关闭加载对话框
+                } catch (e) {
+                  // 忽略导航错误，可能是因为widget已经被销毁
+                }
               }
               
-              if (mounted) { // 纭繚缁勪欢浠嶇劧鎸傝浇
-                // 鏄剧ず楠岃瘉缁撴灉瀵硅瘽妗?                showDialog(
+              if (mounted) { // 确保组件仍然挂载
+                // 显示验证结果对话框
+                showDialog(
                   context: context, // Use the main context for this dialog
                   builder: (context) => AlertDialog(
-                    title: Text(isValid ? '楠岃瘉鎴愬姛' : '楠岃瘉澶辫触'),
-                    content: Text(isValid ? 'Bot Token 楠岃瘉閫氳繃锛? : '鏃犳晥鐨?Bot Token锛岃妫€鏌ュ悗閲嶈瘯'),
+                    title: Text(isValid ? '验证成功' : '验证失败'),
+                    content: Text(isValid ? 'Bot Token 验证通过！' : '无效的 Bot Token，请检查后重试'),
                     actions: [
                       TextButton(
                         onPressed: () async {
-                          Navigator.pop(context); // 鍏抽棴楠岃瘉缁撴灉瀵硅瘽妗?                          if (isValid) {
+                          Navigator.pop(context); // 关闭验证结果对话框
+                          if (isValid) {
                             final success = await _telegramService.saveBotToken(token);
                             if (mounted) {
                               if (success) {
                                 ScaffoldMessenger.of(context).showSnackBar(
                                   const SnackBar(
-                                    content: Text('Bot Token 閰嶇疆鎴愬姛锛?),
+                                    content: Text('Bot Token 配置成功！'),
                                     backgroundColor: Colors.green,
                                   ),
                                 );
-                                // 鍚姩杞
+                                // 启动轮询
                                 _startTelegramPolling();
                                 if (mounted) {
                                   _showTelegramUrlInputDialog();
@@ -2474,56 +2572,58 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                               } else {
                                 ScaffoldMessenger.of(context).showSnackBar(
                                   const SnackBar(
-                                    content: Text('淇濆瓨 Bot Token 澶辫触'),
+                                    content: Text('保存 Bot Token 失败'),
                                     backgroundColor: Colors.red,
                                   ),
                                 );
                               }
                             }
                           } else {
-                            _showBotTokenConfigDialog(); // 閲嶆柊鏄剧ず閰嶇疆瀵硅瘽妗?                          }
+                            _showBotTokenConfigDialog(); // 重新显示配置对话框
+                          }
                         },
-                        child: Text('纭畾'),
+                        child: Text('确定'),
                       ),
                     ],
                   ),
                 );
               }
             },
-            child: const Text('淇濆瓨'),
+            child: const Text('保存'),
           ),
         ],
       ),
     );
   }
   
-  /// 鏄剧ず Telegram URL 杈撳叆瀵硅瘽妗?  void _showTelegramUrlInputDialog() {
+  /// 显示 Telegram URL 输入对话框
+  void _showTelegramUrlInputDialog() {
     final urlController = TextEditingController();
     
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Telegram 濯掍綋涓嬭浇'),
+        title: const Text('Telegram 媒体下载'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
-               'Telegram Bot 涓嬭浇鍔熻兘璇存槑锛歕n\n'
-               '鐢变簬 Telegram Bot API 闄愬埗锛屾満鍣ㄤ汉鍙兘涓嬭浇鍙戦€佺粰瀹冪殑娑堟伅銆俓n\n'
-               '浣跨敤鏂规硶锛歕n'
-               '1. 鍦?Telegram 涓壘鍒版偍鐨勬満鍣ㄤ汉\n'
-               '2. 灏嗚涓嬭浇鐨勫獟浣撴枃浠惰浆鍙戠粰鏈哄櫒浜篭n'
-               '3. 鏈哄櫒浜轰細鑷姩澶勭悊骞朵笅杞芥枃浠禱n\n'
-               '鎴栬€呰緭鍏ユ秷鎭摼鎺ヨ繘琛岃В鏋愭祴璇曪細',
+               'Telegram Bot 下载功能说明：\n\n'
+               '由于 Telegram Bot API 限制，机器人只能下载发送给它的消息。\n\n'
+               '使用方法：\n'
+               '1. 在 Telegram 中找到您的机器人\n'
+               '2. 将要下载的媒体文件转发给机器人\n'
+               '3. 机器人会自动处理并下载文件\n\n'
+               '或者输入消息链接进行解析测试：',
                style: TextStyle(fontSize: 14),
              ),
             const SizedBox(height: 16),
             TextField(
               controller: urlController,
               decoration: const InputDecoration(
-                 labelText: 'Telegram 娑堟伅閾炬帴锛堟祴璇曡В鏋愶級',
-                 hintText: '渚嬪: https://t.me/channel/123',
+                 labelText: 'Telegram 消息链接（测试解析）',
+                 hintText: '例如: https://t.me/channel/123',
                  border: OutlineInputBorder(),
                ),
               maxLines: 3,
@@ -2533,21 +2633,21 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('鍙栨秷'),
+            child: const Text('取消'),
           ),
           TextButton(
             onPressed: () {
               Navigator.pop(context);
               _showBotTokenConfigDialog();
             },
-            child: const Text('閲嶆柊閰嶇疆 Bot'),
+            child: const Text('重新配置 Bot'),
           ),
           ElevatedButton(
             onPressed: () async {
               final url = urlController.text.trim();
               if (url.isEmpty) {
                 ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('璇疯緭鍏?Telegram 娑堟伅閾炬帴')),
+                  const SnackBar(content: Text('请输入 Telegram 消息链接')),
                 );
                 return;
               }
@@ -2557,16 +2657,17 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                 await _downloadFromTelegram(url);
               }
             },
-            child: const Text('瑙ｆ瀽娴嬭瘯'),
+            child: const Text('解析测试'),
           ),
         ],
       ),
     );
   }
   
-  /// 浠?Telegram 涓嬭浇濯掍綋
+  /// 从 Telegram 下载媒体
   Future<void> _downloadFromTelegram(String url) async {
-    // 鏄剧ず涓嬭浇杩涘害瀵硅瘽妗?    double progress = 0.0;
+    // 显示下载进度对话框
+    double progress = 0.0;
     bool isDownloading = true;
     
     showDialog(
@@ -2574,7 +2675,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       barrierDismissible: false,
       builder: (context) => StatefulBuilder(
         builder: (context, setState) => AlertDialog(
-          title: const Text('姝ｅ湪涓嬭浇'),
+          title: const Text('正在下载'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -2588,7 +2689,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
               : [
                   TextButton(
                     onPressed: () => Navigator.pop(context),
-                    child: const Text('纭畾'),
+                    child: const Text('确定'),
                   ),
                 ],
         ),
@@ -2600,10 +2701,10 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         url,
         onProgress: (p) {
           if (mounted) {
-            // 鏇存柊杩涘害
+            // 更新进度
             progress = p;
-            // 杩欓噷闇€瑕佹洿鏂板璇濇鐘舵€侊紝浣嗙敱浜?StatefulBuilder 鐨勯檺鍒讹紝
-            // 鎴戜滑鍙兘闇€瑕佷娇鐢ㄥ叾浠栨柟娉曟潵鏇存柊杩涘害
+            // 这里需要更新对话框状态，但由于 StatefulBuilder 的限制，
+            // 我们可能需要使用其他方法来更新进度
           }
         },
       );
@@ -2611,17 +2712,19 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       isDownloading = false;
       if (mounted) {
         try {
-          Navigator.pop(context); // 鍏抽棴杩涘害瀵硅瘽妗?        } catch (e) {
-          // 蹇界暐瀵艰埅閿欒锛屽彲鑳芥槸鍥犱负widget宸茬粡琚攢姣?        }
+          Navigator.pop(context); // 关闭进度对话框
+        } catch (e) {
+          // 忽略导航错误，可能是因为widget已经被销毁
+        }
       }
       
       if (result.success && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('涓嬭浇鎴愬姛锛?{result.fileName}'),
+            content: Text('下载成功：${result.fileName}'),
             backgroundColor: Colors.green,
             action: SnackBarAction(
-              label: '鏌ョ湅',
+              label: '查看',
               onPressed: () {
                 Navigator.of(context).push(
                   MaterialPageRoute(builder: (context) => const MediaManagerPage()),
@@ -2633,7 +2736,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       } else if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('涓嬭浇澶辫触锛?{result.error}'),
+            content: Text('下载失败：${result.error}'),
             backgroundColor: Colors.red,
           ),
         );
@@ -2642,12 +2745,14 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       isDownloading = false;
       if (mounted) {
         try {
-          Navigator.pop(context); // 鍏抽棴杩涘害瀵硅瘽妗?        } catch (navError) {
-          // 蹇界暐瀵艰埅閿欒锛屽彲鑳芥槸鍥犱负widget宸茬粡琚攢姣?        }
+          Navigator.pop(context); // 关闭进度对话框
+        } catch (navError) {
+          // 忽略导航错误，可能是因为widget已经被销毁
+        }
         
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('涓嬭浇鍑洪敊锛?e'),
+            content: Text('下载出错：$e'),
             backgroundColor: Colors.red,
           ),
         );
@@ -2655,11 +2760,11 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     }
   }
   
-  /// 鍚姩Telegram娑堟伅杞
+  /// 启动Telegram消息轮询
   Future<void> _startTelegramPolling() async {
     if (_isPollingActive) return;
     
-    // 浠嶴haredPreferences鍔犺浇鏈€鍚庡鐞嗙殑鏇存柊ID
+    // 从SharedPreferences加载最后处理的更新ID
     await _loadLastUpdateId();
     
     _isPollingActive = true;
@@ -2667,75 +2772,76 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       _checkForNewMessages();
     });
     
-    debugPrint('Telegram娑堟伅杞宸插惎鍔紝鏈€鍚庢洿鏂癐D: $_lastUpdateId');
+    debugPrint('Telegram消息轮询已启动，最后更新ID: $_lastUpdateId');
   }
   
-  /// 鍋滄Telegram娑堟伅杞
+  /// 停止Telegram消息轮询
   Future<void> _stopTelegramPolling() async {
     _telegramPollingTimer?.cancel();
     _telegramPollingTimer = null;
     _isPollingActive = false;
     
-    // 淇濆瓨鏈€鍚庡鐞嗙殑鏇存柊ID
+    // 保存最后处理的更新ID
     await _saveLastUpdateId();
     
-    debugPrint('Telegram娑堟伅杞宸插仠姝紝鏈€鍚庢洿鏂癐D: $_lastUpdateId');
+    debugPrint('Telegram消息轮询已停止，最后更新ID: $_lastUpdateId');
   }
   
-  /// 鍔犺浇鏈€鍚庡鐞嗙殑鏇存柊ID
+  /// 加载最后处理的更新ID
   Future<void> _loadLastUpdateId() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       _lastUpdateId = prefs.getInt('telegram_last_update_id') ?? 0;
     } catch (e) {
-      debugPrint('鍔犺浇鏈€鍚庢洿鏂癐D澶辫触: $e');
+      debugPrint('加载最后更新ID失败: $e');
       _lastUpdateId = 0;
     }
   }
   
-  /// 淇濆瓨鏈€鍚庡鐞嗙殑鏇存柊ID
+  /// 保存最后处理的更新ID
   Future<void> _saveLastUpdateId() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setInt('telegram_last_update_id', _lastUpdateId);
     } catch (e) {
-      debugPrint('淇濆瓨鏈€鍚庢洿鏂癐D澶辫触: $e');
+      debugPrint('保存最后更新ID失败: $e');
     }
   }
   
-  /// 鍔犺浇宸蹭笅杞界殑鏂囦欢ID
+  /// 加载已下载的文件ID
   Future<void> _loadDownloadedFileIds() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final downloadedIds = prefs.getStringList(_downloadedFileIdsKey) ?? [];
       _downloadedFileIds.clear();
       _downloadedFileIds.addAll(downloadedIds);
-      debugPrint('宸插姞杞?{_downloadedFileIds.length}涓凡涓嬭浇鏂囦欢ID');
+      debugPrint('已加载${_downloadedFileIds.length}个已下载文件ID');
     } catch (e) {
-      debugPrint('鍔犺浇宸蹭笅杞芥枃浠禝D澶辫触: $e');
+      debugPrint('加载已下载文件ID失败: $e');
     }
   }
   
-  /// 淇濆瓨宸蹭笅杞界殑鏂囦欢ID
+  /// 保存已下载的文件ID
   Future<void> _saveDownloadedFileIds() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setStringList(_downloadedFileIdsKey, _downloadedFileIds.toList());
     } catch (e) {
-      debugPrint('淇濆瓨宸蹭笅杞芥枃浠禝D澶辫触: $e');
+      debugPrint('保存已下载文件ID失败: $e');
     }
   }
   
-  /// 娣诲姞宸蹭笅杞界殑鏂囦欢ID
+  /// 添加已下载的文件ID
   Future<void> _addDownloadedFileId(String fileId) async {
     if (fileId.isEmpty) return;
     
     if (_downloadedFileIds.add(fileId)) {
-      // 鍙湁褰撻泦鍚堝彂鐢熷彉鍖栨椂鎵嶄繚瀛?      await _saveDownloadedFileIds();
+      // 只有当集合发生变化时才保存
+      await _saveDownloadedFileIds();
     }
   }
   
-  /// 妫€鏌ユ柊娑堟伅
+  /// 检查新消息
   Future<void> _checkForNewMessages() async {
     try {
       if (!_telegramService.isConfigured) {
@@ -2749,7 +2855,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       for (final update in updates) {
         final updateId = update['update_id'] as int;
         
-        // 鍙鐞嗘柊娑堟伅
+        // 只处理新消息
         if (updateId > _lastUpdateId) {
           _lastUpdateId = updateId;
           hasNewUpdates = true;
@@ -2757,53 +2863,55 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         }
       }
       
-      // 濡傛灉鏈夋柊娑堟伅锛屼繚瀛樻渶鍚庢洿鏂癐D
+      // 如果有新消息，保存最后更新ID
       if (hasNewUpdates) {
         await _saveLastUpdateId();
       }
     } catch (e) {
-      debugPrint('妫€鏌ユ柊娑堟伅澶辫触: $e');
+      debugPrint('检查新消息失败: $e');
     }
   }
   
-  /// 澶勭悊鍗曚釜鏇存柊
+  /// 处理单个更新
   Future<void> _processUpdate(Map<String, dynamic> update) async {
     try {
       final message = update['message'];
       if (message == null) return;
       
-      // 妫€鏌ユ槸鍚︽湁濯掍綋鏂囦欢
+      // 检查是否有媒体文件
       final mediaFileId = _extractMediaFileId(message);
       if (mediaFileId != null) {
         await _downloadMediaFromBot(mediaFileId, message);
       }
     } catch (e) {
-      debugPrint('澶勭悊鏇存柊澶辫触: $e');
+      debugPrint('处理更新失败: $e');
     }
   }
   
-  /// 鎻愬彇濯掍綋鏂囦欢ID
+  /// 提取媒体文件ID
   String? _extractMediaFileId(Map<String, dynamic> message) {
-    // 妫€鏌ョ収鐗?    if (message['photo'] != null) {
+    // 检查照片
+    if (message['photo'] != null) {
       final photos = message['photo'] as List;
       if (photos.isNotEmpty) {
-        // 鑾峰彇鏈€澶у昂瀵哥殑鐓х墖
+        // 获取最大尺寸的照片
         final largestPhoto = photos.reduce((a, b) => 
           (a['file_size'] ?? 0) > (b['file_size'] ?? 0) ? a : b);
         return largestPhoto['file_id'];
       }
     }
     
-    // 妫€鏌ヨ棰?    if (message['video'] != null) {
+    // 检查视频
+    if (message['video'] != null) {
       return message['video']['file_id'];
     }
     
-    // 妫€鏌ュ姩鐢?GIF)
+    // 检查动画(GIF)
     if (message['animation'] != null) {
       return message['animation']['file_id'];
     }
     
-    // 妫€鏌ユ枃妗?鍙兘鏄棰戞垨鍥剧墖)
+    // 检查文档(可能是视频或图片)
     if (message['document'] != null) {
       final document = message['document'];
       final mimeType = document['mime_type'] ?? '';
@@ -2815,7 +2923,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     return null;
   }
   
-  /// 浠嶣ot涓嬭浇濯掍綋鏂囦欢
+  /// 从Bot下载媒体文件
   Future<void> _downloadMediaFromBot(String fileId, Map<String, dynamic> message) async {
     // Determine media type before starting download to control progress indicator
     MediaType? mediaType;
@@ -2839,17 +2947,18 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     }
 
     try {
-      // 妫€鏌ユ枃浠禝D鏄惁宸茬粡涓嬭浇杩?      if (_downloadedFileIds.contains(fileId)) {
-        debugPrint('鏂囦欢宸插瓨鍦紝璺宠繃涓嬭浇: $fileId');
+      // 检查文件ID是否已经下载过
+      if (_downloadedFileIds.contains(fileId)) {
+        debugPrint('文件已存在，跳过下载: $fileId');
         return;
       }
       
-      debugPrint('寮€濮嬩笅杞藉獟浣撴枃浠? $fileId');
+      debugPrint('开始下载媒体文件: $fileId');
       
       final result = await _telegramService.downloadFileById(
         fileId,
         onProgress: (progress) {
-          debugPrint('涓嬭浇杩涘害: ${(progress * 100).toStringAsFixed(1)}%');
+          debugPrint('下载进度: ${(progress * 100).toStringAsFixed(1)}%');
           if (mediaType == MediaType.video) { // Use the inferred mediaType
              _videoDownloadProgress.value = progress;
           }
@@ -2857,23 +2966,23 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       );
       
       if (result.success && mounted) {
-        // 濡傛灉鏄凡瀛樺湪鐨勬枃浠讹紝鏄剧ず涓嶅悓鐨勯€氱煡
+        // 如果是已存在的文件，显示不同的通知
         if (result.isExisting) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('鏂囦欢宸插瓨鍦細${result.fileName}'),
+              content: Text('文件已存在：${result.fileName}'),
               backgroundColor: Colors.blue,
             ),
           );
-          debugPrint('濯掍綋鏂囦欢宸插瓨鍦? ${result.fileName}');
+          debugPrint('媒体文件已存在: ${result.fileName}');
         } else {
-          // 鏄剧ず鎴愬姛閫氱煡
+          // 显示成功通知
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('鑷姩涓嬭浇鎴愬姛锛?{result.fileName}'),
+              content: Text('自动下载成功：${result.fileName}'),
               backgroundColor: Colors.green,
               action: SnackBarAction(
-                label: '鏌ョ湅',
+                label: '查看',
                 onPressed: () {
                   Navigator.of(context).push(
                     MaterialPageRoute(builder: (context) => const MediaManagerPage()),
@@ -2883,17 +2992,19 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
             ),
           );
           
-          // 鍒锋柊濯掍綋搴?          await _refreshMediaLibrary();
+          // 刷新媒体库
+          await _refreshMediaLibrary();
           
-          debugPrint('濯掍綋鏂囦欢涓嬭浇鎴愬姛: ${result.fileName}');
+          debugPrint('媒体文件下载成功: ${result.fileName}');
         }
         
-        // 灏嗘枃浠禝D娣诲姞鍒板凡涓嬭浇闆嗗悎涓?        await _addDownloadedFileId(fileId);
+        // 将文件ID添加到已下载集合中
+        await _addDownloadedFileId(fileId);
       } else {
-        debugPrint('濯掍綋鏂囦欢涓嬭浇澶辫触: ${result.error}');
+        debugPrint('媒体文件下载失败: ${result.error}');
       }
     } catch (e) {
-      debugPrint('涓嬭浇濯掍綋鏂囦欢寮傚父: $e');
+      debugPrint('下载媒体文件异常: $e');
     } finally {
       if (mediaType == MediaType.video) {
         _isDownloadingVideo.value = false;
@@ -2902,16 +3013,17 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     }
   }
   
-  /// 鍒锋柊濯掍綋搴?  Future<void> _refreshMediaLibrary() async {
+  /// 刷新媒体库
+  Future<void> _refreshMediaLibrary() async {
     try {
-      // 杩欓噷鍙互娣诲姞鍒锋柊濯掍綋搴撶殑閫昏緫
-      // 渚嬪閫氱煡MediaManagerPage鍒锋柊鏁版嵁
+      // 这里可以添加刷新媒体库的逻辑
+      // 例如通知MediaManagerPage刷新数据
     } catch (e) {
-      debugPrint('鍒锋柊濯掍綋搴撳け璐? $e');
+      debugPrint('刷新媒体库失败: $e');
     }
   }
 
-  /// 鏄剧ず瀵煎叆瀵煎嚭鑿滃崟
+  /// 显示导入导出菜单
   void _showExportImportMenu() {
     showModalBottomSheet(
       context: context,
@@ -2921,8 +3033,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           children: [
             ListTile(
               leading: const Icon(Icons.upload_file),
-              title: const Text('瀵煎嚭娴忚鍣ㄦ暟鎹?),
-              subtitle: const Text('瀵煎嚭涔︾鍜屽父鐢ㄧ綉绔?),
+              title: const Text('导出浏览器数据'),
+              subtitle: const Text('导出书签和常用网站'),
               onTap: () {
                 Navigator.pop(context);
                 _exportBrowserData();
@@ -2930,8 +3042,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
             ),
             ListTile(
               leading: const Icon(Icons.download),
-              title: const Text('瀵煎叆娴忚鍣ㄦ暟鎹?),
-              subtitle: const Text('瀵煎叆涔︾鍜屽父鐢ㄧ綉绔?),
+              title: const Text('导入浏览器数据'),
+              subtitle: const Text('导入书签和常用网站'),
               onTap: () {
                 Navigator.pop(context);
                 _importBrowserData();
@@ -2943,11 +3055,14 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     );
   }
 
-  /// 瀵煎嚭娴忚鍣ㄦ暟鎹?  Future<void> _exportBrowserData() async {
+  /// 导出浏览器数据
+  Future<void> _exportBrowserData() async {
     try {
-      // 鍒涘缓杩涘害閫氱煡鍣?      final ValueNotifier<String> progressNotifier = ValueNotifier<String>('鍑嗗瀵煎嚭娴忚鍣ㄦ暟鎹?..');
+      // 创建进度通知器
+      final ValueNotifier<String> progressNotifier = ValueNotifier<String>('准备导出浏览器数据...');
       
-      // 鏄剧ず杩涘害瀵硅瘽妗?      showDialog(
+      // 显示进度对话框
+      showDialog(
         context: context,
         barrierDismissible: false,
         builder: (context) => AlertDialog(
@@ -2971,10 +3086,10 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         ),
       );
 
-      // 鑾峰彇瀵煎嚭鐩綍
+      // 获取导出目录
       final Directory? externalDir = await getExternalStorageDirectory();
       if (externalDir == null) {
-        throw Exception('鏃犳硶璁块棶澶栭儴瀛樺偍鐩綍');
+        throw Exception('无法访问外部存储目录');
       }
 
       final String exportDir = '${externalDir.path}/browser_backups';
@@ -2983,93 +3098,97 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         await backupDir.create(recursive: true);
       }
 
-      progressNotifier.value = '鏀堕泦娴忚鍣ㄦ暟鎹?..';
+      progressNotifier.value = '收集浏览器数据...';
 
-      // 鏀堕泦娴忚鍣ㄦ暟鎹?      final Map<String, dynamic> browserData = {
+      // 收集浏览器数据
+      final Map<String, dynamic> browserData = {
         'bookmarks': _bookmarks,
         'common_websites': _commonWebsites,
         'export_time': DateTime.now().toIso8601String(),
         'version': '1.0',
       };
 
-      progressNotifier.value = '鍒涘缓鏁版嵁鏂囦欢...';
+      progressNotifier.value = '创建数据文件...';
 
-      // 鍒涘缓JSON鏂囦欢
+      // 创建JSON文件
       final String jsonPath = '$exportDir/browser_data.json';
       final File jsonFile = File(jsonPath);
       await jsonFile.writeAsString(jsonEncode(browserData));
 
-      progressNotifier.value = '鍒涘缓ZIP鏂囦欢...';
+      progressNotifier.value = '创建ZIP文件...';
 
-      // 鍒涘缓ZIP鏂囦欢
+      // 创建ZIP文件
       final String zipPath = '$exportDir/browser_backup_${DateTime.now().millisecondsSinceEpoch}.zip';
       final Archive archive = Archive();
       archive.addFile(ArchiveFile('browser_data.json', jsonFile.lengthSync(), jsonFile.readAsBytesSync()));
       final List<int> zipData = ZipEncoder().encode(archive);
 
       if (zipData == null) {
-        throw Exception('鍒涘缓ZIP鏂囦欢澶辫触');
+        throw Exception('创建ZIP文件失败');
       }
 
       final File zipFile = File(zipPath);
       await zipFile.writeAsBytes(zipData);
 
-      // 鍒犻櫎涓存椂JSON鏂囦欢
+      // 删除临时JSON文件
       await jsonFile.delete();
 
-      progressNotifier.value = '导出完成';
+      progressNotifier.value = '导出完成！';
 
-      // 鍏抽棴杩涘害瀵硅瘽妗?      if (mounted) {
+      // 关闭进度对话框
+      if (mounted) {
         Navigator.pop(context);
       }
 
-      // 鍒嗕韩鏂囦欢
+      // 分享文件
       await Share.shareXFiles(
         [XFile(zipPath)],
         subject: '浏览器数据备份',
-        text: '浏览器数据备份文件，包含书签和常用网站数据',
+        text: '浏览器数据备份文件，包含书签和常用网站数据。',
       );
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('娴忚鍣ㄦ暟鎹鍑烘垚鍔燂紒鏂囦欢宸蹭繚瀛樺埌: ${zipPath.split('/').last}'),
+            content: Text('浏览器数据导出成功！文件已保存到: ${zipPath.split('/').last}'),
             action: SnackBarAction(
-              label: '鎵撳紑鏂囦欢',
+              label: '打开文件',
               onPressed: () async {
-                // 鎵撳紑鏂囦欢绠＄悊鍣ㄥ埌瀵煎嚭鐩綍
+                // 打开文件管理器到导出目录
                 final result = await FilePicker.platform.clearTemporaryFiles();
-                debugPrint('娓呯悊涓存椂鏂囦欢缁撴灉: $result');
+                debugPrint('清理临时文件结果: $result');
               },
             ),
           ),
         );
       }
     } catch (e) {
-      debugPrint('瀵煎嚭娴忚鍣ㄦ暟鎹椂鍑洪敊: $e');
+      debugPrint('导出浏览器数据时出错: $e');
       if (mounted) {
-        Navigator.pop(context);
+        Navigator.pop(context); // 关闭进度对话框
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('导出浏览器数据时出错: ')),
+          SnackBar(content: Text('导出浏览器数据时出错：$e')),
         );
       }
     }
   }
 
-  /// 瀵煎叆娴忚鍣ㄦ暟鎹?  Future<void> _importBrowserData() async {
+  /// 导入浏览器数据
+  Future<void> _importBrowserData() async {
     try {
-      // 鏄剧ず璀﹀憡瀵硅瘽妗?      bool? confirm = await showDialog<bool>(
+      // 显示警告对话框
+      bool? confirm = await showDialog<bool>(
         context: context,
         builder: (context) => AlertDialog(
+          title: const Text('警告'),
           content: const Text('导入浏览器数据将会覆盖当前的书签和常用网站，确定要继续吗？'),
-          
           actions: [
             TextButton(
-              child: const Text('鍙栨秷'),
+              child: const Text('取消'),
               onPressed: () => Navigator.of(context).pop(false),
             ),
             TextButton(
-              child: const Text('纭畾'),
+              child: const Text('确定'),
               onPressed: () => Navigator.of(context).pop(true),
             ),
           ],
@@ -3078,16 +3197,18 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
       if (confirm != true) return;
 
-      // 閫夋嫨ZIP鏂囦欢
+      // 选择ZIP文件
       FilePickerResult? result = await FilePicker.platform.pickFiles(
         type: FileType.custom,
         allowedExtensions: ['zip'],
       );
 
       if (result != null && result.files.single.path != null) {
-        // 鍒涘缓杩涘害閫氱煡鍣?        final ValueNotifier<String> progressNotifier = ValueNotifier<String>('鍑嗗瀵煎叆...');
+        // 创建进度通知器
+        final ValueNotifier<String> progressNotifier = ValueNotifier<String>('准备导入...');
         
-        // 鏄剧ず杩涘害瀵硅瘽妗?        showDialog(
+        // 显示进度对话框
+        showDialog(
           context: context,
           barrierDismissible: false,
           builder: (context) => AlertDialog(
@@ -3111,20 +3232,20 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           ),
         );
 
-        progressNotifier.value = '瑙ｅ帇鏂囦欢...';
+        progressNotifier.value = '解压文件...';
 
-        // 璇诲彇ZIP鏂囦欢
+        // 读取ZIP文件
         final File zipFile = File(result.files.single.path!);
         final List<int> zipBytes = await zipFile.readAsBytes();
         final Archive? archive = ZipDecoder().decodeBytes(zipBytes);
 
         if (archive == null) {
-          throw Exception('鏃犳硶瑙ｆ瀽ZIP鏂囦欢');
+          throw Exception('无法解析ZIP文件');
         }
 
-        progressNotifier.value = '瑙ｆ瀽鏁版嵁...';
+        progressNotifier.value = '解析数据...';
 
-        // 鏌ユ壘骞惰В鏋怞SON鏂囦欢
+        // 查找并解析JSON文件
         ArchiveFile? jsonFile;
         for (final file in archive) {
           if (file.name == 'browser_data.json') {
@@ -3134,21 +3255,21 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         }
 
         if (jsonFile == null) {
-          throw Exception('ZIP鏂囦欢涓湭鎵惧埌娴忚鍣ㄦ暟鎹枃浠?);
+          throw Exception('ZIP文件中未找到浏览器数据文件');
         }
 
-        // 瑙ｆ瀽JSON鏁版嵁
+        // 解析JSON数据
         final String jsonContent = utf8.decode(jsonFile.content as List<int>);
         final Map<String, dynamic> browserData = jsonDecode(jsonContent);
 
-        progressNotifier.value = '瀵煎叆鏁版嵁...';
+        progressNotifier.value = '导入数据...';
 
-        // 楠岃瘉鏁版嵁鏍煎紡
+        // 验证数据格式
         if (browserData['version'] == null) {
-          throw Exception('鏁版嵁鏍煎紡涓嶆敮鎸侊紝缂哄皯鐗堟湰淇℃伅');
+          throw Exception('数据格式不支持，缺少版本信息');
         }
 
-        // 瀵煎叆涔︾
+        // 导入书签
         if (browserData['bookmarks'] != null) {
           final List<dynamic> bookmarksData = browserData['bookmarks'];
           setState(() {
@@ -3157,14 +3278,14 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           await _saveBookmarks();
         }
 
-        // 瀵煎叆甯哥敤缃戠珯
+        // 导入常用网站
         if (browserData['common_websites'] != null) {
           final List<dynamic> websitesData = browserData['common_websites'];
           setState(() {
             _commonWebsites.clear();
             for (final item in websitesData) {
               final Map<String, dynamic> website = Map<String, dynamic>.from(item);
-              // 鍙繚瀛?iconCode锛屼笉鍔ㄦ€佸垱寤?IconData 瀹炰緥
+              // 只保存 iconCode，不动态创建 IconData 实例
               if (website['iconCode'] == null) {
                 website['iconCode'] = Icons.public.codePoint;
               }
@@ -3174,33 +3295,34 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           await _saveCommonWebsites();
         }
 
-        progressNotifier.value = '导入完成';
+        progressNotifier.value = '导入完成！';
 
-        // 鍏抽棴杩涘害瀵硅瘽妗?        if (mounted) {
+        // 关闭进度对话框
+        if (mounted) {
           Navigator.pop(context);
         }
 
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('娴忚鍣ㄦ暟鎹鍏ユ垚鍔燂紒'),
+              content: Text('浏览器数据导入成功！'),
               backgroundColor: Colors.green,
             ),
           );
         }
       }
     } catch (e) {
-      debugPrint('瀵煎叆娴忚鍣ㄦ暟鎹椂鍑洪敊: $e');
+      debugPrint('导入浏览器数据时出错: $e');
       if (mounted) {
-        Navigator.pop(context);
+        Navigator.pop(context); // 关闭进度对话框
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('导入浏览器数据时出错: ')),
+          SnackBar(content: Text('导入浏览器数据时出错：$e')),
         );
       }
     }
   }
 
-  // 8. 鍘嗗彶璁板綍寮圭獥
+  // 8. 历史记录弹窗
   void _showHistory() {
     showModalBottomSheet(
       context: context,
@@ -3211,7 +3333,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
             children: [
               ListTile(
                 leading: const Icon(Icons.delete_forever),
-                title: const Text('娓呯┖鍏ㄩ儴鍘嗗彶璁板綍'),
+                title: const Text('清空全部历史记录'),
                 onTap: () async {
                   Navigator.pop(context);
                   _history.clear();
@@ -3250,11 +3372,11 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     );
   }
 
-  // 鏍规嵁 iconCode 鑾峰彇瀵瑰簲鐨勫浘鏍囷紙浣跨敤甯搁噺鏄犲皠閬垮厤鍔ㄦ€佸垱寤猴級
+  // 根据 iconCode 获取对应的图标（使用常量映射避免动态创建）
   IconData _getIconFromCode(int? iconCode) {
     if (iconCode == null) return Icons.public;
     
-    // 浣跨敤甯搁噺鍥炬爣鏄犲皠锛岄伩鍏嶅姩鎬佸垱寤?IconData
+    // 使用常量图标映射，避免动态创建 IconData
     switch (iconCode) {
       case 0xe3c3: return Icons.public; // public
       case 0xe3c4: return Icons.public_off; // public_off
@@ -3311,35 +3433,35 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       case 0xe3f7: return Icons.zoom_in; // zoom_in
       case 0xe3f8: return Icons.zoom_out; // zoom_out
       case 0xe3f9: return Icons.zoom_out_map; // zoom_out_map
-      default: return Icons.public; // 榛樿鍥炬爣
+      default: return Icons.public; // 默认图标
     }
   }
 
-  // 椤甸潰鍔犺浇瀹屾垚鍚庣殑澶勭悊
+  // 页面加载完成后的处理
   void _onPageFinished(String url) async {
     try {
-      // 娉ㄥ叆濯掍綋涓嬭浇澶勭悊绋嬪簭
+      // 注入媒体下载处理程序
       _injectDownloadHandlers();
       
-      // 娣诲姞鍘嗗彶璁板綍
+      // 添加历史记录
       String title = await _controller.getTitle() ?? url;
       await _addHistory(title, url);
       
-      // 鏇存柊鐘舵€?      setState(() {
+      // 更新状态
+      setState(() {
         _isLoading = false;
         _currentUrl = url;
         _urlController.text = url;
         _showHomePage = false;
       });
       
-      // 閫氱煡鐖剁粍浠舵祻瑙堝櫒鐘舵€佸彉鍖?      widget.onBrowserHomePageChanged?.call(_showHomePage);
+      // 通知父组件浏览器状态变化
+      widget.onBrowserHomePageChanged?.call(_showHomePage);
       
-      debugPrint('椤甸潰鍔犺浇瀹屾垚: $url, 鏍囬: $title');
+      debugPrint('页面加载完成: $url, 标题: $title');
     } catch (e) {
-      debugPrint('椤甸潰鍔犺浇瀹屾垚澶勭悊鏃跺嚭閿? $e');
+      debugPrint('页面加载完成处理时出错: $e');
     }
   }
 }
-
-
 
