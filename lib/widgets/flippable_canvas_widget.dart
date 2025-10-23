@@ -232,13 +232,6 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
           width: 2,
         ),
         borderRadius: BorderRadius.circular(8),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.1),
-            blurRadius: 4,
-            offset: Offset(2, 2),
-          ),
-        ],
       ),
       child: Stack(
         children: [
@@ -258,13 +251,6 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
                   color: Colors.white.withOpacity(0.35),
                   borderRadius: BorderRadius.circular(13),
                   border: Border.all(color: Colors.white.withOpacity(0.4), width: 0.8),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.08),
-                      blurRadius: 4,
-                      offset: const Offset(1,1),
-                    ),
-                  ],
                 ),
                 child: Icon(
                   Icons.settings,
@@ -297,13 +283,6 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
                   color: Colors.white.withOpacity(0.30),
                   borderRadius: BorderRadius.circular(8),
                   border: Border.all(color: Colors.white.withOpacity(0.45), width: 0.8),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.06),
-                      blurRadius: 3,
-                      offset: const Offset(1,1),
-                    ),
-                  ],
                 ),
                 child: Icon(
                   Icons.open_in_full,
