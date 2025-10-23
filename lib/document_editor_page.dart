@@ -1670,14 +1670,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
                       );
 
                       // If it belongs to a canvas and that canvas is flipped, compute mirrored transform
-                      if (ownerCanvas != null && ownerCanvas.isFlipped) {
-                        // 在反面显示：位置保持不变，应用视觉翻转以体现背面效果
-                        child = Transform(
-                          alignment: Alignment.center,
-                          transform: Matrix4.identity()..rotateY(math.pi),
-                          child: child,
-                        );
-                      }
+                      // 保持内容正常方向（不镜像）
 
                       return Positioned(
                         key: ValueKey(data['id']),
@@ -1722,13 +1715,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
                         child: _buildTextBox(data),
                       );
 
-                      if (ownerCanvas != null && ownerCanvas.isFlipped) {
-                        child = Transform(
-                          alignment: Alignment.center,
-                          transform: Matrix4.identity()..rotateY(math.pi),
-                          child: child,
-                        );
-                      }
+                      // 保持文本正常方向
 
                       return Positioned(
                         key: ValueKey(data['id']),
@@ -1781,13 +1768,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
                         ),
                       );
 
-                      if (ownerCanvas != null && ownerCanvas.isFlipped) {
-                        child = Transform(
-                          alignment: Alignment.center,
-                          transform: Matrix4.identity()..rotateY(math.pi),
-                          child: child,
-                        );
-                      }
+                      // 保持音频控件正常方向
 
                       return Positioned(
                         key: ValueKey(data['id']),
