@@ -252,17 +252,24 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
             child: GestureDetector(
               onTap: _showCanvasOptions,
               child: Container(
-                width: 24,
-                height: 24,
+                width: 26,
+                height: 26,
                 decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.9),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.grey[400]!, width: 1),
+                  color: Colors.white.withOpacity(0.35),
+                  borderRadius: BorderRadius.circular(13),
+                  border: Border.all(color: Colors.white.withOpacity(0.4), width: 0.8),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.08),
+                      blurRadius: 4,
+                      offset: const Offset(1,1),
+                    ),
+                  ],
                 ),
                 child: Icon(
                   Icons.settings,
-                  size: 14,
-                  color: Colors.grey[700],
+                  size: 15,
+                  color: Colors.grey[200],
                 ),
               ),
             ),
@@ -284,17 +291,24 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
                 });
               },
               child: Container(
-                width: 28,
-                height: 28,
+                width: 30,
+                height: 30,
                 decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.95),
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(color: Colors.grey[400]!, width: 1),
+                  color: Colors.white.withOpacity(0.30),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.white.withOpacity(0.45), width: 0.8),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.06),
+                      blurRadius: 3,
+                      offset: const Offset(1,1),
+                    ),
+                  ],
                 ),
                 child: Icon(
                   Icons.open_in_full,
-                  size: 14,
-                  color: Colors.grey[700],
+                  size: 16,
+                  color: Colors.grey[100],
                 ),
               ),
             ),
