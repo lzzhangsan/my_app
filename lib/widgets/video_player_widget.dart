@@ -4,6 +4,11 @@ import 'dart:io';
 import 'dart:async';
 import 'package:chewie/chewie.dart';
 import 'package:flutter/services.dart';
+import '../services/logger.dart';
+
+// Use an Expando to associate the StatefulWidget instance with its State safely
+// without adding mutable fields to the immutable widget class.
+final Expando<_VideoPlayerWidgetState> _widgetStateExpando = Expando<_VideoPlayerWidgetState>();
 
 class VideoPlayerWidget extends StatefulWidget {
   final File file;
@@ -26,9 +31,10 @@ class VideoPlayerWidget extends StatefulWidget {
   @override
   _VideoPlayerWidgetState createState() => _VideoPlayerWidgetState();
 
-  VideoPlayerController? get controller => _state?._controller;
-
-  _VideoPlayerWidgetState? _state;
+  // Provide controller access via the Expando-registered state. This keeps the
+  // widget immutable while still allowing external callers to get the
+  // underlying VideoPlayerController if the state exists.
+  VideoPlayerController? get controller => _widgetStateExpando[this]?._controller;
 }
 
 class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
@@ -37,12 +43,13 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   bool _isEnded = false;
   bool _hasError = false;
   Timer? _progressTimer;
-  Size? _screenSize;
 
   @override
   void initState() {
     super.initState();
-    widget._state = this;
+    // Register this state for the widget so external code can access the
+    // controller through the widget.controller getter.
+    _widgetStateExpando[widget] = this;
     _initializeController();
   }
 
@@ -53,8 +60,8 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     }
 
     _controller = VideoPlayerController.file(widget.file);
-    debugPrint('[播放器] 初始化controller: ${widget.file.path}');
-    
+    Logger.d('[播放器] 初始化controller: ${widget.file.path}');
+
     _controller.initialize().then((_) {
       if (!mounted) return;
       
@@ -70,8 +77,9 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
         materialProgressColors: ChewieProgressColors(
           playedColor: Colors.red,
           handleColor: Colors.red,
-          backgroundColor: Colors.white.withOpacity(0.3),
-          bufferedColor: Colors.white.withOpacity(0.5),
+          // Replace deprecated withOpacity usage with alpha-based color to avoid deprecation warnings
+          backgroundColor: Colors.white.withAlpha((0.3 * 255).round()),
+          bufferedColor: Colors.white.withAlpha((0.5 * 255).round()),
         ),
         errorBuilder: (context, errorMessage) {
           return Center(
@@ -104,8 +112,8 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
       _controller.play();
       _controller.setLooping(widget.looping);
       
-      debugPrint('[播放器] 初始化成功, isInitialized: ${_controller.value.isInitialized}, isPlaying: ${_controller.value.isPlaying}');
-      
+      Logger.i('[播放器] 初始化成功, isInitialized: ${_controller.value.isInitialized}, isPlaying: ${_controller.value.isPlaying}');
+
       _progressTimer = Timer.periodic(const Duration(milliseconds: 100), (_) {
         if (mounted) setState(() {});
       });
@@ -119,8 +127,8 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   void _videoListener() {
     if (!mounted) return;
     
-    debugPrint('[播放器] 状态监听 isInitialized: ${_controller.value.isInitialized}, isPlaying: ${_controller.value.isPlaying}, position: ${_controller.value.position}');
-    
+    Logger.d('[播放器] 状态监听 isInitialized: ${_controller.value.isInitialized}, isPlaying: ${_controller.value.isPlaying}, position: ${_controller.value.position}');
+
     if (_controller.value.hasError && !_hasError) {
       _handleError(_controller.value.errorDescription ?? '未知错误');
       return;
@@ -142,7 +150,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   }
 
   void _handleError(String error) {
-    debugPrint('视频播放错误: ${widget.file.path}, 错误: $error');
+    Logger.e('视频播放错误: ${widget.file.path}', error);
     _hasError = true;
     if (mounted) setState(() {});
     widget.onVideoError?.call();
@@ -150,11 +158,12 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
 
   @override
   void dispose() {
-    debugPrint('销毁视频播放器: ${widget.file.path}');
+    Logger.d('销毁视频播放器: ${widget.file.path}');
     _progressTimer?.cancel();
     _chewieController?.dispose();
     _controller.pause();
     _controller.dispose();
+    // Expando entries are automatically removed when objects are GC'd, no explicit removal needed
     super.dispose();
   }
 
@@ -164,7 +173,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     if (oldWidget.file.path != widget.file.path ||
         oldWidget.looping != widget.looping ||
         oldWidget.forceManualLoop != widget.forceManualLoop) {
-      debugPrint('视频播放器更新: ${oldWidget.file.path} -> ${widget.file.path}');
+      Logger.d('视频播放器更新: ${oldWidget.file.path} -> ${widget.file.path}');
       _progressTimer?.cancel();
       _chewieController?.dispose();
       _controller.pause();
@@ -234,12 +243,5 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
         ),
       ),
     );
-  }
-
-  String _formatDuration(Duration duration) {
-    String twoDigits(int n) => n.toString().padLeft(2, '0');
-    final minutes = twoDigits(duration.inMinutes.remainder(60));
-    final seconds = twoDigits(duration.inSeconds.remainder(60));
-    return '$minutes:$seconds';
   }
 }

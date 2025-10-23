@@ -6,7 +6,6 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
-import 'package:flutter_background_service_android/flutter_background_service_android.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../core/service_locator.dart';
@@ -240,7 +239,6 @@ class BackgroundMediaService {
   static Future<void> _processNewMedia(Set<String> newAssetIds, List<AssetEntity> allAssets) async {
     try {
       final mediaService = getService<MediaService>();
-      final databaseService = getService<DatabaseService>();
       
       for (final assetId in newAssetIds) {
         try {
@@ -287,12 +285,7 @@ class BackgroundMediaService {
       }
       
       // 确定媒体类型
-      MediaType mediaType;
-      if (asset.type == AssetType.image) {
-        mediaType = MediaType.image;
-      } else if (asset.type == AssetType.video) {
-        mediaType = MediaType.video;
-      } else {
+      if (asset.type != AssetType.image && asset.type != AssetType.video) {
         if (kDebugMode) {
           print('[后台服务] 不支持的媒体类型: ${asset.type}');
         }
@@ -401,4 +394,4 @@ class BackgroundMediaService {
       }
     }
   }
-} 
+}

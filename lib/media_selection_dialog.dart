@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'core/service_locator.dart';
 import 'services/database_service.dart';
+import 'services/logger.dart';
 
 class MediaSelectionDialog extends StatefulWidget {
   final Function(String)? onMediaSelected;
@@ -37,16 +38,16 @@ class _MediaSelectionDialogState extends State<MediaSelectionDialog> {
     });
     try {
       final items = await _databaseService.getMediaItems(_currentDirectory);
-      print('加载媒体项: $_currentDirectory, 共 ${items.length} 项');
+      Logger.i('加载媒体项: $_currentDirectory, 共 ${items.length} 项');
       for (var item in items) {
-        print('媒体项: ${item['name']}, 类型: ${item['type']}');
+        Logger.d('媒体项: ${item['name']}, 类型: ${item['type']}');
       }
       setState(() {
         _mediaItems = items.where((item) => item['type'] == 3).toList();
         _isLoading = false;
       });
     } catch (e) {
-      print('加载媒体项时出错: $e');
+      Logger.e('加载媒体项时出错', e);
       setState(() {
         _isLoading = false;
       });

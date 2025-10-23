@@ -8,6 +8,7 @@ import 'services/database_service.dart';
 // 已移除备份服务导入
 import 'resizable_and_configurable_text_box.dart';
 import 'directory_page.dart';
+import 'services/logger.dart';
 
 import 'package:uuid/uuid.dart';
 import 'package:sqflite/sqflite.dart';
@@ -46,18 +47,10 @@ class _CoverPageState extends State<CoverPage> {
   @override
   void initState() {
     super.initState();
-    print('CoverPage initState: ${DateTime.now()}'); // 添加日志
-    
-    if (!kIsWeb) {
-      _databaseService = getService<DatabaseService>();
-      _ensureCoverPageDocumentExists().then((_) {
-        _ensureCoverImageTableExists().then((_) {
-          _loadBackgroundImage();
-          _loadContent();
-        });
-      });
-    } else {
-      print("Web environment: Skipping database operations in CoverPage");
+    Logger.i('CoverPage initState: ${DateTime.now()}'); // 添加日志
+
+    if (kIsWeb) {
+      Logger.d("Web environment: Skipping database operations in CoverPage");
       // 为Web环境设置默认状态
       if (mounted) {
         setState(() {
@@ -66,7 +59,16 @@ class _CoverPageState extends State<CoverPage> {
           _backgroundColor = Colors.grey[200]!;
         });
       }
+      return;
     }
+
+    _databaseService = getService<DatabaseService>();
+    _ensureCoverPageDocumentExists().then((_) {
+      _ensureCoverImageTableExists().then((_) {
+        _loadBackgroundImage();
+        _loadContent();
+      });
+    });
   }
   
   // 确保封面页文档存在
@@ -82,7 +84,7 @@ class _CoverPageState extends State<CoverPage> {
       );
       
       if (result.isEmpty) {
-        print('封面页文档不存在，正在创建...');
+        Logger.i('封面页文档不存在，正在创建...');
         // 创建封面页文档
         final uuid = Uuid();
         await db.insert('documents', {
@@ -95,18 +97,18 @@ class _CoverPageState extends State<CoverPage> {
           'created_at': DateTime.now().millisecondsSinceEpoch,
           'updated_at': DateTime.now().millisecondsSinceEpoch,
         });
-        print('封面页文档已创建');
+        Logger.i('封面页文档已创建');
       } else {
-        print('封面页文档已存在');
+        Logger.i('封面页文档已存在');
       }
     } catch (e) {
-      print('检查或创建封面页文档时出错: $e');
+      Logger.e('检查或创建封面页文档时出错', e);
     }
   }
 
   @override
   void dispose() {
-    print('CoverPage dispose: ${DateTime.now()}'); // 添加日志
+    Logger.i('CoverPage dispose: ${DateTime.now()}'); // 添加日志
     // 清理工作，例如取消订阅、释放资源等
     // _textBoxes.forEach((textBoxData) {
     //   final controller = textBoxData['controller'] as TextEditingController?;
@@ -125,7 +127,7 @@ class _CoverPageState extends State<CoverPage> {
       );
       
       if (tables.isEmpty) {
-        print('cover_image表不存在，正在创建...');
+        Logger.i('cover_image表不存在，正在创建...');
         await db.execute('''
           CREATE TABLE IF NOT EXISTS cover_image (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -133,12 +135,12 @@ class _CoverPageState extends State<CoverPage> {
             timestamp INTEGER
           )
         ''');
-        print('cover_image表已创建');
+        Logger.i('cover_image表已创建');
       } else {
-        print('cover_image表已存在');
+        Logger.i('cover_image表已存在');
       }
     } catch (e) {
-      print('检查或创建cover_image表时出错: $e');
+      Logger.e('检查或创建 cover_image 表时出错', e);
     }
   }
 
@@ -159,7 +161,7 @@ class _CoverPageState extends State<CoverPage> {
           try {
             await _backgroundImage!.delete();
           } catch (e) {
-            print('删除旧背景图片时出错: $e');
+            Logger.w('删除旧背景图片时出错: $e');
           }
         }
 
@@ -180,7 +182,7 @@ class _CoverPageState extends State<CoverPage> {
         await getService<DatabaseService>().insertCoverImage(destinationPath);
       }
     } catch (e) {
-      print('选择背景图片时出错: $e');
+      Logger.e('选择背景图片时出错', e);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('选择背景图片时出错，请重试。')),
       );
@@ -224,7 +226,7 @@ class _CoverPageState extends State<CoverPage> {
           SnackBar(content: Text('背景设置已清除')),
         );
       } catch (e) {
-        print('删除背景设置时出错: $e');
+        Logger.e('删除背景设置时出错', e);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('删除背景设置时出错，请重试。')),
         );
@@ -272,7 +274,7 @@ class _CoverPageState extends State<CoverPage> {
         SnackBar(content: Text('背景图片已删除')),
       );
     } catch (e) {
-      print('删除背景图片时出错: $e');
+      Logger.e('删除背景图片时出错', e);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('删除背景图片时出错，请重试。')),
       );
@@ -291,19 +293,19 @@ class _CoverPageState extends State<CoverPage> {
           setState(() {
             _backgroundImage = File(imagePath);
           });
-          print('成功加载背景图片: $imagePath');
+          Logger.i('成功加载背景图片: $imagePath');
         } else {
-          print('图片文件不存在: $imagePath');
+          Logger.w('图片文件不存在: $imagePath');
         }
       } else {
-        print('没有找到背景图片记录');
+        Logger.d('没有找到背景图片记录');
       }
       
       // 再尝试加载封面设置（包括背景颜色）
       await _loadCoverSettings();
       
     } catch (e) {
-      print('加载背景图片时出错: $e');
+      Logger.e('加载背景图片时出错', e);
     } finally {
       setState(() {
         _isLoading = false;
@@ -323,14 +325,14 @@ class _CoverPageState extends State<CoverPage> {
       );
       
       if (tables.isEmpty) {
-        print('cover_settings表不存在');
+        Logger.i('cover_settings表不存在');
         return;
       }
       
       // 查询设置
       List<Map<String, dynamic>> settings = await db.query('cover_settings', where: 'id = 1');
       if (settings.isEmpty) {
-        print('没有找到封面设置记录');
+        Logger.i('没有找到封面设置记录');
         return;
       }
       
@@ -341,7 +343,7 @@ class _CoverPageState extends State<CoverPage> {
           _backgroundColor = Color(colorValue);
           _hasCustomBackgroundColor = true;
         });
-        print('成功加载背景颜色: $colorValue');
+        Logger.i('成功加载背景颜色: $colorValue');
       }
       
       // 获取背景图片路径
@@ -351,12 +353,12 @@ class _CoverPageState extends State<CoverPage> {
           setState(() {
             _backgroundImage = File(imagePath);
           });
-          print('从设置中加载背景图片: $imagePath');
+          Logger.i('从设置中加载背景图片: $imagePath');
         }
       }
       
     } catch (e) {
-      print('加载封面设置时出错: $e');
+      Logger.e('加载封面设置时出错', e);
     }
   }
 
@@ -379,12 +381,12 @@ class _CoverPageState extends State<CoverPage> {
       // 同时更新封面设置
       await _saveCoverSettings(imagePath, null);
       
-      print('背景图片路径已保存: $imagePath');
-      
+      Logger.i('背景图片路径已保存: $imagePath');
+
       // 自动备份数据库
       await _databaseService.backupDatabase();
     } catch (e) {
-      print('保存背景图片时出错: $e');
+      Logger.e('保存背景图片时出错', e);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('保存背景图片失败，请重试。')),
       );
@@ -424,7 +426,7 @@ class _CoverPageState extends State<CoverPage> {
             textBoxes.map((map) => Map<String, dynamic>.from(map)).toList();
       });
     } catch (e) {
-      print('加载内容时出错: $e');
+      Logger.e('加载内容时出错', e);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('加载内容时出错，请重试。')),
       );
@@ -443,7 +445,7 @@ class _CoverPageState extends State<CoverPage> {
       // 自动备份数据库
       await _databaseService.backupDatabase();
     } catch (e) {
-      print('保存内容时出错: $e');
+      Logger.e('保存内容时出错', e);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('保存内容时出错，请重试。')),
       );
@@ -933,13 +935,13 @@ class _CoverPageState extends State<CoverPage> {
       // 保存背景颜色到设置
       await _saveCoverSettings(null, color.value);
       
-      print('背景颜色已设置: ${color.value}');
-      
+      Logger.i('背景颜色已设置: ${color.value}');
+
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('背景颜色已更新')),
       );
     } catch (e) {
-      print('设置背景颜色时出错: $e');
+      Logger.e('设置背景颜色时出错', e);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('设置背景颜色失败，请重试')),
       );
@@ -968,7 +970,7 @@ class _CoverPageState extends State<CoverPage> {
             background_color INTEGER
           )
         ''');
-        print('创建了cover_settings表');
+        Logger.i('创建了cover_settings表');
       }
       
       // 查询当前设置
@@ -1002,10 +1004,10 @@ class _CoverPageState extends State<CoverPage> {
         await db.insert('cover_settings', data, conflictAlgorithm: ConflictAlgorithm.replace);
       }
       
-      print('已保存封面设置: 图片路径=${data['background_image_path'] ?? "无"}, 颜色=${data['background_color'] ?? "无"}');
-      
+      Logger.i('已保存封面设置: 图片路径=${data['background_image_path'] ?? "无"}, 颜色=${data['background_color'] ?? "无"}');
+
     } catch (e) {
-      print('保存封面设置时出错: $e');
+      Logger.e('保存封面设置时出错', e);
       rethrow;
     }
   }
@@ -1088,7 +1090,7 @@ class _CoverPageState extends State<CoverPage> {
           SnackBar(content: Text('封面页已清空')),
         );
       } catch (e) {
-        print('清空封面页时出错: $e');
+        Logger.e('清空封面页时出错', e);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('清空封面页时出错，请重试。')),
         );

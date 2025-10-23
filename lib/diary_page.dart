@@ -21,6 +21,7 @@ import 'package:path/path.dart' as path;
 import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 import 'services/database_service.dart';
 import 'core/service_locator.dart';
+import 'services/logger.dart';
 
 // 全局函数：显示进度条弹窗，支持取消操作
 void showProgressDialog(BuildContext context, ValueNotifier<double> progress, ValueNotifier<String> message, {bool barrierDismissible = false}) {
@@ -853,7 +854,7 @@ class _DiaryPageState extends State<DiaryPage> {
         mediaPathMapping[mediaPath] = uniqueFileName;
         mediaDone++;
         progress.value = 0.3 + (mediaDone / mediaTotal) * 0.5; // 30%-80% for media copy
-        print('已复制媒体文件: $originalFileName -> $uniqueFileName');
+        Logger.i('已复制媒体文件: $originalFileName -> $uniqueFileName');
       }
 
       // 5.5. 更新JSON数据中的媒体路径
@@ -934,9 +935,9 @@ class _DiaryPageState extends State<DiaryPage> {
       if (await tempExportDir.exists()) {
         try {
           await tempExportDir.delete(recursive: true);
-          print('成功清理日记导出临时文件: ${tempExportDir.path}');
+          Logger.i('成功清理日记导出临时文件: ${tempExportDir.path}');
         } catch (e) {
-          print('警告：清理日记导出临时目录时失败: $e');
+          Logger.w('警告：清理日记导出临时目录时失败: $e');
         }
       }
     }
@@ -997,28 +998,28 @@ class _DiaryPageState extends State<DiaryPage> {
       final List<DiaryEntry> entriesToImport = [];
       final permanentMediaDir = await _getPermanentMediaDirectory();
 
-      print('开始处理JSON数据，共 ${entriesJson.length} 个条目');
-      
+      Logger.i('开始处理JSON数据，共 ${entriesJson.length} 个条目');
+
       for (int i = 0; i < entriesJson.length; i++) {
         final item = entriesJson[i];
         final entryMap = item as Map<String, dynamic>;
         
-        print('处理第 $i 个条目:');
-        print('  原始imagePaths: ${entryMap['image_paths']}');
-        print('  原始videoPaths: ${entryMap['video_paths']}');
-        print('  原始audioPaths: ${entryMap['audio_paths']}');
-        
+        Logger.d('处理第 $i 个条目:');
+        Logger.d('  原始imagePaths: ${entryMap['image_paths']}');
+        Logger.d('  原始videoPaths: ${entryMap['video_paths']}');
+        Logger.d('  原始audioPaths: ${entryMap['audio_paths']}');
+
         // 路径重映射 - 处理media/前缀的路径
         List<String> remapPaths(List<dynamic> originalPaths) {
           return originalPaths.map((p) {
             final pathStr = p.toString();
-            print('处理媒体路径: $pathStr');
-            
+            Logger.d('处理媒体路径: $pathStr');
+
             if (pathStr.startsWith('media/')) {
               // 如果是media/开头的路径，提取文件名并映射到永久目录
               final fileName = path.basename(pathStr);
               final mappedPath = path.join(permanentMediaDir.path, fileName);
-              print('映射 media/ 路径: $pathStr -> $mappedPath');
+              Logger.d('映射 media/ 路径: $pathStr -> $mappedPath');
               return mappedPath;
             } else if (pathStr.contains('media/')) {
               // 如果路径中包含media/，提取media/后面的部分
@@ -1026,13 +1027,13 @@ class _DiaryPageState extends State<DiaryPage> {
               final mediaPath = pathStr.substring(mediaIndex + 6); // 去掉"media/"
               final fileName = path.basename(mediaPath);
               final mappedPath = path.join(permanentMediaDir.path, fileName);
-              print('映射包含media/的路径: $pathStr -> $mappedPath');
+              Logger.d('映射包含media/的路径: $pathStr -> $mappedPath');
               return mappedPath;
             } else {
               // 如果是完整路径，直接使用文件名
               final fileName = path.basename(pathStr);
               final mappedPath = path.join(permanentMediaDir.path, fileName);
-              print('映射完整路径: $pathStr -> $mappedPath');
+              Logger.d('映射完整路径: $pathStr -> $mappedPath');
               return mappedPath;
             }
           }).toList();
@@ -1059,10 +1060,10 @@ class _DiaryPageState extends State<DiaryPage> {
         final videoPaths = remapPaths(parseMediaPaths(entryMap['video_paths']));
         final audioPaths = remapPaths(parseMediaPaths(entryMap['audio_paths']));
         
-        print('  映射后imagePaths: $imagePaths');
-        print('  映射后videoPaths: $videoPaths');
-        print('  映射后audioPaths: $audioPaths');
-        
+        Logger.d('  映射后imagePaths: $imagePaths');
+        Logger.d('  映射后videoPaths: $videoPaths');
+        Logger.d('  映射后audioPaths: $audioPaths');
+
         // 创建临时Map，使用已处理的媒体路径
         final processedEntryMap = Map<String, dynamic>.from(entryMap);
         processedEntryMap['imagePaths'] = imagePaths;
@@ -1106,29 +1107,29 @@ class _DiaryPageState extends State<DiaryPage> {
                 // 验证复制是否成功
                 if (await File(targetPath).exists()) {
                   mediaCount++;
-                  print('已迁移媒体文件: $fileName');
+                  Logger.i('已迁移媒体文件: $fileName');
                 } else {
-                  print('警告：媒体文件复制失败: $fileName');
+                  Logger.w('警告：媒体文件复制失败: $fileName');
                   skippedCount++;
                 }
               } else {
-                print('警告：源媒体文件不存在: ${entity.path}');
+                Logger.w('警告：源媒体文件不存在: ${entity.path}');
                 skippedCount++;
               }
             } catch (e) {
-              print('警告：迁移媒体文件时出错: $fileName, 错误: $e');
+              Logger.w('警告：迁移媒体文件时出错: $fileName, 错误: $e');
               skippedCount++;
             }
           }
         }
-        print('总共迁移了 $mediaCount 个媒体文件，跳过 $skippedCount 个文件');
-        
+        Logger.i('总共迁移了 $mediaCount 个媒体文件，跳过 $skippedCount 个文件');
+
         // 验证迁移结果
         if (mediaCount == 0 && mediaFiles.isNotEmpty) {
-          print('警告：没有成功迁移任何媒体文件，可能存在权限或路径问题');
+          Logger.w('警告：没有成功迁移任何媒体文件，可能存在权限或路径问题');
         }
       } else {
-        print('临时媒体目录不存在，跳过媒体文件迁移');
+        Logger.w('临时媒体目录不存在，跳过媒体文件迁移');
       }
       progress.value = 0.95;
 
@@ -1137,39 +1138,39 @@ class _DiaryPageState extends State<DiaryPage> {
       int validMediaCount = 0;
       int invalidMediaCount = 0;
       
-      print('开始验证媒体文件映射...');
-      print('永久媒体目录: ${permanentMediaDir.path}');
-      
-      for (var entry in entriesToImport) {
-        final allMediaPaths = [...entry.imagePaths, ...entry.videoPaths, ...entry.audioPaths];
-        print('日记条目 ${entry.id} 的媒体路径: $allMediaPaths');
-        
-        for (var mediaPath in allMediaPaths) {
-          if (mediaPath.isNotEmpty) {
-            final mediaFile = File(mediaPath);
-            print('检查媒体文件: $mediaPath');
-            
-            if (await mediaFile.exists()) {
-              validMediaCount++;
-              print('✓ 媒体文件存在: $mediaPath');
-            } else {
-              invalidMediaCount++;
-              print('✗ 媒体文件不存在: $mediaPath');
-              
-              // 尝试列出永久媒体目录中的所有文件
-              try {
-                final files = await permanentMediaDir.list().toList();
-                print('永久媒体目录中的文件: ${files.map((f) => path.basename(f.path)).toList()}');
-              } catch (e) {
-                print('无法列出永久媒体目录: $e');
-              }
-            }
-          }
-        }
-      }
-      
-      print('媒体文件验证完成: $validMediaCount 个有效, $invalidMediaCount 个无效');
-      progress.value = 0.98;
+      Logger.i('开始验证媒体文件映射...');
+      Logger.d('永久媒体目录: ${permanentMediaDir.path}');
+
+       for (var entry in entriesToImport) {
+         final allMediaPaths = [...entry.imagePaths, ...entry.videoPaths, ...entry.audioPaths];
+         Logger.d('日记条目 ${entry.id} 的媒体路径: $allMediaPaths');
+
+         for (var mediaPath in allMediaPaths) {
+           if (mediaPath.isNotEmpty) {
+             final mediaFile = File(mediaPath);
+             Logger.d('检查媒体文件: $mediaPath');
+
+             if (await mediaFile.exists()) {
+               validMediaCount++;
+               Logger.i('✓ 媒体文件存在: $mediaPath');
+             } else {
+               invalidMediaCount++;
+               Logger.w('✗ 媒体文件不存在: $mediaPath');
+
+                // 尝试列出永久媒体目录中的所有文件
+                try {
+                  final files = await permanentMediaDir.list().toList();
+                  Logger.d('永久媒体目录中的文件: ${files.map((f) => path.basename(f.path)).toList()}');
+                } catch (e) {
+                  Logger.w('无法列出永久媒体目录: $e');
+                }
+             }
+           }
+         }
+       }
+
+      Logger.i('媒体文件验证完成: $validMediaCount 个有效, $invalidMediaCount 个无效');
+       progress.value = 0.98;
 
       // 8. 刷新UI
       message.value = '导入完成!';
@@ -1195,9 +1196,9 @@ class _DiaryPageState extends State<DiaryPage> {
       if (await tempImportDir.exists()) {
         try {
           await tempImportDir.delete(recursive: true);
-          print('成功清理日记导入临时文件: ${tempImportDir.path}');
+          Logger.i('成功清理日记导入临时文件: ${tempImportDir.path}');
         } catch (e) {
-          print('警告：清理日记导入临时目录时失败: $e');
+          Logger.w('警告：清理日记导入临时目录时失败: $e');
         }
       }
     }
@@ -1291,8 +1292,8 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
 
   // 预加载所有缩略图的缓存，避免界面上一张一张显示的情况
   Future<void> _preloadThumbnails(List<String> imagePaths, List<String> videoPaths) async {
-    debugPrint('开始预加载所有缩略图...');
-    
+    Logger.d('开始预加载所有缩略图...');
+
     // 清空之前的缓存
     _videoThumbnailCache.clear();
     
@@ -1304,14 +1305,14 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
           final fileName = videoPath.split(Platform.pathSeparator).last;
           final cacheKey = 'video_thumb_$fileName';
           _videoThumbnailCache[cacheKey] = thumbnailFile;
-          debugPrint('视频缩略图已缓存: $cacheKey');
+          Logger.d('视频缩略图已缓存: $cacheKey');
         }
       } catch (e) {
-        debugPrint('预加载视频缩略图失败: $videoPath, 错误: $e');
+        Logger.w('预加载视频缩略图失败: $videoPath, 错误: $e');
       }
     }
     
-    debugPrint('所有缩略图预加载完成，视频缓存数量: ${_videoThumbnailCache.length}');
+    Logger.d('所有缩略图预加载完成，视频缓存数量: ${_videoThumbnailCache.length}');
   }
 
   Future<void> _loadDraftOrEntry() async {
@@ -1884,11 +1885,11 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
       
       // 检查缓存是否存在
       if (await thumbnailFile.exists() && await thumbnailFile.length() > 100) {
-        debugPrint('使用视频缩略图缓存: $thumbnailPath');
+        Logger.d('使用视频缩略图缓存: $thumbnailPath');
         return thumbnailFile;
       }
       
-      debugPrint('生成新的视频缩略图: $videoPath');
+      Logger.d('生成新的视频缩略图: $videoPath');
       // 缓存不存在，生成新的缩略图
       final newThumbnail = await MediaService().generateVideoThumbnail(videoPath);
       if (newThumbnail != null) {
@@ -1899,7 +1900,7 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
       
       return null;
     } catch (e) {
-      debugPrint('获取缓存视频缩略图失败: $e');
+      Logger.w('获取缓存视频缩略图失败: $e');
       return null;
     }
   }
@@ -1950,11 +1951,11 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
       
       // 检查缓存是否存在
       if (await thumbnailFile.exists() && await thumbnailFile.length() > 100) {
-        debugPrint('使用图片缩略图缓存: $thumbnailPath');
+        Logger.d('使用图片缩略图缓存: $thumbnailPath');
         return thumbnailFile;
       }
       
-      debugPrint('生成新的图片缩略图: $imagePath');
+      Logger.d('生成新的图片缩略图: $imagePath');
       // 缓存不存在，创建新的缩略图
       final originalFile = File(imagePath);
       if (await originalFile.exists()) {
@@ -1966,7 +1967,7 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
       
       return null;
     } catch (e) {
-      debugPrint('获取缓存图片缩略图失败: $e');
+      Logger.w('获取缓存图片缩略图失败: $e');
       return null;
     }
   }
@@ -2003,6 +2004,7 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
       }
     } catch (e) {
       if (context.mounted) {
+        Logger.e('选择视频时发生错误', e);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('选择视频时发生错误：\n${e.toString()}')),
         );
@@ -2206,22 +2208,22 @@ class _MediaPreviewDialogState extends State<MediaPreviewDialog> {
               setState(() {
                 _currentIndex = index;
               });
-              debugPrint('日记页面切换到媒体: $_currentIndex');
+              Logger.d('日记页面切换到媒体: $_currentIndex');
             },
             itemBuilder: (context, idx) {
               final path = widget.mediaPaths[idx];
-              debugPrint('构建日记媒体项: $path');
+              Logger.d('构建日记媒体项: $path');
               if (path.endsWith('.mp4') || path.endsWith('.mov') || path.endsWith('.avi')) {
                 // 视频
-                debugPrint('日记页面视频: $path');
-                debugPrint('幕尺寸: \\${MediaQuery.of(context).size.width}x\\${MediaQuery.of(context).size.height}');
-                debugPrint('BoxFit设置: BoxFit.cover');
+                Logger.d('日记页面视频: $path');
+                Logger.d('幕尺寸: \\${MediaQuery.of(context).size.width}x\\${MediaQuery.of(context).size.height}');
+                Logger.d('BoxFit设置: BoxFit.cover');
                 return SizedBox.expand(
                   child: VideoPlayerWidget(file: File(path)),
                 );
               } else {
                 // 图片
-                debugPrint('日记页面图片: $path');
+                Logger.d('日记页面图片: $path');
                 return SizedBox.expand(
                   child: FittedBox(
                     fit: BoxFit.cover,
