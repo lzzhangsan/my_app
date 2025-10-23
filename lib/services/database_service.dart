@@ -2704,6 +2704,62 @@ class DatabaseService {
         newAudioBox['id'] = const Uuid().v4();
         await db.insert('audio_boxes', newAudioBox);
       }
+
+      // 复制画布 (canvases)
+      // 需要重映射其中引用的 text/image/audio box ID 列表，避免指向旧文档元素
+      List<Map<String, dynamic>> sourceCanvases = await db.query(
+        'canvases',
+        where: 'document_id = ?',
+        whereArgs: [sourceId]
+      );
+
+      if (sourceCanvases.isNotEmpty) {
+        // 构建旧ID到新ID的映射，供画布内部前后面关联ID转换
+        final Map<String, String> textIdMap = { for (var tb in textBoxes) tb['id'].toString(): '' }; // placeholder
+        final Map<String, String> imageIdMap = { for (var ib in imageBoxes) ib['id'].toString(): '' };
+        final Map<String, String> audioIdMap = { for (var ab in audioBoxes) ab['id'].toString(): '' };
+
+        // 因为我们在上面复制时生成了新ID，需要重新查询新文档对应的各类型框以拿到新ID集合做映射
+        final newTextBoxes = await db.query('text_boxes', where: 'document_id = ?', whereArgs: [newDocId]);
+        final newImageBoxes = await db.query('image_boxes', where: 'document_id = ?', whereArgs: [newDocId]);
+        final newAudioBoxes = await db.query('audio_boxes', where: 'document_id = ?', whereArgs: [newDocId]);
+
+        // 建立通过内容位置的映射策略：按原列表顺序与新列表顺序一一对应（如果数量一致）
+        // 简单策略：同类型按 index 位置配对。更精确需要内容比对，这里先采用顺序映射。
+        void buildSequentialMap(List<Map<String, dynamic>> oldList, List<Map<String, dynamic>> newList, Map<String, String> map) {
+          for (int i = 0; i < oldList.length && i < newList.length; i++) {
+            map[oldList[i]['id'].toString()] = newList[i]['id'].toString();
+          }
+        }
+
+        buildSequentialMap(textBoxes, newTextBoxes, textIdMap);
+        buildSequentialMap(imageBoxes, newImageBoxes, imageIdMap);
+        buildSequentialMap(audioBoxes, newAudioBoxes, audioIdMap);
+
+        String remapIdList(String? csv, Map<String, String> idMap) {
+          if (csv == null || csv.trim().isEmpty) return '';
+          return csv.split(',').map((id) => idMap[id.trim()] ?? '').where((v) => v.isNotEmpty).join(',');
+        }
+
+        for (var canvas in sourceCanvases) {
+          Map<String, dynamic> newCanvas = Map<String, dynamic>.from(canvas);
+          newCanvas['id'] = const Uuid().v4();
+          newCanvas['document_id'] = newDocId;
+          // 重映射关联ID列
+          newCanvas['front_text_box_ids'] = remapIdList(canvas['front_text_box_ids']?.toString(), textIdMap);
+          newCanvas['back_text_box_ids'] = remapIdList(canvas['back_text_box_ids']?.toString(), textIdMap);
+          newCanvas['front_image_box_ids'] = remapIdList(canvas['front_image_box_ids']?.toString(), imageIdMap);
+            newCanvas['back_image_box_ids'] = remapIdList(canvas['back_image_box_ids']?.toString(), imageIdMap);
+          newCanvas['front_audio_box_ids'] = remapIdList(canvas['front_audio_box_ids']?.toString(), audioIdMap);
+          newCanvas['back_audio_box_ids'] = remapIdList(canvas['back_audio_box_ids']?.toString(), audioIdMap);
+          // 时间戳更新
+          final now = DateTime.now().millisecondsSinceEpoch;
+          newCanvas['created_at'] = now;
+          newCanvas['updated_at'] = now;
+          await db.insert('canvases', newCanvas);
+        }
+        print('复制画布: ${sourceCanvases.length} 个 (已重映射内部关联ID)');
+      }
       
       // 复制文档设置
       List<Map<String, dynamic>> docSettings = await db.query(
@@ -2883,6 +2939,50 @@ class DatabaseService {
         // 为音频框生成新的唯一ID
         newAudioBox['id'] = const Uuid().v4();
         await db.insert('audio_boxes', newAudioBox);
+      }
+
+      // 复制画布 (canvases) from template
+      List<Map<String, dynamic>> templateCanvases = await db.query(
+        'canvases',
+        where: 'document_id = ?',
+        whereArgs: [templateId]
+      );
+      if (templateCanvases.isNotEmpty) {
+        // 构建旧ID到新ID的映射（按顺序配对）
+        final newTextBoxes = await db.query('text_boxes', where: 'document_id = ?', whereArgs: [newDocId]);
+        final newImageBoxes = await db.query('image_boxes', where: 'document_id = ?', whereArgs: [newDocId]);
+        final newAudioBoxes = await db.query('audio_boxes', where: 'document_id = ?', whereArgs: [newDocId]);
+        Map<String, String> textMap = {};
+        Map<String, String> imageMap = {};
+        Map<String, String> audioMap = {};
+        void seq(List<Map<String, dynamic>> oldL, List<Map<String, dynamic>> newL, Map<String, String> mp) {
+          for (int i = 0; i < oldL.length && i < newL.length; i++) {
+            mp[oldL[i]['id'].toString()] = newL[i]['id'].toString();
+          }
+        }
+        seq(textBoxes, newTextBoxes, textMap);
+        seq(imageBoxes, newImageBoxes, imageMap);
+        seq(audioBoxes, newAudioBoxes, audioMap);
+        String remap(String? csv, Map<String,String> m) {
+          if (csv == null || csv.trim().isEmpty) return '';
+            return csv.split(',').map((id)=>m[id.trim()]??'').where((v)=>v.isNotEmpty).join(',');
+        }
+        for (var canvas in templateCanvases) {
+          Map<String, dynamic> newCanvas = Map<String, dynamic>.from(canvas);
+          newCanvas['id'] = const Uuid().v4();
+          newCanvas['document_id'] = newDocId;
+          newCanvas['front_text_box_ids'] = remap(canvas['front_text_box_ids']?.toString(), textMap);
+          newCanvas['back_text_box_ids'] = remap(canvas['back_text_box_ids']?.toString(), textMap);
+          newCanvas['front_image_box_ids'] = remap(canvas['front_image_box_ids']?.toString(), imageMap);
+          newCanvas['back_image_box_ids'] = remap(canvas['back_image_box_ids']?.toString(), imageMap);
+          newCanvas['front_audio_box_ids'] = remap(canvas['front_audio_box_ids']?.toString(), audioMap);
+          newCanvas['back_audio_box_ids'] = remap(canvas['back_audio_box_ids']?.toString(), audioMap);
+          final now = DateTime.now().millisecondsSinceEpoch;
+          newCanvas['created_at'] = now;
+          newCanvas['updated_at'] = now;
+          await db.insert('canvases', newCanvas);
+        }
+        print('从模板复制画布: ${templateCanvases.length} 个');
       }
       
       // 复制文档设置
