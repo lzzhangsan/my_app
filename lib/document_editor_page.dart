@@ -12,6 +12,7 @@ import 'widgets/video_player_widget.dart';
 import 'widgets/flippable_canvas_widget.dart'; // 新增：导入画布组件
 import 'models/flippable_canvas.dart'; // 新增：导入画布模型
 import 'dart:async';
+import 'dart:math' as math;
 import 'package:image_picker/image_picker.dart';
 import 'dart:io';
 import 'package:flutter_colorpicker/flutter_colorpicker.dart';
@@ -1559,134 +1560,187 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
                       );
                     }),
                     ...List<Map<String, dynamic>>.from(_imageBoxes).where((data) => _shouldShowContent(data['id'], 'image')).map<Widget>((data) {
-                      return Positioned(
-                        key: ValueKey(data['id']),
-                        left: data['positionX'],
-                        top: data['positionY'],
-                        child: GestureDetector(
-                          behavior: HitTestBehavior.translucent,
-                          onPanUpdate: (details) {
-                            if (_isPositionLocked) return;
-                            setState(() {
-                              double newDx =
-                                  data['positionX'] + details.delta.dx;
-                              double newDy =
-                                  data['positionY'] + details.delta.dy;
-                              double documentWidth =
-                                  MediaQuery.of(context).size.width;
-                              double documentHeight = totalHeight;
-                              newDx = newDx.clamp(
-                                  0.0, documentWidth - data['width']);
-                              newDy = newDy.clamp(
-                                  0.0, documentHeight - data['height']);
-                              data['positionX'] = newDx;
-                              data['positionY'] = newDy;
-                              _updateImageBoxPosition(
-                                data['id'],
-                                Offset(newDx, newDy),
-                              );
-                            });
-                          },
-                          onPanEnd: (_) {
+                      // Determine whether this image belongs to a canvas
+                      FlippableCanvas? ownerCanvas;
+                      for (var c in _canvases) {
+                        if (c.containsImageBox(data['id'])) {
+                          ownerCanvas = c;
+                          break;
+                        }
+                      }
+                      // default values
+                      double left = data['positionX'];
+                      double top = data['positionY'];
+                      Widget child = GestureDetector(
+                        behavior: HitTestBehavior.translucent,
+                        onPanUpdate: (details) {
+                          if (_isPositionLocked) return;
+                          setState(() {
+                            double newDx = data['positionX'] + details.delta.dx;
+                            double newDy = data['positionY'] + details.delta.dy;
+                            double documentWidth = MediaQuery.of(context).size.width;
+                            double documentHeight = totalHeight;
+                            newDx = newDx.clamp(0.0, documentWidth - data['width']);
+                            newDy = newDy.clamp(0.0, documentHeight - data['height']);
+                            data['positionX'] = newDx;
+                            data['positionY'] = newDy;
+                            _updateImageBoxPosition(data['id'], Offset(newDx, newDy));
+                          });
+                        },
+                        onPanEnd: (_) {
+                          _debouncedSave();
+                          _saveStateToHistory();
+                        },
+                        child: ResizableImageBox(
+                          initialSize: Size(data['width'], data['height']),
+                          imagePath: data['imagePath'],
+                          onResize: (size) {
+                            _updateImageBox(data['id'], size);
                             _debouncedSave();
                             _saveStateToHistory();
                           },
-                          child: ResizableImageBox(
-                            initialSize: Size(data['width'], data['height']),
-                            imagePath: data['imagePath'],
-                            onResize: (size) {
-                              _updateImageBox(data['id'], size);
-                              _debouncedSave();
-                              _saveStateToHistory();
-                            },
-                            onSettingsPressed: () =>
-                                _showImageBoxOptions(data['id']),
-                          ),
+                          onSettingsPressed: () => _showImageBoxOptions(data['id']),
                         ),
+                      );
+
+                      // If it belongs to a canvas and that canvas is flipped, compute mirrored transform
+                      if (ownerCanvas != null && ownerCanvas.isFlipped) {
+                        // compute relative position inside canvas
+                        double relX = data['positionX'] - ownerCanvas.positionX;
+                        double relY = data['positionY'] - ownerCanvas.positionY;
+                        // mirrored X relative to canvas
+                        double mirroredRelX = ownerCanvas.width - relX - (data['width'] as double);
+                        left = ownerCanvas.positionX + mirroredRelX;
+                        top = ownerCanvas.positionY + relY;
+                        // Wrap child in horizontal flip
+                        child = Transform(
+                          alignment: Alignment.center,
+                          transform: Matrix4.identity()..rotateY(math.pi),
+                          child: child,
+                        );
+                      }
+
+                      return Positioned(
+                        key: ValueKey(data['id']),
+                        left: left,
+                        top: top,
+                        child: child,
                       );
                     }),
                     ...List<Map<String, dynamic>>.from(_textBoxes).where((data) => _shouldShowContent(data['id'], 'text')).map<Widget>((data) {
+                      FlippableCanvas? ownerCanvas;
+                      for (var c in _canvases) {
+                        if (c.containsTextBox(data['id'])) {
+                          ownerCanvas = c;
+                          break;
+                        }
+                      }
+
+                      double left = data['positionX'];
+                      double top = data['positionY'];
+                      Widget child = GestureDetector(
+                        behavior: HitTestBehavior.translucent,
+                        onPanUpdate: (details) {
+                          if (_isPositionLocked) return;
+                          setState(() {
+                            double newDx = data['positionX'] + details.delta.dx;
+                            double newDy = data['positionY'] + details.delta.dy;
+                            double documentWidth = MediaQuery.of(context).size.width;
+                            double documentHeight = totalHeight;
+                            newDx = newDx.clamp(0.0, documentWidth - data['width']);
+                            newDy = newDy.clamp(0.0, documentHeight - data['height']);
+                            data['positionX'] = newDx;
+                            data['positionY'] = newDy;
+                            _updateTextBoxPosition(data['id'], Offset(newDx, newDy));
+                          });
+                        },
+                        onPanEnd: (_) {
+                          _debouncedSave();
+                          _saveStateToHistory();
+                        },
+                        child: _buildTextBox(data),
+                      );
+
+                      if (ownerCanvas != null && ownerCanvas.isFlipped) {
+                        double relX = data['positionX'] - ownerCanvas.positionX;
+                        double relY = data['positionY'] - ownerCanvas.positionY;
+                        double mirroredRelX = ownerCanvas.width - relX - (data['width'] as double);
+                        left = ownerCanvas.positionX + mirroredRelX;
+                        top = ownerCanvas.positionY + relY;
+                        child = Transform(
+                          alignment: Alignment.center,
+                          transform: Matrix4.identity()..rotateY(math.pi),
+                          child: child,
+                        );
+                      }
+
                       return Positioned(
                         key: ValueKey(data['id']),
-                        left: data['positionX'],
-                        top: data['positionY'],
-                        child: GestureDetector(
-                          behavior: HitTestBehavior.translucent,
-                          onPanUpdate: (details) {
-                            if (_isPositionLocked) return;
-                            setState(() {
-                              double newDx =
-                                  data['positionX'] + details.delta.dx;
-                              double newDy =
-                                  data['positionY'] + details.delta.dy;
-                              double documentWidth =
-                                  MediaQuery.of(context).size.width;
-                              double documentHeight = totalHeight;
-                              newDx = newDx.clamp(
-                                  0.0, documentWidth - data['width']);
-                              newDy = newDy.clamp(
-                                  0.0, documentHeight - data['height']);
-                              data['positionX'] = newDx;
-                              data['positionY'] = newDy;
-                              _updateTextBoxPosition(
-                                data['id'],
-                                Offset(newDx, newDy),
-                              );
-                            });
-                          },
-                          onPanEnd: (_) {
-                            _debouncedSave();
-                            _saveStateToHistory();
-                          },
-                          child: _buildTextBox(data),
-                        ),
+                        left: left,
+                        top: top,
+                        child: child,
                       );
                     }),
                     ..._audioBoxes.where((data) => _shouldShowContent(data['id'], 'audio')).map<Widget>((data) {
+                      FlippableCanvas? ownerCanvas;
+                      for (var c in _canvases) {
+                        if (c.containsAudioBox(data['id'])) {
+                          ownerCanvas = c;
+                          break;
+                        }
+                      }
+
+                      double left = data['positionX'];
+                      double top = data['positionY'];
+                      Widget child = GestureDetector(
+                        behavior: HitTestBehavior.translucent,
+                        onPanUpdate: (details) {
+                          if (_isPositionLocked) return;
+                          setState(() {
+                            double newDx = data['positionX'] + details.delta.dx;
+                            double newDy = data['positionY'] + details.delta.dy;
+                            double documentWidth = MediaQuery.of(context).size.width;
+                            double documentHeight = totalHeight;
+                            newDx = newDx.clamp(0.0, documentWidth - 37.3);
+                            newDy = newDy.clamp(0.0, documentHeight - 37.3);
+                            data['positionX'] = newDx;
+                            data['positionY'] = newDy;
+                            _updateAudioBoxPosition(data['id'], Offset(newDx, newDy));
+                          });
+                        },
+                        onPanEnd: (_) {
+                          if (!_isSaving) {
+                            _debouncedSave();
+                          }
+                          _saveStateToHistory();
+                        },
+                        child: ResizableAudioBox(
+                          audioPath: data['audioPath'] ?? '',
+                          onIsRecording: (isRecording) => _handleAudioRecordingState(data['id'], isRecording),
+                          onSettingsPressed: () => _showAudioBoxOptions(data['id']),
+                          onPathUpdated: (path) => _updateAudioPath(data['id'], path),
+                          startRecording: _recordingAudioBoxId == data['id'],
+                        ),
+                      );
+
+                      if (ownerCanvas != null && ownerCanvas.isFlipped) {
+                        double relX = data['positionX'] - ownerCanvas.positionX;
+                        double relY = data['positionY'] - ownerCanvas.positionY;
+                        double mirroredRelX = ownerCanvas.width - relX - 37.3; // use audio width
+                        left = ownerCanvas.positionX + mirroredRelX;
+                        top = ownerCanvas.positionY + relY;
+                        child = Transform(
+                          alignment: Alignment.center,
+                          transform: Matrix4.identity()..rotateY(math.pi),
+                          child: child,
+                        );
+                      }
+
                       return Positioned(
                         key: ValueKey(data['id']),
-                        left: data['positionX'],
-                        top: data['positionY'],
-                        child: GestureDetector(
-                          behavior: HitTestBehavior.translucent,
-                          onPanUpdate: (details) {
-                            if (_isPositionLocked) return;
-                            setState(() {
-                              double newDx =
-                                  data['positionX'] + details.delta.dx;
-                              double newDy =
-                                  data['positionY'] + details.delta.dy;
-                              double documentWidth =
-                                  MediaQuery.of(context).size.width;
-                              double documentHeight = totalHeight;
-                              newDx = newDx.clamp(0.0, documentWidth - 37.3);
-                              newDy = newDy.clamp(0.0, documentHeight - 37.3);
-                              data['positionX'] = newDx;
-                              data['positionY'] = newDy;
-                              _updateAudioBoxPosition(
-                                data['id'],
-                                Offset(newDx, newDy),
-                              );
-                            });
-                          },
-                          onPanEnd: (_) {
-                            if (!_isSaving) {
-                              _debouncedSave();
-                            }
-                            _saveStateToHistory();
-                          },
-                          child: ResizableAudioBox(
-                            audioPath: data['audioPath'] ?? '',
-                            onIsRecording: (isRecording) =>
-                                _handleAudioRecordingState(
-                                    data['id'], isRecording),
-                            onSettingsPressed: () =>
-                                _showAudioBoxOptions(data['id']),
-                            onPathUpdated: (path) =>
-                                _updateAudioPath(data['id'], path),
-                            startRecording: _recordingAudioBoxId == data['id'],
-                          ),
-                        ),
+                        left: left,
+                        top: top,
+                        child: child,
                       );
                     }),
                   ],

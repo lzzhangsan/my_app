@@ -32,6 +32,10 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
   // 画布拖拽相关
   bool _isDragging = false;
   Offset _dragStart = Offset.zero;
+  // 缩放相关
+  double _initialWidth = 0.0;
+  double _initialHeight = 0.0;
+  double _currentScale = 1.0;
 
   @override
   void initState() {
@@ -52,6 +56,8 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
     if (widget.canvas.isFlipped) {
       _flipController.value = 1.0;
     }
+    _initialWidth = widget.canvas.width;
+    _initialHeight = widget.canvas.height;
   }
 
   @override
@@ -172,21 +178,35 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onPanStart: widget.isPositionLocked ? null : (details) {
-        _isDragging = true;
-        _dragStart = details.globalPosition;
+      onScaleStart: (details) {
+        // 记录初始尺寸和初始缩放/焦点
+        _initialWidth = widget.canvas.width;
+        _initialHeight = widget.canvas.height;
+        _currentScale = 1.0;
       },
-      onPanUpdate: widget.isPositionLocked ? null : (details) {
-        if (_isDragging) {
-          final delta = details.globalPosition - _dragStart;
-          widget.canvas.positionX += delta.dx;
-          widget.canvas.positionY += delta.dy;
-          _dragStart = details.globalPosition;
-          widget.onCanvasUpdated(widget.canvas);
+      onScaleUpdate: (details) {
+        // 双指缩放
+        if (details.pointerCount > 1 && !widget.isPositionLocked) {
+          setState(() {
+            _currentScale = details.scale.clamp(0.3, 4.0);
+            widget.canvas.width = (_initialWidth * _currentScale).clamp(50.0, 2000.0);
+            widget.canvas.height = (_initialHeight * _currentScale).clamp(50.0, 2000.0);
+            widget.onCanvasUpdated(widget.canvas);
+          });
+          return;
         }
-      },
-      onPanEnd: widget.isPositionLocked ? null : (details) {
-        _isDragging = false;
+
+        // 单指拖动：使用 scale 的 focalPointDelta 来平移
+        if (details.pointerCount <= 1 && !widget.isPositionLocked) {
+          final delta = details.focalPointDelta;
+          if (delta != Offset.zero) {
+            setState(() {
+              widget.canvas.positionX += delta.dx;
+              widget.canvas.positionY += delta.dy;
+              widget.onCanvasUpdated(widget.canvas);
+            });
+          }
+        }
       },
       onDoubleTap: _flipCanvas, // 双击翻转
       onLongPress: _showCanvasOptions, // 长按显示选项
@@ -215,7 +235,8 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
       width: widget.canvas.width,
       height: widget.canvas.height,
       decoration: BoxDecoration(
-        color: shouldShowFront ? Colors.white : Colors.grey[100],
+        // 填充色与文本框一致，区别通过边框颜色体现
+        color: Colors.white,
         border: Border.all(
           color: shouldShowFront ? Colors.blue[300]! : Colors.orange[300]!,
           width: 2,
@@ -263,28 +284,7 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
               ],
             ),
           ),
-          // 翻转按钮
-          Positioned(
-            top: 4,
-            right: 4,
-            child: GestureDetector(
-              onTap: _flipCanvas,
-              child: Container(
-                width: 24,
-                height: 24,
-                decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.9),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.grey[400]!, width: 1),
-                ),
-                child: Icon(
-                  shouldShowFront ? Icons.flip_to_back : Icons.flip_to_front,
-                  size: 14,
-                  color: Colors.grey[700],
-                ),
-              ),
-            ),
-          ),
+          // （保留）设置按钮位于左上角，翻转由双击空白处触发，不再需要单独翻转按钮
           // 设置按钮
           Positioned(
             top: 4,
@@ -301,6 +301,38 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
                 ),
                 child: Icon(
                   Icons.settings,
+                  size: 14,
+                  color: Colors.grey[700],
+                ),
+              ),
+            ),
+          ),
+          // 右下角缩放把手（可拖动来改变画布大小）
+          Positioned(
+            right: 4,
+            bottom: 4,
+            child: GestureDetector(
+              behavior: HitTestBehavior.translucent,
+              onPanUpdate: (details) {
+                if (widget.isPositionLocked) return;
+                setState(() {
+                  double newWidth = (widget.canvas.width + details.delta.dx).clamp(50.0, 2000.0);
+                  double newHeight = (widget.canvas.height + details.delta.dy).clamp(50.0, 2000.0);
+                  widget.canvas.width = newWidth;
+                  widget.canvas.height = newHeight;
+                  widget.onCanvasUpdated(widget.canvas);
+                });
+              },
+              child: Container(
+                width: 28,
+                height: 28,
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.95),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: Colors.grey[400]!, width: 1),
+                ),
+                child: Icon(
+                  Icons.open_in_full,
                   size: 14,
                   color: Colors.grey[700],
                 ),
