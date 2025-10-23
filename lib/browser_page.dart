@@ -28,6 +28,11 @@ import 'models/media_type.dart';
 import 'main.dart';
 import 'media_manager_page.dart';
 
+// Top-level function for ZIP encoding to avoid blocking UI
+List<int>? encodeArchive(Archive archive) {
+  return ZipEncoder().encode(archive);
+}
+
 class BrowserPage extends StatefulWidget {
   final ValueChanged<bool>? onBrowserHomePageChanged;
 
@@ -93,8 +98,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   Future<void> _launchExternalApp(String url) async {
     debugPrint('尝试启动外部应用: $url');
     try {
-      final Uri uri = Uri.parse(url);
-      if (await canLaunchUrl(uri)) {
+      final Uri? uri = Uri.tryParse(url);
+      if (uri != null && await canLaunchUrl(uri)) {
         await launchUrl(uri, mode: LaunchMode.externalApplication);
         debugPrint('成功启动外部应用');
       } else {
@@ -1066,7 +1071,17 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     } else {
       _controller.setUserAgent('Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36');
     }
-    _controller.loadRequest(Uri.parse(processedUrl));
+    final uri = Uri.tryParse(processedUrl);
+    if (uri != null) {
+      _controller.loadRequest(uri);
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('无效的URL: $processedUrl')),
+        );
+      }
+      return;
+    }
     setState(() {
       _showHomePage = false;
       _currentUrl = processedUrl;
@@ -1637,7 +1652,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       if (lowercaseUrl.contains(keyword)) return true;
     }
     final downloadParams = ['download=true', 'dl=1', 'attachment=1'];
-    final uri = Uri.parse(url);
+    final uri = Uri.tryParse(url);
+    if (uri == null) return false;
     final queryString = uri.query.toLowerCase();
     for (final param in downloadParams) {
       if (queryString.contains(param)) return true;
@@ -1647,7 +1663,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   }
 
   String _guessMimeType(String url) {
-    final uri = Uri.parse(url);
+    final uri = Uri.tryParse(url);
+    if (uri == null) return 'application/octet-stream';
     final path = uri.path.toLowerCase();
     if (path.endsWith('.jpg') || path.endsWith('.jpeg')) return 'image/jpeg';
     if (path.endsWith('.png')) return 'image/png';
@@ -1700,7 +1717,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       if (!await mediaDir.exists()) await mediaDir.create(recursive: true);
 
       final uuid = const Uuid().v4();
-      final uri = Uri.parse(url);
+      final uri = Uri.tryParse(url);
+      if (uri == null) throw Exception('Invalid URL: $url');
       String extension = _getFileExtension(uri.path);
 
       if (extension.isEmpty) {
@@ -1786,8 +1804,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       final outputPath = '${m3u8Path.replaceAll('.m3u8', '.mp4')}';
       final file = File(outputPath)..createSync();
       final sink = file.openWrite();
-      for (final segment in segments) {
-        final segmentResponse = await dio.get(segment, options: Options(responseType: ResponseType.bytes));
+      for (final segmentUrl in segments) {
+        final segmentResponse = await dio.get(segmentUrl, options: Options(responseType: ResponseType.bytes));
         sink.add(segmentResponse.data);
       }
       await sink.close();
@@ -2716,28 +2734,20 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         } catch (e) {
           // 忽略导航错误，可能是因为widget已经被销毁
         }
-      }
-      
-      if (result.success && mounted) {
+        
+        // 显示成功或失败通知
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('下载成功：${result.fileName}'),
-            backgroundColor: Colors.green,
-            action: SnackBarAction(
+            content: Text(result.success ? '下载成功：${result.fileName}' : '下载失败：${result.error}'),
+            backgroundColor: result.success ? Colors.green : Colors.red,
+            action: result.success ? SnackBarAction(
               label: '查看',
               onPressed: () {
                 Navigator.of(context).push(
                   MaterialPageRoute(builder: (context) => const MediaManagerPage()),
                 );
               },
-            ),
-          ),
-        );
-      } else if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('下载失败：${result.error}'),
-            backgroundColor: Colors.red,
+            ) : null,
           ),
         );
       }
@@ -3120,8 +3130,9 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       // 创建ZIP文件
       final String zipPath = '$exportDir/browser_backup_${DateTime.now().millisecondsSinceEpoch}.zip';
       final Archive archive = Archive();
-      archive.addFile(ArchiveFile('browser_data.json', jsonFile.lengthSync(), jsonFile.readAsBytesSync()));
-      final List<int> zipData = ZipEncoder().encode(archive);
+      final bytes = await jsonFile.readAsBytes();
+      archive.addFile(ArchiveFile('browser_data.json', bytes.length, bytes));
+      final List<int>? zipData = await compute(encodeArchive, archive);
 
       if (zipData == null) {
         throw Exception('创建ZIP文件失败');
