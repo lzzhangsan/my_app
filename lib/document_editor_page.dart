@@ -424,6 +424,12 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
       await _databaseService.getAudioBoxesByDocument(widget.documentName);
       print('✅ 成功获取 ${audioBoxes.length} 个音频框');
 
+  // 新增：加载画布
+  print('🖼️🔁 正在从数据库获取画布数据...');
+  final canvasRows = await _databaseService.getCanvasesByDocument(widget.documentName);
+  print('✅ 成功获取 ${canvasRows.length} 个画布');
+  List<FlippableCanvas> canvases = canvasRows.map((row) => FlippableCanvas.fromMap(row)).toList();
+
       print('⚙️ 正在获取文档设置...');
       Map<String, dynamic>? docSettings =
       await _databaseService.getDocumentSettings(widget.documentName);
@@ -436,6 +442,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
         _textBoxes = textBoxes;
         _imageBoxes = imageBoxes;
         _audioBoxes = audioBoxes;
+        _canvases = canvases; // 新增：设置画布
         _deletedTextBoxIds.clear();
         _deletedImageBoxIds.clear();
         _deletedAudioBoxIds.clear();
@@ -477,9 +484,11 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
           'textBoxes': safeTextBoxes,
           'imageBoxes': safeImageBoxes,
           'audioBoxes': safeAudioBoxes,
+          'canvases': canvases.map((c) => c.toMap()).toList(),
           'deletedTextBoxIds': List<String>.from(_deletedTextBoxIds.where((id) => id != null)),
           'deletedImageBoxIds': List<String>.from(_deletedImageBoxIds.where((id) => id != null)),
           'deletedAudioBoxIds': List<String>.from(_deletedAudioBoxIds.where((id) => id != null)),
+          'deletedCanvasIds': List<String>.from(_deletedCanvasIds.where((id) => id != null)),
           'backgroundImage': _backgroundImage?.path,
           'backgroundColor': _backgroundColor?.value,
           'textEnhanceMode': _textEnhanceMode,
@@ -535,6 +544,17 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
       await _databaseService.saveTextBoxes(List<Map<String, dynamic>>.from(_textBoxes), widget.documentName);
       await _databaseService.saveImageBoxes(List<Map<String, dynamic>>.from(_imageBoxes), widget.documentName);
       await _databaseService.saveAudioBoxes(List<Map<String, dynamic>>.from(_audioBoxes), widget.documentName);
+      await _databaseService.saveCanvases(
+        _canvases.map((c) => c.toMap()).toList(),
+        _deletedCanvasIds,
+        widget.documentName,
+      );
+      // 新增：保存画布
+      await _databaseService.saveCanvases(
+        _canvases.map((c) => c.toMap()).toList(),
+        _deletedCanvasIds,
+        widget.documentName,
+      );
       if (mounted) {
         setState(() {
           _contentChanged = false;

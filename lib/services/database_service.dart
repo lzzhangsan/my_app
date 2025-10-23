@@ -212,6 +212,28 @@ class DatabaseService {
         )
       ''');
 
+      // 可翻转画布表（正反面内容ID使用逗号分隔存储）
+      await txn.execute('''
+        CREATE TABLE canvases(
+          id TEXT PRIMARY KEY,
+          document_id TEXT NOT NULL,
+          position_x REAL NOT NULL,
+          position_y REAL NOT NULL,
+          width REAL NOT NULL,
+          height REAL NOT NULL,
+          is_flipped INTEGER DEFAULT 0,
+          front_text_box_ids TEXT,
+          front_image_box_ids TEXT,
+          front_audio_box_ids TEXT,
+          back_text_box_ids TEXT,
+          back_image_box_ids TEXT,
+          back_audio_box_ids TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          FOREIGN KEY (document_id) REFERENCES documents (id) ON DELETE CASCADE
+        )
+      ''');
+
       // 媒体项表
       await txn.execute('''
         CREATE TABLE media_items(
@@ -317,6 +339,7 @@ class DatabaseService {
     await db.execute('CREATE INDEX idx_text_boxes_document ON text_boxes(document_id)');
     await db.execute('CREATE INDEX idx_image_boxes_document ON image_boxes(document_id)');
     await db.execute('CREATE INDEX idx_audio_boxes_document ON audio_boxes(document_id)');
+  await db.execute('CREATE INDEX IF NOT EXISTS idx_canvases_document ON canvases(document_id)');
     await db.execute('CREATE INDEX idx_media_items_directory ON media_items(directory)');
     await db.execute('CREATE INDEX idx_media_items_type ON media_items(type)');
     await db.execute('CREATE INDEX idx_media_items_hash ON media_items(file_hash)');
@@ -435,6 +458,53 @@ class DatabaseService {
         print('❌ [DB] 检查或添加position_locked字段失败: $e');
       }
       // 不抛出异常，避免影响数据库初始化
+    }
+  }
+
+  /// 确保canvases表存在（兼容旧版本数据库）
+  Future<void> _ensureCanvasesTableExists() async {
+    try {
+      final tables = await _database!.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name='canvases'");
+      if (tables.isEmpty) {
+        if (kDebugMode) {
+          print('🔧 [DB] canvases表不存在，正在创建...');
+        }
+        await _database!.execute('''
+          CREATE TABLE IF NOT EXISTS canvases(
+            id TEXT PRIMARY KEY,
+            document_id TEXT NOT NULL,
+            position_x REAL NOT NULL,
+            position_y REAL NOT NULL,
+            width REAL NOT NULL,
+            height REAL NOT NULL,
+            is_flipped INTEGER DEFAULT 0,
+            front_text_box_ids TEXT,
+            front_image_box_ids TEXT,
+            front_audio_box_ids TEXT,
+            back_text_box_ids TEXT,
+            back_image_box_ids TEXT,
+            back_audio_box_ids TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY (document_id) REFERENCES documents (id) ON DELETE CASCADE
+          )
+        ''');
+        if (kDebugMode) {
+          print('✅ [DB] canvases表创建完成');
+        }
+        // 创建索引（如果未创建）
+        try {
+          await _database!.execute('CREATE INDEX IF NOT EXISTS idx_canvases_document ON canvases(document_id)');
+        } catch (_) {}
+      } else {
+        if (kDebugMode) {
+          print('✅ [DB] canvases表已存在');
+        }
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        print('❌ [DB] 检查或创建canvases表失败: $e');
+      }
     }
   }
 
@@ -1028,7 +1098,7 @@ class DatabaseService {
       final Map<String, List<Map<String, dynamic>>> tableData = {};
       
       // 分批导出数据库表，避免一次性加载全部数据
-      final List<String> tables = ['folders', 'documents', 'text_boxes', 'image_boxes', 'audio_boxes'];
+  final List<String> tables = ['folders', 'documents', 'text_boxes', 'image_boxes', 'audio_boxes', 'canvases'];
       
       for (String tableName in tables) {
         progressNotifier?.value = "正在导出$tableName表数据...";
@@ -1409,7 +1479,7 @@ class DatabaseService {
       await db.transaction((txn) async {
         // 定义所有相关表的列表
         const List<String> tableNames = [
-          'folders', 'documents', 'text_boxes', 'image_boxes', 'audio_boxes', 
+          'folders', 'documents', 'text_boxes', 'image_boxes', 'audio_boxes', 'canvases',
           'document_settings', 'directory_settings'
         ];
         
@@ -3449,6 +3519,100 @@ class DatabaseService {
       print('❌ [DB] 获取文档音频框失败: $e');
       _handleError('获取文档音频框失败', e, stackTrace);
       return [];
+    }
+  }
+
+  /// 获取指定文档的画布列表
+  Future<List<Map<String, dynamic>>> getCanvasesByDocument(String documentName) async {
+    print('🔍 [DB] 开始查询画布数据，文档名: $documentName');
+    try {
+      final db = await database;
+      final List<Map<String, dynamic>> result = await db.query(
+        'canvases',
+        where: 'document_id = (SELECT id FROM documents WHERE name = ?)',
+        whereArgs: [documentName],
+        orderBy: 'created_at ASC'
+      );
+      print('✅ [DB] 画布查询成功，返回 ${result.length} 条记录');
+      if (result.isNotEmpty) {
+        print('📋 [DB] 第一条画布数据字段: ${result.first.keys.toList()}');
+        print('📋 [DB] 第一条画布数据值: ${result.first}');
+      }
+      return result;
+    } catch (e, stackTrace) {
+      print('❌ [DB] 获取画布失败: $e');
+      _handleError('获取画布失败', e, stackTrace);
+      return [];
+    }
+  }
+
+  /// 保存画布列表（新增 / 更新 / 删除）
+  Future<void> saveCanvases(List<Map<String, dynamic>> canvases, List<String> deletedCanvasIds, String documentName) async {
+    print('🔧 [DB] 开始保存画布，文档名: $documentName, 传入画布数: ${canvases.length}, 已删除数: ${deletedCanvasIds.length}');
+    final db = await database;
+    await db.transaction((txn) async {
+      // 获取文档ID
+      final docRows = await txn.query('documents', columns: ['id'], where: 'name = ?', whereArgs: [documentName]);
+      if (docRows.isEmpty) {
+        print('❌ [DB] 保存画布失败：文档不存在');
+        return;
+      }
+      final documentId = docRows.first['id'];
+
+      // 查询现有画布ID
+      final existingRows = await txn.query('canvases', columns: ['id'], where: 'document_id = ?', whereArgs: [documentId]);
+      final existingIds = existingRows.map((e) => e['id'] as String).toSet();
+      final incomingIds = canvases.map((c) => c['id'] as String).toSet();
+      final idsToDelete = existingIds.difference(incomingIds).union(deletedCanvasIds.toSet());
+      print('🔧 [DB] existingIds=${existingIds.length}, incomingIds=${incomingIds.length}, idsToDelete=${idsToDelete.length}');
+
+      // 删除遗失或标记删除的画布
+      for (final delId in idsToDelete) {
+        final count = await txn.delete('canvases', where: 'id = ?', whereArgs: [delId]);
+        print('🗑️ [DB] 删除画布 id=$delId, affected=$count');
+      }
+
+      final now = DateTime.now().millisecondsSinceEpoch;
+      for (final canvas in canvases) {
+        final id = canvas['id'] as String?;
+        if (id == null || id.isEmpty) continue;
+        final data = <String, dynamic>{
+          'id': id,
+          'document_id': documentId,
+          'position_x': (canvas['position_x'] ?? canvas['positionX'] ?? 0.0).toDouble(),
+          'position_y': (canvas['position_y'] ?? canvas['positionY'] ?? 0.0).toDouble(),
+          'width': (canvas['width'] ?? 300.0).toDouble(),
+          'height': (canvas['height'] ?? 200.0).toDouble(),
+          'is_flipped': (canvas['is_flipped'] ?? canvas['isFlipped'] ?? 0) == 1 ? 1 : 0,
+          'front_text_box_ids': canvas['front_text_box_ids'] ?? canvas['frontTextBoxIds'],
+          'front_image_box_ids': canvas['front_image_box_ids'] ?? canvas['frontImageBoxIds'],
+          'front_audio_box_ids': canvas['front_audio_box_ids'] ?? canvas['frontAudioBoxIds'],
+          'back_text_box_ids': canvas['back_text_box_ids'] ?? canvas['backTextBoxIds'],
+          'back_image_box_ids': canvas['back_image_box_ids'] ?? canvas['backImageBoxIds'],
+          'back_audio_box_ids': canvas['back_audio_box_ids'] ?? canvas['backAudioBoxIds'],
+          'updated_at': now,
+        };
+        if (!existingIds.contains(id)) {
+          data['created_at'] = now;
+          await txn.insert('canvases', data, conflictAlgorithm: ConflictAlgorithm.replace);
+          print('➕ [DB] 新增画布 id=$id');
+        } else {
+          await txn.update('canvases', data, where: 'id = ?', whereArgs: [id]);
+          print('✏️ [DB] 更新画布 id=$id');
+        }
+      }
+
+      final total = Sqflite.firstIntValue(await txn.rawQuery('SELECT COUNT(*) FROM canvases WHERE document_id = ?', [documentId])) ?? 0;
+      print('📊 [DB] 保存完成，当前文档画布总数: $total');
+    });
+  }
+
+  /// 根据ID删除单个画布
+  Future<void> deleteCanvasById(String canvasId) async {
+    final db = await database;
+    final count = await db.delete('canvases', where: 'id = ?', whereArgs: [canvasId]);
+    if (kDebugMode) {
+      print('🗑️ [DB] deleteCanvasById id=$canvasId affected=$count');
     }
   }
 
