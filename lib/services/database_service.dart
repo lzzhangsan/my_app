@@ -1486,17 +1486,14 @@ class DatabaseService {
 
       progressNotifier?.value = "正在导入数据库...";
       
+      // 简化版事务：直接清空并重填，不再创建临时表和 DROP/RENAME，避免复杂DDL导致的事务状态异常
       await db.transaction((txn) async {
-        // 定义所有相关表的列表
         const List<String> tableNames = [
           'folders', 'documents', 'text_boxes', 'image_boxes', 'audio_boxes', 'canvases',
           'document_settings', 'directory_settings'
         ];
-        
-        // 为每个表创建临时表
-        for (final tableName in tableNames) {
 
-        // 确保目标表结构包含 text_segments 列（如缺）
+        // 预检查 text_boxes 补列
         try {
           final cols = await txn.rawQuery("PRAGMA table_info(text_boxes)");
           final has = cols.any((c) => (c['name'] as String).toLowerCase() == 'text_segments');
@@ -1504,113 +1501,104 @@ class DatabaseService {
             await txn.execute('ALTER TABLE text_boxes ADD COLUMN text_segments TEXT');
           }
         } catch (e) {
-          if (kDebugMode) {
-            print('检查/添加text_segments列失败: $e');
-          }
+          print('[导入] 检查/添加 text_segments 列失败: $e');
         }
 
-          await txn.execute('DROP TABLE IF EXISTS ${tableName}_temp');
-          await txn.execute('CREATE TABLE ${tableName}_temp AS SELECT * FROM $tableName WHERE 0');
-        }
-
-        
-
-        // === 读取每个临时表的列集合（白名单） ===
+        // 构建每张真实表的列白名单
         final Map<String, Set<String>> allowedCols = {};
         for (final t in tableNames) {
-          final cols = await txn.rawQuery('PRAGMA table_info(' + t + '_temp)');
-          allowedCols[t] = { for (final r in cols) r['name'] as String };
+          final info = await txn.rawQuery('PRAGMA table_info(' + t + ')');
+          allowedCols[t] = { for (final r in info) r['name'] as String };
         }
 
-// 导入新数据到临时表
+        // 全量替换：DELETE 而不是 DROP，保留索引/触发器结构
+        for (final t in tableNames) {
+          await txn.delete(t);
+        }
+
         final int batchSize = 100;
         for (var entry in tableData.entries) {
-          final String tableName = entry.key;
-          final List<dynamic> rows = entry.value;
+          final tableName = entry.key;
+          if (!tableNames.contains(tableName)) continue; // 忽略未识别表
+          final rows = entry.value as List<dynamic>;
+          int processedRows = 0;
+          for (int i = 0; i < rows.length; i += batchSize) {
+            final end = (i + batchSize < rows.length) ? i + batchSize : rows.length;
+            final batch = rows.sublist(i, end);
+            for (var row in batch) {
+              if (tableName == 'media_items') continue; // 兼容旧备份中的无关表
+              Map<String, dynamic> newRow = Map<String, dynamic>.from(row as Map);
 
-          if (tableNames.contains(tableName)) {
-            int processedRows = 0;
-            for (int i = 0; i < rows.length; i += batchSize) {
-              final end = (i + batchSize < rows.length) ? i + batchSize : rows.length;
-              final batch = rows.sublist(i, end);
-              
-              for (var row in batch) {
-                 if (tableName == 'media_items') continue;
-                 Map<String, dynamic> newRow = Map<String, dynamic>.from(row);
-
-                 // --- 开始路径修正逻辑 ---
-                 if (tableName == 'image_boxes' && newRow.containsKey('imageFileName')) {
-                   String newPath = p.join(imagesDirPath, newRow['imageFileName']);
-                   String tempPath = p.join(tempDirPath, 'images', newRow['imageFileName']);
-                   if(await File(tempPath).exists()) {
-                     await File(tempPath).copy(newPath);
-                     newRow['image_path'] = newPath;
-                     print('[导入] 已导入图片框图片: $newPath');
-                   } else {
-                     print('[导入] 警告：未找到图片框图片文件: $tempPath');
-                     newRow['image_path'] = null;
-                   }
-                   newRow.remove('imageFileName');
-                 } else if (tableName == 'audio_boxes' && newRow.containsKey('audioFileName')) {
-                   String newPath = p.join(audiosDirPath, newRow['audioFileName']);
-                   String tempAudioPath = p.join(tempDirPath, 'audios', newRow['audioFileName']);
-                   if (await File(tempAudioPath).exists()) {
-                     await Directory(p.dirname(newPath)).create(recursive: true);
-                     await File(tempAudioPath).copy(newPath);
-                     newRow['audio_path'] = newPath;
-                     print('[导入] 已导入音频文件: $newPath');
-                   } else {
-                     print('[导入] 警告：未找到音频文件: $tempAudioPath');
-                     newRow['audio_path'] = null;
-                   }
-                   newRow.remove('audioFileName');
-                 } else if ((tableName == 'directory_settings' || tableName == 'document_settings') && newRow.containsKey('backgroundImageFileName')) {
-                   String newPath = p.join(backgroundImagesPath, newRow['backgroundImageFileName']);
-                   String tempPath = p.join(tempDirPath, 'background_images', newRow['backgroundImageFileName']);
-                   if(await File(tempPath).exists()) {
-                     await File(tempPath).copy(newPath);
-                     newRow['background_image_path'] = newPath;
-                     print('[导入] 已导入背景图片: $newPath');
-                   } else {
-                     print('[导入] 警告：未找到背景图片文件: $tempPath');
-                     newRow['background_image_path'] = null;
-                   }
-                   newRow.remove('backgroundImageFileName');
-                 }
-                 // --- 结束路径修正逻辑 ---
-
-                 // === textBoxes 兼容旧字段名：textSegments -> text_segments，并统一为 JSON 字符串 ===
-                 if (tableName == 'text_boxes') {
-                   if (newRow.containsKey('textSegments') && !newRow.containsKey('text_segments')) {
-                     newRow['text_segments'] = newRow['textSegments'];
-                   }
-                   if (newRow.containsKey('text_segments') && newRow['text_segments'] != null && newRow['text_segments'] is! String) {
-                     try { newRow['text_segments'] = jsonEncode(newRow['text_segments']); } catch (_) {}
-                   }
-                   // 无论如何移除旧字段名，避免插入不存在的列
-                   newRow.remove('textSegments');
-                 }
-
-                 // === 白名单过滤：仅保留目标表真实存在的列，杜绝 no column named ... ===
-                 final allowed = allowedCols[tableName] ?? const <String>{};
-                 final clean = <String, dynamic>{};
-                 for (final k in newRow.keys) {
-                   if (allowed.contains(k)) clean[k] = newRow[k];
-                 }
-
-                 await txn.insert('${tableName}_temp', clean);
-
-                 processedRows++;
+              // 路径修正
+              if (tableName == 'image_boxes' && newRow.containsKey('imageFileName')) {
+                final fileName = newRow['imageFileName'];
+                final newPath = p.join(imagesDirPath, fileName);
+                final tempPath = p.join(tempDirPath, 'images', fileName);
+                if (await File(tempPath).exists()) {
+                  await File(tempPath).copy(newPath);
+                  newRow['image_path'] = newPath;
+                  print('[导入] 已导入图片框图片: $newPath');
+                } else {
+                  print('[导入] 警告：未找到图片框图片文件: $tempPath');
+                  newRow['image_path'] = null;
+                }
+                newRow.remove('imageFileName');
+              } else if (tableName == 'audio_boxes' && newRow.containsKey('audioFileName')) {
+                final fileName = newRow['audioFileName'];
+                final newPath = p.join(audiosDirPath, fileName);
+                final tempAudioPath = p.join(tempDirPath, 'audios', fileName);
+                if (await File(tempAudioPath).exists()) {
+                  await Directory(p.dirname(newPath)).create(recursive: true);
+                  await File(tempAudioPath).copy(newPath);
+                  newRow['audio_path'] = newPath;
+                  print('[导入] 已导入音频文件: $newPath');
+                } else {
+                  print('[导入] 警告：未找到音频文件: $tempAudioPath');
+                  newRow['audio_path'] = null;
+                }
+                newRow.remove('audioFileName');
+              } else if ((tableName == 'directory_settings' || tableName == 'document_settings') && newRow.containsKey('backgroundImageFileName')) {
+                final fileName = newRow['backgroundImageFileName'];
+                final newPath = p.join(backgroundImagesPath, fileName);
+                final tempPath = p.join(tempDirPath, 'background_images', fileName);
+                if (await File(tempPath).exists()) {
+                  await File(tempPath).copy(newPath);
+                  newRow['background_image_path'] = newPath;
+                  print('[导入] 已导入背景图片: $newPath');
+                } else {
+                  print('[导入] 警告：未找到背景图片文件: $tempPath');
+                  newRow['background_image_path'] = null;
+                }
+                newRow.remove('backgroundImageFileName');
               }
-              progressNotifier?.value = "正在导入$tableName表: $processedRows/${rows.length}";
+
+              // text_boxes 旧字段兼容
+              if (tableName == 'text_boxes') {
+                if (newRow.containsKey('textSegments') && !newRow.containsKey('text_segments')) {
+                  newRow['text_segments'] = newRow['textSegments'];
+                }
+                if (newRow.containsKey('text_segments') && newRow['text_segments'] != null && newRow['text_segments'] is! String) {
+                  try { newRow['text_segments'] = jsonEncode(newRow['text_segments']); } catch (_) {}
+                }
+                newRow.remove('textSegments');
+              }
+
+              // 白名单过滤
+              final allowed = allowedCols[tableName] ?? const <String>{};
+              final clean = <String, dynamic>{};
+              for (final k in newRow.keys) {
+                if (allowed.contains(k)) clean[k] = newRow[k];
+              }
+              try {
+                await txn.insert(tableName, clean, conflictAlgorithm: ConflictAlgorithm.replace);
+              } catch (rowErr) {
+                print('[导入] 行插入失败(表:$tableName): $rowErr\n数据: $clean');
+              }
+              processedRows++;
             }
+            progressNotifier?.value = '正在导入$tableName表: $processedRows/${rows.length}';
           }
-        }
-        
-        // 所有数据成功导入临时表后，替换旧表
-        for (final tableName in tableNames) {
-          await txn.execute('DROP TABLE $tableName');
-          await txn.execute('ALTER TABLE ${tableName}_temp RENAME TO $tableName');
+          print('[导入] 表 $tableName 导入完成，共 $processedRows 行');
         }
       });
 
