@@ -2036,24 +2036,17 @@ class DatabaseService {
       
       String documentId = documents.first['id'];
       
-      // 导出文档相关的数据
+      // 导出文档相关的数据 (包含画布)
+      final List<Map<String, dynamic>> textBoxRows = await db.query('text_boxes', where: 'document_id = ?', whereArgs: [documentId]);
+      final List<Map<String, dynamic>> imageBoxRows = await db.query('image_boxes', where: 'document_id = ?', whereArgs: [documentId]);
+      final List<Map<String, dynamic>> audioBoxRows = await db.query('audio_boxes', where: 'document_id = ?', whereArgs: [documentId]);
+      final List<Map<String, dynamic>> canvasRows = await db.query('canvases', where: 'document_id = ?', whereArgs: [documentId]);
       final Map<String, List<Map<String, dynamic>>> documentData = {
         'documents': documents,
-        'text_boxes': await db.query(
-          'text_boxes',
-          where: 'document_id = ?',
-          whereArgs: [documentId],
-        ),
-        'image_boxes': await db.query(
-          'image_boxes',
-          where: 'document_id = ?',
-          whereArgs: [documentId],
-        ),
-        'audio_boxes': await db.query(
-          'audio_boxes',
-          where: 'document_id = ?',
-          whereArgs: [documentId],
-        ),
+        'text_boxes': textBoxRows,
+        'image_boxes': imageBoxRows,
+        'audio_boxes': audioBoxRows,
+        'canvases': canvasRows,
         'document_settings': await db.query(
           'document_settings',
           where: 'document_id = ?',
@@ -2108,6 +2101,8 @@ class DatabaseService {
         audioBoxesToExport.add(audioBoxCopy);
       }
       documentData['audio_boxes'] = audioBoxesToExport;
+
+  // 画布无需复制文件，只需原样写入（已在 documentData 初始化）
       
       // 处理文档设置和背景图片
       List<Map<String, dynamic>> documentSettingsToExport = [];
@@ -2281,6 +2276,10 @@ class DatabaseService {
         await txn.insert('documents', documentData);
         print('已导入文档: $uniqueName');
         
+        // === 先处理文本/图片/音频框并记录旧->新ID映射，供画布重映射 ===
+        final Map<String,String> textIdMap = {};
+        final Map<String,String> imageIdMap = {};
+        final Map<String,String> audioIdMap = {};
         // 处理文本框
         List<dynamic> textBoxes = importData['text_boxes'] ?? [];
         for (var textBox in List.from(textBoxes)) {
@@ -2372,23 +2371,11 @@ class DatabaseService {
               whereArgs: [newDocumentId, data['id']],
             );
             
-            if (existing.isNotEmpty) {
-              // Update existing text box
-              data['updated_at'] = DateTime.now().millisecondsSinceEpoch;
-              await txn.update(
-                'text_boxes',
-                data,
-                where: 'document_id = ? AND id = ?',
-                whereArgs: [newDocumentId, data['id']],
-              );
-            } else {
-              // Insert new text box
-              await txn.insert(
-                'text_boxes',
-                data,
-                conflictAlgorithm: ConflictAlgorithm.replace,
-              );
-            }
+            // 始终生成新ID，保持与导出/复制策略一致
+            final oldId = data['id'].toString();
+            data['id'] = const Uuid().v4();
+            textIdMap[oldId] = data['id'];
+            await txn.insert('text_boxes', data, conflictAlgorithm: ConflictAlgorithm.replace);
           }
         }
         print('已导入 ${textBoxes.length} 个文本框');
@@ -2397,7 +2384,8 @@ class DatabaseService {
         List<dynamic> imageBoxes = importData['image_boxes'] ?? [];
         for (var imageBox in List.from(imageBoxes)) {
           Map<String, dynamic> imageBoxData = Map<String, dynamic>.from(imageBox);
-          String newImageBoxId = const Uuid().v4();
+          final oldId = imageBoxData['id'].toString();
+          final newImageBoxId = const Uuid().v4();
           imageBoxData['id'] = newImageBoxId;
           imageBoxData['document_id'] = newDocumentId;
           
@@ -2419,6 +2407,7 @@ class DatabaseService {
           imageBoxData.remove('imageFileName');
           imageBoxData.remove('imagePath');
           await txn.insert('image_boxes', imageBoxData);
+          imageIdMap[oldId] = newImageBoxId;
         }
         print('已导入 ${imageBoxes.length} 个图片框');
         
@@ -2426,7 +2415,8 @@ class DatabaseService {
         List<dynamic> audioBoxes = importData['audio_boxes'] ?? [];
         for (var audioBox in audioBoxes) {
           Map<String, dynamic> audioBoxData = Map<String, dynamic>.from(audioBox);
-          String newAudioBoxId = const Uuid().v4();
+          final oldId = audioBoxData['id'].toString();
+          final newAudioBoxId = const Uuid().v4();
           audioBoxData['id'] = newAudioBoxId;
           audioBoxData['document_id'] = newDocumentId;
           // 处理音频文件
@@ -2446,8 +2436,32 @@ class DatabaseService {
           audioBoxData.remove('audioFileName');
           audioBoxData.remove('audioPath');
           await txn.insert('audio_boxes', audioBoxData);
+          audioIdMap[oldId] = newAudioBoxId;
         }
         print('已导入 ${audioBoxes.length} 个音频框');
+
+        // === 导入画布并重映射内部关联 ID ===
+        List<dynamic> canvases = importData['canvases'] ?? [];
+        String remap(String? csv, Map<String,String> m) {
+          if (csv == null || csv.trim().isEmpty) return '';
+          return csv.split(',').map((id)=>m[id.trim()]??'').where((v)=>v.isNotEmpty).join(',');
+        }
+        for (var canvas in canvases) {
+          Map<String,dynamic> c = Map<String,dynamic>.from(canvas as Map);
+          c['id'] = const Uuid().v4();
+          c['document_id'] = newDocumentId;
+          c['front_text_box_ids'] = remap(c['front_text_box_ids']?.toString(), textIdMap);
+          c['back_text_box_ids'] = remap(c['back_text_box_ids']?.toString(), textIdMap);
+          c['front_image_box_ids'] = remap(c['front_image_box_ids']?.toString(), imageIdMap);
+          c['back_image_box_ids'] = remap(c['back_image_box_ids']?.toString(), imageIdMap);
+          c['front_audio_box_ids'] = remap(c['front_audio_box_ids']?.toString(), audioIdMap);
+          c['back_audio_box_ids'] = remap(c['back_audio_box_ids']?.toString(), audioIdMap);
+          final now = DateTime.now().millisecondsSinceEpoch;
+          c['created_at'] = now;
+          c['updated_at'] = now;
+          await txn.insert('canvases', c);
+        }
+        print('已导入 ${canvases.length} 个画布');
         
         // 处理文档设置和背景图片
         List<dynamic> documentSettings = importData['document_settings'] ?? [];
@@ -2663,13 +2677,15 @@ class DatabaseService {
         where: 'document_id = ?',
         whereArgs: [sourceId]
       );
-      
+      final Map<String,String> textIdMap = {};
       for (var textBox in List.from(textBoxes)) {
+        final oldId = textBox['id'].toString();
         Map<String, dynamic> newTextBox = Map<String, dynamic>.from(textBox);
         newTextBox.remove('id');
         newTextBox['document_id'] = newDocId;
-        // 为文本框生成新的唯一ID
-        newTextBox['id'] = const Uuid().v4();
+        final newId = const Uuid().v4();
+        newTextBox['id'] = newId;
+        textIdMap[oldId] = newId;
         await db.insert('text_boxes', newTextBox);
       }
       
@@ -2679,13 +2695,15 @@ class DatabaseService {
         where: 'document_id = ?',
         whereArgs: [sourceId]
       );
-      
+      final Map<String,String> imageIdMap = {};
       for (var imageBox in List.from(imageBoxes)) {
+        final oldId = imageBox['id'].toString();
         Map<String, dynamic> newImageBox = Map<String, dynamic>.from(imageBox);
         newImageBox.remove('id');
         newImageBox['document_id'] = newDocId;
-        // 为图片框生成新的唯一ID
-        newImageBox['id'] = const Uuid().v4();
+        final newId = const Uuid().v4();
+        newImageBox['id'] = newId;
+        imageIdMap[oldId] = newId;
         await db.insert('image_boxes', newImageBox);
       }
       
@@ -2695,13 +2713,15 @@ class DatabaseService {
         where: 'document_id = ?',
         whereArgs: [sourceId]
       );
-      
+      final Map<String,String> audioIdMap = {};
       for (var audioBox in audioBoxes) {
+        final oldId = audioBox['id'].toString();
         Map<String, dynamic> newAudioBox = Map<String, dynamic>.from(audioBox);
         newAudioBox.remove('id');
         newAudioBox['document_id'] = newDocId;
-        // 为音频框生成新的唯一ID
-        newAudioBox['id'] = const Uuid().v4();
+        final newId = const Uuid().v4();
+        newAudioBox['id'] = newId;
+        audioIdMap[oldId] = newId;
         await db.insert('audio_boxes', newAudioBox);
       }
 
@@ -2714,28 +2734,6 @@ class DatabaseService {
       );
 
       if (sourceCanvases.isNotEmpty) {
-        // 构建旧ID到新ID的映射，供画布内部前后面关联ID转换
-        final Map<String, String> textIdMap = { for (var tb in textBoxes) tb['id'].toString(): '' }; // placeholder
-        final Map<String, String> imageIdMap = { for (var ib in imageBoxes) ib['id'].toString(): '' };
-        final Map<String, String> audioIdMap = { for (var ab in audioBoxes) ab['id'].toString(): '' };
-
-        // 因为我们在上面复制时生成了新ID，需要重新查询新文档对应的各类型框以拿到新ID集合做映射
-        final newTextBoxes = await db.query('text_boxes', where: 'document_id = ?', whereArgs: [newDocId]);
-        final newImageBoxes = await db.query('image_boxes', where: 'document_id = ?', whereArgs: [newDocId]);
-        final newAudioBoxes = await db.query('audio_boxes', where: 'document_id = ?', whereArgs: [newDocId]);
-
-        // 建立通过内容位置的映射策略：按原列表顺序与新列表顺序一一对应（如果数量一致）
-        // 简单策略：同类型按 index 位置配对。更精确需要内容比对，这里先采用顺序映射。
-        void buildSequentialMap(List<Map<String, dynamic>> oldList, List<Map<String, dynamic>> newList, Map<String, String> map) {
-          for (int i = 0; i < oldList.length && i < newList.length; i++) {
-            map[oldList[i]['id'].toString()] = newList[i]['id'].toString();
-          }
-        }
-
-        buildSequentialMap(textBoxes, newTextBoxes, textIdMap);
-        buildSequentialMap(imageBoxes, newImageBoxes, imageIdMap);
-        buildSequentialMap(audioBoxes, newAudioBoxes, audioIdMap);
-
         String remapIdList(String? csv, Map<String, String> idMap) {
           if (csv == null || csv.trim().isEmpty) return '';
           return csv.split(',').map((id) => idMap[id.trim()] ?? '').where((v) => v.isNotEmpty).join(',');
@@ -2899,13 +2897,15 @@ class DatabaseService {
         where: 'document_id = ?',
         whereArgs: [templateId]
       );
-      
+      final Map<String,String> tplTextIdMap = {};
       for (var textBox in List.from(textBoxes)) {
+        final oldId = textBox['id'].toString();
         Map<String, dynamic> newTextBox = Map<String, dynamic>.from(textBox);
         newTextBox.remove('id');
         newTextBox['document_id'] = newDocId;
-        // 为文本框生成新的唯一ID
-        newTextBox['id'] = const Uuid().v4();
+        final newId = const Uuid().v4();
+        newTextBox['id'] = newId;
+        tplTextIdMap[oldId] = newId;
         await db.insert('text_boxes', newTextBox);
       }
       
@@ -2915,13 +2915,15 @@ class DatabaseService {
         where: 'document_id = ?',
         whereArgs: [templateId]
       );
-      
+      final Map<String,String> tplImageIdMap = {};
       for (var imageBox in imageBoxes) {
+        final oldId = imageBox['id'].toString();
         Map<String, dynamic> newImageBox = Map<String, dynamic>.from(imageBox);
         newImageBox.remove('id');
         newImageBox['document_id'] = newDocId;
-        // 为图片框生成新的唯一ID
-        newImageBox['id'] = const Uuid().v4();
+        final newId = const Uuid().v4();
+        newImageBox['id'] = newId;
+        tplImageIdMap[oldId] = newId;
         await db.insert('image_boxes', newImageBox);
       }
       
@@ -2931,13 +2933,15 @@ class DatabaseService {
         where: 'document_id = ?',
         whereArgs: [templateId]
       );
-      
+      final Map<String,String> tplAudioIdMap = {};
       for (var audioBox in audioBoxes) {
+        final oldId = audioBox['id'].toString();
         Map<String, dynamic> newAudioBox = Map<String, dynamic>.from(audioBox);
         newAudioBox.remove('id');
         newAudioBox['document_id'] = newDocId;
-        // 为音频框生成新的唯一ID
-        newAudioBox['id'] = const Uuid().v4();
+        final newId = const Uuid().v4();
+        newAudioBox['id'] = newId;
+        tplAudioIdMap[oldId] = newId;
         await db.insert('audio_boxes', newAudioBox);
       }
 
@@ -2948,21 +2952,6 @@ class DatabaseService {
         whereArgs: [templateId]
       );
       if (templateCanvases.isNotEmpty) {
-        // 构建旧ID到新ID的映射（按顺序配对）
-        final newTextBoxes = await db.query('text_boxes', where: 'document_id = ?', whereArgs: [newDocId]);
-        final newImageBoxes = await db.query('image_boxes', where: 'document_id = ?', whereArgs: [newDocId]);
-        final newAudioBoxes = await db.query('audio_boxes', where: 'document_id = ?', whereArgs: [newDocId]);
-        Map<String, String> textMap = {};
-        Map<String, String> imageMap = {};
-        Map<String, String> audioMap = {};
-        void seq(List<Map<String, dynamic>> oldL, List<Map<String, dynamic>> newL, Map<String, String> mp) {
-          for (int i = 0; i < oldL.length && i < newL.length; i++) {
-            mp[oldL[i]['id'].toString()] = newL[i]['id'].toString();
-          }
-        }
-        seq(textBoxes, newTextBoxes, textMap);
-        seq(imageBoxes, newImageBoxes, imageMap);
-        seq(audioBoxes, newAudioBoxes, audioMap);
         String remap(String? csv, Map<String,String> m) {
           if (csv == null || csv.trim().isEmpty) return '';
             return csv.split(',').map((id)=>m[id.trim()]??'').where((v)=>v.isNotEmpty).join(',');
@@ -2971,12 +2960,12 @@ class DatabaseService {
           Map<String, dynamic> newCanvas = Map<String, dynamic>.from(canvas);
           newCanvas['id'] = const Uuid().v4();
           newCanvas['document_id'] = newDocId;
-          newCanvas['front_text_box_ids'] = remap(canvas['front_text_box_ids']?.toString(), textMap);
-          newCanvas['back_text_box_ids'] = remap(canvas['back_text_box_ids']?.toString(), textMap);
-          newCanvas['front_image_box_ids'] = remap(canvas['front_image_box_ids']?.toString(), imageMap);
-          newCanvas['back_image_box_ids'] = remap(canvas['back_image_box_ids']?.toString(), imageMap);
-          newCanvas['front_audio_box_ids'] = remap(canvas['front_audio_box_ids']?.toString(), audioMap);
-          newCanvas['back_audio_box_ids'] = remap(canvas['back_audio_box_ids']?.toString(), audioMap);
+          newCanvas['front_text_box_ids'] = remap(canvas['front_text_box_ids']?.toString(), tplTextIdMap);
+          newCanvas['back_text_box_ids'] = remap(canvas['back_text_box_ids']?.toString(), tplTextIdMap);
+          newCanvas['front_image_box_ids'] = remap(canvas['front_image_box_ids']?.toString(), tplImageIdMap);
+          newCanvas['back_image_box_ids'] = remap(canvas['back_image_box_ids']?.toString(), tplImageIdMap);
+          newCanvas['front_audio_box_ids'] = remap(canvas['front_audio_box_ids']?.toString(), tplAudioIdMap);
+          newCanvas['back_audio_box_ids'] = remap(canvas['back_audio_box_ids']?.toString(), tplAudioIdMap);
           final now = DateTime.now().millisecondsSinceEpoch;
           newCanvas['created_at'] = now;
           newCanvas['updated_at'] = now;

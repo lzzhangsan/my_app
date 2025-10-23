@@ -68,17 +68,29 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
+
+    // 为了支持同时安装两个版本（稳定版 + 预览版），增加产品风味
+    flavorDimensions "channel"
+    productFlavors {
+        stable {
+            dimension "channel"
+            // 稳定版使用原始包名，无后缀
+            resValue "string", "app_name", "Change Copy"
+        }
+        preview {
+            dimension "channel"
+            applicationIdSuffix ".preview"
+            versionNameSuffix "-preview"
+            // 预览包名字体与图标可区分
+            resValue "string", "app_name", "Change Copy Preview"
+        }
+    }
 }
 
-// Place APK outputs under build/app/outputs/apk/{variant}
+// Simplify output naming only (avoid overriding outputDirectory which breaks metadata generation for flavors)
 android.applicationVariants.all { variant ->
-    variant.outputs.all {
+    variant.outputs.all { output ->
         outputFileName = "app-${variant.name}.apk"
-        def newOutputDir = new File(project.rootDir.parentFile, "build/app/outputs/apk/${variant.name}")
-        if (!newOutputDir.exists()) {
-            newOutputDir.mkdirs()
-        }
-        variant.packageApplicationProvider.get().outputDirectory = newOutputDir
     }
 }
 

@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">change_copy</string>
+    <!-- app_name 会被 productFlavors 中的 resValue 覆盖，这里保留一个默认值防回退 -->
+    <string name="app_name">Change Copy</string>
     <string name="media_auto_import_channel_name">媒体自动导入</string>
     <string name="media_auto_import_channel_description">监听媒体库变化并自动导入新媒体</string>
 </resources> 
