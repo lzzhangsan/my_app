@@ -11,6 +11,7 @@ import '../services/error_service.dart';
 import '../services/backup_service.dart';
 import '../services/background_media_service.dart';
 import '../services/file_cleanup_service.dart';
+import '../services/network_service.dart';
 import 'app_state.dart';
 
 /// 服务定位器 - 管理所有服务的单例实例
@@ -39,6 +40,10 @@ class ServiceLocator {
       registerSingleton<ErrorService>(ErrorService());
       registerSingleton<PerformanceService>(PerformanceService());
       registerSingleton<CacheService>(CacheService());
+      registerSingleton<NetworkService>(NetworkService());
+      
+  // 初始化网络服务
+  await get<NetworkService>().initialize();
       
       // 初始化缓存服务
       await get<CacheService>().initialize();
@@ -140,6 +145,10 @@ class ServiceLocator {
       
       if (isRegistered<CacheService>()) {
         await get<CacheService>().dispose();
+      }
+      
+      if (isRegistered<NetworkService>()) {
+        get<NetworkService>().dispose();
       }
       
       _services.clear();

@@ -30,6 +30,9 @@ class DatabaseService {
   /// 事务队列
   final List<Future<void> Function(Transaction)> _transactionQueue = [];
   final bool _isProcessingTransactions = false;
+  
+  /// 性能监控Timer
+  Timer? _performanceMonitoringTimer;
 
   /// 初始化数据库服务
   Future<void> initialize() async {
@@ -438,7 +441,7 @@ class DatabaseService {
   /// 启动性能监控
   void _startPerformanceMonitoring() {
     if (kDebugMode) {
-      Timer.periodic(const Duration(minutes: 5), (timer) {
+      _performanceMonitoringTimer = Timer.periodic(const Duration(minutes: 5), (timer) {
         _analyzePerformance();
       });
     }
@@ -491,6 +494,10 @@ class DatabaseService {
   /// 清理资源
   Future<void> dispose() async {
     try {
+      // 取消性能监控Timer
+      _performanceMonitoringTimer?.cancel();
+      _performanceMonitoringTimer = null;
+      
       if (_database != null) {
         await _database!.close();
         _database = null;

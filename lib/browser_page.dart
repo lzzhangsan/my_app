@@ -27,6 +27,7 @@ import 'models/media_item.dart';
 import 'models/media_type.dart';
 import 'main.dart';
 import 'media_manager_page.dart';
+import 'services/network_service.dart';
 
 // Top-level function for ZIP encoding to avoid blocking UI
 List<int>? encodeArchive(Archive archive) {
@@ -46,16 +47,15 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
   Future<String> _resolveFinalUrl(String url, {Map<String, String>? headers}) async {
     try {
-      final dio = Dio(BaseOptions(
-        followRedirects: true,
-        maxRedirects: 5,
-        validateStatus: (s) => s != null && s < 400,
+      final networkService = NetworkService();
+      await networkService.initialize();
+      final resp = await networkService.dio.head(url, options: Options(
+        method: 'HEAD',
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36',
           ...?headers,
         },
       ));
-      final resp = await dio.head(url, options: Options(method: 'HEAD'));
       final finalUrl = resp.realUri.toString();
       return finalUrl.isNotEmpty ? finalUrl : url;
     } catch (_) {
@@ -1559,12 +1559,12 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           final MediaType mediaType = result['mediaType'];
           if (shouldDownload) {
             ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('开始下载，将在后台进行...'), duration: Duration(seconds: 2)));
-            unawaited(_performBackgroundDownload(processedUrl, mediaType));
+            _performBackgroundDownload(processedUrl, mediaType);
           }
         }
       } else {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('开始下载，将在后台进行...'), duration: Duration(seconds: 2)));
-        unawaited(_performBackgroundDownload(processedUrl, selectedType));
+  _performBackgroundDownload(processedUrl, selectedType);
       }
     } catch (e, stackTrace) {
       debugPrint('处理下载时出错: $e');
@@ -1690,27 +1690,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   Future<File?> _downloadFile(String url, MediaType mediaType) async { // Added mediaType parameter
     try {
       debugPrint('开始下载文件，URL: $url');
-      final dio = Dio();
-      dio.options.connectTimeout = const Duration(seconds: 60);
-      dio.options.receiveTimeout = const Duration(seconds: 300);
-      dio.options.sendTimeout = const Duration(seconds: 60);
-
-      dio.options.headers = {
-        'User-Agent': 'Mozilla/5.5 (iPhone; CPU iPhone OS 13_2_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0.3 Mobile/15E148 Safari/604.1',
-        'Accept': '*/*',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Connection': 'keep-alive',
-      };
-
-      if (url.contains('telegram.org') || url.contains('t.me')) {
-        dio.options.headers['Referer'] = 'https://web.telegram.org/a/';
-        dio.options.headers['Origin'] = 'https://web.telegram.org';
-        // 注意：webview_flutter 不支持直接获取 cookies
-        // 如果需要 cookies，可以考虑其他方案
-      } else if (url.contains('youtube.com') || url.contains('youtu.be')) {
-        dio.options.headers['Referer'] = 'https://www.youtube.com';
-      }
+      final networkService = NetworkService();
+      await networkService.initialize();
 
       final appDir = await getApplicationDocumentsDirectory();
       final mediaDir = Directory('${appDir.path}/media');
@@ -1736,7 +1717,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
       while (retryCount < maxRetries) {
         try {
-          final response = await dio.download(
+          final response = await networkService.dio.download(
             url,
             filePath,
             deleteOnError: true,
@@ -1797,15 +1778,16 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   }
 
   Future<void> _handleM3u8Download(String m3u8Path, String url) async {
-    final dio = Dio();
-    final response = await dio.get(url);
+    final networkService = NetworkService();
+    await networkService.initialize();
+    final response = await networkService.dio.get(url);
     final segments = response.data.toString().split('\n').where((line) => line.startsWith('http')).toList();
     if (segments.isNotEmpty) {
       final outputPath = '${m3u8Path.replaceAll('.m3u8', '.mp4')}';
       final file = File(outputPath)..createSync();
       final sink = file.openWrite();
       for (final segmentUrl in segments) {
-        final segmentResponse = await dio.get(segmentUrl, options: Options(responseType: ResponseType.bytes));
+        final segmentResponse = await networkService.dio.get(segmentUrl, options: Options(responseType: ResponseType.bytes));
         sink.add(segmentResponse.data);
       }
       await sink.close();
@@ -2391,8 +2373,21 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     _urlController.dispose();
     _videoDownloadProgress.dispose(); // Dispose ValueNotifier
     _isDownloadingVideo.dispose(); // Dispose ValueNotifier
-    _saveBookmarks().then((_) => debugPrint('书签保存完成')).catchError((error) => debugPrint('保存书签时出错: $error'));
-    _saveCommonWebsites().then((_) => debugPrint('常用网站保存完成')).catchError((error) => debugPrint('保存常用网站时出错: $error'));
+    // Fire-and-forget saves to avoid awaiting in dispose
+    Future.microtask(() async {
+      try {
+        await _saveBookmarks();
+        debugPrint('书签保存完成');
+      } catch (e) {
+        debugPrint('保存书签时出错: $e');
+      }
+      try {
+        await _saveCommonWebsites();
+        debugPrint('常用网站保存完成');
+      } catch (e) {
+        debugPrint('保存常用网站时出错: $e');
+      }
+    });
     widget.onBrowserHomePageChanged?.call(true);
     super.dispose();
   }

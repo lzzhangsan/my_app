@@ -6,6 +6,7 @@ import 'package:dio/dio.dart';
 import 'package:html/parser.dart' as html;
 import 'package:html/dom.dart' as dom;
 import '../models/media_type.dart';
+import 'network_service.dart';
 
 /// 媒体信息类
 class MediaInfo {
@@ -47,37 +48,12 @@ class MediaSnifferService {
   factory MediaSnifferService() => _instance;
   MediaSnifferService._internal();
 
-  final Dio _dio = Dio();
+  final NetworkService _networkService = NetworkService();
   final Set<String> _processedUrls = {};
 
   /// 初始化嗅探服务
-  void initialize() {
-    _dio.options = BaseOptions(
-      connectTimeout: const Duration(seconds: 15),
-      receiveTimeout: const Duration(seconds: 30),
-      followRedirects: true,
-      maxRedirects: 3,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
-        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache',
-      },
-    );
-    
-    // 添加拦截器处理错误
-    _dio.interceptors.add(InterceptorsWrapper(
-      onError: (error, handler) {
-        debugPrint('网络请求错误: ${error.message}');
-        if (error.type == DioExceptionType.connectionTimeout ||
-            error.type == DioExceptionType.receiveTimeout) {
-          debugPrint('网络超时，可能是CORS问题或网络连接问题');
-        }
-        handler.next(error);
-      },
-    ));
+  Future<void> initialize() async {
+    await _networkService.initialize();
   }
 
   /// 主要的媒体嗅探方法 - 从网页URL中提取所有可能的媒体链接
@@ -120,7 +96,7 @@ class MediaSnifferService {
   Future<List<MediaInfo>> _extractFromHtml(String url) async {
     try {
       debugPrint('尝试获取页面HTML: $url');
-      final response = await _dio.get(url);
+      final response = await _networkService.dio.get(url);
       debugPrint('成功获取页面HTML，状态码: ${response.statusCode}');
       final document = html.parse(response.data);
       final List<MediaInfo> media = [];
@@ -289,7 +265,7 @@ class MediaSnifferService {
         r'https://t\.me/[^/]+/\d+',
       ];
       
-      final response = await _dio.get(url);
+      final response = await _networkService.dio.get(url);
       final content = response.data.toString();
       
       for (final pattern in telegramPatterns) {
@@ -359,7 +335,7 @@ class MediaSnifferService {
     final List<MediaInfo> media = [];
     
     try {
-      final response = await _dio.get(url);
+      final response = await _networkService.dio.get(url);
       final content = response.data.toString();
       
       // Twitter图片模式
@@ -413,7 +389,7 @@ class MediaSnifferService {
     final List<MediaInfo> media = [];
     
     try {
-      final response = await _dio.get(url);
+      final response = await _networkService.dio.get(url);
       final content = response.data.toString();
       
       // Instagram图片和视频模式
@@ -448,7 +424,7 @@ class MediaSnifferService {
     final List<MediaInfo> media = [];
     
     try {
-      final response = await _dio.get(url);
+      final response = await _networkService.dio.get(url);
       final content = response.data.toString();
       
       // Facebook视频模式
@@ -483,7 +459,7 @@ class MediaSnifferService {
     final List<MediaInfo> media = [];
     
     try {
-      final response = await _dio.get(url);
+      final response = await _networkService.dio.get(url);
       final content = response.data.toString();
       
       // TikTok视频模式
@@ -521,7 +497,7 @@ class MediaSnifferService {
       // 例如分析AJAX请求、WebSocket连接等
       
       // 分析常见的动态加载模式
-      final response = await _dio.get(url);
+      final response = await _networkService.dio.get(url);
       final content = response.data.toString();
       
       // 查找JSON中的媒体URL
@@ -564,7 +540,7 @@ class MediaSnifferService {
         r'https://[^"\s]*\.azureedge\.net/[^"\s]+\.(jpg|jpeg|png|gif|mp4|webm|mp3|wav)',
       ];
       
-      final response = await _dio.get(url);
+      final response = await _networkService.dio.get(url);
       final content = response.data.toString();
       
       for (final pattern in cdnPatterns) {
@@ -773,7 +749,7 @@ class MediaSnifferService {
   /// 获取文件大小（如果可能）
   Future<String?> getFileSize(String url) async {
     try {
-      final response = await _dio.head(url);
+      final response = await _networkService.dio.head(url);
       final contentLength = response.headers.value('content-length');
       if (contentLength != null) {
         final bytes = int.parse(contentLength);
@@ -837,5 +813,10 @@ class MediaSnifferService {
   /// 清理缓存
   void clearCache() {
     _processedUrls.clear();
+  }
+
+  /// 清理资源
+  void dispose() {
+    _networkService.dispose();
   }
 }

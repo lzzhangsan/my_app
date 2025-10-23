@@ -9,6 +9,7 @@ import 'package:crypto/crypto.dart';
 import 'package:uuid/uuid.dart';
 import '../core/service_locator.dart';
 import 'database_service.dart';
+import 'network_service.dart';
 import '../models/media_type.dart';
 
 /// 简化版 Telegram 下载服务
@@ -17,7 +18,7 @@ class TelegramDownloadServiceV2 {
   static const String _botTokenKey = 'telegram_bot_token';
   static TelegramDownloadServiceV2? _instance;
   
-  final Dio _dio = Dio();
+  final NetworkService _networkService = NetworkService();
   String? _botToken;
   
   static TelegramDownloadServiceV2 get instance {
@@ -30,10 +31,7 @@ class TelegramDownloadServiceV2 {
   /// 初始化服务
   Future<void> initialize() async {
     await _loadBotToken();
-    // Set global Dio options
-    _dio.options.connectTimeout = const Duration(seconds: 15);
-    _dio.options.sendTimeout = const Duration(seconds: 15);
-    _dio.options.receiveTimeout = const Duration(seconds: 300); // Increased for large files
+    await _networkService.initialize();
   }
   
   /// 加载保存的 Bot Token
@@ -70,10 +68,7 @@ class TelegramDownloadServiceV2 {
         receiveTimeout: const Duration(seconds: 10),
       );
       
-      // 设置连接超时（在 BaseOptions 中设置）
-      _dio.options.connectTimeout = const Duration(seconds: 10);
-      
-      final response = await _dio.get(
+      final response = await _networkService.dio.get(
         'https://api.telegram.org/bot$token/getMe',
         options: options,
       );
@@ -163,7 +158,7 @@ class TelegramDownloadServiceV2 {
     }
     
     try {
-      final response = await _dio.get(
+      final response = await _networkService.dio.get(
         'https://api.telegram.org/bot$_botToken/getMe',
       );
       
@@ -184,7 +179,7 @@ class TelegramDownloadServiceV2 {
     }
     
     try {
-      final response = await _dio.get(
+      final response = await _networkService.dio.get(
         'https://api.telegram.org/bot$_botToken/getUpdates',
       );
       
@@ -222,7 +217,7 @@ class TelegramDownloadServiceV2 {
       }
       
       // 1. 获取文件信息
-      final fileInfoResponse = await _dio.get(
+      final fileInfoResponse = await _networkService.dio.get(
         'https://api.telegram.org/bot$_botToken/getFile',
         queryParameters: {'file_id': fileId},
       );
@@ -256,7 +251,7 @@ class TelegramDownloadServiceV2 {
       final fileName = path.basename(filePath);
       final localFilePath = path.join(mediaDir.path, fileName);
       
-      await _dio.download(
+      await _networkService.dio.download(
         downloadUrl,
         localFilePath,
         onReceiveProgress: (received, total) {
@@ -337,7 +332,7 @@ class TelegramDownloadServiceV2 {
   
   /// 清理资源
   void dispose() {
-    _dio.close();
+    _networkService.dispose();
   }
 }
 
