@@ -178,35 +178,22 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onScaleStart: (details) {
-        // 记录初始尺寸和初始缩放/焦点
-        _initialWidth = widget.canvas.width;
-        _initialHeight = widget.canvas.height;
-        _currentScale = 1.0;
+      // 使用单指平移拖动画布
+      onPanStart: widget.isPositionLocked ? null : (details) {
+        _isDragging = true;
+        _dragStart = details.globalPosition;
       },
-      onScaleUpdate: (details) {
-        // 双指缩放
-        if (details.pointerCount > 1 && !widget.isPositionLocked) {
-          setState(() {
-            _currentScale = details.scale.clamp(0.3, 4.0);
-            widget.canvas.width = (_initialWidth * _currentScale).clamp(50.0, 2000.0);
-            widget.canvas.height = (_initialHeight * _currentScale).clamp(50.0, 2000.0);
-            widget.onCanvasUpdated(widget.canvas);
-          });
-          return;
+      onPanUpdate: widget.isPositionLocked ? null : (details) {
+        if (_isDragging) {
+          final delta = details.globalPosition - _dragStart;
+          widget.canvas.positionX += delta.dx;
+          widget.canvas.positionY += delta.dy;
+          _dragStart = details.globalPosition;
+          widget.onCanvasUpdated(widget.canvas);
         }
-
-        // 单指拖动：使用 scale 的 focalPointDelta 来平移
-        if (details.pointerCount <= 1 && !widget.isPositionLocked) {
-          final delta = details.focalPointDelta;
-          if (delta != Offset.zero) {
-            setState(() {
-              widget.canvas.positionX += delta.dx;
-              widget.canvas.positionY += delta.dy;
-              widget.onCanvasUpdated(widget.canvas);
-            });
-          }
-        }
+      },
+      onPanEnd: widget.isPositionLocked ? null : (details) {
+        _isDragging = false;
       },
       onDoubleTap: _flipCanvas, // 双击翻转
       onLongPress: _showCanvasOptions, // 长按显示选项
@@ -235,8 +222,8 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
       width: widget.canvas.width,
       height: widget.canvas.height,
       decoration: BoxDecoration(
-        // 填充色与文本框一致，区别通过边框颜色体现
-        color: Colors.white,
+        // 画布透明，保持空白区域；通过边框颜色区分正/反面
+        color: Colors.transparent,
         border: Border.all(
           color: shouldShowFront ? Colors.blue[300]! : Colors.orange[300]!,
           width: 2,
@@ -252,38 +239,8 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
       ),
       child: Stack(
         children: [
-          // 画布背景标识
-          Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(
-                  shouldShowFront ? Icons.crop_portrait : Icons.crop_portrait,
-                  size: 32,
-                  color: shouldShowFront ? Colors.blue[200] : Colors.orange[200],
-                ),
-                SizedBox(height: 4),
-                Text(
-                  shouldShowFront ? '正面' : '反面',
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: shouldShowFront ? Colors.blue[400] : Colors.orange[400],
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                SizedBox(height: 4),
-                Text(
-                  shouldShowFront 
-                    ? '${widget.canvas.frontTextBoxIds.length + widget.canvas.frontImageBoxIds.length + widget.canvas.frontAudioBoxIds.length}个内容'
-                    : '${widget.canvas.backTextBoxIds.length + widget.canvas.backImageBoxIds.length + widget.canvas.backAudioBoxIds.length}个内容',
-                  style: TextStyle(
-                    fontSize: 10,
-                    color: Colors.grey[600],
-                  ),
-                ),
-              ],
-            ),
-          ),
+          // 画布保持空白，不渲染默认占位标识
+          SizedBox.shrink(),
           // （保留）设置按钮位于左上角，翻转由双击空白处触发，不再需要单独翻转按钮
           // 设置按钮
           Positioned(
