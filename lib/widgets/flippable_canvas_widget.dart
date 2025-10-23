@@ -189,6 +189,9 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
           widget.canvas.positionX += delta.dx;
           widget.canvas.positionY += delta.dy;
           _dragStart = details.globalPosition;
+          // 水平安全边界
+          final screenWidth = MediaQuery.of(context).size.width;
+          widget.canvas.positionX = widget.canvas.positionX.clamp(0.0, screenWidth - widget.canvas.width);
           widget.onCanvasUpdated(widget.canvas);
         }
       },

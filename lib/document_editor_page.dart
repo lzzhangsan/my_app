@@ -1017,6 +1017,70 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
     }
   }
 
+  // 拖动结束后重新判断内容是否应归属某个画布（支持把现有内容拖入/拖出画布）
+  void _reassociateContentWithCanvas(String contentId, String contentType) {
+    // 先从所有画布移除该内容（保持前后面列表一致性）
+    for (var canvas in _canvases) {
+      canvas.frontTextBoxIds.remove(contentId);
+      canvas.backTextBoxIds.remove(contentId);
+      canvas.frontImageBoxIds.remove(contentId);
+      canvas.backImageBoxIds.remove(contentId);
+      canvas.frontAudioBoxIds.remove(contentId);
+      canvas.backAudioBoxIds.remove(contentId);
+    }
+
+    // 获取当前内容位置与尺寸
+    double x = 0, y = 0, w = 0, h = 0;
+    switch (contentType) {
+      case 'text':
+        final box = _textBoxes.firstWhere((e) => e['id'] == contentId, orElse: () => {});
+        if (box.isEmpty) return; 
+        x = (box['positionX'] ?? 0).toDouble();
+        y = (box['positionY'] ?? 0).toDouble();
+        w = (box['width'] ?? 0).toDouble();
+        h = (box['height'] ?? 0).toDouble();
+        break;
+      case 'image':
+        final box = _imageBoxes.firstWhere((e) => e['id'] == contentId, orElse: () => {});
+        if (box.isEmpty) return;
+        x = (box['positionX'] ?? 0).toDouble();
+        y = (box['positionY'] ?? 0).toDouble();
+        w = (box['width'] ?? 0).toDouble();
+        h = (box['height'] ?? 0).toDouble();
+        break;
+      case 'audio':
+        final box = _audioBoxes.firstWhere((e) => e['id'] == contentId, orElse: () => {});
+        if (box.isEmpty) return;
+        x = (box['positionX'] ?? 0).toDouble();
+        y = (box['positionY'] ?? 0).toDouble();
+        w = 56.0; // 音频按钮假定宽高
+        h = 56.0;
+        break;
+    }
+
+    // 判定与画布框是否重叠（面积 > 0 即认为粘连）
+    for (var canvas in _canvases) {
+      bool overlap = !(x + w < canvas.positionX ||
+                       x > canvas.positionX + canvas.width ||
+                       y + h < canvas.positionY ||
+                       y > canvas.positionY + canvas.height);
+      if (overlap) {
+        switch (contentType) {
+          case 'text':
+            canvas.addTextBoxToCurrentSide(contentId);
+            break;
+          case 'image':
+            canvas.addImageBoxToCurrentSide(contentId);
+            break;
+          case 'audio':
+            canvas.addAudioBoxToCurrentSide(contentId);
+            break;
+        }
+        break; // 绑定到第一个重叠的画布
+      }
+    }
+  }
+
   // 新增：检查内容是否应该显示（基于画布状态）
   bool _shouldShowContent(String contentId, String contentType) {
     for (var canvas in _canvases) {
@@ -1587,10 +1651,12 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
                             _updateImageBoxPosition(data['id'], Offset(newDx, newDy));
                           });
                         },
-                        onPanEnd: (_) {
-                          _debouncedSave();
-                          _saveStateToHistory();
-                        },
+                          onPanEnd: (_) {
+                            _reassociateContentWithCanvas(data['id'], 'image');
+                            _contentChanged = true;
+                            _debouncedSave();
+                            _saveStateToHistory();
+                          },
                         child: ResizableImageBox(
                           initialSize: Size(data['width'], data['height']),
                           imagePath: data['imagePath'],
@@ -1605,14 +1671,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
 
                       // If it belongs to a canvas and that canvas is flipped, compute mirrored transform
                       if (ownerCanvas != null && ownerCanvas.isFlipped) {
-                        // compute relative position inside canvas
-                        double relX = data['positionX'] - ownerCanvas.positionX;
-                        double relY = data['positionY'] - ownerCanvas.positionY;
-                        // mirrored X relative to canvas
-                        double mirroredRelX = ownerCanvas.width - relX - (data['width'] as double);
-                        left = ownerCanvas.positionX + mirroredRelX;
-                        top = ownerCanvas.positionY + relY;
-                        // Wrap child in horizontal flip
+                        // 在反面显示：位置保持不变，应用视觉翻转以体现背面效果
                         child = Transform(
                           alignment: Alignment.center,
                           transform: Matrix4.identity()..rotateY(math.pi),
@@ -1654,19 +1713,16 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
                             _updateTextBoxPosition(data['id'], Offset(newDx, newDy));
                           });
                         },
-                        onPanEnd: (_) {
-                          _debouncedSave();
-                          _saveStateToHistory();
-                        },
+                          onPanEnd: (_) {
+                            _reassociateContentWithCanvas(data['id'], 'text');
+                            _contentChanged = true;
+                            _debouncedSave();
+                            _saveStateToHistory();
+                          },
                         child: _buildTextBox(data),
                       );
 
                       if (ownerCanvas != null && ownerCanvas.isFlipped) {
-                        double relX = data['positionX'] - ownerCanvas.positionX;
-                        double relY = data['positionY'] - ownerCanvas.positionY;
-                        double mirroredRelX = ownerCanvas.width - relX - (data['width'] as double);
-                        left = ownerCanvas.positionX + mirroredRelX;
-                        top = ownerCanvas.positionY + relY;
                         child = Transform(
                           alignment: Alignment.center,
                           transform: Matrix4.identity()..rotateY(math.pi),
@@ -1708,12 +1764,14 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
                             _updateAudioBoxPosition(data['id'], Offset(newDx, newDy));
                           });
                         },
-                        onPanEnd: (_) {
-                          if (!_isSaving) {
-                            _debouncedSave();
-                          }
-                          _saveStateToHistory();
-                        },
+                          onPanEnd: (_) {
+                            _reassociateContentWithCanvas(data['id'], 'audio');
+                            if (!_isSaving) {
+                              _debouncedSave();
+                            }
+                            _contentChanged = true;
+                            _saveStateToHistory();
+                          },
                         child: ResizableAudioBox(
                           audioPath: data['audioPath'] ?? '',
                           onIsRecording: (isRecording) => _handleAudioRecordingState(data['id'], isRecording),
@@ -1724,11 +1782,6 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
                       );
 
                       if (ownerCanvas != null && ownerCanvas.isFlipped) {
-                        double relX = data['positionX'] - ownerCanvas.positionX;
-                        double relY = data['positionY'] - ownerCanvas.positionY;
-                        double mirroredRelX = ownerCanvas.width - relX - 37.3; // use audio width
-                        left = ownerCanvas.positionX + mirroredRelX;
-                        top = ownerCanvas.positionY + relY;
                         child = Transform(
                           alignment: Alignment.center,
                           transform: Matrix4.identity()..rotateY(math.pi),
