@@ -1370,10 +1370,20 @@ class DatabaseService {
           throw Exception('导出失败：图片文件数量不一致，数据库图片框$imageBoxCount个，ZIP包内$zipImageCount个，请联系开发者排查。');
         }
         // 校验音频文件数量
-        int audioBoxCount = audioBoxesToExport.length;
+        // 之前直接使用 audioBoxesToExport.length 作为期望文件数，如果某些音频框尚未选择音频（audio_path为空），会导致误报。
+        final audioBoxesWithFile = audioBoxesToExport.where((row) {
+          final path = row['audio_path'];
+          return path != null && path.toString().isNotEmpty;
+        }).toList();
+        final audioBoxesWithoutFile = audioBoxesToExport.where((row) {
+          final path = row['audio_path'];
+          return path == null || path.toString().isEmpty;
+        }).toList();
+        int expectedAudioFileCount = audioBoxesWithFile.length;
         int zipAudioCount = archiveCheck.where((file) => file.name.startsWith('audios/') && !file.isDirectory).length;
-        if (audioBoxCount != zipAudioCount) {
-          throw Exception('导出失败：音频文件数量不一致，数据库音频框$audioBoxCount个，ZIP包内$zipAudioCount个，请联系开发者排查。');
+        print('[导出] 音频框总数: ${audioBoxesToExport.length}，其中有文件的: $expectedAudioFileCount，没有文件的: ${audioBoxesWithoutFile.length}');
+        if (expectedAudioFileCount != zipAudioCount) {
+          throw Exception('导出失败：音频文件数量不一致，有音频文件的音频框$expectedAudioFileCount个，ZIP包内$zipAudioCount个，请联系开发者排查。如果只是有空的音频框请忽略该错误并报告日志。');
         }
       } finally {
         await inputStream.close();
