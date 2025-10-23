@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
-import 'package:path_provider/path_provider.dart';
-import 'dart:io';
+import 'dart:async';
 
 class GlobalToolBar extends StatefulWidget {
   final VoidCallback? onNewTextBox;
   final VoidCallback? onNewImageBox;
   final VoidCallback? onNewAudioBox;
+  final VoidCallback? onNewCanvas; // 新增：新建画布回调
   final VoidCallback? onUndo;
   final VoidCallback? onRedo;
   final VoidCallback? onMediaPlay;
@@ -19,6 +19,7 @@ class GlobalToolBar extends StatefulWidget {
     this.onNewTextBox,
     this.onNewImageBox,
     this.onNewAudioBox,
+    this.onNewCanvas, // 新增：新建画布回调
     this.onUndo,
     this.onRedo,
     this.onMediaPlay,
@@ -34,6 +35,60 @@ class GlobalToolBar extends StatefulWidget {
 }
 
 class _GlobalToolBarState extends State<GlobalToolBar> {
+  int _tapCount = 0;
+  Timer? _tapTimer;
+  static const Duration _tapTimeout = Duration(milliseconds: 600); // 三连击检测时间窗口
+
+  void _handleAddButtonTap() {
+    _tapCount++;
+    
+    // 取消之前的定时器
+    _tapTimer?.cancel();
+    
+    if (_tapCount == 1) {
+      // 第一次点击，开始计时
+      _tapTimer = Timer(_tapTimeout, () {
+        // 超时，执行单击操作
+        if (widget.onNewTextBox != null) {
+          widget.onNewTextBox!();
+        }
+        _tapCount = 0;
+      });
+    } else if (_tapCount == 2) {
+      // 第二次点击，继续等待可能的第三次点击
+      _tapTimer = Timer(_tapTimeout, () {
+        // 超时，执行双击操作
+        if (widget.onNewImageBox != null) {
+          widget.onNewImageBox!();
+        }
+        _tapCount = 0;
+      });
+    } else if (_tapCount >= 3) {
+      // 三连击，立即执行
+      _tapTimer?.cancel();
+      if (widget.onNewCanvas != null) {
+        widget.onNewCanvas!();
+      }
+      _tapCount = 0;
+    }
+  }
+
+  void _handleAddButtonLongPress() {
+    // 取消点击计时器
+    _tapTimer?.cancel();
+    _tapCount = 0;
+    
+    // 执行长按操作
+    if (widget.onNewAudioBox != null) {
+      widget.onNewAudioBox!();
+    }
+  }
+
+  @override
+  void dispose() {
+    _tapTimer?.cancel();
+    super.dispose();
+  }
   @override
   Widget build(BuildContext context) {
     return Padding(
@@ -45,13 +100,8 @@ class _GlobalToolBarState extends State<GlobalToolBar> {
           mainAxisAlignment: MainAxisAlignment.spaceAround,
           children: [
             GestureDetector(
-              onTap: widget.onNewTextBox,
-              onDoubleTap: widget.onNewImageBox,
-              onLongPress: () {
-                if (widget.onNewAudioBox != null) {
-                  widget.onNewAudioBox!();
-                }
-              },
+              onTap: _handleAddButtonTap,
+              onLongPress: _handleAddButtonLongPress,
               child: Icon(
                 Icons.note_add,
                 color: Colors.blueAccent,

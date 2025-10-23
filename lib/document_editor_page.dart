@@ -9,6 +9,8 @@ import 'global_tool_bar.dart' as toolBar;
 import 'media_player_container.dart';
 import 'video_controls_overlay.dart';
 import 'widgets/video_player_widget.dart';
+import 'widgets/flippable_canvas_widget.dart'; // 新增：导入画布组件
+import 'models/flippable_canvas.dart'; // 新增：导入画布模型
 import 'dart:async';
 import 'package:image_picker/image_picker.dart';
 import 'dart:io';
@@ -36,9 +38,11 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
   List<Map<String, dynamic>> _textBoxes = [];
   List<Map<String, dynamic>> _imageBoxes = [];
   List<Map<String, dynamic>> _audioBoxes = [];
+  List<FlippableCanvas> _canvases = []; // 新增：画布列表
   List<String> _deletedTextBoxIds = [];
   List<String> _deletedImageBoxIds = [];
   List<String> _deletedAudioBoxIds = [];
+  List<String> _deletedCanvasIds = []; // 新增：已删除的画布ID列表
   List<Map<String, dynamic>> _history = [];
   int _historyIndex = -1;
   late ScrollController _scrollController;
@@ -574,8 +578,10 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
           double spacing = 2.5 * 3.779527559;
           positionY = bottomMostTextBox['positionY'] + bottomMostTextBox['height'] + spacing;
         }
+        
+        String textBoxId = uuid.v4();
         Map<String, dynamic> newTextBox = {
-          'id': uuid.v4(),
+          'id': textBoxId,
           'documentName': widget.documentName,
           'positionX': positionX,
           'positionY': positionY,
@@ -585,8 +591,13 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
           'fontSize': 16.0,
           'fontColor': Colors.black.value,
         };
+        
         if (_databaseService.validateTextBoxData(newTextBox)) {
           _textBoxes.add(newTextBox);
+          
+          // 新增：检查是否有画布包含这个位置，如果有则将文本框关联到画布
+          _associateContentWithCanvas(textBoxId, positionX, positionY, 'text');
+          
           _contentChanged = true;
           Future.microtask(() {
             _debouncedSave();
@@ -606,17 +617,25 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
     double screenWidth = MediaQuery.of(context).size.width;
     double screenHeight = MediaQuery.of(context).size.height;
     double scrollOffset = _scrollController.offset;
+    double positionX = screenWidth / 2 - 100;
+    double positionY = scrollOffset + screenHeight / 2 - 50;
+    
+    String imageBoxId = uuid.v4();
     Map<String, dynamic> imageBox = {
-      'id': uuid.v4(),
+      'id': imageBoxId,
       'documentName': widget.documentName,
-      'positionX': screenWidth / 2 - 100,
-      'positionY': scrollOffset + screenHeight / 2 - 50,
+      'positionX': positionX,
+      'positionY': positionY,
       'width': 200.0,
       'height': 200.0,
       'imagePath': '',
     };
     setState(() {
       _imageBoxes.add(imageBox);
+      
+      // 新增：检查是否有画布包含这个位置
+      _associateContentWithCanvas(imageBoxId, positionX, positionY, 'image');
+      
       _contentChanged = true;
       _saveStateToHistory();
     });
@@ -817,18 +836,58 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
       double screenWidth = MediaQuery.of(context).size.width;
       double screenHeight = MediaQuery.of(context).size.height;
       double scrollOffset = _scrollController.offset;
+      double positionX = screenWidth / 2 - 28;
+      double positionY = scrollOffset + screenHeight / 2 - 28;
+      
+      String audioBoxId = uuid.v4();
       Map<String, dynamic> newAudioBox = {
-        'id': uuid.v4(),
+        'id': audioBoxId,
         'documentName': widget.documentName,
-        'positionX': screenWidth / 2 - 28,
-        'positionY': scrollOffset + screenHeight / 2 - 28,
+        'positionX': positionX,
+        'positionY': positionY,
         'audioPath': '',
       };
 
       _audioBoxes.add(newAudioBox);
+      
+      // 新增：检查是否有画布包含这个位置
+      _associateContentWithCanvas(audioBoxId, positionX, positionY, 'audio');
+      
       _contentChanged = true;
       _debouncedSave();
       _saveStateToHistory();
+    });
+  }
+
+  // 新增：添加新画布
+  void _addNewCanvas() {
+    setState(() {
+      var uuid = Uuid();
+      double screenWidth = MediaQuery.of(context).size.width;
+      double screenHeight = MediaQuery.of(context).size.height;
+      double scrollOffset = _scrollController.offset;
+      
+      FlippableCanvas newCanvas = FlippableCanvas(
+        id: uuid.v4(),
+        documentName: widget.documentName,
+        positionX: screenWidth / 2 - 150, // 画布默认宽度300，居中显示
+        positionY: scrollOffset + screenHeight / 2 - 100, // 画布默认高度200，居中显示
+        width: 300.0,
+        height: 200.0,
+        isFlipped: false,
+      );
+
+      _canvases.add(newCanvas);
+      _contentChanged = true;
+      _debouncedSave();
+      _saveStateToHistory();
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('画布已创建！双击画布可翻转，长按可查看设置'),
+          duration: Duration(seconds: 3),
+        ),
+      );
     });
   }
 
@@ -918,6 +977,132 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
     }
   }
 
+  // 新增：更新画布
+  void _updateCanvas(FlippableCanvas canvas) {
+    setState(() {
+      int index = _canvases.indexWhere((c) => c.id == canvas.id);
+      if (index != -1) {
+        _canvases[index] = canvas;
+        _contentChanged = true;
+      }
+    });
+  }
+
+  // 新增：检查内容是否与画布重叠并关联
+  void _associateContentWithCanvas(String contentId, double x, double y, String contentType) {
+    for (var canvas in _canvases) {
+      // 检查内容是否在画布范围内
+      if (x >= canvas.positionX && 
+          x <= canvas.positionX + canvas.width &&
+          y >= canvas.positionY && 
+          y <= canvas.positionY + canvas.height) {
+        
+        // 将内容关联到画布的当前面
+        switch (contentType) {
+          case 'text':
+            canvas.addTextBoxToCurrentSide(contentId);
+            break;
+          case 'image':
+            canvas.addImageBoxToCurrentSide(contentId);
+            break;
+          case 'audio':
+            canvas.addAudioBoxToCurrentSide(contentId);
+            break;
+        }
+        
+        print('内容 $contentId 已关联到画布 ${canvas.id} 的${canvas.isFlipped ? "反面" : "正面"}');
+        break; // 只关联到第一个匹配的画布
+      }
+    }
+  }
+
+  // 新增：检查内容是否应该显示（基于画布状态）
+  bool _shouldShowContent(String contentId, String contentType) {
+    for (var canvas in _canvases) {
+      bool containsContent = false;
+      bool isOnCurrentSide = false;
+      
+      switch (contentType) {
+        case 'text':
+          containsContent = canvas.containsTextBox(contentId);
+          isOnCurrentSide = canvas.getCurrentTextBoxIds().contains(contentId);
+          break;
+        case 'image':
+          containsContent = canvas.containsImageBox(contentId);
+          isOnCurrentSide = canvas.getCurrentImageBoxIds().contains(contentId);
+          break;
+        case 'audio':
+          containsContent = canvas.containsAudioBox(contentId);
+          isOnCurrentSide = canvas.getCurrentAudioBoxIds().contains(contentId);
+          break;
+      }
+      
+      if (containsContent) {
+        // 如果内容属于某个画布，只有在当前面时才显示
+        return isOnCurrentSide;
+      }
+    }
+    
+    // 如果内容不属于任何画布，始终显示
+    return true;
+  }
+  
+  Future<void> _deleteCanvas(String canvasId) async {
+    // 显示确认对话框
+    bool shouldDelete = await _showDeleteConfirmationDialog();
+    if (!shouldDelete) return;
+
+    setState(() {
+      // 找到要删除的画布
+      FlippableCanvas? canvasToDelete;
+      for (var canvas in _canvases) {
+        if (canvas.id == canvasId) {
+          canvasToDelete = canvas;
+          break;
+        }
+      }
+
+      if (canvasToDelete != null) {
+        // 从画布的所有面移除关联的内容
+        List<String> allTextBoxIds = [
+          ...canvasToDelete.frontTextBoxIds,
+          ...canvasToDelete.backTextBoxIds,
+        ];
+        List<String> allImageBoxIds = [
+          ...canvasToDelete.frontImageBoxIds,
+          ...canvasToDelete.backImageBoxIds,
+        ];
+        List<String> allAudioBoxIds = [
+          ...canvasToDelete.frontAudioBoxIds,
+          ...canvasToDelete.backAudioBoxIds,
+        ];
+
+        // 将关联的内容也删除（可选，也可以选择保留内容）
+        _textBoxes.removeWhere((box) => allTextBoxIds.contains(box['id']));
+        _imageBoxes.removeWhere((box) => allImageBoxIds.contains(box['id']));
+        _audioBoxes.removeWhere((box) => allAudioBoxIds.contains(box['id']));
+
+        // 添加到删除列表
+        _deletedTextBoxIds.addAll(allTextBoxIds);
+        _deletedImageBoxIds.addAll(allImageBoxIds);
+        _deletedAudioBoxIds.addAll(allAudioBoxIds);
+
+        // 删除画布
+        _canvases.removeWhere((canvas) => canvas.id == canvasId);
+        _deletedCanvasIds.add(canvasId);
+        
+        _contentChanged = true;
+      }
+    });
+
+    _debouncedSave();
+    _saveStateToHistory();
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('画布及其内容已删除')),
+    );
+  }
+
   void _saveStateToHistory() {
     if (_historyIndex < _history.length - 1) {
       _history = _history.sublist(0, _historyIndex + 1);
@@ -948,14 +1133,21 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
                 });
         return safeMap;
       }).toList();
+
+      // 新增：安全地复制画布数据
+      List<Map<String, dynamic>> safeCanvases = _canvases.map((canvas) {
+        return canvas.toMap();
+      }).toList();
       
       _history.add({
         'textBoxes': safeTextBoxes,
         'imageBoxes': safeImageBoxes,
         'audioBoxes': safeAudioBoxes,
+        'canvases': safeCanvases, // 新增：画布数据
         'deletedTextBoxIds': List<String>.from(_deletedTextBoxIds.where((id) => id != null)),
         'deletedImageBoxIds': List<String>.from(_deletedImageBoxIds.where((id) => id != null)),
         'deletedAudioBoxIds': List<String>.from(_deletedAudioBoxIds.where((id) => id != null)),
+        'deletedCanvasIds': List<String>.from(_deletedCanvasIds.where((id) => id != null)), // 新增：已删除画布ID
         'backgroundImage': _backgroundImage?.path,
         'backgroundColor': _backgroundColor?.value,
         'textEnhanceMode': _textEnhanceMode,
@@ -967,9 +1159,11 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
         'textBoxes': <Map<String, dynamic>>[],
         'imageBoxes': <Map<String, dynamic>>[],
         'audioBoxes': <Map<String, dynamic>>[],
+        'canvases': <Map<String, dynamic>>[], // 新增：空画布列表
         'deletedTextBoxIds': <String>[],
         'deletedImageBoxIds': <String>[],
         'deletedAudioBoxIds': <String>[],
+        'deletedCanvasIds': <String>[], // 新增：空删除画布列表
         'backgroundImage': null,
         'backgroundColor': null,
         'textEnhanceMode': false,
@@ -996,10 +1190,23 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
         .map<Map<String, dynamic>>((e) => Map<String, dynamic>.from(e))
         .toList()
         : [];
+    
+    // 新增：从历史记录加载画布数据
+    _canvases = historyState['canvases'] != null
+        ? historyState['canvases']
+        .map<FlippableCanvas>((e) => FlippableCanvas.fromMap(Map<String, dynamic>.from(e)))
+        .toList()
+        : [];
+    
     _deletedTextBoxIds = List<String>.from(historyState['deletedTextBoxIds']);
     _deletedImageBoxIds = List<String>.from(historyState['deletedImageBoxIds']);
     _deletedAudioBoxIds = historyState['deletedAudioBoxIds'] != null
         ? List<String>.from(historyState['deletedAudioBoxIds'])
+        : [];
+    
+    // 新增：从历史记录加载已删除画布ID
+    _deletedCanvasIds = historyState['deletedCanvasIds'] != null
+        ? List<String>.from(historyState['deletedCanvasIds'])
         : [];
 
     if (historyState['backgroundImage'] != null) {
@@ -1159,6 +1366,14 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
     for (var audioBox in _audioBoxes) {
       // 音频框假设高度为56.0
       double bottom = (audioBox['positionY'] as double) + 56.0;
+      if (bottom > maxBottom) {
+        maxBottom = bottom;
+      }
+    }
+    
+    // 新增：检查所有画布
+    for (var canvas in _canvases) {
+      double bottom = canvas.positionY + canvas.height;
       if (bottom > maxBottom) {
         maxBottom = bottom;
       }
@@ -1329,7 +1544,21 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
                 child: Stack(
                   key: ValueKey('content_stack'),
                   children: [
-                    ...List<Map<String, dynamic>>.from(_imageBoxes).map<Widget>((data) {
+                    // 新增：画布组件（放在最底层，但在背景之上）
+                    ..._canvases.map<Widget>((canvas) {
+                      return Positioned(
+                        key: ValueKey(canvas.id),
+                        left: canvas.positionX,
+                        top: canvas.positionY,
+                        child: FlippableCanvasWidget(
+                          canvas: canvas,
+                          onCanvasUpdated: _updateCanvas,
+                          onSettingsPressed: () => _deleteCanvas(canvas.id),
+                          isPositionLocked: _isPositionLocked,
+                        ),
+                      );
+                    }),
+                    ...List<Map<String, dynamic>>.from(_imageBoxes).where((data) => _shouldShowContent(data['id'], 'image')).map<Widget>((data) {
                       return Positioned(
                         key: ValueKey(data['id']),
                         left: data['positionX'],
@@ -1376,7 +1605,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
                         ),
                       );
                     }),
-                    ...List<Map<String, dynamic>>.from(_textBoxes).map<Widget>((data) {
+                    ...List<Map<String, dynamic>>.from(_textBoxes).where((data) => _shouldShowContent(data['id'], 'text')).map<Widget>((data) {
                       return Positioned(
                         key: ValueKey(data['id']),
                         left: data['positionX'],
@@ -1413,7 +1642,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
                         ),
                       );
                     }),
-                    ..._audioBoxes.map<Widget>((data) {
+                    ..._audioBoxes.where((data) => _shouldShowContent(data['id'], 'audio')).map<Widget>((data) {
                       return Positioned(
                         key: ValueKey(data['id']),
                         left: data['positionX'],
@@ -1484,6 +1713,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
           onNewTextBox: _addNewTextBox,
           onNewImageBox: _addNewImageBox,
           onNewAudioBox: _addNewAudioBox,
+          onNewCanvas: _addNewCanvas, // 新增：新建画布回调
           onUndo: _historyIndex > 0 ? _undo : null,
           onRedo: _historyIndex < _history.length - 1 ? _redo : null,
           onMediaPlay: () => _mediaPlayerKey.currentState?.playCurrentMedia(),
