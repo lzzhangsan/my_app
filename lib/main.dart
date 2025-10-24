@@ -38,7 +38,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: '变体',
+      title: '变化',
       theme: ThemeData(
         primarySwatch: Colors.blue,
         fontFamily: 'Roboto',

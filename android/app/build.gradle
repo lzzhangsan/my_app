@@ -36,8 +36,8 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId "com.example.change_copy2"
+        // 使用独立的预览版包名，保证可与旧版（com.example.change_copy2）并存安装
+        applicationId "com.example.change_copy2.preview"
         // You can update the following values to match your application needs.
         // For more information, see: https://docs.flutter.dev/deployment/android#reviewing-the-gradle-build-configuration.
         minSdkVersion 24
@@ -69,30 +69,11 @@ android {
         }
     }
 
-    // 为了支持同时安装两个版本（稳定版 + 预览版），增加产品风味
-    flavorDimensions "channel"
-    productFlavors {
-        stable {
-            dimension "channel"
-            // 稳定版使用原始包名，无后缀
-            resValue "string", "app_name", "Change Copy"
-        }
-        preview {
-            dimension "channel"
-            applicationIdSuffix ".preview"
-            versionNameSuffix "-preview"
-            // 预览包名字体与图标可区分
-            resValue "string", "app_name", "Change Copy Preview"
-        }
-    }
 }
 
-// Simplify output naming only (avoid overriding outputDirectory which breaks metadata generation for flavors)
-android.applicationVariants.all { variant ->
-    variant.outputs.all { output ->
-        outputFileName = "app-${variant.name}.apk"
-    }
-}
+// 移除自定义 APK 命名，使用 Flutter 默认命名方便 flutter run 检测产物
+// 如果以后确实需要自定义，请保持格式 app-<flavor>-<buildType>.apk 例如：
+// outputFileName = "app-${variant.flavorName}-${variant.buildType.name}.apk"
 
 
 dependencies {
