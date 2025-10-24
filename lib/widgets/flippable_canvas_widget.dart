@@ -178,14 +178,53 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
                   contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 6),
                 );
 
-            Widget _numField({required TextEditingController c, required String label, required Function(String) onChanged}) {
-              return SizedBox(
-                width: 74,
-                child: TextField(
-                  controller: c,
-                  keyboardType: TextInputType.number,
-                  decoration: _dec(label),
-                  onChanged: onChanged,
+            Widget _numField({
+              required TextEditingController c,
+              required String label,
+              required Function(String) onChanged,
+              required VoidCallback onInc,
+              required VoidCallback onDec,
+            }) {
+              return Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SizedBox(
+                    width: 82,
+                    child: TextField(
+                      controller: c,
+                      keyboardType: TextInputType.number,
+                      decoration: _dec(label),
+                      onChanged: onChanged,
+                    ),
+                  ),
+                  SizedBox(height: 4),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      _miniBtn(icon: Icons.remove, onTap: onDec),
+                      SizedBox(width: 6),
+                      _miniBtn(icon: Icons.add, onTap: onInc),
+                    ],
+                  )
+                ],
+              );
+            }
+
+            Widget _miniBtn({required IconData icon, required VoidCallback onTap}) {
+              return GestureDetector(
+                onTap: () {
+                  onTap();
+                },
+                child: Container(
+                  width: 28,
+                  height: 26,
+                  decoration: BoxDecoration(
+                    color: Colors.grey[200],
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: Colors.grey[400]!, width: 0.7),
+                  ),
+                  alignment: Alignment.center,
+                  child: Icon(icon, size: 16, color: Colors.grey[700]),
                 ),
               );
             }
@@ -237,21 +276,62 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
                                   c: xController,
                                   label: 'X',
                                   onChanged: (_) => _applyValues(updateX: true),
+                                  onInc: () {
+                                    xController.text = (double.tryParse(xController.text) ?? widget.canvas.positionX).toInt().toString();
+                                    final v = (double.tryParse(xController.text) ?? widget.canvas.positionX) + 1;
+                                    xController.text = v.toInt().toString();
+                                    _applyValues(updateX: true);
+                                  },
+                                  onDec: () {
+                                    final v = (double.tryParse(xController.text) ?? widget.canvas.positionX) - 1;
+                                    xController.text = v.toInt().toString();
+                                    _applyValues(updateX: true);
+                                  },
                                 ),
                                 _numField(
                                   c: yController,
                                   label: 'Y',
                                   onChanged: (_) => _applyValues(updateY: true),
+                                  onInc: () {
+                                    final v = (double.tryParse(yController.text) ?? widget.canvas.positionY) + 1;
+                                    yController.text = v.toInt().toString();
+                                    _applyValues(updateY: true);
+                                  },
+                                  onDec: () {
+                                    final v = (double.tryParse(yController.text) ?? widget.canvas.positionY) - 1;
+                                    yController.text = v.toInt().toString();
+                                    _applyValues(updateY: true);
+                                  },
                                 ),
                                 _numField(
                                   c: wController,
                                   label: '宽',
                                   onChanged: (_) => _applyValues(updateW: true),
+                                  onInc: () {
+                                    final v = (double.tryParse(wController.text) ?? widget.canvas.width) + 1;
+                                    wController.text = v.toInt().toString();
+                                    _applyValues(updateW: true);
+                                  },
+                                  onDec: () {
+                                    final v = (double.tryParse(wController.text) ?? widget.canvas.width) - 1;
+                                    wController.text = v.toInt().toString();
+                                    _applyValues(updateW: true);
+                                  },
                                 ),
                                 _numField(
                                   c: hController,
                                   label: '高',
                                   onChanged: (_) => _applyValues(updateH: true),
+                                  onInc: () {
+                                    final v = (double.tryParse(hController.text) ?? widget.canvas.height) + 1;
+                                    hController.text = v.toInt().toString();
+                                    _applyValues(updateH: true);
+                                  },
+                                  onDec: () {
+                                    final v = (double.tryParse(hController.text) ?? widget.canvas.height) - 1;
+                                    hController.text = v.toInt().toString();
+                                    _applyValues(updateH: true);
+                                  },
                                 ),
                               ],
                             ),
