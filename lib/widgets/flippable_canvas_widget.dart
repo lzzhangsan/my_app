@@ -2,6 +2,7 @@
 // 可翻转画布组件
 
 import 'package:flutter/material.dart';
+import 'dart:async';
 import 'dart:math' as math;
 import '../models/flippable_canvas.dart';
 
@@ -180,20 +181,43 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
 
             // 先声明微调按钮构建函数，供数值输入控件使用
             Widget _miniBtn({required IconData icon, required VoidCallback onTap}) {
+              Timer? holdTimer;
+              Duration repeatInterval = const Duration(milliseconds: 120);
+              // 启动长按后快速重复
+              void startHold() {
+                // 先立即执行一次
+                onTap();
+                // 设定一个短延迟再进入循环（初始延迟更长一点方便精确单次）
+                holdTimer = Timer(const Duration(milliseconds: 350), () {
+                  holdTimer = Timer.periodic(repeatInterval, (_) {
+                    onTap();
+                  });
+                });
+              }
+
+              void stopHold() {
+                holdTimer?.cancel();
+                holdTimer = null;
+              }
+
               return GestureDetector(
-                onTap: () {
-                  onTap();
-                },
-                child: Container(
-                  width: 28,
-                  height: 26,
-                  decoration: BoxDecoration(
-                    color: Colors.grey[200],
-                    borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: Colors.grey[400]!, width: 0.7),
+                onTap: onTap,
+                onLongPressStart: (_) => startHold(),
+                onLongPressEnd: (_) => stopHold(),
+                onLongPressCancel: stopHold,
+                child: Listener(
+                  onPointerUp: (_) => stopHold(),
+                  child: Container(
+                    width: 28,
+                    height: 26,
+                    decoration: BoxDecoration(
+                      color: Colors.grey[200],
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: Colors.grey[400]!, width: 0.7),
+                    ),
+                    alignment: Alignment.center,
+                    child: Icon(icon, size: 16, color: Colors.grey[700]),
                   ),
-                  alignment: Alignment.center,
-                  child: Icon(icon, size: 16, color: Colors.grey[700]),
                 ),
               );
             }
