@@ -238,6 +238,51 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
               );
             }
 
+            // 紧凑型单行字段（含 ± 按钮）
+            Widget _compactField({
+              required TextEditingController controller,
+              required String label,
+              required VoidCallback onInc,
+              required VoidCallback onDec,
+              required VoidCallback onChanged,
+            }) {
+              return Expanded(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextField(
+                      controller: controller,
+                      keyboardType: TextInputType.number,
+                      decoration: InputDecoration(
+                        labelText: label,
+                        isDense: true,
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
+                        contentPadding: EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+                      ),
+                      onChanged: (_) => onChanged(),
+                    ),
+                    SizedBox(height: 4),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        _miniBtn(
+                          icon: Icons.remove,
+                          onTap: onDec,
+                          onDouble: () { for(int i=0;i<10;i++){ onDec(); } },
+                        ),
+                        SizedBox(width: 6),
+                        _miniBtn(
+                          icon: Icons.add,
+                          onTap: onInc,
+                          onDouble: () { for(int i=0;i<10;i++){ onInc(); } },
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              );
+            }
+
             return Container(
               decoration: BoxDecoration(
                 color: Colors.white.withOpacity(0.95),
@@ -256,142 +301,78 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
+                      // 精简标题与布局
                       Padding(
-                        padding: EdgeInsets.symmetric(vertical: 12),
-                        child: Center(
-                          child: Text(
-                            '画布设置',
-                            style: TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
+                        padding: EdgeInsets.only(top: 10, bottom: 6),
+                        child: Text('画布设置', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
                       ),
-                      Divider(height: 1, thickness: 1),
-                      // 数值输入区域
+                      // 单行位置与大小
                       Padding(
-                        padding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
+                        padding: EdgeInsets.symmetric(horizontal: 10),
+                        child: Row(
                           children: [
-                            Text('位置与大小（实时预览）', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
-                            SizedBox(height: 8),
-                            Wrap(
-                              spacing: 8,
-                              runSpacing: 8,
-                              children: [
-                                _numField(
-                                  c: xController,
-                                  label: 'X',
-                                  onChanged: (_) => _applyValues(updateX: true),
-                                  onInc: () {
-                                    xController.text = (double.tryParse(xController.text) ?? widget.canvas.positionX).toInt().toString();
-                                    final v = (double.tryParse(xController.text) ?? widget.canvas.positionX) + 1;
-                                    xController.text = v.toInt().toString();
-                                    _applyValues(updateX: true);
-                                  },
-                                  onDec: () {
-                                    final v = (double.tryParse(xController.text) ?? widget.canvas.positionX) - 1;
-                                    xController.text = v.toInt().toString();
-                                    _applyValues(updateX: true);
-                                  },
-                                ),
-                                _numField(
-                                  c: yController,
-                                  label: 'Y',
-                                  onChanged: (_) => _applyValues(updateY: true),
-                                  onInc: () {
-                                    final v = (double.tryParse(yController.text) ?? widget.canvas.positionY) + 1;
-                                    yController.text = v.toInt().toString();
-                                    _applyValues(updateY: true);
-                                  },
-                                  onDec: () {
-                                    final v = (double.tryParse(yController.text) ?? widget.canvas.positionY) - 1;
-                                    yController.text = v.toInt().toString();
-                                    _applyValues(updateY: true);
-                                  },
-                                ),
-                                _numField(
-                                  c: wController,
-                                  label: '宽',
-                                  onChanged: (_) => _applyValues(updateW: true),
-                                  onInc: () {
-                                    final v = (double.tryParse(wController.text) ?? widget.canvas.width) + 1;
-                                    wController.text = v.toInt().toString();
-                                    _applyValues(updateW: true);
-                                  },
-                                  onDec: () {
-                                    final v = (double.tryParse(wController.text) ?? widget.canvas.width) - 1;
-                                    wController.text = v.toInt().toString();
-                                    _applyValues(updateW: true);
-                                  },
-                                ),
-                                _numField(
-                                  c: hController,
-                                  label: '高',
-                                  onChanged: (_) => _applyValues(updateH: true),
-                                  onInc: () {
-                                    final v = (double.tryParse(hController.text) ?? widget.canvas.height) + 1;
-                                    hController.text = v.toInt().toString();
-                                    _applyValues(updateH: true);
-                                  },
-                                  onDec: () {
-                                    final v = (double.tryParse(hController.text) ?? widget.canvas.height) - 1;
-                                    hController.text = v.toInt().toString();
-                                    _applyValues(updateH: true);
-                                  },
-                                ),
-                              ],
+                            _compactField(
+                              controller: xController,
+                              label: 'X',
+                              onChanged: () => _applyValues(updateX: true),
+                              onInc: () { xController.text = ((double.tryParse(xController.text) ?? widget.canvas.positionX) + 1).toInt().toString(); _applyValues(updateX: true); },
+                              onDec: () { xController.text = ((double.tryParse(xController.text) ?? widget.canvas.positionX) - 1).toInt().toString(); _applyValues(updateX: true); },
                             ),
-                            SizedBox(height: 6),
-                            Text(
-                              '安全范围：0 ≤ X，且 X+宽 ≤ 屏幕宽(${screenWidth.toStringAsFixed(0)})。宽度最小50。',
-                              style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+                            _compactField(
+                              controller: yController,
+                              label: 'Y',
+                              onChanged: () => _applyValues(updateY: true),
+                              onInc: () { yController.text = ((double.tryParse(yController.text) ?? widget.canvas.positionY) + 1).toInt().toString(); _applyValues(updateY: true); },
+                              onDec: () { yController.text = ((double.tryParse(yController.text) ?? widget.canvas.positionY) - 1).toInt().toString(); _applyValues(updateY: true); },
+                            ),
+                            _compactField(
+                              controller: wController,
+                              label: '宽',
+                              onChanged: () => _applyValues(updateW: true),
+                              onInc: () { wController.text = ((double.tryParse(wController.text) ?? widget.canvas.width) + 1).toInt().toString(); _applyValues(updateW: true); },
+                              onDec: () { wController.text = ((double.tryParse(wController.text) ?? widget.canvas.width) - 1).toInt().toString(); _applyValues(updateW: true); },
+                            ),
+                            _compactField(
+                              controller: hController,
+                              label: '高',
+                              onChanged: () => _applyValues(updateH: true),
+                              onInc: () { hController.text = ((double.tryParse(hController.text) ?? widget.canvas.height) + 1).toInt().toString(); _applyValues(updateH: true); },
+                              onDec: () { hController.text = ((double.tryParse(hController.text) ?? widget.canvas.height) - 1).toInt().toString(); _applyValues(updateH: true); },
                             ),
                           ],
                         ),
                       ),
-                      Divider(height: 1, thickness: 1),
-                      ListTile(
-                        leading: Icon(
-                          widget.canvas.isFlipped ? Icons.flip_to_front : Icons.flip_to_back,
-                          color: Colors.blue,
+                      // 安全范围提示
+                      Padding(
+                        padding: EdgeInsets.only(left: 12, top: 4, bottom: 6),
+                        child: Text('范围: 0 ≤ X 且 X+宽 ≤ 屏幕(${screenWidth.toStringAsFixed(0)}) 宽≥50', style: TextStyle(fontSize: 11, color: Colors.grey[600])),
+                      ),
+                      // 操作行：翻转 + 内容统计 + 删除
+                      Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                        child: Row(
+                          children: [
+                            TextButton.icon(
+                              onPressed: () { Navigator.pop(context); _flipCanvas(); },
+                              icon: Icon(widget.canvas.isFlipped ? Icons.flip_to_front : Icons.flip_to_back, size: 18, color: Colors.blue),
+                              label: Text(widget.canvas.isFlipped ? '正面' : '反面'),
+                            ),
+                            SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                '正:${widget.canvas.frontTextBoxIds.length + widget.canvas.frontImageBoxIds.length + widget.canvas.frontAudioBoxIds.length} 反:${widget.canvas.backTextBoxIds.length + widget.canvas.backImageBoxIds.length + widget.canvas.backAudioBoxIds.length}',
+                                style: TextStyle(fontSize: 12, color: Colors.grey[700]),
+                              ),
+                            ),
+                            TextButton.icon(
+                              onPressed: () { Navigator.pop(context); if (widget.onSettingsPressed != null) widget.onSettingsPressed!(); },
+                              icon: Icon(Icons.delete, size: 18, color: Colors.red),
+                              label: Text('删除', style: TextStyle(color: Colors.red)),
+                            ),
+                          ],
                         ),
-                        title: Text(widget.canvas.isFlipped ? '翻转到正面' : '翻转到反面'),
-                        onTap: () {
-                          Navigator.pop(context);
-                          _flipCanvas();
-                        },
                       ),
-                      ListTile(
-                        leading: Icon(Icons.info_outline, color: Colors.green),
-                        title: Text('当前显示：${widget.canvas.isFlipped ? "反面" : "正面"}'),
-                        subtitle: Text(
-                          '正面内容：${widget.canvas.frontTextBoxIds.length + widget.canvas.frontImageBoxIds.length + widget.canvas.frontAudioBoxIds.length}个\n'
-                          '反面内容：${widget.canvas.backTextBoxIds.length + widget.canvas.backImageBoxIds.length + widget.canvas.backAudioBoxIds.length}个'
-                        ),
-                      ),
-                      ListTile(
-                        leading: Icon(Icons.delete, color: Colors.red),
-                        title: Text('删除画布'),
-                        onTap: () {
-                          Navigator.pop(context);
-                          if (widget.onSettingsPressed != null) {
-                            widget.onSettingsPressed!();
-                          }
-                        },
-                      ),
-                      Container(
-                        height: 4,
-                        width: 40,
-                        margin: EdgeInsets.symmetric(vertical: 12),
-                        decoration: BoxDecoration(
-                          color: Colors.grey.withOpacity(0.5),
-                          borderRadius: BorderRadius.circular(2),
-                        ),
-                        alignment: Alignment.center,
-                      ),
+                      SizedBox(height: 6),
                     ],
                   ),
                 ),
