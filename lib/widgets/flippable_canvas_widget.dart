@@ -178,6 +178,26 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
                   contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 6),
                 );
 
+            // 先声明微调按钮构建函数，供数值输入控件使用
+            Widget _miniBtn({required IconData icon, required VoidCallback onTap}) {
+              return GestureDetector(
+                onTap: () {
+                  onTap();
+                },
+                child: Container(
+                  width: 28,
+                  height: 26,
+                  decoration: BoxDecoration(
+                    color: Colors.grey[200],
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: Colors.grey[400]!, width: 0.7),
+                  ),
+                  alignment: Alignment.center,
+                  child: Icon(icon, size: 16, color: Colors.grey[700]),
+                ),
+              );
+            }
+
             Widget _numField({
               required TextEditingController c,
               required String label,
@@ -207,25 +227,6 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
                     ],
                   )
                 ],
-              );
-            }
-
-            Widget _miniBtn({required IconData icon, required VoidCallback onTap}) {
-              return GestureDetector(
-                onTap: () {
-                  onTap();
-                },
-                child: Container(
-                  width: 28,
-                  height: 26,
-                  decoration: BoxDecoration(
-                    color: Colors.grey[200],
-                    borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: Colors.grey[400]!, width: 0.7),
-                  ),
-                  alignment: Alignment.center,
-                  child: Icon(icon, size: 16, color: Colors.grey[700]),
-                ),
               );
             }
 
