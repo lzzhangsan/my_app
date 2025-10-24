@@ -2,7 +2,7 @@
 // 可翻转画布组件
 
 import 'package:flutter/material.dart';
-import 'dart:async';
+// 移除长按自动重复所需的 async Timer（保留可扩展性）
 import 'dart:math' as math;
 import '../models/flippable_canvas.dart';
 
@@ -179,45 +179,21 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
                   contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 6),
                 );
 
-            // 先声明微调按钮构建函数，供数值输入控件使用
-            Widget _miniBtn({required IconData icon, required VoidCallback onTap}) {
-              Timer? holdTimer;
-              Duration repeatInterval = const Duration(milliseconds: 120);
-              // 启动长按后快速重复
-              void startHold() {
-                // 先立即执行一次
-                onTap();
-                // 设定一个短延迟再进入循环（初始延迟更长一点方便精确单次）
-                holdTimer = Timer(const Duration(milliseconds: 350), () {
-                  holdTimer = Timer.periodic(repeatInterval, (_) {
-                    onTap();
-                  });
-                });
-              }
-
-              void stopHold() {
-                holdTimer?.cancel();
-                holdTimer = null;
-              }
-
+            // 微调按钮：单击 ±1，双击 ±10
+            Widget _miniBtn({required IconData icon, required VoidCallback onTap, required VoidCallback onDouble}) {
               return GestureDetector(
-                onTap: onTap,
-                onLongPressStart: (_) => startHold(),
-                onLongPressEnd: (_) => stopHold(),
-                onLongPressCancel: stopHold,
-                child: Listener(
-                  onPointerUp: (_) => stopHold(),
-                  child: Container(
-                    width: 28,
-                    height: 26,
-                    decoration: BoxDecoration(
-                      color: Colors.grey[200],
-                      borderRadius: BorderRadius.circular(6),
-                      border: Border.all(color: Colors.grey[400]!, width: 0.7),
-                    ),
-                    alignment: Alignment.center,
-                    child: Icon(icon, size: 16, color: Colors.grey[700]),
+                onTap: onTap, // 单击 ±1
+                onDoubleTap: onDouble, // 双击 ±10
+                child: Container(
+                  width: 28,
+                  height: 26,
+                  decoration: BoxDecoration(
+                    color: Colors.grey[200],
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: Colors.grey[400]!, width: 0.7),
                   ),
+                  alignment: Alignment.center,
+                  child: Icon(icon, size: 16, color: Colors.grey[700]),
                 ),
               );
             }
@@ -245,9 +221,17 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
                   Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      _miniBtn(icon: Icons.remove, onTap: onDec),
+                      _miniBtn(
+                        icon: Icons.remove,
+                        onTap: onDec,
+                        onDouble: () { for(int i=0;i<10;i++){ onDec(); } },
+                      ),
                       SizedBox(width: 6),
-                      _miniBtn(icon: Icons.add, onTap: onInc),
+                      _miniBtn(
+                        icon: Icons.add,
+                        onTap: onInc,
+                        onDouble: () { for(int i=0;i<10;i++){ onInc(); } },
+                      ),
                     ],
                   )
                 ],
