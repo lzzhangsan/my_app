@@ -96,7 +96,13 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
   }
 
   void _showCanvasOptions() {
-    showModalBottomSheet(
+    // Create controllers once so they won't be recreated on every rebuild of the modal's StatefulBuilder.
+    final xController = TextEditingController(text: widget.canvas.positionX.toStringAsFixed(0));
+    final yController = TextEditingController(text: widget.canvas.positionY.toStringAsFixed(0));
+    final wController = TextEditingController(text: widget.canvas.width.toStringAsFixed(0));
+    final hController = TextEditingController(text: widget.canvas.height.toStringAsFixed(0));
+
+    final sheet = showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
       shape: RoundedRectangleBorder(
@@ -107,14 +113,10 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
         return StatefulBuilder(
           builder: (context, setModalState) {
             final screenWidth = MediaQuery.of(context).size.width;
-            // 控制器初始化（每次打开弹窗时创建）
-            final xController = TextEditingController(text: widget.canvas.positionX.toStringAsFixed(0));
-            final yController = TextEditingController(text: widget.canvas.positionY.toStringAsFixed(0));
-            final wController = TextEditingController(text: widget.canvas.width.toStringAsFixed(0));
-            final hController = TextEditingController(text: widget.canvas.height.toStringAsFixed(0));
+            // 使用外层创建的 controllers，避免在 setModalState 时被重建
 
             // 通用解析与更新函数
-            void _applyValues({bool updateX = false, bool updateY = false, bool updateW = false, bool updateH = false}) {
+              void _applyValues({bool updateX = false, bool updateY = false, bool updateW = false, bool updateH = false, bool enforceMin = false}) {
               // 读取现有值
               double x = widget.canvas.positionX;
               double y = widget.canvas.positionY;
@@ -144,8 +146,15 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
               }
 
               // 安全范围与最小值限制
-              w = w.clamp(50.0, screenWidth); // 宽度不超过屏幕宽
-              h = h.clamp(50.0, 4000.0); // 高度上限给大一些，用户可自由
+              // 如果 enforceMin 为 true，则强制最低值（例如 50），否则仅限制上限，允许用户临时输入较小值以便编辑
+              if (enforceMin) {
+                w = w.clamp(50.0, screenWidth); // 宽度不超过屏幕宽，且最小 50
+                h = h.clamp(50.0, 4000.0); // 高度下限 50，上限给大一些
+              } else {
+                // 允许用户临时输入更小的正整数（>=1），但仍不超过屏幕宽或极大值
+                w = w.clamp(1.0, screenWidth);
+                h = h.clamp(1.0, 4000.0);
+              }
               x = x.clamp(0.0, screenWidth - w); // 左右不超出屏幕
               // y 暂不做垂直安全范围限制，如需可加：y = y.clamp(0.0, MediaQuery.of(context).size.height - h)
 
@@ -161,13 +170,18 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
 
               // 触发外部刷新，实时预览
               widget.onCanvasUpdated(widget.canvas);
-              // 更新文本（去掉不合法输入时矫正值）
-              setModalState(() {
-                xController.text = x.toStringAsFixed(0);
-                yController.text = y.toStringAsFixed(0);
-                wController.text = w.toStringAsFixed(0);
-                hController.text = h.toStringAsFixed(0);
-              });
+              // 更新文本（去掉不合法输入时矫正值）。只有在 enforceMin=true 时才覆写用户正在输入的文本，避免打断输入体验。
+              if (enforceMin) {
+                setModalState(() {
+                  xController.text = x.toStringAsFixed(0);
+                  yController.text = y.toStringAsFixed(0);
+                  wController.text = w.toStringAsFixed(0);
+                  hController.text = h.toStringAsFixed(0);
+                });
+              } else {
+                // 仍需刷新父视图以便预览（当 parse 成功时）
+                setModalState(() {});
+              }
               // 同时刷新父组件（防止大小未同步）
               setState(() {});
             }
@@ -260,6 +274,33 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
                         contentPadding: EdgeInsets.symmetric(horizontal: 6, vertical: 6),
                       ),
                       onChanged: (_) => onChanged(),
+                      // 当用户完成编辑（按完成键）或失去焦点时，强制最小值并更新。
+                      onEditingComplete: () {
+                        // 先做一次实时更新
+                        onChanged();
+                        // 编辑完成时，对宽/高 强制最小值，X/Y 也做边界修正
+                        if (label == '宽') {
+                          _applyValues(updateW: true, enforceMin: true);
+                        } else if (label == '高') {
+                          _applyValues(updateH: true, enforceMin: true);
+                        } else if (label == 'X') {
+                          _applyValues(updateX: true, enforceMin: true);
+                        } else if (label == 'Y') {
+                          _applyValues(updateY: true, enforceMin: true);
+                        }
+                      },
+                      onSubmitted: (_) {
+                        onChanged();
+                        if (label == '宽') {
+                          _applyValues(updateW: true, enforceMin: true);
+                        } else if (label == '高') {
+                          _applyValues(updateH: true, enforceMin: true);
+                        } else if (label == 'X') {
+                          _applyValues(updateX: true, enforceMin: true);
+                        } else if (label == 'Y') {
+                          _applyValues(updateY: true, enforceMin: true);
+                        }
+                      },
                     ),
                     SizedBox(height: 4),
                     Row(
@@ -325,19 +366,32 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
                               onInc: () { yController.text = ((double.tryParse(yController.text) ?? widget.canvas.positionY) + 1).toInt().toString(); _applyValues(updateY: true); },
                               onDec: () { yController.text = ((double.tryParse(yController.text) ?? widget.canvas.positionY) - 1).toInt().toString(); _applyValues(updateY: true); },
                             ),
+                            // 宽/高输入：允许自由输入，只有在失焦或提交时才强制最小值
                             _compactField(
                               controller: wController,
                               label: '宽',
-                              onChanged: () => _applyValues(updateW: true),
-                              onInc: () { wController.text = ((double.tryParse(wController.text) ?? widget.canvas.width) + 1).toInt().toString(); _applyValues(updateW: true); },
-                              onDec: () { wController.text = ((double.tryParse(wController.text) ?? widget.canvas.width) - 1).toInt().toString(); _applyValues(updateW: true); },
+                              onChanged: () {
+                                // 实时更新但不强制最小值以避免打断输入体验
+                                _applyValues(updateW: true, enforceMin: false);
+                              },
+                              onInc: () {
+                                wController.text = ((double.tryParse(wController.text) ?? widget.canvas.width) + 1).toInt().toString();
+                                // 加减操作视为用户明确操作，立即生效并强制最小值
+                                _applyValues(updateW: true, enforceMin: true);
+                              },
+                              onDec: () {
+                                wController.text = ((double.tryParse(wController.text) ?? widget.canvas.width) - 1).toInt().toString();
+                                _applyValues(updateW: true, enforceMin: true);
+                              },
                             ),
                             _compactField(
                               controller: hController,
                               label: '高',
-                              onChanged: () => _applyValues(updateH: true),
-                              onInc: () { hController.text = ((double.tryParse(hController.text) ?? widget.canvas.height) + 1).toInt().toString(); _applyValues(updateH: true); },
-                              onDec: () { hController.text = ((double.tryParse(hController.text) ?? widget.canvas.height) - 1).toInt().toString(); _applyValues(updateH: true); },
+                              onChanged: () {
+                                _applyValues(updateH: true, enforceMin: false);
+                              },
+                              onInc: () { hController.text = ((double.tryParse(hController.text) ?? widget.canvas.height) + 1).toInt().toString(); _applyValues(updateH: true, enforceMin: true); },
+                              onDec: () { hController.text = ((double.tryParse(hController.text) ?? widget.canvas.height) - 1).toInt().toString(); _applyValues(updateH: true, enforceMin: true); },
                             ),
                           ],
                         ),
@@ -382,6 +436,11 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
         );
       },
     );
+
+    // Note: Do not dispose the controllers here. Disposing while framework still
+    // has dependents can trigger assertions on some platforms/input flows.
+    // Controllers will be GC'd when no longer referenced; explicit disposal
+    // can be added later with careful lifecycle handling if desired.
   }
 
   @override
