@@ -64,10 +64,10 @@ class _GlobalToolBarState extends State<GlobalToolBar> {
         _tapCount = 0;
       });
     } else if (_tapCount >= 3) {
-      // 三连击，立即执行
+      // 三连击：改为新建语音框（保持操作风格统一）
       _tapTimer?.cancel();
-      if (widget.onNewCanvas != null) {
-        widget.onNewCanvas!();
+      if (widget.onNewAudioBox != null) {
+        widget.onNewAudioBox!();
       }
       _tapCount = 0;
     }
@@ -77,10 +77,9 @@ class _GlobalToolBarState extends State<GlobalToolBar> {
     // 取消点击计时器
     _tapTimer?.cancel();
     _tapCount = 0;
-    
-    // 执行长按操作
-    if (widget.onNewAudioBox != null) {
-      widget.onNewAudioBox!();
+    // 长按：改为新建画布
+    if (widget.onNewCanvas != null) {
+      widget.onNewCanvas!();
     }
   }
 
