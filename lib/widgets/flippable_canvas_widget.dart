@@ -102,74 +102,213 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
         borderRadius: BorderRadius.vertical(top: Radius.circular(10)),
       ),
       builder: (context) {
-        return Container(
-          decoration: BoxDecoration(
-            color: Colors.white.withOpacity(0.95),
-            borderRadius: BorderRadius.vertical(top: Radius.circular(10)),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.2),
-                blurRadius: 10,
-                offset: Offset(0, -1),
+        // 使用StatefulBuilder让底部弹窗内部局部刷新
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            final screenWidth = MediaQuery.of(context).size.width;
+            // 控制器初始化（每次打开弹窗时创建）
+            final xController = TextEditingController(text: widget.canvas.positionX.toStringAsFixed(0));
+            final yController = TextEditingController(text: widget.canvas.positionY.toStringAsFixed(0));
+            final wController = TextEditingController(text: widget.canvas.width.toStringAsFixed(0));
+            final hController = TextEditingController(text: widget.canvas.height.toStringAsFixed(0));
+
+            // 通用解析与更新函数
+            void _applyValues({bool updateX = false, bool updateY = false, bool updateW = false, bool updateH = false}) {
+              // 读取现有值
+              double x = widget.canvas.positionX;
+              double y = widget.canvas.positionY;
+              double w = widget.canvas.width;
+              double h = widget.canvas.height;
+
+              double? parse(String v) {
+                if (v.trim().isEmpty) return null;
+                return double.tryParse(v.trim());
+              }
+
+              if (updateX) {
+                final px = parse(xController.text);
+                if (px != null) x = px;
+              }
+              if (updateY) {
+                final py = parse(yController.text);
+                if (py != null) y = py;
+              }
+              if (updateW) {
+                final pw = parse(wController.text);
+                if (pw != null) w = pw;
+              }
+              if (updateH) {
+                final ph = parse(hController.text);
+                if (ph != null) h = ph;
+              }
+
+              // 安全范围与最小值限制
+              w = w.clamp(50.0, screenWidth); // 宽度不超过屏幕宽
+              h = h.clamp(50.0, 4000.0); // 高度上限给大一些，用户可自由
+              x = x.clamp(0.0, screenWidth - w); // 左右不超出屏幕
+              // y 暂不做垂直安全范围限制，如需可加：y = y.clamp(0.0, MediaQuery.of(context).size.height - h)
+
+              // 如果用户把x调到靠右导致 x+width > 屏幕宽，则自动回调
+              if (x + w > screenWidth) {
+                x = screenWidth - w;
+              }
+
+              widget.canvas.positionX = x;
+              widget.canvas.positionY = y;
+              widget.canvas.width = w;
+              widget.canvas.height = h;
+
+              // 触发外部刷新，实时预览
+              widget.onCanvasUpdated(widget.canvas);
+              // 更新文本（去掉不合法输入时矫正值）
+              setModalState(() {
+                xController.text = x.toStringAsFixed(0);
+                yController.text = y.toStringAsFixed(0);
+                wController.text = w.toStringAsFixed(0);
+                hController.text = h.toStringAsFixed(0);
+              });
+              // 同时刷新父组件（防止大小未同步）
+              setState(() {});
+            }
+
+            InputDecoration _dec(String label) => InputDecoration(
+                  labelText: label,
+                  isDense: true,
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
+                  contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                );
+
+            Widget _numField({required TextEditingController c, required String label, required Function(String) onChanged}) {
+              return SizedBox(
+                width: 74,
+                child: TextField(
+                  controller: c,
+                  keyboardType: TextInputType.number,
+                  decoration: _dec(label),
+                  onChanged: onChanged,
+                ),
+              );
+            }
+
+            return Container(
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.95),
+                borderRadius: BorderRadius.vertical(top: Radius.circular(10)),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.2),
+                    blurRadius: 10,
+                    offset: Offset(0, -1),
+                  ),
+                ],
               ),
-            ],
-          ),
-          child: Wrap(
-            children: [
-              Padding(
-                padding: EdgeInsets.symmetric(vertical: 12),
-                child: Center(
-                  child: Text(
-                    '画布设置',
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                    ),
+              child: SingleChildScrollView(
+                child: Padding(
+                  padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Padding(
+                        padding: EdgeInsets.symmetric(vertical: 12),
+                        child: Center(
+                          child: Text(
+                            '画布设置',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ),
+                      Divider(height: 1, thickness: 1),
+                      // 数值输入区域
+                      Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('位置与大小（实时预览）', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                            SizedBox(height: 8),
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 8,
+                              children: [
+                                _numField(
+                                  c: xController,
+                                  label: 'X',
+                                  onChanged: (_) => _applyValues(updateX: true),
+                                ),
+                                _numField(
+                                  c: yController,
+                                  label: 'Y',
+                                  onChanged: (_) => _applyValues(updateY: true),
+                                ),
+                                _numField(
+                                  c: wController,
+                                  label: '宽',
+                                  onChanged: (_) => _applyValues(updateW: true),
+                                ),
+                                _numField(
+                                  c: hController,
+                                  label: '高',
+                                  onChanged: (_) => _applyValues(updateH: true),
+                                ),
+                              ],
+                            ),
+                            SizedBox(height: 6),
+                            Text(
+                              '安全范围：0 ≤ X，且 X+宽 ≤ 屏幕宽(${screenWidth.toStringAsFixed(0)})。宽度最小50。',
+                              style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Divider(height: 1, thickness: 1),
+                      ListTile(
+                        leading: Icon(
+                          widget.canvas.isFlipped ? Icons.flip_to_front : Icons.flip_to_back,
+                          color: Colors.blue,
+                        ),
+                        title: Text(widget.canvas.isFlipped ? '翻转到正面' : '翻转到反面'),
+                        onTap: () {
+                          Navigator.pop(context);
+                          _flipCanvas();
+                        },
+                      ),
+                      ListTile(
+                        leading: Icon(Icons.info_outline, color: Colors.green),
+                        title: Text('当前显示：${widget.canvas.isFlipped ? "反面" : "正面"}'),
+                        subtitle: Text(
+                          '正面内容：${widget.canvas.frontTextBoxIds.length + widget.canvas.frontImageBoxIds.length + widget.canvas.frontAudioBoxIds.length}个\n'
+                          '反面内容：${widget.canvas.backTextBoxIds.length + widget.canvas.backImageBoxIds.length + widget.canvas.backAudioBoxIds.length}个'
+                        ),
+                      ),
+                      ListTile(
+                        leading: Icon(Icons.delete, color: Colors.red),
+                        title: Text('删除画布'),
+                        onTap: () {
+                          Navigator.pop(context);
+                          if (widget.onSettingsPressed != null) {
+                            widget.onSettingsPressed!();
+                          }
+                        },
+                      ),
+                      Container(
+                        height: 4,
+                        width: 40,
+                        margin: EdgeInsets.symmetric(vertical: 12),
+                        decoration: BoxDecoration(
+                          color: Colors.grey.withOpacity(0.5),
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                        alignment: Alignment.center,
+                      ),
+                    ],
                   ),
                 ),
               ),
-              Divider(height: 1, thickness: 1),
-              ListTile(
-                leading: Icon(
-                  widget.canvas.isFlipped ? Icons.flip_to_front : Icons.flip_to_back,
-                  color: Colors.blue,
-                ),
-                title: Text(widget.canvas.isFlipped ? '翻转到正面' : '翻转到反面'),
-                onTap: () {
-                  Navigator.pop(context);
-                  _flipCanvas();
-                },
-              ),
-              ListTile(
-                leading: Icon(Icons.info_outline, color: Colors.green),
-                title: Text('当前显示：${widget.canvas.isFlipped ? "反面" : "正面"}'),
-                subtitle: Text(
-                  '正面内容：${widget.canvas.frontTextBoxIds.length + widget.canvas.frontImageBoxIds.length + widget.canvas.frontAudioBoxIds.length}个\n'
-                  '反面内容：${widget.canvas.backTextBoxIds.length + widget.canvas.backImageBoxIds.length + widget.canvas.backAudioBoxIds.length}个'
-                ),
-              ),
-              ListTile(
-                leading: Icon(Icons.delete, color: Colors.red),
-                title: Text('删除画布'),
-                onTap: () {
-                  Navigator.pop(context);
-                  if (widget.onSettingsPressed != null) {
-                    widget.onSettingsPressed!();
-                  }
-                },
-              ),
-              Container(
-                height: 4,
-                width: 40,
-                margin: EdgeInsets.symmetric(vertical: 12),
-                decoration: BoxDecoration(
-                  color: Colors.grey.withOpacity(0.5),
-                  borderRadius: BorderRadius.circular(2),
-                ),
-                alignment: Alignment.center,
-              ),
-            ],
-          ),
+            );
+          },
         );
       },
     );
