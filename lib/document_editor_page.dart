@@ -920,6 +920,17 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
     setState(() {
       _textBoxes.removeWhere((textBox) => textBox['id'] == id);
       _deletedTextBoxIds.add(id);
+      
+      // 同时从所有画布中移除该文本框的关联
+      for (var canvas in _canvases) {
+        if (canvas.containsTextBox(id)) {
+          canvas.frontTextBoxIds.remove(id);
+          canvas.backTextBoxIds.remove(id);
+          // 更新画布状态以确保UI同步
+          _updateCanvas(canvas);
+        }
+      }
+      
       _contentChanged = true;
     });
   }
@@ -950,6 +961,36 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
     setState(() {
       _imageBoxes.removeWhere((imageBox) => imageBox['id'] == id);
       _deletedImageBoxIds.add(id);
+      
+      // 同时从所有画布中移除该图片框的关联
+      for (var canvas in _canvases) {
+        if (canvas.containsImageBox(id)) {
+          canvas.frontImageBoxIds.remove(id);
+          canvas.backImageBoxIds.remove(id);
+          // 更新画布状态以确保UI同步
+          _updateCanvas(canvas);
+        }
+      }
+      
+      _contentChanged = true;
+    });
+  }
+
+  void _deleteAudioBox(String id) {
+    setState(() {
+      _audioBoxes.removeWhere((audioBox) => audioBox['id'] == id);
+      _deletedAudioBoxIds.add(id);
+      
+      // 同时从所有画布中移除该音频框的关联
+      for (var canvas in _canvases) {
+        if (canvas.containsAudioBox(id)) {
+          canvas.frontAudioBoxIds.remove(id);
+          canvas.backAudioBoxIds.remove(id);
+          // 更新画布状态以确保UI同步
+          _updateCanvas(canvas);
+        }
+      }
+      
       _contentChanged = true;
     });
   }
@@ -1056,11 +1097,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
                 Navigator.pop(context);
                 bool shouldDelete = await _showDeleteConfirmationDialog();
                 if (shouldDelete) {
-                  setState(() {
-                    _deletedAudioBoxIds.add(_audioBoxes[index]['id']);
-                    _audioBoxes.removeAt(index);
-                    _contentChanged = true;
-                  });
+                  _deleteAudioBox(id);
                   _debouncedSave();
                   _saveStateToHistory();
                 }
