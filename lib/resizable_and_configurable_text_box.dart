@@ -378,45 +378,35 @@ class _ResizableAndConfigurableTextBoxState
             mainAxisSize: MainAxisSize.min,
             children: [
               Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Flexible(
-                    flex: 3,
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        _buildAlignmentButton(Icons.format_align_left, TextAlign.left),
-                        _buildAlignmentButton(Icons.format_align_center, TextAlign.center),
-                        _buildAlignmentButton(Icons.format_align_right, TextAlign.right),
-                        _buildAlignmentButton(Icons.format_align_justify, TextAlign.justify),
-                      ],
-                    ),
+                mainAxisAlignment: widget.isOnCanvas ? MainAxisAlignment.spaceEvenly : MainAxisAlignment.center,
+                children: widget.isOnCanvas ? [
+                  // 画布文本框：6个按钮均匀分布
+                  _buildAlignmentButton(Icons.format_align_left, TextAlign.left, isLarge: true),
+                  _buildAlignmentButton(Icons.format_align_center, TextAlign.center, isLarge: true),
+                  _buildAlignmentButton(Icons.format_align_right, TextAlign.right, isLarge: true),
+                  _buildAlignmentButton(Icons.format_align_justify, TextAlign.justify, isLarge: true),
+                  IconButton(
+                    icon: Icon(Icons.copy_all, color: Colors.blue),
+                    onPressed: widget.onCopyToOtherSide,
+                    iconSize: 24,
+                    padding: EdgeInsets.all(4),
+                    constraints: BoxConstraints(minWidth: 40, minHeight: 40),
+                    tooltip: '复制到另一面',
                   ),
-                  if (widget.isOnCanvas)
-                    Flexible(
-                      flex: 2,
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          IconButton(
-                            icon: Icon(Icons.copy_all, color: Colors.blue),
-                            onPressed: widget.onCopyToOtherSide,
-                            iconSize: 18,
-                            padding: EdgeInsets.all(2),
-                            constraints: BoxConstraints(minWidth: 28, minHeight: 28),
-                            tooltip: '复制到另一面',
-                          ),
-                          IconButton(
-                            icon: Icon(Icons.swap_horiz, color: Colors.blue),
-                            onPressed: widget.onMoveToOtherSide,
-                            iconSize: 18,
-                            padding: EdgeInsets.all(2),
-                            constraints: BoxConstraints(minWidth: 28, minHeight: 28),
-                            tooltip: '移动到另一面',
-                          ),
-                        ],
-                      ),
-                    ),
+                  IconButton(
+                    icon: Icon(Icons.swap_horiz, color: Colors.blue),
+                    onPressed: widget.onMoveToOtherSide,
+                    iconSize: 24,
+                    padding: EdgeInsets.all(4),
+                    constraints: BoxConstraints(minWidth: 40, minHeight: 40),
+                    tooltip: '移动到另一面',
+                  ),
+                ] : [
+                  // 非画布文本框：4个对齐按钮居中显示
+                  _buildAlignmentButton(Icons.format_align_left, TextAlign.left),
+                  _buildAlignmentButton(Icons.format_align_center, TextAlign.center),
+                  _buildAlignmentButton(Icons.format_align_right, TextAlign.right),
+                  _buildAlignmentButton(Icons.format_align_justify, TextAlign.justify),
                 ],
               ),
               Divider(height: 12),
@@ -708,7 +698,7 @@ class _ResizableAndConfigurableTextBoxState
   }
 
   // 对齐方式按钮
-  Widget _buildAlignmentButton(IconData icon, TextAlign align) {
+  Widget _buildAlignmentButton(IconData icon, TextAlign align, {bool isLarge = false}) {
     final bool isActive = _textStyle.textAlign == align;
 
     return IconButton(
@@ -724,6 +714,12 @@ class _ResizableAndConfigurableTextBoxState
         });
         Future.microtask(() => _saveChanges());
       },
+      iconSize: isLarge ? 24 : 20,
+      padding: EdgeInsets.all(isLarge ? 4 : 2),
+      constraints: BoxConstraints(
+        minWidth: isLarge ? 40 : 32, 
+        minHeight: isLarge ? 40 : 32
+      ),
     );
   }
 
