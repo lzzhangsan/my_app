@@ -231,6 +231,12 @@ class ResizableAndConfigurableTextBox extends StatefulWidget {
   final Function(Size, String, CustomTextStyle) onSave;
   final Function() onDeleteCurrent;
   final Function() onDuplicateCurrent;
+  // 如果此文本框是处于画布上（需要显示移动/复制到另一面的功能）
+  final bool isOnCanvas;
+  // 将此文本框移动到画布另一面（通常会改变所属页面/层）
+  final VoidCallback? onMoveToOtherSide;
+  // 复制此文本框到画布另一面（保留当前文本框）
+  final VoidCallback? onCopyToOtherSide;
 
   const ResizableAndConfigurableTextBox({
     super.key,
@@ -240,6 +246,9 @@ class ResizableAndConfigurableTextBox extends StatefulWidget {
     required this.onSave,
     required this.onDeleteCurrent,
     required this.onDuplicateCurrent,
+    this.isOnCanvas = false,
+    this.onMoveToOtherSide,
+    this.onCopyToOtherSide,
   });
 
   @override
@@ -379,24 +388,28 @@ class _ResizableAndConfigurableTextBoxState
                       _buildAlignmentButton(Icons.format_align_justify, TextAlign.justify),
                     ],
                   ),
-                  Row(
-                    children: [
-                      IconButton(
-                        icon: Icon(Icons.content_copy, color: Colors.blue),
-                        onPressed: widget.onDuplicateCurrent,
-                        iconSize: 22,
-                        padding: EdgeInsets.all(4),
-                        constraints: BoxConstraints(),
-                      ),
-                      IconButton(
-                        icon: Icon(Icons.delete, color: Colors.red),
-                        onPressed: widget.onDeleteCurrent,
-                        iconSize: 22,
-                        padding: EdgeInsets.all(4),
-                        constraints: BoxConstraints(),
-                      ),
-                    ],
-                  ),
+                  if (widget.isOnCanvas)
+                    Row(
+                      children: [
+                        IconButton(
+                          icon: Icon(Icons.copy_all, color: Colors.blue),
+                          onPressed: widget.onCopyToOtherSide,
+                          iconSize: 22,
+                          padding: EdgeInsets.all(4),
+                          constraints: BoxConstraints(),
+                          tooltip: '复制到另一面',
+                        ),
+                        SizedBox(width: 4),
+                        IconButton(
+                          icon: Icon(Icons.swap_horiz, color: Colors.blue),
+                          onPressed: widget.onMoveToOtherSide,
+                          iconSize: 22,
+                          padding: EdgeInsets.all(4),
+                          constraints: BoxConstraints(),
+                          tooltip: '移动到另一面',
+                        ),
+                      ],
+                    ),
                 ],
               ),
               Divider(height: 12),
@@ -482,6 +495,23 @@ class _ResizableAndConfigurableTextBoxState
                     false,
                     width: 45,
                     color: Colors.red,
+                  ),
+                  SizedBox(width: 12),
+                  IconButton(
+                    icon: Icon(Icons.content_copy, color: Colors.blue),
+                    onPressed: widget.onDuplicateCurrent,
+                    iconSize: 20,
+                    padding: EdgeInsets.all(4),
+                    constraints: BoxConstraints(),
+                    tooltip: '复制文本框',
+                  ),
+                  IconButton(
+                    icon: Icon(Icons.delete, color: Colors.red),
+                    onPressed: widget.onDeleteCurrent,
+                    iconSize: 20,
+                    padding: EdgeInsets.all(4),
+                    constraints: BoxConstraints(),
+                    tooltip: '删除文本框',
                   ),
                 ],
               ),

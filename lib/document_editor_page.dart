@@ -731,6 +731,103 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
     });
   }
 
+  // 复制文本框到画布的另一面（若文本框属于某个画布并处于该画布的当前面）
+  void _copyTextBoxToOtherSide(String id) {
+    Future.microtask(() {
+      setState(() {
+        int index = _textBoxes.indexWhere((textBox) => textBox['id'] == id);
+        if (index == -1) return;
+        final original = _textBoxes[index];
+        // 找到所属的画布（第一个包含该文本框的画布）
+        FlippableCanvas? ownerCanvas;
+        for (var c in _canvases) {
+          if (c.containsTextBox(id)) {
+            ownerCanvas = c;
+            break;
+          }
+        }
+        if (ownerCanvas == null) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('该文本框不属于任何画布，无法复制到另一面')));
+          return;
+        }
+
+        var uuid = Uuid();
+        Map<String, dynamic> newTextBox = {
+          'id': uuid.v4(),
+          'documentName': widget.documentName,
+          'positionX': (original['positionX'] ?? 0.0) + 20,
+          'positionY': (original['positionY'] ?? 0.0) + 20,
+          'width': original['width'],
+          'height': original['height'],
+          'text': original['text'],
+          'fontSize': original['fontSize'],
+          'fontColor': original['fontColor'],
+          'fontWeight': original['fontWeight'],
+          'isItalic': original['isItalic'],
+          'backgroundColor': original['backgroundColor'],
+          'textAlign': original['textAlign'],
+        };
+
+        if (!_databaseService.validateTextBoxData(newTextBox)) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('复制失败：文本框数据无效')));
+          return;
+        }
+
+        // 将新文本框加入文档
+        _textBoxes.add(newTextBox);
+
+        // 将新文本框关联到所属画布的另一面
+        bool wasOnBack = ownerCanvas.backTextBoxIds.contains(id);
+        if (wasOnBack) {
+          if (!ownerCanvas.frontTextBoxIds.contains(newTextBox['id'])) ownerCanvas.frontTextBoxIds.add(newTextBox['id']);
+        } else {
+          if (!ownerCanvas.backTextBoxIds.contains(newTextBox['id'])) ownerCanvas.backTextBoxIds.add(newTextBox['id']);
+        }
+
+        _contentChanged = true;
+        _debouncedSave();
+        _saveStateToHistory();
+
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已复制到画布的另一面')));
+      });
+    });
+  }
+
+  // 将文本框移动到画布的另一面（如果属于画布）
+  void _moveTextBoxToOtherSide(String id) {
+    Future.microtask(() {
+      setState(() {
+        // 找到所属画布
+        FlippableCanvas? ownerCanvas;
+        for (var c in _canvases) {
+          if (c.containsTextBox(id)) {
+            ownerCanvas = c;
+            break;
+          }
+        }
+        if (ownerCanvas == null) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('该文本框不属于任何画布，无法移动')));
+          return;
+        }
+
+        // 从当前面移除并加入另一面
+        if (ownerCanvas.frontTextBoxIds.contains(id)) {
+          ownerCanvas.frontTextBoxIds.remove(id);
+          if (!ownerCanvas.backTextBoxIds.contains(id)) ownerCanvas.backTextBoxIds.add(id);
+        } else if (ownerCanvas.backTextBoxIds.contains(id)) {
+          ownerCanvas.backTextBoxIds.remove(id);
+          if (!ownerCanvas.frontTextBoxIds.contains(id)) ownerCanvas.frontTextBoxIds.add(id);
+        }
+
+        _contentChanged = true;
+        _debouncedSave();
+        _saveStateToHistory();
+
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已移动到画布的另一面')));
+      });
+    });
+  }
+
   void _duplicateImageBox(String id) {
     Future.microtask(() {
       setState(() {
@@ -1933,6 +2030,16 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
           : TextAlign.left,
     );
 
+    // Determine owner canvas and whether this textbox is on the canvas's current side
+    FlippableCanvas? ownerCanvas;
+    for (var c in _canvases) {
+      if (c.containsTextBox(data['id'])) {
+        ownerCanvas = c;
+        break;
+      }
+    }
+    bool isOnCanvas = ownerCanvas != null && ownerCanvas.getCurrentTextBoxIds().contains(data['id']);
+
     return ResizableAndConfigurableTextBox(
       initialSize: Size(
         (data['width'] as num?)?.toDouble() ?? 200.0,
@@ -1966,6 +2073,13 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
           _saveStateToHistory();
         });
       },
+      isOnCanvas: isOnCanvas,
+      onCopyToOtherSide: isOnCanvas ? () {
+        _copyTextBoxToOtherSide(data['id']);
+      } : null,
+      onMoveToOtherSide: isOnCanvas ? () {
+        _moveTextBoxToOtherSide(data['id']);
+      } : null,
 
     );
   }
