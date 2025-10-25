@@ -755,8 +755,8 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
         Map<String, dynamic> newTextBox = {
           'id': uuid.v4(),
           'documentName': widget.documentName,
-          'positionX': (original['positionX'] ?? 0.0) + 20,
-          'positionY': (original['positionY'] ?? 0.0) + 20,
+          'positionX': original['positionX'] ?? 0.0,
+          'positionY': original['positionY'] ?? 0.0,
           'width': original['width'],
           'height': original['height'],
           'text': original['text'],
