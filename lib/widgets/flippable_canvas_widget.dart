@@ -33,10 +33,6 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
   // 画布拖拽相关
   bool _isDragging = false;
   Offset _dragStart = Offset.zero;
-  // 缩放相关
-  double _initialWidth = 0.0;
-  double _initialHeight = 0.0;
-  double _currentScale = 1.0;
 
   @override
   void initState() {
@@ -57,8 +53,19 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
     if (widget.canvas.isFlipped) {
       _flipController.value = 1.0;
     }
-    _initialWidth = widget.canvas.width;
-    _initialHeight = widget.canvas.height;
+  }
+
+  @override
+  void didUpdateWidget(FlippableCanvasWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 如果画布的翻转状态发生了变化，同步动画状态
+    if (oldWidget.canvas.isFlipped != widget.canvas.isFlipped) {
+      if (widget.canvas.isFlipped && _flipController.value == 0.0) {
+        _flipController.value = 1.0;
+      } else if (!widget.canvas.isFlipped && _flipController.value == 1.0) {
+        _flipController.value = 0.0;
+      }
+    }
   }
 
   @override
@@ -102,7 +109,7 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
     final wController = TextEditingController(text: widget.canvas.width.toStringAsFixed(0));
     final hController = TextEditingController(text: widget.canvas.height.toStringAsFixed(0));
 
-    final sheet = showModalBottomSheet(
+    showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
       shape: RoundedRectangleBorder(

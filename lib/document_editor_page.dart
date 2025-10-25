@@ -784,6 +784,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
           if (!ownerCanvas.backTextBoxIds.contains(newTextBox['id'])) ownerCanvas.backTextBoxIds.add(newTextBox['id']);
         }
 
+        // 更新画布状态以确保UI同步
+        _updateCanvas(ownerCanvas);
+        
         _contentChanged = true;
         _debouncedSave();
         _saveStateToHistory();
@@ -818,6 +821,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
           ownerCanvas.backTextBoxIds.remove(id);
           if (!ownerCanvas.frontTextBoxIds.contains(id)) ownerCanvas.frontTextBoxIds.add(id);
         }
+
+        // 更新画布状态以确保UI同步
+        _updateCanvas(ownerCanvas);
 
         _contentChanged = true;
         _debouncedSave();
