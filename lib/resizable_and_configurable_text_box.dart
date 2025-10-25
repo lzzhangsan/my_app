@@ -380,137 +380,154 @@ class _ResizableAndConfigurableTextBoxState
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Row(
-                    children: [
-                      _buildAlignmentButton(Icons.format_align_left, TextAlign.left),
-                      _buildAlignmentButton(Icons.format_align_center, TextAlign.center),
-                      _buildAlignmentButton(Icons.format_align_right, TextAlign.right),
-                      _buildAlignmentButton(Icons.format_align_justify, TextAlign.justify),
-                    ],
+                  Flexible(
+                    flex: 3,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        _buildAlignmentButton(Icons.format_align_left, TextAlign.left),
+                        _buildAlignmentButton(Icons.format_align_center, TextAlign.center),
+                        _buildAlignmentButton(Icons.format_align_right, TextAlign.right),
+                        _buildAlignmentButton(Icons.format_align_justify, TextAlign.justify),
+                      ],
+                    ),
                   ),
                   if (widget.isOnCanvas)
-                    Row(
-                      children: [
-                        IconButton(
-                          icon: Icon(Icons.copy_all, color: Colors.blue),
-                          onPressed: widget.onCopyToOtherSide,
-                          iconSize: 22,
-                          padding: EdgeInsets.all(4),
-                          constraints: BoxConstraints(),
-                          tooltip: '复制到另一面',
-                        ),
-                        SizedBox(width: 4),
-                        IconButton(
-                          icon: Icon(Icons.swap_horiz, color: Colors.blue),
-                          onPressed: widget.onMoveToOtherSide,
-                          iconSize: 22,
-                          padding: EdgeInsets.all(4),
-                          constraints: BoxConstraints(),
-                          tooltip: '移动到另一面',
-                        ),
-                      ],
+                    Flexible(
+                      flex: 2,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          IconButton(
+                            icon: Icon(Icons.copy_all, color: Colors.blue),
+                            onPressed: widget.onCopyToOtherSide,
+                            iconSize: 18,
+                            padding: EdgeInsets.all(2),
+                            constraints: BoxConstraints(minWidth: 28, minHeight: 28),
+                            tooltip: '复制到另一面',
+                          ),
+                          IconButton(
+                            icon: Icon(Icons.swap_horiz, color: Colors.blue),
+                            onPressed: widget.onMoveToOtherSide,
+                            iconSize: 18,
+                            padding: EdgeInsets.all(2),
+                            constraints: BoxConstraints(minWidth: 28, minHeight: 28),
+                            tooltip: '移动到另一面',
+                          ),
+                        ],
+                      ),
                     ),
                 ],
               ),
               Divider(height: 12),
               Row(
-                mainAxisAlignment: MainAxisAlignment.center,
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                 children: [
-                  _buildToolButton(
-                    null,
-                    () {
-                      setState(() {
-                        if (_textStyle.fontSize > 8) {
-                          _textStyle = _textStyle.copyWith(fontSize: _textStyle.fontSize - 2);
-                        }
-                      });
-                      Future.microtask(() => _saveChanges());
-                    },
-                    false,
-                    text: "A-",
-                    width: 40,
+                  Flexible(
+                    child: _buildToolButton(
+                      null,
+                      () {
+                        setState(() {
+                          if (_textStyle.fontSize > 8) {
+                            _textStyle = _textStyle.copyWith(fontSize: _textStyle.fontSize - 2);
+                          }
+                        });
+                        Future.microtask(() => _saveChanges());
+                      },
+                      false,
+                      text: "A-",
+                      width: 30,
+                    ),
                   ),
-                  SizedBox(width: 8),
-                  _buildToolButton(
-                    null,
-                    () {
-                      setState(() {
-                        _textStyle = _textStyle.copyWith(fontSize: _textStyle.fontSize + 2);
-                      });
-                      Future.microtask(() => _saveChanges());
-                    },
-                    false,
-                    text: "A+",
-                    width: 40,
+                  SizedBox(width: 4),
+                  Flexible(
+                    child: _buildToolButton(
+                      null,
+                      () {
+                        setState(() {
+                          _textStyle = _textStyle.copyWith(fontSize: _textStyle.fontSize + 2);
+                        });
+                        Future.microtask(() => _saveChanges());
+                      },
+                      false,
+                      text: "A+",
+                      width: 30,
+                    ),
                   ),
-                  SizedBox(width: 8),
-                  _buildToolButton(
-                    null,
-                    () {
-                      print('点击加粗按钮');
-                      final newFontWeight = _textStyle.fontWeight == FontWeight.normal ? FontWeight.bold : FontWeight.normal;
-                      setState(() {
-                        _textStyle = _textStyle.copyWith(fontWeight: newFontWeight);
-                        print('设置加粗状态为: $newFontWeight');
-                      });
-                      Future.microtask(() => _saveChanges());
-                    },
-                    _textStyle.fontWeight == FontWeight.bold,
-                    text: "B",
-                    width: 40,
+                  SizedBox(width: 4),
+                  Flexible(
+                    child: _buildToolButton(
+                      null,
+                      () {
+                        print('点击加粗按钮');
+                        final newFontWeight = _textStyle.fontWeight == FontWeight.normal ? FontWeight.bold : FontWeight.normal;
+                        setState(() {
+                          _textStyle = _textStyle.copyWith(fontWeight: newFontWeight);
+                          print('设置加粗状态为: $newFontWeight');
+                        });
+                        Future.microtask(() => _saveChanges());
+                      },
+                      _textStyle.fontWeight == FontWeight.bold,
+                      text: "B",
+                      width: 30,
+                    ),
                   ),
-                  SizedBox(width: 8),
-                  _buildToolButton(
-                    null,
-                    () {
-                      print('点击斜体按钮');
-                      final newItalicState = !_textStyle.isItalic;
-                      setState(() {
-                        _textStyle = _textStyle.copyWith(isItalic: newItalicState);
-                        print('设置斜体状态为: $newItalicState');
-                      });
-                      Future.microtask(() => _saveChanges());
-                    },
-                    _textStyle.isItalic,
-                    text: "I",
-                    width: 40,
-                    isItalic: true,
+                  SizedBox(width: 4),
+                  Flexible(
+                    child: _buildToolButton(
+                      null,
+                      () {
+                        print('点击斜体按钮');
+                        final newItalicState = !_textStyle.isItalic;
+                        setState(() {
+                          _textStyle = _textStyle.copyWith(isItalic: newItalicState);
+                          print('设置斜体状态为: $newItalicState');
+                        });
+                        Future.microtask(() => _saveChanges());
+                      },
+                      _textStyle.isItalic,
+                      text: "I",
+                      width: 30,
+                      isItalic: true,
+                    ),
                   ),
-                  SizedBox(width: 12),
-                  _buildToolButton(
-                    Icons.format_clear,
-                    () {
-                      setState(() {
-                        _textStyle = CustomTextStyle(
-                          fontSize: 16.0,
-                          fontColor: Colors.black,
-                          fontWeight: FontWeight.normal,
-                          isItalic: false,
-                          backgroundColor: null,
-                          textAlign: TextAlign.left,
-                        );
-                      });
-                      _saveChanges();
-                    },
-                    false,
-                    width: 45,
-                    color: Colors.red,
+                  SizedBox(width: 6),
+                  Flexible(
+                    child: _buildToolButton(
+                      Icons.format_clear,
+                      () {
+                        setState(() {
+                          _textStyle = CustomTextStyle(
+                            fontSize: 16.0,
+                            fontColor: Colors.black,
+                            fontWeight: FontWeight.normal,
+                            isItalic: false,
+                            backgroundColor: null,
+                            textAlign: TextAlign.left,
+                          );
+                        });
+                        _saveChanges();
+                      },
+                      false,
+                      width: 30,
+                      color: Colors.red,
+                    ),
                   ),
-                  SizedBox(width: 12),
+                  SizedBox(width: 6),
                   IconButton(
                     icon: Icon(Icons.content_copy, color: Colors.blue),
                     onPressed: widget.onDuplicateCurrent,
-                    iconSize: 20,
-                    padding: EdgeInsets.all(4),
-                    constraints: BoxConstraints(),
+                    iconSize: 18,
+                    padding: EdgeInsets.all(2),
+                    constraints: BoxConstraints(minWidth: 28, minHeight: 28),
                     tooltip: '复制文本框',
                   ),
                   IconButton(
                     icon: Icon(Icons.delete, color: Colors.red),
                     onPressed: widget.onDeleteCurrent,
-                    iconSize: 20,
-                    padding: EdgeInsets.all(4),
-                    constraints: BoxConstraints(),
+                    iconSize: 18,
+                    padding: EdgeInsets.all(2),
+                    constraints: BoxConstraints(minWidth: 28, minHeight: 28),
                     tooltip: '删除文本框',
                   ),
                 ],
