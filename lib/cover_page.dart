@@ -24,6 +24,7 @@ import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:path/path.dart' as p;
 import 'services/cache_service.dart';
+import 'core/app_state.dart';
 
 class CoverPage extends StatefulWidget {
   const CoverPage({super.key});
@@ -42,11 +43,14 @@ class _CoverPageState extends State<CoverPage> {
   final List<String> _deletedTextBoxIds = [];
   static const String coverDocumentName = '__CoverPage__';
   late final DatabaseService _databaseService;
+  late final AppThemeState _themeState;
 
   @override
   void initState() {
     super.initState();
     print('CoverPage initState: ${DateTime.now()}'); // 添加日志
+    
+    _themeState = getService<AppThemeState>();
     
     if (!kIsWeb) {
       _databaseService = getService<DatabaseService>();
@@ -739,6 +743,19 @@ class _CoverPageState extends State<CoverPage> {
                     _showColorPickerDialog();
                   },
                 ),
+                // 主题与外观
+                _buildSettingItem(
+                  icon: _themeState.isDarkMode ? Icons.dark_mode : Icons.light_mode,
+                  iconColor: Colors.teal,
+                  title: _themeState.isDarkMode ? '切换到浅色主题' : '切换到深色主题',
+                  onTap: () {
+                    Navigator.pop(context);
+                    setState(() {
+                      _themeState.toggleThemeMode();
+                    });
+                  },
+                ),
+
                 
                 // 只删除背景图片的选项
                 if (_backgroundImage != null)

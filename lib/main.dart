@@ -9,6 +9,7 @@ import 'core/service_locator.dart';
 import 'services/background_media_service.dart';
 import 'package:flutter/services.dart';
 import 'diary_page.dart';
+import 'core/app_state.dart';
 
 // 添加全局导航键，以便可以在应用的任何地方访问Navigator
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
@@ -31,6 +32,7 @@ void main() async {
     print('服务架构初始化失败: $e');
   }
 
+  await getService<AppThemeState>().initialize();
   runApp(const MyApp());
 }
 
@@ -41,19 +43,20 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: '变化',
-      theme: ThemeData(
-        primarySwatch: Colors.blue,
-        fontFamily: 'Roboto',
-        appBarTheme: const AppBarTheme(
-          backgroundColor: Colors.transparent,
-          elevation: 0,
-        ),
-      ),
-      navigatorKey: navigatorKey, // 添加导航键
-      debugShowCheckedModeBanner: false,
-      home: MainScreen(),
+    final theme = getService<AppThemeState>();
+    return AnimatedBuilder(
+      animation: theme,
+      builder: (context, _) {
+        return MaterialApp(
+          title: '变化',
+          theme: theme.lightTheme,
+          darkTheme: theme.darkTheme,
+          themeMode: theme.themeMode,
+          navigatorKey: navigatorKey,
+          debugShowCheckedModeBanner: false,
+          home: MainScreen(),
+        );
+      },
     );
   }
 }
