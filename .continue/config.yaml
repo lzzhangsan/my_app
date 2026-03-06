@@ -14,3 +14,14 @@ models:
     defaultCompletionOptions:
       temperature: 0.2
       maxTokens: 1024
+  - name: Grok-4.1-fast
+    provider: openai
+    model: grok-4.1-fast
+    apiKey: sk-i4TOLmt4SB9ccIRIzigyGUkoTh52D6NsiR2PUePKXAefrBeX
+    apiBase: https://xinyuanai666.com/v1
+    roles:
+      - chat
+      - autocomplete
+    defaultCompletionOptions:
+      temperature: 0.2
+      maxTokens: 1024
