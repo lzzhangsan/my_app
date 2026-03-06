@@ -2117,13 +2117,18 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
         });
       },
       isOnCanvas: isOnCanvas,
-      onCopyToOtherSide: isOnCanvas ? () {
-        _copyTextBoxToOtherSide(data['id']);
-      } : null,
-      onMoveToOtherSide: isOnCanvas ? () {
-        _moveTextBoxToOtherSide(data['id']);
-      } : null,
-
+      onCopyToOtherSide: isOnCanvas
+          ? () {
+              _copyTextBoxToOtherSide(data['id']);
+            }
+          : null,
+      onMoveToOtherSide: isOnCanvas
+          ? () {
+              _moveTextBoxToOtherSide(data['id']);
+            }
+          : null,
+      // 传入当前位置锁定状态，用于在锁定时禁用缩放手柄
+      isPositionLocked: _isPositionLocked,
     );
   }
 

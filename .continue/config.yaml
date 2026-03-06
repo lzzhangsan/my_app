@@ -1,0 +1,14 @@
+name: Local Config
+version: 1.0.0
+schema: v1
+
+models:
+  - title: DeepSeek
+    provider: openai
+    model: deepseek-chat
+    apiKey: sk-MHM4j6vRJZtd6o7VIpIZngU0NMpmDUzQIa3S6ZuS7tkM48wQ
+    apiBase: https://xinyuanai666.com/v1
+
+defaultCompletionOptions:
+  temperature: 0.2
+  maxTokens: 1024

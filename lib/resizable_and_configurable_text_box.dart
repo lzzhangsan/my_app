@@ -237,6 +237,8 @@ class ResizableAndConfigurableTextBox extends StatefulWidget {
   final VoidCallback? onMoveToOtherSide;
   // 复制此文本框到画布另一面（保留当前文本框）
   final VoidCallback? onCopyToOtherSide;
+  // 是否锁定位置和尺寸（锁定时禁用右下角缩放手柄）
+  final bool isPositionLocked;
 
   const ResizableAndConfigurableTextBox({
     super.key,
@@ -249,6 +251,7 @@ class ResizableAndConfigurableTextBox extends StatefulWidget {
     this.isOnCanvas = false,
     this.onMoveToOtherSide,
     this.onCopyToOtherSide,
+    this.isPositionLocked = false,
   });
 
   @override
@@ -808,6 +811,8 @@ class _ResizableAndConfigurableTextBoxState
               bottom: 0,
               child: GestureDetector(
                 onPanUpdate: (details) {
+                  // 锁定状态下禁用缩放手柄，避免误触导致文本框变形
+                  if (widget.isPositionLocked) return;
                   double newWidth = _size.width + details.delta.dx;
                   double newHeight = _size.height + details.delta.dy;
                   if (newWidth >= _minWidth && newHeight >= _minHeight) {
