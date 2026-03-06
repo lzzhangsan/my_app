@@ -13,6 +13,7 @@ import 'services/logger.dart';
 
 // 添加全局 navigatorKey
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
+final GlobalKey<DirectoryPageState> directoryPageKey = GlobalKey<DirectoryPageState>();
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -65,6 +66,7 @@ class MainScreen extends StatefulWidget {
 
 class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   final PageController _pageController = PageController(initialPage: 0);
+  final FocusNode _keyboardFocusNode = FocusNode();
   int _currentPage = 0;
   bool _isBrowserHomePage = true;
 
@@ -97,6 +99,7 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _pageController.dispose();
+    _keyboardFocusNode.dispose();
     super.dispose();
   }
 
@@ -109,7 +112,7 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
   void _refreshCurrentPage() {
     if (_currentPage == 1) {
-      DirectoryPage.refresh();
+      directoryPageKey.currentState?.refresh();
     } else if (_currentPage == 2) {
       // MediaManagerPage.refresh();
     }
@@ -125,7 +128,7 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         ),
       ),
     ).then((_) {
-      DirectoryPage.refresh();
+      directoryPageKey.currentState?.refresh();
     });
   }
 
@@ -134,9 +137,8 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     Logger.d('[_MainScreenState.build] _currentPage: $_currentPage, _isBrowserHomePage: $_isBrowserHomePage, Calculated PageView Physics: ${_currentPage == 3 ? (_isBrowserHomePage ? 'ClampingScrollPhysics' : 'NeverScrollableScrollPhysics') : 'ClampingScrollPhysics'}');
 
     return Scaffold(
-      // 使用 KeyboardListener 替换已弃用的 RawKeyboardListener
       body: KeyboardListener(
-        focusNode: FocusNode(),
+        focusNode: _keyboardFocusNode,
         autofocus: true,
         onKeyEvent: (KeyEvent event) {
           if (event is KeyDownEvent) {
@@ -184,7 +186,7 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                     Logger.d('[_MainScreenState] Page changed to: $index');
                   });
                   if (index == 1) {
-                    DirectoryPage.refresh();
+                    directoryPageKey.currentState?.refresh();
                   }
                 },
                 physics: _currentPage == 3
@@ -194,7 +196,7 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                     : const ClampingScrollPhysics(),
                 children: [
                   const CoverPage(),
-                  DirectoryPage(onDocumentOpen: _onDocumentOpen),
+                  DirectoryPage(key: directoryPageKey, onDocumentOpen: _onDocumentOpen),
                   const MediaManagerPage(),
                   BrowserPage(onBrowserHomePageChanged: _handleBrowserHomePageChanged),
                   const DiaryPage(),

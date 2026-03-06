@@ -2,7 +2,6 @@
 // 可翻转画布组件
 
 import 'package:flutter/material.dart';
-// 移除长按自动重复所需的 async Timer（保留可扩展性）
 import 'dart:math' as math;
 import '../models/flippable_canvas.dart';
 
@@ -103,7 +102,6 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
   }
 
   void _showCanvasOptions() {
-    // Create controllers once so they won't be recreated on every rebuild of the modal's StatefulBuilder.
     final xController = TextEditingController(text: widget.canvas.positionX.toStringAsFixed(0));
     final yController = TextEditingController(text: widget.canvas.positionY.toStringAsFixed(0));
     final wController = TextEditingController(text: widget.canvas.width.toStringAsFixed(0));
@@ -112,19 +110,15 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
-      shape: RoundedRectangleBorder(
+      shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(10)),
       ),
       builder: (context) {
-        // 使用StatefulBuilder让底部弹窗内部局部刷新
         return StatefulBuilder(
           builder: (context, setModalState) {
             final screenWidth = MediaQuery.of(context).size.width;
-            // 使用外层创建的 controllers，避免在 setModalState 时被重建
 
-            // 通用解析与更新函数
-              void _applyValues({bool updateX = false, bool updateY = false, bool updateW = false, bool updateH = false, bool enforceMin = false}) {
-              // 读取现有值
+            void applyValues({bool updateX = false, bool updateY = false, bool updateW = false, bool updateH = false, bool enforceMin = false}) {
               double x = widget.canvas.positionX;
               double y = widget.canvas.positionY;
               double w = widget.canvas.width;
@@ -152,20 +146,15 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
                 if (ph != null) h = ph;
               }
 
-              // 安全范围与最小值限制
-              // 如果 enforceMin 为 true，则强制最低值（例如 50），否则仅限制上限，允许用户临时输入较小值以便编辑
               if (enforceMin) {
-                w = w.clamp(50.0, screenWidth); // 宽度不超过屏幕宽，且最小 50
-                h = h.clamp(50.0, 4000.0); // 高度下限 50，上限给大一些
+                w = w.clamp(50.0, screenWidth);
+                h = h.clamp(50.0, 4000.0);
               } else {
-                // 允许用户临时输入更小的正整数（>=1），但仍不超过屏幕宽或极大值
                 w = w.clamp(1.0, screenWidth);
                 h = h.clamp(1.0, 4000.0);
               }
-              x = x.clamp(0.0, screenWidth - w); // 左右不超出屏幕
-              // y 暂不做垂直安全范围限制，如需可加：y = y.clamp(0.0, MediaQuery.of(context).size.height - h)
+              x = x.clamp(0.0, screenWidth - w);
 
-              // 如果用户把x调到靠右导致 x+width > 屏幕宽，则自动回调
               if (x + w > screenWidth) {
                 x = screenWidth - w;
               }
@@ -175,9 +164,7 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
               widget.canvas.width = w;
               widget.canvas.height = h;
 
-              // 触发外部刷新，实时预览
               widget.onCanvasUpdated(widget.canvas);
-              // 更新文本（去掉不合法输入时矫正值）。只有在 enforceMin=true 时才覆写用户正在输入的文本，避免打断输入体验。
               if (enforceMin) {
                 setModalState(() {
                   xController.text = x.toStringAsFixed(0);
@@ -186,25 +173,22 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
                   hController.text = h.toStringAsFixed(0);
                 });
               } else {
-                // 仍需刷新父视图以便预览（当 parse 成功时）
                 setModalState(() {});
               }
-              // 同时刷新父组件（防止大小未同步）
               setState(() {});
             }
 
-            InputDecoration _dec(String label) => InputDecoration(
+            InputDecoration dec(String label) => InputDecoration(
                   labelText: label,
                   isDense: true,
                   border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
-                  contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
                 );
 
-            // 微调按钮：单击 ±1，双击 ±10
-            Widget _miniBtn({required IconData icon, required VoidCallback onTap, required VoidCallback onDouble}) {
+            Widget miniBtn({required IconData icon, required VoidCallback onTap, required VoidCallback onDouble}) {
               return GestureDetector(
-                onTap: onTap, // 单击 ±1
-                onDoubleTap: onDouble, // 双击 ±10
+                onTap: onTap,
+                onDoubleTap: onDouble,
                 child: Container(
                   width: 28,
                   height: 26,
@@ -219,48 +203,7 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
               );
             }
 
-            Widget _numField({
-              required TextEditingController c,
-              required String label,
-              required Function(String) onChanged,
-              required VoidCallback onInc,
-              required VoidCallback onDec,
-            }) {
-              return Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  SizedBox(
-                    width: 82,
-                    child: TextField(
-                      controller: c,
-                      keyboardType: TextInputType.number,
-                      decoration: _dec(label),
-                      onChanged: onChanged,
-                    ),
-                  ),
-                  SizedBox(height: 4),
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      _miniBtn(
-                        icon: Icons.remove,
-                        onTap: onDec,
-                        onDouble: () { for(int i=0;i<10;i++){ onDec(); } },
-                      ),
-                      SizedBox(width: 6),
-                      _miniBtn(
-                        icon: Icons.add,
-                        onTap: onInc,
-                        onDouble: () { for(int i=0;i<10;i++){ onInc(); } },
-                      ),
-                    ],
-                  )
-                ],
-              );
-            }
-
-            // 紧凑型单行字段（含 ± 按钮）
-            Widget _compactField({
+            Widget compactField({
               required TextEditingController controller,
               required String label,
               required VoidCallback onInc,
@@ -278,48 +221,45 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
                         labelText: label,
                         isDense: true,
                         border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
-                        contentPadding: EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
                       ),
                       onChanged: (_) => onChanged(),
-                      // 当用户完成编辑（按完成键）或失去焦点时，强制最小值并更新。
                       onEditingComplete: () {
-                        // 先做一次实时更新
                         onChanged();
-                        // 编辑完成时，对宽/高 强制最小值，X/Y 也做边界修正
                         if (label == '宽') {
-                          _applyValues(updateW: true, enforceMin: true);
+                          applyValues(updateW: true, enforceMin: true);
                         } else if (label == '高') {
-                          _applyValues(updateH: true, enforceMin: true);
+                          applyValues(updateH: true, enforceMin: true);
                         } else if (label == 'X') {
-                          _applyValues(updateX: true, enforceMin: true);
+                          applyValues(updateX: true, enforceMin: true);
                         } else if (label == 'Y') {
-                          _applyValues(updateY: true, enforceMin: true);
+                          applyValues(updateY: true, enforceMin: true);
                         }
                       },
                       onSubmitted: (_) {
                         onChanged();
                         if (label == '宽') {
-                          _applyValues(updateW: true, enforceMin: true);
+                          applyValues(updateW: true, enforceMin: true);
                         } else if (label == '高') {
-                          _applyValues(updateH: true, enforceMin: true);
+                          applyValues(updateH: true, enforceMin: true);
                         } else if (label == 'X') {
-                          _applyValues(updateX: true, enforceMin: true);
+                          applyValues(updateX: true, enforceMin: true);
                         } else if (label == 'Y') {
-                          _applyValues(updateY: true, enforceMin: true);
+                          applyValues(updateY: true, enforceMin: true);
                         }
                       },
                     ),
-                    SizedBox(height: 4),
+                    const SizedBox(height: 4),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        _miniBtn(
+                        miniBtn(
                           icon: Icons.remove,
                           onTap: onDec,
                           onDouble: () { for(int i=0;i<10;i++){ onDec(); } },
                         ),
-                        SizedBox(width: 6),
-                        _miniBtn(
+                        const SizedBox(width: 6),
+                        miniBtn(
                           icon: Icons.add,
                           onTap: onInc,
                           onDouble: () { for(int i=0;i<10;i++){ onInc(); } },
@@ -334,12 +274,12 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
             return Container(
               decoration: BoxDecoration(
                 color: Colors.white.withOpacity(0.95),
-                borderRadius: BorderRadius.vertical(top: Radius.circular(10)),
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(10)),
                 boxShadow: [
                   BoxShadow(
                     color: Colors.black.withOpacity(0.2),
                     blurRadius: 10,
-                    offset: Offset(0, -1),
+                    offset: const Offset(0, -1),
                   ),
                 ],
               ),
@@ -349,68 +289,61 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      // 精简标题与布局
-                      Padding(
+                      const Padding(
                         padding: EdgeInsets.only(top: 10, bottom: 6),
                         child: Text('画布设置', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
                       ),
-                      // 单行位置与大小
                       Padding(
-                        padding: EdgeInsets.symmetric(horizontal: 10),
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
                         child: Row(
                           children: [
-                            _compactField(
+                            compactField(
                               controller: xController,
                               label: 'X',
-                              onChanged: () => _applyValues(updateX: true),
-                              onInc: () { xController.text = ((double.tryParse(xController.text) ?? widget.canvas.positionX) + 1).toInt().toString(); _applyValues(updateX: true); },
-                              onDec: () { xController.text = ((double.tryParse(xController.text) ?? widget.canvas.positionX) - 1).toInt().toString(); _applyValues(updateX: true); },
+                              onChanged: () => applyValues(updateX: true),
+                              onInc: () { xController.text = ((double.tryParse(xController.text) ?? widget.canvas.positionX) + 1).toInt().toString(); applyValues(updateX: true); },
+                              onDec: () { xController.text = ((double.tryParse(xController.text) ?? widget.canvas.positionX) - 1).toInt().toString(); applyValues(updateX: true); },
                             ),
-                            _compactField(
+                            compactField(
                               controller: yController,
                               label: 'Y',
-                              onChanged: () => _applyValues(updateY: true),
-                              onInc: () { yController.text = ((double.tryParse(yController.text) ?? widget.canvas.positionY) + 1).toInt().toString(); _applyValues(updateY: true); },
-                              onDec: () { yController.text = ((double.tryParse(yController.text) ?? widget.canvas.positionY) - 1).toInt().toString(); _applyValues(updateY: true); },
+                              onChanged: () => applyValues(updateY: true),
+                              onInc: () { yController.text = ((double.tryParse(yController.text) ?? widget.canvas.positionY) + 1).toInt().toString(); applyValues(updateY: true); },
+                              onDec: () { yController.text = ((double.tryParse(yController.text) ?? widget.canvas.positionY) - 1).toInt().toString(); applyValues(updateY: true); },
                             ),
-                            // 宽/高输入：允许自由输入，只有在失焦或提交时才强制最小值
-                            _compactField(
+                            compactField(
                               controller: wController,
                               label: '宽',
                               onChanged: () {
-                                // 实时更新但不强制最小值以避免打断输入体验
-                                _applyValues(updateW: true, enforceMin: false);
+                                applyValues(updateW: true, enforceMin: false);
                               },
                               onInc: () {
                                 wController.text = ((double.tryParse(wController.text) ?? widget.canvas.width) + 1).toInt().toString();
-                                // 加减操作视为用户明确操作，立即生效并强制最小值
-                                _applyValues(updateW: true, enforceMin: true);
+                                applyValues(updateW: true, enforceMin: true);
                               },
                               onDec: () {
                                 wController.text = ((double.tryParse(wController.text) ?? widget.canvas.width) - 1).toInt().toString();
-                                _applyValues(updateW: true, enforceMin: true);
+                                applyValues(updateW: true, enforceMin: true);
                               },
                             ),
-                            _compactField(
+                            compactField(
                               controller: hController,
                               label: '高',
                               onChanged: () {
-                                _applyValues(updateH: true, enforceMin: false);
+                                applyValues(updateH: true, enforceMin: false);
                               },
-                              onInc: () { hController.text = ((double.tryParse(hController.text) ?? widget.canvas.height) + 1).toInt().toString(); _applyValues(updateH: true, enforceMin: true); },
-                              onDec: () { hController.text = ((double.tryParse(hController.text) ?? widget.canvas.height) - 1).toInt().toString(); _applyValues(updateH: true, enforceMin: true); },
+                              onInc: () { hController.text = ((double.tryParse(hController.text) ?? widget.canvas.height) + 1).toInt().toString(); applyValues(updateH: true, enforceMin: true); },
+                              onDec: () { hController.text = ((double.tryParse(hController.text) ?? widget.canvas.height) - 1).toInt().toString(); applyValues(updateH: true, enforceMin: true); },
                             ),
                           ],
                         ),
                       ),
-                      // 安全范围提示
                       Padding(
-                        padding: EdgeInsets.only(left: 12, top: 4, bottom: 6),
+                        padding: const EdgeInsets.only(left: 12, top: 4, bottom: 6),
                         child: Text('范围: 0 ≤ X 且 X+宽 ≤ 屏幕(${screenWidth.toStringAsFixed(0)}) 宽≥50', style: TextStyle(fontSize: 11, color: Colors.grey[600])),
                       ),
-                      // 操作行：翻转 + 内容统计 + 删除
                       Padding(
-                        padding: EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
                         child: Row(
                           children: [
                             TextButton.icon(
@@ -418,7 +351,7 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
                               icon: Icon(widget.canvas.isFlipped ? Icons.flip_to_front : Icons.flip_to_back, size: 18, color: Colors.blue),
                               label: Text(widget.canvas.isFlipped ? '正面' : '反面'),
                             ),
-                            SizedBox(width: 8),
+                            const SizedBox(width: 8),
                             Expanded(
                               child: Text(
                                 '正:${widget.canvas.frontTextBoxIds.length + widget.canvas.frontImageBoxIds.length + widget.canvas.frontAudioBoxIds.length} 反:${widget.canvas.backTextBoxIds.length + widget.canvas.backImageBoxIds.length + widget.canvas.backAudioBoxIds.length}',
@@ -427,13 +360,13 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
                             ),
                             TextButton.icon(
                               onPressed: () { Navigator.pop(context); if (widget.onSettingsPressed != null) widget.onSettingsPressed!(); },
-                              icon: Icon(Icons.delete, size: 18, color: Colors.red),
-                              label: Text('删除', style: TextStyle(color: Colors.red)),
+                              icon: const Icon(Icons.delete, size: 18, color: Colors.red),
+                              label: const Text('删除', style: TextStyle(color: Colors.red)),
                             ),
                           ],
                         ),
                       ),
-                      SizedBox(height: 6),
+                      const SizedBox(height: 6),
                     ],
                   ),
                 ),
@@ -443,17 +376,11 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
         );
       },
     );
-
-    // Note: Do not dispose the controllers here. Disposing while framework still
-    // has dependents can trigger assertions on some platforms/input flows.
-    // Controllers will be GC'd when no longer referenced; explicit disposal
-    // can be added later with careful lifecycle handling if desired.
   }
 
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      // 使用单指平移拖动画布
       onPanStart: widget.isPositionLocked ? null : (details) {
         _isDragging = true;
         _dragStart = details.globalPosition;
@@ -464,7 +391,6 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
           widget.canvas.positionX += delta.dx;
           widget.canvas.positionY += delta.dy;
           _dragStart = details.globalPosition;
-          // 水平安全边界
           final screenWidth = MediaQuery.of(context).size.width;
           widget.canvas.positionX = widget.canvas.positionX.clamp(0.0, screenWidth - widget.canvas.width);
           widget.onCanvasUpdated(widget.canvas);
@@ -473,17 +399,16 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
       onPanEnd: widget.isPositionLocked ? null : (details) {
         _isDragging = false;
       },
-      onDoubleTap: _flipCanvas, // 双击翻转
-      onLongPress: _showCanvasOptions, // 长按显示选项
+      onDoubleTap: _flipCanvas,
+      onLongPress: _showCanvasOptions,
       child: AnimatedBuilder(
         animation: _flipAnimation,
         builder: (context, child) {
-          // 计算翻转角度
           final isShowingFront = _flipAnimation.value < 0.5;
           return Transform(
             alignment: Alignment.center,
             transform: Matrix4.identity()
-              ..setEntry(3, 2, 0.001) // 添加透视效果
+              ..setEntry(3, 2, 0.001)
               ..rotateY(_flipAnimation.value * math.pi),
             child: _buildCanvasSide(isShowingFront),
           );
@@ -493,14 +418,12 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
   }
 
   Widget _buildCanvasSide(bool isShowingFront) {
-    // 根据翻转状态和动画进度决定显示哪一面
     final bool shouldShowFront = isShowingFront == !widget.canvas.isFlipped;
     
     return Container(
       width: widget.canvas.width,
       height: widget.canvas.height,
       decoration: BoxDecoration(
-        // 画布透明，保持空白区域；通过边框颜色区分正/反面
         color: Colors.transparent,
         border: Border.all(
           color: shouldShowFront ? Colors.blue[300]! : Colors.orange[300]!,
@@ -510,10 +433,7 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
       ),
       child: Stack(
         children: [
-          // 画布保持空白，不渲染默认占位标识
-          SizedBox.shrink(),
-          // （保留）设置按钮位于左上角，翻转由双击空白处触发，不再需要单独翻转按钮
-          // 设置按钮
+          const SizedBox.shrink(),
           Positioned(
             top: 4,
             left: 4,
@@ -535,7 +455,6 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
               ),
             ),
           ),
-          // 右下角缩放把手（可拖动来改变画布大小）
           Positioned(
             right: 4,
             bottom: 4,
