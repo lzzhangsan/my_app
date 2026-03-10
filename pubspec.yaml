@@ -45,6 +45,7 @@ dependencies:
   flutter_svg: ^2.2.1
   flutter_background_service: ^5.0.5
   flutter_background_service_android: ^6.3.1
+  flutter_quill: ^11.5.0
 
 dev_dependencies:
   flutter_test:

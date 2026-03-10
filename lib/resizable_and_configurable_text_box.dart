@@ -1,7 +1,10 @@
 // lib/resizable_and_configurable_text_box.dart
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'dart:ui' as ui;
 import 'package:uuid/uuid.dart';
+import 'package:flutter_quill/flutter_quill.dart' as quill;
 
 // 配置类，定义常用的颜色和其他配置
 class Config {
@@ -94,7 +97,7 @@ class CustomTextStyle {
   CustomTextStyle({
     required this.fontSize,
     required this.fontColor,
-    this.fontWeight = FontWeight.normal,
+    this.fontWeight = FontWeight.bold,
     this.isItalic = false,
     this.backgroundColor,
     this.textAlign = TextAlign.left,
@@ -133,7 +136,7 @@ class CustomTextStyle {
     return CustomTextStyle(
       fontSize: map['fontSize'] ?? 16.0,
       fontColor: map['fontColor'] != null ? Color(map['fontColor']) : Colors.black,
-      fontWeight: FontWeight.values[map['fontWeight'] ?? 0],
+      fontWeight: FontWeight.values[map['fontWeight'] ?? FontWeight.bold.index],
       isItalic: map['isItalic'] ?? false,
       backgroundColor: map['backgroundColor'] != null ? Color(map['backgroundColor']) : null,
       textAlign: TextAlign.values[map['textAlign'] ?? 0],
@@ -145,6 +148,106 @@ class CustomTextStyle {
         ((color.r * 255).round() << 16) |
         ((color.g * 255).round() << 8) |
         (color.b * 255).round();
+  }
+
+  /// 转为 Quill 颜色字符串 (#AARRGGBB 或 #RRGGBB)
+  static String _toQuillColorHex(Color c) {
+    return '#${c.value.toRadixString(16).padLeft(8, '0')}';
+  }
+}
+
+/// TextSegment <-> Quill Delta 转换（用于 flutter_quill 富文本）
+class _QuillDeltaConverter {
+  static List<Map<String, dynamic>> segmentsToDeltaOps(List<TextSegment> segments) {
+    final ops = <Map<String, dynamic>>[];
+    for (final seg in segments) {
+      if (seg.text.isEmpty) continue;
+      final attrs = <String, dynamic>{};
+      final s = seg.style;
+      if (s.fontSize != 16) attrs['size'] = s.fontSize.toString();
+      attrs['color'] = CustomTextStyle._toQuillColorHex(s.fontColor);
+      if (s.fontWeight == FontWeight.bold) attrs['bold'] = true;
+      if (s.isItalic) attrs['italic'] = true;
+      if (s.backgroundColor != null) {
+        attrs['background'] = CustomTextStyle._toQuillColorHex(s.backgroundColor!);
+      }
+      final insert = seg.text.replaceAll('\n', '\n');
+      if (insert.contains('\n')) {
+        final parts = insert.split('\n');
+        for (var i = 0; i < parts.length; i++) {
+          if (parts[i].isNotEmpty) {
+            ops.add({'insert': parts[i], if (attrs.isNotEmpty) 'attributes': Map<String, dynamic>.from(attrs)});
+          }
+          if (i < parts.length - 1) ops.add({'insert': '\n'});
+        }
+      } else {
+        ops.add({'insert': insert, if (attrs.isNotEmpty) 'attributes': attrs});
+      }
+    }
+    if (ops.isEmpty || (ops.last['insert'] != '\n')) ops.add({'insert': '\n'});
+    return ops;
+  }
+
+  static List<TextSegment> deltaOpsToSegments(List<Map<String, dynamic>> ops, CustomTextStyle defaultStyle) {
+    final segments = <TextSegment>[];
+    CustomTextStyle current = defaultStyle;
+    final buf = StringBuffer();
+    for (final op in ops) {
+      final data = op['insert'];
+      if (data is! String) continue;
+      final attrs = op['attributes'] as Map<String, dynamic>?;
+      final style = _attrsToCustomStyle(attrs, defaultStyle);
+      for (var i = 0; i < data.length; i++) {
+        final ch = data[i];
+        if (ch == '\n') {
+          if (buf.isNotEmpty) {
+            segments.add(TextSegment(text: buf.toString(), style: current));
+            buf.clear();
+          }
+          segments.add(TextSegment(text: '\n', style: current));
+        } else {
+          if (style != current && buf.isNotEmpty) {
+            segments.add(TextSegment(text: buf.toString(), style: current));
+            buf.clear();
+          }
+          current = style;
+          buf.write(ch);
+        }
+      }
+    }
+    if (buf.isNotEmpty) segments.add(TextSegment(text: buf.toString(), style: current));
+    return segments;
+  }
+
+  static CustomTextStyle _attrsToCustomStyle(Map<String, dynamic>? attrs, CustomTextStyle defaultStyle) {
+    if (attrs == null || attrs.isEmpty) return defaultStyle;
+    double fontSize = defaultStyle.fontSize;
+    if (attrs['size'] != null) {
+      final v = attrs['size'];
+      if (v is num) fontSize = v.toDouble();
+      else if (v is String) fontSize = double.tryParse(v) ?? defaultStyle.fontSize;
+    }
+    Color fontColor = defaultStyle.fontColor;
+    if (attrs['color'] != null) {
+      var h = attrs['color'].toString().replaceFirst('#', '');
+      if (h.length == 6) h = 'ff$h';
+      fontColor = Color(int.parse(h, radix: 16));
+    }
+    final bold = attrs['bold'] == true;
+    final italic = attrs['italic'] == true;
+    Color? bg;
+    if (attrs['background'] != null) {
+      var h = attrs['background'].toString().replaceFirst('#', '');
+      if (h.length == 6) h = 'ff$h';
+      bg = Color(int.parse(h, radix: 16));
+    }
+    return defaultStyle.copyWith(
+      fontSize: fontSize,
+      fontColor: fontColor,
+      fontWeight: bold ? FontWeight.bold : FontWeight.normal,
+      isItalic: italic,
+      backgroundColor: bg,
+    );
   }
 }
 
@@ -228,7 +331,8 @@ class ResizableAndConfigurableTextBox extends StatefulWidget {
   final Size initialSize;
   final String initialText;
   final CustomTextStyle initialTextStyle;
-  final Function(Size, String, CustomTextStyle) onSave;
+  final List<TextSegment>? initialTextSegments;
+  final Function(Size, String, CustomTextStyle, List<TextSegment>) onSave;
   final Function() onDeleteCurrent;
   final Function() onDuplicateCurrent;
   // 如果此文本框是处于画布上（需要显示移动/复制到另一面的功能）
@@ -245,6 +349,7 @@ class ResizableAndConfigurableTextBox extends StatefulWidget {
     required this.initialSize,
     required this.initialText,
     required this.initialTextStyle,
+    this.initialTextSegments,
     required this.onSave,
     required this.onDeleteCurrent,
     required this.onDuplicateCurrent,
@@ -263,81 +368,217 @@ class _ResizableAndConfigurableTextBoxState
     extends State<ResizableAndConfigurableTextBox> {
   late Size _size;
   late CustomTextStyle _textStyle;
-  late TextEditingController _controller;
+  late quill.QuillController _quillController;
+  StreamSubscription<quill.DocChange>? _docChangeSub;
+  bool _applyingDefaultStyle = false;
   late FocusNode _focusNode;
   late ScrollController _textScrollController;
   final double _minWidth = 25.0;
   final double _minHeight = 25.0;
-
-  // 选择文本的相关变量
-  int? _selectionStart;
-  int? _selectionEnd;
-
-  // 设置界面相关变量
   bool _showBottomSettings = false;
+  Timer? _keyboardSuppressTimer;
 
   @override
   void initState() {
     super.initState();
     _size = widget.initialSize;
+    _textStyle = widget.initialTextStyle.copyWith(fontWeight: FontWeight.bold);
 
-    // 确保使用完整的CustomTextStyle对象，填充所有属性
-    _textStyle = widget.initialTextStyle;
+    List<TextSegment> initSegments;
+    if (widget.initialTextSegments != null && widget.initialTextSegments!.isNotEmpty) {
+      final fullText = widget.initialTextSegments!.map((s) => s.text).join();
+      initSegments = fullText == widget.initialText
+          ? List.from(widget.initialTextSegments!)
+          : [TextSegment(text: widget.initialText, style: _textStyle)];
+    } else {
+      initSegments = [TextSegment(text: widget.initialText, style: _textStyle)];
+    }
 
-    // 打印初始样式，用于调试
-    print('初始化文本框样式: 字体大小=${_textStyle.fontSize}, '
-        '颜色=${_textStyle.fontColor}, '
-        '粗体=${_textStyle.fontWeight}, '
-        '斜体=${_textStyle.isItalic}, '
-        '背景色=${_textStyle.backgroundColor}, '
-        '对齐=${_textStyle.textAlign}');
-
-    _controller = TextEditingController(text: widget.initialText);
+    final ops = _QuillDeltaConverter.segmentsToDeltaOps(initSegments);
+    final doc = quill.Document.fromJson(ops);
+    _quillController = quill.QuillController(
+      document: doc,
+      selection: const TextSelection.collapsed(offset: 0),
+      keepStyleOnNewLine: false,
+    );
+    _quillController.addListener(_onQuillChanged);
+    _docChangeSub = _quillController.changes.listen(_handleDocChange);
 
     _focusNode = FocusNode();
-    _focusNode.addListener(() {
-      setState(() {});
-    });
+    _focusNode.addListener(() => setState(() {}));
     _textScrollController = ScrollController();
-
-    // 监听文本选择变化
-    _controller.addListener(_handleTextChange);
   }
 
-  // 处理文本变化和选择
-  void _handleTextChange() {
-    if (_controller.selection.isValid) {
-      setState(() {
-        _selectionStart = _controller.selection.start;
-        _selectionEnd = _controller.selection.end;
-      });
-    }
+  void _onQuillChanged() {
+    setState(() {});
+    _saveChanges();
   }
 
   @override
   void dispose() {
-    _controller.removeListener(_handleTextChange);
-    _controller.dispose();
+    _keyboardSuppressTimer?.cancel();
+    _docChangeSub?.cancel();
+    _quillController.removeListener(_onQuillChanged);
+    _quillController.dispose();
     _focusNode.dispose();
     _textScrollController.dispose();
     super.dispose();
   }
 
   void _saveChanges() {
-    print('保存文本框样式更改: 字体大小=${_textStyle.fontSize}, '
-        '颜色=${_textStyle.fontColor}, '
-        '粗体=${_textStyle.fontWeight}, '
-        '斜体=${_textStyle.isItalic}, '
-        '背景色=${_textStyle.backgroundColor}, '
-        '对齐=${_textStyle.textAlign}');
+    final plainText = _quillController.document.toPlainText();
+    final delta = _quillController.document.toDelta();
+    final opsJson = <Map<String, dynamic>>[];
+    for (final op in delta.toList()) {
+      if (!op.isInsert) continue;
+      final m = <String, dynamic>{'insert': op.data};
+      if (op.attributes != null && op.attributes!.isNotEmpty) {
+        m['attributes'] = op.attributes;
+      }
+      opsJson.add(m);
+    }
+    final segments = _QuillDeltaConverter.deltaOpsToSegments(
+      opsJson.map((m) => Map<String, dynamic>.from(m)).toList(),
+      _textStyle,
+    );
+    widget.onSave(_size, plainText, _textStyle, segments);
+  }
 
-    widget.onSave(_size, _controller.text, _textStyle);
+  void _applyDefaultStyleToRange(int index, int length) {
+    if (length <= 0) return;
+    final docLength = _quillController.document.length;
+    if (index < 0 || index >= docLength) return;
+    final clampedLength = (index + length) > docLength ? (docLength - index) : length;
+
+    final defaultColorHex = CustomTextStyle._toQuillColorHex(_textStyle.fontColor);
+    _quillController.formatText(
+      index,
+      clampedLength,
+      quill.Attribute.clone(quill.Attribute.size, _textStyle.fontSize.toInt().toString()),
+    );
+    _quillController.formatText(
+      index,
+      clampedLength,
+      quill.Attribute.clone(quill.Attribute.color, defaultColorHex),
+    );
+    _quillController.formatText(
+      index,
+      clampedLength,
+      quill.Attribute.clone(quill.Attribute.background, null),
+    );
+    _quillController.formatText(
+      index,
+      clampedLength,
+      quill.Attribute.clone(quill.Attribute.italic, null),
+    );
+    _quillController.formatText(
+      index,
+      clampedLength,
+      quill.Attribute.bold,
+    );
+  }
+
+  void _handleDocChange(quill.DocChange change) {
+    if (_applyingDefaultStyle) return;
+    if (change.source != quill.ChangeSource.local) return;
+
+    final ops = change.change.toJson();
+    int insertedLength = 0;
+    for (final op in ops) {
+      final inserted = op['insert'];
+      if (inserted is String && inserted.isNotEmpty) {
+        insertedLength += inserted.length;
+      }
+    }
+    if (insertedLength == 0) return;
+
+    final end = _quillController.selection.baseOffset;
+    final start = end - insertedLength;
+    if (start < 0) return;
+
+    _applyingDefaultStyle = true;
+    try {
+      _applyDefaultStyleToRange(start, insertedLength);
+    } finally {
+      _applyingDefaultStyle = false;
+    }
+  }
+
+  bool get _hasSelection {
+    final s = _quillController.selection;
+    return s.isValid && s.start < s.end;
+  }
+
+  void _quillFormatSelection(quill.Attribute? attr) {
+    if (_showBottomSettings) SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
+    _quillController.formatSelection(attr);
+    _saveChanges();
+    _suppressKeyboardAfterFormat();
+  }
+
+  void _quillFormatWhole(quill.Attribute? attr) {
+    if (_showBottomSettings) SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
+    final len = _quillController.document.length;
+    if (len > 0) _quillController.formatText(0, len, attr);
+    _saveChanges();
+    _suppressKeyboardAfterFormat();
+  }
+
+  void _hideKeyboard() {
+    SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
+    FocusManager.instance.primaryFocus?.unfocus();
+  }
+
+  ///  format 后多次尝试收起键盘，避免闪现
+  void _suppressKeyboardAfterFormat() {
+    if (!_showBottomSettings) return;
+    void hide() {
+      SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
+      FocusManager.instance.primaryFocus?.unfocus();
+    }
+    hide();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _showBottomSettings) hide();
+    });
+    Future.delayed(const Duration(milliseconds: 50), () {
+      if (mounted && _showBottomSettings) hide();
+    });
+  }
+
+  Color _getQuillFontColor() {
+    final s = _quillController.getSelectionStyle();
+    final a = s.values.cast<quill.Attribute>().firstWhere(
+      (a) => a.key == quill.Attribute.color.key,
+      orElse: () => quill.Attribute.color,
+    );
+    if (a.value == null) return _textStyle.fontColor;
+    var h = a.value.toString().replaceFirst('#', '');
+    if (h.length == 6) h = 'ff$h';
+    return Color(int.parse(h, radix: 16));
+  }
+
+  Color? _getQuillBackgroundColor() {
+    final s = _quillController.getSelectionStyle();
+    final a = s.values.cast<quill.Attribute>().firstWhere(
+      (a) => a.key == quill.Attribute.background.key,
+      orElse: () => quill.Attribute.background,
+    );
+    if (a.value == null) return null;
+    var h = a.value.toString().replaceFirst('#', '');
+    if (h.length == 6) h = 'ff$h';
+    return Color(int.parse(h, radix: 16));
   }
 
   // 显示设置面板
   void _showSettingsPanel(BuildContext context) {
-    print('显示设置面板');
-
+    _hideKeyboard();
+    _quillController.readOnly = true;
+    _quillController.skipRequestKeyboard = true;
+    _keyboardSuppressTimer?.cancel();
+    _keyboardSuppressTimer = Timer.periodic(const Duration(milliseconds: 30), (_) {
+      if (!mounted || !_showBottomSettings) return;
+      _hideKeyboard();
+    });
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -346,16 +587,32 @@ class _ResizableAndConfigurableTextBoxState
         borderRadius: BorderRadius.vertical(top: Radius.circular(10)),
       ),
       builder: (BuildContext context) {
-        return Container(
-          constraints: BoxConstraints(maxHeight: 260),
-          child: StatefulBuilder(
-            builder: (BuildContext context, StateSetter setModalState) {
-              return _buildTextBoxSettings(setModalState);
-            },
+        return GestureDetector(
+          onTap: () {},
+          behavior: HitTestBehavior.opaque,
+          child: Container(
+            constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.5),
+            child: StatefulBuilder(
+              builder: (BuildContext context, StateSetter setModalState) {
+                return SingleChildScrollView(
+                  child: _buildTextBoxSettings(setModalState),
+                );
+              },
+            ),
           ),
         );
       },
-    );
+    ).then((_) {
+      if (mounted) {
+        _keyboardSuppressTimer?.cancel();
+        _keyboardSuppressTimer = null;
+        _quillController.readOnly = false;
+        _quillController.skipRequestKeyboard = false;
+        setState(() {
+          _showBottomSettings = false;
+        });
+      }
+    });
   }
 
   // 文本框设置面板
@@ -365,7 +622,7 @@ class _ResizableAndConfigurableTextBoxState
       child: BackdropFilter(
         filter: ui.ImageFilter.blur(sigmaX: 15.0, sigmaY: 15.0),
         child: Container(
-          padding: EdgeInsets.symmetric(vertical: 8, horizontal: 15),
+          padding: EdgeInsets.symmetric(vertical: 6, horizontal: 12),
           decoration: BoxDecoration(
             color: Colors.white.withOpacity(0.35),
             borderRadius: BorderRadius.vertical(top: Radius.circular(10)),
@@ -380,39 +637,56 @@ class _ResizableAndConfigurableTextBoxState
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Row(
-                mainAxisAlignment: widget.isOnCanvas ? MainAxisAlignment.spaceEvenly : MainAxisAlignment.center,
-                children: widget.isOnCanvas ? [
-                  // 画布文本框：6个按钮均匀分布
-                  _buildAlignmentButton(Icons.format_align_left, TextAlign.left, isLarge: true),
-                  _buildAlignmentButton(Icons.format_align_center, TextAlign.center, isLarge: true),
-                  _buildAlignmentButton(Icons.format_align_right, TextAlign.right, isLarge: true),
-                  _buildAlignmentButton(Icons.format_align_justify, TextAlign.justify, isLarge: true),
-                  IconButton(
-                    icon: Icon(Icons.copy_all, color: Colors.blue),
-                    onPressed: widget.onCopyToOtherSide,
-                    iconSize: 24,
-                    padding: EdgeInsets.all(4),
-                    constraints: BoxConstraints(minWidth: 40, minHeight: 40),
-                    tooltip: '复制到另一面',
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                  if (widget.isOnCanvas) ...[
+                    _buildAlignmentButton(Icons.format_align_left, TextAlign.left, isLarge: true),
+                    _buildAlignmentButton(Icons.format_align_center, TextAlign.center, isLarge: true),
+                    _buildAlignmentButton(Icons.format_align_right, TextAlign.right, isLarge: true),
+                    IconButton(
+                      icon: Icon(Icons.copy_all, color: Colors.blue),
+                      onPressed: widget.onCopyToOtherSide,
+                      iconSize: 24,
+                      padding: EdgeInsets.all(4),
+                      constraints: BoxConstraints(minWidth: 40, minHeight: 40),
+                      tooltip: '复制到另一面',
+                    ),
+                    IconButton(
+                      icon: Icon(Icons.swap_horiz, color: Colors.blue),
+                      onPressed: widget.onMoveToOtherSide,
+                      iconSize: 24,
+                      padding: EdgeInsets.all(4),
+                      constraints: BoxConstraints(minWidth: 40, minHeight: 40),
+                      tooltip: '移动到另一面',
+                    ),
+                  ] else ...[
+                    _buildAlignmentButton(Icons.format_align_left, TextAlign.left),
+                    _buildAlignmentButton(Icons.format_align_center, TextAlign.center),
+                    _buildAlignmentButton(Icons.format_align_right, TextAlign.right),
+                  ],
+                  InkWell(
+                    onTap: () => Navigator.of(context).pop(),
+                    borderRadius: BorderRadius.circular(4),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.check, size: 18, color: Colors.blue.shade700),
+                          SizedBox(width: 4),
+                          Text('完成', style: TextStyle(fontSize: 14, color: Colors.blue.shade700)),
+                        ],
+                      ),
+                    ),
                   ),
-                  IconButton(
-                    icon: Icon(Icons.swap_horiz, color: Colors.blue),
-                    onPressed: widget.onMoveToOtherSide,
-                    iconSize: 24,
-                    padding: EdgeInsets.all(4),
-                    constraints: BoxConstraints(minWidth: 40, minHeight: 40),
-                    tooltip: '移动到另一面',
-                  ),
-                ] : [
-                  // 非画布文本框：4个对齐按钮居中显示
-                  _buildAlignmentButton(Icons.format_align_left, TextAlign.left),
-                  _buildAlignmentButton(Icons.format_align_center, TextAlign.center),
-                  _buildAlignmentButton(Icons.format_align_right, TextAlign.right),
-                  _buildAlignmentButton(Icons.format_align_justify, TextAlign.justify),
                 ],
+                ),
               ),
-              Divider(height: 12),
+              Divider(height: 8),
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                 children: [
@@ -420,12 +694,14 @@ class _ResizableAndConfigurableTextBoxState
                     child: _buildToolButton(
                       null,
                       () {
-                        setState(() {
-                          if (_textStyle.fontSize > 8) {
-                            _textStyle = _textStyle.copyWith(fontSize: _textStyle.fontSize - 2);
-                          }
-                        });
-                        Future.microtask(() => _saveChanges());
+                        final style = _quillController.getSelectionStyle();
+                        final sizeVal = style.values.firstWhere((a) => a.key == quill.Attribute.size.key, orElse: () => quill.Attribute.size);
+                        double cur = _textStyle.fontSize;
+                        if (sizeVal.value != null) cur = double.tryParse(sizeVal.value.toString()) ?? cur;
+                        cur = (cur - 2).clamp(8.0, 72.0);
+                        final attr = quill.Attribute.clone(quill.Attribute.size, cur.toString());
+                        if (_hasSelection) _quillFormatSelection(attr); else _quillFormatWhole(attr);
+                        setModalState(() {});
                       },
                       false,
                       text: "A-",
@@ -437,10 +713,14 @@ class _ResizableAndConfigurableTextBoxState
                     child: _buildToolButton(
                       null,
                       () {
-                        setState(() {
-                          _textStyle = _textStyle.copyWith(fontSize: _textStyle.fontSize + 2);
-                        });
-                        Future.microtask(() => _saveChanges());
+                        final style = _quillController.getSelectionStyle();
+                        final sizeVal = style.values.firstWhere((a) => a.key == quill.Attribute.size.key, orElse: () => quill.Attribute.size);
+                        double cur = _textStyle.fontSize;
+                        if (sizeVal.value != null) cur = double.tryParse(sizeVal.value.toString()) ?? cur;
+                        cur = (cur + 2).clamp(8.0, 72.0);
+                        final attr = quill.Attribute.clone(quill.Attribute.size, cur.toString());
+                        if (_hasSelection) _quillFormatSelection(attr); else _quillFormatWhole(attr);
+                        setModalState(() {});
                       },
                       false,
                       text: "A+",
@@ -452,15 +732,13 @@ class _ResizableAndConfigurableTextBoxState
                     child: _buildToolButton(
                       null,
                       () {
-                        print('点击加粗按钮');
-                        final newFontWeight = _textStyle.fontWeight == FontWeight.normal ? FontWeight.bold : FontWeight.normal;
-                        setState(() {
-                          _textStyle = _textStyle.copyWith(fontWeight: newFontWeight);
-                          print('设置加粗状态为: $newFontWeight');
-                        });
-                        Future.microtask(() => _saveChanges());
+                        final isBold = _quillController.getSelectionStyle().values.any((a) => a.key == quill.Attribute.bold.key && a.value == true);
+                        final attr = isBold ? quill.Attribute.clone(quill.Attribute.bold, null) : quill.Attribute.bold;
+                        if (_hasSelection) _quillFormatSelection(attr);
+                        else _quillFormatWhole(attr);
+                        setModalState(() {});
                       },
-                      _textStyle.fontWeight == FontWeight.bold,
+                      _quillController.getSelectionStyle().values.any((a) => a.key == quill.Attribute.bold.key && a.value == true),
                       text: "B",
                       width: 30,
                     ),
@@ -470,15 +748,13 @@ class _ResizableAndConfigurableTextBoxState
                     child: _buildToolButton(
                       null,
                       () {
-                        print('点击斜体按钮');
-                        final newItalicState = !_textStyle.isItalic;
-                        setState(() {
-                          _textStyle = _textStyle.copyWith(isItalic: newItalicState);
-                          print('设置斜体状态为: $newItalicState');
-                        });
-                        Future.microtask(() => _saveChanges());
+                        final isItalic = _quillController.getSelectionStyle().values.any((a) => a.key == quill.Attribute.italic.key && a.value == true);
+                        final attr = isItalic ? quill.Attribute.clone(quill.Attribute.italic, null) : quill.Attribute.italic;
+                        if (_hasSelection) _quillFormatSelection(attr);
+                        else _quillFormatWhole(attr);
+                        setModalState(() {});
                       },
-                      _textStyle.isItalic,
+                      _quillController.getSelectionStyle().values.any((a) => a.key == quill.Attribute.italic.key && a.value == true),
                       text: "I",
                       width: 30,
                       isItalic: true,
@@ -489,17 +765,16 @@ class _ResizableAndConfigurableTextBoxState
                     child: _buildToolButton(
                       Icons.format_clear,
                       () {
-                        setState(() {
-                          _textStyle = CustomTextStyle(
-                            fontSize: 16.0,
-                            fontColor: Colors.black,
-                            fontWeight: FontWeight.normal,
-                            isItalic: false,
-                            backgroundColor: null,
-                            textAlign: TextAlign.left,
-                          );
-                        });
+                        if (_showBottomSettings) SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
+                        final len = _quillController.document.length;
+                        if (len > 0) {
+                          _quillController.formatText(0, len, quill.Attribute.clone(quill.Attribute.size, '16'));
+                          _quillController.formatText(0, len, quill.Attribute.clone(quill.Attribute.color, '#FF000000'));
+                          _quillController.formatText(0, len, quill.Attribute.clone(quill.Attribute.background, null));
+                        }
                         _saveChanges();
+                        _suppressKeyboardAfterFormat();
+                        setModalState(() {});
                       },
                       false,
                       width: 30,
@@ -545,13 +820,9 @@ class _ResizableAndConfigurableTextBoxState
                       padding: EdgeInsets.symmetric(horizontal: 4),
                       child: InkWell(
                         onTap: () {
-                          print('点击文本颜色: $color');
-                          setState(() {
-                            _textStyle = _textStyle.copyWith(fontColor: color);
-                            print('设置文本颜色为: $color');
-                          });
+                          final attr = quill.Attribute.clone(quill.Attribute.color, CustomTextStyle._toQuillColorHex(color));
+                          if (_hasSelection) _quillFormatSelection(attr); else _quillFormatWhole(attr);
                           setModalState(() {});
-                          Future.microtask(() => _saveChanges());
                         },
                         child: Container(
                           width: 24,
@@ -560,12 +831,12 @@ class _ResizableAndConfigurableTextBoxState
                             color: color,
                             shape: BoxShape.circle,
                             border: Border.all(
-                              color: _compareColors(_textStyle.fontColor, color) ? Colors.blue : Colors.grey.shade300,
-                              width: _compareColors(_textStyle.fontColor, color) ? 2 : 1,
+                              color: _compareColors(_getQuillFontColor(), color) ? Colors.blue : Colors.grey.shade300,
+                              width: _compareColors(_getQuillFontColor(), color) ? 2 : 1,
                             ),
-                            boxShadow: _compareColors(_textStyle.fontColor, color) ? [BoxShadow(color: Colors.blue.withOpacity(0.5), blurRadius: 4)] : null,
+                            boxShadow: _compareColors(_getQuillFontColor(), color) ? [BoxShadow(color: Colors.blue.withOpacity(0.5), blurRadius: 4)] : null,
                           ),
-                          child: _compareColors(_textStyle.fontColor, color) ? Icon(Icons.check, color: _getContrastColor(color), size: 12) : null,
+                          child: _compareColors(_getQuillFontColor(), color) ? Icon(Icons.check, color: _getContrastColor(color), size: 12) : null,
                         ),
                       ),
                     ),
@@ -579,13 +850,9 @@ class _ResizableAndConfigurableTextBoxState
                     padding: EdgeInsets.symmetric(horizontal: 4),
                     child: InkWell(
                       onTap: () {
-                        print("设置透明背景");
-                        setState(() {
-                          _textStyle = _textStyle.copyWith(backgroundColor: Colors.transparent);
-                          print('背景颜色已设置为透明');
-                        });
+                        final attr = quill.Attribute.clone(quill.Attribute.background, null);
+                        if (_hasSelection) _quillFormatSelection(attr); else _quillFormatWhole(attr);
                         setModalState(() {});
-                        Future.microtask(() => _saveChanges());
                       },
                       child: Container(
                         width: 24,
@@ -593,17 +860,17 @@ class _ResizableAndConfigurableTextBoxState
                         decoration: BoxDecoration(
                           borderRadius: BorderRadius.circular(4),
                           border: Border.all(
-                            color: _textStyle.backgroundColor == null || _textStyle.backgroundColor == Colors.transparent ? Colors.blue : Colors.grey.shade300,
-                            width: _textStyle.backgroundColor == null || _textStyle.backgroundColor == Colors.transparent ? 2 : 1,
+                            color: (_getQuillBackgroundColor() == null || _getQuillBackgroundColor() == Colors.transparent) ? Colors.blue : Colors.grey.shade300,
+                            width: (_getQuillBackgroundColor() == null || _getQuillBackgroundColor() == Colors.transparent) ? 2 : 1,
                           ),
                           gradient: LinearGradient(
                             colors: [Colors.white, Colors.grey.shade200],
                             begin: Alignment.topLeft,
                             end: Alignment.bottomRight,
                           ),
-                          boxShadow: _textStyle.backgroundColor == null || _textStyle.backgroundColor == Colors.transparent ? [BoxShadow(color: Colors.blue.withOpacity(0.5), blurRadius: 4)] : null,
+                          boxShadow: (_getQuillBackgroundColor() == null || _getQuillBackgroundColor() == Colors.transparent) ? [BoxShadow(color: Colors.blue.withOpacity(0.5), blurRadius: 4)] : null,
                         ),
-                        child: _textStyle.backgroundColor == null || _textStyle.backgroundColor == Colors.transparent ? Icon(Icons.check, color: Colors.blue, size: 12) : null,
+                        child: (_getQuillBackgroundColor() == null || _getQuillBackgroundColor() == Colors.transparent) ? Icon(Icons.check, color: Colors.blue, size: 12) : null,
                       ),
                     ),
                   ),
@@ -622,13 +889,9 @@ class _ResizableAndConfigurableTextBoxState
                       padding: EdgeInsets.symmetric(horizontal: 4),
                       child: InkWell(
                         onTap: () {
-                          print('点击背景颜色: $color');
-                          setState(() {
-                            _textStyle = _textStyle.copyWith(backgroundColor: color);
-                            print('设置背景颜色为: $color');
-                          });
+                          final attr = quill.Attribute.clone(quill.Attribute.background, CustomTextStyle._toQuillColorHex(color));
+                          if (_hasSelection) _quillFormatSelection(attr); else _quillFormatWhole(attr);
                           setModalState(() {});
-                          Future.microtask(() => _saveChanges());
                         },
                         child: Container(
                           width: 24,
@@ -637,12 +900,12 @@ class _ResizableAndConfigurableTextBoxState
                             color: color,
                             borderRadius: BorderRadius.circular(4),
                             border: Border.all(
-                              color: _compareColors(_textStyle.backgroundColor, color) ? Colors.blue : Colors.grey.shade300,
-                              width: _compareColors(_textStyle.backgroundColor, color) ? 2 : 1,
+                              color: _compareColors(_getQuillBackgroundColor(), color) ? Colors.blue : Colors.grey.shade300,
+                              width: _compareColors(_getQuillBackgroundColor(), color) ? 2 : 1,
                             ),
-                            boxShadow: _compareColors(_textStyle.backgroundColor, color) ? [BoxShadow(color: Colors.blue.withOpacity(0.5), blurRadius: 4)] : null,
+                            boxShadow: _compareColors(_getQuillBackgroundColor(), color) ? [BoxShadow(color: Colors.blue.withOpacity(0.5), blurRadius: 4)] : null,
                           ),
-                          child: _compareColors(_textStyle.backgroundColor, color) ? Icon(Icons.check, color: Colors.blue, size: 12) : null,
+                          child: _compareColors(_getQuillBackgroundColor(), color) ? Icon(Icons.check, color: Colors.blue, size: 12) : null,
                         ),
                       ),
                     ),
@@ -651,7 +914,7 @@ class _ResizableAndConfigurableTextBoxState
               Container(
                 height: 4,
                 width: 40,
-                margin: EdgeInsets.only(top: 12, bottom: 8),
+                margin: EdgeInsets.only(top: 6, bottom: 4),
                 decoration: BoxDecoration(
                   color: Colors.grey.withOpacity(0.5),
                   borderRadius: BorderRadius.circular(2),
@@ -702,6 +965,7 @@ class _ResizableAndConfigurableTextBoxState
 
   // 对齐方式按钮
   Widget _buildAlignmentButton(IconData icon, TextAlign align, {bool isLarge = false}) {
+    final String alignVal = align == TextAlign.left ? 'left' : align == TextAlign.center ? 'center' : align == TextAlign.right ? 'right' : 'justify';
     final bool isActive = _textStyle.textAlign == align;
 
     return IconButton(
@@ -710,12 +974,10 @@ class _ResizableAndConfigurableTextBoxState
         color: isActive ? Colors.blue.shade700 : Colors.blue.shade300,
       ),
       onPressed: () {
-        print('点击对齐按钮: $align');
-        setState(() {
-          _textStyle = _textStyle.copyWith(textAlign: align);
-          print('设置文本对齐为: $align');
-        });
-        Future.microtask(() => _saveChanges());
+        _textStyle = _textStyle.copyWith(textAlign: align);
+        final attr = quill.Attribute.clone(quill.Attribute.align, alignVal);
+        _quillFormatWhole(attr);
+        setState(() {});
       },
       iconSize: isLarge ? 24 : 20,
       padding: EdgeInsets.all(isLarge ? 4 : 2),
@@ -731,24 +993,8 @@ class _ResizableAndConfigurableTextBoxState
     return Color.fromARGB((color.a * 255).round(), d, d, d);
   }
 
-  // 智能描边颜色计算函数
-  Color _getSmartStrokeColor(Color textColor) {
-    // 计算文字颜色的亮度
-    double luminance = textColor.computeLuminance();
-
-    // 如果文字颜色较亮（亮度 > 0.5），使用黑色描边
-    // 如果文字颜色较暗（亮度 <= 0.5），使用白色描边
-    if (luminance > 0.5) {
-      return Colors.black;
-    } else {
-      return Colors.white;
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
-    bool hasTextSelection = _selectionStart != null && _selectionEnd != null && _selectionStart != _selectionEnd;
-
     return Focus(
       onKeyEvent: (node, event) {
         return _showBottomSettings ? KeyEventResult.handled : KeyEventResult.ignored;
@@ -796,10 +1042,10 @@ class _ResizableAndConfigurableTextBoxState
                   constraints: BoxConstraints(),
                   iconSize: 20,
                   onPressed: () {
+                    FocusManager.instance.primaryFocus?.unfocus();
                     setState(() {
                       _showBottomSettings = true;
                     });
-                    FocusScope.of(context).unfocus();
                     _showSettingsPanel(context);
                   },
                   tooltip: '文本框设置',
@@ -838,104 +1084,150 @@ class _ResizableAndConfigurableTextBoxState
     );
   }
 
-  Widget _buildCustomTextField() {
-    // 统一增强模式：基于TextField结构，添加背景增强文字效果
-    print('渲染增强模式: ${_focusNode.hasFocus ? "编辑状态" : "显示状态"}');
-    final text = _controller.text;
+  Color _getStrokeColorForText(Color textColor) {
+    return textColor.computeLuminance() > 0.5 ? Colors.black : Colors.white;
+  }
 
-    return SingleChildScrollView(
-      controller: _textScrollController,
-      child: Stack(
-        children: [
-          // 背景增强文字层（描边效果）
-          TextField(
-            controller: TextEditingController(text: text),
-            enabled: false, // 禁用交互，仅用于显示
-            minLines: 1,
-            maxLines: null,
-            textAlign: _textStyle.textAlign,
-            textAlignVertical: TextAlignVertical.top,
-            strutStyle: const StrutStyle(height: 1.2, forceStrutHeight: true),
-            style: TextStyle(
-              fontSize: _textStyle.fontSize,
-              fontWeight: FontWeight.bold,
-              fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
-              backgroundColor: _textStyle.backgroundColor,
-              height: 1.2,
-              foreground: Paint()
-                ..style = PaintingStyle.stroke
-                ..strokeWidth = 2.5
-                ..color = _getSmartStrokeColor(_textStyle.fontColor),
-            ),
-            decoration: const InputDecoration(
-              isCollapsed: true,
-              border: InputBorder.none,
-              contentPadding: EdgeInsets.all(5.0),
-              fillColor: Colors.transparent,
+  TextStyle _strokeStyleForColor(Color textColor) {
+    final strokeColor = _getStrokeColorForText(textColor);
+    const offsets = [
+      Offset(-1, -1), Offset(-1, 0), Offset(-1, 1),
+      Offset(0, -1), Offset(0, 1),
+      Offset(1, -1), Offset(1, 0), Offset(1, 1),
+    ];
+    return TextStyle(
+      shadows: [for (final o in offsets) Shadow(blurRadius: 0, offset: o, color: strokeColor)],
+    );
+  }
+
+  Widget _buildCustomTextField() {
+    return Padding(
+      padding: const EdgeInsets.all(5.0),
+      child: quill.QuillEditor.basic(
+        controller: _quillController,
+        focusNode: _focusNode,
+        scrollController: _textScrollController,
+        config: quill.QuillEditorConfig(
+          padding: EdgeInsets.zero,
+          placeholder: '',
+          quillMagnifierBuilder: quill.defaultQuillMagnifierBuilder,
+          contextMenuBuilder: (menuContext, state) {
+            final anchors = state.contextMenuAnchors;
+            final shifted = TextSelectionToolbarAnchors(
+              primaryAnchor: anchors.primaryAnchor + const Offset(70, 0),
+              secondaryAnchor: anchors.secondaryAnchor != null
+                  ? anchors.secondaryAnchor! + const Offset(70, 0)
+                  : null,
+            );
+            return TextFieldTapRegion(
+              child: AdaptiveTextSelectionToolbar(
+                anchors: shifted,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(6),
+                      boxShadow: const [
+                        BoxShadow(
+                          color: Colors.black26,
+                          blurRadius: 4,
+                          offset: Offset(0, 2),
+                        ),
+                      ],
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          icon: const Icon(Icons.content_cut, size: 18),
+                          tooltip: '剪切',
+                          splashRadius: 18,
+                          onPressed: state.cutEnabled
+                              ? () => state.cutSelection(
+                                    SelectionChangedCause.toolbar,
+                                  )
+                              : null,
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.copy, size: 18),
+                          tooltip: '复制',
+                          splashRadius: 18,
+                          onPressed: state.copyEnabled
+                              ? () => state.copySelection(
+                                    SelectionChangedCause.toolbar,
+                                  )
+                              : null,
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.paste, size: 18),
+                          tooltip: '粘贴',
+                          splashRadius: 18,
+                          onPressed: state.pasteEnabled
+                              ? () => state.pasteText(
+                                    SelectionChangedCause.toolbar,
+                                  )
+                              : null,
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.select_all, size: 18),
+                          tooltip: '全选',
+                          splashRadius: 18,
+                          onPressed: state.selectAllEnabled
+                              ? () => state.selectAll(
+                                    SelectionChangedCause.toolbar,
+                                  )
+                              : null,
+                        ),
+                        const SizedBox(width: 4),
+                        IconButton(
+                          icon: const Icon(Icons.settings, size: 18),
+                          tooltip: '文字设置',
+                          splashRadius: 18,
+                          onPressed: () {
+                            state.hideToolbar();
+                            setState(() {
+                              _showBottomSettings = true;
+                            });
+                            _showSettingsPanel(context);
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+          customStyles: quill.DefaultStyles(
+            paragraph: quill.DefaultTextBlockStyle(
+              TextStyle(
+                fontSize: _textStyle.fontSize,
+                color: _textStyle.fontColor,
+                fontWeight: _textStyle.fontWeight,
+                fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
+                height: 1.35,
+                shadows: [
+                  for (final o in [const Offset(-1,-1), const Offset(-1,0), const Offset(-1,1), const Offset(0,-1), const Offset(0,1), const Offset(1,-1), const Offset(1,0), const Offset(1,1)])
+                    Shadow(blurRadius: 0, offset: o, color: _getStrokeColorForText(_textStyle.fontColor)),
+                ],
+              ),
+              const quill.HorizontalSpacing(0, 0),
+              const quill.VerticalSpacing(0, 0),
+              const quill.VerticalSpacing(0, 0),
+              null,
             ),
           ),
-          // 背景增强文字层（填充效果）
-          TextField(
-            controller: TextEditingController(text: text),
-            enabled: false, // 禁用交互，仅用于显示
-            minLines: 1,
-            maxLines: null,
-            textAlign: _textStyle.textAlign,
-            textAlignVertical: TextAlignVertical.top,
-            strutStyle: const StrutStyle(height: 1.2, forceStrutHeight: true),
-            style: TextStyle(
-              color: _textStyle.fontColor,
-              fontSize: _textStyle.fontSize,
-              fontWeight: FontWeight.bold,
-              fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
-              backgroundColor: _textStyle.backgroundColor,
-              height: 1.2,
-            ),
-            decoration: const InputDecoration(
-              isCollapsed: true,
-              border: InputBorder.none,
-              contentPadding: EdgeInsets.all(5.0),
-              fillColor: Colors.transparent,
-            ),
-          ),
-          // 前景交互TextField层（透明文字，精确光标定位）
-          TextField(
-            controller: _controller,
-            focusNode: _focusNode,
-            minLines: 1,
-            maxLines: null,
-            textAlign: _textStyle.textAlign,
-            textAlignVertical: TextAlignVertical.top,
-            strutStyle: const StrutStyle(height: 1.2, forceStrutHeight: true),
-            style: TextStyle(
-              color: Colors.transparent, // 文字透明，只显示光标
-              fontSize: _textStyle.fontSize,
-              fontWeight: FontWeight.bold, // 与背景文字保持一致
-              fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
-              height: 1.2,
-            ),
-            decoration: const InputDecoration(
-              isCollapsed: true,
-              border: InputBorder.none,
-              contentPadding: EdgeInsets.all(5.0), // 与背景文字完全一致
-              fillColor: Colors.transparent,
-            ),
-            onChanged: (text) {
-              setState(() {}); // 更新背景增强文字显示
-              _saveChanges();
-            },
-            onTap: () {
-              if (_showBottomSettings) {
-                setState(() {
-                  _showBottomSettings = false;
-                });
-              }
-            },
-            cursorWidth: 2.0,
-            cursorColor: _textStyle.fontColor,
-            enableInteractiveSelection: true,
-          ),
-        ],
+          customStyleBuilder: (quill.Attribute attr) {
+            if (attr.key == quill.Attribute.color.key && attr.value != null) {
+              var h = attr.value.toString().replaceFirst('#', '');
+              if (h.length == 6) h = 'ff$h';
+              final c = Color(int.parse(h, radix: 16));
+              return _strokeStyleForColor(c);
+            }
+            return const TextStyle();
+          },
+        ),
       ),
     );
   }

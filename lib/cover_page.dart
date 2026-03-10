@@ -526,7 +526,10 @@ class _CoverPageState extends State<CoverPage> {
           ),
           initialText: data['text'],
           initialTextStyle: customTextStyle,
-          onSave: (size, text, textStyle) {
+          initialTextSegments: data['textSegments'] != null && data['textSegments'] is List && (data['textSegments'] as List).isNotEmpty
+              ? (data['textSegments'] as List).map((e) => TextSegment.fromMap(Map<String, dynamic>.from(e as Map))).toList()
+              : null,
+          onSave: (size, text, textStyle, textSegments) {
             setState(() {
               data['width'] = size.width;
               data['height'] = size.height;
@@ -537,6 +540,7 @@ class _CoverPageState extends State<CoverPage> {
               data['isItalic'] = textStyle.isItalic ? 1 : 0;
               data['backgroundColor'] = textStyle.backgroundColor?.value;
               data['textAlign'] = textStyle.textAlign.index;
+              data['textSegments'] = textSegments.map((s) => s.toMap()).toList();
             });
             _saveContent();
           },
@@ -564,6 +568,7 @@ class _CoverPageState extends State<CoverPage> {
                 'isItalic': original['isItalic'],
                 'textAlign': original['textAlign'],
                 'backgroundColor': original['backgroundColor'],
+                if (original['textSegments'] != null) 'textSegments': List.from(original['textSegments']),
               };
 
               // 数据验证

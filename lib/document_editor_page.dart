@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
 import 'core/service_locator.dart';
 import 'services/database_service.dart';
-import 'resizable_and_configurable_text_box.dart';
+import 'resizable_and_configurable_text_box.dart' show ResizableAndConfigurableTextBox, CustomTextStyle, TextSegment;
 import 'resizable_image_box.dart';
 import 'resizable_audio_box.dart';
 import 'global_tool_bar.dart' as toolBar;
@@ -714,6 +714,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
             'isItalic': original['isItalic'],
             'backgroundColor': original['backgroundColor'],
             'textAlign': original['textAlign'],
+            if (original['textSegments'] != null) 'textSegments': List.from(original['textSegments']),
           };
           if (_databaseService.validateTextBoxData(newTextBox)) {
             _textBoxes.add(newTextBox);
@@ -766,6 +767,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
           'isItalic': original['isItalic'],
           'backgroundColor': original['backgroundColor'],
           'textAlign': original['textAlign'],
+          if (original['textSegments'] != null) 'textSegments': List.from(original['textSegments']),
         };
 
         if (!_databaseService.validateTextBoxData(newTextBox)) {
@@ -891,10 +893,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
   }
 
   void _updateTextBox(
-      String id, Size size, String text, CustomTextStyle textStyle) {
-    print(
-        '更新文本框：id=$id, 样式：粗体=${textStyle.fontWeight}, 斜体=${textStyle.isItalic}');
-
+      String id, Size size, String text, CustomTextStyle textStyle, List<TextSegment> textSegments) {
     setState(() {
       int index = _textBoxes.indexWhere((textBox) => textBox['id'] == id);
       if (index != -1) {
@@ -907,11 +906,8 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
         _textBoxes[index]['isItalic'] = textStyle.isItalic ? 1 : 0;
         _textBoxes[index]['backgroundColor'] = textStyle.backgroundColor?.value;
         _textBoxes[index]['textAlign'] = textStyle.textAlign.index;
-
+        _textBoxes[index]['textSegments'] = textSegments.map((s) => s.toMap()).toList();
         _contentChanged = true;
-
-        print(
-            '文本框数据更新成功: fontWeight=${_textBoxes[index]['fontWeight']}, isItalic=${_textBoxes[index]['isItalic']}');
       }
     });
   }
@@ -2083,6 +2079,17 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
     }
     bool isOnCanvas = ownerCanvas != null && ownerCanvas.getCurrentTextBoxIds().contains(data['id']);
 
+    List<TextSegment>? initialSegments;
+    if (data['textSegments'] != null && data['textSegments'] is List && (data['textSegments'] as List).isNotEmpty) {
+      try {
+        initialSegments = (data['textSegments'] as List)
+            .map((e) => TextSegment.fromMap(Map<String, dynamic>.from(e as Map)))
+            .toList();
+      } catch (_) {
+        initialSegments = null;
+      }
+    }
+
     return ResizableAndConfigurableTextBox(
       initialSize: Size(
         (data['width'] as num?)?.toDouble() ?? 200.0,
@@ -2090,13 +2097,15 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
       ),
       initialText: data['text']?.toString() ?? '',
       initialTextStyle: customTextStyle,
-      onSave: (size, text, textStyle) {
+      initialTextSegments: initialSegments,
+      onSave: (size, text, textStyle, textSegments) {
         Future.microtask(() {
           _updateTextBox(
             data['id'],
             size,
             text,
             textStyle,
+            textSegments,
           );
           _debouncedSave();
           _saveStateToHistory();
