@@ -1726,10 +1726,56 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     return 'application/octet-stream';
   }
 
-  Future<File?> _downloadFile(String url, MediaType mediaType) async { // Added mediaType parameter
+  /// 清理媒体 URL：移除会导致 400 的图片处理参数，获取原始图片
+  /// 网页中的图片常带 x-bce-process=image/resize 等参数用于缩略显示，但参数不完整时 CDN 返回 400
+  String _getCleanMediaUrl(String url) {
+    final uri = Uri.tryParse(url);
+    if (uri == null) return url;
+    final q = uri.query.toLowerCase();
+    if (q.isEmpty) return url;
+    if (q.contains('x-bce-process') || q.contains('image/resize') ||
+        q.contains('image/format') || q.contains('image/quality') ||
+        q.contains('image/crop') || q.contains('image/watermark')) {
+      return uri.replace(query: '').toString();
+    }
+    return url;
+  }
+
+  /// 根据 URL 返回合适的 Referer，用于绕过反盗链
+  String _getMediaReferer(String url) {
+    final lower = url.toLowerCase();
+    if (lower.contains('img0.baidu.com') || lower.contains('img1.baidu.com') ||
+        lower.contains('img2.baidu.com') || lower.contains('img3.baidu.com') ||
+        lower.contains('img.baidu.com') || lower.contains('pic.rmb.bdstatic.com')) {
+      return 'https://www.baidu.com';
+    }
+    final pageUrl = _urlController.text.trim().isNotEmpty
+        ? _urlController.text.trim()
+        : _currentUrl;
+    if (pageUrl.startsWith('http')) return pageUrl;
+    return 'https://www.baidu.com';
+  }
+
+  /// 验证图片字节是否有效（检查文件头 magic numbers）
+  bool _isValidImageBytes(List<int> bytes) {
+    if (bytes.length < 12) return false;
+    // JPEG: FF D8 FF
+    if (bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF) return true;
+    // PNG: 89 50 4E 47 0D 0A 1A 0A
+    if (bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47) return true;
+    // GIF: 47 49 46 38
+    if (bytes[0] == 0x47 && bytes[1] == 0x49 && bytes[2] == 0x46 && bytes[3] == 0x38) return true;
+    // WebP: 52 49 46 46 ... 57 45 42 50
+    if (bytes.length >= 12 && bytes[0] == 0x52 && bytes[1] == 0x49 && bytes[2] == 0x46 &&
+        bytes[3] == 0x46 && bytes[8] == 0x57 && bytes[9] == 0x45 && bytes[10] == 0x42 && bytes[11] == 0x50) return true;
+    return false;
+  }
+
+  Future<File?> _downloadFile(String url, MediaType mediaType) async {
     try {
       final absoluteUrl = _toAbsoluteUrl(url);
-      debugPrint('开始下载文件，URL: $absoluteUrl');
+      final downloadUrl = _getCleanMediaUrl(absoluteUrl);
+      debugPrint('开始下载文件，URL: $downloadUrl');
       final networkService = NetworkService();
       await networkService.initialize();
 
@@ -1744,13 +1790,24 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
       if (extension.isEmpty) {
         final mimeType = _guessMimeType(absoluteUrl);
-        extension = mimeType.startsWith('image/') ? '.jpg' :
-                    mimeType.startsWith('video/') || mimeType == 'application/x-mpegURL' ? '.mp4' :
-                    mimeType.startsWith('audio/') ? '.mp3' : '.bin';
+        if (mimeType.startsWith('image/')) {
+          extension = mimeType == 'image/png' ? '.png' : mimeType == 'image/gif' ? '.gif' :
+              mimeType == 'image/webp' ? '.webp' : '.jpg';
+        } else if (mimeType.startsWith('video/') || mimeType == 'application/x-mpegURL') {
+          extension = '.mp4';
+        } else if (mimeType.startsWith('audio/')) {
+          extension = '.mp3';
+        } else {
+          extension = mediaType == MediaType.image ? '.jpg' :
+              mediaType == MediaType.video ? '.mp4' : mediaType == MediaType.audio ? '.mp3' : '.bin';
+        }
       }
 
       final filePath = '${mediaDir.path}/$uuid$extension';
       debugPrint('将下载到文件路径: $filePath');
+
+      final referer = _getMediaReferer(absoluteUrl);
+      const browserUA = 'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
 
       int retryCount = 0;
       const maxRetries = 3;
@@ -1758,14 +1815,19 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       while (retryCount < maxRetries) {
         try {
           final response = await networkService.dio.download(
-            absoluteUrl,
+            downloadUrl,
             filePath,
             deleteOnError: true,
             options: Options(
               followRedirects: true,
               maxRedirects: 5,
-              validateStatus: (status) => status != null && status < 500, // Treat 4xx as valid, handle in catch block
+              validateStatus: (status) => status != null && status >= 200 && status < 300,
               responseType: ResponseType.bytes,
+              headers: {
+                'User-Agent': browserUA,
+                'Referer': referer,
+                'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+              },
             ),
             onReceiveProgress: (received, total) {
               if (total != -1) {
@@ -1777,7 +1839,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
               }
             },
           );
-          if (extension == '.m3u8') await _handleM3u8Download(filePath, absoluteUrl);
+          if (extension == '.m3u8') await _handleM3u8Download(filePath, downloadUrl);
           break;
         } catch (e, stackTrace) {
           retryCount++;
@@ -1788,8 +1850,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
               if (retryCount >= maxRetries) throw Exception('下载超时，请检查网络连接或稍后重试');
             } else if (e.type == DioExceptionType.badResponse) {
               debugPrint('下载响应错误: 状态码 ${e.response?.statusCode}, 错误: ${e.response?.data}');
-              if (e.response?.statusCode == 400) {
-                if (retryCount >= maxRetries) throw Exception('下载失败: 文件无法访问或Bot权限不足');
+              if (e.response?.statusCode == 400 || e.response?.statusCode == 403) {
+                if (retryCount >= maxRetries) throw Exception('该资源受保护，无法直接下载，请尝试其他图片或视频');
               } else {
                 if (retryCount >= maxRetries) throw Exception('下载失败: 服务器返回错误 ${e.response?.statusCode}');
               }
@@ -1807,9 +1869,19 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       }
 
       final file = File(filePath);
-      if (await file.exists() && await file.length() > 0) return file;
-      await file.delete();
-      return null;
+      if (!await file.exists() || await file.length() == 0) {
+        await file.delete();
+        return null;
+      }
+      if (mediaType == MediaType.image) {
+        final bytes = await file.readAsBytes();
+        if (!_isValidImageBytes(bytes)) {
+          debugPrint('下载内容不是有效图片格式，已丢弃');
+          await file.delete();
+          return null;
+        }
+      }
+      return file;
     } catch (e, stackTrace) {
       debugPrint('下载文件时出错: $e');
       debugPrint('错误堆栈: $stackTrace');
