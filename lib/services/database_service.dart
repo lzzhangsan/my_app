@@ -1486,7 +1486,11 @@ class DatabaseService {
 
       progressNotifier?.value = "正在导入数据库...";
       
-      // 简化版事务：直接清空并重填，不再创建临时表和 DROP/RENAME，避免复杂DDL导致的事务状态异常
+      // 事务有时会因并发/时序出现 "no current transaction" COMMIT 错误，重试可恢复
+      const maxAttempts = 3;
+      for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+      // 简化版事务：直接清空并重填
       await db.transaction((txn) async {
         const List<String> tableNames = [
           'folders', 'documents', 'text_boxes', 'image_boxes', 'audio_boxes', 'canvases',
@@ -1601,6 +1605,17 @@ class DatabaseService {
           print('[导入] 表 $tableName 导入完成，共 $processedRows 行');
         }
       });
+          break;
+        } on DatabaseException catch (e) {
+          final msg = e.toString();
+          if (msg.contains('no current transaction') && msg.contains('COMMIT') && attempt < maxAttempts) {
+            print('[导入] 事务异常，${200 * attempt}ms 后重试 ($attempt/$maxAttempts): $msg');
+            await Future.delayed(Duration(milliseconds: 200 * attempt));
+          } else {
+            rethrow;
+          }
+        }
+      }
 
       // 清理临时目录
       progressNotifier?.value = "正在清理临时文件...";

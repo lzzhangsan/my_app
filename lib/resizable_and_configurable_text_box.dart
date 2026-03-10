@@ -377,6 +377,8 @@ class _ResizableAndConfigurableTextBoxState
   final double _minHeight = 25.0;
   bool _showBottomSettings = false;
   Timer? _keyboardSuppressTimer;
+  TextSelection? _lastSelectionForHaptic;
+  DateTime? _lastHapticTime;
 
   @override
   void initState() {
@@ -410,6 +412,18 @@ class _ResizableAndConfigurableTextBoxState
   }
 
   void _onQuillChanged() {
+    final sel = _quillController.selection;
+    if (_lastSelectionForHaptic != null &&
+        (sel.baseOffset != _lastSelectionForHaptic!.baseOffset ||
+            sel.extentOffset != _lastSelectionForHaptic!.extentOffset)) {
+      final now = DateTime.now();
+      if (_lastHapticTime == null ||
+          now.difference(_lastHapticTime!).inMilliseconds >= 40) {
+        HapticFeedback.selectionClick();
+        _lastHapticTime = now;
+      }
+    }
+    _lastSelectionForHaptic = sel;
     setState(() {});
     _saveChanges();
   }
@@ -1151,14 +1165,16 @@ class _ResizableAndConfigurableTextBoxState
   Widget _buildCustomTextField() {
     return Padding(
       padding: const EdgeInsets.all(5.0),
-      child: quill.QuillEditor.basic(
+      child: ClipRect(
+        clipBehavior: Clip.none,
+        child: quill.QuillEditor.basic(
         controller: _quillController,
         focusNode: _focusNode,
         scrollController: _textScrollController,
         config: quill.QuillEditorConfig(
           padding: EdgeInsets.zero,
           placeholder: '',
-          quillMagnifierBuilder: quill.defaultQuillMagnifierBuilder,
+          quillMagnifierBuilder: (Offset dragPos) => _buildMagnifierAboveText(dragPos),
           contextMenuBuilder: (menuContext, state) {
             final anchors = state.contextMenuAnchors;
             final shifted = TextSelectionToolbarAnchors(
@@ -1277,7 +1293,13 @@ class _ResizableAndConfigurableTextBoxState
           },
         ),
       ),
+    ),
     );
+  }
+
+  /// 自定义放大镜：尽量保持在选区附近，减少随手指远距离移动
+  Widget _buildMagnifierAboveText(Offset dragPos) {
+    return quill.defaultQuillMagnifierBuilder(dragPos);
   }
 
   bool _compareColors(Color? color1, Color? color2) {
