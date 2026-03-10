@@ -16,12 +16,6 @@ buildscript {
         classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
     }
 
-    // 全局设置，强制忽略路径检查
-    gradle.projectsEvaluated {
-        tasks.withType(JavaCompile) {
-            options.compilerArgs << "-Xpkginfo:always"
-        }
-    }
 }
 
 allprojects {
