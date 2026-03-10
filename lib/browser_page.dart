@@ -863,22 +863,37 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           }
         }
         
-        // 超全面的URL提取逻辑
+        // 超全面的URL提取逻辑 - 优先获取高清/原图
         let url = null;
+        const parentLink = target.closest ? target.closest('a') : null;
         const urlSources = [
+          () => target.currentSrc || target.src,
           () => target.href,
+          () => {
+            if (!parentLink || !parentLink.href) return null;
+            const h = parentLink.href;
+            if (h.includes('imgres') || h.includes('mediaurl=') || h.includes('images/search')) {
+              try {
+                const u = new URL(h);
+                return u.searchParams.get('imgurl') || u.searchParams.get('mediaurl') || u.searchParams.get('surl') || null;
+              } catch (e) { return null; }
+            }
+            return isMediaUrl(h) ? h : null;
+          },
           () => target.src,
           () => target.srcset,
-          () => target.getAttribute('data-href'),
-          () => target.getAttribute('data-url'),
           () => target.getAttribute('data-src'),
           () => target.getAttribute('data-original'),
+          () => target.getAttribute('data-full-url') || target.getAttribute('data-highres') || target.getAttribute('data-large-src'),
+          () => target.getAttribute('data-href'),
+          () => target.getAttribute('data-url'),
           () => target.getAttribute('data-lazy-src'),
           () => target.getAttribute('data-srcset'),
           () => target.getAttribute('data-poster'),
           () => target.getAttribute('data-media'),
           () => target.getAttribute('data-video'),
           () => target.getAttribute('data-image'),
+          () => target.getAttribute('data-zoom-src') || target.getAttribute('data-imgsrc'),
           () => target.getAttribute('content'),
           () => target.getAttribute('value'),
           () => target.getAttribute('title'),
@@ -923,6 +938,13 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         }
         if (url && !url.startsWith('http') && !url.startsWith('blob:') && !url.startsWith('data:')) {
           try { url = new URL(url, window.location.href).href; } catch (e) { console.log('URL解析失败:', e); }
+        }
+        if (url && (url.includes('google.com/imgres') || url.includes('bing.com/images/search') || url.includes('imgres') || url.includes('mediaurl='))) {
+          try {
+            const u = new URL(url);
+            const imgUrl = u.searchParams.get('imgurl') || u.searchParams.get('mediaurl') || u.searchParams.get('surl') || u.searchParams.get('imgrefurl');
+            if (imgUrl && isMediaUrl(imgUrl)) { url = imgUrl; }
+          } catch (e) { console.log('解析图片搜索URL失败:', e); }
         }
         if (!url) {
           updateFeedbackStatus('未找到下载链接', false);
@@ -998,6 +1020,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
             return;
           }
           window.processedMediaUrls.add(url);
+          window._lastMediaTargetForFallback = target;
           Flutter.postMessage(JSON.stringify({
             type: 'media',
             mediaType: mediaType,
@@ -1009,6 +1032,74 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           e.preventDefault();
         } else {
           updateFeedbackStatus('该媒体已在处理中', false);
+        }
+      }
+
+      function tryCanvasCaptureFallback() {
+        const target = window._lastMediaTargetForFallback;
+        window._lastMediaTargetForFallback = null;
+        if (!target) return;
+        const tag = target.tagName ? target.tagName.toLowerCase() : '';
+        let w = target.naturalWidth || target.videoWidth || target.width || target.offsetWidth;
+        let h = target.naturalHeight || target.videoHeight || target.height || target.offsetHeight;
+        if (w <= 0 || h <= 0) { w = target.offsetWidth || 200; h = target.offsetHeight || 200; }
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        function postCanvas() {
+          try {
+            const dataUrl = canvas.toDataURL('image/png');
+            if (dataUrl && dataUrl.startsWith('data:image/')) {
+              Flutter.postMessage(JSON.stringify({ type: 'media', mediaType: 'image', url: dataUrl.split(',')[1], isBase64: true, action: 'download' }));
+            }
+          } catch (e) { console.log('toDataURL failed:', e); }
+        }
+        function postBase64(base64) {
+          if (base64) Flutter.postMessage(JSON.stringify({ type: 'media', mediaType: 'image', url: base64, isBase64: true, action: 'download' }));
+        }
+        function tryDrawImg(src) {
+          const img = new Image();
+          img.crossOrigin = 'anonymous';
+          img.onload = function() {
+            try { ctx.drawImage(img, 0, 0, w, h); postCanvas(); } catch (e) {
+              try { ctx.drawImage(target, 0, 0, w, h); postCanvas(); } catch (e2) { tryFetchFallback(src); }
+            }
+          };
+          img.onerror = function() {
+            try { ctx.drawImage(target, 0, 0, w, h); postCanvas(); } catch (e) { tryFetchFallback(src); }
+          };
+          img.src = src;
+        }
+        function tryFetchFallback(src) {
+          fetch(src, { mode: 'cors', credentials: 'omit' })
+            .then(r => r.blob())
+            .then(blob => {
+              const fr = new FileReader();
+              fr.onload = () => { const b64 = fr.result.split(',')[1]; if (b64) postBase64(b64); };
+              fr.readAsDataURL(blob);
+            })
+            .catch(() => {});
+        }
+        if (tag === 'img') {
+          const src = target.currentSrc || target.src;
+          if (src) tryDrawImg(src);
+        } else if (tag === 'video') {
+          try {
+            ctx.drawImage(target, 0, 0, w, h);
+            postCanvas();
+          } catch (e) {
+            console.log('video canvas fallback failed:', e);
+          }
+        } else if (tag === 'canvas') {
+          try {
+            ctx.drawImage(target, 0, 0, w, h);
+            postCanvas();
+          } catch (e) { console.log('canvas fallback failed:', e); }
+        } else if (target.style && target.style.backgroundImage) {
+          const m = target.style.backgroundImage.match(/url\(['"]?([^'")]+)['"]?\)/);
+          if (m && m[1]) tryDrawImg(m[1]);
         }
       }
 
@@ -1052,16 +1143,24 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         return;
       }
 
+      final absoluteUrl = _toAbsoluteUrl(urlValue);
+      final referer = _getMediaReferer(absoluteUrl);
       final resolvedUrl = await _resolveFinalUrl(
         urlValue,
         headers: {
-          'Referer': _urlController.text.trim(),
+          'Referer': referer,
+          'User-Agent': 'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
           'Accept': '*/*',
         },
       );
       final mimeType = _guessMimeType(resolvedUrl);
       final MediaType selectedType = _determineMediaType(mimeType);
-      _performBackgroundDownload(resolvedUrl, selectedType);
+      final success = await _performBackgroundDownload(resolvedUrl, selectedType);
+        if (!success && (selectedType == MediaType.image || selectedType == MediaType.video) && mounted) {
+        try {
+          await _controller.runJavaScript('typeof tryCanvasCaptureFallback === "function" && tryCanvasCaptureFallback();');
+        } catch (_) {}
+      }
     } catch (e, stackTrace) {
       debugPrint('Error handling JavaScript message: $e');
       debugPrint('Trace: $stackTrace');
@@ -1726,34 +1825,44 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     return 'application/octet-stream';
   }
 
-  /// 清理媒体 URL：移除会导致 400 的图片处理参数，获取原始图片
-  /// 网页中的图片常带 x-bce-process=image/resize 等参数用于缩略显示，但参数不完整时 CDN 返回 400
+  /// 清理媒体 URL：移除会导致 400 的图片处理参数，获取原始媒体
+  /// 网页中媒体常带 CDN 处理参数用于缩略/懒加载，参数不完整时返回 400
   String _getCleanMediaUrl(String url) {
     final uri = Uri.tryParse(url);
     if (uri == null) return url;
     final q = uri.query.toLowerCase();
     if (q.isEmpty) return url;
-    if (q.contains('x-bce-process') || q.contains('image/resize') ||
-        q.contains('image/format') || q.contains('image/quality') ||
-        q.contains('image/crop') || q.contains('image/watermark')) {
+    final stripParams = [
+      'x-bce-process', 'image/resize', 'image/format', 'image/quality',
+      'image/crop', 'image/watermark', 'imagemogr2', 'imageview2',
+    ];
+    if (stripParams.any((p) => q.contains(p))) {
       return uri.replace(query: '').toString();
     }
     return url;
   }
 
-  /// 根据 URL 返回合适的 Referer，用于绕过反盗链
+  /// 获取完全 stripped 的 URL（仅 path，用于 400/403 重试）
+  String _getStrippedMediaUrl(String url) {
+    final uri = Uri.tryParse(url);
+    if (uri == null) return url;
+    return uri.origin + uri.path;
+  }
+
+  /// 根据 URL 和当前页面返回合适的 Referer，用于绕过反盗链
   String _getMediaReferer(String url) {
     final lower = url.toLowerCase();
-    if (lower.contains('img0.baidu.com') || lower.contains('img1.baidu.com') ||
-        lower.contains('img2.baidu.com') || lower.contains('img3.baidu.com') ||
-        lower.contains('img.baidu.com') || lower.contains('pic.rmb.bdstatic.com')) {
-      return 'https://www.baidu.com';
-    }
-    final pageUrl = _urlController.text.trim().isNotEmpty
-        ? _urlController.text.trim()
-        : _currentUrl;
+    if (lower.contains('baidu.com') || lower.contains('bdstatic.com')) return 'https://www.baidu.com';
+    if (lower.contains('gstatic.com') || lower.contains('googleusercontent.com') || lower.contains('google.com')) return 'https://www.google.com';
+    if (lower.contains('bing.com') || lower.contains('bcbits.com')) return 'https://www.bing.com';
+    if (lower.contains('twitter.com') || lower.contains('twimg.com')) return 'https://twitter.com';
+    if (lower.contains('facebook.com') || lower.contains('fbcdn.net')) return 'https://www.facebook.com';
+    if (lower.contains('instagram.com') || lower.contains('cdninstagram.com')) return 'https://www.instagram.com';
+    if (lower.contains('zhihu.com')) return 'https://www.zhihu.com';
+    if (lower.contains('weibo.com') || lower.contains('sinaimg.cn')) return 'https://weibo.com';
+    final pageUrl = _urlController.text.trim().isNotEmpty ? _urlController.text.trim() : _currentUrl;
     if (pageUrl.startsWith('http')) return pageUrl;
-    return 'https://www.baidu.com';
+    return Uri.tryParse(pageUrl)?.origin ?? 'https://www.google.com';
   }
 
   /// 验证图片字节是否有效（检查文件头 magic numbers）
@@ -1811,11 +1920,12 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
       int retryCount = 0;
       const maxRetries = 3;
+      String urlToTry = downloadUrl;
 
       while (retryCount < maxRetries) {
         try {
           final response = await networkService.dio.download(
-            downloadUrl,
+            urlToTry,
             filePath,
             deleteOnError: true,
             options: Options(
@@ -1826,7 +1936,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
               headers: {
                 'User-Agent': browserUA,
                 'Referer': referer,
-                'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+                'Accept': '*/*',
               },
             ),
             onReceiveProgress: (received, total) {
@@ -1851,6 +1961,12 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
             } else if (e.type == DioExceptionType.badResponse) {
               debugPrint('下载响应错误: 状态码 ${e.response?.statusCode}, 错误: ${e.response?.data}');
               if (e.response?.statusCode == 400 || e.response?.statusCode == 403) {
+                final stripped = _getStrippedMediaUrl(downloadUrl);
+                if (stripped != urlToTry && urlToTry == downloadUrl) {
+                  debugPrint('400/403，尝试去掉全部查询参数: $stripped');
+                  urlToTry = stripped;
+                  retryCount--;
+                }
                 if (retryCount >= maxRetries) throw Exception('该资源受保护，无法直接下载，请尝试其他图片或视频');
               } else {
                 if (retryCount >= maxRetries) throw Exception('下载失败: 服务器返回错误 ${e.response?.statusCode}');
@@ -2504,7 +2620,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     super.dispose();
   }
 
-  Future<void> _performBackgroundDownload(String url, MediaType mediaType) async {
+  Future<bool> _performBackgroundDownload(String url, MediaType mediaType) async {
     final absoluteUrl = _toAbsoluteUrl(url);
     if (_isApiEndpointUrl(absoluteUrl)) {
       debugPrint('跳过 API 接口 URL（非媒体文件）: $absoluteUrl');
@@ -2516,7 +2632,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           ),
         );
       }
-      return;
+      return false;
     }
     _downloadingUrls.add(absoluteUrl);
     try {
@@ -2541,26 +2657,29 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
             ),
           );
         }
+        return true;
       } else {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('${mediaType == MediaType.video ? "视频" : mediaType == MediaType.image ? "图片" : "音频"}下载失败，请检查网络连接或稍后重试'),
-              duration: const Duration(seconds: 3),
+              content: const Text('下载失败，正在尝试截图保存...'),
+              duration: Duration(seconds: 2),
             ),
           );
         }
+        return false;
       }
     } catch (e) {
       debugPrint('后台下载出错: $absoluteUrl, 错误: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('${mediaType == MediaType.video ? "视频" : mediaType == MediaType.image ? "图片" : "音频"}下载出错: $e'),
-            duration: const Duration(seconds: 3),
+          const SnackBar(
+            content: Text('下载失败，正在尝试截图保存...'),
+            duration: Duration(seconds: 2),
           ),
         );
       }
+      return false;
     } finally {
       _downloadingUrls.remove(absoluteUrl);
       if (mediaType == MediaType.video) {
