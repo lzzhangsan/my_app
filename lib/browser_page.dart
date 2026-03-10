@@ -1124,7 +1124,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
             _awaitingCanvasFallbackResult = true;
             _canvasFallbackSucceeded = false;
             await ctrl.evaluateJavascript(source: 'typeof tryCanvasCaptureFallback === "function" && tryCanvasCaptureFallback();');
-            await Future.delayed(const Duration(milliseconds: 1500));
+            await Future.delayed(const Duration(milliseconds: 600));
             if (!_canvasFallbackSucceeded) await _tryScreenshotFallback(ctrl);
             _awaitingCanvasFallbackResult = false;
           }
@@ -1157,7 +1157,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           SnackBar(
             content: Text('媒体已成功保存到媒体库: ${file.path.split('/').last}'),
             duration: const Duration(seconds: 5),
-            action: SnackBarAction(label: '查看', onPressed: () => Navigator.pushNamed(context, '/media_manager')),
+            action: SnackBarAction(label: '查看', onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (context) => const MediaManagerPage()))),
           ),
         );
       }
@@ -1943,7 +1943,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           } else {
             if (retryCount >= maxRetries) throw Exception('下载失败: $e');
           }
-          await Future.delayed(Duration(seconds: retryCount * 3)); // Increased delay
+          await Future.delayed(Duration(milliseconds: (retryCount * 800).clamp(800, 3000)));
         }
       }
 
@@ -2032,7 +2032,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           SnackBar(
             content: const Text('已通过截屏保存到媒体库'),
             duration: const Duration(seconds: 3),
-            action: SnackBarAction(label: '查看', onPressed: () => Navigator.pushNamed(context, '/media_manager')),
+            action: SnackBarAction(label: '查看', onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (context) => const MediaManagerPage()))),
           ),
         );
       }
@@ -2695,7 +2695,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
             SnackBar(
               content: Text('${mediaType == MediaType.video ? "视频" : mediaType == MediaType.image ? "图片" : "音频"}已成功保存到媒体库: ${file.path.split('/').last}'),
               duration: const Duration(seconds: 5),
-              action: SnackBarAction(label: '查看', onPressed: () => Navigator.pushNamed(context, '/media_manager')),
+              action: SnackBarAction(label: '查看', onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (context) => const MediaManagerPage()))),
             ),
           );
         }
