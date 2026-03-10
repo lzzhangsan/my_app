@@ -45,11 +45,37 @@ class BrowserPage extends StatefulWidget {
 
 class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClientMixin {
 
+  /// 将相对 URL 解析为绝对 URL（使用当前页面地址作为基准）
+  String _toAbsoluteUrl(String url) {
+    if (url.isEmpty) return url;
+    final trimmed = url.trim();
+    if (trimmed.startsWith('http://') || trimmed.startsWith('https://') ||
+        trimmed.startsWith('data:') || trimmed.startsWith('blob:')) {
+      return trimmed;
+    }
+    String base = _urlController.text.trim();
+    if (base.isEmpty) base = _currentUrl;
+    if (base.isEmpty) base = 'https://www.baidu.com';
+    final baseUri = Uri.tryParse(base);
+    if (baseUri == null || !baseUri.hasAuthority) return trimmed;
+    if (trimmed.startsWith('//')) return 'https:$trimmed';
+    return baseUri.resolve(trimmed).toString();
+  }
+
+  /// 是否为 API 接口（返回 JSON 而非图片），应跳过下载
+  bool _isApiEndpointUrl(String url) {
+    final lower = url.toLowerCase();
+    return lower.contains('detailrecommend') ||
+        lower.contains('wisesearchsetpic') ||
+        lower.contains('wisejson');
+  }
+
   Future<String> _resolveFinalUrl(String url, {Map<String, String>? headers}) async {
+    final absoluteUrl = _toAbsoluteUrl(url);
     try {
       final networkService = NetworkService();
       await networkService.initialize();
-      final resp = await networkService.dio.head(url, options: Options(
+      final resp = await networkService.dio.head(absoluteUrl, options: Options(
         method: 'HEAD',
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36',
@@ -57,9 +83,9 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         },
       ));
       final finalUrl = resp.realUri.toString();
-      return finalUrl.isNotEmpty ? finalUrl : url;
+      return finalUrl.isNotEmpty ? finalUrl : absoluteUrl;
     } catch (_) {
-      return url;
+      return absoluteUrl;
     }
   }
 
@@ -316,9 +342,17 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         return url && typeof url === 'string' && url.startsWith('blob:');
       }
 
+      // 排除 API 接口（返回 JSON 而非媒体）
+      function isApiUrl(url) {
+        if (!url) return false;
+        const lower = url.toLowerCase();
+        return lower.includes('detailrecommend') || lower.includes('wisesearchsetpic') || lower.includes('wisejson');
+      }
+
       // 增强的媒体URL检测 - 支持更多格式和模式
       function isMediaUrl(url) {
         if (!url) return false;
+        if (isApiUrl(url)) return false;
         
         // 扩展的媒体文件扩展名
         const mediaExtensions = [
@@ -892,6 +926,10 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         }
         if (!url) {
           updateFeedbackStatus('未找到下载链接', false);
+          return;
+        }
+        if (isApiUrl(url)) {
+          updateFeedbackStatus('该链接不是媒体文件', false);
           return;
         }
         // 多重处理blob/data url
@@ -1530,23 +1568,24 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
   Future<void> _handleDownload(String url, String contentDisposition, String mimeType, {MediaType? selectedType}) async {
     try {
-      debugPrint('开始处理下载: $url, MIME类型: $mimeType');
-      if (_downloadingUrls.contains(url)) {
+      final absoluteUrl = _toAbsoluteUrl(url);
+      debugPrint('开始处理下载: $absoluteUrl, MIME类型: $mimeType');
+      if (_downloadingUrls.contains(absoluteUrl)) {
         if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('该文件正在下载中，请稍候...')));
         return;
       }
 
-      String processedUrl = url;
-      if (url.startsWith('blob:https://web.telegram.org/')) {
+      String processedUrl = absoluteUrl;
+      if (absoluteUrl.startsWith('blob:https://web.telegram.org/')) {
         // Blob URL 由 JavaScript 处理，不直接下载
         return;
-      } else if (url.contains('telegram.org') || url.contains('t.me')) {
-        if (!url.startsWith('http')) processedUrl = url.startsWith('//') ? 'https:$url' : 'https://$url';
+      } else if (absoluteUrl.contains('telegram.org') || absoluteUrl.contains('t.me')) {
+        if (!absoluteUrl.startsWith('http')) processedUrl = absoluteUrl.startsWith('//') ? 'https:$absoluteUrl' : 'https://$absoluteUrl';
         if (processedUrl.contains('/progressive/https://')) {
           processedUrl = processedUrl.substring(processedUrl.indexOf('/progressive/https://') + '/progressive/'.length);
         }
-      } else if (url.contains('youtube.com') || url.contains('youtu.be')) {
-        processedUrl = await _resolveYouTubeUrl(url);
+      } else if (absoluteUrl.contains('youtube.com') || absoluteUrl.contains('youtu.be')) {
+        processedUrl = await _resolveYouTubeUrl(absoluteUrl);
       }
 
       if (selectedType == null) {
@@ -1689,7 +1728,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
   Future<File?> _downloadFile(String url, MediaType mediaType) async { // Added mediaType parameter
     try {
-      debugPrint('开始下载文件，URL: $url');
+      final absoluteUrl = _toAbsoluteUrl(url);
+      debugPrint('开始下载文件，URL: $absoluteUrl');
       final networkService = NetworkService();
       await networkService.initialize();
 
@@ -1698,12 +1738,12 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       if (!await mediaDir.exists()) await mediaDir.create(recursive: true);
 
       final uuid = const Uuid().v4();
-      final uri = Uri.tryParse(url);
-      if (uri == null) throw Exception('Invalid URL: $url');
+      final uri = Uri.tryParse(absoluteUrl);
+      if (uri == null) throw Exception('Invalid URL: $absoluteUrl');
       String extension = _getFileExtension(uri.path);
 
       if (extension.isEmpty) {
-        final mimeType = _guessMimeType(url);
+        final mimeType = _guessMimeType(absoluteUrl);
         extension = mimeType.startsWith('image/') ? '.jpg' :
                     mimeType.startsWith('video/') || mimeType == 'application/x-mpegURL' ? '.mp4' :
                     mimeType.startsWith('audio/') ? '.mp3' : '.bin';
@@ -1718,7 +1758,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       while (retryCount < maxRetries) {
         try {
           final response = await networkService.dio.download(
-            url,
+            absoluteUrl,
             filePath,
             deleteOnError: true,
             options: Options(
@@ -1737,7 +1777,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
               }
             },
           );
-          if (extension == '.m3u8') await _handleM3u8Download(filePath, url);
+          if (extension == '.m3u8') await _handleM3u8Download(filePath, absoluteUrl);
           break;
         } catch (e, stackTrace) {
           retryCount++;
@@ -2393,16 +2433,29 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   }
 
   Future<void> _performBackgroundDownload(String url, MediaType mediaType) async {
-    _downloadingUrls.add(url);
+    final absoluteUrl = _toAbsoluteUrl(url);
+    if (_isApiEndpointUrl(absoluteUrl)) {
+      debugPrint('跳过 API 接口 URL（非媒体文件）: $absoluteUrl');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('该链接不是媒体文件，请长按图片或视频本身进行下载'),
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
+      return;
+    }
+    _downloadingUrls.add(absoluteUrl);
     try {
-      debugPrint('开始后台下载: $url, 媒体类型: $mediaType');
+      debugPrint('开始后台下载: $absoluteUrl, 媒体类型: $mediaType');
       
       if (mediaType == MediaType.video) {
         _isDownloadingVideo.value = true;
         _videoDownloadProgress.value = 0.0;
       }
 
-      final file = await _downloadFile(url, mediaType);
+      final file = await _downloadFile(absoluteUrl, mediaType);
 
       if (file != null) {
         debugPrint('文件下载成功: ${file.path}');
@@ -2427,7 +2480,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         }
       }
     } catch (e) {
-      debugPrint('后台下载出错: $url, 错误: $e');
+      debugPrint('后台下载出错: $absoluteUrl, 错误: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -2437,7 +2490,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         );
       }
     } finally {
-      _downloadingUrls.remove(url);
+      _downloadingUrls.remove(absoluteUrl);
       if (mediaType == MediaType.video) {
         _isDownloadingVideo.value = false;
         _videoDownloadProgress.value = null;

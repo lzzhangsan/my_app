@@ -524,6 +524,39 @@ class _ResizableAndConfigurableTextBoxState
     _suppressKeyboardAfterFormat();
   }
 
+  /// 对整个文档按等比例调整字号：每个 Delta 插入片段在自身字号基础上 +delta
+  void _quillFormatWholeSizeDelta(int delta) {
+    if (_showBottomSettings) {
+      SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
+    }
+    final ops = _quillController.document.toDelta().toList();
+    int offset = 0;
+    for (final op in ops) {
+      if (op.isInsert) {
+        final len = op.length ?? (op.data is String ? (op.data as String).length : 1);
+        if (op.data is String && len > 0) {
+          double cur = _textStyle.fontSize;
+          final attrs = op.attributes;
+          if (attrs != null && attrs['size'] != null) {
+            final v = attrs['size'];
+            cur = (v is num) ? v.toDouble() : (double.tryParse(v.toString()) ?? cur);
+          }
+          final newSize = (cur + delta).clamp(8.0, 72.0);
+          _quillController.formatText(
+            offset,
+            len,
+            quill.Attribute.clone(quill.Attribute.size, newSize.toString()),
+          );
+        }
+        offset += len;
+      } else if (op.isRetain) {
+        offset += op.length ?? 0;
+      }
+    }
+    _saveChanges();
+    _suppressKeyboardAfterFormat();
+  }
+
   void _hideKeyboard() {
     SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
     FocusManager.instance.primaryFocus?.unfocus();
@@ -694,13 +727,17 @@ class _ResizableAndConfigurableTextBoxState
                     child: _buildToolButton(
                       null,
                       () {
-                        final style = _quillController.getSelectionStyle();
-                        final sizeVal = style.values.firstWhere((a) => a.key == quill.Attribute.size.key, orElse: () => quill.Attribute.size);
-                        double cur = _textStyle.fontSize;
-                        if (sizeVal.value != null) cur = double.tryParse(sizeVal.value.toString()) ?? cur;
-                        cur = (cur - 2).clamp(8.0, 72.0);
-                        final attr = quill.Attribute.clone(quill.Attribute.size, cur.toString());
-                        if (_hasSelection) _quillFormatSelection(attr); else _quillFormatWhole(attr);
+                        if (_hasSelection) {
+                          final style = _quillController.getSelectionStyle();
+                          final sizeVal = style.values.firstWhere((a) => a.key == quill.Attribute.size.key, orElse: () => quill.Attribute.size);
+                          double cur = _textStyle.fontSize;
+                          if (sizeVal.value != null) cur = double.tryParse(sizeVal.value.toString()) ?? cur;
+                          cur = (cur - 2).clamp(8.0, 72.0);
+                          final attr = quill.Attribute.clone(quill.Attribute.size, cur.toString());
+                          _quillFormatSelection(attr);
+                        } else {
+                          _quillFormatWholeSizeDelta(-2);
+                        }
                         setModalState(() {});
                       },
                       false,
@@ -713,13 +750,17 @@ class _ResizableAndConfigurableTextBoxState
                     child: _buildToolButton(
                       null,
                       () {
-                        final style = _quillController.getSelectionStyle();
-                        final sizeVal = style.values.firstWhere((a) => a.key == quill.Attribute.size.key, orElse: () => quill.Attribute.size);
-                        double cur = _textStyle.fontSize;
-                        if (sizeVal.value != null) cur = double.tryParse(sizeVal.value.toString()) ?? cur;
-                        cur = (cur + 2).clamp(8.0, 72.0);
-                        final attr = quill.Attribute.clone(quill.Attribute.size, cur.toString());
-                        if (_hasSelection) _quillFormatSelection(attr); else _quillFormatWhole(attr);
+                        if (_hasSelection) {
+                          final style = _quillController.getSelectionStyle();
+                          final sizeVal = style.values.firstWhere((a) => a.key == quill.Attribute.size.key, orElse: () => quill.Attribute.size);
+                          double cur = _textStyle.fontSize;
+                          if (sizeVal.value != null) cur = double.tryParse(sizeVal.value.toString()) ?? cur;
+                          cur = (cur + 2).clamp(8.0, 72.0);
+                          final attr = quill.Attribute.clone(quill.Attribute.size, cur.toString());
+                          _quillFormatSelection(attr);
+                        } else {
+                          _quillFormatWholeSizeDelta(2);
+                        }
                         setModalState(() {});
                       },
                       false,
@@ -768,9 +809,16 @@ class _ResizableAndConfigurableTextBoxState
                         if (_showBottomSettings) SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
                         final len = _quillController.document.length;
                         if (len > 0) {
-                          _quillController.formatText(0, len, quill.Attribute.clone(quill.Attribute.size, '16'));
-                          _quillController.formatText(0, len, quill.Attribute.clone(quill.Attribute.color, '#FF000000'));
-                          _quillController.formatText(0, len, quill.Attribute.clone(quill.Attribute.background, null));
+                          final sel = _quillController.selection;
+                          final start = _hasSelection ? sel.start : 0;
+                          final length = _hasSelection ? (sel.end - sel.start) : len;
+                          if (length > 0) {
+                            _quillController.formatText(start, length, quill.Attribute.clone(quill.Attribute.size, '16'));
+                            _quillController.formatText(start, length, quill.Attribute.clone(quill.Attribute.color, '#FF000000'));
+                            _quillController.formatText(start, length, quill.Attribute.clone(quill.Attribute.background, null));
+                            _quillController.formatText(start, length, quill.Attribute.clone(quill.Attribute.bold, null));
+                            _quillController.formatText(start, length, quill.Attribute.clone(quill.Attribute.italic, null));
+                          }
                         }
                         _saveChanges();
                         _suppressKeyboardAfterFormat();
@@ -1204,9 +1252,9 @@ class _ResizableAndConfigurableTextBoxState
               TextStyle(
                 fontSize: _textStyle.fontSize,
                 color: _textStyle.fontColor,
-                fontWeight: _textStyle.fontWeight,
+                fontWeight: FontWeight.normal,
                 fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
-                height: 1.35,
+                height: 1.23,
                 shadows: [
                   for (final o in [const Offset(-1,-1), const Offset(-1,0), const Offset(-1,1), const Offset(0,-1), const Offset(0,1), const Offset(1,-1), const Offset(1,0), const Offset(1,1)])
                     Shadow(blurRadius: 0, offset: o, color: _getStrokeColorForText(_textStyle.fontColor)),
@@ -1239,6 +1287,7 @@ class _ResizableAndConfigurableTextBoxState
     if (color2 == null || color2 == Colors.transparent) {
       return color1 == Colors.transparent;
     }
-    return color1 == color2;
+    return CustomTextStyle._toQuillColorHex(color1).toLowerCase() ==
+        CustomTextStyle._toQuillColorHex(color2).toLowerCase();
   }
 }
