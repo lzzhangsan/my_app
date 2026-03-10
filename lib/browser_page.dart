@@ -1,9 +1,10 @@
 import 'dart:io';
 import 'dart:async';
+import 'dart:collection';
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
-import 'package:webview_flutter/webview_flutter.dart';
+import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_downloader/flutter_downloader.dart';
@@ -92,7 +93,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   @override
   bool get wantKeepAlive => true;
 
-  late WebViewController _controller;
+  InAppWebViewController? _controller;
   final TextEditingController _urlController = TextEditingController();
   bool _isLoading = false;
   double _loadingProgress = 0.0;
@@ -196,7 +197,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     super.initState();
     _databaseService = getService<DatabaseService>();
     _initializeDownloader();
-    _initializeWebView();
     _loadBookmarks();
     _loadCommonWebsites();
     _initializeTelegramService();
@@ -233,58 +233,14 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     debugPrint('录音权限状态: $recordStatus');
   }
 
-  void _initializeWebView() {
-    _controller = WebViewController()
-      ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setUserAgent('Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36')
-      ..setBackgroundColor(const Color(0x00000000))
-      ..runJavaScript('''
-        document.body.style.overflowX = 'hidden';
-        document.documentElement.style.overflowX = 'hidden';
-      ''')
-      ..setNavigationDelegate(
-        NavigationDelegate(
-          onProgress: (progress) {
-            setState(() {
-              _loadingProgress = progress / 100;
-              _isLoading = _loadingProgress < 1.0;
-            });
-          },
-          onPageStarted: (url) {
-            setState(() {
-              _isLoading = true;
-              _currentUrl = url;
-              _urlController.text = url;
-              _showHomePage = false;
-            });
-          },
-          onPageFinished: _onPageFinished,
-          onWebResourceError: (error) => debugPrint('WebView错误: ${error.description}'),
-          onNavigationRequest: (NavigationRequest request) {
-            final url = request.url;
-            debugPrint('导航请求: $url');
-            if (_isDownloadableLink(url) || _isTelegramMediaLink(url) || _isYouTubeLink(url)) {
-              debugPrint('检测到可能的下载链接: $url');
-              _handleDownload(url, '', _guessMimeType(url));
-              return NavigationDecision.prevent;
-            }
-            // 处理自定义URL协议
-            if (!url.startsWith('http://') && !url.startsWith('https://')) {
-              debugPrint('检测到自定义URL协议: $url');
-              _launchExternalApp(url);
-              return NavigationDecision.prevent;
-            }
-            return NavigationDecision.navigate;
-          },
-        ),
-      )
-      ..addJavaScriptChannel(
-        'Flutter',
-        onMessageReceived: (JavaScriptMessage message) {
-          debugPrint('来自JavaScript的消息: ${message.message}');
-          _handleJavaScriptMessage(message.message);
-        },
-      );
+  void _setupWebViewController(InAppWebViewController ctrl) {
+    _controller = ctrl;
+    ctrl.addJavaScriptHandler(handlerName: 'Flutter', callback: (args) {
+      if (args.isNotEmpty && args[0] != null) {
+        debugPrint('来自JavaScript的消息: ${args[0]}');
+        _handleJavaScriptMessage(args[0].toString());
+      }
+    });
   }
 
   bool _isTelegramMediaLink(String url) {
@@ -322,10 +278,14 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
   final Set<String> _downloadingUrls = {};
   final Set<String> _processedUrls = {};
+  bool _awaitingCanvasFallbackResult = false;
+  bool _canvasFallbackSucceeded = false;
 
   void _injectDownloadHandlers() {
+    if (_controller == null) return;
     debugPrint('为所有网站注入超强媒体下载处理程序 - 95%成功率版本');
-    _controller.runJavaScript('''
+    _controller!.evaluateJavascript(source: '''
+      window.Flutter = window.Flutter || { postMessage: function(m){ try { if(window.flutter_inappwebview && window.flutter_inappwebview.callHandler) window.flutter_inappwebview.callHandler('Flutter', m); } catch(e){} } };
       window.MediaInterceptor = window.MediaInterceptor || {
         processedUrls: new Set(),
         interceptedRequests: new Map(),
@@ -1139,6 +1099,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       debugPrint('Received URL from JavaScript with download action: $urlValue, type: $mediaType, isBase64: $isBase64');
 
       if (isBase64) {
+        if (_awaitingCanvasFallbackResult) _canvasFallbackSucceeded = true;
         await _handleBlobUrl(urlValue, mediaType);
         return;
       }
@@ -1158,8 +1119,18 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       final success = await _performBackgroundDownload(resolvedUrl, selectedType);
         if (!success && (selectedType == MediaType.image || selectedType == MediaType.video) && mounted) {
         try {
-          await _controller.runJavaScript('typeof tryCanvasCaptureFallback === "function" && tryCanvasCaptureFallback();');
-        } catch (_) {}
+          final ctrl = _controller;
+          if (ctrl != null) {
+            _awaitingCanvasFallbackResult = true;
+            _canvasFallbackSucceeded = false;
+            await ctrl.evaluateJavascript(source: 'typeof tryCanvasCaptureFallback === "function" && tryCanvasCaptureFallback();');
+            await Future.delayed(const Duration(milliseconds: 1500));
+            if (!_canvasFallbackSucceeded) await _tryScreenshotFallback(ctrl);
+            _awaitingCanvasFallbackResult = false;
+          }
+        } catch (_) {
+          _awaitingCanvasFallbackResult = false;
+        }
       }
     } catch (e, stackTrace) {
       debugPrint('Error handling JavaScript message: $e');
@@ -1200,17 +1171,10 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   void _loadUrl(String url) {
     String processedUrl = url;
     if (!url.startsWith('http://') && !url.startsWith('https://')) processedUrl = 'https://$url';
-    if (processedUrl.contains('telegram.org') || processedUrl.contains('t.me') || processedUrl.contains('web.telegram.org')) {
-      _controller.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 13_2_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0.3 Mobile/15E148 Safari/604.1');
-      if (processedUrl.contains('web.telegram.org')) processedUrl = 'https://web.telegram.org/a/';
-    } else if (processedUrl.contains('youtube.com') || processedUrl.contains('youtu.be')) {
-      _controller.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
-    } else {
-      _controller.setUserAgent('Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36');
-    }
+    if (processedUrl.contains('web.telegram.org')) processedUrl = 'https://web.telegram.org/a/';
     final uri = Uri.tryParse(processedUrl);
     if (uri != null) {
-      _controller.loadRequest(uri);
+      _controller?.loadUrl(urlRequest: URLRequest(url: WebUri(processedUrl)));
     } else {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1267,13 +1231,12 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   }
 
   void _exitWebPage() {
+    _controller?.clearCache();
     setState(() {
       _showHomePage = true;
       _isBrowsingWebPage = false;
       _shouldKeepWebPageState = false;
       _lastBrowsedUrl = null;
-      _controller.clearCache();
-      _controller.clearLocalStorage();
       _currentUrl = 'https://www.baidu.com';
       _urlController.text = _currentUrl;
     });
@@ -1356,7 +1319,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           nameController.text = "获取中...";
 
           // 异步获取网页标题
-          _controller.getTitle().then((title) {
+          _controller?.getTitle().then((title) {
             if (title != null && title.isNotEmpty && nameController.text == "获取中...") {
               // 直接更新文本控制器，而不使用setState
               nameController.text = title;
@@ -2052,6 +2015,32 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     }
   }
 
+  Future<void> _tryScreenshotFallback(InAppWebViewController ctrl) async {
+    try {
+      await Future.delayed(const Duration(milliseconds: 500));
+      final screenshot = await ctrl.takeScreenshot();
+      if (screenshot == null || screenshot.isEmpty || !mounted) return;
+      final appDir = await getApplicationDocumentsDirectory();
+      final mediaDir = Directory('${appDir.path}/media');
+      if (!await mediaDir.exists()) await mediaDir.create(recursive: true);
+      final uuid = const Uuid().v4();
+      final file = File('${mediaDir.path}/$uuid.png');
+      await file.writeAsBytes(screenshot);
+      await _saveToMediaLibrary(file, MediaType.image);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('已通过截屏保存到媒体库'),
+            duration: const Duration(seconds: 3),
+            action: SnackBarAction(label: '查看', onPressed: () => Navigator.pushNamed(context, '/media_manager')),
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('截屏兜底失败: $e');
+    }
+  }
+
   Future<String> _calculateFileHash(File file) async {
     try {
       final bytes = await file.readAsBytes();
@@ -2075,7 +2064,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     // 如果在浏览网页，尝试获取网页标题
     if (!_showHomePage && _isBrowsingWebPage) {
       nameController.text = "获取中...";
-      _controller.getTitle().then((title) {
+      final c = _controller;
+      if (c != null) c.getTitle().then((title) {
         if (title != null && title.isNotEmpty && nameController.text == "获取中...") {
           nameController.text = title;
           // 自动选中文本，方便用户编辑
@@ -2399,9 +2389,9 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     super.build(context);
     return WillPopScope(
       onWillPop: () async {
-        if (!_showHomePage) {
-          if (await _controller.canGoBack()) {
-            _controller.goBack();
+        if (!_showHomePage && _controller != null) {
+          if (await _controller!.canGoBack()) {
+            _controller!.goBack();
             return false;
           } else {
             _goToHomePage();
@@ -2478,11 +2468,9 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
             ),
           ],
         ),
-        body: Stack( // Wrap the body in a Stack
+        body: Stack(
           children: [
-            _showHomePage
-                ? _buildHomePage()
-                : Column(
+            Column(
                     children: [
                       Padding(
                         padding: const EdgeInsets.all(8.0),
@@ -2491,20 +2479,20 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                             IconButton(
                               icon: const Icon(Icons.arrow_back),
                               onPressed: () async {
-                                if (await _controller.canGoBack()) _controller.goBack();
+                                if (_controller != null && await _controller!.canGoBack()) _controller!.goBack();
                               },
                               tooltip: '后退',
                             ),
                             IconButton(
                               icon: const Icon(Icons.arrow_forward),
                               onPressed: () async {
-                                if (await _controller.canGoForward()) _controller.goForward();
+                                if (_controller != null && await _controller!.canGoForward()) _controller!.goForward();
                               },
                               tooltip: '前进',
                             ),
                             IconButton(
                               icon: const Icon(Icons.refresh),
-                              onPressed: () => _controller.reload(),
+                              onPressed: () => _controller?.reload(),
                               tooltip: '刷新',
                             ),
                             Expanded(
@@ -2531,12 +2519,66 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                       Expanded(
                         child: Stack(
                           children: [
-                            WebViewWidget(controller: _controller),
+                            InAppWebView(
+                              initialUrlRequest: URLRequest(url: WebUri('about:blank')),
+                              initialSettings: InAppWebViewSettings(
+                                javaScriptEnabled: true,
+                                useHybridComposition: true,
+                                useOnLoadResource: true,
+                                allowFileAccess: true,
+                                domStorageEnabled: true,
+                                userAgent: 'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+                              ),
+                              initialUserScripts: UnmodifiableListView([]),
+                              onWebViewCreated: (ctrl) => _setupWebViewController(ctrl),
+                              onLoadStart: (ctrl, url) {
+                                setState(() {
+                                  _isLoading = true;
+                                  if (url != null) {
+                                    _currentUrl = url.toString();
+                                    _urlController.text = _currentUrl;
+                                    _showHomePage = false;
+                                  }
+                                });
+                              },
+                              onProgressChanged: (ctrl, progress) {
+                                setState(() {
+                                  _loadingProgress = progress / 100;
+                                  _isLoading = _loadingProgress < 1.0;
+                                });
+                              },
+                              onLoadStop: (ctrl, url) {
+                                if (url != null) _onPageFinished(url.toString());
+                              },
+                              onReceivedError: (ctrl, req, err) => debugPrint('WebView错误: ${err?.description}'),
+                              shouldOverrideUrlLoading: (ctrl, nav) async {
+                                final url = nav.request.url?.toString() ?? '';
+                                debugPrint('导航请求: $url');
+                                if (_isDownloadableLink(url) || _isTelegramMediaLink(url) || _isYouTubeLink(url)) {
+                                  debugPrint('检测到可能的下载链接: $url');
+                                  _handleDownload(url, '', _guessMimeType(url));
+                                  return NavigationActionPolicy.CANCEL;
+                                }
+                                if (!url.startsWith('http://') && !url.startsWith('https://')) {
+                                  debugPrint('检测到自定义URL协议: $url');
+                                  _launchExternalApp(url);
+                                  return NavigationActionPolicy.CANCEL;
+                                }
+                                return NavigationActionPolicy.ALLOW;
+                              },
+                            ),
                           ],
                         ),
                       ),
                     ],
                   ),
+            if (_showHomePage)
+              Positioned.fill(
+                child: Container(
+                  color: Theme.of(context).scaffoldBackgroundColor,
+                  child: _buildHomePage(),
+                ),
+              ),
             // Floating Download Progress Indicator
             ValueListenableBuilder<bool>(
               valueListenable: _isDownloadingVideo,
@@ -3694,7 +3736,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       _injectDownloadHandlers();
       
       // 添加历史记录
-      String title = await _controller.getTitle() ?? url;
+      final ctrl = _controller;
+      String title = ctrl != null ? (await ctrl.getTitle() ?? url) : url;
       await _addHistory(title, url);
       
       // 更新状态
