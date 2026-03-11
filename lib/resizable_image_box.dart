@@ -6,6 +6,7 @@ class ResizableImageBox extends StatefulWidget {
   final Size initialSize;
   final String imagePath;
   final Function(Size) onResize;
+  final VoidCallback? onResizeEnd;
   final Function() onSettingsPressed;
 
   const ResizableImageBox({
@@ -13,6 +14,7 @@ class ResizableImageBox extends StatefulWidget {
     required this.initialSize,
     required this.imagePath,
     required this.onResize,
+    this.onResizeEnd,
     required this.onSettingsPressed,
   });
 
@@ -82,6 +84,7 @@ class _ResizableImageBoxState extends State<ResizableImageBox> {
                 widget.onResize(_size);
               }
             },
+            onPanEnd: (_) => widget.onResizeEnd?.call(),
             child: Opacity(
               opacity: 0.25,
               child: Icon(

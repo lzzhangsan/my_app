@@ -379,6 +379,7 @@ class _ResizableAndConfigurableTextBoxState
   Timer? _keyboardSuppressTimer;
   TextSelection? _lastSelectionForHaptic;
   DateTime? _lastHapticTime;
+  Timer? _saveDebounceTimer; // 防抖：连续输入/格式调整合并为一次历史记录
 
   @override
   void initState() {
@@ -411,8 +412,22 @@ class _ResizableAndConfigurableTextBoxState
     _docChangeSub = _quillController.changes.listen(_handleDocChange);
 
     _focusNode = FocusNode();
-    _focusNode.addListener(() => setState(() {}));
+    _focusNode.addListener(() {
+      setState(() {});
+      if (!_focusNode.hasFocus) _flushSaveDebounce(); // 失焦时立即保存，确保连续操作为一步
+    });
     _textScrollController = ScrollController();
+  }
+
+  void _flushSaveDebounce() {
+    _saveDebounceTimer?.cancel();
+    _saveDebounceTimer = null;
+    _saveChanges();
+  }
+
+  void _debouncedSaveChanges() {
+    _saveDebounceTimer?.cancel();
+    _saveDebounceTimer = Timer(const Duration(milliseconds: 1200), _flushSaveDebounce);
   }
 
   void _onQuillChanged() {
@@ -429,11 +444,12 @@ class _ResizableAndConfigurableTextBoxState
     }
     _lastSelectionForHaptic = sel;
     setState(() {});
-    _saveChanges();
+    _debouncedSaveChanges();
   }
 
   @override
   void dispose() {
+    _saveDebounceTimer?.cancel();
     _keyboardSuppressTimer?.cancel();
     _docChangeSub?.cancel();
     _quillController.removeListener(_onQuillChanged);
@@ -540,7 +556,7 @@ class _ResizableAndConfigurableTextBoxState
   void _quillFormatSelection(quill.Attribute? attr) {
     if (_showBottomSettings) SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
     _quillController.formatSelection(attr);
-    _saveChanges();
+    _debouncedSaveChanges();
     _suppressKeyboardAfterFormat();
   }
 
@@ -548,7 +564,7 @@ class _ResizableAndConfigurableTextBoxState
     if (_showBottomSettings) SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
     final len = _quillController.document.length;
     if (len > 0) _quillController.formatText(0, len, attr);
-    _saveChanges();
+    _debouncedSaveChanges();
     _suppressKeyboardAfterFormat();
   }
 
@@ -581,7 +597,7 @@ class _ResizableAndConfigurableTextBoxState
         offset += op.length ?? 0;
       }
     }
-    _saveChanges();
+    _debouncedSaveChanges();
     _suppressKeyboardAfterFormat();
   }
 
@@ -848,7 +864,7 @@ class _ResizableAndConfigurableTextBoxState
                             _quillController.formatText(start, length, quill.Attribute.clone(quill.Attribute.italic, null));
                           }
                         }
-                        _saveChanges();
+                        _debouncedSaveChanges();
                         _suppressKeyboardAfterFormat();
                         setModalState(() {});
                       },
@@ -1141,8 +1157,10 @@ class _ResizableAndConfigurableTextBoxState
                     setState(() {
                       _size = Size(newWidth, newHeight);
                     });
-                    _saveChanges();
                   }
+                },
+                onPanEnd: (_) {
+                  _saveChanges();
                 },
                 child: Opacity(
                   opacity: 0.25,

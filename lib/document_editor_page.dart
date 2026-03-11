@@ -46,6 +46,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
   List<String> _deletedCanvasIds = []; // 新增：已删除的画布ID列表
   List<Map<String, dynamic>> _history = [];
   int _historyIndex = -1;
+  int _restoreGeneration = 0; // undo/redo 时递增，用于强制文本框等子组件重建以正确显示恢复内容
   late ScrollController _scrollController;
   double _currentScrollOffset = 0.0;
   double _scrollPercentage = 0.0;
@@ -57,6 +58,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
   bool _isTemplate = false;
   Timer? _autoSaveTimer;
   Timer? _debounceTimer; // 防抖定时器
+  Timer? _canvasHistoryDebounce; // 画布操作历史防抖，避免拖拽/缩放时产生大量记录
   bool _contentChanged = false;
   bool _textEnhanceMode = true;
   bool _isPositionLocked = true;
@@ -1392,7 +1394,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
     }
     _historyIndex = _history.length - 1;
 
-    if (_history.length > 20) {
+    if (_history.length > 25) {
       _history.removeAt(0);
       _historyIndex--;
     }
@@ -1461,6 +1463,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
     }
     _autoSaveTimer?.cancel();
     _debounceTimer?.cancel();
+    _canvasHistoryDebounce?.cancel();
     _scrollController.dispose();
     super.dispose();
   }
@@ -1768,12 +1771,20 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
                     // 新增：画布组件（放在最底层，但在背景之上）
                     ..._canvases.map<Widget>((canvas) {
                       return Positioned(
-                        key: ValueKey(canvas.id),
+                        key: ValueKey('canvas_${canvas.id}_r$_restoreGeneration'),
                         left: canvas.positionX,
                         top: canvas.positionY,
                         child: FlippableCanvasWidget(
                           canvas: canvas,
-                          onCanvasUpdated: _updateCanvas,
+                          onCanvasUpdated: (c) {
+                            _updateCanvas(c);
+                            _canvasHistoryDebounce?.cancel();
+                            _canvasHistoryDebounce = Timer(const Duration(milliseconds: 400), () {
+                              _contentChanged = true;
+                              _debouncedSave();
+                              _saveStateToHistory();
+                            });
+                          },
                           onSettingsPressed: () => _deleteCanvas(canvas.id),
                           isPositionLocked: _isPositionLocked,
                         ),
@@ -1819,6 +1830,8 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
                           onResize: (size) {
                             _updateImageBox(data['id'], size);
                             _debouncedSave();
+                          },
+                          onResizeEnd: () {
                             _saveStateToHistory();
                           },
                           onSettingsPressed: () => _showImageBoxOptions(data['id']),
@@ -1829,7 +1842,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
                       // 保持内容正常方向（不镜像）
 
                       return Positioned(
-                        key: ValueKey(data['id']),
+                        key: ValueKey('img_${data['id']}_r$_restoreGeneration'),
                         left: left,
                         top: top,
                         child: child,
@@ -1874,7 +1887,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
                       // 保持文本正常方向
 
                       return Positioned(
-                        key: ValueKey(data['id']),
+                        key: ValueKey('txt_${data['id']}_r$_restoreGeneration'),
                         left: left,
                         top: top,
                         child: child,
@@ -1927,7 +1940,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
                       // 保持音频控件正常方向
 
                       return Positioned(
-                        key: ValueKey(data['id']),
+                        key: ValueKey('aud_${data['id']}_r$_restoreGeneration'),
                         left: left,
                         top: top,
                         child: child,
@@ -2234,6 +2247,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
       setState(() {
         _historyIndex--;
         _loadStateFromHistory();
+        _restoreGeneration++; // 强制文本框/图片框等重建，以正确显示恢复的文本、格式等
         _contentChanged = true;
       });
     }
@@ -2244,6 +2258,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
       setState(() {
         _historyIndex++;
         _loadStateFromHistory();
+        _restoreGeneration++; // 同上
         _contentChanged = true;
       });
     }
