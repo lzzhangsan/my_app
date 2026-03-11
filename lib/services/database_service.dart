@@ -1662,60 +1662,83 @@ class DatabaseService {
 
   // ==================== 文档和文件夹管理方法 ====================
 
+  /// 删除文档关联的物理文件（图片、音频、背景图），释放存储空间
+  Future<void> _deleteDocumentPhysicalFiles(String documentId) async {
+    try {
+      final fileCleanupService = getService<FileCleanupService>();
+      if (!fileCleanupService.isInitialized) return;
+
+      final db = await database;
+      final pathsToDelete = <String>[];
+
+      final imageBoxes = await db.query('image_boxes', columns: ['image_path'], where: 'document_id = ?', whereArgs: [documentId]);
+      for (final row in imageBoxes) {
+        final path = row['image_path']?.toString();
+        if (path != null && path.isNotEmpty) pathsToDelete.add(path);
+      }
+
+      final audioBoxes = await db.query('audio_boxes', columns: ['audio_path'], where: 'document_id = ?', whereArgs: [documentId]);
+      for (final row in audioBoxes) {
+        final path = row['audio_path']?.toString();
+        if (path != null && path.isNotEmpty) pathsToDelete.add(path);
+      }
+
+      final settings = await db.query('document_settings', columns: ['background_image_path'], where: 'document_id = ?', whereArgs: [documentId]);
+      for (final row in settings) {
+        final path = row['background_image_path']?.toString();
+        if (path != null && path.isNotEmpty) pathsToDelete.add(path);
+      }
+
+      for (final filePath in pathsToDelete) {
+        try {
+          await fileCleanupService.deleteMediaFileCompletely(filePath);
+        } catch (e) {
+          if (kDebugMode) print('删除文档关联文件失败: $filePath, $e');
+        }
+      }
+    } catch (e) {
+      if (kDebugMode) print('_deleteDocumentPhysicalFiles 失败: $e');
+    }
+  }
+
+  /// 递归收集文件夹及其子文件夹下所有文档的 ID
+  Future<List<String>> _collectDocumentIdsInFolder(String folderId) async {
+    final db = await database;
+    final ids = <String>[];
+
+    final documents = await db.query('documents', columns: ['id'], where: 'parent_folder = ?', whereArgs: [folderId]);
+    for (final doc in documents) ids.add(doc['id'] as String);
+
+    final subFolders = await db.query('folders', columns: ['id'], where: 'parent_folder = ?', whereArgs: [folderId]);
+    for (final sub in subFolders) {
+      ids.addAll(await _collectDocumentIdsInFolder(sub['id'] as String));
+    }
+    return ids;
+  }
+
   Future<void> deleteDocument(String documentName, {String? parentFolder}) async {
     final db = await database;
     
     try {
+      List<Map<String, dynamic>> documents = await db.query('documents', columns: ['id'], where: 'name = ?', whereArgs: [documentName]);
+      if (documents.isNotEmpty) {
+        final documentId = documents.first['id'] as String;
+        await _deleteDocumentPhysicalFiles(documentId);
+      }
+
       await db.transaction((txn) async {
-        // 首先获取文档ID
-        List<Map<String, dynamic>> documents = await txn.query(
-          'documents',
-          columns: ['id'],
-          where: 'name = ?',
-          whereArgs: [documentName],
-        );
-        
         if (documents.isNotEmpty) {
           String documentId = documents.first['id'] as String;
-          
-          // 删除文档相关的所有数据
-          await txn.delete(
-            'text_boxes',
-            where: 'document_id = ?',
-            whereArgs: [documentId],
-          );
-          await txn.delete(
-            'image_boxes',
-            where: 'document_id = ?',
-            whereArgs: [documentId],
-          );
-          await txn.delete(
-            'audio_boxes',
-            where: 'document_id = ?',
-            whereArgs: [documentId],
-          );
-          await txn.delete(
-            'document_settings',
-            where: 'document_id = ?',
-            whereArgs: [documentId],
-          );
-          
-          // 删除文档本身
-          await txn.delete(
-            'documents',
-            where: 'id = ?',
-            whereArgs: [documentId],
-          );
+          await txn.delete('text_boxes', where: 'document_id = ?', whereArgs: [documentId]);
+          await txn.delete('image_boxes', where: 'document_id = ?', whereArgs: [documentId]);
+          await txn.delete('audio_boxes', where: 'document_id = ?', whereArgs: [documentId]);
+          await txn.delete('document_settings', where: 'document_id = ?', whereArgs: [documentId]);
+          await txn.delete('documents', where: 'id = ?', whereArgs: [documentId]);
         }
 
-        // 重新排序剩余文档
         String? parentFolderId;
         if (parentFolder != null) {
-          final parentFolderData = await txn.query(
-            'folders',
-            where: 'name = ?',
-            whereArgs: [parentFolder],
-          );
+          final parentFolderData = await txn.query('folders', where: 'name = ?', whereArgs: [parentFolder]);
           parentFolderId = parentFolderData.isNotEmpty ? parentFolderData.first['id'] as String? : null;
         }
         
@@ -1727,30 +1750,20 @@ class DatabaseService {
         );
         
         for (int i = 0; i < remainingDocuments.length; i++) {
-          await txn.update(
-            'documents',
-            {'order_index': i},
-            where: 'id = ?',
-            whereArgs: [remainingDocuments[i]['id']],
-          );
+          await txn.update('documents', {'order_index': i}, where: 'id = ?', whereArgs: [remainingDocuments[i]['id']]);
         }
       });
       
-      // 使用文件清理服务彻底删除文档文件
       try {
         final fileCleanupService = getService<FileCleanupService>();
         if (fileCleanupService.isInitialized) {
           await fileCleanupService.deleteDocumentCompletely(documentName);
         }
       } catch (e) {
-        if (kDebugMode) {
-          print('文件清理服务删除文档失败: $e');
-        }
+        if (kDebugMode) print('文件清理服务删除文档失败: $e');
       }
       
-      if (kDebugMode) {
-        print('成功删除文档: $documentName');
-      }
+      if (kDebugMode) print('成功删除文档: $documentName');
     } catch (e, stackTrace) {
       _handleError('删除文档失败: $documentName', e, stackTrace);
       rethrow;
@@ -1790,32 +1803,23 @@ class DatabaseService {
     final db = await database;
     
     try {
-      // 使用事务确保数据一致性
+      final folderToDelete = await db.query('folders', where: 'name = ?', whereArgs: [folderName]);
+      if (folderToDelete.isEmpty) {
+        throw Exception('文件夹不存在: $folderName');
+      }
+      
+      final folderId = folderToDelete.first['id'] as String;
+      final documentIds = await _collectDocumentIdsInFolder(folderId);
+      for (final docId in documentIds) {
+        await _deleteDocumentPhysicalFiles(docId);
+      }
+
       await db.transaction((txn) async {
-        // 首先获取要删除的文件夹信息
-        final folderToDelete = await txn.query(
-          'folders',
-          where: 'name = ?',
-          whereArgs: [folderName],
-        );
-        
-        if (folderToDelete.isEmpty) {
-          throw Exception('文件夹不存在: $folderName');
-        }
-        
-        final folderId = folderToDelete.first['id'] as String;
-        
-        // 递归删除文件夹及其所有子内容
         await _deleteFolderRecursive(txn, folderId, folderName);
 
-        // 重新排序剩余文件夹
         String? parentFolderId;
         if (parentFolder != null) {
-          final parentFolderData = await txn.query(
-            'folders',
-            where: 'name = ?',
-            whereArgs: [parentFolder],
-          );
+          final parentFolderData = await txn.query('folders', where: 'name = ?', whereArgs: [parentFolder]);
           parentFolderId = parentFolderData.isNotEmpty ? parentFolderData.first['id'] as String? : null;
         }
         
@@ -1827,18 +1831,20 @@ class DatabaseService {
         );
         
         for (int i = 0; i < remainingFolders.length; i++) {
-          await txn.update(
-            'folders',
-            {'order_index': i},
-            where: 'id = ?',
-            whereArgs: [remainingFolders[i]['id']],
-          );
+          await txn.update('folders', {'order_index': i}, where: 'id = ?', whereArgs: [remainingFolders[i]['id']]);
         }
       });
-      
-      if (kDebugMode) {
-        print('成功删除文件夹: $folderName');
+
+      try {
+        final fileCleanupService = getService<FileCleanupService>();
+        if (fileCleanupService.isInitialized) {
+          await fileCleanupService.deleteFolderCompletely(folderName);
+        }
+      } catch (e) {
+        if (kDebugMode) print('文件清理服务删除文件夹失败: $e');
       }
+      
+      if (kDebugMode) print('成功删除文件夹: $folderName');
     } catch (e, stackTrace) {
       _handleError('删除文件夹失败: $folderName', e, stackTrace);
       rethrow;
@@ -3895,9 +3901,17 @@ class DatabaseService {
         final existingIds = existingBoxes.map((box) => box['id'] as String).toSet();
         final newIds = imageBoxes.map((box) => box['id'] as String).toSet();
         
-        // Delete removed image boxes
+        // Delete removed image boxes（同时删除物理文件以释放空间）
         final idsToDelete = existingIds.difference(newIds);
         for (final id in idsToDelete) {
+          final box = existingBoxes.firstWhere((b) => b['id'] == id, orElse: () => <String, dynamic>{});
+          final path = box['image_path'] ?? box['imagePath'] ?? '';
+          if (path.toString().isNotEmpty) {
+            try {
+              final fcs = getService<FileCleanupService>();
+              if (fcs.isInitialized) await fcs.deleteMediaFileCompletely(path.toString());
+            } catch (_) {}
+          }
           await txn.delete(
             'image_boxes',
             where: 'document_id = ? AND id = ?',
@@ -3987,9 +4001,17 @@ class DatabaseService {
         final existingIds = existingBoxes.map((box) => box['id'] as String).toSet();
         final newIds = audioBoxes.map((box) => box['id'] as String).toSet();
         
-        // Delete removed audio boxes
+        // Delete removed audio boxes（同时删除物理文件以释放空间）
         final idsToDelete = existingIds.difference(newIds);
         for (final id in idsToDelete) {
+          final box = existingBoxes.firstWhere((b) => b['id'] == id, orElse: () => <String, dynamic>{});
+          final path = box['audio_path'] ?? box['audioPath'] ?? '';
+          if (path.toString().isNotEmpty) {
+            try {
+              final fcs = getService<FileCleanupService>();
+              if (fcs.isInitialized) await fcs.deleteMediaFileCompletely(path.toString());
+            } catch (_) {}
+          }
           await txn.delete(
             'audio_boxes',
             where: 'document_id = ? AND id = ?',
@@ -4673,6 +4695,94 @@ class DatabaseService {
   Future<List<Map<String, dynamic>>> getAllMediaItems() async {
     final db = await database;
     return await db.query('media_items');
+  }
+
+  /// 获取数据库中所有有效引用的文件路径（用于清理孤立文件）
+  Future<Set<String>> getAllValidFilePaths() async {
+    final db = await database;
+    final appDocDir = (await getApplicationDocumentsDirectory()).path;
+    final validPaths = <String>{};
+
+    String toAbsolute(String? pathStr) {
+      if (pathStr == null || pathStr.isEmpty) return '';
+      final s = pathStr.trim();
+      if (s.isEmpty) return '';
+      final abs = s.startsWith('/') || (s.length > 1 && s[1] == ':') ? s : p.join(appDocDir, s);
+      return p.normalize(p.absolute(abs));
+    }
+
+    try {
+      final mediaItems = await db.query('media_items', columns: ['path', 'thumbnail_path']);
+      for (final row in mediaItems) {
+        final path = row['path']?.toString();
+        if (path != null && path.isNotEmpty) validPaths.add(toAbsolute(path));
+        final thumb = row['thumbnail_path']?.toString();
+        if (thumb != null && thumb.isNotEmpty) validPaths.add(toAbsolute(thumb));
+      }
+
+      final imageBoxes = await db.query('image_boxes', columns: ['image_path']);
+      for (final row in imageBoxes) {
+        final path = row['image_path']?.toString();
+        if (path != null && path.isNotEmpty) validPaths.add(toAbsolute(path));
+      }
+
+      final audioBoxes = await db.query('audio_boxes', columns: ['audio_path']);
+      for (final row in audioBoxes) {
+        final path = row['audio_path']?.toString();
+        if (path != null && path.isNotEmpty) validPaths.add(toAbsolute(path));
+      }
+
+      final docSettings = await db.query('document_settings', columns: ['background_image_path']);
+      for (final row in docSettings) {
+        final path = row['background_image_path']?.toString();
+        if (path != null && path.isNotEmpty) validPaths.add(toAbsolute(path));
+      }
+
+      final coverImages = await db.query('cover_image', columns: ['path']);
+      for (final row in coverImages) {
+        final path = row['path']?.toString();
+        if (path != null && path.isNotEmpty) validPaths.add(toAbsolute(path));
+      }
+
+      final coverSettings = await db.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name='cover_settings'");
+      if (coverSettings.isNotEmpty) {
+        final rows = await db.query('cover_settings');
+        for (final row in rows) {
+          final path = row['background_image_path']?.toString();
+          if (path != null && path.isNotEmpty) validPaths.add(toAbsolute(path));
+        }
+      }
+
+      final diarySettings = await db.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name='diary_settings'");
+      if (diarySettings.isNotEmpty) {
+        final rows = await db.query('diary_settings');
+        for (final row in rows) {
+          final path = row['background_image_path']?.toString();
+          if (path != null && path.isNotEmpty) validPaths.add(toAbsolute(path));
+        }
+      }
+
+      final diaryEntries = await db.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name='diary_entries'");
+      if (diaryEntries.isNotEmpty) {
+        final rows = await db.query('diary_entries', columns: ['image_paths', 'audio_paths', 'video_paths']);
+        for (final row in rows) {
+          for (final key in ['image_paths', 'audio_paths', 'video_paths']) {
+            final val = row[key];
+            if (val == null) continue;
+            try {
+              final list = jsonDecode(val.toString()) as List?;
+              if (list != null) for (final p in list) validPaths.add(toAbsolute(p.toString()));
+            } catch (_) {}
+          }
+        }
+      }
+
+      validPaths.remove('');
+      return validPaths;
+    } catch (e) {
+      if (kDebugMode) print('getAllValidFilePaths 失败: $e');
+      return {};
+    }
   }
 
   /// 替换所有媒体项（清空并批量插入）- 使用临时表保证事务安全

@@ -376,46 +376,70 @@ class FileCleanupService {
   }
 
   /// 清理孤立文件（数据库中不存在但文件系统中存在的文件）
-  Future<void> cleanOrphanedFiles(List<String> validFilePaths) async {
-    if (!_isInitialized) return;
+  /// validFilePaths: 数据库中有效引用的文件路径集合
+  /// 安全策略：仅删除不在有效路径集合中的文件，且路径比较使用规范化+大小写不敏感（Windows/Android）
+  Future<Map<String, int>> cleanOrphanedFiles(Iterable<String> validFilePaths) async {
+    if (!_isInitialized) return {'count': 0, 'bytes': 0};
 
-    try {
-      int deletedCount = 0;
-      int totalSize = 0;
-      
-      // 扫描媒体目录
-      final mediaDir = Directory('${_appDocumentsDirectory!.path}/media');
-      if (await mediaDir.exists()) {
-        await for (final entity in mediaDir.list(recursive: true)) {
-          if (entity is File) {
-            final filePath = entity.path;
-            if (!validFilePaths.contains(filePath)) {
-              try {
-                final fileSize = await entity.length();
-                await entity.delete();
-                deletedCount++;
-                totalSize += fileSize;
-                
-                if (kDebugMode) {
-                  print('删除孤立文件: $filePath');
-                }
-              } catch (e) {
-                if (kDebugMode) {
-                  print('删除孤立文件失败: $filePath, 错误: $e');
-                }
-              }
+    String toKey(String p) {
+      final n = path.normalize(path.absolute(p));
+      return n.isEmpty ? n : (Platform.isWindows || Platform.isAndroid ? n.toLowerCase() : n);
+    }
+
+    final validSet = validFilePaths
+        .map((p) => toKey(p))
+        .where((p) => p.isNotEmpty)
+        .toSet();
+
+    if (validSet.isEmpty) {
+      if (kDebugMode) print('清理孤立文件: 有效路径集合为空，跳过清理以确保安全');
+      return {'count': 0, 'bytes': 0};
+    }
+
+    int deletedCount = 0;
+    int totalSize = 0;
+
+    bool isValidFile(String filePath) {
+      final key = toKey(filePath);
+      if (key.isEmpty) return true;
+      return validSet.contains(key);
+    }
+
+    Future<void> scanAndDelete(Directory dir) async {
+      if (!await dir.exists()) return;
+      await for (final entity in dir.list(recursive: true)) {
+        if (entity is File) {
+          final filePath = entity.path;
+          if (!isValidFile(filePath)) {
+            try {
+              final fileSize = await entity.length();
+              await entity.delete();
+              deletedCount++;
+              totalSize += fileSize;
+              if (kDebugMode) print('删除孤立文件: $filePath');
+            } catch (e) {
+              if (kDebugMode) print('删除孤立文件失败: $filePath, 错误: $e');
             }
           }
         }
       }
-      
+    }
+
+    try {
+      final base = _appDocumentsDirectory!.path;
+      await scanAndDelete(Directory('$base/media'));
+      await scanAndDelete(Directory('$base/images'));
+      await scanAndDelete(Directory('$base/audios'));
+      await scanAndDelete(Directory('$base/background_images'));
+      await scanAndDelete(Directory('$base/documents'));
+
       if (kDebugMode) {
         print('清理孤立文件完成: 删除 $deletedCount 个文件，释放空间: ${_formatFileSize(totalSize)}');
       }
+      return {'count': deletedCount, 'bytes': totalSize};
     } catch (e) {
-      if (kDebugMode) {
-        print('清理孤立文件失败: $e');
-      }
+      if (kDebugMode) print('清理孤立文件失败: $e');
+      return {'count': deletedCount, 'bytes': totalSize};
     }
   }
 

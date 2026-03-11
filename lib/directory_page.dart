@@ -225,7 +225,10 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
           // 删除后重新加载数据，确保界面和数据库状态一致
           await _loadData();
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('已删除选中的项目')),
+            SnackBar(
+              content: Text('已删除选中的项目并释放存储空间'),
+              backgroundColor: Colors.green,
+            ),
           );
         }
       } catch (e) {

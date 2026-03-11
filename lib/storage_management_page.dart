@@ -7,7 +7,6 @@ import 'package:path_provider/path_provider.dart';
 import '../core/service_locator.dart';
 import '../services/file_cleanup_service.dart';
 import '../services/database_service.dart';
-import '../services/media_service.dart';
 import 'dart:io';
 
 class StorageManagementPage extends StatefulWidget {
@@ -28,7 +27,6 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
   
   final FileCleanupService _fileCleanupService = getService<FileCleanupService>();
   final DatabaseService _databaseService = getService<DatabaseService>();
-  final MediaService _mediaService = getService<MediaService>();
 
   @override
   void initState() {
@@ -183,21 +181,19 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
   /// 清理孤立文件
   Future<void> _cleanOrphanedFiles() async {
     try {
-      // 获取数据库中有效的文件路径
-      final validPaths = <String>[];
-      
-      // 从媒体服务获取有效路径
-      for (final mediaItem in _mediaService.mediaItems) {
-        validPaths.add(mediaItem.path);
-      }
-      
-      // 清理孤立文件
-      await _fileCleanupService.cleanOrphanedFiles(validPaths);
+      final validPaths = await _databaseService.getAllValidFilePaths();
+      final result = await _fileCleanupService.cleanOrphanedFiles(validPaths);
       await _loadStorageInfo();
-      
+
       if (mounted) {
+        final count = result['count'] ?? 0;
+        final bytes = result['bytes'] ?? 0;
+        final sizeStr = bytes < 1024 ? '${bytes}B' : bytes < 1024 * 1024 ? '${(bytes / 1024).toStringAsFixed(1)}KB' : '${(bytes / (1024 * 1024)).toStringAsFixed(1)}MB';
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('孤立文件清理完成')),
+          SnackBar(
+            content: Text(count > 0 ? '已清理 $count 个孤立文件，释放 $sizeStr 空间' : '未发现孤立文件'),
+            backgroundColor: count > 0 ? Colors.green : null,
+          ),
         );
       }
     } catch (e) {

@@ -1031,11 +1031,16 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       );
 
       try {
+        final fileCleanupService = getService<FileCleanupService>();
         for (var id in _selectedItems) {
           final item = _mediaItems.firstWhere((item) => item.id == id);
+          if (fileCleanupService.isInitialized) {
+            await fileCleanupService.deleteMediaFileCompletely(item.path);
+          } else {
+            final file = File(item.path);
+            if (await file.exists()) await file.delete();
+          }
           await _databaseService.deleteMediaItem(id);
-          final file = File(item.path);
-          if (await file.exists()) await file.delete();
         }
 
         if (mounted) {
@@ -2173,9 +2178,14 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   // New method to delete media item silently (without confirmation dialog)
   Future<void> _deleteMediaItemSilently(MediaItem item) async {
     try {
+      final fileCleanupService = getService<FileCleanupService>();
+      if (fileCleanupService.isInitialized) {
+        await fileCleanupService.deleteMediaFileCompletely(item.path);
+      } else {
+        final file = File(item.path);
+        if (await file.exists()) await file.delete();
+      }
       await _databaseService.deleteMediaItem(item.id);
-      final file = File(item.path);
-      if (await file.exists()) await file.delete();
     } catch (e) {
       debugPrint('静默删除媒体项时出错: ${item.name}, 错误: $e');
       rethrow;
