@@ -4757,6 +4757,16 @@ class DatabaseService {
         }
       }
 
+      // 目录界面的背景图片
+      final dirSettings = await db.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name='directory_settings'");
+      if (dirSettings.isNotEmpty) {
+        final rows = await db.query('directory_settings', columns: ['background_image_path']);
+        for (final row in rows) {
+          final path = row['background_image_path']?.toString();
+          if (path != null && path.isNotEmpty) validPaths.add(toAbsolute(path));
+        }
+      }
+
       final diaryEntries = await db.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name='diary_entries'");
       if (diaryEntries.isNotEmpty) {
         final rows = await db.query('diary_entries', columns: ['image_paths', 'audio_paths', 'video_paths']);
