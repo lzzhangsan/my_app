@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../core/service_locator.dart';
 import 'database_service.dart';
 import 'media_service.dart';
@@ -252,11 +253,16 @@ class BackgroundMediaService {
           final mediaItem = await _importMediaToApp(asset, mediaService);
           
           if (mediaItem != null) {
-            // 尝试彻底删除本地媒体
-            await _deleteLocalMedia(asset);
-            
-            if (kDebugMode) {
-              print('[后台服务] 成功导入并删除媒体: ${asset.title}');
+            // 静默模式下不删除原件，避免 Android 弹出系统确认框
+            // 后台 isolate 的 SharedPreferences 需 reload 才能拿到主 isolate 的最新设置
+            final prefs = await SharedPreferences.getInstance();
+            await prefs.reload();
+            final silent = prefs.getBool('auto_import_silent') ?? true;
+            if (!silent) {
+              await _deleteLocalMedia(asset);
+              if (kDebugMode) print('[后台服务] 成功导入并删除媒体: ${asset.title}');
+            } else if (kDebugMode) {
+              print('[后台服务] 成功导入媒体（静默，原件已保留）: ${asset.title}');
             }
           }
         } catch (e) {

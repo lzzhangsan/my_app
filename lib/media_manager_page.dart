@@ -64,6 +64,8 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   Set<String> _initialAssetIds = {};
   /// 是否正在自动处理，防止重复
   bool _isAutoProcessing = false;
+  /// 静默导入：仅复制到应用媒体库，不删除系统相册原件。为 true 时不会弹出系统确认框
+  bool _autoImportSilentMode = true;
 
   @override
   void initState() {
@@ -493,22 +495,24 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   }
 
   Future<void> _saveMultipleMediaToAppDirectory(
-      List<File> sourceFiles, MediaType type) async {
+      List<File> sourceFiles, MediaType type, {bool silent = false}) async {
     if (sourceFiles.isEmpty) return;
 
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => const AlertDialog(
-        content: Row(
-          children: [
-            CircularProgressIndicator(),
-            SizedBox(width: 20),
-            Text('正在导入媒体...')
-          ],
+    if (!silent) {
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => const AlertDialog(
+          content: Row(
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(width: 20),
+              Text('正在导入媒体...')
+            ],
+          ),
         ),
-      ),
-    );
+      );
+    }
 
     try {
       final appDir = await getApplicationDocumentsDirectory();
@@ -553,22 +557,26 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       }
 
       if (mounted) {
-        Navigator.of(context).pop();
+        if (!silent) Navigator.of(context).pop();
         await _loadMediaItems();
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              '导入完成: 成功导入 $importedCount 个${_getMediaTypeName(type)}文件${skippedCount > 0 ? '，跳过 $skippedCount 个重复文件' : ''}'
+        if (!silent) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                '导入完成: 成功导入 $importedCount 个${_getMediaTypeName(type)}文件${skippedCount > 0 ? '，跳过 $skippedCount 个重复文件' : ''}'
+              ),
             ),
-          ),
-        );
+          );
+        }
       }
     } catch (e) {
       if (mounted) {
-        Navigator.of(context).pop();
+        if (!silent) Navigator.of(context).pop();
         debugPrint('批量导入媒体时出错: $e');
-        ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('导入媒体文件时出错: $e')));
+        if (!silent) {
+          ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('导入媒体文件时出错: $e')));
+        }
       }
     }
   }
@@ -1782,21 +1790,37 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           });
         }
 
-        return ConstrainedBox(
-          constraints: const BoxConstraints(maxHeight: 280),
-          child: Container(
-            width: dialogWidth,
-            padding: const EdgeInsets.symmetric(vertical: 8),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 4),
-                  child: Text(
-                    '媒体管理选项',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                  ),
-                ),
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 340),
+              child: Container(
+                width: dialogWidth,
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 4),
+                      child: Text(
+                        '媒体管理选项',
+                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                    SwitchListTile(
+                      title: const Text('静默导入', style: TextStyle(fontSize: 14)),
+                      subtitle: Text(
+                        _autoImportSilentMode ? '仅复制到媒体库，不删除原件（无确认框）' : '导入后删除原件（会弹出系统确认）',
+                        style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+                      ),
+                      value: _autoImportSilentMode,
+                      onChanged: (v) async {
+                        setState(() => _autoImportSilentMode = v);
+                        setModalState(() {}); // 立即刷新底部面板内开关显示
+                        await _saveSettings();
+                      },
+                    ),
+                const Divider(height: 1),
                 GridView.builder(
                   shrinkWrap: true,
                   physics: const NeverScrollableScrollPhysics(),
@@ -1849,6 +1873,8 @@ class _MediaManagerPageState extends State<MediaManagerPage>
             ),
           ),
         );
+          },
+        );
       },
     );
   }
@@ -1856,7 +1882,10 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   Future<void> _loadSettings() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      setState(() => _mediaVisible = prefs.getBool('media_visible') ?? true);
+      setState(() {
+        _mediaVisible = prefs.getBool('media_visible') ?? true;
+        _autoImportSilentMode = prefs.getBool('auto_import_silent') ?? true;
+      });
     } catch (e) {
       debugPrint('加载设置时出错: $e');
     }
@@ -1866,6 +1895,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool('media_visible', _mediaVisible);
+      await prefs.setBool('auto_import_silent', _autoImportSilentMode);
     } catch (e) {
       debugPrint('保存设置时出错: $e');
     }
@@ -2340,7 +2370,8 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       message.value = '正在导出设置...';
       final prefs = await SharedPreferences.getInstance();
       final mediaVisible = prefs.getBool('media_visible') ?? true;
-      final settingsJson = jsonEncode({'media_visible': mediaVisible});
+      final autoImportSilent = prefs.getBool('auto_import_silent') ?? true;
+      final settingsJson = jsonEncode({'media_visible': mediaVisible, 'auto_import_silent': autoImportSilent});
       final settingsBytes = utf8.encode(settingsJson);
       final settingsFile = ArchiveFile('media_settings.json', settingsBytes.length, settingsBytes);
       encoder.addArchiveFile(settingsFile);
@@ -2481,11 +2512,15 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         if (settingsToImport['media_visible'] != null) {
           await prefs.setBool('media_visible', settingsToImport['media_visible']);
         }
+        if (settingsToImport['auto_import_silent'] != null) {
+          await prefs.setBool('auto_import_silent', settingsToImport['auto_import_silent']);
+        }
       }
       progress.value = 0.95;
 
-      // 8. 刷新界面
+      // 8. 刷新界面和设置
       message.value = '导入完成，正在刷新...';
+      await _loadSettings();
       await _loadMediaItems();
       progress.value = 1.0;
 
@@ -2769,20 +2804,28 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     }
   }
 
-  /// 自动导入并彻底删除本地媒体
+  /// 自动导入媒体。静默模式下仅复制不删除原件（无确认框）；非静默模式会尝试删除原件（会弹出系统确认框）
   Future<void> _autoImportAndDeleteAsset(AssetEntity asset) async {
     try {
       final file = await asset.file;
       if (file == null) return;
       // 仅处理图片/视频
       if (asset.type != AssetType.image && asset.type != AssetType.video) return;
-      // 导入到应用媒体库
-      await _saveMultipleMediaToAppDirectory([file], asset.type == AssetType.image ? MediaType.image : MediaType.video);
-      // 删除本地媒体（彻底删除，包括已删除文件夹）
-      final bool deleted = await PhotoManager.editor.deleteWithIds([asset.id]) == 1;
-      print('自动导入并彻底删除: ${file.path}，删除结果: $deleted');
+      // 导入到应用媒体库（静默：无进度框、无成功提示）
+      await _saveMultipleMediaToAppDirectory(
+        [file],
+        asset.type == AssetType.image ? MediaType.image : MediaType.video,
+        silent: true,
+      );
+      // 静默模式：不删除原件，避免 Android 系统弹出"要允许变化删除这张照片吗"确认框
+      if (!_autoImportSilentMode) {
+        final bool deleted = await PhotoManager.editor.deleteWithIds([asset.id]) == 1;
+        print('自动导入并彻底删除: ${file.path}，删除结果: $deleted');
+      } else {
+        print('自动导入（静默）: ${file.path}，原件已保留');
+      }
     } catch (e) {
-      print('自动导入并删除媒体失败: $e');
+      print('自动导入媒体失败: $e');
     }
   }
 
