@@ -1188,6 +1188,11 @@ class _ResizableAndConfigurableTextBoxState
         config: quill.QuillEditorConfig(
           padding: EdgeInsets.zero,
           placeholder: '',
+          paintCursorAboveText: true,
+          textSelectionThemeData: const TextSelectionThemeData(
+            cursorColor: Color(0xFF1565C0),
+            selectionColor: Color(0x661565C0),
+          ),
           quillMagnifierBuilder: (Offset dragPos) => _buildMagnifierAboveText(dragPos),
           contextMenuBuilder: (menuContext, state) {
             final anchors = state.contextMenuAnchors;
