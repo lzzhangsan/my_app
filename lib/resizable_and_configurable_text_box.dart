@@ -403,6 +403,10 @@ class _ResizableAndConfigurableTextBoxState
       selection: const TextSelection.collapsed(offset: 0),
       keepStyleOnNewLine: false,
     );
+    if (_textStyle.textAlign != TextAlign.left && _quillController.document.length > 0) {
+      final alignVal = _textStyle.textAlign == TextAlign.center ? 'center' : _textStyle.textAlign == TextAlign.right ? 'right' : 'justify';
+      _quillController.formatText(0, _quillController.document.length, quill.Attribute.clone(quill.Attribute.align, alignVal));
+    }
     _quillController.addListener(_onQuillChanged);
     _docChangeSub = _quillController.changes.listen(_handleDocChange);
 
@@ -492,6 +496,15 @@ class _ResizableAndConfigurableTextBoxState
     );
   }
 
+  /// 是否在行首插入：文档开头或紧跟换行符后。只有行首插入才应用默认格式，否则继承上下文格式。
+  bool _isAtLineStart(int index) {
+    if (index <= 0) return true;
+    final doc = _quillController.document;
+    if (index > doc.length) return false;
+    final char = doc.toPlainText().substring(index - 1, index);
+    return char == '\n';
+  }
+
   void _handleDocChange(quill.DocChange change) {
     if (_applyingDefaultStyle) return;
     if (change.source != quill.ChangeSource.local) return;
@@ -510,6 +523,7 @@ class _ResizableAndConfigurableTextBoxState
     final start = end - insertedLength;
     if (start < 0) return;
 
+    if (!_isAtLineStart(start)) return;
     _applyingDefaultStyle = true;
     try {
       _applyDefaultStyleToRange(start, insertedLength);
