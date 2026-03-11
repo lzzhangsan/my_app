@@ -8,7 +8,7 @@ import 'package:archive/archive.dart';
 import 'package:archive/archive_io.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show kIsWeb, ValueNotifier;
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
@@ -29,6 +29,8 @@ import 'create_folder_dialog.dart';
 import 'models/media_type.dart';
 import 'browser_page.dart';
 import 'services/cache_service.dart';
+import 'services/export_import_utils.dart';
+import 'services/test_data_generator_service.dart';
 import 'storage_management_page.dart';
 
 class MediaManagerPage extends StatefulWidget {
@@ -1718,7 +1720,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
             'title': '扫描重复文件',
             'onTap': () async {
               Navigator.pop(context);
-              await _scanAndUpdateFileHashes();
+              await _showScanDuplicatesOptionsDialog();
             },
           },
           {
@@ -1737,6 +1739,15 @@ class _MediaManagerPageState extends State<MediaManagerPage>
             'onTap': () async {
               Navigator.pop(context);
               await _importAllMediaData();
+            },
+          },
+          {
+            'icon': Icons.science,
+            'color': Colors.orange,
+            'title': '生成测试数据',
+            'onTap': () async {
+              Navigator.pop(context);
+              await _showGenerateTestDataDialog();
             },
           },
         ];
@@ -1896,7 +1907,39 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     }
   }
 
-  Future<void> _scanAndUpdateFileHashes() async {
+  /// 选择扫描模式：仅扫描 / 扫描并清理
+  Future<void> _showScanDuplicatesOptionsDialog() async {
+    final autoRemove = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('扫描重复文件'),
+        content: const Text(
+          '请选择扫描模式：\n\n'
+          '• 仅扫描：更新哈希并报告重复数量，不自动删除\n'
+          '• 扫描并清理：将重复项移至回收站',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('仅扫描'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('扫描并清理'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('取消'),
+          ),
+        ],
+      ),
+    );
+    if (autoRemove != null && mounted) {
+      await _scanAndUpdateFileHashes(autoRemove: autoRemove);
+    }
+  }
+
+  Future<void> _scanAndUpdateFileHashes({bool autoRemove = true}) async {
     try {
       // 显示进度对话框
       showDialog(
@@ -1977,25 +2020,21 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         }
       }
 
-      // 第二遍扫描：处理重复文件
+      // 第二遍扫描：处理重复文件（仅当 autoRemove 时移至回收站）
       for (var hash in hashGroups.keys) {
         var files = hashGroups[hash]!;
         if (files.length > 1) {
-          // 有重复文件
           _progressController.add('发现重复文件: ${files.map((f) => f['name']).join(', ')}');
-          
-          // 保留第一个文件，将其他文件移动到回收站
-          var originalFile = files.first;
-          var duplicates = files.skip(1).toList();
-          
-          for (var duplicate in duplicates) {
-            try {
-              // 将重复文件移动到回收站
-              await _databaseService.updateMediaItemDirectory(duplicate['id'], 'recycle_bin');
-              duplicateCount++;
-            } catch (e) {
-              print('移动重复文件到回收站时出错: ${duplicate['name']}, 错误: $e');
-              errorCount++;
+          duplicateCount += files.length - 1;
+          if (autoRemove) {
+            var duplicates = files.skip(1).toList();
+            for (var duplicate in duplicates) {
+              try {
+                await _databaseService.updateMediaItemDirectory(duplicate['id'], 'recycle_bin');
+              } catch (e) {
+                print('移动重复文件到回收站时出错: ${duplicate['name']}, 错误: $e');
+                errorCount++;
+              }
             }
           }
         }
@@ -2008,20 +2047,21 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
       // 显示结果
       if (mounted) {
+        final removedNote = autoRemove && duplicateCount > 0
+            ? '\n已移至回收站: $duplicateCount 个'
+            : (duplicateCount > 0 ? '\n(未删除，请手动处理)' : '');
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
               '扫描完成\n'
               '处理文件: $processedCount\n'
               '更新哈希: $updatedCount\n'
-              '重复文件: $duplicateCount\n'
+              '发现重复: $duplicateCount 个$removedNote\n'
               '错误: $errorCount'
             ),
             duration: const Duration(seconds: 5),
           ),
         );
-        
-        // 重新加载媒体列表以反映变化
         await _loadMediaItems();
       }
     } catch (e) {
@@ -2285,12 +2325,21 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         }
       }
       
-      // 4. 导出数据库和设置文件
+      // 4. 导出数据库 - 分块写入避免单一大JSON (5000条/文件)
       message.value = '正在导出数据库...';
-      final mediaItemsJson = jsonEncode(allMediaItems);
-      final mediaItemsBytes = utf8.encode(mediaItemsJson);
-      final mediaItemsFile = ArchiveFile('media_items.json', mediaItemsBytes.length, mediaItemsBytes);
-      encoder.addArchiveFile(mediaItemsFile);
+      for (int chunkIdx = 0; chunkIdx < allMediaItems.length; chunkIdx += kExportChunkSize) {
+        final end = math.min(chunkIdx + kExportChunkSize, allMediaItems.length);
+        final chunk = allMediaItems.sublist(chunkIdx, end);
+        final fileName = 'media_items_${chunkIdx ~/ kExportChunkSize}.json';
+        final bytes = utf8.encode(jsonEncode(chunk));
+        encoder.addArchiveFile(ArchiveFile(fileName, bytes.length, bytes));
+        if ((chunkIdx + kExportChunkSize) % (kProgressUpdateInterval * 10) == 0 || end == allMediaItems.length) {
+          message.value = '正在导出数据库: $end/${allMediaItems.length}';
+        }
+      }
+      if (allMediaItems.isEmpty) {
+        encoder.addArchiveFile(ArchiveFile('media_items.json', 2, utf8.encode('[]')));
+      }
       progress.value = 0.85;
 
       message.value = '正在导出设置...';
@@ -2395,24 +2444,36 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       }
       await inputStream.close();
 
-      // 4. 从临时目录中读取元数据和设置
-      List<dynamic>? mediaItemsToImport;
+      // 4. 从临时目录中读取元数据 - 支持分块格式与旧版media_items.json
       Map<String, dynamic>? settingsToImport;
 
+      final chunk0File = File(path.join(tempImportDir.path, 'media_items_0.json'));
       final jsonFile = File(path.join(tempImportDir.path, 'media_items.json'));
-      if (!await jsonFile.exists()) {
-        throw Exception("关键错误: 压缩包中未找到 'media_items.json' 文件。");
+
+      if (await chunk0File.exists()) {
+        int chunkIdx = 0;
+        await _databaseService.replaceAllMediaItemsFromChunks(() async {
+          final f = File(path.join(tempImportDir.path, 'media_items_$chunkIdx.json'));
+          if (!await f.exists()) return null;
+          message.value = '正在导入: media_items_$chunkIdx.json';
+          final chunk = jsonDecode(await f.readAsString()) as List<dynamic>;
+          chunkIdx++;
+          return chunk;
+        });
+      } else if (await jsonFile.exists()) {
+        final mediaItemsToImport = jsonDecode(await jsonFile.readAsString()) as List<dynamic>? ?? [];
+        message.value = '正在恢复数据库...';
+        await _databaseService.replaceAllMediaItems(mediaItemsToImport);
+      } else {
+        throw Exception("关键错误: 压缩包中未找到 'media_items.json' 或 'media_items_0.json' 文件。");
       }
-      mediaItemsToImport = jsonDecode(await jsonFile.readAsString());
 
       final settingsFile = File(path.join(tempImportDir.path, 'media_settings.json'));
       if (await settingsFile.exists()){
         settingsToImport = jsonDecode(await settingsFile.readAsString());
       }
       
-      // 5. 恢复数据库表 (事务性)
-      message.value = '正在恢复数据库...';
-      await _databaseService.replaceAllMediaItems(mediaItemsToImport!);
+      // 5. 数据库已恢复
       progress.value = 0.8;
 
       // 6. 替换媒体文件
@@ -2491,6 +2552,109 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     }
   }
 
+  Future<void> _showGenerateTestDataDialog() async {
+    final scale = await showDialog<TestDataScale>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('选择测试数据规模'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: TestDataScale.mediaScales
+                  .map((s) {
+                    final suffix = s.formulaMedia.substring(s.label.length) +
+                        (s.isPeakTarget ? '（需数分钟）' : '');
+                    return ListTile(
+                      dense: true,
+                      title: RichText(
+                        text: TextSpan(
+                          style: TextStyle(
+                            color: Theme.of(ctx).brightness == Brightness.dark
+                                ? Colors.white
+                                : Colors.black87,
+                            fontSize: 14,
+                          ),
+                          children: [
+                            TextSpan(
+                              text: s.label,
+                              style: TextStyle(
+                                color: Colors.blue,
+                                fontSize: 16,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            TextSpan(text: suffix),
+                          ],
+                        ),
+                      ),
+                      onTap: () => Navigator.pop(ctx, s),
+                    );
+                  })
+              .toList(),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text('取消'),
+          ),
+        ],
+      ),
+    );
+    if (scale == null || !mounted) return;
+    if (scale.isPeakTarget) {
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Text('确认峰值测试'),
+          content: Text(
+            '将生成约 15GB 测试数据，预计耗时数分钟。\n请确保设备有足够存储空间。\n\n继续？',
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text('取消')),
+            TextButton(onPressed: () => Navigator.pop(ctx, true), child: Text('继续')),
+          ],
+        ),
+      );
+      if (confirm != true || !mounted) return;
+    }
+    final progress = ValueNotifier<String>('准备中...');
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(height: 16),
+            ValueListenableBuilder<String>(
+              valueListenable: progress,
+              builder: (_, v, __) => Text(v),
+            ),
+          ],
+        ),
+      ),
+    );
+    try {
+      final result = await TestDataGeneratorService().generateMediaTestData(scale, progress: progress);
+      if (!mounted) return;
+      Navigator.pop(context);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '测试数据已生成：${result['count']} 条媒体，已生成约 ${result['actualSizeMB']} MB',
+          ),
+          duration: Duration(seconds: 4),
+        ),
+      );
+      await _loadMediaItems();
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('生成失败: $e')));
+      }
+    }
+  }
+
   // 优化后的递归拷贝目录方法 - 使用流式处理避免内存溢出，支持大文件
   Future<void> _copyDirectory(Directory src, Directory dst) async {
     if (!await dst.exists()) await dst.create(recursive: true);
@@ -2521,8 +2685,8 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           if (await sourceFile.exists()) {
             final fileSize = await sourceFile.length();
             
-            // 对于大文件（超过10MB），使用分块复制
-            if (fileSize > 10 * 1024 * 1024) {
+            // 对于大文件（超过2MB），使用流式复制
+            if (fileSize > kStreamingThresholdBytes) {
               await _copyLargeFile(sourceFile, targetFile);
             } else {
               // 小文件直接复制

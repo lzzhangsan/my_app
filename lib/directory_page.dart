@@ -1,4 +1,4 @@
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show kIsWeb, ValueNotifier;
 import 'package:flutter/material.dart';
 import 'core/service_locator.dart';
 import 'services/database_service.dart';
@@ -13,6 +13,7 @@ import 'dart:async'; // For Timer
 import 'package:path/path.dart' as path;
 import 'services/image_picker_service.dart';
 import 'services/file_cleanup_service.dart';
+import 'services/test_data_generator_service.dart';
 import 'package:archive/archive_io.dart';
 
 class DirectoryPage extends StatefulWidget {
@@ -1791,10 +1792,124 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
                 _repairDataIntegrity();
               },
             ),
+            ListTile(
+              leading: Icon(Icons.science, color: Colors.orange),
+              title: Text('生成测试数据'),
+              subtitle: Text('用于验证导出/导入性能'),
+              onTap: () {
+                Navigator.pop(context);
+                _showGenerateTestDataDialog();
+              },
+            ),
           ],
         );
       },
     );
+  }
+
+  Future<void> _showGenerateTestDataDialog() async {
+    final scale = await showDialog<TestDataScale>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('选择测试数据规模'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: TestDataScale.directoryScales
+                  .map((s) {
+                    final suffix = s.formulaDir.substring(s.label.length) +
+                        (s.isPeakTarget ? '（需数分钟）' : '');
+                    return ListTile(
+                      dense: true,
+                      title: RichText(
+                        text: TextSpan(
+                          style: TextStyle(
+                            color: Theme.of(ctx).brightness == Brightness.dark
+                                ? Colors.white
+                                : Colors.black87,
+                            fontSize: 14,
+                          ),
+                          children: [
+                            TextSpan(
+                              text: s.label,
+                              style: TextStyle(
+                                color: Colors.blue,
+                                fontSize: 16,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            TextSpan(text: suffix),
+                          ],
+                        ),
+                      ),
+                      onTap: () => Navigator.pop(ctx, s),
+                    );
+                  })
+              .toList(),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text('取消'),
+          ),
+        ],
+      ),
+    );
+    if (scale == null || !mounted) return;
+    if (scale.isPeakTarget) {
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Text('确认峰值测试'),
+          content: Text(
+            '将生成约 10GB 测试数据，预计耗时数分钟。\n请确保设备有足够存储空间。\n\n继续？',
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text('取消')),
+            TextButton(onPressed: () => Navigator.pop(ctx, true), child: Text('继续')),
+          ],
+        ),
+      );
+      if (confirm != true || !mounted) return;
+    }
+    final progress = ValueNotifier<String>('准备中...');
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(height: 16),
+            ValueListenableBuilder<String>(
+              valueListenable: progress,
+              builder: (_, v, __) => Text(v),
+            ),
+          ],
+        ),
+      ),
+    );
+    try {
+      final result = await TestDataGeneratorService().generateDirectoryTestData(scale, progress: progress);
+      if (!mounted) return;
+      Navigator.pop(context);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '测试数据已生成：${result['folders']} 文件夹、${result['documents']} 文档、'
+            '${result['textBoxes']} 文本框、${result['imageBoxes']} 图片框、${result['audioBoxes']} 音频框，'
+            '已生成约 ${result['actualSizeMB']} MB',
+          ),
+          duration: Duration(seconds: 5),
+        ),
+      );
+      _loadData();
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('生成失败: $e')));
+      }
+    }
   }
 
   Future<void> _showTemplateSelectionDialog() async {

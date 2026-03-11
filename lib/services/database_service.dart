@@ -13,6 +13,7 @@ import 'package:uuid/uuid.dart';
 import '../core/app_state.dart';
 import '../core/service_locator.dart';
 import 'file_cleanup_service.dart';
+import 'export_import_utils.dart';
 import '../models/diary_entry.dart';
 
 /// 数据库服务 - 统一管理所有数据库操作
@@ -1155,15 +1156,7 @@ class DatabaseService {
             if (await imageFile.exists()) {
               String relativePath = 'images/$fileName';
               await Directory('$tempDirPath/images').create(recursive: true);
-              final fileSize = await imageFile.length();
-              if (fileSize > 10 * 1024 * 1024) {
-                final sourceStream = imageFile.openRead();
-                final targetSink = File('$tempDirPath/$relativePath').openWrite();
-                await sourceStream.pipe(targetSink);
-                await targetSink.close();
-              } else {
-                await imageFile.copy('$tempDirPath/$relativePath');
-              }
+              await copyFileWithStreaming(imageFile, '$tempDirPath/$relativePath');
               print('已导出图片框图片: $relativePath');
             } else {
               print('警告：图片文件不存在: $imagePath');
@@ -1190,7 +1183,7 @@ class DatabaseService {
           if (await imageFile.exists()) {
             String relativePath = 'background_images/$fileName';
             await Directory('$tempDirPath/background_images').create(recursive: true);
-            await imageFile.copy('$tempDirPath/$relativePath');
+            await copyFileWithStreaming(imageFile, '$tempDirPath/$relativePath');
             print('已导出目录背景图片: $relativePath');
           } else {
             print('警告：目录背景图片不存在: $backgroundImagePath');
@@ -1215,7 +1208,7 @@ class DatabaseService {
           if (await imageFile.exists()) {
             String relativePath = 'background_images/$fileName';
             await Directory('$tempDirPath/background_images').create(recursive: true);
-            await imageFile.copy('$tempDirPath/$relativePath');
+            await copyFileWithStreaming(imageFile, '$tempDirPath/$relativePath');
             print('已导出文档背景图片: $relativePath');
           } else {
             print('警告：文档背景图片不存在: $backgroundImagePath');
@@ -1247,15 +1240,7 @@ class DatabaseService {
             if (await audioFile.exists()) {
               String relativePath = 'audios/$fileName';
               await Directory('$tempDirPath/audios').create(recursive: true);
-              final fileSize = await audioFile.length();
-              if (fileSize > 5 * 1024 * 1024) {
-                final sourceStream = audioFile.openRead();
-                final targetSink = File('$tempDirPath/$relativePath').openWrite();
-                await sourceStream.pipe(targetSink);
-                await targetSink.close();
-              } else {
-                await audioFile.copy('$tempDirPath/$relativePath');
-              }
+              await copyFileWithStreaming(audioFile, '$tempDirPath/$relativePath');
               print('已导出音频文件: $relativePath');
             } else {
               print('警告：音频文件不存在: $audioPath');
@@ -1279,54 +1264,48 @@ class DatabaseService {
         }
       }
 
-      // 将数据库表数据保存为JSON文件 - 分批序列化优化
+      // SPLIT格式：将数据库表数据保存到directory_data/目录，每表一文件，大表分块
       progressNotifier?.value = "正在生成数据文件...";
-      
-      final File dbDataFile = File('$tempDirPath/directory_data.json');
-      print('[导出] 即将写入数据文件: \'${dbDataFile.path}\'');
-      final IOSink sink = dbDataFile.openWrite();
-      
-      // 分批序列化大数据，避免内存溢出
-      sink.write('{');
-      bool isFirst = true;
-      for (String tableName in tableData.keys) {
-        if (!isFirst) sink.write(',');
-        isFirst = false;
-        
-        sink.write('"$tableName":');
-        
-        final List<Map<String, dynamic>> tableRows = tableData[tableName]!;
-        if (tableRows.length > 1000) {
-          // 大表分批序列化
-          sink.write('[');
-          for (int i = 0; i < tableRows.length; i++) {
-            if (i > 0) sink.write(',');
-            sink.write(jsonEncode(tableRows[i]));
-            
-            // 每100条记录刷新一次
-            if (i % 100 == 0) {
-              await sink.flush();
-              progressNotifier?.value = "正在生成数据文件: $tableName ${i + 1}/${tableRows.length}";
-            }
+      final String dirDataPath = '$tempDirPath/directory_data';
+      await Directory(dirDataPath).create(recursive: true);
+
+      final List<String> tableFileList = [];
+      const List<String> largeTables = ['text_boxes', 'image_boxes', 'audio_boxes'];
+
+      Future<void> writeTableToFile(String tableName, List<Map<String, dynamic>> rows) async {
+        if (rows.isEmpty) return;
+        if (largeTables.contains(tableName) && rows.length > kExportChunkSize) {
+          for (int chunkIdx = 0; chunkIdx < rows.length; chunkIdx += kExportChunkSize) {
+            final end = (chunkIdx + kExportChunkSize < rows.length) ? chunkIdx + kExportChunkSize : rows.length;
+            final chunk = rows.sublist(chunkIdx, end);
+            final fileName = '${tableName}_${chunkIdx ~/ kExportChunkSize}.json';
+            final f = File('$dirDataPath/$fileName');
+            await f.writeAsString(jsonEncode(chunk), encoding: utf8);
+            tableFileList.add(fileName);
+            progressNotifier?.value = "正在生成数据文件: $tableName ${end}/${rows.length}";
           }
-          sink.write(']');
         } else {
-          // 小表直接序列化
-          sink.write(jsonEncode(tableRows));
+          final fileName = '$tableName.json';
+          final f = File('$dirDataPath/$fileName');
+          await f.writeAsString(jsonEncode(rows), encoding: utf8);
+          tableFileList.add(fileName);
         }
       }
-      sink.write('}');
-      await sink.close();
-      print('[导出] 数据文件写入完成: \'${dbDataFile.path}\'');
-      // 新增：写入后确认文件存在且大小大于0
-      int retry = 0;
-      while ((!await dbDataFile.exists() || await dbDataFile.length() == 0) && retry < 10) {
-        print('[导出] 等待数据文件写入完成...');
-        await Future.delayed(Duration(milliseconds: 100));
-        retry++;
+
+      for (String tableName in tableData.keys) {
+        final rows = tableData[tableName]!;
+        await writeTableToFile(tableName, rows);
       }
-      if (!await dbDataFile.exists() || await dbDataFile.length() == 0) {
-        throw Exception('导出失败：未生成有效的directory_data.json数据文件');
+
+      final manifest = {
+        'format_version': 2,
+        'tables': tableFileList,
+      };
+      final manifestFile = File('$dirDataPath/directory_manifest.json');
+      await manifestFile.writeAsString(jsonEncode(manifest), encoding: utf8);
+      print('[导出] SPLIT格式数据文件写入完成: $dirDataPath');
+      if (!await manifestFile.exists() || await manifestFile.length() == 0) {
+        throw Exception('导出失败：未生成有效的directory_manifest.json');
       }
       print('[导出] 数据文件存在且有效，准备压缩...');
       // 压缩前打印临时目录下所有文件
@@ -1446,30 +1425,43 @@ class DatabaseService {
       }
       await inputStream.close();
 
-      // 读取目录数据 - 流式读取优化
+      // 读取目录数据 - 支持SPLIT格式与旧版directory_data.json
       progressNotifier?.value = "正在读取数据文件...";
       
-      File dbDataFile = File('$tempDirPath/directory_data.json');
-      if (!await dbDataFile.exists()) {
-        // 递归查找所有子目录
-        List<FileSystemEntity> allFiles = await Directory(tempDirPath).list(recursive: true).toList();
-        List<String> foundFiles = [];
-        for (final f in allFiles) {
-          if (f is File && f.path.endsWith('directory_data.json')) {
-            dbDataFile = File(f.path);
-            foundFiles.add(f.path);
+      final String dirDataPath = '$tempDirPath/directory_data';
+      final File manifestFile = File('$dirDataPath/directory_manifest.json');
+      final bool useSplitFormat = await manifestFile.exists();
+      
+      Map<String, dynamic>? legacyTableData;
+      List<Map<String, String>>? splitTableFiles;
+      if (useSplitFormat) {
+        final manifest = jsonDecode(await manifestFile.readAsString()) as Map<String, dynamic>;
+        final tableFileList = (manifest['tables'] as List<dynamic>?)?.cast<String>() ?? [];
+        splitTableFiles = [];
+        for (final fileName in tableFileList) {
+          final tableName = fileName.replaceAll(RegExp(r'_\d+\.json$'), '.json').replaceAll('.json', '');
+          splitTableFiles.add({'table': tableName, 'file': fileName});
+        }
+      } else {
+        File dbDataFile = File('$tempDirPath/directory_data.json');
+        if (!await dbDataFile.exists()) {
+          List<FileSystemEntity> allFiles = await Directory(tempDirPath).list(recursive: true).toList();
+          List<String> foundFiles = [];
+          for (final f in allFiles) {
+            if (f is File && f.path.endsWith('directory_data.json')) {
+              dbDataFile = File(f.path);
+              foundFiles.add(f.path);
+            }
+          }
+          if (foundFiles.isEmpty) {
+            throw Exception('备份中未找到directory_data.json或directory_data/目录。请确认导出的ZIP包结构正确。');
+          } else if (foundFiles.length > 1) {
+            throw Exception('在多个位置找到directory_data.json文件，请检查备份包结构：\n${foundFiles.join('\n')}');
           }
         }
-        if (foundFiles.isEmpty) {
-          throw Exception('备份中未找到directory_data.json数据文件。请确认导出的ZIP包结构正确。');
-        } else if (foundFiles.length == 1) {
-          // 找到唯一文件，继续
-        } else {
-          throw Exception('在多个位置找到directory_data.json文件，请检查备份包结构：\n${foundFiles.join('\n')}');
-        }
+        legacyTableData = jsonDecode(await dbDataFile.readAsString()) as Map<String, dynamic>;
       }
 
-      final Map<String, dynamic> tableData = jsonDecode(await dbDataFile.readAsString());
       final db = await database;
 
       // 准备背景图片目录
@@ -1521,29 +1513,23 @@ class DatabaseService {
         }
 
         final int batchSize = 100;
-        for (var entry in tableData.entries) {
-          final tableName = entry.key;
-          if (!tableNames.contains(tableName)) continue; // 忽略未识别表
-          final rows = entry.value as List<dynamic>;
+        Future<void> processTableRows(String tableName, List<dynamic> rows) async {
+          if (!tableNames.contains(tableName)) return;
           int processedRows = 0;
           for (int i = 0; i < rows.length; i += batchSize) {
             final end = (i + batchSize < rows.length) ? i + batchSize : rows.length;
             final batch = rows.sublist(i, end);
             for (var row in batch) {
-              if (tableName == 'media_items') continue; // 兼容旧备份中的无关表
+              if (tableName == 'media_items') continue;
               Map<String, dynamic> newRow = Map<String, dynamic>.from(row as Map);
-
-              // 路径修正
               if (tableName == 'image_boxes' && newRow.containsKey('imageFileName')) {
                 final fileName = newRow['imageFileName'];
                 final newPath = p.join(imagesDirPath, fileName);
                 final tempPath = p.join(tempDirPath, 'images', fileName);
                 if (await File(tempPath).exists()) {
-                  await File(tempPath).copy(newPath);
+                  await copyFileWithStreaming(File(tempPath), newPath);
                   newRow['image_path'] = newPath;
-                  print('[导入] 已导入图片框图片: $newPath');
                 } else {
-                  print('[导入] 警告：未找到图片框图片文件: $tempPath');
                   newRow['image_path'] = null;
                 }
                 newRow.remove('imageFileName');
@@ -1553,11 +1539,9 @@ class DatabaseService {
                 final tempAudioPath = p.join(tempDirPath, 'audios', fileName);
                 if (await File(tempAudioPath).exists()) {
                   await Directory(p.dirname(newPath)).create(recursive: true);
-                  await File(tempAudioPath).copy(newPath);
+                  await copyFileWithStreaming(File(tempAudioPath), newPath);
                   newRow['audio_path'] = newPath;
-                  print('[导入] 已导入音频文件: $newPath');
                 } else {
-                  print('[导入] 警告：未找到音频文件: $tempAudioPath');
                   newRow['audio_path'] = null;
                 }
                 newRow.remove('audioFileName');
@@ -1566,17 +1550,13 @@ class DatabaseService {
                 final newPath = p.join(backgroundImagesPath, fileName);
                 final tempPath = p.join(tempDirPath, 'background_images', fileName);
                 if (await File(tempPath).exists()) {
-                  await File(tempPath).copy(newPath);
+                  await copyFileWithStreaming(File(tempPath), newPath);
                   newRow['background_image_path'] = newPath;
-                  print('[导入] 已导入背景图片: $newPath');
                 } else {
-                  print('[导入] 警告：未找到背景图片文件: $tempPath');
                   newRow['background_image_path'] = null;
                 }
                 newRow.remove('backgroundImageFileName');
               }
-
-              // text_boxes 旧字段兼容
               if (tableName == 'text_boxes') {
                 if (newRow.containsKey('textSegments') && !newRow.containsKey('text_segments')) {
                   newRow['text_segments'] = newRow['textSegments'];
@@ -1586,8 +1566,6 @@ class DatabaseService {
                 }
                 newRow.remove('textSegments');
               }
-
-              // 白名单过滤
               final allowed = allowedCols[tableName] ?? const <String>{};
               final clean = <String, dynamic>{};
               for (final k in newRow.keys) {
@@ -1596,13 +1574,30 @@ class DatabaseService {
               try {
                 await txn.insert(tableName, clean, conflictAlgorithm: ConflictAlgorithm.replace);
               } catch (rowErr) {
-                print('[导入] 行插入失败(表:$tableName): $rowErr\n数据: $clean');
+                print('[导入] 行插入失败(表:$tableName): $rowErr');
               }
               processedRows++;
+              if (processedRows % kProgressUpdateInterval == 0) {
+                progressNotifier?.value = '正在导入$tableName表: $processedRows';
+              }
             }
-            progressNotifier?.value = '正在导入$tableName表: $processedRows/${rows.length}';
           }
           print('[导入] 表 $tableName 导入完成，共 $processedRows 行');
+        }
+
+        if (useSplitFormat) {
+          for (final tf in splitTableFiles!) {
+            final tableName = tf['table']!;
+            final f = File('$dirDataPath/${tf['file']}');
+            if (!await f.exists()) continue;
+            progressNotifier?.value = "正在读取: ${tf['file']}";
+            final rows = jsonDecode(await f.readAsString()) as List<dynamic>;
+            await processTableRows(tableName, rows);
+          }
+        } else {
+          for (var entry in legacyTableData!.entries) {
+            await processTableRows(entry.key, entry.value as List<dynamic>);
+          }
         }
       });
           break;
@@ -4783,6 +4778,45 @@ class DatabaseService {
       if (kDebugMode) print('getAllValidFilePaths 失败: $e');
       return {};
     }
+  }
+
+  /// 替换所有媒体项（分块读取，不一次性加载）- 用于大容量导入
+  Future<void> replaceAllMediaItemsFromChunks(Future<List<dynamic>?> Function() getNextChunk) async {
+    final db = await database;
+    const tempTable = 'media_items_temp';
+    await db.transaction((txn) async {
+      await txn.execute('DROP TABLE IF EXISTS $tempTable');
+      await txn.execute('''
+        CREATE TABLE $tempTable (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          path TEXT NOT NULL,
+          type INTEGER NOT NULL,
+          directory TEXT NOT NULL,
+          date_added TEXT NOT NULL,
+          file_size INTEGER DEFAULT 0,
+          duration INTEGER DEFAULT 0,
+          thumbnail_path TEXT,
+          file_hash TEXT,
+          telegram_file_id TEXT,
+          is_favorite INTEGER DEFAULT 0,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      ''');
+      List<dynamic>? chunk;
+      while (true) {
+        chunk = await getNextChunk();
+        if (chunk == null || chunk.isEmpty) break;
+        final batch = txn.batch();
+        for (var item in chunk) {
+          batch.insert(tempTable, Map<String, dynamic>.from(item), conflictAlgorithm: ConflictAlgorithm.replace);
+        }
+        await batch.commit(noResult: true);
+      }
+      await txn.execute('DROP TABLE IF EXISTS media_items');
+      await txn.execute('ALTER TABLE $tempTable RENAME TO media_items');
+    });
   }
 
   /// 替换所有媒体项（清空并批量插入）- 使用临时表保证事务安全

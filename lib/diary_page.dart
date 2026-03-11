@@ -22,6 +22,8 @@ import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 import 'services/database_service.dart';
 import 'core/service_locator.dart';
 import 'services/logger.dart';
+import 'services/export_import_utils.dart';
+import 'services/test_data_generator_service.dart';
 
 // 全局函数：显示进度条弹窗，支持取消操作
 void showProgressDialog(BuildContext context, ValueNotifier<double> progress, ValueNotifier<String> message, {bool barrierDismissible = false}) {
@@ -403,10 +405,122 @@ class _DiaryPageState extends State<DiaryPage> {
                 _importDiaryData();
               },
             ),
+            ListTile(
+              leading: Icon(Icons.science, color: Colors.orange),
+              title: Text('生成测试数据'),
+              subtitle: Text('用于验证导出/导入性能'),
+              onTap: () {
+                Navigator.pop(context);
+                _showGenerateTestDataDialog();
+              },
+            ),
           ],
         ),
       ),
     );
+  }
+
+  Future<void> _showGenerateTestDataDialog() async {
+    final scale = await showDialog<TestDataScale>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('选择测试数据规模'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: TestDataScale.diaryScales
+                  .map((s) {
+                    final suffix = s.formulaDiary.substring(s.label.length) +
+                        (s.isPeakTarget ? '（需数分钟）' : '');
+                    return ListTile(
+                      dense: true,
+                      title: RichText(
+                        text: TextSpan(
+                          style: TextStyle(
+                            color: Theme.of(ctx).brightness == Brightness.dark
+                                ? Colors.white
+                                : Colors.black87,
+                            fontSize: 14,
+                          ),
+                          children: [
+                            TextSpan(
+                              text: s.label,
+                              style: TextStyle(
+                                color: Colors.blue,
+                                fontSize: 16,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            TextSpan(text: suffix),
+                          ],
+                        ),
+                      ),
+                      onTap: () => Navigator.pop(ctx, s),
+                    );
+                  })
+              .toList(),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text('取消'),
+          ),
+        ],
+      ),
+    );
+    if (scale == null || !mounted) return;
+    if (scale.isPeakTarget) {
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Text('确认峰值测试'),
+          content: Text(
+            '将生成约 10GB 测试数据，预计耗时数分钟。\n请确保设备有足够存储空间。\n\n继续？',
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text('取消')),
+            TextButton(onPressed: () => Navigator.pop(ctx, true), child: Text('继续')),
+          ],
+        ),
+      );
+      if (confirm != true || !mounted) return;
+    }
+    final progress = ValueNotifier<String>('准备中...');
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(height: 16),
+            ValueListenableBuilder<String>(
+              valueListenable: progress,
+              builder: (_, v, __) => Text(v),
+            ),
+          ],
+        ),
+      ),
+    );
+    try {
+      final result = await TestDataGeneratorService().generateDiaryTestData(scale, progress: progress);
+      if (!mounted) return;
+      Navigator.pop(context);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '测试数据已生成：${result['count']} 篇日记，已生成约 ${result['actualSizeMB']} MB',
+          ),
+          duration: Duration(seconds: 4),
+        ),
+      );
+      await _loadEntries();
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('生成失败: $e')));
+      }
+    }
   }
 
   @override
@@ -823,9 +937,19 @@ class _DiaryPageState extends State<DiaryPage> {
       }
       progress.value = 0.3;
 
-      // 4. 将元数据写入临时目录中的json文件
-      final jsonFile = File(path.join(tempExportDir.path, 'diary_data.json'));
-      await jsonFile.writeAsString(jsonEncode(entriesForJson));
+      // 4. 将元数据写入临时目录 - 超过1000条时分块
+      if (entriesForJson.length > 1000) {
+        for (int i = 0; i < entriesForJson.length; i += kExportChunkSize) {
+          final end = (i + kExportChunkSize < entriesForJson.length) ? i + kExportChunkSize : entriesForJson.length;
+          final chunk = entriesForJson.sublist(i, end);
+          final f = File(path.join(tempExportDir.path, 'diary_data_${i ~/ kExportChunkSize}.json'));
+          await f.writeAsString(jsonEncode(chunk), encoding: utf8);
+          message.value = '正在导出日记数据: $end/${entriesForJson.length}';
+        }
+      } else {
+        final jsonFile = File(path.join(tempExportDir.path, 'diary_data.json'));
+        await jsonFile.writeAsString(jsonEncode(entriesForJson), encoding: utf8);
+      }
 
       // 5. 将媒体文件复制到临时目录的media子文件夹中
       message.value = '正在复制媒体文件...';
@@ -850,10 +974,13 @@ class _DiaryPageState extends State<DiaryPage> {
         }
         
         final targetPath = path.join(tempMediaDir.path, uniqueFileName);
-        await File(mediaPath).copy(targetPath);
+        await copyFileWithStreaming(File(mediaPath), targetPath);
         mediaPathMapping[mediaPath] = uniqueFileName;
         mediaDone++;
-        progress.value = 0.3 + (mediaDone / mediaTotal) * 0.5; // 30%-80% for media copy
+        progress.value = 0.3 + (mediaDone / mediaTotal) * 0.5;
+        if (mediaDone % kProgressUpdateInterval == 0 || mediaDone == mediaTotal) {
+          message.value = '正在复制媒体文件: $mediaDone/$mediaTotal';
+        }
         Logger.i('已复制媒体文件: $originalFileName -> $uniqueFileName');
       }
 
@@ -904,7 +1031,17 @@ class _DiaryPageState extends State<DiaryPage> {
       }
       
       // 重新写入更新后的JSON文件
-      await jsonFile.writeAsString(jsonEncode(entriesForJson));
+      if (entriesForJson.length > 1000) {
+        for (int i = 0; i < entriesForJson.length; i += kExportChunkSize) {
+          final end = (i + kExportChunkSize < entriesForJson.length) ? i + kExportChunkSize : entriesForJson.length;
+          final chunk = entriesForJson.sublist(i, end);
+          final f = File(path.join(tempExportDir.path, 'diary_data_${i ~/ kExportChunkSize}.json'));
+          await f.writeAsString(jsonEncode(chunk), encoding: utf8);
+        }
+      } else {
+        final jsonFile = File(path.join(tempExportDir.path, 'diary_data.json'));
+        await jsonFile.writeAsString(jsonEncode(entriesForJson), encoding: utf8);
+      }
 
       // 6. 从临时目录创建zip文件
       message.value = '正在压缩文件...';
@@ -987,14 +1124,27 @@ class _DiaryPageState extends State<DiaryPage> {
         message.value = '正在解压: $done/$total';
       }
 
-      // 4. 读取并处理JSON数据
+      // 4. 读取并处理JSON数据 - 支持分块格式与旧版diary_data.json
       message.value = '正在处理日记数据...';
-      final jsonFile = File(path.join(tempImportDir.path, 'diary_data.json'));
-      if (!await jsonFile.exists()) {
-        throw Exception('压缩包中未找到 diary_data.json');
+      List<dynamic> entriesJson = [];
+      final chunk0File = File(path.join(tempImportDir.path, 'diary_data_0.json'));
+      if (await chunk0File.exists()) {
+        int chunkIdx = 0;
+        while (true) {
+          final f = File(path.join(tempImportDir.path, 'diary_data_$chunkIdx.json'));
+          if (!await f.exists()) break;
+          message.value = '正在读取: diary_data_$chunkIdx.json';
+          final chunk = jsonDecode(await f.readAsString()) as List;
+          entriesJson.addAll(chunk);
+          chunkIdx++;
+        }
+      } else {
+        final jsonFile = File(path.join(tempImportDir.path, 'diary_data.json'));
+        if (!await jsonFile.exists()) {
+          throw Exception('压缩包中未找到 diary_data.json');
+        }
+        entriesJson = jsonDecode(await jsonFile.readAsString()) as List;
       }
-
-      final entriesJson = jsonDecode(await jsonFile.readAsString()) as List;
       final List<DiaryEntry> entriesToImport = [];
       final permanentMediaDir = await _getPermanentMediaDirectory();
 
@@ -1087,26 +1237,25 @@ class _DiaryPageState extends State<DiaryPage> {
         int mediaCount = 0;
         int skippedCount = 0;
         
+        int fileIdx = 0;
         for (var entity in mediaFiles) {
           if (entity is File) {
             final fileName = path.basename(entity.path);
             final targetPath = path.join(permanentMediaDir.path, fileName);
             
             try {
-              // 检查源文件是否存在且可读
               if (await entity.exists()) {
-                // 如果目标文件已存在，先删除
                 final targetFile = File(targetPath);
                 if (await targetFile.exists()) {
                   await targetFile.delete();
                 }
-                
-                // 复制文件
-                await entity.copy(targetPath);
-                
-                // 验证复制是否成功
+                await copyFileWithStreaming(entity, targetPath);
                 if (await File(targetPath).exists()) {
                   mediaCount++;
+                  fileIdx++;
+                  if (fileIdx % kProgressUpdateInterval == 0) {
+                    message.value = '正在迁移媒体文件: $mediaCount';
+                  }
                   Logger.i('已迁移媒体文件: $fileName');
                 } else {
                   Logger.w('警告：媒体文件复制失败: $fileName');

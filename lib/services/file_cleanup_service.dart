@@ -303,7 +303,7 @@ class FileCleanupService {
     }
   }
 
-  /// 清理所有临时文件
+  /// 清理所有临时文件（递归清理子目录，导入等操作会在 temp 下创建子目录）
   Future<void> cleanAllTempFiles() async {
     if (!_isInitialized || _tempDirectory == null) return;
 
@@ -312,18 +312,16 @@ class FileCleanupService {
       int totalSize = 0;
       
       if (await _tempDirectory!.exists()) {
-        final files = await _tempDirectory!.list().toList();
-        
-        for (final file in files) {
-          if (file is File) {
+        await for (final entity in _tempDirectory!.list(recursive: true)) {
+          if (entity is File) {
             try {
-              final fileSize = await file.length();
-              await file.delete();
+              final fileSize = await entity.length();
+              await entity.delete();
               deletedCount++;
               totalSize += fileSize;
             } catch (e) {
               if (kDebugMode) {
-                print('删除临时文件失败: ${file.path}, 错误: $e');
+                print('删除临时文件失败: ${entity.path}, 错误: $e');
               }
             }
           }
@@ -431,6 +429,7 @@ class FileCleanupService {
       await scanAndDelete(Directory('$base/images'));
       await scanAndDelete(Directory('$base/audios'));
       await scanAndDelete(Directory('$base/background_images'));
+      await scanAndDelete(Directory('$base/diary_media'));
       await scanAndDelete(Directory('$base/documents'));
 
       if (kDebugMode) {
@@ -475,21 +474,23 @@ class FileCleanupService {
     return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)}GB';
   }
 
-  /// 获取应用总存储使用量
+  /// 获取应用总存储使用量（含文档目录、缓存、临时目录，与系统应用详情一致）
   Future<int> getAppTotalStorageUsage() async {
     if (!_isInitialized) return 0;
 
     try {
       int totalSize = 0;
       
-      // 计算文档目录大小
       if (_appDocumentsDirectory != null && await _appDocumentsDirectory!.exists()) {
         totalSize += await _getDirectorySize(_appDocumentsDirectory!.path);
       }
       
-      // 计算缓存目录大小
       if (_appCacheDirectory != null && await _appCacheDirectory!.exists()) {
         totalSize += await _getDirectorySize(_appCacheDirectory!.path);
+      }
+      
+      if (_tempDirectory != null && await _tempDirectory!.exists()) {
+        totalSize += await _getDirectorySize(_tempDirectory!.path);
       }
       
       return totalSize;

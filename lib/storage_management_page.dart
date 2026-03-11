@@ -7,7 +7,8 @@ import 'package:path_provider/path_provider.dart';
 import '../core/service_locator.dart';
 import '../services/file_cleanup_service.dart';
 import '../services/database_service.dart';
-import 'dart:io';
+import 'dart:io' show Directory, File, Platform;
+import 'package:photo_manager/photo_manager.dart';
 
 class StorageManagementPage extends StatefulWidget {
   const StorageManagementPage({Key? key}) : super(key: key);
@@ -20,10 +21,20 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
   bool _isLoading = true;
   int _totalStorageUsage = 0;
   int _documentsSize = 0;
+  int _imagesSize = 0;
+  int _audiosSize = 0;
   int _mediaSize = 0;
+  int _diaryMediaSize = 0;
+  int _backgroundImagesSize = 0;
+  int _backgroundsSize = 0;
+  int _diaryBackgroundsSize = 0;
+  int _backupsSize = 0;
+  int _videosSize = 0;
   int _cacheSize = 0;
   int _tempSize = 0;
   int _databaseSize = 0;
+  /// 应用文档目录下其他未分类的子项（目录名 -> 字节数），用于定位不明占用
+  final Map<String, int> _otherAppPaths = {};
   
   final FileCleanupService _fileCleanupService = getService<FileCleanupService>();
   final DatabaseService _databaseService = getService<DatabaseService>();
@@ -44,16 +55,78 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
       // 获取各种存储大小
       _totalStorageUsage = await _fileCleanupService.getAppTotalStorageUsage();
       
-      // 获取文档目录大小
-      final documentsDir = Directory('${(await getApplicationDocumentsDirectory()).path}/documents');
+      final appPath = (await getApplicationDocumentsDirectory()).path;
+      
+      final documentsDir = Directory('$appPath/documents');
       if (await documentsDir.exists()) {
         _documentsSize = await _getDirectorySize(documentsDir.path);
       }
       
-      // 获取媒体目录大小
-      final mediaDir = Directory('${(await getApplicationDocumentsDirectory()).path}/media');
+      final imagesDir = Directory('$appPath/images');
+      if (await imagesDir.exists()) {
+        _imagesSize = await _getDirectorySize(imagesDir.path);
+      }
+      
+      final audiosDir = Directory('$appPath/audios');
+      if (await audiosDir.exists()) {
+        _audiosSize = await _getDirectorySize(audiosDir.path);
+      }
+      
+      final mediaDir = Directory('$appPath/media');
       if (await mediaDir.exists()) {
         _mediaSize = await _getDirectorySize(mediaDir.path);
+      }
+      
+      final diaryMediaDir = Directory('$appPath/diary_media');
+      if (await diaryMediaDir.exists()) {
+        _diaryMediaSize = await _getDirectorySize(diaryMediaDir.path);
+      }
+      
+      final backgroundImagesDir = Directory('$appPath/background_images');
+      if (await backgroundImagesDir.exists()) {
+        _backgroundImagesSize = await _getDirectorySize(backgroundImagesDir.path);
+      }
+      
+      final backgroundsDir = Directory('$appPath/backgrounds');
+      if (await backgroundsDir.exists()) {
+        _backgroundsSize = await _getDirectorySize(backgroundsDir.path);
+      }
+      
+      final diaryBackgroundsDir = Directory('$appPath/diary_backgrounds');
+      if (await diaryBackgroundsDir.exists()) {
+        _diaryBackgroundsSize = await _getDirectorySize(diaryBackgroundsDir.path);
+      }
+      
+      final backupsDir = Directory('$appPath/backups');
+      if (await backupsDir.exists()) {
+        _backupsSize = await _getDirectorySize(backupsDir.path);
+      }
+      
+      final videosDir = Directory('$appPath/videos');
+      if (await videosDir.exists()) {
+        _videosSize = await _getDirectorySize(videosDir.path);
+      }
+      
+      // 动态扫描应用文档根目录下所有子项，定位未列出的占用（如插件缓存等）
+      _otherAppPaths.clear();
+      final appDir = Directory(appPath);
+      if (await appDir.exists()) {
+        await for (final entity in appDir.list()) {
+          final name = entity.path.split(Platform.pathSeparator).last;
+          if (name.startsWith('.') || name == 'change_app.db' || name == 'change_app.db-journal' || name == 'change_app.db-wal') continue;
+          final known = {
+            'documents', 'images', 'audios', 'media', 'diary_media',
+            'background_images', 'backgrounds', 'diary_backgrounds', 'backups', 'videos',
+          };
+          if (known.contains(name)) continue;
+          int size = 0;
+          if (entity is File) {
+            size = await entity.length();
+          } else if (entity is Directory) {
+            size = await _getDirectorySize(entity.path);
+          }
+          if (size > 0) _otherAppPaths[name] = size;
+        }
       }
       
       // 获取缓存目录大小
@@ -141,6 +214,7 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
   /// 清理缓存文件
   Future<void> _cleanCacheFiles() async {
     try {
+      try { await PhotoManager.clearFileCache(); } catch (_) {}
       await _fileCleanupService.cleanAllCacheFiles();
       await _loadStorageInfo();
       
@@ -158,10 +232,13 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
     }
   }
 
-  /// 执行完整清理
+  /// 执行完整清理（临时+缓存+孤立文件）
   Future<void> _performFullCleanup() async {
     try {
+      try { await PhotoManager.clearFileCache(); } catch (_) {}
       await _fileCleanupService.performFullStorageCleanup();
+      final validPaths = await _databaseService.getAllValidFilePaths();
+      await _fileCleanupService.cleanOrphanedFiles(validPaths);
       await _loadStorageInfo();
       
       if (mounted) {
@@ -319,7 +396,17 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
             ),
             const SizedBox(height: 16),
             _buildStorageItem('文档文件', _documentsSize, Icons.description),
+            _buildStorageItem('图片文件(目录)', _imagesSize, Icons.image),
+            _buildStorageItem('音频文件(目录)', _audiosSize, Icons.audiotrack),
             _buildStorageItem('媒体文件', _mediaSize, Icons.photo_library),
+            _buildStorageItem('日记媒体', _diaryMediaSize, Icons.photo),
+            _buildStorageItem('背景图片', _backgroundImagesSize, Icons.wallpaper),
+            _buildStorageItem('文档背景', _backgroundsSize, Icons.image),
+            _buildStorageItem('日记背景', _diaryBackgroundsSize, Icons.photo_library),
+            _buildStorageItem('备份文件', _backupsSize, Icons.backup),
+            _buildStorageItem('视频文件', _videosSize, Icons.videocam),
+            ..._otherAppPaths.entries.map((e) => _buildStorageItem(
+                  '其他(${e.key})', e.value, Icons.folder)),
             _buildStorageItem('缓存文件', _cacheSize, Icons.cached),
             _buildStorageItem('临时文件', _tempSize, Icons.folder_open),
             _buildStorageItem('数据库文件', _databaseSize, Icons.storage),
