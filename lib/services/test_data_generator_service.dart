@@ -39,8 +39,9 @@ enum TestDataScale {
   /// 调整后：targetBytes ≈ 1.33MB，使实际≈1MB/条
   int get mediaFileBytes => 1365 * 1024; // 约 1.33MB
 
-  /// 日记：半数带图，每张 2MB，补偿后接近 totalMB
-  int get diaryImageBytes => 2344 * 1024; // 约 2.29MB
+  /// 日记：半数带图，每张 2MB，补偿 BMP 实际略小于目标使总量接近 totalMB
+  /// 经验值：小量 20 篇实际约 17.2MB（10 张图），调整后使实际≈20MB
+  int get diaryImageBytes => 2735 * 1024; // 约 2.67MB
 
   static List<TestDataScale> get directoryScales =>
       [small, medium, large, extra, peakDir10g];

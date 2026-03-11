@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/diary_entry.dart';
 import 'dart:convert';
@@ -96,6 +97,31 @@ class DiaryService {
 
   Future<void> deleteEntry(String id) async {
     final db = await getService<DatabaseService>().database;
+    // 先获取记录，删除关联的媒体文件，再删除数据库记录
+    final rows = await db.query('diary_entries', where: 'id = ?', whereArgs: [id]);
+    if (rows.isNotEmpty) {
+      final row = rows.first;
+      final paths = <String>[];
+      for (final key in ['image_paths', 'audio_paths', 'video_paths']) {
+        final val = row[key];
+        if (val == null) continue;
+        try {
+          final list = json.decode(val.toString()) as List?;
+          if (list != null) {
+            for (final p in list) {
+              final s = p.toString().trim();
+              if (s.isNotEmpty) paths.add(s);
+            }
+          }
+        } catch (_) {}
+      }
+      for (final filePath in paths) {
+        try {
+          final f = File(filePath);
+          if (await f.exists()) await f.delete();
+        } catch (_) {}
+      }
+    }
     await db.delete('diary_entries', where: 'id = ?', whereArgs: [id]);
   }
 

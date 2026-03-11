@@ -196,7 +196,10 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                   const CoverPage(),
                   DirectoryPage(onDocumentOpen: _onDocumentOpen),
                   const MediaManagerPage(),
-                  BrowserPage(onBrowserHomePageChanged: _handleBrowserHomePageChanged),
+                  BrowserPage(
+                    onBrowserHomePageChanged: _handleBrowserHomePageChanged,
+                    currentMainPageIndex: _currentPage,
+                  ),
                   const DiaryPage(),
                 ],
               ),

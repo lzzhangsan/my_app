@@ -1730,9 +1730,18 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
   void _showDirectorySettings() {
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
       builder: (context) {
-        return Wrap(
-          children: [
+        return DraggableScrollableSheet(
+          initialChildSize: 0.5,
+          minChildSize: 0.3,
+          maxChildSize: 0.9,
+          expand: false,
+          builder: (context, scrollController) {
+            return SingleChildScrollView(
+              controller: scrollController,
+              child: Wrap(
+                children: [
             ListTile(
               leading: Icon(Icons.image),
               title: Text('设置背景图片'),
@@ -1802,6 +1811,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
               },
             ),
           ],
+        ),
+      );
+          },
         );
       },
     );

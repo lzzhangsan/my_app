@@ -2253,17 +2253,12 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         return;
       }
       
-      // 2. 设置导出路径
-      final Directory downloadsDir;
-      if (Platform.isAndroid) {
-        downloadsDir = Directory('/storage/emulated/0/Download');
-      } else {
-        downloadsDir = await getExternalStorageDirectory() ?? await getApplicationDocumentsDirectory();
-      }
-      final String backupPath = "${downloadsDir.path}/diary_backups";
-      await Directory(backupPath).create(recursive: true);
-      final String timestamp = DateTime.now().toIso8601String().replaceAll(':', '-');
-      final zipFilePath = path.join(backupPath, 'media_backup_$timestamp.zip');
+      // 2. 设置导出路径（与日记一致使用 Downloads，便于分享）
+      final Directory? downloadsDir = await getDownloadsDirectory();
+      final Directory saveDir = downloadsDir ?? await getExternalStorageDirectory() ?? await getApplicationDocumentsDirectory();
+      await saveDir.create(recursive: true);
+      final String timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.').first;
+      final zipFilePath = path.join(saveDir.path, 'media_backup_$timestamp.zip');
       
       // 3. 使用流式ZIP处理，避免内存溢出
       message.value = '正在创建压缩包...';
@@ -2358,16 +2353,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
       if (mounted) Navigator.of(context).pop();
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('媒体数据已成功导出到: $zipFilePath'),
-            action: SnackBarAction(
-              label: '打开',
-              onPressed: () {
-                // 这里可以添加打开文件或目录的功能
-              },
-            ),
-          ),
+        await Share.shareXFiles(
+          [XFile(zipFilePath)],
+          text: '媒体数据导出',
         );
       }
     } catch (e) {

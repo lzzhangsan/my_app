@@ -37,8 +37,10 @@ List<int>? encodeArchive(Archive archive) {
 
 class BrowserPage extends StatefulWidget {
   final ValueChanged<bool>? onBrowserHomePageChanged;
+  /// 当前主界面选中的标签页索引（0=封面 1=目录 2=媒体 3=浏览器 4=日记），用于从其他标签切换过来时显示主界面
+  final int? currentMainPageIndex;
 
-  const BrowserPage({Key? key, this.onBrowserHomePageChanged}) : super(key: key);
+  const BrowserPage({Key? key, this.onBrowserHomePageChanged, this.currentMainPageIndex}) : super(key: key);
 
   @override
   _BrowserPageState createState() => _BrowserPageState();
@@ -201,6 +203,17 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     _loadCommonWebsites();
     _initializeTelegramService();
     _loadHistory();
+  }
+
+  @override
+  void didUpdateWidget(covariant BrowserPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 从其他标签页（如媒体）滑动到浏览器时，应显示主界面而非空白网页
+    final idx = widget.currentMainPageIndex;
+    final oldIdx = oldWidget.currentMainPageIndex;
+    if (idx == 3 && oldIdx != 3 && !_showHomePage) {
+      _goToHomePage();
+    }
   }
   
   /// 初始化 Telegram 服务
