@@ -1045,6 +1045,32 @@ class _DiaryPageState extends State<DiaryPage> {
         await jsonFile.writeAsString(jsonEncode(entriesForJson), encoding: utf8);
       }
 
+      // 5.6. 导出日记本设置（背景图片、背景色）
+      message.value = '正在导出日记本设置...';
+      final db = getService<DatabaseService>();
+      final diarySettings = await db.getDiarySettings();
+      if (diarySettings != null) {
+        final settingsExport = <String, dynamic>{};
+        final bgImagePath = diarySettings['background_image_path'] as String?;
+        final bgColor = diarySettings['background_color'] as int?;
+        if (bgColor != null) settingsExport['background_color'] = bgColor;
+        if (bgImagePath != null && bgImagePath.isNotEmpty) {
+          final imageFile = File(bgImagePath);
+          if (await imageFile.exists()) {
+            final fileName = path.basename(bgImagePath);
+            final bgDir = Directory(path.join(tempExportDir.path, 'diary_background'));
+            await bgDir.create(recursive: true);
+            final targetPath = path.join(bgDir.path, fileName);
+            await copyFileWithStreaming(imageFile, targetPath);
+            settingsExport['background_image_file'] = 'diary_background/$fileName';
+          }
+        }
+        if (settingsExport.isNotEmpty) {
+          final settingsFile = File(path.join(tempExportDir.path, 'diary_settings.json'));
+          await settingsFile.writeAsString(jsonEncode(settingsExport), encoding: utf8);
+        }
+      }
+
       currentPhase = '选择保存位置';
       final Directory saveDir = await getExportSaveDirectory();
       await saveDir.create(recursive: true);
@@ -1310,6 +1336,39 @@ class _DiaryPageState extends State<DiaryPage> {
       } else {
         Logger.w('临时媒体目录不存在，跳过媒体文件迁移');
       }
+
+      // 6.5. 导入日记本设置（背景图片、背景色）
+      final settingsFile = File(path.join(tempImportDir.path, 'diary_settings.json'));
+      if (await settingsFile.exists()) {
+        message.value = '正在恢复日记本设置...';
+        try {
+          final settingsJson = jsonDecode(await settingsFile.readAsString()) as Map<String, dynamic>;
+          final bgColor = settingsJson['background_color'] as int?;
+          final bgImageRel = settingsJson['background_image_file'] as String?;
+          String? newBgImagePath;
+          if (bgImageRel != null && bgImageRel.isNotEmpty) {
+            final sourcePath = path.join(tempImportDir.path, bgImageRel);
+            final sourceFile = File(sourcePath);
+            if (await sourceFile.exists()) {
+              final appDir = await getApplicationDocumentsDirectory();
+              final bgDir = Directory(path.join(appDir.path, 'diary_backgrounds'));
+              if (!await bgDir.exists()) await bgDir.create(recursive: true);
+              final fileName = path.basename(bgImageRel);
+              final destPath = path.join(bgDir.path, fileName);
+              await copyFileWithStreaming(sourceFile, destPath);
+              newBgImagePath = destPath;
+              Logger.i('已导入日记本背景图片: $fileName');
+            }
+          }
+          await getService<DatabaseService>().insertOrUpdateDiarySettings(
+            imagePath: newBgImagePath,
+            colorValue: bgColor,
+          );
+        } catch (e) {
+          Logger.w('导入日记本设置时出错: $e');
+        }
+      }
+
       progress.value = 0.95;
 
       // 7. 验证媒体文件映射
@@ -1354,6 +1413,7 @@ class _DiaryPageState extends State<DiaryPage> {
       // 8. 刷新UI
       message.value = '导入完成!';
       await _loadEntries();
+      await _loadDiarySettings();
       progress.value = 1.0;
       
       if (mounted) Navigator.of(context).pop();

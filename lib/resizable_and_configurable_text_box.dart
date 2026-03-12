@@ -585,7 +585,7 @@ class _ResizableAndConfigurableTextBoxState
             final v = attrs['size'];
             cur = (v is num) ? v.toDouble() : (double.tryParse(v.toString()) ?? cur);
           }
-          final newSize = (cur + delta).clamp(8.0, 72.0);
+          final newSize = (cur + delta).clamp(8.0, double.infinity);
           _quillController.formatText(
             offset,
             len,
@@ -776,7 +776,7 @@ class _ResizableAndConfigurableTextBoxState
                           final sizeVal = style.values.firstWhere((a) => a.key == quill.Attribute.size.key, orElse: () => quill.Attribute.size);
                           double cur = _textStyle.fontSize;
                           if (sizeVal.value != null) cur = double.tryParse(sizeVal.value.toString()) ?? cur;
-                          cur = (cur - 2).clamp(8.0, 72.0);
+                          cur = (cur - 2).clamp(8.0, double.infinity);
                           final attr = quill.Attribute.clone(quill.Attribute.size, cur.toString());
                           _quillFormatSelection(attr);
                         } else {
@@ -799,7 +799,7 @@ class _ResizableAndConfigurableTextBoxState
                           final sizeVal = style.values.firstWhere((a) => a.key == quill.Attribute.size.key, orElse: () => quill.Attribute.size);
                           double cur = _textStyle.fontSize;
                           if (sizeVal.value != null) cur = double.tryParse(sizeVal.value.toString()) ?? cur;
-                          cur = (cur + 2).clamp(8.0, 72.0);
+                          cur = (cur + 2).clamp(8.0, double.infinity);
                           final attr = quill.Attribute.clone(quill.Attribute.size, cur.toString());
                           _quillFormatSelection(attr);
                         } else {
