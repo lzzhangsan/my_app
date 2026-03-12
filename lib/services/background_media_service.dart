@@ -3,16 +3,18 @@
 
 import 'dart:async';
 import 'dart:io';
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:uuid/uuid.dart';
 import '../core/service_locator.dart';
 import 'database_service.dart';
-import 'media_service.dart';
-import '../models/media_item.dart';
 import '../models/media_type.dart';
 
 @pragma('vm:entry-point')
@@ -239,7 +241,7 @@ class BackgroundMediaService {
   /// 处理新增媒体
   static Future<void> _processNewMedia(Set<String> newAssetIds, List<AssetEntity> allAssets) async {
     try {
-      final mediaService = getService<MediaService>();
+      final databaseService = getService<DatabaseService>();
       
       for (final assetId in newAssetIds) {
         try {
@@ -249,10 +251,10 @@ class BackgroundMediaService {
             print('[后台服务] 处理新增媒体: ${asset.title}');
           }
           
-          // 导入媒体到应用媒体库
-          final mediaItem = await _importMediaToApp(asset, mediaService);
+          // 导入媒体到应用媒体库（含查重）
+          final imported = await _importMediaToApp(asset, databaseService);
           
-          if (mediaItem != null) {
+          if (imported) {
             // 静默模式下不删除原件，避免 Android 弹出系统确认框
             // 后台 isolate 的 SharedPreferences 需 reload 才能拿到主 isolate 的最新设置
             final prefs = await SharedPreferences.getInstance();
@@ -278,39 +280,52 @@ class BackgroundMediaService {
     }
   }
 
-  /// 导入媒体到应用媒体库
-  static Future<MediaItem?> _importMediaToApp(AssetEntity asset, MediaService mediaService) async {
+  /// 导入媒体到应用媒体库（含查重：file_hash/fileName，重复则跳过）
+  static Future<bool> _importMediaToApp(AssetEntity asset, DatabaseService databaseService) async {
     try {
-      // 获取媒体文件
       final File? mediaFile = await asset.file;
       if (mediaFile == null || !await mediaFile.exists()) {
-        if (kDebugMode) {
-          print('[后台服务] 媒体文件不存在: ${asset.title}');
-        }
-        return null;
+        if (kDebugMode) print('[后台服务] 媒体文件不存在: ${asset.title}');
+        return false;
       }
-      
-      // 确定媒体类型
       if (asset.type != AssetType.image && asset.type != AssetType.video) {
-        if (kDebugMode) {
-          print('[后台服务] 不支持的媒体类型: ${asset.type}');
-        }
-        return null;
+        if (kDebugMode) print('[后台服务] 不支持的媒体类型: ${asset.type}');
+        return false;
       }
-      
-      // 导入到应用媒体库
-      final mediaItem = await mediaService.addMediaFile(mediaFile);
-      
-      if (kDebugMode) {
-        print('[后台服务] 成功导入媒体: ${mediaItem?.name}');
+
+      final fileName = p.basename(mediaFile.path);
+      final fileHash = md5.convert(await mediaFile.readAsBytes()).toString();
+      final duplicate = await databaseService.findDuplicateMediaItem(fileHash, fileName);
+      if (duplicate != null) {
+        if (kDebugMode) print('[后台服务] 跳过重复文件: $fileName');
+        return false;
       }
-      
-      return mediaItem;
+
+      final appDir = await getApplicationDocumentsDirectory();
+      final mediaDir = Directory(p.join(appDir.path, 'media'));
+      if (!await mediaDir.exists()) await mediaDir.create(recursive: true);
+
+      final uuid = const Uuid().v4();
+      final ext = p.extension(mediaFile.path);
+      final destPath = p.join(mediaDir.path, '$uuid$ext');
+      await mediaFile.copy(destPath);
+
+      final mediaItemMap = {
+        'id': uuid,
+        'name': fileName,
+        'path': destPath,
+        'type': asset.type == AssetType.image ? MediaType.image.index : MediaType.video.index,
+        'directory': 'root',
+        'date_added': DateTime.now().toIso8601String(),
+        'file_hash': fileHash,
+      };
+      await databaseService.insertMediaItem(mediaItemMap);
+
+      if (kDebugMode) print('[后台服务] 成功导入媒体: $fileName');
+      return true;
     } catch (e) {
-      if (kDebugMode) {
-        print('[后台服务] 导入媒体失败: $e');
-      }
-      return null;
+      if (kDebugMode) print('[后台服务] 导入媒体失败: $e');
+      return false;
     }
   }
 

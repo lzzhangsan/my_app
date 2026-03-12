@@ -324,9 +324,155 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   }
 
   Future<List<File>> _pickMultipleImages() async {
-    final picker = ImagePicker();
-    final pickedFiles = await picker.pickMultiImage();
-    return pickedFiles.map((xFile) => File(xFile.path)).toList();
+    try {
+      debugPrint('开始加载图片文件...');
+      final List<AssetPathEntity> paths = await PhotoManager.getAssetPathList(
+        type: RequestType.image,
+      );
+      debugPrint('找到 ${paths.length} 个图片路径');
+      if (paths.isEmpty) {
+        final picker = ImagePicker();
+        final pickedFiles = await picker.pickMultiImage();
+        return pickedFiles.map((xFile) => File(xFile.path)).toList();
+      }
+
+      List<AssetEntity> allImages = [];
+      Set<String> imageIds = {};
+      for (var path in paths) {
+        final assets = await path.getAssetListRange(start: 0, end: 100000);
+        for (var asset in assets) {
+          if (!imageIds.contains(asset.id)) {
+            allImages.add(asset);
+            imageIds.add(asset.id);
+          }
+        }
+      }
+      allImages.sort((a, b) {
+        final aDate = a.createDateTime;
+        final bDate = b.createDateTime;
+        if (aDate == null && bDate == null) return 0;
+        if (aDate == null) return 1;
+        if (bDate == null) return -1;
+        return bDate.compareTo(aDate);
+      });
+
+      debugPrint('总共找到 ${allImages.length} 个唯一图片（按时间从新到旧）');
+      List<AssetEntity> selectedImages = await _showImageSelectionDialog(allImages);
+      if (selectedImages.isEmpty) return [];
+
+      List<File> imageFiles = [];
+      for (var asset in selectedImages) {
+        final file = await asset.file;
+        if (file != null) imageFiles.add(file);
+      }
+      return imageFiles;
+    } catch (e) {
+      debugPrint('选择图片时出错: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('加载图片时出错: $e')),
+        );
+      }
+      return [];
+    }
+  }
+
+  Future<List<AssetEntity>> _showImageSelectionDialog(List<AssetEntity> images) async {
+    List<AssetEntity> selected = [];
+    bool isSelecting = false;
+    final screenSize = MediaQuery.of(context).size;
+
+    await showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => Dialog(
+          insetPadding: EdgeInsets.zero,
+          child: SizedBox(
+            width: screenSize.width,
+            height: screenSize.height * 0.9,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Padding(
+                  padding: EdgeInsets.all(8.0),
+                  child: Text('选择图片（按时间从新到旧）', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                ),
+                Expanded(
+                  child: GridView.builder(
+                    padding: const EdgeInsets.all(4.0),
+                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 4,
+                      childAspectRatio: 1,
+                      crossAxisSpacing: 4,
+                      mainAxisSpacing: 4,
+                    ),
+                    itemCount: images.length,
+                    itemBuilder: (context, index) {
+                      final image = images[index];
+                      final isSelected = selected.contains(image);
+                      return GestureDetector(
+                        onTap: () {
+                          setDialogState(() {
+                            if (isSelected) {
+                              selected.remove(image);
+                            } else {
+                              selected.add(image);
+                            }
+                          });
+                        },
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            FutureBuilder<Uint8List?>(
+                              future: image.thumbnailDataWithSize(const ThumbnailSize(200, 200)),
+                              builder: (context, snapshot) {
+                                if (snapshot.hasData && snapshot.data != null) {
+                                  return Image.memory(
+                                    snapshot.data!,
+                                    fit: BoxFit.cover,
+                                    width: double.infinity,
+                                    height: double.infinity,
+                                  );
+                                }
+                                return const Center(child: CircularProgressIndicator());
+                              },
+                            ),
+                            if (isSelected)
+                              const Positioned(
+                                top: 4,
+                                right: 4,
+                                child: Icon(Icons.check_circle, color: Colors.green, size: 24),
+                              ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.all(8.0),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
+                      TextButton(
+                        onPressed: () {
+                          isSelecting = true;
+                          Navigator.pop(context);
+                        },
+                        child: const Text('确定'),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    return isSelecting ? selected : [];
   }
 
   Future<List<File>> _pickMultipleVideos() async {
@@ -2967,7 +3113,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       final Set<String> newIds = currentIds.difference(_initialAssetIds);
       if (newIds.isNotEmpty) {
         print('检测到新增媒体: ${newIds.length} 个');
-        for (final asset in allAssets.where((e) => newIds.contains(e.id))) {
+        // 按 id 去重：同一图片可能出现在多个相册（Recent/Camera/Screenshots），避免重复导入
+        for (final id in newIds) {
+          final asset = allAssets.firstWhere((e) => e.id == id);
           await _autoImportAndDeleteAsset(asset);
         }
         // 更新快照，只保留应用打开期间的新增

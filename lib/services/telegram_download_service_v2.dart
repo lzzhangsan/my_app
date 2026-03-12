@@ -277,6 +277,11 @@ class TelegramDownloadServiceV2 {
         }
 
         final fileHash = md5.convert(await appFile.readAsBytes()).toString();
+        final duplicate = await databaseService.findDuplicateMediaItem(fileHash, fileName, telegramFileId: fileId);
+        if (duplicate != null) {
+          return DownloadResult.success(localFilePath, fileName); // 已存在，视为成功
+        }
+
         final uuid = const Uuid().v4();
 
         final mediaItem = {
