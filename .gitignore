@@ -3,6 +3,14 @@
 .env
 .env.local
 .env.*.local
+
+# Cursor/Continue - 含 API Key，切勿提交
+.continue/
+
+# Android 签名密钥（含密码）
+*.keystore
+*.jks
+key.properties
 *.log
 *.pyc
 *.swp
