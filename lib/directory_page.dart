@@ -15,6 +15,8 @@ import 'services/image_picker_service.dart';
 import 'services/file_cleanup_service.dart';
 import 'services/test_data_generator_service.dart';
 import 'package:archive/archive_io.dart';
+import 'services/export_import_utils.dart';
+import 'utils/export_import_error_utils.dart';
 
 class DirectoryPage extends StatefulWidget {
   final Function(String) onDocumentOpen;
@@ -2172,6 +2174,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
 
   void _exportDirectoryData() async {
     try {
+      // 使用默认位置（Downloads/外部存储），便于一键分享
       // 创建进度通知器
       final ValueNotifier<String> progressNotifier = ValueNotifier<String>('准备导出...');
       
@@ -2200,8 +2203,10 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         ),
       );
 
-      final String zipPath = await getService<DatabaseService>().exportDirectoryData(
+      // 导出到默认目录（Downloads/外部存储），不写入 backups
+      String zipPath = await getService<DatabaseService>().exportDirectoryData(
         progressNotifier: progressNotifier,
+        outputDirectory: null,
       );
 
       // 关闭进度对话框
@@ -2209,18 +2214,32 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         Navigator.pop(context);
       }
 
-      // 分享文件
-      await Share.shareXFiles(
-        [XFile(zipPath)],
-        subject: '目录数据备份',
-      );
-    } catch (e) {
-      print('导出目录数据时出错: $e');
+      // 小文件：仅原生分享；大文件(>500MB)：跳过分享，弹窗提供「直达」等（share_plus 大文件会 ANR）
       if (mounted) {
-        Navigator.pop(context); // 关闭进度对话框
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('导出目录数据时出错：$e')),
-        );
+        final zipFile = File(zipPath);
+        final size = await zipFile.exists() ? await zipFile.length() : 0;
+        if (size <= kShareSizeLimitBytes) {
+          try {
+            await Share.shareXFiles([XFile(zipPath)], subject: '目录数据备份');
+          } catch (_) {}
+          // 小文件：分享后即完成，不再弹第二个界面
+        } else {
+          showExportResultDialog(
+            context,
+            zipPath,
+            size,
+            shareText: '目录数据备份',
+            showShareButton: false,
+            showSaveToFolderButton: true,
+          );
+        }
+      }
+    } catch (e, stack) {
+      debugPrint('导出目录数据时出错: $e\n$stack');
+      if (mounted) {
+        Navigator.pop(context);
+        final userMsg = formatExportImportError(e, '导出失败');
+        showExportImportErrorDialog(context, '目录数据导出失败', userMsg);
       }
     }
   }
@@ -2302,13 +2321,12 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
           );
         }
       }
-    } catch (e) {
-      print('导入所有数据时出错: $e');
+    } catch (e, stack) {
+      debugPrint('导入目录数据时出错: $e\n$stack');
       if (mounted) {
-        Navigator.pop(context); // 关闭进度对话框
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('导入数据时出错：$e')),
-        );
+        Navigator.pop(context);
+        final userMsg = formatExportImportError(e, '导入失败');
+        showExportImportErrorDialog(context, '目录数据导入失败', userMsg);
       }
     }
   }

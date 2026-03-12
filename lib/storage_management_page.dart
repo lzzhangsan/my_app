@@ -33,6 +33,8 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
   int _cacheSize = 0;
   int _tempSize = 0;
   int _databaseSize = 0;
+  /// 应用专属外部存储（Android 计入系统「数据」，含导出文件、browser_backups 等）
+  int _externalStorageSize = 0;
   /// 应用文档目录下其他未分类的子项（目录名 -> 字节数），用于定位不明占用
   final Map<String, int> _otherAppPaths = {};
   
@@ -148,6 +150,9 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
         _databaseSize = await dbFile.length();
       }
       
+      // 应用专属外部存储（与系统「数据」一致，含导出 ZIP、browser_backups 等）
+      _externalStorageSize = await _fileCleanupService.getExternalStorageUsage();
+      
     } catch (e) {
       if (kDebugMode) {
         print('加载存储信息失败: $e');
@@ -250,6 +255,75 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('完整存储清理失败: $e')),
+        );
+      }
+    }
+  }
+
+  /// 清理备份文件（需确认，删除后无法恢复）
+  Future<void> _cleanBackupFiles() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('确认清理备份'),
+        content: Text(
+          '备份文件包含目录导出、数据库备份等，用于数据恢复。\n\n'
+          '删除后将无法恢复，确定要清理约 ${_formatFileSize(_backupsSize)} 的备份文件吗？',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('确定清理'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      final result = await _fileCleanupService.cleanBackupFiles();
+      await _loadStorageInfo();
+      if (mounted) {
+        final count = result['count'] ?? 0;
+        final bytes = result['bytes'] ?? 0;
+        final sizeStr = _formatFileSize(bytes);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(count > 0 ? '已清理 $count 项备份，释放 $sizeStr' : '备份目录为空'),
+            backgroundColor: count > 0 ? Colors.green : null,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('清理备份失败: $e')),
+        );
+      }
+    }
+  }
+
+  /// 清理应用外部存储（导出 ZIP、插件缓存等）
+  Future<void> _cleanExternalStorage() async {
+    try {
+      final result = await _fileCleanupService.cleanExternalStorage();
+      await _loadStorageInfo();
+      if (mounted) {
+        final count = result['count'] ?? 0;
+        final bytes = result['bytes'] ?? 0;
+        final sizeStr = _formatFileSize(bytes);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(count > 0 ? '已清理 $count 项外部存储，释放 $sizeStr' : '外部存储无可清理项'),
+            backgroundColor: count > 0 ? Colors.green : null,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('清理外部存储失败: $e')),
         );
       }
     }
@@ -410,6 +484,7 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
             _buildStorageItem('缓存文件', _cacheSize, Icons.cached),
             _buildStorageItem('临时文件', _tempSize, Icons.folder_open),
             _buildStorageItem('数据库文件', _databaseSize, Icons.storage),
+            _buildStorageItem('应用外部存储', _externalStorageSize, Icons.sd_storage),
           ],
         ),
       ),
@@ -472,9 +547,23 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
               Icons.delete_sweep,
               _cleanOrphanedFiles,
             ),
+            if (_externalStorageSize > 0)
+              _buildCleanupButton(
+                '清理外部存储',
+                '删除导出 ZIP、插件缓存等，释放约 ${_formatFileSize(_externalStorageSize)}',
+                Icons.sd_storage,
+                _cleanExternalStorage,
+              ),
+            if (_backupsSize > 0)
+              _buildCleanupButton(
+                '清理备份文件',
+                '删除目录导出、数据库备份等（约 ${_formatFileSize(_backupsSize)}），删除后无法恢复',
+                Icons.backup,
+                _cleanBackupFiles,
+              ),
             _buildCleanupButton(
               '完整清理',
-              '执行所有清理操作',
+              '执行所有清理操作（含外部存储）',
               Icons.cleaning_services,
               _performFullCleanup,
               isPrimary: true,
@@ -495,12 +584,14 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
   }) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8),
-      child: ElevatedButton.icon(
-        onPressed: onPressed,
-        icon: Icon(icon),
-        label: Expanded(
-          child: Column(
+      child: SizedBox(
+        width: double.infinity,
+        child: ElevatedButton.icon(
+          onPressed: onPressed,
+          icon: Icon(icon),
+          label: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
             children: [
               Text(
                 title,
@@ -515,12 +606,12 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
               ),
             ],
           ),
-        ),
-        style: ElevatedButton.styleFrom(
-          backgroundColor: isPrimary ? Colors.blue : Colors.grey[200],
-          foregroundColor: isPrimary ? Colors.white : Colors.black87,
-          padding: const EdgeInsets.all(16),
-          alignment: Alignment.centerLeft,
+          style: ElevatedButton.styleFrom(
+            backgroundColor: isPrimary ? Colors.blue : Colors.grey[200],
+            foregroundColor: isPrimary ? Colors.white : Colors.black87,
+            padding: const EdgeInsets.all(16),
+            alignment: Alignment.centerLeft,
+          ),
         ),
       ),
     );
@@ -543,6 +634,10 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
               ),
             ),
             const SizedBox(height: 16),
+            _buildTipItem(
+              '「应用外部存储」含导出 ZIP、插件缓存等；「备份文件」为目录/数据库导出备份',
+              Icons.info_outline,
+            ),
             _buildTipItem(
               '定期清理临时文件和缓存文件',
               Icons.lightbulb_outline,

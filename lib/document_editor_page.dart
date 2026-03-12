@@ -565,11 +565,6 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
         _contentChanged = false;
       }
       widget.onSave(List<Map<String, dynamic>>.from(_textBoxes));
-      try {
-        await _databaseService.backupDatabase();
-      } catch (e) {
-        print('保存内容时数据库备份出错: $e');
-      }
       print('文档内容已保存');
     } catch (e) {
       print('保存内容时出错: $e');
@@ -1496,11 +1491,6 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
       // 不调用setState，因为页面已经销毁
       _contentChanged = false;
       widget.onSave(List<Map<String, dynamic>>.from(_textBoxes));
-      try {
-        await _databaseService.backupDatabase();
-      } catch (e) {
-        print('保存内容时数据库备份出错: $e');
-      }
       print('文档内容已保存');
     } catch (e) {
       print('保存内容时出错: $e');

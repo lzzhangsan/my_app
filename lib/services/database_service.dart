@@ -15,6 +15,7 @@ import '../core/service_locator.dart';
 import 'file_cleanup_service.dart';
 import 'export_import_utils.dart';
 import '../models/diary_entry.dart';
+import '../utils/safe_path_utils.dart';
 
 /// 数据库服务 - 统一管理所有数据库操作
 class DatabaseService {
@@ -933,35 +934,6 @@ class DatabaseService {
     return true;
   }
 
-  /// 备份数据库
-  Future<void> backupDatabase() async {
-    try {
-      String dbPath = await getDatabasesPath();
-      String path = p.join(dbPath, 'text_boxes.db');
-      File dbFile = File(path);
-
-      if (!await dbFile.exists()) {
-        print('数据库文件不存在，无需备份');
-        return;
-      }
-
-      Directory appDir = await getApplicationDocumentsDirectory();
-      String backupDirPath = p.join(appDir.path, 'backups');
-
-      Directory backupDir = Directory(backupDirPath);
-      if (!await backupDir.exists()) {
-        await backupDir.create(recursive: true);
-      }
-
-      String backupPath = p.join(backupDirPath, 'text_boxes_backup.db');
-      await dbFile.copy(backupPath);
-
-      print('数据库已备份到: $backupPath');
-    } catch (e) {
-      print('备份数据库时出错: $e');
-    }
-  }
-
   /// 更新文件夹的父文件夹
   Future<void> updateFolderParentFolder(String folderName, String? newParentFolderName) async {
     try {
@@ -1089,22 +1061,16 @@ class DatabaseService {
   }
 
   /// 导出目录数据 - 优化版，支持超大数据处理
-  Future<String> exportDirectoryData({ValueNotifier<String>? progressNotifier}) async {
-    // 导出前先检测音频完整性
-    final missingAudioFiles = await checkDirectoryAudioFilesIntegrity();
-    if (missingAudioFiles.isNotEmpty) {
-      throw Exception('导出失败：有音频文件丢失，需补齐后再导出。丢失文件如下：\n${missingAudioFiles.join('\n')}');
-    }
+  /// [outputDirectory] 可选，指定 ZIP 输出目录；为 null 时使用 Downloads/外部存储（不写入 backups）
+  /// 允许部分图片/音频文件缺失（已删除或路径无效），缺失文件会跳过并写入 missing_audio_files.txt
+  Future<String> exportDirectoryData({ValueNotifier<String>? progressNotifier, String? outputDirectory}) async {
     try {
       print('开始导出目录数据...');
       progressNotifier?.value = "准备导出...";
       
-      final Directory appDocDir = await getApplicationDocumentsDirectory();
-      final String backupPath = '${appDocDir.path}/backups';
-      print('备份路径: $backupPath');
-
-      // 创建临时目录
-      final String tempDirPath = '$backupPath/temp_backup';
+      // 临时目录用于打包，导出完成后删除；不占用 backups
+      final Directory tempRoot = await getTemporaryDirectory();
+      final String tempDirPath = '${tempRoot.path}/directory_export_temp_${DateTime.now().millisecondsSinceEpoch}';
       final Directory tempDir = Directory(tempDirPath);
       if (await tempDir.exists()) {
         await tempDir.delete(recursive: true);
@@ -1332,9 +1298,17 @@ class DatabaseService {
       }
       progressNotifier?.value = "正在创建压缩文件...";
       
-      // 创建ZIP文件 - 使用流式ZipEncoder递归打包所有文件，彻底解决嵌套目录丢失问题
+      // ZIP 输出目录：用户指定 > 公共下载目录（优先）> 外部存储（不写入 backups）
+      String zipOutputDir;
+      if (outputDirectory != null && outputDirectory.isNotEmpty) {
+        zipOutputDir = outputDirectory;
+      } else {
+        final saveDir = await getExportSaveDirectory();
+        zipOutputDir = saveDir.path;
+      }
+      await Directory(zipOutputDir).create(recursive: true);
       final String timestamp = DateTime.now().toString().replaceAll(RegExp(r'[^0-9]'), '');
-      final String zipPath = '$backupPath/directory_backup_$timestamp.zip';
+      final String zipPath = p.join(zipOutputDir, 'directory_backup_$timestamp.zip');
       final tempDirEntity = Directory(tempDirPath);
       
       // 使用流式ZipEncoder避免内存溢出
@@ -1345,8 +1319,8 @@ class DatabaseService {
         if (entity is File) {
           final relativePath = p.relative(entity.path, from: tempDirPath);
           print('[导出] 添加到ZIP: $relativePath');
-          // addFile会以流的方式处理文件，避免读入内存
-          await encoder.addFile(entity, relativePath);
+          // addFile会以流的方式处理文件，避免读入内存；level:0 不压缩，降低大容量导出时的内存占用
+          await encoder.addFile(entity, relativePath, 0);
         }
       }
       encoder.close();
@@ -1358,27 +1332,33 @@ class DatabaseService {
       final archiveCheck = ZipDecoder().decodeStream(inputStream);
 
       try {
-        // 校验图片文件数量
+        // 校验图片文件数量（允许 ZIP 少于 DB：部分图片文件可能已被删除或路径无效）
         int imageBoxCount = imageBoxesToExport.length;
+        int imageBoxesWithPath = imageBoxesToExport.where((row) {
+          final path = row['image_path'];
+          return path != null && path.toString().isNotEmpty;
+        }).length;
         int zipImageCount = archiveCheck.where((file) => file.name.startsWith('images/') && !file.isDirectory).length;
-        if (imageBoxCount != zipImageCount) {
-          throw Exception('导出失败：图片文件数量不一致，数据库图片框$imageBoxCount个，ZIP包内$zipImageCount个，请联系开发者排查。');
+        print('[导出] 图片框总数: $imageBoxCount，其中有路径的: $imageBoxesWithPath，ZIP内文件: $zipImageCount');
+        if (zipImageCount > imageBoxCount) {
+          throw Exception('导出失败：图片文件数量异常，ZIP包内$zipImageCount个多于数据库$imageBoxCount个，请联系开发者排查。');
         }
-        // 校验音频文件数量
-        // 之前直接使用 audioBoxesToExport.length 作为期望文件数，如果某些音频框尚未选择音频（audio_path为空），会导致误报。
+        if (zipImageCount < imageBoxesWithPath && kDebugMode) {
+          print('[导出] 警告：部分图片文件不存在已跳过，有路径的$imageBoxesWithPath个，实际导出$zipImageCount个');
+        }
+        // 校验音频文件数量（允许 ZIP 少于期望：部分音频文件可能已被删除）
         final audioBoxesWithFile = audioBoxesToExport.where((row) {
           final path = row['audio_path'];
           return path != null && path.toString().isNotEmpty;
         }).toList();
-        final audioBoxesWithoutFile = audioBoxesToExport.where((row) {
-          final path = row['audio_path'];
-          return path == null || path.toString().isEmpty;
-        }).toList();
         int expectedAudioFileCount = audioBoxesWithFile.length;
         int zipAudioCount = archiveCheck.where((file) => file.name.startsWith('audios/') && !file.isDirectory).length;
-        print('[导出] 音频框总数: ${audioBoxesToExport.length}，其中有文件的: $expectedAudioFileCount，没有文件的: ${audioBoxesWithoutFile.length}');
-        if (expectedAudioFileCount != zipAudioCount) {
-          throw Exception('导出失败：音频文件数量不一致，有音频文件的音频框$expectedAudioFileCount个，ZIP包内$zipAudioCount个，请联系开发者排查。如果只是有空的音频框请忽略该错误并报告日志。');
+        print('[导出] 音频框总数: ${audioBoxesToExport.length}，其中有文件的: $expectedAudioFileCount，ZIP内: $zipAudioCount');
+        if (zipAudioCount > expectedAudioFileCount) {
+          throw Exception('导出失败：音频文件数量异常，ZIP包内$zipAudioCount个多于有路径的$expectedAudioFileCount个，请联系开发者排查。');
+        }
+        if (zipAudioCount < expectedAudioFileCount && missingAudioFiles.isNotEmpty && kDebugMode) {
+          print('[导出] 警告：${missingAudioFiles.length}个音频文件不存在已跳过');
         }
       } finally {
         await inputStream.close();
@@ -1426,15 +1406,15 @@ class DatabaseService {
       final totalFiles = archive.length;
       
       for (final file in archive) {
-        final filename = file.name;
+        final outPath = resolveSafeExtractPath(tempDirPath, file.name);
         if (file.isFile) {
-          final outFile = File('$tempDirPath/$filename');
-          await outFile.create(recursive: true);
+          final outFile = File(outPath);
+          await outFile.parent.create(recursive: true);
           final outputStream = OutputFileStream(outFile.path);
           file.writeContent(outputStream);
           await outputStream.close();
         } else {
-          await Directory('$tempDirPath/$filename').create(recursive: true);
+          await Directory(outPath).create(recursive: true);
         }
         processedFiles++;
         progressNotifier?.value = "正在解压: $processedFiles/$totalFiles";
@@ -2216,11 +2196,11 @@ class DatabaseService {
       final inputStream = InputFileStream(zipPath);
       final archive = ZipDecoder().decodeStream(inputStream);
       for (final file in archive) {
-        final filename = file.name;
         if (file.isFile) {
+          final outPath = resolveSafeExtractPath(tempDirPath, file.name);
           final data = file.content as List<int>;
-          File('$tempDirPath/$filename')
-            ..createSync(recursive: true)
+          File(outPath)
+            ..parent.createSync(recursive: true)
             ..writeAsBytesSync(data);
         }
       }
@@ -3086,11 +3066,11 @@ class DatabaseService {
       final inputStream = InputFileStream(zipPath);
       final archive = ZipDecoder().decodeStream(inputStream);
       for (var file in archive) {
-        final String filename = file.name;
         if (file.isFile) {
+          final outPath = resolveSafeExtractPath(tempDirPath, file.name);
           final data = file.content as List<int>;
-          File('$tempDirPath/$filename')
-            ..createSync(recursive: true)
+          File(outPath)
+            ..parent.createSync(recursive: true)
             ..writeAsBytesSync(data);
         }
       }
@@ -3170,13 +3150,14 @@ class DatabaseService {
               Map<String, dynamic> imageBox = Map<String, dynamic>.from(row);
               String? imageFileName = imageBox.remove('imageFileName');
               if (imageFileName != null) {
-                // 复制图片文件到新位置
                 String newPath = p.join(imagesDirPath, imageFileName);
                 String tempPath = p.join(tempDirPath, 'images', imageFileName);
                 if (await File(tempPath).exists()) {
                   await File(tempPath).copy(newPath);
-                  imageBox['image_path'] = newPath; // 修正字段名称为image_path
+                  imageBox['image_path'] = newPath;
                   print('已导入图片框图片: $newPath');
+                } else {
+                  imageBox['image_path'] = null; // 导出时文件已缺失，导入时清空路径
                 }
               }
               await txn.insert(tableName, imageBox);
@@ -4320,368 +4301,6 @@ class DatabaseService {
     } catch (e, stackTrace) {
       _handleError('删除封面图片失败', e, stackTrace);
       print('删除封面图片时出错: $e');
-    }
-  }
-
-  /// Restore database from backup
-  Future<void> restoreDatabase(String filePath) async {
-    try {
-      print('开始从备份恢复数据库: $filePath');
-      
-      final Directory appDocDir = await getApplicationDocumentsDirectory();
-      final String tempDirPath = '${appDocDir.path}/temp_restore';
-      
-      // 清理并创建临时目录
-      if (await Directory(tempDirPath).exists()) {
-        await Directory(tempDirPath).delete(recursive: true);
-      }
-      await Directory(tempDirPath).create(recursive: true);
-      
-      // 解压备份文件
-      final bytes = File(filePath).readAsBytesSync();
-      final archive = ZipDecoder().decodeBytes(bytes);
-      
-      for (final file in archive) {
-        final filename = file.name;
-        if (file.isFile) {
-          final data = file.content as List<int>;
-          File('$tempDirPath/$filename')
-            ..createSync(recursive: true)
-            ..writeAsBytesSync(data);
-        }
-      }
-      
-      // 读取目录数据
-      final File dbDataFile = File('$tempDirPath/directory_data.json');
-      if (!await dbDataFile.exists()) {
-        throw Exception('备份中未找到目录数据文件');
-      }
-      
-      final Map<String, dynamic> tableData = jsonDecode(await dbDataFile.readAsString());
-      final db = await database;
-      
-      // 准备背景图片目录
-      final String backgroundImagesPath = '${appDocDir.path}/background_images';
-      await Directory(backgroundImagesPath).create(recursive: true);
-      
-      await db.transaction((txn) async {
-        // 清除现有数据
-        await txn.delete('folders');
-        await txn.delete('documents');
-        await txn.delete('text_boxes');
-        await txn.delete('image_boxes');
-        await txn.delete('audio_boxes');
-        await txn.delete('document_settings');
-        await txn.delete('directory_settings');
-        
-        // 导入新数据
-        for (var entry in tableData.entries) {
-          final String tableName = entry.key;
-          final List<dynamic> rows = entry.value;
-          print('处理表: $tableName, 行数: ${rows.length}');
-          
-          if (tableName == 'directory_settings') {
-            for (var row in rows) {
-              Map<String, dynamic> settings = Map<String, dynamic>.from(row);
-              String? fileName = settings.remove('backgroundImageFileName');
-              if (fileName != null) {
-                // 复制背景图片到新位置
-                String newPath = p.join(backgroundImagesPath, fileName);
-                String tempPath = p.join(tempDirPath, 'background_images', fileName);
-                if (await File(tempPath).exists()) {
-                  await File(tempPath).copy(newPath);
-                  settings['background_image_path'] = newPath;
-                  print('已导入目录背景图片: $newPath');
-                }
-              }
-              await txn.insert(tableName, settings);
-            }
-          } else if (tableName == 'document_settings') {
-            for (var row in rows) {
-              Map<String, dynamic> settings = Map<String, dynamic>.from(row);
-              String? fileName = settings.remove('backgroundImageFileName');
-              if (fileName != null) {
-                // 复制背景图片到新位置
-                String newPath = p.join(backgroundImagesPath, fileName);
-                String tempPath = p.join(tempDirPath, 'background_images', fileName);
-                if (await File(tempPath).exists()) {
-                  await File(tempPath).copy(newPath);
-                  settings['background_image_path'] = newPath;
-                  print('已导入文档背景图片: $newPath');
-                }
-              }
-              await txn.insert(tableName, settings);
-            }
-          } else if (tableName == 'image_boxes') {
-            for (var row in rows) {
-              Map<String, dynamic> imageBox = Map<String, dynamic>.from(row);
-              String? imageFileName = imageBox.remove('imageFileName');
-              if (imageFileName != null) {
-                // 复制图片文件到新位置
-                String imagesDirPath = p.join(appDocDir.path, 'images');
-                await Directory(imagesDirPath).create(recursive: true);
-                String newPath = p.join(imagesDirPath, imageFileName);
-                String tempPath = p.join(tempDirPath, 'images', imageFileName);
-                if (await File(tempPath).exists()) {
-                  await File(tempPath).copy(newPath);
-                  imageBox['image_path'] = newPath;
-                  print('已导入图片框图片: $newPath');
-                }
-              }
-              await txn.insert(tableName, imageBox);
-            }
-          } else if (tableName == 'audio_boxes') {
-            for (var row in rows) {
-              Map<String, dynamic> audioBox = Map<String, dynamic>.from(row);
-              String? audioFileName = audioBox.remove('audioFileName');
-              if (audioFileName != null) {
-                String audiosDirPath = p.join(appDocDir.path, 'audios');
-                await Directory(audiosDirPath).create(recursive: true);
-                String newPath = p.join(audiosDirPath, audioFileName);
-                String tempPath = p.join(tempDirPath, 'audios', audioFileName);
-                if (await File(tempPath).exists()) {
-                  await File(tempPath).copy(newPath);
-                  print('[导入音频] 已复制音频文件: $tempPath -> $newPath');
-                  audioBox['audio_path'] = newPath;
-                } else {
-                  print('[导入音频] 警告：未找到音频文件: $tempPath');
-                  audioBox['audio_path'] = null;
-                }
-              } else if (audioBox['audio_path'] != null && !(await File(audioBox['audio_path']).exists())) {
-                print('[导入音频] 警告：音频路径无效: ${audioBox['audio_path']}');
-                audioBox['audio_path'] = null;
-              }
-              audioBox.remove('audioPath');
-              await txn.insert(tableName, audioBox);
-            }
-          } else {
-            // 其他表正常导入（folders, documents, text_boxes）
-            for (var row in rows) {
-              await txn.insert(tableName, Map<String, dynamic>.from(row));
-            }
-          }
-        }
-      });
-      
-      // 导入完成后再次校验所有音频文件存在性
-      final db2 = await database;
-      final List<Map<String, dynamic>> audioBoxes = await db2.query('audio_boxes');
-      for (final audioBox in audioBoxes) {
-        String? audioPath = audioBox['audio_path'];
-        if (audioPath != null && audioPath.isNotEmpty) {
-          if (!await File(audioPath).exists()) {
-            print('[导入后校验] 音频文件不存在，清空路径: $audioPath');
-            await db2.update('audio_boxes', {'audio_path': null}, where: 'id = ?', whereArgs: [audioBox['id']]);
-          } else {
-            print('[导入后校验] 音频文件存在: $audioPath');
-          }
-        }
-      }
-      
-      // 清理临时目录
-      await Directory(tempDirPath).delete(recursive: true);
-      print('所有数据导入完成');
-    } catch (e, stackTrace) {
-      _handleError('导入目录数据失败', e, stackTrace);
-      print('导入目录数据时出错: $e');
-      print('错误堆栈: $stackTrace');
-      rethrow;
-    }
-  }
-
-  /// 物理备份整个数据库文件（带备注和meta，自动清理只保留10个）
-  /// 物理备份整个数据库文件和媒体文件（带备注和meta，自动清理只保留10个）
-  Future<void> backupDatabaseFileWithMeta({String? remark, bool isAuto = false, bool includeMediaFiles = true}) async {
-    final documentsDirectory = await getApplicationDocumentsDirectory();
-    final dbPath = p.join(documentsDirectory.path, _databaseName);
-    final dbFile = File(dbPath);
-    if (!await dbFile.exists()) {
-      print('数据库文件不存在，无需备份');
-      return;
-    }
-    final backupDirPath = p.join(documentsDirectory.path, 'backups');
-    final backupDir = Directory(backupDirPath);
-    if (!await backupDir.exists()) {
-      await backupDir.create(recursive: true);
-    }
-    final now = DateTime.now();
-    final timeStr = '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}_${now.hour.toString().padLeft(2, '0')}-${now.minute.toString().padLeft(2, '0')}-${now.second.toString().padLeft(2, '0')}';
-    final safeRemark = (remark ?? (isAuto ? '自动备份' : '手动备份')).replaceAll(RegExp(r'[^\u4e00-\u9fa5A-Za-z0-9_-]'), '');
-    
-    // 创建备份目录
-    final backupFolderName = '${_databaseName}_backup_${timeStr}_${safeRemark.isNotEmpty ? safeRemark : (isAuto ? 'auto' : 'manual')}';
-    final backupFolderPath = p.join(backupDirPath, backupFolderName);
-    await Directory(backupFolderPath).create(recursive: true);
-    
-    // 备份数据库文件
-    final backupDbPath = p.join(backupFolderPath, _databaseName);
-    await dbFile.copy(backupDbPath);
-    
-    // 如果需要包含媒体文件
-    if (includeMediaFiles) {
-      // 备份媒体文件
-      final mediaDir = Directory(p.join(documentsDirectory.path, 'media'));
-      if (await mediaDir.exists()) {
-        final backupMediaDir = Directory(p.join(backupFolderPath, 'media'));
-        await backupMediaDir.create(recursive: true);
-        
-        // 复制所有媒体文件
-        await for (final entity in mediaDir.list(recursive: true)) {
-          if (entity is File) {
-            final relativePath = p.relative(entity.path, from: mediaDir.path);
-            final targetPath = p.join(backupMediaDir.path, relativePath);
-            await Directory(p.dirname(targetPath)).create(recursive: true);
-            await entity.copy(targetPath);
-          }
-        }
-      }
-      
-      // 备份图片文件
-      final imagesDir = Directory(p.join(documentsDirectory.path, 'images'));
-      if (await imagesDir.exists()) {
-        final backupImagesDir = Directory(p.join(backupFolderPath, 'images'));
-        await backupImagesDir.create(recursive: true);
-        
-        await for (final entity in imagesDir.list(recursive: true)) {
-          if (entity is File) {
-            final relativePath = p.relative(entity.path, from: imagesDir.path);
-            final targetPath = p.join(backupImagesDir.path, relativePath);
-            await Directory(p.dirname(targetPath)).create(recursive: true);
-            await entity.copy(targetPath);
-          }
-        }
-      }
-      
-      // 备份音频文件
-      final audiosDir = Directory(p.join(documentsDirectory.path, 'audios'));
-      if (await audiosDir.exists()) {
-        final backupAudiosDir = Directory(p.join(backupFolderPath, 'audios'));
-        await backupAudiosDir.create(recursive: true);
-        
-        await for (final entity in audiosDir.list(recursive: true)) {
-          if (entity is File) {
-            final relativePath = p.relative(entity.path, from: audiosDir.path);
-            final targetPath = p.join(backupAudiosDir.path, relativePath);
-            await Directory(p.dirname(targetPath)).create(recursive: true);
-            await entity.copy(targetPath);
-          }
-        }
-      }
-      
-      // 备份背景图片
-      final backgroundImagesDir = Directory(p.join(documentsDirectory.path, 'background_images'));
-      if (await backgroundImagesDir.exists()) {
-        final backupBackgroundImagesDir = Directory(p.join(backupFolderPath, 'background_images'));
-        await backupBackgroundImagesDir.create(recursive: true);
-        
-        await for (final entity in backgroundImagesDir.list(recursive: true)) {
-          if (entity is File) {
-            final relativePath = p.relative(entity.path, from: backgroundImagesDir.path);
-            final targetPath = p.join(backupBackgroundImagesDir.path, relativePath);
-            await Directory(p.dirname(targetPath)).create(recursive: true);
-            await entity.copy(targetPath);
-          }
-        }
-      }
-    }
-    
-    // 压缩备份文件夹
-    final backupZipPath = p.join(backupDirPath, '$backupFolderName.zip');
-    final encoder = ZipFileEncoder();
-    encoder.create(backupZipPath);
-    await encoder.addDirectory(Directory(backupFolderPath));
-    encoder.close();
-    
-    // 删除临时备份文件夹
-    await Directory(backupFolderPath).delete(recursive: true);
-    
-    // 写入meta
-    final metaFile = File(p.join(backupDirPath, 'backup_meta.json'));
-    List<dynamic> metaList = [];
-    if (await metaFile.exists()) {
-      try {
-        metaList = jsonDecode(await metaFile.readAsString());
-      } catch (_) {}
-    }
-    metaList.insert(0, {
-      'file': '$backupFolderName.zip',
-      'remark': remark ?? (isAuto ? '自动备份' : '手动备份'),
-      'type': isAuto ? 'auto' : 'manual',
-      'time': now.toIso8601String(),
-      'size': await File(backupZipPath).length(),
-      'includeMediaFiles': includeMediaFiles,
-    });
-    // 只保留10个
-    if (metaList.length > 10) {
-      for (var i = 10; i < metaList.length; i++) {
-        final old = metaList[i];
-        final oldFile = File(p.join(backupDirPath, old['file']));
-        if (await oldFile.exists()) await oldFile.delete();
-      }
-      metaList = metaList.sublist(0, 10);
-    }
-    await metaFile.writeAsString(jsonEncode(metaList));
-    print('数据库${includeMediaFiles ? "和媒体文件" : ""}已物理备份到: $backupZipPath');
-  }
-
-  /// 物理恢复数据库文件（带meta）
-  Future<void> restoreDatabaseFileWithMeta(String backupFileName) async {
-    final documentsDirectory = await getApplicationDocumentsDirectory();
-    final dbPath = p.join(documentsDirectory.path, _databaseName);
-    final backupDirPath = p.join(documentsDirectory.path, 'backups');
-    final backupPath = p.join(backupDirPath, backupFileName);
-    final backupFile = File(backupPath);
-    if (!await backupFile.exists()) {
-      print('备份文件不存在: $backupPath');
-      throw Exception('备份文件不存在');
-    }
-    // 关闭数据库连接
-    if (_database != null) {
-      await _database!.close();
-      _database = null;
-      _isInitialized = false;
-    }
-    // 用备份覆盖
-    await backupFile.copy(dbPath);
-    // 重新初始化数据库
-    await initialize();
-    print('数据库已从备份恢复: $backupPath');
-  }
-
-  /// 应用启动时自动检测并执行24小时自动备份
-  Future<void> autoBackupIfNeeded() async {
-    final documentsDirectory = await getApplicationDocumentsDirectory();
-    final backupDirPath = p.join(documentsDirectory.path, 'backups');
-    final metaFile = File(p.join(backupDirPath, 'backup_meta.json'));
-    List<dynamic> metaList = [];
-    if (await metaFile.exists()) {
-      try {
-        metaList = jsonDecode(await metaFile.readAsString());
-      } catch (_) {}
-    }
-    DateTime? lastAuto;
-    int autoCount = 0;
-    for (var meta in metaList) {
-      if (meta['type'] == 'auto') {
-        autoCount++;
-        final t = DateTime.tryParse(meta['time'] ?? '');
-        if (lastAuto == null || (t != null && t.isAfter(lastAuto))) lastAuto = t;
-      }
-    }
-    final now = DateTime.now();
-    if (lastAuto == null || now.difference(lastAuto).inHours >= 24) {
-      final n = autoCount + 1;
-      sizeMB() async {
-        final dbPath = p.join(documentsDirectory.path, _databaseName);
-        final dbFile = File(dbPath);
-        if (await dbFile.exists()) {
-          return (await dbFile.length() / 1024 / 1024).toStringAsFixed(2);
-        }
-        return '0.00';
-      }
-      final size = await sizeMB();
-      final remark = '自动备份-第$n版-${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')} ${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')} ${size}MB';
-      await backupDatabaseFileWithMeta(remark: remark, isAuto: true);
     }
   }
 

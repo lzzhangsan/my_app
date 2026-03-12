@@ -72,12 +72,14 @@ class DiaryService {
   Future<void> saveEntries(List<DiaryEntry> entries) async {
     await migrateOldDataIfNeeded();
     final db = await getService<DatabaseService>().database;
-    final batch = db.batch();
-    await db.delete('diary_entries');
-    for (var entry in entries) {
-      batch.insert('diary_entries', _entryToDbMap(entry), conflictAlgorithm: ConflictAlgorithm.replace);
-    }
-    await batch.commit(noResult: true);
+    await db.transaction((txn) async {
+      await txn.delete('diary_entries');
+      final batch = txn.batch();
+      for (var entry in entries) {
+        batch.insert('diary_entries', _entryToDbMap(entry), conflictAlgorithm: ConflictAlgorithm.replace);
+      }
+      await batch.commit(noResult: true);
+    });
   }
 
   Future<void> replaceAllEntries(List<DiaryEntry> entries) async {
@@ -97,11 +99,11 @@ class DiaryService {
 
   Future<void> deleteEntry(String id) async {
     final db = await getService<DatabaseService>().database;
-    // 先获取记录，删除关联的媒体文件，再删除数据库记录
+    // 1. 先获取记录中的媒体路径（用于 DB 删除成功后再删物理文件）
     final rows = await db.query('diary_entries', where: 'id = ?', whereArgs: [id]);
+    final paths = <String>[];
     if (rows.isNotEmpty) {
       final row = rows.first;
-      final paths = <String>[];
       for (final key in ['image_paths', 'audio_paths', 'video_paths']) {
         final val = row[key];
         if (val == null) continue;
@@ -115,14 +117,16 @@ class DiaryService {
           }
         } catch (_) {}
       }
-      for (final filePath in paths) {
-        try {
-          final f = File(filePath);
-          if (await f.exists()) await f.delete();
-        } catch (_) {}
-      }
     }
+    // 2. 先删 DB，保证数据一致性；若 DB 删除失败则保留文件，便于恢复
     await db.delete('diary_entries', where: 'id = ?', whereArgs: [id]);
+    // 3. DB 删除成功后，再删除物理文件（失败仅留下孤立文件，不影响 DB 权威性）
+    for (final filePath in paths) {
+      try {
+        final f = File(filePath);
+        if (await f.exists()) await f.delete();
+      } catch (_) {}
+    }
   }
 
   Future<void> autoSaveEntry(DiaryEntry entry) async {

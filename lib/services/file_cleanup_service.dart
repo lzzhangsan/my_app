@@ -17,6 +17,10 @@ class FileCleanupService {
   Directory? _appDocumentsDirectory;
   Directory? _appCacheDirectory;
   Directory? _tempDirectory;
+  /// 应用专属外部存储（Android: /Android/data/<package>/files/，系统计入「数据」）
+  Directory? _externalStorageDirectory;
+  /// 应用外部缓存目录（插件如 WebView、PhotoManager 可能使用）
+  List<Directory> _externalCacheDirectories = [];
   CacheService? _cacheService;
   FileService? _fileService;
 
@@ -31,6 +35,13 @@ class FileCleanupService {
       _appDocumentsDirectory = await getApplicationDocumentsDirectory();
       _appCacheDirectory = await getApplicationCacheDirectory();
       _tempDirectory = await getTemporaryDirectory();
+      try {
+        _externalStorageDirectory = await getExternalStorageDirectory();
+      } catch (_) {}
+      try {
+        final extCaches = await getExternalCacheDirectories();
+        _externalCacheDirectories = extCaches ?? [];
+      } catch (_) {}
       
       // 获取服务实例
       _cacheService = CacheService();
@@ -43,6 +54,9 @@ class FileCleanupService {
         print('应用文档目录: ${_appDocumentsDirectory!.path}');
         print('应用缓存目录: ${_appCacheDirectory!.path}');
         print('临时目录: ${_tempDirectory!.path}');
+        if (_externalStorageDirectory != null) {
+          print('应用外部存储: ${_externalStorageDirectory!.path}');
+        }
       }
     } catch (e) {
       if (kDebugMode) {
@@ -503,7 +517,7 @@ class FileCleanupService {
     return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)}GB';
   }
 
-  /// 获取应用总存储使用量（含文档目录、缓存、临时目录，与系统应用详情一致）
+  /// 获取应用总存储使用量（含内部存储+应用专属外部存储，与系统应用详情一致）
   Future<int> getAppTotalStorageUsage() async {
     if (!_isInitialized) return 0;
 
@@ -522,6 +536,18 @@ class FileCleanupService {
         totalSize += await _getDirectorySize(_tempDirectory!.path);
       }
       
+      // 应用专属外部存储（Android: browser_backups、导出文件等，系统计入「数据」）
+      if (_externalStorageDirectory != null && await _externalStorageDirectory!.exists()) {
+        totalSize += await _getDirectorySize(_externalStorageDirectory!.path);
+      }
+      
+      // 应用外部缓存（插件如 WebView、PhotoManager 可能使用）
+      for (final d in _externalCacheDirectories) {
+        if (await d.exists()) {
+          totalSize += await _getDirectorySize(d.path);
+        }
+      }
+      
       return totalSize;
     } catch (e) {
       if (kDebugMode) {
@@ -529,6 +555,116 @@ class FileCleanupService {
       }
       return 0;
     }
+  }
+
+  /// 获取应用专属外部存储大小（含外部缓存，用于存储管理页展示）
+  Future<int> getExternalStorageUsage() async {
+    if (!_isInitialized) return 0;
+    int total = 0;
+    try {
+      if (_externalStorageDirectory != null && await _externalStorageDirectory!.exists()) {
+        total += await _getDirectorySize(_externalStorageDirectory!.path);
+      }
+      for (final d in _externalCacheDirectories) {
+        if (await d.exists()) {
+          total += await _getDirectorySize(d.path);
+        }
+      }
+    } catch (e) {
+      if (kDebugMode) print('获取外部存储大小失败: $e');
+    }
+    return total;
+  }
+
+  /// 清理应用专属外部存储（含外部缓存，释放系统「数据」占用）
+  /// 包括：外部文件目录下全部内容（导出 ZIP、browser_backups、插件缓存等）、外部缓存目录
+  Future<Map<String, int>> cleanExternalStorage() async {
+    int deletedCount = 0;
+    int totalBytes = 0;
+    if (!_isInitialized) return {'count': 0, 'bytes': 0};
+    try {
+      // 1. 清理外部文件目录下全部内容（导出 ZIP、browser_backups、PhotoManager/WebView 等插件缓存）
+      if (_externalStorageDirectory != null && await _externalStorageDirectory!.exists()) {
+        await for (final entity in _externalStorageDirectory!.list()) {
+          try {
+            if (entity is File) {
+              final len = await entity.length();
+              await entity.delete();
+              deletedCount++;
+              totalBytes += len;
+            } else if (entity is Directory) {
+              final size = await _getDirectorySize(entity.path);
+              await entity.delete(recursive: true);
+              deletedCount++;
+              totalBytes += size;
+            }
+          } catch (_) {}
+        }
+      }
+      // 2. 清理外部缓存目录（PhotoManager、WebView 等插件缓存）
+      for (final cacheDir in _externalCacheDirectories) {
+        if (!await cacheDir.exists()) continue;
+        try {
+          await for (final entity in cacheDir.list()) {
+            try {
+              if (entity is File) {
+                final len = await entity.length();
+                await entity.delete();
+                deletedCount++;
+                totalBytes += len;
+              } else if (entity is Directory) {
+                final size = await _getDirectorySize(entity.path);
+                await entity.delete(recursive: true);
+                deletedCount++;
+                totalBytes += size;
+              }
+            } catch (_) {}
+          }
+        } catch (_) {}
+      }
+      if (kDebugMode && totalBytes > 0) {
+        print('清理外部存储: 删除 $deletedCount 项，释放 ${_formatFileSize(totalBytes)}');
+      }
+    } catch (e) {
+      if (kDebugMode) print('清理外部存储失败: $e');
+    }
+    return {'count': deletedCount, 'bytes': totalBytes};
+  }
+
+  /// 清理备份文件（directory_backup_*.zip、数据库备份等，释放空间）
+  /// 备份用于恢复数据，删除后无法恢复，需用户确认
+  Future<Map<String, int>> cleanBackupFiles() async {
+    int deletedCount = 0;
+    int totalBytes = 0;
+    if (!_isInitialized || _appDocumentsDirectory == null) return {'count': 0, 'bytes': 0};
+    try {
+      final backupsDir = Directory('${_appDocumentsDirectory!.path}/backups');
+      if (!await backupsDir.exists()) return {'count': 0, 'bytes': 0};
+      await for (final entity in backupsDir.list()) {
+        try {
+          final name = path.basename(entity.path);
+          if (entity is File) {
+            if (name.endsWith('.zip') || name.endsWith('.json')) {
+              final len = await entity.length();
+              await entity.delete();
+              deletedCount++;
+              totalBytes += len;
+            }
+          } else if (entity is Directory) {
+            final size = await _getDirectorySize(entity.path);
+            await entity.delete(recursive: true);
+            deletedCount++;
+            totalBytes += size;
+          }
+        } catch (_) {}
+      }
+      if (kDebugMode && totalBytes > 0) {
+        print('清理备份文件: 删除 $deletedCount 项，释放 ${_formatFileSize(totalBytes)}');
+      }
+    } catch (e) {
+      if (kDebugMode) print('清理备份文件失败: $e');
+    }
+    return {'count': deletedCount, 'bytes': totalBytes};
   }
 
   /// 执行完整的存储清理
@@ -545,6 +681,9 @@ class FileCleanupService {
       
       // 清理缓存文件
       await cleanAllCacheFiles();
+      
+      // 清理应用外部存储
+      await cleanExternalStorage();
       
       if (kDebugMode) {
         print('完整存储清理完成');

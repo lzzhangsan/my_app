@@ -23,6 +23,7 @@ import 'package:archive/archive.dart';
 
 import 'core/service_locator.dart';
 import 'services/database_service.dart';
+import 'utils/export_import_error_utils.dart';
 import 'services/telegram_download_service_v2.dart';
 import 'models/media_item.dart';
 import 'models/media_type.dart';
@@ -3361,6 +3362,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
   /// 导出浏览器数据
   Future<void> _exportBrowserData() async {
+    String currentPhase = '准备';
     try {
       // 创建进度通知器
       final ValueNotifier<String> progressNotifier = ValueNotifier<String>('准备导出浏览器数据...');
@@ -3402,6 +3404,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         await backupDir.create(recursive: true);
       }
 
+      currentPhase = '收集数据';
       progressNotifier.value = '收集浏览器数据...';
 
       // 收集浏览器数据
@@ -3412,6 +3415,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         'version': '1.0',
       };
 
+      currentPhase = '创建数据文件';
       progressNotifier.value = '创建数据文件...';
 
       // 创建JSON文件
@@ -3419,6 +3423,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       final File jsonFile = File(jsonPath);
       await jsonFile.writeAsString(jsonEncode(browserData));
 
+      currentPhase = '创建ZIP文件';
       progressNotifier.value = '创建ZIP文件...';
 
       // 创建ZIP文件
@@ -3467,19 +3472,19 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           ),
         );
       }
-    } catch (e) {
-      debugPrint('导出浏览器数据时出错: $e');
+    } catch (e, stack) {
+      debugPrint('导出浏览器数据时出错 [$currentPhase]: $e\n$stack');
       if (mounted) {
         Navigator.pop(context); // 关闭进度对话框
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('导出浏览器数据时出错：$e')),
-        );
+        final userMsg = formatExportImportError(e, '导出失败');
+        showExportImportErrorDialog(context, '浏览器数据导出失败', '出错阶段：$currentPhase\n\n$userMsg');
       }
     }
   }
 
   /// 导入浏览器数据
   Future<void> _importBrowserData() async {
+    String currentPhase = '准备';
     try {
       // 显示警告对话框
       bool? confirm = await showDialog<bool>(
@@ -3537,6 +3542,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           ),
         );
 
+        currentPhase = '解压文件';
         progressNotifier.value = '解压文件...';
 
         // 读取ZIP文件
@@ -3548,6 +3554,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           throw Exception('无法解析ZIP文件');
         }
 
+        currentPhase = '解析数据';
         progressNotifier.value = '解析数据...';
 
         // 查找并解析JSON文件
@@ -3567,6 +3574,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         final String jsonContent = utf8.decode(jsonFile.content as List<int>);
         final Map<String, dynamic> browserData = jsonDecode(jsonContent);
 
+        currentPhase = '导入数据';
         progressNotifier.value = '导入数据...';
 
         // 验证数据格式
@@ -3616,13 +3624,12 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           );
         }
       }
-    } catch (e) {
-      debugPrint('导入浏览器数据时出错: $e');
+    } catch (e, stack) {
+      debugPrint('导入浏览器数据时出错 [$currentPhase]: $e\n$stack');
       if (mounted) {
         Navigator.pop(context); // 关闭进度对话框
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('导入浏览器数据时出错：$e')),
-        );
+        final userMsg = formatExportImportError(e, '导入失败');
+        showExportImportErrorDialog(context, '浏览器数据导入失败', '出错阶段：$currentPhase\n\n$userMsg');
       }
     }
   }

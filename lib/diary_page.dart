@@ -23,6 +23,8 @@ import 'services/database_service.dart';
 import 'core/service_locator.dart';
 import 'services/logger.dart';
 import 'services/export_import_utils.dart';
+import 'utils/export_import_error_utils.dart';
+import 'utils/safe_path_utils.dart';
 import 'services/test_data_generator_service.dart';
 
 // 全局函数：显示进度条弹窗，支持取消操作
@@ -894,18 +896,18 @@ class _DiaryPageState extends State<DiaryPage> {
   Future<void> _exportDiaryData() async {
     final progress = ValueNotifier<double>(0.0);
     final message = ValueNotifier<String>('准备导出...');
-    
-    // 1. 创建唯一的临时导出目录
+
     final Directory appDir = await getApplicationDocumentsDirectory();
     final String tempExportPath = path.join(appDir.path, 'temp_diary_export_${const Uuid().v4()}');
     final Directory tempExportDir = Directory(tempExportPath);
 
+    String currentPhase = '准备';
     try {
       await tempExportDir.create(recursive: true);
       
       showProgressDialog(context, progress, message);
 
-      // 2. 获取所有日记条目
+      currentPhase = '获取日记数据';
       message.value = '正在获取日记数据...';
       final allEntries = await _diaryService.loadEntries();
       if (allEntries.isEmpty) {
@@ -919,7 +921,7 @@ class _DiaryPageState extends State<DiaryPage> {
       }
       progress.value = 0.1;
 
-      // 3. 准备媒体文件和元数据
+      currentPhase = '整理媒体文件';
       message.value = '正在整理媒体文件...';
       final List<Map<String, dynamic>> entriesForJson = [];
       final Set<String> mediaPathsToExport = {};
@@ -1043,10 +1045,13 @@ class _DiaryPageState extends State<DiaryPage> {
         await jsonFile.writeAsString(jsonEncode(entriesForJson), encoding: utf8);
       }
 
-      // 6. 从临时目录创建zip文件
+      currentPhase = '选择保存位置';
+      final Directory saveDir = await getExportSaveDirectory();
+      await saveDir.create(recursive: true);
+
+      currentPhase = '压缩文件';
       message.value = '正在压缩文件...';
-      final downloadsDir = await getDownloadsDirectory();
-      final zipFilePath = path.join(downloadsDir!.path, 'diary_export_${DateTime.now().toIso8601String().split('T').first}.zip');
+      final zipFilePath = path.join(saveDir.path, 'diary_export_${DateTime.now().toIso8601String().split('T').first}.zip');
       
       final encoder = ZipFileEncoder();
       encoder.create(zipFilePath);
@@ -1056,16 +1061,33 @@ class _DiaryPageState extends State<DiaryPage> {
       progress.value = 1.0;
       if (mounted) Navigator.of(context).pop();
 
-      // 7. 分享zip文件
-      await Share.shareXFiles([XFile(zipFilePath)], text: '日记数据导出');
+      // 7. 小文件：仅原生分享；大文件(>500MB)：跳过分享，弹窗提供「直达」等（share_plus 大文件会 ANR）
+      if (mounted) {
+        final zipFile = File(zipFilePath);
+        final size = await zipFile.exists() ? await zipFile.length() : 0;
+        if (size <= kShareSizeLimitBytes) {
+          try {
+            await Share.shareXFiles([XFile(zipFilePath)], text: '日记数据导出');
+          } catch (_) {}
+          // 小文件：分享后即完成，不再弹第二个界面
+        } else {
+          showExportResultDialog(
+            context,
+            zipFilePath,
+            size,
+            shareText: '日记数据导出',
+            showShareButton: false,
+            showSaveToFolderButton: true,
+          );
+        }
+      }
 
-    } catch (e) {
-      debugPrint('导出日记数据失败: $e');
+    } catch (e, stack) {
+      debugPrint('导出日记数据失败 [$currentPhase]: $e\n$stack');
       if (mounted) Navigator.of(context).pop();
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('导出失败: $e')),
-        );
+        final userMsg = formatExportImportError(e, '导出失败');
+        showExportImportErrorDialog(context, '日记导出失败', '出错阶段：$currentPhase\n\n$userMsg');
       }
     } finally {
       // 关键：无论成功或失败，都清理临时目录
@@ -1085,11 +1107,11 @@ class _DiaryPageState extends State<DiaryPage> {
     final progress = ValueNotifier<double>(0.0);
     final message = ValueNotifier<String>('准备导入...');
 
-    // 1. 创建唯一的临时导入目录
     final Directory appDir = await getApplicationDocumentsDirectory();
     final String tempImportPath = path.join(appDir.path, 'temp_diary_import_${const Uuid().v4()}');
     final Directory tempImportDir = Directory(tempImportPath);
 
+    String currentPhase = '准备';
     try {
       await tempImportDir.create(recursive: true);
 
@@ -1102,14 +1124,19 @@ class _DiaryPageState extends State<DiaryPage> {
       showProgressDialog(context, progress, message);
 
       final zipFile = File(result.files.single.path!);
+      if (!await zipFile.exists()) {
+        throw Exception('所选文件不存在或无法访问');
+      }
+
+      currentPhase = '解压压缩包';
       final archive = ZipDecoder().decodeStream(InputFileStream(zipFile.path));
-      
+
       // 3. 解压到临时目录
       int total = archive.files.length;
       int done = 0;
       for (final file in archive) {
         final filename = file.name;
-        final outPath = path.join(tempImportDir.path, filename);
+        final outPath = resolveSafeExtractPath(tempImportDir.path, filename);
         if (file.isFile) {
           final outFile = File(outPath);
           await outFile.parent.create(recursive: true);
@@ -1125,6 +1152,7 @@ class _DiaryPageState extends State<DiaryPage> {
       }
 
       // 4. 读取并处理JSON数据 - 支持分块格式与旧版diary_data.json
+      currentPhase = '处理日记数据';
       message.value = '正在处理日记数据...';
       List<dynamic> entriesJson = [];
       final chunk0File = File(path.join(tempImportDir.path, 'diary_data_0.json'));
@@ -1225,11 +1253,13 @@ class _DiaryPageState extends State<DiaryPage> {
       progress.value = 0.7;
 
       // 5. 导入数据库（事务安全）
+      currentPhase = '写入数据库';
       message.value = '正在写入数据库...';
       await _diaryService.replaceAllEntries(entriesToImport);
       progress.value = 0.8;
 
       // 6. 迁移媒体文件
+      currentPhase = '迁移媒体文件';
       message.value = '正在迁移媒体文件...';
       final tempMediaDir = Directory(path.join(tempImportDir.path, 'media'));
       if (await tempMediaDir.exists()) {
@@ -1332,13 +1362,12 @@ class _DiaryPageState extends State<DiaryPage> {
           const SnackBar(content: Text('日记数据导入成功')),
         );
       }
-    } catch (e) {
-      debugPrint('导入日记数据失败: $e');
+    } catch (e, stack) {
+      debugPrint('导入日记数据失败 [$currentPhase]: $e\n$stack');
       if (mounted) Navigator.of(context).pop();
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('导入失败: $e')),
-        );
+        final userMsg = formatExportImportError(e, '导入失败');
+        showExportImportErrorDialog(context, '日记导入失败', '出错阶段：$currentPhase\n\n$userMsg');
       }
     } finally {
       // 关键：无论成功或失败，都清理临时目录

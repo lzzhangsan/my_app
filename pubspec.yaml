@@ -29,6 +29,8 @@ dependencies:
   archive: ^4.0.7
   file_picker: ^10.3.3  # Updated to latest major version
   share_plus: ^12.0.1  # Updated to latest major version
+  open_filex: ^4.6.0  # 打开文件/所在目录
+  open_file_manager: ^2.0.1  # 直达文件管理器指定目录
   win32: ^5.15.0
   audioplayers: ^6.5.1
   record: ^6.1.2  # Updated to latest major version

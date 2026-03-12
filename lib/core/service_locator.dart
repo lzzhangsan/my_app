@@ -8,7 +8,6 @@ import '../services/file_service.dart';
 import '../services/cache_service.dart';
 import '../services/performance_service.dart';
 import '../services/error_service.dart';
-import '../services/backup_service.dart';
 import '../services/background_media_service.dart';
 import '../services/file_cleanup_service.dart';
 import '../services/network_service.dart';
@@ -65,10 +64,6 @@ class ServiceLocator {
       // 注册媒体服务
       registerSingleton<MediaService>(MediaService());
       await get<MediaService>().initialize();
-      
-      // 注册备份服务
-      registerSingleton<BackupService>(BackupService());
-      await get<BackupService>().initialize();
       
       // 注册后台媒体服务
       registerSingleton<BackgroundMediaService>(BackgroundMediaService());

@@ -30,6 +30,8 @@ import 'models/media_type.dart';
 import 'browser_page.dart';
 import 'services/cache_service.dart';
 import 'services/export_import_utils.dart';
+import 'utils/export_import_error_utils.dart';
+import 'utils/safe_path_utils.dart';
 import 'services/test_data_generator_service.dart';
 import 'storage_management_page.dart';
 
@@ -2363,14 +2365,14 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     final progress = ValueNotifier<double>(0);
     final message = ValueNotifier<String>('准备中...');
     
+    ZipFileEncoder? encoder;
+    String currentPhase = '准备';
     try {
-      showProgressDialog(context, progress, message);
-
       // 1. 获取所有媒体项的数据库记录（分批处理）
+      currentPhase = '查询媒体列表';
       message.value = '正在查询媒体文件...';
       final allMediaItems = await _databaseService.getAllMediaItems();
       if (allMediaItems.isEmpty) {
-        if (mounted) Navigator.of(context).pop();
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('没有可导出的媒体文件。')),
@@ -2379,74 +2381,86 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         return;
       }
       
-      // 2. 设置导出路径（与日记一致使用 Downloads，便于分享）
-      final Directory? downloadsDir = await getDownloadsDirectory();
-      final Directory saveDir = downloadsDir ?? await getExternalStorageDirectory() ?? await getApplicationDocumentsDirectory();
+      // 2. 使用默认保存位置（优先公共下载目录，用户可在文件管理器中找到）
+      currentPhase = '选择保存位置';
+      final Directory saveDir = await getExportSaveDirectory();
       await saveDir.create(recursive: true);
       final String timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.').first;
       final zipFilePath = path.join(saveDir.path, 'media_backup_$timestamp.zip');
+
+      showProgressDialog(context, progress, message);
       
-      // 3. 使用流式ZIP处理，避免内存溢出
+      // 3. 使用流式ZIP处理，避免内存溢出（7GB/15GB+ 大容量导出需严格控制内存）
+      currentPhase = '压缩媒体文件';
       message.value = '正在创建压缩包...';
-      final encoder = ZipFileEncoder();
+      encoder = ZipFileEncoder();
       encoder.create(zipFilePath);
-      
+
       int totalFiles = allMediaItems.length;
       int processedFiles = 0;
       int totalSize = 0;
-      
-      // 计算总大小用于进度显示
-      for (final item in allMediaItems) {
-        final mediaFile = File(item['path']);
-        if (await mediaFile.exists()) {
-          totalSize += await mediaFile.length();
+
+      // 仅当文件数较少时预计算总大小，避免超大库（如7GB）的 O(n) 预扫描导致卡顿
+      const int kSkipTotalSizeThreshold = 500;
+      if (totalFiles <= kSkipTotalSizeThreshold) {
+        for (final item in allMediaItems) {
+          final mediaFile = File(item['path']);
+          if (await mediaFile.exists()) {
+            totalSize += await mediaFile.length();
+          }
         }
       }
-      
+
       int processedSize = 0;
-      
-      // 分批处理文件，避免内存溢出
-      const int batchSize = 10; // 每批处理10个文件
+
+      // 大容量导出：按数据量动态调整批次，level=0 不压缩（媒体文件已压缩），减少内存占用
+      final batchSize = totalFiles > 3000 ? 1 : (totalFiles > 1000 ? 2 : 3);
+      const int level = 0; // 0=仅存储，不压缩，大幅降低内存和CPU
       for (int i = 0; i < allMediaItems.length; i += batchSize) {
         final endIndex = math.min(i + batchSize, allMediaItems.length);
         final batch = allMediaItems.sublist(i, endIndex);
-        
+
         for (final item in batch) {
           try {
             final mediaFile = File(item['path']);
             if (await mediaFile.exists()) {
               final fileName = path.basename(item['path']);
               final relativePath = 'media/$fileName';
-              
-              // 使用ZipFileEncoder的addFile方法，它会自动处理流式写入
-              await encoder.addFile(mediaFile, relativePath);
-              
+
+              await encoder.addFile(mediaFile, relativePath, level);
+
               processedFiles++;
-              processedSize += await mediaFile.length();
-              progress.value = (processedSize / totalSize) * 0.8; // 80% for files
-              message.value = '正在压缩: $processedFiles/$totalFiles (${_formatFileSize(processedSize)}/${_formatFileSize(totalSize)})';
-              
-              // 定期清理内存
+              if (totalSize > 0) {
+                processedSize += await mediaFile.length();
+                progress.value = (processedSize / totalSize) * 0.8;
+              } else {
+                progress.value = (processedFiles / totalFiles) * 0.8;
+              }
+              message.value = totalSize > 0
+                  ? '正在压缩: $processedFiles/$totalFiles (${_formatFileSize(processedSize)}/${_formatFileSize(totalSize)})'
+                  : '正在压缩: $processedFiles/$totalFiles';
+
+              // 按数据量调整暂停频率，避免 7GB/15GB 级导出 OOM
               if (processedFiles % 50 == 0) {
-                await Future.delayed(Duration(milliseconds: 50));
+                await Future.delayed(Duration(milliseconds: totalFiles > 2000 ? 400 : 300));
+              } else if (processedFiles % 10 == 0) {
+                await Future.delayed(Duration(milliseconds: totalFiles > 2000 ? 120 : 80));
               }
             } else {
-              print('警告: 文件不存在，跳过导出: ${item['path']}');
-              totalFiles--; // 更新总数以保证进度条准确
+              debugPrint('警告: 文件不存在，跳过导出: ${item['path']}');
             }
           } catch (e) {
-            print('导出文件失败: ${item['path']}, 错误: $e');
-            // 继续处理其他文件
+            debugPrint('导出文件失败: ${item['path']}, 错误: $e');
           }
         }
-        
-        // 每批处理完后稍作延迟，让系统有时间进行内存管理
+
         if (endIndex < allMediaItems.length) {
-          await Future.delayed(Duration(milliseconds: 100));
+          await Future.delayed(const Duration(milliseconds: 150));
         }
       }
       
       // 4. 导出数据库 - 分块写入避免单一大JSON (5000条/文件)
+      currentPhase = '导出数据库';
       message.value = '正在导出数据库...';
       for (int chunkIdx = 0; chunkIdx < allMediaItems.length; chunkIdx += kExportChunkSize) {
         final end = math.min(chunkIdx + kExportChunkSize, allMediaItems.length);
@@ -2474,24 +2488,44 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       progress.value = 0.9;
 
       // 5. 完成打包
+      currentPhase = '完成打包';
       message.value = '正在完成...';
+      await Future.delayed(const Duration(milliseconds: 500)); // 缓解大容量导出时的内存压力
       encoder.close();
       progress.value = 1.0;
 
       if (mounted) Navigator.of(context).pop();
       if (mounted) {
-        await Share.shareXFiles(
-          [XFile(zipFilePath)],
-          text: '媒体数据导出',
-        );
+        final zipFile = File(zipFilePath);
+        final zipSizeBytes = await zipFile.exists() ? await zipFile.length() : 0;
+        final bool isTooLarge = zipSizeBytes > kShareSizeLimitBytes;
+        if (!isTooLarge) {
+          try {
+            await Share.shareXFiles([XFile(zipFilePath)], text: '媒体数据导出');
+          } catch (shareErr) {
+            debugPrint('分享失败: $shareErr');
+          }
+          // 小文件：分享后即完成，不再弹第二个界面
+        } else {
+          showExportResultDialog(
+            context,
+            zipFilePath,
+            zipSizeBytes,
+            shareText: '媒体数据导出',
+            showShareButton: false,
+            showSaveToFolderButton: true,
+          );
+        }
       }
-    } catch (e) {
+    } catch (e, stack) {
+      try {
+        encoder?.close();
+      } catch (_) {}
       if (mounted) Navigator.of(context).pop();
-      debugPrint('导出媒体数据时出错: $e');
+      debugPrint('导出媒体数据时出错 [$currentPhase]: $e\n$stack');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('导出失败: $e')),
-        );
+        final userMsg = formatExportImportError(e, '导出失败');
+        showExportImportErrorDialog(context, '媒体导出失败', '出错阶段：$currentPhase\n\n$userMsg');
       }
     }
   }
@@ -2513,24 +2547,35 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     final String tempImportPath = path.join(appDir.path, 'temp_media_import_${const Uuid().v4()}');
     final Directory tempImportDir = Directory(tempImportPath);
 
+    String currentPhase = '准备';
+    bool importHadError = false;
     try {
       await tempImportDir.create(recursive: true);
 
       // 2. 选择zip包
       FilePickerResult? result = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['zip']);
       if (result == null || result.files.isEmpty) {
-        // 用户取消选择，静默退出
-        return; 
+        return;
       }
 
       showProgressDialog(context, progress, message);
 
       final zipFile = File(result.files.single.path!);
+      if (!await zipFile.exists()) {
+        throw Exception('所选文件不存在或无法访问');
+      }
 
       // 3. 用流式InputFileStream解压zip到临时目录
+      currentPhase = '解压压缩包';
       message.value = '正在解压数据...';
       final inputStream = InputFileStream(zipFile.path);
-      final archive = ZipDecoder().decodeStream(inputStream);
+      Archive archive;
+      try {
+        archive = ZipDecoder().decodeStream(inputStream);
+      } catch (e) {
+        await inputStream.close();
+        rethrow;
+      }
 
       int total = archive.files.length;
       int done = 0;
@@ -2541,10 +2586,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       }
 
       for (final file in archive.files) {
-        final outPath = path.join(tempImportDir.path, file.name);
+        final outPath = resolveSafeExtractPath(tempImportDir.path, file.name);
         if (file.isFile) {
           final outFile = File(outPath);
-          // 确保父目录存在
           await outFile.parent.create(recursive: true);
           final outputStream = OutputFileStream(outFile.path);
           file.writeContent(outputStream);
@@ -2554,12 +2598,16 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         }
 
         done++;
-        progress.value = (done / total) * 0.7; // 70% for unzipping
+        progress.value = (done / total) * 0.7;
         message.value = '解压: $done/$total';
+        if (total > 500 && done % 100 == 0) {
+          await Future.delayed(const Duration(milliseconds: 50));
+        }
       }
       await inputStream.close();
 
       // 4. 从临时目录中读取元数据 - 支持分块格式与旧版media_items.json
+      currentPhase = '恢复数据库';
       Map<String, dynamic>? settingsToImport;
 
       final chunk0File = File(path.join(tempImportDir.path, 'media_items_0.json'));
@@ -2615,6 +2663,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       progress.value = 0.8;
 
       // 6. 替换媒体文件（带进度，支持超大量数据）
+      currentPhase = '迁移媒体文件';
       final Directory finalMediaDir = Directory(path.join(appDir.path, 'media'));
       if (await finalMediaDir.exists()) {
         await finalMediaDir.delete(recursive: true);
@@ -2667,21 +2716,21 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           const SnackBar(content: Text('导入媒体数据成功')),
         );
       }
-    } catch (e) {
-      debugPrint('导入媒体数据失败: $e');
+    } catch (e, stack) {
+      importHadError = true;
+      debugPrint('导入媒体数据失败 [$currentPhase]: $e\n$stack');
       if (mounted) Navigator.of(context).pop();
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('导入媒体数据失败: $e')),
-        );
+        final userMsg = formatExportImportError(e, '导入失败');
+        showExportImportErrorDialog(context, '媒体导入失败', '出错阶段：$currentPhase\n\n$userMsg');
       }
     } finally {
       // 关键：无论成功或失败，都强制彻底清理本次导入的临时目录
       if (await tempImportDir.exists()) {
         try {
           await tempImportDir.delete(recursive: true);
-          debugPrint('已彻底清理媒体导入临时目录: [32m${tempImportDir.path}[0m');
-          if (mounted) {
+          debugPrint('已彻底清理媒体导入临时目录: ${tempImportDir.path}');
+          if (mounted && !importHadError) {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(content: Text('临时导入文件已清理')),
             );

@@ -382,9 +382,6 @@ class _CoverPageState extends State<CoverPage> {
       await _saveCoverSettings(imagePath, null);
       
       Logger.i('背景图片路径已保存: $imagePath');
-
-      // 自动备份数据库
-      await _databaseService.backupDatabase();
     } catch (e) {
       Logger.e('保存背景图片时出错', e);
       ScaffoldMessenger.of(context).showSnackBar(
@@ -441,9 +438,6 @@ class _CoverPageState extends State<CoverPage> {
       
       // 清除已删除的文本框ID列表
       _deletedTextBoxIds.clear();
-      
-      // 自动备份数据库
-      await _databaseService.backupDatabase();
     } catch (e) {
       Logger.e('保存内容时出错', e);
       ScaffoldMessenger.of(context).showSnackBar(

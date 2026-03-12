@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'document_editor_page.dart';
@@ -5,10 +7,13 @@ import 'directory_page.dart';
 import 'cover_page.dart';
 import 'media_manager_page.dart';
 import 'browser_page.dart';
+import 'core/app_state.dart';
 import 'core/service_locator.dart';
 import 'services/background_media_service.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'diary_page.dart';
+import 'services/error_service.dart';
 import 'services/logger.dart';
 
 // 添加全局 navigatorKey
@@ -17,19 +22,31 @@ final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  try {
-    await serviceLocator.initialize();
-    Logger.i('服务架构初始化成功');
+  // 捕获未处理的异步异常，防止静默崩溃
+  runZonedGuarded(() async {
+    try {
+      await serviceLocator.initialize();
+      Logger.i('服务架构初始化成功');
 
-    final backgroundService = getService<BackgroundMediaService>();
-    if (backgroundService.isInitialized) {
-      Logger.i('后台媒体服务已启动');
+      final backgroundService = getService<BackgroundMediaService>();
+      if (backgroundService.isInitialized) {
+        Logger.i('后台媒体服务已启动');
+      }
+    } catch (e) {
+      Logger.e('服务架构初始化失败', e);
     }
-  } catch (e) {
-    Logger.e('服务架构初始化失败', e);
-  }
 
-  runApp(const MyApp());
+    runApp(const MyApp());
+  }, (error, stack) {
+    Logger.e('未捕获的异步异常', error, stack);
+    if (kDebugMode) {
+      debugPrint('runZonedGuarded 捕获: $error\n$stack');
+    }
+    try {
+      final errorService = getService<ErrorService>();
+      errorService.recordError(error, stack, context: 'runZonedGuarded', severity: ErrorSeverity.critical);
+    } catch (_) {}
+  });
 }
 
 class MyApp extends StatelessWidget {

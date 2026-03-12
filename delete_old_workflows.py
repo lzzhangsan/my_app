@@ -1,11 +1,17 @@
+import os
 import requests
 
-# ========== 在这里填写你的信息 ==========
-GITHUB_TOKEN = "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"
-OWNER = "lzzhangsan"
-REPO = "my_app"
+# ========== 配置（敏感信息请用环境变量） ==========
+# 设置环境变量 GITHUB_TOKEN 后运行，例如: export GITHUB_TOKEN=ghp_xxx
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
+OWNER = os.environ.get("GITHUB_OWNER", "lzzhangsan")
+REPO = os.environ.get("GITHUB_REPO", "my_app")
 KEEP = 10  # 要保留的最新条数
 # ======================================
+
+if not GITHUB_TOKEN:
+    print("错误：请设置环境变量 GITHUB_TOKEN 后再运行")
+    exit(1)
 
 headers = {
     "Authorization": f"token {GITHUB_TOKEN}",
