@@ -846,6 +846,22 @@ class DatabaseService {
     }
   }
 
+  /// 更新媒体项文件路径（用于跨设备导入后的路径修复）
+  Future<int> updateMediaItemPath(String id, String newPath) async {
+    try {
+      final db = await database;
+      return await db.update(
+        'media_items',
+        {'path': newPath, 'thumbnail_path': null},
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+    } catch (e, stackTrace) {
+      _handleError('更新媒体项路径失败', e, stackTrace);
+      rethrow;
+    }
+  }
+
   /// 更新媒体项目录
   Future<int> updateMediaItemDirectory(String id, String directory) async {
     try {

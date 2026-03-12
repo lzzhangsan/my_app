@@ -59,6 +59,8 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   // For automatic invalid media cleanup
   final Set<String> _itemsToCleanup = {};
   Timer? _cleanupTimer;
+  /// 导入完成时间，导入后 30 秒内不触发自动清理，避免大量缩略图生成时的误判
+  DateTime? _lastImportCompletedAt;
 
   /// 启动时的媒体ID快照，仅用于自动导入逻辑
   Set<String> _initialAssetIds = {};
@@ -192,7 +194,42 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       // 加载当前目录的媒体项
       final items = await _databaseService.getMediaItems(_currentDirectory);
       debugPrint('从目录 $_currentDirectory 加载了 ${items.length} 个项目');
-      
+
+      // 路径修复：跨设备导入后 path 可能指向旧设备，若文件不存在则尝试 media 目录按文件名查找
+      final appDir = await getApplicationDocumentsDirectory();
+      final mediaDirPath = path.join(appDir.path, 'media');
+      final toRepair = <Map<String, dynamic>>[];
+      for (var item in items) {
+        final id = item['id']?.toString();
+        if (id == null || id == 'recycle_bin' || id == 'favorites') continue;
+        final typeIndex = item['type'] as int? ?? 0;
+        if (typeIndex == MediaType.folder.index) continue;
+        final oldPath = item['path']?.toString();
+        if (oldPath == null || oldPath.isEmpty) continue;
+        toRepair.add(item);
+      }
+      // 批量检查并修复，每批 30 个并行，避免超大量数据时阻塞
+      const batchSize = 30;
+      for (var i = 0; i < toRepair.length; i += batchSize) {
+        final batch = toRepair.skip(i).take(batchSize).toList();
+        final checks = await Future.wait(batch.map((item) async {
+          final oldPath = item['path']?.toString() ?? '';
+          final file = File(oldPath);
+          if (await file.exists()) return null;
+          final fileName = path.basename(oldPath);
+          final candidatePath = path.join(mediaDirPath, fileName);
+          if (await File(candidatePath).exists()) return (item, candidatePath);
+          return null;
+        }));
+        for (var r in checks) {
+          if (r != null) {
+            await _databaseService.updateMediaItemPath(r.$1['id'] as String, r.$2);
+            r.$1['path'] = r.$2;
+            debugPrint('路径已修复: ${r.$1['id']} -> ${r.$2}');
+          }
+        }
+      }
+
       // 计算图片和视频数量
       int imageCount = items.where((item) {
         final typeIndex = item['type'] as int;
@@ -1232,7 +1269,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           File(item.path),
           fit: BoxFit.cover,
           errorBuilder: (context, error, stackTrace) {
-            _scheduleCleanup(item.id); // Schedule cleanup on image load error
+            _scheduleCleanup(item.id); // 加载失败时安排清理（文件缺失或损坏）
             return const Icon(Icons.image, size: 32);
           },
         );
@@ -1243,6 +1280,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
             if (snapshot.connectionState == ConnectionState.done &&
                 snapshot.hasData &&
                 snapshot.data != null) {
+              // 缩略图已成功生成，仅展示失败时不触发清理（避免误杀）
               return Stack(
                 fit: StackFit.expand,
                 children: [
@@ -1250,8 +1288,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                     snapshot.data!,
                     fit: BoxFit.cover,
                     errorBuilder: (context, error, stackTrace) {
-                      debugPrint('加载视频缩略图失败: ${item.path}, 错误: $error');
-                      _scheduleCleanup(item.id); // Schedule cleanup on video thumbnail load error
+                      debugPrint('加载视频缩略图显示失败（缩略图文件已存在）: ${item.path}');
                       return _buildVideoPlaceholder();
                     },
                   ),
@@ -1355,51 +1392,79 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
   Future<File?> _generateVideoThumbnail(String videoPath) async {
     try {
+      // 文件不存在则直接返回，避免无意义尝试
+      final videoFile = File(videoPath);
+      if (!await videoFile.exists()) {
+        debugPrint('视频文件不存在: $videoPath');
+        return null;
+      }
+
       final tempDir = await getTemporaryDirectory();
-      final thumbnailPath = '${tempDir.path}/${videoPath.hashCode}_thumbnail.jpg';
+      final cacheKey = '${videoPath.hashCode.abs()}_${videoPath.length}';
+      final thumbnailPath = '${tempDir.path}/${cacheKey}_thumbnail.jpg';
       final thumbnailFile = File(thumbnailPath);
-      
+
       // 检查缓存
       if (await thumbnailFile.exists() && await thumbnailFile.length() > 100) {
         return thumbnailFile;
       }
 
-      // 优先尝试使用 FFmpeg 生成缩略图
-      debugPrint('开始尝试使用FFmpeg生成缩略图...');
-      bool ffmpegSuccess = await _extractVideoFrameWithFFmpeg(videoPath, thumbnailPath);
-      if (ffmpegSuccess && await thumbnailFile.exists()) {
-        debugPrint('FFmpeg 缩略图生成成功: $thumbnailPath');
-        return thumbnailFile;
-      } 
-      
-      // 尝试使用video_thumbnail插件作为备选
+      // 1. 优先尝试 thumbnailFile（直接写文件，部分机型更稳定）
       if (Platform.isAndroid || Platform.isIOS) {
-        try {
-          final thumbnailBytes = await VideoThumbnail.thumbnailData(
-            video: videoPath,
-            imageFormat: ImageFormat.JPEG,
-            maxWidth: 250,
-            quality: 50,
-          );
-          
-          if (thumbnailBytes != null && thumbnailBytes.isNotEmpty) {
-            await thumbnailFile.writeAsBytes(thumbnailBytes);
-            if (await thumbnailFile.exists()) {
-              debugPrint('VideoThumbnail插件成功生成缩略图');
-              return thumbnailFile;
+        for (final timeMs in [0, 500, 1500, 3000, 5000]) {
+          try {
+            final outPath = '${tempDir.path}/${cacheKey}_t${timeMs}.jpg';
+            final resultPath = await VideoThumbnail.thumbnailFile(
+              video: videoPath,
+              thumbnailPath: outPath,
+              imageFormat: ImageFormat.JPEG,
+              maxWidth: 250,
+              quality: 75,
+              timeMs: timeMs,
+            );
+            if (resultPath != null) {
+              final f = File(resultPath);
+              if (await f.exists() && await f.length() > 100) {
+                await f.copy(thumbnailPath);
+                try { await f.delete(); } catch (_) {}
+                debugPrint('thumbnailFile 成功 (timeMs=$timeMs)');
+                return thumbnailFile;
+              }
             }
+          } catch (e) {
+            if (timeMs == 5000) debugPrint('thumbnailFile 失败: $e');
           }
-        } catch (e) {
-          debugPrint('VideoThumbnail插件生成缩略图失败: $e');
-          // 继续尝试其他方法
         }
       }
-      
-      debugPrint('标准方法生成缩略图失败，使用简单替代方法');
-      // 尝试生成彩色缩略图作为备选
+
+      // 2. 备选：thumbnailData + 多时间点
+      if (Platform.isAndroid || Platform.isIOS) {
+        for (final timeMs in [0, 1000, 3000, 5000]) {
+          try {
+            final thumbnailBytes = await VideoThumbnail.thumbnailData(
+              video: videoPath,
+              imageFormat: ImageFormat.JPEG,
+              maxWidth: 250,
+              quality: 75,
+              timeMs: timeMs,
+            );
+            if (thumbnailBytes != null && thumbnailBytes.isNotEmpty) {
+              await thumbnailFile.writeAsBytes(thumbnailBytes);
+              if (await thumbnailFile.exists()) {
+                debugPrint('thumbnailData 成功 (timeMs=$timeMs)');
+                return thumbnailFile;
+              }
+            }
+          } catch (e) {
+            if (timeMs == 5000) debugPrint('thumbnailData 失败: $e');
+          }
+        }
+      }
+
+      debugPrint('标准方法失败，尝试彩色占位缩略图');
       return _generateColoredThumbnail(videoPath);
     } catch (e) {
-      debugPrint('缩略图生成过程中发生错误: $videoPath, 错误: $e');
+      debugPrint('缩略图生成异常: $videoPath, 错误: $e');
       return null;
     }
   }
@@ -1407,18 +1472,22 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   Future<File?> _generateColoredThumbnail(String videoPath) async {
     try {
       final tempDir = await getTemporaryDirectory();
-      final thumbnailPath = '${tempDir.path}/${videoPath.hashCode}_color_thumbnail.jpg';
+      final cacheKey = '${videoPath.hashCode.abs()}_${videoPath.length}';
+      final thumbnailPath = '${tempDir.path}/${cacheKey}_color_thumbnail.jpg';
       final thumbnailFile = File(thumbnailPath);
-      
+
       // 检查缓存
       if (await thumbnailFile.exists() && await thumbnailFile.length() > 100) {
         return thumbnailFile;
       }
-      
-      // 创建基于视频路径的唯一颜色缩略图
+
+      // 创建基于视频路径的唯一颜色缩略图（不依赖文件可读性）
       final videoFileName = path.basename(videoPath);
-      final fileSize = await File(videoPath).length();
-      final colorSeed = videoFileName.hashCode + fileSize;
+      int colorSeed = videoFileName.hashCode;
+      try {
+        final f = File(videoPath);
+        if (await f.exists()) colorSeed += await f.length();
+      } catch (_) {}
       final colorMap = _generateUniqueColors(colorSeed);
       
       // 使用简单的位图方法生成缩略图，而不依赖Canvas
@@ -2215,32 +2284,59 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
   // New method for scheduling cleanup
   void _scheduleCleanup(String itemId) {
+    // 导入后 30 秒内不触发清理，避免大量缩略图并发生成时的误判
+    if (_lastImportCompletedAt != null &&
+        DateTime.now().difference(_lastImportCompletedAt!) < const Duration(seconds: 30)) {
+      return;
+    }
     _itemsToCleanup.add(itemId);
     _cleanupTimer?.cancel(); // Cancel any existing timer
-    _cleanupTimer = Timer(const Duration(seconds: 5), () { // Debounce cleanup by 5 seconds
+    _cleanupTimer = Timer(const Duration(seconds: 10), () { // 10秒防抖，给缩略图生成更多重试机会
       _performCleanup();
     });
   }
 
   // New method to perform the cleanup
+  // 图片加载失败：直接删除（多为损坏/垃圾文件）
+  // 视频缩略图失败：移至回收站，给用户自行处理或再次尝试的机会
   Future<void> _performCleanup() async {
     if (_itemsToCleanup.isEmpty) return;
 
     debugPrint('开始自动清理无效媒体文件: ${_itemsToCleanup.length} 个');
-    Set<String> cleanedItems = Set.from(_itemsToCleanup); // Copy items to avoid modification during iteration
-    _itemsToCleanup.clear(); // Clear the main set
+    Set<String> cleanedItems = Set.from(_itemsToCleanup);
+    _itemsToCleanup.clear();
 
     for (var id in cleanedItems) {
       try {
-        final item = _mediaItems.firstWhere((i) => i.id == id, orElse: () => null as MediaItem);
-        await _deleteMediaItemSilently(item);
-        debugPrint('已自动清理无效文件: ${item.name}');
-            } catch (e) {
+        final matches = _mediaItems.where((i) => i.id == id).toList();
+        if (matches.isEmpty) continue;
+        final item = matches.first;
+
+        // 清理前尝试路径修复：跨设备导入后 path 可能错误，文件实际在 media 目录
+        final appDir = await getApplicationDocumentsDirectory();
+        final mediaDirPath = path.join(appDir.path, 'media');
+        final fileName = path.basename(item.path);
+        final candidatePath = path.join(mediaDirPath, fileName);
+        if (!await File(item.path).exists() && await File(candidatePath).exists()) {
+          await _databaseService.updateMediaItemPath(item.id, candidatePath);
+          debugPrint('清理前路径已修复，跳过: ${item.name}');
+          continue;
+        }
+
+        if (item.type == MediaType.video) {
+          // 视频：移至回收站，不删除文件，让用户自行处理
+          await _databaseService.updateMediaItemDirectory(item.id, 'recycle_bin');
+          debugPrint('视频缩略图生成失败，已移至回收站: ${item.name}');
+        } else {
+          // 图片等：直接删除（多为损坏文件）
+          await _deleteMediaItemSilently(item);
+          debugPrint('已自动清理无效文件: ${item.name}');
+        }
+      } catch (e) {
         debugPrint('自动清理文件时出错 ($id): $e');
       }
     }
-    
-    // Reload media items after cleanup
+
     await _loadMediaItems();
     debugPrint('无效媒体文件自动清理完成。');
   }
@@ -2469,6 +2565,23 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       final chunk0File = File(path.join(tempImportDir.path, 'media_items_0.json'));
       final jsonFile = File(path.join(tempImportDir.path, 'media_items.json'));
 
+      // 路径重映射与数据规范化：跨设备导入时 path 需映射到当前设备，并补全必要字段
+      final mediaDirPath = path.join(appDir.path, 'media');
+      final now = DateTime.now().millisecondsSinceEpoch;
+      void remapMediaItemPath(Map<String, dynamic> item) {
+        // 文件夹（回收站、收藏夹等）不重映射 path
+        final typeIndex = item['type'] as int? ?? 0;
+        if (typeIndex == MediaType.folder.index) return;
+        final oldPath = item['path']?.toString();
+        if (oldPath != null && oldPath.isNotEmpty) {
+          final fileName = path.basename(oldPath);
+          item['path'] = path.join(mediaDirPath, fileName);
+        }
+        item['thumbnail_path'] = null; // 清空旧设备缓存，导入后重新生成
+        item['created_at'] ??= now;
+        item['updated_at'] ??= now;
+      }
+
       if (await chunk0File.exists()) {
         int chunkIdx = 0;
         await _databaseService.replaceAllMediaItemsFromChunks(() async {
@@ -2476,11 +2589,17 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           if (!await f.exists()) return null;
           message.value = '正在导入: media_items_$chunkIdx.json';
           final chunk = jsonDecode(await f.readAsString()) as List<dynamic>;
+          for (var item in chunk) {
+            if (item is Map<String, dynamic>) remapMediaItemPath(item);
+          }
           chunkIdx++;
           return chunk;
         });
       } else if (await jsonFile.exists()) {
         final mediaItemsToImport = jsonDecode(await jsonFile.readAsString()) as List<dynamic>? ?? [];
+        for (var item in mediaItemsToImport) {
+          if (item is Map<String, dynamic>) remapMediaItemPath(item);
+        }
         message.value = '正在恢复数据库...';
         await _databaseService.replaceAllMediaItems(mediaItemsToImport);
       } else {
@@ -2495,14 +2614,16 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       // 5. 数据库已恢复
       progress.value = 0.8;
 
-      // 6. 替换媒体文件
-      message.value = '正在迁移媒体文件...';
+      // 6. 替换媒体文件（带进度，支持超大量数据）
       final Directory finalMediaDir = Directory(path.join(appDir.path, 'media'));
       if (await finalMediaDir.exists()) {
         await finalMediaDir.delete(recursive: true);
       }
       await finalMediaDir.create(recursive: true);
-      await _copyDirectory(tempMediaDir, finalMediaDir);
+      await _copyDirectory(tempMediaDir, finalMediaDir, onProgress: (p, t, msg) {
+        message.value = msg;
+        progress.value = 0.8 + (t > 0 ? (p / t) * 0.1 : 0);
+      });
       progress.value = 0.9;
 
       // 7. 恢复设置
@@ -2521,6 +2642,8 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       // 8. 刷新界面和设置
       message.value = '导入完成，正在刷新...';
       await _loadSettings();
+      _itemsToCleanup.clear();
+      _lastImportCompletedAt = DateTime.now(); // 30 秒内不触发自动清理
       await _loadMediaItems();
       progress.value = 1.0;
 
@@ -2679,35 +2802,36 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   }
 
   // 优化后的递归拷贝目录方法 - 使用流式处理避免内存溢出，支持大文件
-  Future<void> _copyDirectory(Directory src, Directory dst) async {
+  /// [onProgress] 可选，用于导入时显示进度 (processed, total, message)
+  Future<void> _copyDirectory(Directory src, Directory dst, {void Function(int processed, int total, String msg)? onProgress}) async {
     if (!await dst.exists()) await dst.create(recursive: true);
-    
+
     int totalFiles = 0;
     int processedFiles = 0;
-    
+
     // 首先计算总文件数
     await for (var entity in src.list(recursive: true)) {
       if (entity is File) totalFiles++;
     }
-    
+
     // 然后执行实际的复制操作
     await for (var entity in src.list(recursive: true)) {
       final relativePath = path.relative(entity.path, from: src.path);
       final newPath = path.join(dst.path, relativePath);
-      
+
       if (entity is Directory) {
         await Directory(newPath).create(recursive: true);
       } else if (entity is File) {
         try {
           await File(newPath).create(recursive: true);
-          
+
           // 使用流式复制，避免内存溢出
           final sourceFile = File(entity.path);
           final targetFile = File(newPath);
-          
+
           if (await sourceFile.exists()) {
             final fileSize = await sourceFile.length();
-            
+
             // 对于大文件（超过2MB），使用流式复制
             if (fileSize > kStreamingThresholdBytes) {
               await _copyLargeFile(sourceFile, targetFile);
@@ -2716,14 +2840,17 @@ class _MediaManagerPageState extends State<MediaManagerPage>
               await sourceFile.copy(newPath);
             }
           }
-          
+
           processedFiles++;
-          
+          if (onProgress != null && (processedFiles % 25 == 0 || processedFiles == totalFiles)) {
+            onProgress(processedFiles, totalFiles, '迁移媒体: $processedFiles/$totalFiles');
+          }
+
           // 每处理10个文件后稍作延迟，让系统有时间进行内存管理
           if (processedFiles % 10 == 0) {
             await Future.delayed(Duration(milliseconds: 50));
           }
-          
+
         } catch (e) {
           print('复制文件失败: ${entity.path} -> $newPath, 错误: $e');
           // 继续处理其他文件

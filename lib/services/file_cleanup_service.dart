@@ -303,17 +303,36 @@ class FileCleanupService {
     }
   }
 
+  /// 判断是否为媒体缩略图等需保留的有用缓存（清理临时文件时跳过，避免误删导致媒体页无法显示并误判为垃圾文件）
+  bool _isProtectedThumbnailOrCache(String fileName) {
+    final lower = fileName.toLowerCase();
+    return lower.endsWith('_thumbnail.jpg') ||
+        lower.endsWith('_color_thumbnail.jpg') ||
+        lower.startsWith('video_thumb_') ||
+        lower.startsWith('img_thumb_');
+  }
+
   /// 清理所有临时文件（递归清理子目录，导入等操作会在 temp 下创建子目录）
+  /// 安全策略：跳过媒体页/日记页的缩略图缓存，避免误删后媒体页无法及时重建缩略图而将正常媒体误判为垃圾删除
   Future<void> cleanAllTempFiles() async {
     if (!_isInitialized || _tempDirectory == null) return;
 
     try {
       int deletedCount = 0;
       int totalSize = 0;
-      
+      int skippedCount = 0;
+
       if (await _tempDirectory!.exists()) {
         await for (final entity in _tempDirectory!.list(recursive: true)) {
           if (entity is File) {
+            final fileName = path.basename(entity.path);
+            if (_isProtectedThumbnailOrCache(fileName)) {
+              skippedCount++;
+              if (kDebugMode) {
+                print('保留缩略图缓存: ${entity.path}');
+              }
+              continue;
+            }
             try {
               final fileSize = await entity.length();
               await entity.delete();
@@ -327,9 +346,9 @@ class FileCleanupService {
           }
         }
       }
-      
+
       if (kDebugMode) {
-        print('清理临时文件完成: 删除 $deletedCount 个文件，释放空间: ${_formatFileSize(totalSize)}');
+        print('清理临时文件完成: 删除 $deletedCount 个文件，保留 $skippedCount 个缩略图，释放空间: ${_formatFileSize(totalSize)}');
       }
     } catch (e) {
       if (kDebugMode) {
@@ -339,16 +358,26 @@ class FileCleanupService {
   }
 
   /// 清理所有缓存文件
+  /// 安全策略：跳过媒体缩略图等有用缓存，与 cleanAllTempFiles 保持一致
   Future<void> cleanAllCacheFiles() async {
     if (!_isInitialized || _appCacheDirectory == null) return;
 
     try {
       int deletedCount = 0;
       int totalSize = 0;
-      
+      int skippedCount = 0;
+
       if (await _appCacheDirectory!.exists()) {
         await for (final entity in _appCacheDirectory!.list(recursive: true)) {
           if (entity is File) {
+            final fileName = path.basename(entity.path);
+            if (_isProtectedThumbnailOrCache(fileName)) {
+              skippedCount++;
+              if (kDebugMode) {
+                print('保留缩略图缓存: ${entity.path}');
+              }
+              continue;
+            }
             try {
               final fileSize = await entity.length();
               await entity.delete();
@@ -362,9 +391,9 @@ class FileCleanupService {
           }
         }
       }
-      
+
       if (kDebugMode) {
-        print('清理缓存文件完成: 删除 $deletedCount 个文件，释放空间: ${_formatFileSize(totalSize)}');
+        print('清理缓存文件完成: 删除 $deletedCount 个文件，保留 $skippedCount 个缩略图，释放空间: ${_formatFileSize(totalSize)}');
       }
     } catch (e) {
       if (kDebugMode) {
