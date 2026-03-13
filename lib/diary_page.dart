@@ -1897,10 +1897,15 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
                         decoration: InputDecoration(
                           labelText: '今天的心情',
                           prefixIcon: _mood != null
-                              ? SvgPicture.asset(_moodSvgOptions.firstWhere((e) => e['label'] == _mood)['icon'], width: 24, height: 24)
+                              ? SvgPicture.asset(_moodSvgOptions.firstWhere((e) => e['label'] == _mood)['icon'], width: 20, height: 20)
                               : null,
                           border: OutlineInputBorder(),
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                         ),
+                        isExpanded: true,
+                        selectedItemBuilder: (context) => _moodSvgOptions.map((opt) => Center(
+                          child: SvgPicture.asset(opt['icon'], width: 22, height: 22),
+                        )).toList(),
                         items: _moodSvgOptions.map((opt) => DropdownMenuItem<String>(
                           value: opt['label'],
                           child: Row(
@@ -1926,10 +1931,15 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
                         decoration: InputDecoration(
                           labelText: '今天的天气',
                           prefixIcon: _weather != null
-                              ? SvgPicture.asset(_weatherSvgOptions.firstWhere((e) => e['label'] == _weather)['icon'], width: 24, height: 24)
+                              ? SvgPicture.asset(_weatherSvgOptions.firstWhere((e) => e['label'] == _weather)['icon'], width: 20, height: 20)
                               : null,
                           border: OutlineInputBorder(),
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                         ),
+                        isExpanded: true,
+                        selectedItemBuilder: (context) => _weatherSvgOptions.map((opt) => Center(
+                          child: SvgPicture.asset(opt['icon'], width: 22, height: 22),
+                        )).toList(),
                         items: _weatherSvgOptions.map((opt) => DropdownMenuItem<String>(
                           value: opt['label'],
                           child: Row(

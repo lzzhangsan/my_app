@@ -1521,49 +1521,61 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     );
   }
   
-  void _showWebsiteOptionsDialog(BuildContext context, Map<String, dynamic> website, int index) {
+  void _showWebsiteOptionsDialog(BuildContext pageContext, Map<String, dynamic> website, int index) {
     showModalBottomSheet(
-      context: context,
-      builder: (context) => Column(
+      context: pageContext,
+      builder: (sheetContext) => Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           ListTile(
             leading: const Icon(Icons.edit, color: Colors.blue),
             title: const Text('重命名'),
             onTap: () {
-              Navigator.pop(context);
-              _showRenameWebsiteDialog(context, website, index);
+              Navigator.pop(sheetContext);
+              _showRenameWebsiteDialog(pageContext, website, index);
             },
           ),
           ListTile(
             leading: const Icon(Icons.delete, color: Colors.red),
             title: const Text('删除'),
             onTap: () async {
-              Navigator.pop(context);
+              // 先显示确认对话框（此时 sheet 仍打开，sheetContext 有效）
               final shouldDelete = await showDialog<bool>(
-                context: context,
-                builder: (context) => AlertDialog(
+                context: sheetContext,
+                builder: (ctx) => AlertDialog(
                   title: const Text('删除网站'),
                   content: Text('确定要删除 ${website['name']} 吗？'),
                   actions: [
-                    TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-                    TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('删除')),
+                    TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+                    TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('删除')),
                   ],
                 ),
               ) ?? false;
-              if (shouldDelete) {
-                showDialog(
-                  context: context,
-                  barrierDismissible: false,
-                  builder: (context) => const AlertDialog(
-                    content: Row(
-                      children: [CircularProgressIndicator(), SizedBox(width: 20), Text('删除中...')],
-                    ),
+              if (!shouldDelete) return;
+              // 关闭底部面板后再执行删除，使用 pageContext 确保有效
+              if (!pageContext.mounted) return;
+              Navigator.pop(sheetContext);
+              // 使用 pageContext 显示加载框并执行删除
+              showDialog(
+                context: pageContext,
+                barrierDismissible: false,
+                builder: (_) => const AlertDialog(
+                  content: Row(
+                    children: [CircularProgressIndicator(), SizedBox(width: 20), Text('删除中...')],
                   ),
-                );
-                await _removeWebsite(index);
-                Navigator.of(context).pop();
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('网站已删除')));
+                ),
+              );
+              // 若 index 可能失效，则按 url 重新查找
+              int idx = index;
+              if (idx < 0 || idx >= _commonWebsites.length) {
+                idx = _commonWebsites.indexWhere((s) => s['url'] == website['url']);
+              }
+              if (idx >= 0) {
+                await _removeWebsite(idx);
+              }
+              if (pageContext.mounted) {
+                Navigator.of(pageContext).pop();
+                ScaffoldMessenger.of(pageContext).showSnackBar(const SnackBar(content: Text('网站已删除')));
               }
             },
           ),
@@ -2541,17 +2553,33 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                                 useOnLoadResource: true,
                                 allowFileAccess: true,
                                 domStorageEnabled: true,
+                                mixedContentMode: MixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
                                 userAgent: 'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
                               ),
                               initialUserScripts: UnmodifiableListView([]),
                               onWebViewCreated: (ctrl) => _setupWebViewController(ctrl),
+                              shouldAllowDeprecatedTLS: (ctrl, challenge) async {
+                                return ShouldAllowDeprecatedTLSAction.ALLOW;
+                              },
+                              // 注意：PROCEED 会跳过证书校验，存在中间人攻击风险。
+                              // 若需更高安全性，可改为 DENY 或实现白名单校验。
+                              onReceivedServerTrustAuthRequest: (ctrl, challenge) async {
+                                return ServerTrustAuthResponse(
+                                  action: ServerTrustAuthResponseAction.PROCEED,
+                                );
+                              },
                               onLoadStart: (ctrl, url) {
                                 setState(() {
                                   _isLoading = true;
                                   if (url != null) {
-                                    _currentUrl = url.toString();
+                                    final urlStr = url.toString();
+                                    _currentUrl = urlStr;
                                     _urlController.text = _currentUrl;
-                                    _showHomePage = false;
+                                    // 仅当加载真实网页时切换到 WebView，about:blank 不切换（保持主界面）
+                                    if (urlStr.startsWith('http://') || urlStr.startsWith('https://')) {
+                                      _showHomePage = false;
+                                      widget.onBrowserHomePageChanged?.call(false);
+                                    }
                                   }
                                 });
                               },

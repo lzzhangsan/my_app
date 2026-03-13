@@ -61,7 +61,7 @@ android {
 
     buildTypes {
         release {
-            // Use the debug keystore for now to avoid signing blockers
+            // 使用 debug 签名，保证与旧版覆盖安装时签名一致、数据保留
             signingConfig signingConfigs.debug
             minifyEnabled false
             shrinkResources false

@@ -398,65 +398,73 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     } catch (e) {
     }
     
-    // 在对话框中显示文件夹列表
-    final MediaItem? targetFolder = await showDialog<MediaItem?>(
+    // 在底部面板显示文件夹列表：50%透明，高度随目录数量自适应，最多占屏幕一半可滚动
+    final screenHeight = MediaQuery.of(context).size.height;
+    const itemHeight = 48.0;
+    const headerHeight = 52.0;
+    const minPanelHeight = 150.0;
+    final itemCount = folders.length + 1; // +1 根目录
+    final contentHeight = itemCount * itemHeight + headerHeight;
+    final maxPanelHeight = screenHeight * 0.5;
+    final panelHeight = (contentHeight < maxPanelHeight ? contentHeight : maxPanelHeight).clamp(minPanelHeight, maxPanelHeight);
+
+    final MediaItem? targetFolder = await showModalBottomSheet<MediaItem?>(
       context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: Colors.white.withOpacity(0.6), // 增加透明度
-        title: Container(
-          padding: EdgeInsets.zero,
-          height: 30,
-          child: const Text('移动到', style: TextStyle(fontSize: 14)),
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => Container(
+        height: panelHeight,
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.5),
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
         ),
-        titlePadding: const EdgeInsets.only(left: 12, top: 8, bottom: 0),
-        contentPadding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
-        content: SizedBox(
-          width: MediaQuery.of(context).size.width * 0.9, // 加宽面板
-          height: MediaQuery.of(context).size.height * 0.7, // 加高面板
-          child: Wrap(
-            spacing: 4, // 水平间距
-            runSpacing: 2, // 垂直间距
-            children: [
-              // 根目录选项
-              SizedBox(
-                width: (MediaQuery.of(context).size.width * 0.9 - 20) / 2, // 计算每个项的宽度
-                height: 32, // 固定高度
-                child: ListTile(
-                  dense: true,
-                  visualDensity: VisualDensity(horizontal: 0, vertical: -4), // 进一步压缩
-                  contentPadding: EdgeInsets.symmetric(horizontal: 4),
-                  title: const Text('根目录', style: TextStyle(fontSize: 13)),
-                  onTap: () => Navigator.pop(context, MediaItem(
-                    id: 'root',
-                    name: '根目录',
-                    path: '',
-                    type: MediaType.folder,
-                    directory: '',
-                    dateAdded: DateTime.now(),
-                  )),
-                ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text('移动到', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('取消', style: TextStyle(fontSize: 13)),
+                  ),
+                ],
               ),
-              // 其他文件夹选项
-              ...folders.map((folder) => SizedBox(
-                width: (MediaQuery.of(context).size.width * 0.9 - 20) / 2, // 计算每个项的宽度
-                height: 32, // 固定高度
-                child: ListTile(
-                  dense: true,
-                  visualDensity: VisualDensity(horizontal: 0, vertical: -4), // 进一步压缩
-                  contentPadding: EdgeInsets.symmetric(horizontal: 4),
-                  title: Text(folder.name, style: const TextStyle(fontSize: 13)),
-                  onTap: () => Navigator.pop(context, folder),
-                ),
-              )),
-            ],
-          ),
+            ),
+            Flexible(
+              child: ListView(
+                children: [
+                  ListTile(
+                    dense: true,
+                    visualDensity: const VisualDensity(horizontal: 0, vertical: -4),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+                    leading: const Icon(Icons.folder_open, size: 20),
+                    title: const Text('根目录', style: TextStyle(fontSize: 13)),
+                    onTap: () => Navigator.pop(context, MediaItem(
+                      id: 'root',
+                      name: '根目录',
+                      path: '',
+                      type: MediaType.folder,
+                      directory: '',
+                      dateAdded: DateTime.now(),
+                    )),
+                  ),
+                  ...folders.map((folder) => ListTile(
+                    dense: true,
+                    visualDensity: const VisualDensity(horizontal: 0, vertical: -4),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+                    leading: const Icon(Icons.folder, size: 20),
+                    title: Text(folder.name, style: const TextStyle(fontSize: 13)),
+                    onTap: () => Navigator.pop(context, folder),
+                  )),
+                ],
+              ),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消', style: TextStyle(fontSize: 13)),
-          ),
-        ],
       ),
     );
     
@@ -747,27 +755,32 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
             ),
           ),
 
-          // 设置按钮 - 始终显示
+          // 收藏、删除、移动按钮 - 始终显示
           Positioned(
             right: 16,
             bottom: 160,
-            child: GestureDetector(
-              onTap: () => _addToFavorites(),
-              onDoubleTap: () => _moveToTrash(),
-              onLongPress: () => _moveCurrentMediaItem(),
-              child: Container(
-                width: 45,
-                height: 45,
-                decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.5),
-                  shape: BoxShape.circle,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                _buildActionButton(
+                  icon: Icons.favorite_border,
+                  tooltip: '收藏',
+                  onPressed: _addToFavorites,
                 ),
-                child: const Icon(
-                  Icons.settings,
-                  color: Colors.white,
-                  size: 24,
+                const SizedBox(height: 8),
+                _buildActionButton(
+                  icon: Icons.delete_outline,
+                  tooltip: '删除',
+                  onPressed: _moveToTrash,
                 ),
-              ),
+                const SizedBox(height: 8),
+                _buildActionButton(
+                  icon: Icons.drive_file_move_outline,
+                  tooltip: '移动',
+                  onPressed: _moveCurrentMediaItem,
+                ),
+              ],
             ),
           ),
         ],
@@ -794,7 +807,19 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
         throw Exception('添加到收藏夹失败');
       }
       
+      // 从当前列表中移除并自动切换到下一个媒体
       if (!mounted) return;
+      setState(() {
+        widget.mediaItems.removeAt(_currentIndex);
+        if (widget.mediaItems.isEmpty) {
+          Navigator.of(context).pop(true);
+          return;
+        }
+        _currentIndex = _currentIndex >= widget.mediaItems.length
+            ? widget.mediaItems.length - 1
+            : _currentIndex;
+        _pageController.jumpToPage(_currentIndex);
+      });
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('已添加到收藏夹')),
       );
@@ -862,6 +887,32 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
         SnackBar(content: Text('移动到回收站失败: $e')),
       );
     }
+  }
+
+  Widget _buildActionButton({
+    required IconData icon,
+    required String tooltip,
+    required VoidCallback onPressed,
+  }) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onPressed,
+        borderRadius: BorderRadius.circular(22.5),
+        child: Tooltip(
+          message: tooltip,
+          child: Container(
+            width: 45,
+            height: 45,
+            decoration: BoxDecoration(
+              color: Colors.black.withOpacity(0.5),
+              shape: BoxShape.circle,
+            ),
+            child: Icon(icon, color: Colors.white, size: 24),
+          ),
+        ),
+      ),
+    );
   }
 
   void _toggleControls() {
