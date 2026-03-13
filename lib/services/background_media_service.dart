@@ -294,7 +294,14 @@ class BackgroundMediaService {
       }
 
       final fileName = p.basename(mediaFile.path);
-      final fileHash = md5.convert(await mediaFile.readAsBytes()).toString();
+      List<int> bytes;
+      try {
+        bytes = await mediaFile.readAsBytes();
+      } catch (e) {
+        if (kDebugMode) print('[后台服务] 读取文件失败: $fileName');
+        return false;
+      }
+      final fileHash = md5.convert(bytes).toString();
       final duplicate = await databaseService.findDuplicateMediaItem(fileHash, fileName);
       if (duplicate != null) {
         if (kDebugMode) print('[后台服务] 跳过重复文件: $fileName');
@@ -309,6 +316,14 @@ class BackgroundMediaService {
       final ext = p.extension(mediaFile.path);
       final destPath = p.join(mediaDir.path, '$uuid$ext');
       await mediaFile.copy(destPath);
+
+      // 插入前再次查重，防止与前台自动导入并发时的竞态
+      final duplicateBeforeInsert = await databaseService.findDuplicateMediaItem(fileHash, fileName);
+      if (duplicateBeforeInsert != null) {
+        try { await File(destPath).delete(); } catch (_) {}
+        if (kDebugMode) print('[后台服务] 插入前发现重复，已跳过: $fileName');
+        return false;
+      }
 
       final mediaItemMap = {
         'id': uuid,

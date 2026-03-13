@@ -710,8 +710,14 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       for (var sourceFile in sourceFiles) {
         final fileName = path.basename(sourceFile.path);
         final fileHash = await _calculateFileHash(sourceFile);
-        
-        // 检查是否存在重复文件
+        // 无法计算哈希时跳过，避免无法查重导致重复导入
+        if (fileHash.isEmpty) {
+          debugPrint('无法计算文件哈希，跳过导入: $fileName');
+          skippedCount++;
+          continue;
+        }
+
+        // 检查是否存在重复文件（file_hash 优先，可识别同内容不同文件名）
         final duplicate = await _databaseService.findDuplicateMediaItem(fileHash, fileName);
         if (duplicate != null) {
           debugPrint('发现重复文件: ${duplicate['name']}');
@@ -723,6 +729,15 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         final extension = path.extension(sourceFile.path);
         final destinationPath = '${mediaDir.path}/$uuid$extension';
         await sourceFile.copy(destinationPath);
+
+        // 插入前再次查重，防止并发导入时的竞态
+        final duplicateBeforeInsert = await _databaseService.findDuplicateMediaItem(fileHash, fileName);
+        if (duplicateBeforeInsert != null) {
+          try { await File(destinationPath).delete(); } catch (_) {}
+          debugPrint('插入前发现重复，已跳过: $fileName');
+          skippedCount++;
+          continue;
+        }
 
         final mediaItem = MediaItem(
           id: uuid,
@@ -1021,6 +1036,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       }
 
       if (mounted) {
+        final movedCount = _selectedItems.length;
         Navigator.of(context).pop();
         setState(() {
           _selectedItems.clear();
@@ -1028,7 +1044,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         });
         await _loadMediaItems();
         ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('成功移动 ${_selectedItems.length} 个项')));
+            SnackBar(content: Text('成功移动 $movedCount 个项')));
       }
     } catch (e) {
       if (mounted) {
@@ -1239,6 +1255,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         }
 
         if (mounted) {
+          final deletedCount = _selectedItems.length;
           Navigator.of(context).pop();
           setState(() {
             _selectedItems.clear();
@@ -1246,7 +1263,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           });
           await _loadMediaItems();
           ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('已删除 ${_selectedItems.length} 个项')));
+              SnackBar(content: Text('已删除 $deletedCount 个项')));
         }
       } catch (e) {
         if (mounted) {
@@ -1277,7 +1294,12 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         }
       },
       child: GridView.builder(
-        padding: const EdgeInsets.all(4),
+        padding: EdgeInsets.only(
+          left: 4,
+          right: 4,
+          top: 4,
+          bottom: 4 + (_selectedItems.isNotEmpty ? 56 : 0),
+        ),
         gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
           crossAxisCount: 5,
           childAspectRatio: 0.7,
@@ -2322,6 +2344,96 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     }
   }
 
+  /// 当前目录一键查重并删除：仅处理当前页面的媒体文件，重复项移至回收站
+  Future<void> _deduplicateCurrentFolder() async {
+    try {
+      final items = await _databaseService.getMediaItems(_currentDirectory);
+      final mediaFiles = items.where((item) => item['type'] != MediaType.folder.index).toList();
+      if (mediaFiles.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('当前目录没有媒体文件')),
+          );
+        }
+        return;
+      }
+
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => AlertDialog(
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const CircularProgressIndicator(),
+              const SizedBox(height: 16),
+              Text('正在扫描当前目录 (${_currentDirectory == 'root' ? '根目录' : _currentDirectory})...', style: const TextStyle(fontSize: 14)),
+            ],
+          ),
+        ),
+      );
+
+      Map<String, List<Map<String, dynamic>>> hashGroups = {};
+      int errorCount = 0;
+
+      for (var item in mediaFiles) {
+        try {
+          final file = File(item['path']?.toString() ?? '');
+          if (!await file.exists()) {
+            errorCount++;
+            continue;
+          }
+          final fileHash = await _calculateFileHash(file);
+          if (fileHash.isEmpty) {
+            errorCount++;
+            continue;
+          }
+          await _databaseService.updateMediaItemHash(item['id'], fileHash);
+          hashGroups.putIfAbsent(fileHash, () => []).add(item);
+        } catch (e) {
+          errorCount++;
+        }
+      }
+
+      int duplicateCount = 0;
+      for (var files in hashGroups.values) {
+        if (files.length > 1) {
+          duplicateCount += files.length - 1;
+          for (var dup in files.skip(1)) {
+            try {
+              await _databaseService.updateMediaItemDirectory(dup['id'], 'recycle_bin');
+            } catch (e) {
+              errorCount++;
+            }
+          }
+        }
+      }
+
+      if (mounted) Navigator.of(context).pop();
+
+      if (mounted) {
+        await _loadMediaItems();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              duplicateCount > 0
+                  ? '查重完成：发现 $duplicateCount 个重复文件，已移至回收站'
+                  : '查重完成：当前目录无重复文件',
+            ),
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        Navigator.of(context).pop();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('查重失败: $e')),
+        );
+      }
+    }
+  }
+
   // 递归获取所有媒体项的辅助方法
   Future<List<Map<String, dynamic>>> _getAllMediaItemsRecursively(String directory) async {
     List<Map<String, dynamic>> allItems = [];
@@ -3153,6 +3265,85 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     }
   }
 
+  /// 底部操作栏：选中时显示计数+移动+删除+查重，未选中时仅显示查重按钮
+  Widget _buildBottomActionBar() {
+    final hasSelection = _selectedItems.isNotEmpty;
+    int imageCount = 0;
+    int videoCount = 0;
+    int folderCount = 0;
+    if (hasSelection) {
+      for (var item in _mediaItems) {
+        if (!_selectedItems.contains(item.id)) continue;
+        if (item.type == MediaType.image) imageCount++;
+        else if (item.type == MediaType.video) videoCount++;
+        else if (item.type == MediaType.folder) folderCount++;
+      }
+    }
+
+    if (!hasSelection) {
+      return Align(
+        alignment: Alignment.centerRight,
+        child: Padding(
+          padding: const EdgeInsets.only(right: 16, bottom: 8),
+          child: FloatingActionButton.small(
+            onPressed: _deduplicateCurrentFolder,
+            tooltip: '当前目录查重',
+            heroTag: 'deduplicate_current',
+            child: const Icon(Icons.find_replace),
+          ),
+        ),
+      );
+    }
+
+    final parts = <String>[];
+    if (imageCount > 0) parts.add('$imageCount张图片');
+    if (videoCount > 0) parts.add('$videoCount个视频');
+    if (folderCount > 0) parts.add('$folderCount个文件夹');
+    final countText = parts.isEmpty ? '${_selectedItems.length}项' : parts.join(' ');
+
+    return Material(
+      color: Theme.of(context).colorScheme.surface,
+      elevation: 8,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                '已选 $countText',
+                style: TextStyle(
+                  fontSize: 13,
+                  color: Theme.of(context).colorScheme.onSurface,
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            IconButton(
+              icon: const Icon(Icons.select_all),
+              onPressed: _selectAll,
+              tooltip: '全选',
+            ),
+            IconButton(
+              icon: const Icon(Icons.drive_file_move_outline),
+              onPressed: () => _showMoveDialog(),
+              tooltip: '移动选定项',
+            ),
+            IconButton(
+              icon: const Icon(Icons.delete_outline),
+              onPressed: _deleteSelectedItems,
+              tooltip: '删除选定项',
+            ),
+            IconButton(
+              icon: const Icon(Icons.find_replace),
+              onPressed: _deduplicateCurrentFolder,
+              tooltip: '当前目录查重',
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   /// 显示存储管理页面
   void _showStorageManagement() {
     Navigator.push(
@@ -3228,7 +3419,19 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           ),
         ],
       ),
-      body: _buildMediaGrid(),
+      body: Stack(
+        children: [
+          _buildMediaGrid(),
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            child: SafeArea(
+              child: _buildBottomActionBar(),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
