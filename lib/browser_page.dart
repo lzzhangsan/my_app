@@ -1526,6 +1526,22 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
             },
           ),
           ListTile(
+            leading: const Icon(Icons.link, color: Colors.green),
+            title: const Text('复制网址'),
+            onTap: () {
+              final url = website['url']?.toString() ?? '';
+              if (url.isNotEmpty) {
+                Clipboard.setData(ClipboardData(text: url));
+                Navigator.pop(sheetContext);
+                if (pageContext.mounted) {
+                  ScaffoldMessenger.of(pageContext).showSnackBar(
+                    const SnackBar(content: Text('网址已复制到剪贴板'), duration: Duration(seconds: 1)),
+                  );
+                }
+              }
+            },
+          ),
+          ListTile(
             leading: const Icon(Icons.delete, color: Colors.red),
             title: const Text('删除'),
             onTap: () async {
@@ -2189,7 +2205,28 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         builder: (BuildContext context, StateSetter modalSetState) {
           return SizedBox(
             height: MediaQuery.of(context).size.height * 0.5,
-            child: ReorderableListView(
+            child: Column(
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.content_copy, color: Colors.blue),
+                  title: const Text('复制当前网址'),
+                  onTap: () {
+                    final url = _urlController.text.trim().isNotEmpty
+                        ? _urlController.text.trim()
+                        : _currentUrl;
+                    if (url.isNotEmpty) {
+                      Clipboard.setData(ClipboardData(text: url));
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('当前网址已复制到剪贴板'), duration: Duration(seconds: 1)),
+                        );
+                      }
+                    }
+                  },
+                ),
+                const Divider(height: 1),
+                Expanded(
+                  child: ReorderableListView(
               onReorder: (oldIndex, newIndex) async {
                 if (oldIndex < newIndex) newIndex -= 1;
                 final item = _bookmarks.removeAt(oldIndex);
@@ -2239,9 +2276,27 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                             }
                           },
                         ),
+                        IconButton(
+                          icon: const Icon(Icons.content_copy, color: Colors.green),
+                          onPressed: () {
+                            final url = _bookmarks[index]['url']?.toString() ?? '';
+                            if (url.isNotEmpty) {
+                              Clipboard.setData(ClipboardData(text: url));
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(content: Text('书签网址已复制到剪贴板'), duration: Duration(seconds: 1)),
+                                );
+                              }
+                            }
+                          },
+                          tooltip: '复制网址',
+                        ),
                       ],
                     ),
                   ),
+              ],
+            ),
+                ),
               ],
             ),
           );
@@ -3642,6 +3697,23 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     }
   }
 
+  /// 将长 URL 缩短为简洁显示（域名 + 路径摘要，单行友好）
+  String _shortenUrlForDisplay(String url) {
+    if (url.isEmpty) return '';
+    try {
+      final uri = Uri.tryParse(url);
+      if (uri == null) return url.length > 45 ? '${url.substring(0, 42)}...' : url;
+      final host = uri.host.isNotEmpty ? uri.host : url;
+      final path = uri.path;
+      if (path.isEmpty || path == '/') return host;
+      // 路径过长时只保留前一段
+      final pathDisplay = path.length > 25 ? '${path.substring(0, 22)}...' : path;
+      return '$host$pathDisplay';
+    } catch (_) {
+      return url.length > 45 ? '${url.substring(0, 42)}...' : url;
+    }
+  }
+
   // 8. 历史记录弹窗
   void _showHistory() {
     showModalBottomSheet(
@@ -3667,19 +3739,50 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                   itemCount: _history.length,
                   itemBuilder: (context, index) {
                     final item = _history[index];
-                    return ListTile(
-                      title: Text(item['title'] ?? item['url']),
-                      subtitle: Text(item['url']),
-                      trailing: Text(item['datetime']?.substring(0, 19).replaceAll('T', ' ') ?? ''),
-                      onTap: () {
-                        Navigator.pop(context);
-                        _loadUrl(item['url']);
-                      },
-                      onLongPress: () async {
-                        _history.removeAt(index);
-                        await _saveHistory();
-                        setState(() {});
-                      },
+                    final title = item['title'] as String?;
+                    final url = item['url'] as String? ?? '';
+                    final timeStr = (item['datetime'] as String?)?.substring(0, 19).replaceAll('T', ' ') ?? '';
+                    // 优先用标题，若标题过长或与 URL 相同则用缩短的 URL
+                    final displayText = (title != null && title != url && title.length <= 50)
+                        ? title
+                        : _shortenUrlForDisplay(url);
+                    return SizedBox(
+                      height: 32,
+                      child: Material(
+                        color: Colors.transparent,
+                        child: InkWell(
+                          onTap: () {
+                            Navigator.pop(context);
+                            _loadUrl(url);
+                          },
+                          onLongPress: () async {
+                            _history.removeAt(index);
+                            await _saveHistory();
+                            setState(() {});
+                          },
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 16),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    displayText,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(fontSize: 14),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Text(
+                                  timeStr,
+                                  style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
                     );
                   },
                 ),

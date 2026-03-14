@@ -1844,7 +1844,8 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       builder: (context) =>
           MediaPreviewPage(mediaItems: _mediaItems, initialIndex: index),
     )).then((_) {
-      // 当预览页面关闭时，记录最后查看的视频ID
+      // 预览页面关闭时刷新列表（删除/移动/收藏等操作后需同步显示）
+      _loadMediaItems();
       if (item.type == MediaType.video) {
         setState(() {
           _lastViewedVideoId = item.id;
