@@ -2295,6 +2295,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
         throw Exception('移动到回收站失败');
       }
 
+      if (mounted) {
+        _mediaPlayerKey.currentState?.removeCurrentAndPlayNext();
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -2351,6 +2354,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
         throw Exception('收藏失败');
       }
 
+      if (mounted) {
+        _mediaPlayerKey.currentState?.removeCurrentAndPlayNext();
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

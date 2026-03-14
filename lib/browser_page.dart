@@ -3868,15 +3868,28 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   // 页面加载完成后的处理
   void _onPageFinished(String url) async {
     try {
+      // about:blank 为 WebView 初始空白页，不切换主界面、不加入历史
+      final isBlankPage = url.isEmpty ||
+          url.toLowerCase().startsWith('about:blank') ||
+          url.toLowerCase().startsWith('about://blank');
+      if (isBlankPage) {
+        setState(() {
+          _isLoading = false;
+          _loadingProgress = 0.0;
+        });
+        debugPrint('页面加载完成(about:blank): 保持主界面');
+        return;
+      }
+
       // 注入媒体下载处理程序
       _injectDownloadHandlers();
       
-      // 添加历史记录
+      // 添加历史记录（仅真实网页）
       final ctrl = _controller;
       String title = ctrl != null ? (await ctrl.getTitle() ?? url) : url;
       await _addHistory(title, url);
       
-      // 更新状态
+      // 更新状态：仅当加载真实网页时切换到 WebView
       setState(() {
         _isLoading = false;
         _currentUrl = url;

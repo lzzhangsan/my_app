@@ -737,6 +737,27 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
      }
    }
 
+   /// 从当前列表中移除当前播放的媒体并切换到下一个。
+   /// 用于文档编辑界面等场景：外部已更新数据库（如移动到回收站/收藏夹）后，
+   /// 需要从展示列表中移除该项并自动播放下一个，与媒体页面的删除/收藏/移动行为一致。
+   void removeCurrentAndPlayNext() {
+     if (_currentPlayingMedia == null) return;
+     final String currentId = _currentPlayingMedia!['id'];
+     final int currentIndex = _mediaList.indexWhere((media) => media['id'] == currentId);
+     if (currentIndex == -1) return;
+
+     setState(() {
+       _mediaList.removeAt(currentIndex);
+     });
+
+     if (_mediaList.isEmpty) {
+       stop();
+       return;
+     }
+
+     _showRandomMedia();
+   }
+
    // 辅助方法：显示消息
    void _showMessage(BuildContext context, String message) {
      ScaffoldMessenger.of(context).showSnackBar(

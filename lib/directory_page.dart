@@ -25,10 +25,6 @@ class DirectoryPage extends StatefulWidget {
 
   @override
   _DirectoryPageState createState() => _DirectoryPageState();
-
-  static void refresh() {
-    // 需要外部持有DirectoryPage的State引用时可用其它方式实现
-  }
 }
 
 class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserver {

@@ -3835,12 +3835,14 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
       final chunk0File = File(path.join(tempImportDir.path, 'media_items_0.json'));
       final jsonFile = File(path.join(tempImportDir.path, 'media_items.json'));
+      if (!await chunk0File.exists() && !await jsonFile.exists()) {
+        throw Exception("关键错误: 压缩包中未找到 'media_items.json' 或 'media_items_0.json' 文件。");
+      }
 
       // 路径重映射与数据规范化：跨设备导入时 path 需映射到当前设备，并补全必要字段
       final mediaDirPath = path.join(appDir.path, 'media');
       final now = DateTime.now().millisecondsSinceEpoch;
       void remapMediaItemPath(Map<String, dynamic> item) {
-        // 文件夹（回收站、收藏夹等）不重映射 path
         final typeIndex = item['type'] as int? ?? 0;
         if (typeIndex == MediaType.folder.index) return;
         final oldPath = item['path']?.toString();
@@ -3848,45 +3850,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           final fileName = path.basename(oldPath);
           item['path'] = path.join(mediaDirPath, fileName);
         }
-        item['thumbnail_path'] = null; // 清空旧设备缓存，导入后重新生成
+        item['thumbnail_path'] = null;
         item['created_at'] ??= now;
         item['updated_at'] ??= now;
-      }
-
-      // 准备待导入数据（暂不写入 DB，等媒体文件就位后再写）
-      List<Map<String, dynamic>>? mediaItemsToImport;
-      Future<List<Map<String, dynamic>>?> Function()? chunkProvider;
-
-      if (await chunk0File.exists()) {
-        chunkProvider = () async {
-          int chunkIdx = 0;
-          final chunks = <List<Map<String, dynamic>>>[];
-          while (true) {
-            final f = File(path.join(tempImportDir.path, 'media_items_$chunkIdx.json'));
-            if (!await f.exists()) break;
-            message.value = '准备: media_items_$chunkIdx.json';
-            final chunk = (jsonDecode(await f.readAsString()) as List<dynamic>)
-                .whereType<Map<String, dynamic>>()
-                .map((item) {
-              remapMediaItemPath(item);
-              return item;
-            })
-                .toList();
-            chunks.add(chunk);
-            chunkIdx++;
-          }
-          return chunks.isEmpty ? null : chunks.expand((c) => c).toList();
-        };
-      } else if (await jsonFile.exists()) {
-        mediaItemsToImport = (jsonDecode(await jsonFile.readAsString()) as List<dynamic>? ?? [])
-            .whereType<Map<String, dynamic>>()
-            .map((item) {
-          remapMediaItemPath(item);
-          return item;
-        })
-            .toList();
-      } else {
-        throw Exception("关键错误: 压缩包中未找到 'media_items.json' 或 'media_items_0.json' 文件。");
       }
 
       final settingsFile = File(path.join(tempImportDir.path, 'media_settings.json'));
@@ -3917,15 +3883,44 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       }
       progress.value = 0.9;
 
-      // 6. 媒体文件已就位，再恢复数据库
+      // 6. 媒体文件已就位，使用分块 API 恢复数据库（避免大容量导入 OOM）
       currentPhase = '恢复数据库';
-      if (chunkProvider != null) {
-        mediaItemsToImport = await chunkProvider();
+      message.value = '正在恢复数据库...';
+      final useChunkFormat = await chunk0File.exists();
+      int chunkIdx = 0;
+      List<Map<String, dynamic>>? singleFormatData;
+      Future<List<dynamic>?> getNextChunk() async {
+        if (useChunkFormat) {
+          while (true) {
+            final f = File(path.join(tempImportDir.path, 'media_items_$chunkIdx.json'));
+            if (!await f.exists()) return null;
+            message.value = '正在导入: media_items_$chunkIdx.json';
+            final chunk = (jsonDecode(await f.readAsString()) as List<dynamic>)
+                .whereType<Map<String, dynamic>>()
+                .map((item) {
+              remapMediaItemPath(item);
+              return item;
+            }).toList();
+            chunkIdx++;
+            if (chunk.isNotEmpty) return chunk;
+          }
+        } else {
+          if (singleFormatData == null) {
+            final data = jsonDecode(await jsonFile.readAsString()) as List<dynamic>? ?? [];
+            singleFormatData = data.whereType<Map<String, dynamic>>().map((item) {
+              remapMediaItemPath(item);
+              return item;
+            }).toList();
+          }
+          const batchSize = 500;
+          final start = chunkIdx * batchSize;
+          if (start >= singleFormatData!.length) return null;
+          final end = math.min(start + batchSize, singleFormatData!.length);
+          chunkIdx++;
+          return singleFormatData!.sublist(start, end);
+        }
       }
-      if (mediaItemsToImport != null && mediaItemsToImport.isNotEmpty) {
-        message.value = '正在恢复数据库...';
-        await _databaseService.replaceAllMediaItems(mediaItemsToImport);
-      }
+      await _databaseService.replaceAllMediaItemsFromChunks(getNextChunk);
 
       // 7. 恢复设置
       message.value = '正在恢复设置...';

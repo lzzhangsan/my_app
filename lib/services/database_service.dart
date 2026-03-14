@@ -29,10 +29,6 @@ class DatabaseService {
   /// 数据库连接池
   final Map<String, Database> _connectionPool = {};
   
-  /// 事务队列
-  final List<Future<void> Function(Transaction)> _transactionQueue = [];
-  final bool _isProcessingTransactions = false;
-  
   /// 性能监控Timer
   Timer? _performanceMonitoringTimer;
 
@@ -4497,6 +4493,8 @@ class DatabaseService {
       'issues': [],
       'folderCount': 0,
       'documentCount': 0,
+      'mediaItemCount': 0,
+      'diaryEntryCount': 0,
     };
     
     try {
@@ -4510,7 +4508,6 @@ class DatabaseService {
           report['issues'].add('发现无效文件夹名称: ${folder['id']}');
         }
         
-        // 检查父文件夹引用
         if (folder['parent_folder'] != null) {
           final parentExists = await db.query(
             'folders',
@@ -4534,7 +4531,6 @@ class DatabaseService {
           report['issues'].add('发现无效文档名称: ${document['id']}');
         }
         
-        // 检查父文件夹引用
         if (document['parent_folder'] != null) {
           final parentExists = await db.query(
             'folders',
@@ -4546,6 +4542,49 @@ class DatabaseService {
             report['issues'].add('文档 ${document['name']} 的父文件夹引用无效');
           }
         }
+      }
+      
+      // 检查媒体项数据完整性
+      try {
+        final mediaItems = await db.query('media_items');
+        report['mediaItemCount'] = mediaItems.length;
+        const systemDirs = ['root', 'recycle_bin', 'favorites'];
+        final folderIds = (await db.query('media_items', columns: ['id'], where: 'type = ?', whereArgs: [3])).map((r) => r['id'] as String).toSet();
+        for (var item in mediaItems) {
+          final dir = item['directory']?.toString();
+          if (dir != null && dir.isNotEmpty && !systemDirs.contains(dir) && !folderIds.contains(dir)) {
+            report['isValid'] = false;
+            report['issues'].add('媒体项 ${item['name']} 的父目录引用无效: $dir');
+          }
+          final typeIndex = item['type'] as int? ?? 0;
+          if (typeIndex != 3 && (item['path'] == null || item['path'].toString().isEmpty)) {
+            report['isValid'] = false;
+            report['issues'].add('媒体项 ${item['name']} 缺少有效路径');
+          }
+        }
+      } catch (e) {
+        report['issues'].add('媒体项检查异常: $e');
+      }
+      
+      // 检查日记条目数据完整性
+      try {
+        final diaryTable = await db.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name='diary_entries'");
+        if (diaryTable.isNotEmpty) {
+          final diaryEntries = await db.query('diary_entries');
+          report['diaryEntryCount'] = diaryEntries.length;
+          for (var entry in diaryEntries) {
+            if (entry['id'] == null || entry['id'].toString().isEmpty) {
+              report['isValid'] = false;
+              report['issues'].add('发现无效日记条目 ID');
+            }
+            if (entry['date'] == null || entry['date'].toString().isEmpty) {
+              report['isValid'] = false;
+              report['issues'].add('日记条目 ${entry['id']} 缺少日期');
+            }
+          }
+        }
+      } catch (e) {
+        report['issues'].add('日记条目检查异常: $e');
       }
       
       if (kDebugMode) {

@@ -130,11 +130,7 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   }
 
   void _refreshCurrentPage() {
-    if (_currentPage == 1) {
-      DirectoryPage.refresh();
-    } else if (_currentPage == 2) {
-      // MediaManagerPage.refresh();
-    }
+    // 应用从后台恢复时可在此添加页面刷新逻辑
   }
 
   void _onDocumentOpen(String documentName) {
@@ -146,9 +142,7 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
           onSave: (updatedTextBoxes) {},
         ),
       ),
-    ).then((_) {
-      DirectoryPage.refresh();
-    });
+    );
   }
 
   @override
@@ -205,9 +199,6 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                     _currentPage = index;
                     Logger.d('[_MainScreenState] Page changed to: $index');
                   });
-                  if (index == 1) {
-                    DirectoryPage.refresh();
-                  }
                 },
                 physics: _currentPage == 2 && _isMediaMultiSelectMode
                     ? const NeverScrollableScrollPhysics()

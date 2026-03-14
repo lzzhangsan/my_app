@@ -1276,15 +1276,9 @@ class _DiaryPageState extends State<DiaryPage> {
         
         entriesToImport.add(DiaryEntry.fromMap(processedEntryMap));
       }
-      progress.value = 0.7;
+      progress.value = 0.65;
 
-      // 5. 导入数据库（事务安全）
-      currentPhase = '写入数据库';
-      message.value = '正在写入数据库...';
-      await _diaryService.replaceAllEntries(entriesToImport);
-      progress.value = 0.8;
-
-      // 6. 迁移媒体文件
+      // 5. 先迁移媒体文件到永久目录，再写入数据库（避免崩溃时 DB 引用不存在的文件）
       currentPhase = '迁移媒体文件';
       message.value = '正在迁移媒体文件...';
       final tempMediaDir = Directory(path.join(tempImportDir.path, 'media'));
@@ -1329,15 +1323,21 @@ class _DiaryPageState extends State<DiaryPage> {
         }
         Logger.i('总共迁移了 $mediaCount 个媒体文件，跳过 $skippedCount 个文件');
 
-        // 验证迁移结果
         if (mediaCount == 0 && mediaFiles.isNotEmpty) {
           Logger.w('警告：没有成功迁移任何媒体文件，可能存在权限或路径问题');
         }
       } else {
         Logger.w('临时媒体目录不存在，跳过媒体文件迁移');
       }
+      progress.value = 0.75;
 
-      // 6.5. 导入日记本设置（背景图片、背景色）
+      // 6. 媒体文件就位后，再导入数据库（事务安全）
+      currentPhase = '写入数据库';
+      message.value = '正在写入数据库...';
+      await _diaryService.replaceAllEntries(entriesToImport);
+      progress.value = 0.8;
+
+      // 7. 导入日记本设置（背景图片、背景色）
       final settingsFile = File(path.join(tempImportDir.path, 'diary_settings.json'));
       if (await settingsFile.exists()) {
         message.value = '正在恢复日记本设置...';
