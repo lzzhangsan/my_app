@@ -247,24 +247,33 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       }
       return;
     }
-    List<String> excludeIds = [];
-    String? currentFolderId;
+    final excludeIds = <String>{};
     final dbService = getService<DatabaseService>();
     final folders = await dbService.getAllDirectoryFolders();
     for (var item in _selectedItems) {
       if (item.type == ItemType.folder) {
         final folder = folders.firstWhere((f) => f['name'] == item.name, orElse: () => <String, dynamic>{'id': '', 'parent_folder': null, 'name': ''});
-        if (folder['id'] != '') excludeIds.add(folder['id'] as String);
+        if (folder['id'] != '') {
+          excludeIds.add(folder['id'] as String);
+          excludeIds.addAll(_getAllSubFolderIds(folder['id'] as String, folders));
+        }
       } else if (item.type == ItemType.document) {
         final doc = await dbService.getDocumentByName(item.name);
         if (doc != null && doc['parent_folder'] != null) {
-          currentFolderId = doc['parent_folder'] as String;
-          excludeIds.add(currentFolderId);
+          excludeIds.add(doc['parent_folder'] as String);
+        }
+      }
+    }
+    if (_currentParentFolder != null) {
+      for (final f in folders) {
+        if (f['name'] == _currentParentFolder && f['id'] != null) {
+          excludeIds.add(f['id'] as String);
+          break;
         }
       }
     }
     bool showRoot = _currentParentFolder != null;
-    final targetFolderName = await _selectFolder(excludeFolderIds: excludeIds, showRoot: showRoot);
+    final targetFolderName = await _selectFolder(excludeFolderIds: excludeIds.toList(), showRoot: showRoot);
     if (targetFolderName == null) return;
     try {
       for (var item in _selectedItems) {

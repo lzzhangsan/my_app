@@ -161,6 +161,10 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           'date_added': DateTime.now().toIso8601String(),
         });
         debugPrint('回收站文件夹创建成功');
+      } else if ((recycleBinFolder['directory'] ?? '').toString() != 'root') {
+        // 修复：回收站被误移后，强制恢复其在根目录
+        debugPrint('修复回收站目录为 root');
+        await _databaseService.updateMediaItemDirectory('recycle_bin', 'root');
       }
 
       // 检查并创建收藏夹
@@ -178,6 +182,10 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           'date_added': DateTime.now().toIso8601String(),
         });
         debugPrint('收藏夹创建成功');
+      } else if ((favoritesFolder['directory'] ?? '').toString() != 'root') {
+        // 修复：收藏夹被误移后，强制恢复其在根目录
+        debugPrint('修复收藏夹目录为 root');
+        await _databaseService.updateMediaItemDirectory('favorites', 'root');
       }
 
       // 更新可用目录列表，确保包含回收站和收藏夹
@@ -896,6 +904,14 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   }
 
   Future<void> _moveMediaItem(MediaItem item, String targetDirectory) async {
+    if (item.id == 'recycle_bin' || item.id == 'favorites') {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('回收站和收藏夹为系统文件夹，不可移动')),
+        );
+      }
+      return;
+    }
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -982,6 +998,16 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
   Future<void> _moveSelectedItems(String targetDirectory) async {
     if (_selectedItems.isEmpty) return;
+    // 排除系统文件夹，不可移动
+    final idsToMove = _selectedItems.where((id) => id != 'recycle_bin' && id != 'favorites').toSet();
+    if (idsToMove.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('回收站和收藏夹为系统文件夹，不可移动')),
+        );
+      }
+      return;
+    }
 
     showDialog(
       context: context,
@@ -998,7 +1024,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     );
 
     try {
-      for (var id in _selectedItems) {
+      for (var id in idsToMove) {
         final item = _mediaItems.firstWhere((item) => item.id == id);
         final updatedItem = MediaItem(
           id: item.id,
@@ -1031,6 +1057,14 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   }
 
   Future<void> _showMoveDialog({MediaItem? item}) async {
+    if (item != null && (item.id == 'recycle_bin' || item.id == 'favorites')) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('回收站和收藏夹为系统文件夹，不可移动')),
+        );
+      }
+      return;
+    }
     String? excludeId;
     if (item != null && item.type == MediaType.folder) {
       excludeId = item.id;
@@ -1050,7 +1084,10 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     showDialog(
       context: context,
       builder: (context) => FutureBuilder<List<MediaItem>>(
-        future: _getAllAvailableFolders(excludeFolderId: excludeId),
+        future: _getAllAvailableFolders(
+          excludeFolderId: excludeId,
+          excludeCurrentDirectoryId: _currentDirectory,
+        ),
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
             return const AlertDialog(
@@ -1119,7 +1156,10 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     );
   }
 
-  Future<List<MediaItem>> _getAllAvailableFolders({String? excludeFolderId}) async {
+  Future<List<MediaItem>> _getAllAvailableFolders({
+    String? excludeFolderId,
+    String? excludeCurrentDirectoryId,
+  }) async {
     try {
       final rootItems = await _databaseService.getMediaItems('root');
       final rootFolders = rootItems
@@ -1150,10 +1190,15 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         ..add(MediaItem.fromMap(recycleBin))
         ..add(MediaItem.fromMap(favorites));
 
-      // Filter out the excluded folder and its subfolders
+      // 排除正在移动的文件夹及其所有子文件夹（避免移入自身或子级导致循环）
       if (excludeFolderId != null) {
         final excludedSubfolders = await _getAllSubfolderIds(excludeFolderId);
         allFolders.removeWhere((folder) => folder.id == excludeFolderId || excludedSubfolders.contains(folder.id));
+      }
+
+      // 排除当前所在文件夹（项目已在此文件夹内，无需再选）
+      if (excludeCurrentDirectoryId != null && excludeCurrentDirectoryId != 'root') {
+        allFolders.removeWhere((folder) => folder.id == excludeCurrentDirectoryId);
       }
 
       return allFolders.toList();
@@ -1288,26 +1333,31 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   }
 
   Widget _buildMediaItem(MediaItem item, int index) {
+    final isSystemFolder = item.id == 'recycle_bin' || item.id == 'favorites';
     bool isSelected = _selectedItems.contains(item.id);
     bool isLastViewed = item.id == _lastViewedVideoId;
 
     return GestureDetector(
       key: ValueKey(item.id),
-      onTap: _isMultiSelectMode
-          ? () => _toggleItemSelection(item.id)
+      onTap: isSystemFolder
+          ? () => _navigateToFolder(item)
+          : (_isMultiSelectMode
+              ? () => _toggleItemSelection(item.id)
+              : () {
+                  if (item.type == MediaType.folder) {
+                    _navigateToFolder(item);
+                  } else {
+                    _previewMediaItem(item);
+                  }
+                }),
+      onLongPress: isSystemFolder
+          ? () => _navigateToFolder(item)
           : () {
-        if (item.type == MediaType.folder) {
-          _navigateToFolder(item);
-        } else {
-          _previewMediaItem(item);
-        }
-      },
-      onLongPress: () {
-        if (!_isMultiSelectMode) {
-          _toggleMultiSelectMode();
-        }
-        _toggleItemSelection(item.id);
-      },
+              if (!_isMultiSelectMode) {
+                _toggleMultiSelectMode();
+              }
+              _toggleItemSelection(item.id);
+            },
       child: Card(
         elevation: isLastViewed ? 6 : 2,
         margin: const EdgeInsets.all(0),
@@ -1338,7 +1388,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                   ),
                 ],
               ),
-              if (_isMultiSelectMode)
+              if (_isMultiSelectMode && !isSystemFolder)
                 Positioned(
                   top: 2,
                   right: 2,
@@ -1351,7 +1401,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                     ),
                   ),
                 ),
-              if (!_isMultiSelectMode)
+              if (!_isMultiSelectMode && !isSystemFolder)
                 Positioned(
                   top: 0,
                   right: 0,
@@ -1387,7 +1437,8 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                       itemBuilder: (context) => [
                         const PopupMenuItem(value: 'rename', child: Text('重命名')),
                         const PopupMenuItem(value: 'move', child: Text('移动到')),
-                        const PopupMenuItem(value: 'export', child: Text('导出')),
+                        if (item.type != MediaType.folder)
+                          const PopupMenuItem(value: 'export', child: Text('导出')),
                         const PopupMenuItem(
                             value: 'delete',
                             child: Text('删除', style: TextStyle(color: Colors.red))),
@@ -1481,6 +1532,38 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         );
 
       case MediaType.folder:
+        if (item.id == 'recycle_bin') {
+          return Container(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Colors.grey.shade400, Colors.grey.shade600],
+              ),
+              borderRadius: BorderRadius.circular(8),
+              boxShadow: [
+                BoxShadow(color: Colors.black26, blurRadius: 4, offset: const Offset(0, 2)),
+              ],
+            ),
+            child: const Icon(Icons.delete_outline, size: 40, color: Colors.white),
+          );
+        }
+        if (item.id == 'favorites') {
+          return Container(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Colors.pink.shade300, Colors.red.shade400],
+              ),
+              borderRadius: BorderRadius.circular(8),
+              boxShadow: [
+                BoxShadow(color: Colors.pink.withOpacity(0.3), blurRadius: 4, offset: const Offset(0, 2)),
+              ],
+            ),
+            child: const Icon(Icons.favorite, size: 40, color: Colors.white),
+          );
+        }
         return Container(
           color: Colors.amber.shade100,
           child: const Icon(Icons.folder, size: 32, color: Colors.amber),
@@ -1835,14 +1918,16 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   }
 
   void _previewMediaItem(MediaItem item) {
-    final index = _mediaItems.indexOf(item);
+    // 仅预览媒体文件（图片/视频），不包含文件夹，避免切换下一项时出现文件夹
+    final mediaOnly = _mediaItems.where((i) => i.type == MediaType.image || i.type == MediaType.video).toList();
+    final index = mediaOnly.indexOf(item);
     if (index == -1) {
       debugPrint('错误：无法在媒体列表中找到该项目');
       return;
     }
     Navigator.of(context).push(MaterialPageRoute(
       builder: (context) =>
-          MediaPreviewPage(mediaItems: _mediaItems, initialIndex: index),
+          MediaPreviewPage(mediaItems: mediaOnly, initialIndex: index),
     )).then((_) {
       // 预览页面关闭时刷新列表（删除/移动/收藏等操作后需同步显示）
       _loadMediaItems();
@@ -2114,6 +2199,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   }
 
   void _toggleItemSelection(String id) {
+    if (id == 'recycle_bin' || id == 'favorites') return;
     setState(() {
       if (_selectedItems.contains(id)) {
         _selectedItems.remove(id);
