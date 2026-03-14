@@ -1938,6 +1938,41 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     );
   }
 
+  /// 文件夹缩略图底部显示媒体数量
+  Widget _buildFolderThumbnailWithCount({required Widget child, required String folderId}) {
+    final isSystemFolder = folderId == 'recycle_bin' || folderId == 'favorites';
+    final countColor = isSystemFolder ? Colors.white : Colors.lightBlue.shade400;
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        child,
+        Positioned(
+          left: 0,
+          right: 0,
+          bottom: 4,
+          child: Center(
+            child: FutureBuilder<int>(
+              future: _databaseService.getMediaItems(folderId).then((list) => list.length),
+              builder: (context, snapshot) {
+                if (snapshot.hasData && snapshot.data != null) {
+                  return Text(
+                    '${snapshot.data}',
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: countColor,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  );
+                }
+                return const SizedBox.shrink();
+              },
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _buildMediaThumbnail(MediaItem item) {
     switch (item.type) {
       case MediaType.image:
@@ -2016,40 +2051,49 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
       case MediaType.folder:
         if (item.id == 'recycle_bin') {
-          return Container(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [Colors.grey.shade400, Colors.grey.shade600],
+          return _buildFolderThumbnailWithCount(
+            child: Container(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [Colors.grey.shade400, Colors.grey.shade600],
+                ),
+                borderRadius: BorderRadius.circular(8),
+                boxShadow: [
+                  BoxShadow(color: Colors.black26, blurRadius: 4, offset: const Offset(0, 2)),
+                ],
               ),
-              borderRadius: BorderRadius.circular(8),
-              boxShadow: [
-                BoxShadow(color: Colors.black26, blurRadius: 4, offset: const Offset(0, 2)),
-              ],
+              child: const Icon(Icons.delete_outline, size: 40, color: Colors.white),
             ),
-            child: const Icon(Icons.delete_outline, size: 40, color: Colors.white),
+            folderId: item.id,
           );
         }
         if (item.id == 'favorites') {
-          return Container(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [Colors.pink.shade100, Colors.pink.shade200],
+          return _buildFolderThumbnailWithCount(
+            child: Container(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [Colors.pink.shade100, Colors.pink.shade200],
+                ),
+                borderRadius: BorderRadius.circular(8),
+                boxShadow: [
+                  BoxShadow(color: Colors.pink.shade200.withOpacity(0.2), blurRadius: 4, offset: const Offset(0, 2)),
+                ],
               ),
-              borderRadius: BorderRadius.circular(8),
-              boxShadow: [
-                BoxShadow(color: Colors.pink.shade200.withOpacity(0.2), blurRadius: 4, offset: const Offset(0, 2)),
-              ],
+              child: const Icon(Icons.favorite, size: 40, color: Colors.white),
             ),
-            child: const Icon(Icons.favorite, size: 40, color: Colors.white),
+            folderId: item.id,
           );
         }
-        return Container(
-          color: Colors.amber.shade100,
-          child: const Icon(Icons.folder, size: 32, color: Colors.amber),
+        return _buildFolderThumbnailWithCount(
+          child: Container(
+            color: Colors.amber.shade100,
+            child: const Icon(Icons.folder, size: 32, color: Colors.amber),
+          ),
+          folderId: item.id,
         );
       default:
         return Container();
@@ -4269,7 +4313,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        leadingWidth: 56,
+        leadingWidth: _currentDirectory == 'root' ? 80 : 56,
+        titleSpacing: 0,
+        centerTitle: false,
         leading: _currentDirectory == 'root'
             ? Padding(
                 padding: const EdgeInsets.only(left: 16),
