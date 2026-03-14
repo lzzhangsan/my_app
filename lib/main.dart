@@ -45,7 +45,11 @@ void main() async {
     try {
       final errorService = getService<ErrorService>();
       errorService.recordError(error, stack, context: 'runZonedGuarded', severity: ErrorSeverity.critical);
-    } catch (_) {}
+    } catch (recordErr, recordStack) {
+      if (kDebugMode) {
+        debugPrint('记录错误时失败: $recordErr\n$recordStack');
+      }
+    }
   });
 }
 

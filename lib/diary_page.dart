@@ -904,7 +904,8 @@ class _DiaryPageState extends State<DiaryPage> {
     String currentPhase = '准备';
     try {
       await tempExportDir.create(recursive: true);
-      
+      if (!mounted) return;
+
       showProgressDialog(context, progress, message);
 
       currentPhase = '获取日记数据';
@@ -1143,9 +1144,8 @@ class _DiaryPageState extends State<DiaryPage> {
 
       // 2. 选择ZIP文件
       final result = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['zip']);
-      if (result == null || result.files.isEmpty) {
-        return; // 用户取消选择
-      }
+      if (result == null || result.files.isEmpty) return;
+      if (!mounted) return;
 
       showProgressDialog(context, progress, message);
 

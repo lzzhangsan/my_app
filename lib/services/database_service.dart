@@ -101,18 +101,13 @@ class DatabaseService {
   /// 配置数据库连接
   Future<void> _onConfigure(Database db) async {
     try {
-      // 启用外键约束
-      await db.execute('PRAGMA foreign_keys = ON');
-      // 设置同步模式 - 使用NORMAL而不是FULL以提高性能
-      await db.execute('PRAGMA synchronous = NORMAL');
-      // 设置缓存大小 - 增加缓存以提高性能
-      await db.execute('PRAGMA cache_size = 10000');
-      // 设置临时存储在内存中
-      await db.execute('PRAGMA temp_store = MEMORY');
-      // 设置页面大小
-      await db.execute('PRAGMA page_size = 4096');
-      // 设置自动清理
-      await db.execute('PRAGMA auto_vacuum = INCREMENTAL');
+      // 注意：部分 Android 设备上 PRAGMA 需用 rawQuery，且 busy_timeout 可能不兼容，已移除
+      await db.rawQuery('PRAGMA foreign_keys = ON');
+      await db.rawQuery('PRAGMA synchronous = NORMAL');
+      await db.rawQuery('PRAGMA cache_size = 10000');
+      await db.rawQuery('PRAGMA temp_store = MEMORY');
+      await db.rawQuery('PRAGMA page_size = 4096');
+      await db.rawQuery('PRAGMA auto_vacuum = INCREMENTAL');
       
       if (kDebugMode) {
         print('数据库配置成功应用');
@@ -389,6 +384,10 @@ class DatabaseService {
   /// 升级到指定版本
   Future<void> _upgradeToVersion(DatabaseExecutor db, int version) async {
     switch (version) {
+      case 11:
+      case 12:
+        // 版本 11/12 无 schema 变更，仅用于强制升级或兼容性
+        break;
       case 8:
         // 添加新的字段和索引
         await db.execute('ALTER TABLE media_items ADD COLUMN file_size INTEGER DEFAULT 0');
@@ -2615,15 +2614,14 @@ class DatabaseService {
   Future<String> copyDocument(String sourceDocumentName, {String? parentFolder}) async { // NEW SIGNATURE
     print('copyDocument called for $sourceDocumentName, parentFolder: $parentFolder');
     final db = await database;
-    
-    // 1. 生成唯一的文档名称，使用更简洁的格式
+
+    // 1. 生成唯一的文档名称
     String newName = '$sourceDocumentName-副本';
     String finalNewDocumentName = newName;
     int attempt = 0;
     String baseName = newName;
     while (await doesNameExist(finalNewDocumentName)) {
       attempt++;
-      // 如果已存在同名文档，则使用"源文档名称-副本(序号)"的格式
       finalNewDocumentName = attempt > 1 ? '$baseName($attempt)' : baseName;
       if (attempt > 100) {
         print('Failed to generate a unique name for document copy after 100 attempts.');
@@ -2631,198 +2629,146 @@ class DatabaseService {
       }
     }
     print('Final new document name for copy: $finalNewDocumentName');
-    
+
     try {
-      // 2. 获取源文档信息
+      // 2. 预读取所有数据（事务外）
       List<Map<String, dynamic>> sourceDocs = await db.query(
         'documents',
         where: 'name = ?',
-        whereArgs: [sourceDocumentName]
+        whereArgs: [sourceDocumentName],
       );
-      
       if (sourceDocs.isEmpty) {
         throw Exception('Source document not found: $sourceDocumentName');
       }
-      
-      Map<String, dynamic> sourceDoc = sourceDocs.first;
-      // 使用字符串类型的ID，因为数据库中id字段是TEXT类型
-      String sourceId = sourceDoc['id'].toString();
-      
-      // 3. 创建新文档记录
+      String sourceId = sourceDocs.first['id'].toString();
+
       int maxOrder = 0;
-      String? parentFolderId; // 新增：用于存储父文件夹ID
+      String? parentFolderId;
       if (parentFolder != null) {
-        // 查找父文件夹ID
         final folder = await getFolderByName(parentFolder);
         parentFolderId = folder?['id'];
-        // Optional: Add error handling if folder not found, though getFolderByName handles some cases
-
-        List<Map<String, dynamic>> docs = await db.query(
+        final docs = await db.query(
           'documents',
           where: 'parent_folder = ?',
-          whereArgs: [parentFolderId], // 使用ID查询
+          whereArgs: [parentFolderId],
           orderBy: 'order_index DESC',
-          limit: 1
+          limit: 1,
         );
         if (docs.isNotEmpty) {
-          maxOrder = docs.first['order_index'] ?? 0;
+          maxOrder = (docs.first['order_index'] as int?) ?? 0;
         }
       }
-      
-      // 4. 插入新文档
-      // 生成UUID作为文档ID
+
+      final textBoxes = await db.query('text_boxes', where: 'document_id = ?', whereArgs: [sourceId]);
+      final imageBoxes = await db.query('image_boxes', where: 'document_id = ?', whereArgs: [sourceId]);
+      final audioBoxes = await db.query('audio_boxes', where: 'document_id = ?', whereArgs: [sourceId]);
+      final sourceCanvases = await db.query('canvases', where: 'document_id = ?', whereArgs: [sourceId]);
+      final docSettings = await db.query('document_settings', where: 'document_id = ?', whereArgs: [sourceId]);
+
       String newDocId = const Uuid().v4();
-      await db.insert('documents', {
-        'id': newDocId, // 显式设置ID为UUID
-        'name': finalNewDocumentName,
-        'parent_folder': parentFolderId, // 使用ID插入
-        'is_template': 0, // 确保新文档不是模板
-        'order_index': maxOrder + 1,
-        'created_at': DateTime.now().millisecondsSinceEpoch,
-        'updated_at': DateTime.now().millisecondsSinceEpoch,
-      });
-      
-      // 5. 复制源文档的内容
-      // 复制文本框
-      List<Map<String, dynamic>> textBoxes = await db.query(
-        'text_boxes',
-        where: 'document_id = ?',
-        whereArgs: [sourceId]
-      );
-      final Map<String,String> textIdMap = {};
-      for (var textBox in List.from(textBoxes)) {
-        final oldId = textBox['id'].toString();
-        Map<String, dynamic> newTextBox = Map<String, dynamic>.from(textBox);
-        newTextBox.remove('id');
-        newTextBox['document_id'] = newDocId;
-        final newId = const Uuid().v4();
-        newTextBox['id'] = newId;
-        textIdMap[oldId] = newId;
-        await db.insert('text_boxes', newTextBox);
-      }
-      
-      // 复制图片框
-      List<Map<String, dynamic>> imageBoxes = await db.query(
-        'image_boxes',
-        where: 'document_id = ?',
-        whereArgs: [sourceId]
-      );
-      final Map<String,String> imageIdMap = {};
-      for (var imageBox in List.from(imageBoxes)) {
-        final oldId = imageBox['id'].toString();
-        Map<String, dynamic> newImageBox = Map<String, dynamic>.from(imageBox);
-        newImageBox.remove('id');
-        newImageBox['document_id'] = newDocId;
-        final newId = const Uuid().v4();
-        newImageBox['id'] = newId;
-        imageIdMap[oldId] = newId;
-        await db.insert('image_boxes', newImageBox);
-      }
-      
-      // 复制音频框
-      List<Map<String, dynamic>> audioBoxes = await db.query(
-        'audio_boxes',
-        where: 'document_id = ?',
-        whereArgs: [sourceId]
-      );
-      final Map<String,String> audioIdMap = {};
-      for (var audioBox in audioBoxes) {
-        final oldId = audioBox['id'].toString();
-        Map<String, dynamic> newAudioBox = Map<String, dynamic>.from(audioBox);
-        newAudioBox.remove('id');
-        newAudioBox['document_id'] = newDocId;
-        final newId = const Uuid().v4();
-        newAudioBox['id'] = newId;
-        audioIdMap[oldId] = newId;
-        await db.insert('audio_boxes', newAudioBox);
-      }
+      final Map<String, String> textIdMap = {};
+      final Map<String, String> imageIdMap = {};
+      final Map<String, String> audioIdMap = {};
 
-      // 复制画布 (canvases)
-      // 需要重映射其中引用的 text/image/audio box ID 列表，避免指向旧文档元素
-      List<Map<String, dynamic>> sourceCanvases = await db.query(
-        'canvases',
-        where: 'document_id = ?',
-        whereArgs: [sourceId]
-      );
-
-      if (sourceCanvases.isNotEmpty) {
-        String remapIdList(String? csv, Map<String, String> idMap) {
-          if (csv == null || csv.trim().isEmpty) return '';
-          return csv.split(',').map((id) => idMap[id.trim()] ?? '').where((v) => v.isNotEmpty).join(',');
-        }
-
-        for (var canvas in sourceCanvases) {
-          Map<String, dynamic> newCanvas = Map<String, dynamic>.from(canvas);
-          newCanvas['id'] = const Uuid().v4();
-          newCanvas['document_id'] = newDocId;
-          // 重映射关联ID列
-          newCanvas['front_text_box_ids'] = remapIdList(canvas['front_text_box_ids']?.toString(), textIdMap);
-          newCanvas['back_text_box_ids'] = remapIdList(canvas['back_text_box_ids']?.toString(), textIdMap);
-          newCanvas['front_image_box_ids'] = remapIdList(canvas['front_image_box_ids']?.toString(), imageIdMap);
-            newCanvas['back_image_box_ids'] = remapIdList(canvas['back_image_box_ids']?.toString(), imageIdMap);
-          newCanvas['front_audio_box_ids'] = remapIdList(canvas['front_audio_box_ids']?.toString(), audioIdMap);
-          newCanvas['back_audio_box_ids'] = remapIdList(canvas['back_audio_box_ids']?.toString(), audioIdMap);
-          // 时间戳更新
-          final now = DateTime.now().millisecondsSinceEpoch;
-          newCanvas['created_at'] = now;
-          newCanvas['updated_at'] = now;
-          await db.insert('canvases', newCanvas);
-        }
-        print('复制画布: ${sourceCanvases.length} 个 (已重映射内部关联ID)');
-      }
-      
-      // 复制文档设置
-      List<Map<String, dynamic>> docSettings = await db.query(
-        'document_settings',
-        where: 'document_id = ?',
-        whereArgs: [sourceId]
-      );
-      
+      // 3. 预复制背景图片（事务外，避免事务内文件 I/O）
+      Map<String, dynamic>? newSettings;
       if (docSettings.isNotEmpty) {
-        Map<String, dynamic> newSettings = Map<String, dynamic>.from(docSettings.first);
-        newSettings.remove('id');
-        newSettings['document_id'] = newDocId;
-        // 移除document_name字段，因为document_settings表中没有这个列
-        newSettings.remove('document_name');
-        
-        // 复制背景图片文件（如果存在）
-        String? originalBackgroundPath = newSettings['background_image_path'];
+        newSettings = Map<String, dynamic>.from(docSettings.first);
+        newSettings!.remove('id');
+        newSettings!['document_id'] = newDocId;
+        newSettings!.remove('document_name');
+        String? originalBackgroundPath = newSettings!['background_image_path'];
         if (originalBackgroundPath != null && originalBackgroundPath.isNotEmpty) {
           try {
-            File originalFile = File(originalBackgroundPath);
+            final originalFile = File(originalBackgroundPath);
             if (await originalFile.exists()) {
-              // 获取应用私有目录
               final appDir = await getApplicationDocumentsDirectory();
               final backgroundDir = Directory('${appDir.path}/backgrounds');
               if (!await backgroundDir.exists()) {
                 await backgroundDir.create(recursive: true);
               }
-              
-              // 生成新的唯一文件名
-              final uuid = const Uuid().v4();
-              final extension = p.extension(originalBackgroundPath);
-              final newFileName = '$uuid$extension';
-              final newBackgroundPath = '${backgroundDir.path}/$newFileName';
-              
-              // 复制背景图片文件
+              final ext = p.extension(originalBackgroundPath);
+              final newBackgroundPath = '${backgroundDir.path}/${const Uuid().v4()}$ext';
               await originalFile.copy(newBackgroundPath);
-              newSettings['background_image_path'] = newBackgroundPath;
+              newSettings!['background_image_path'] = newBackgroundPath;
               print('复制背景图片: $originalBackgroundPath -> $newBackgroundPath');
             } else {
-              // 原背景图片文件不存在，清除路径
-              newSettings['background_image_path'] = null;
-              print('原背景图片文件不存在，已清除路径: $originalBackgroundPath');
+              newSettings!['background_image_path'] = null;
             }
           } catch (e) {
             print('复制背景图片时出错: $e');
-            // 出错时清除背景图片路径，避免指向无效文件
-            newSettings['background_image_path'] = null;
+            newSettings!['background_image_path'] = null;
           }
         }
-        
-        await db.insert('document_settings', newSettings);
       }
-      
+
+      // 4. 事务内执行所有 DB 写入，确保原子性
+      await db.transaction((txn) async {
+        await txn.insert('documents', {
+          'id': newDocId,
+          'name': finalNewDocumentName,
+          'parent_folder': parentFolderId,
+          'is_template': 0,
+          'order_index': maxOrder + 1,
+          'created_at': DateTime.now().millisecondsSinceEpoch,
+          'updated_at': DateTime.now().millisecondsSinceEpoch,
+        });
+
+        for (var textBox in textBoxes) {
+          final oldId = textBox['id'].toString();
+          final newTextBox = Map<String, dynamic>.from(textBox);
+          newTextBox.remove('id');
+          newTextBox['document_id'] = newDocId;
+          final newId = const Uuid().v4();
+          newTextBox['id'] = newId;
+          textIdMap[oldId] = newId;
+          await txn.insert('text_boxes', newTextBox);
+        }
+        for (var imageBox in imageBoxes) {
+          final oldId = imageBox['id'].toString();
+          final newImageBox = Map<String, dynamic>.from(imageBox);
+          newImageBox.remove('id');
+          newImageBox['document_id'] = newDocId;
+          final newId = const Uuid().v4();
+          newImageBox['id'] = newId;
+          imageIdMap[oldId] = newId;
+          await txn.insert('image_boxes', newImageBox);
+        }
+        for (var audioBox in audioBoxes) {
+          final oldId = audioBox['id'].toString();
+          final newAudioBox = Map<String, dynamic>.from(audioBox);
+          newAudioBox.remove('id');
+          newAudioBox['document_id'] = newDocId;
+          final newId = const Uuid().v4();
+          newAudioBox['id'] = newId;
+          audioIdMap[oldId] = newId;
+          await txn.insert('audio_boxes', newAudioBox);
+        }
+
+        String remapIdList(String? csv, Map<String, String> idMap) {
+          if (csv == null || csv.trim().isEmpty) return '';
+          return csv.split(',').map((id) => idMap[id.trim()] ?? '').where((v) => v.isNotEmpty).join(',');
+        }
+        for (var canvas in sourceCanvases) {
+          final newCanvas = Map<String, dynamic>.from(canvas);
+          newCanvas['id'] = const Uuid().v4();
+          newCanvas['document_id'] = newDocId;
+          newCanvas['front_text_box_ids'] = remapIdList(canvas['front_text_box_ids']?.toString(), textIdMap);
+          newCanvas['back_text_box_ids'] = remapIdList(canvas['back_text_box_ids']?.toString(), textIdMap);
+          newCanvas['front_image_box_ids'] = remapIdList(canvas['front_image_box_ids']?.toString(), imageIdMap);
+          newCanvas['back_image_box_ids'] = remapIdList(canvas['back_image_box_ids']?.toString(), imageIdMap);
+          newCanvas['front_audio_box_ids'] = remapIdList(canvas['front_audio_box_ids']?.toString(), audioIdMap);
+          newCanvas['back_audio_box_ids'] = remapIdList(canvas['back_audio_box_ids']?.toString(), audioIdMap);
+          newCanvas['created_at'] = DateTime.now().millisecondsSinceEpoch;
+          newCanvas['updated_at'] = DateTime.now().millisecondsSinceEpoch;
+          await txn.insert('canvases', newCanvas);
+        }
+
+        if (newSettings != null) {
+          await txn.insert('document_settings', newSettings);
+        }
+      });
+
       print('Successfully copied document: $finalNewDocumentName');
       return finalNewDocumentName;
     } catch (e, stackTrace) {
@@ -2835,14 +2781,12 @@ class DatabaseService {
   Future<String> createDocumentFromTemplate(String templateName, String newDocumentName, {String? parentFolder}) async {
     print('createDocumentFromTemplate called for template $templateName, newName: $newDocumentName, parentFolder: $parentFolder');
     final db = await database;
-    
-    // 1. 生成唯一的文档名称，使用更简洁的格式
+
     String finalNewDocumentName = newDocumentName;
     int attempt = 0;
     String baseName = newDocumentName;
     while (await doesNameExist(finalNewDocumentName)) {
       attempt++;
-      // 如果已存在同名文档，则使用"模板名称-副本(序号)"的格式
       finalNewDocumentName = attempt > 1 ? '$baseName($attempt)' : baseName;
       if (attempt > 100) {
         print('Failed to generate a unique name for document from template after 100 attempts.');
@@ -2850,126 +2794,123 @@ class DatabaseService {
       }
     }
     print('Final new document name from template: $finalNewDocumentName');
-    
+
     try {
-      // 2. 获取模板文档信息
-      List<Map<String, dynamic>> templateDocs = await db.query(
-        'documents',
-        where: 'name = ?',
-        whereArgs: [templateName]
-      );
-      
+      final templateDocs = await db.query('documents', where: 'name = ?', whereArgs: [templateName]);
       if (templateDocs.isEmpty) {
         throw Exception('Template document not found: $templateName');
       }
-      
-      Map<String, dynamic> templateDoc = templateDocs.first;
-      // 使用字符串类型的ID，因为数据库中id字段是TEXT类型
-      String templateId = templateDoc['id'].toString();
-      
-      // 3. 创建新文档记录
+      String templateId = templateDocs.first['id'].toString();
+
       int maxOrder = 0;
-      String? parentFolderId; // 新增：用于存储父文件夹ID
+      String? parentFolderId;
       if (parentFolder != null) {
-        // 查找父文件夹ID
         final folder = await getFolderByName(parentFolder);
         parentFolderId = folder?['id'];
-         // Optional: Add error handling if folder not found
       }
-      
-      // 查询当前目录下的最大order_index（无论是根目录还是子文件夹）
-      List<Map<String, dynamic>> docs = await db.query(
+      final docs = await db.query(
         'documents',
         where: 'parent_folder ${parentFolderId == null ? 'IS NULL' : '= ?'}',
         whereArgs: parentFolderId != null ? [parentFolderId] : [],
         orderBy: 'order_index DESC',
-        limit: 1
+        limit: 1,
       );
       if (docs.isNotEmpty) {
-        maxOrder = docs.first['order_index'] ?? 0;
-      }
-      
-      // 4. 插入新文档
-      // 生成UUID作为文档ID
-      String newDocId = const Uuid().v4();
-      await db.insert('documents', {
-        'id': newDocId, // 显式设置ID为UUID
-        'name': finalNewDocumentName,
-        'parent_folder': parentFolderId, // 使用ID插入
-        'is_template': 0, // 确保新文档不是模板
-        'order_index': maxOrder + 1,
-        'created_at': DateTime.now().millisecondsSinceEpoch,
-        'updated_at': DateTime.now().millisecondsSinceEpoch,
-      });
-      
-      // 5. 复制模板文档的内容
-      // 复制文本框
-      List<Map<String, dynamic>> textBoxes = await db.query(
-        'text_boxes',
-        where: 'document_id = ?',
-        whereArgs: [templateId]
-      );
-      final Map<String,String> tplTextIdMap = {};
-      for (var textBox in List.from(textBoxes)) {
-        final oldId = textBox['id'].toString();
-        Map<String, dynamic> newTextBox = Map<String, dynamic>.from(textBox);
-        newTextBox.remove('id');
-        newTextBox['document_id'] = newDocId;
-        final newId = const Uuid().v4();
-        newTextBox['id'] = newId;
-        tplTextIdMap[oldId] = newId;
-        await db.insert('text_boxes', newTextBox);
-      }
-      
-      // 复制图片框
-      List<Map<String, dynamic>> imageBoxes = await db.query(
-        'image_boxes',
-        where: 'document_id = ?',
-        whereArgs: [templateId]
-      );
-      final Map<String,String> tplImageIdMap = {};
-      for (var imageBox in imageBoxes) {
-        final oldId = imageBox['id'].toString();
-        Map<String, dynamic> newImageBox = Map<String, dynamic>.from(imageBox);
-        newImageBox.remove('id');
-        newImageBox['document_id'] = newDocId;
-        final newId = const Uuid().v4();
-        newImageBox['id'] = newId;
-        tplImageIdMap[oldId] = newId;
-        await db.insert('image_boxes', newImageBox);
-      }
-      
-      // 复制音频框
-      List<Map<String, dynamic>> audioBoxes = await db.query(
-        'audio_boxes',
-        where: 'document_id = ?',
-        whereArgs: [templateId]
-      );
-      final Map<String,String> tplAudioIdMap = {};
-      for (var audioBox in audioBoxes) {
-        final oldId = audioBox['id'].toString();
-        Map<String, dynamic> newAudioBox = Map<String, dynamic>.from(audioBox);
-        newAudioBox.remove('id');
-        newAudioBox['document_id'] = newDocId;
-        final newId = const Uuid().v4();
-        newAudioBox['id'] = newId;
-        tplAudioIdMap[oldId] = newId;
-        await db.insert('audio_boxes', newAudioBox);
+        maxOrder = (docs.first['order_index'] as int?) ?? 0;
       }
 
-      // 复制画布 (canvases) from template
-      List<Map<String, dynamic>> templateCanvases = await db.query(
-        'canvases',
-        where: 'document_id = ?',
-        whereArgs: [templateId]
-      );
-      if (templateCanvases.isNotEmpty) {
-        String remap(String? csv, Map<String,String> m) {
+      final textBoxes = await db.query('text_boxes', where: 'document_id = ?', whereArgs: [templateId]);
+      final imageBoxes = await db.query('image_boxes', where: 'document_id = ?', whereArgs: [templateId]);
+      final audioBoxes = await db.query('audio_boxes', where: 'document_id = ?', whereArgs: [templateId]);
+      final templateCanvases = await db.query('canvases', where: 'document_id = ?', whereArgs: [templateId]);
+      final docSettings = await db.query('document_settings', where: 'document_id = ?', whereArgs: [templateId]);
+
+      String newDocId = const Uuid().v4();
+      final Map<String, String> tplTextIdMap = {};
+      final Map<String, String> tplImageIdMap = {};
+      final Map<String, String> tplAudioIdMap = {};
+
+      // 预复制背景图片（事务外）
+      Map<String, dynamic>? newSettings;
+      if (docSettings.isNotEmpty) {
+        newSettings = Map<String, dynamic>.from(docSettings.first);
+        newSettings!.remove('id');
+        newSettings!['document_id'] = newDocId;
+        newSettings!.remove('document_name');
+        String? originalBackgroundPath = newSettings!['background_image_path'];
+        if (originalBackgroundPath != null && originalBackgroundPath.isNotEmpty) {
+          try {
+            final originalFile = File(originalBackgroundPath);
+            if (await originalFile.exists()) {
+              final appDir = await getApplicationDocumentsDirectory();
+              final backgroundsDir = Directory(p.join(appDir.path, 'backgrounds'));
+              if (!await backgroundsDir.exists()) {
+                await backgroundsDir.create(recursive: true);
+              }
+              final ext = p.extension(originalBackgroundPath);
+              final newBackgroundPath = p.join(backgroundsDir.path, '${const Uuid().v4()}$ext');
+              await originalFile.copy(newBackgroundPath);
+              newSettings!['background_image_path'] = newBackgroundPath;
+              print('从模板复制背景图片: $originalBackgroundPath -> $newBackgroundPath');
+            } else {
+              newSettings!['background_image_path'] = null;
+            }
+          } catch (e) {
+            print('复制模板背景图片时出错: $e');
+            newSettings!['background_image_path'] = null;
+          }
+        }
+      }
+
+      // 事务内执行所有 DB 写入
+      await db.transaction((txn) async {
+        await txn.insert('documents', {
+          'id': newDocId,
+          'name': finalNewDocumentName,
+          'parent_folder': parentFolderId,
+          'is_template': 0,
+          'order_index': maxOrder + 1,
+          'created_at': DateTime.now().millisecondsSinceEpoch,
+          'updated_at': DateTime.now().millisecondsSinceEpoch,
+        });
+
+        for (var textBox in textBoxes) {
+          final oldId = textBox['id'].toString();
+          final newTextBox = Map<String, dynamic>.from(textBox);
+          newTextBox.remove('id');
+          newTextBox['document_id'] = newDocId;
+          final newId = const Uuid().v4();
+          newTextBox['id'] = newId;
+          tplTextIdMap[oldId] = newId;
+          await txn.insert('text_boxes', newTextBox);
+        }
+        for (var imageBox in imageBoxes) {
+          final oldId = imageBox['id'].toString();
+          final newImageBox = Map<String, dynamic>.from(imageBox);
+          newImageBox.remove('id');
+          newImageBox['document_id'] = newDocId;
+          final newId = const Uuid().v4();
+          newImageBox['id'] = newId;
+          tplImageIdMap[oldId] = newId;
+          await txn.insert('image_boxes', newImageBox);
+        }
+        for (var audioBox in audioBoxes) {
+          final oldId = audioBox['id'].toString();
+          final newAudioBox = Map<String, dynamic>.from(audioBox);
+          newAudioBox.remove('id');
+          newAudioBox['document_id'] = newDocId;
+          final newId = const Uuid().v4();
+          newAudioBox['id'] = newId;
+          tplAudioIdMap[oldId] = newId;
+          await txn.insert('audio_boxes', newAudioBox);
+        }
+
+        String remap(String? csv, Map<String, String> m) {
           if (csv == null || csv.trim().isEmpty) return '';
-            return csv.split(',').map((id)=>m[id.trim()]??'').where((v)=>v.isNotEmpty).join(',');
+          return csv.split(',').map((id) => m[id.trim()] ?? '').where((v) => v.isNotEmpty).join(',');
         }
         for (var canvas in templateCanvases) {
-          Map<String, dynamic> newCanvas = Map<String, dynamic>.from(canvas);
+          final newCanvas = Map<String, dynamic>.from(canvas);
           newCanvas['id'] = const Uuid().v4();
           newCanvas['document_id'] = newDocId;
           newCanvas['front_text_box_ids'] = remap(canvas['front_text_box_ids']?.toString(), tplTextIdMap);
@@ -2981,65 +2922,14 @@ class DatabaseService {
           final now = DateTime.now().millisecondsSinceEpoch;
           newCanvas['created_at'] = now;
           newCanvas['updated_at'] = now;
-          await db.insert('canvases', newCanvas);
+          await txn.insert('canvases', newCanvas);
         }
-        print('从模板复制画布: ${templateCanvases.length} 个');
-      }
-      
-      // 复制文档设置
-      List<Map<String, dynamic>> docSettings = await db.query(
-        'document_settings',
-        where: 'document_id = ?',
-        whereArgs: [templateId]
-      );
-      
-      if (docSettings.isNotEmpty) {
-        Map<String, dynamic> newSettings = Map<String, dynamic>.from(docSettings.first);
-        newSettings.remove('id');
-        newSettings['document_id'] = newDocId;
-        // 移除document_name字段，因为document_settings表中没有这个列
-        newSettings.remove('document_name');
-        
-        // 处理背景图片复制
-        String? originalBackgroundPath = newSettings['background_image_path'];
-        if (originalBackgroundPath != null && originalBackgroundPath.isNotEmpty) {
-          try {
-            // 获取应用私有目录
-            Directory appDir = await getApplicationDocumentsDirectory();
-            Directory backgroundsDir = Directory(p.join(appDir.path, 'backgrounds'));
-            if (!await backgroundsDir.exists()) {
-              await backgroundsDir.create(recursive: true);
-            }
-            
-            // 检查原背景图片文件是否存在
-            File originalFile = File(originalBackgroundPath);
-            if (await originalFile.exists()) {
-              // 生成新的唯一文件名
-              String extension = p.extension(originalBackgroundPath);
-              String newFileName = '${const Uuid().v4()}$extension';
-              String newBackgroundPath = p.join(backgroundsDir.path, newFileName);
-              
-              // 复制背景图片文件
-              await originalFile.copy(newBackgroundPath);
-              
-              // 更新新文档设置中的背景图片路径
-              newSettings['background_image_path'] = newBackgroundPath;
-              print('从模板复制背景图片: $originalBackgroundPath -> $newBackgroundPath');
-            } else {
-              // 如果原文件不存在，清空背景图片路径
-              newSettings['background_image_path'] = null;
-              print('模板背景图片文件不存在，已清空新文档的背景图片路径');
-            }
-          } catch (e) {
-            print('复制模板背景图片时出错: $e');
-            // 出错时清空背景图片路径，避免指向不存在的文件
-            newSettings['background_image_path'] = null;
-          }
+
+        if (newSettings != null) {
+          await txn.insert('document_settings', newSettings);
         }
-        
-        await db.insert('document_settings', newSettings);
-      }
-      
+      });
+
       print('Successfully created document from template: $finalNewDocumentName');
       return finalNewDocumentName;
     } catch (e, stackTrace) {

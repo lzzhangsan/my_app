@@ -1984,7 +1984,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         return null;
       }
       if (mediaType == MediaType.image) {
-        final bytes = await file.readAsBytes();
+        // 仅读取前 32 字节校验格式，避免大文件 OOM
+        final bytes = await file.openRead(0, 32).fold<List<int>>([], (prev, chunk) => [...prev, ...chunk]);
         if (!_isValidImageBytes(bytes)) {
           debugPrint('下载内容不是有效图片格式，已丢弃');
           await file.delete();
@@ -2074,8 +2075,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
   Future<String> _calculateFileHash(File file) async {
     try {
-      final bytes = await file.readAsBytes();
-      return md5.convert(bytes).toString();
+      final digest = await md5.bind(file.openRead()).first;
+      return digest.toString();
     } catch (e) {
       debugPrint('计算文件哈希值时出错: $e');
       return '';
@@ -3608,8 +3609,13 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         currentPhase = '解压文件';
         progressNotifier.value = '解压文件...';
 
-        // 读取ZIP文件
+        // 读取ZIP文件（限制 100MB 避免 OOM）
+        const int kMaxZipSizeBytes = 100 * 1024 * 1024;
         final File zipFile = File(result.files.single.path!);
+        final fileSize = await zipFile.length();
+        if (fileSize > kMaxZipSizeBytes) {
+          throw Exception('ZIP 文件过大 (${(fileSize / 1024 / 1024).toStringAsFixed(1)}MB)，超过 100MB 限制，请选择较小的备份文件');
+        }
         final List<int> zipBytes = await zipFile.readAsBytes();
         final Archive? archive = ZipDecoder().decodeBytes(zipBytes);
 

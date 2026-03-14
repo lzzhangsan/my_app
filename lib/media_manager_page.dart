@@ -15,6 +15,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as path;
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:collection/collection.dart';
 import 'package:uuid/uuid.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:photo_manager/photo_manager.dart';
@@ -1576,7 +1577,8 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       try {
         final fileCleanupService = getService<FileCleanupService>();
         for (var id in _selectedItems) {
-          final item = _mediaItems.firstWhere((item) => item.id == id);
+          final item = _mediaItems.firstWhereOrNull((i) => i.id == id);
+          if (item == null) continue;
           if (fileCleanupService.isInitialized) {
             await fileCleanupService.deleteMediaFileCompletely(item.path);
           } else {
@@ -3259,6 +3261,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       currentPhase = '选择保存位置';
       final Directory saveDir = await getExportSaveDirectory();
       await saveDir.create(recursive: true);
+      if (!mounted) return;
       final String timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.').first;
       final zipFilePath = path.join(saveDir.path, 'media_backup_$timestamp.zip');
 
@@ -3438,6 +3441,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       currentPhase = '选择保存位置';
       final Directory saveDir = await getExportSaveDirectory();
       await saveDir.create(recursive: true);
+      if (!mounted) return;
       final String safeName = folderName.replaceAll(RegExp(r'[^\w\s\u4e00-\u9fff-]'), '_');
       final String timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.').first;
       final zipFilePath = path.join(saveDir.path, 'media_folder_${safeName}_$timestamp.zip');
@@ -3571,6 +3575,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
       FilePickerResult? result = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['zip']);
       if (result == null || result.files.isEmpty) return;
+      if (!mounted) return;
 
       showProgressDialog(context, progress, message);
       final zipFile = File(result.files.single.path!);
@@ -3773,9 +3778,8 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
       // 2. 选择zip包
       FilePickerResult? result = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['zip']);
-      if (result == null || result.files.isEmpty) {
-        return;
-      }
+      if (result == null || result.files.isEmpty) return;
+      if (!mounted) return;
 
       showProgressDialog(context, progress, message);
 
@@ -3849,50 +3853,79 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         item['updated_at'] ??= now;
       }
 
+      // 准备待导入数据（暂不写入 DB，等媒体文件就位后再写）
+      List<Map<String, dynamic>>? mediaItemsToImport;
+      Future<List<Map<String, dynamic>>?> Function()? chunkProvider;
+
       if (await chunk0File.exists()) {
-        int chunkIdx = 0;
-        await _databaseService.replaceAllMediaItemsFromChunks(() async {
-          final f = File(path.join(tempImportDir.path, 'media_items_$chunkIdx.json'));
-          if (!await f.exists()) return null;
-          message.value = '正在导入: media_items_$chunkIdx.json';
-          final chunk = jsonDecode(await f.readAsString()) as List<dynamic>;
-          for (var item in chunk) {
-            if (item is Map<String, dynamic>) remapMediaItemPath(item);
+        chunkProvider = () async {
+          int chunkIdx = 0;
+          final chunks = <List<Map<String, dynamic>>>[];
+          while (true) {
+            final f = File(path.join(tempImportDir.path, 'media_items_$chunkIdx.json'));
+            if (!await f.exists()) break;
+            message.value = '准备: media_items_$chunkIdx.json';
+            final chunk = (jsonDecode(await f.readAsString()) as List<dynamic>)
+                .whereType<Map<String, dynamic>>()
+                .map((item) {
+              remapMediaItemPath(item);
+              return item;
+            })
+                .toList();
+            chunks.add(chunk);
+            chunkIdx++;
           }
-          chunkIdx++;
-          return chunk;
-        });
+          return chunks.isEmpty ? null : chunks.expand((c) => c).toList();
+        };
       } else if (await jsonFile.exists()) {
-        final mediaItemsToImport = jsonDecode(await jsonFile.readAsString()) as List<dynamic>? ?? [];
-        for (var item in mediaItemsToImport) {
-          if (item is Map<String, dynamic>) remapMediaItemPath(item);
-        }
-        message.value = '正在恢复数据库...';
-        await _databaseService.replaceAllMediaItems(mediaItemsToImport);
+        mediaItemsToImport = (jsonDecode(await jsonFile.readAsString()) as List<dynamic>? ?? [])
+            .whereType<Map<String, dynamic>>()
+            .map((item) {
+          remapMediaItemPath(item);
+          return item;
+        })
+            .toList();
       } else {
         throw Exception("关键错误: 压缩包中未找到 'media_items.json' 或 'media_items_0.json' 文件。");
       }
 
       final settingsFile = File(path.join(tempImportDir.path, 'media_settings.json'));
-      if (await settingsFile.exists()){
+      if (await settingsFile.exists()) {
         settingsToImport = jsonDecode(await settingsFile.readAsString());
       }
-      
-      // 5. 数据库已恢复
-      progress.value = 0.8;
 
-      // 6. 替换媒体文件（带进度，支持超大量数据）
+      // 5. 先复制媒体文件到新目录，再替换旧目录，最后才写 DB（避免数据丢失）
+      progress.value = 0.75;
       currentPhase = '迁移媒体文件';
       final Directory finalMediaDir = Directory(path.join(appDir.path, 'media'));
-      if (await finalMediaDir.exists()) {
-        await finalMediaDir.delete(recursive: true);
+      final Directory mediaNewDir = Directory(path.join(appDir.path, 'media_new_import'));
+      try {
+        if (await mediaNewDir.exists()) await mediaNewDir.delete(recursive: true);
+        await mediaNewDir.create(recursive: true);
+        await _copyDirectory(tempMediaDir, mediaNewDir, onProgress: (p, t, msg) {
+          message.value = msg;
+          progress.value = 0.75 + (t > 0 ? (p / t) * 0.15 : 0);
+        });
+        if (await finalMediaDir.exists()) {
+          await finalMediaDir.delete(recursive: true);
+        }
+        await mediaNewDir.rename(finalMediaDir.path);
+      } finally {
+        if (await mediaNewDir.exists()) {
+          try { await mediaNewDir.delete(recursive: true); } catch (_) {}
+        }
       }
-      await finalMediaDir.create(recursive: true);
-      await _copyDirectory(tempMediaDir, finalMediaDir, onProgress: (p, t, msg) {
-        message.value = msg;
-        progress.value = 0.8 + (t > 0 ? (p / t) * 0.1 : 0);
-      });
       progress.value = 0.9;
+
+      // 6. 媒体文件已就位，再恢复数据库
+      currentPhase = '恢复数据库';
+      if (chunkProvider != null) {
+        mediaItemsToImport = await chunkProvider();
+      }
+      if (mediaItemsToImport != null && mediaItemsToImport.isNotEmpty) {
+        message.value = '正在恢复数据库...';
+        await _databaseService.replaceAllMediaItems(mediaItemsToImport);
+      }
 
       // 7. 恢复设置
       message.value = '正在恢复设置...';
@@ -4313,26 +4346,39 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        leadingWidth: _currentDirectory == 'root' ? 80 : 56,
+        leadingWidth: 80,
         titleSpacing: 0,
         centerTitle: false,
-        leading: _currentDirectory == 'root'
-            ? Padding(
-                padding: const EdgeInsets.only(left: 16),
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text(
-                    '媒体',
-                    style: Theme.of(context).appBarTheme.titleTextStyle ??
-                        const TextStyle(fontSize: 20, fontWeight: FontWeight.w500),
-                  ),
-                ),
-              )
-            : IconButton(
+        leading: Builder(
+          builder: (context) {
+            // 从浏览器等 push 进入时显示返回箭头，可返回上一页
+            if (Navigator.of(context).canPop()) {
+              return IconButton(
+                icon: const Icon(Icons.arrow_back),
+                onPressed: () => Navigator.of(context).pop(),
+                tooltip: '返回',
+              );
+            }
+            if (_currentDirectory != 'root') {
+              return IconButton(
                 icon: const Icon(Icons.arrow_upward),
                 onPressed: _navigateUp,
                 tooltip: '返回上级',
+              );
+            }
+            return Padding(
+              padding: const EdgeInsets.only(left: 16),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  '媒体',
+                  style: Theme.of(context).appBarTheme.titleTextStyle ??
+                      const TextStyle(fontSize: 20, fontWeight: FontWeight.w500),
+                ),
               ),
+            );
+          },
+        ),
         automaticallyImplyLeading: false,
         title: _currentDirectory == 'root' ? null : Text('媒体 / $_currentDirectory'),
         actions: [

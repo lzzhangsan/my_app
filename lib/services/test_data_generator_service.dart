@@ -152,10 +152,10 @@ class TestDataGeneratorService {
     await File(path).writeAsBytes(buffer.buffer.asUint8List());
   }
 
-  /// 计算文件 MD5（用于写入 media_items.file_hash，避免被查重误删）
+  /// 计算文件 MD5（流式处理，避免大文件 OOM）
   Future<String> _fileHash(File f) async {
-    final bytes = await f.readAsBytes();
-    return md5.convert(bytes).toString();
+    final digest = await md5.bind(f.openRead()).first;
+    return digest.toString();
   }
 
   /// 生成目录测试数据（真实 PNG 图片 + 真实 WAV 音频）

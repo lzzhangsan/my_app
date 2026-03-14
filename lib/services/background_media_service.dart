@@ -294,14 +294,13 @@ class BackgroundMediaService {
       }
 
       final fileName = p.basename(mediaFile.path);
-      List<int> bytes;
+      String fileHash;
       try {
-        bytes = await mediaFile.readAsBytes();
+        fileHash = (await md5.bind(mediaFile.openRead()).first).toString();
       } catch (e) {
         if (kDebugMode) print('[后台服务] 读取文件失败: $fileName');
         return false;
       }
-      final fileHash = md5.convert(bytes).toString();
       final duplicate = await databaseService.findDuplicateMediaItem(fileHash, fileName);
       if (duplicate != null) {
         if (kDebugMode) print('[后台服务] 跳过重复文件: $fileName');

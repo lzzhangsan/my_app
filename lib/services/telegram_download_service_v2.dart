@@ -1,8 +1,8 @@
 import 'dart:io';
-import 'dart:convert';
 import 'package:dio/dio.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:path/path.dart' as path;
 import 'package:mime/mime.dart';
 import 'package:crypto/crypto.dart';
@@ -17,7 +17,10 @@ import '../models/media_type.dart';
 class TelegramDownloadServiceV2 {
   static const String _botTokenKey = 'telegram_bot_token';
   static TelegramDownloadServiceV2? _instance;
-  
+
+  final FlutterSecureStorage _secureStorage = const FlutterSecureStorage(
+    aOptions: AndroidOptions(encryptedSharedPreferences: true),
+  );
   final NetworkService _networkService = NetworkService();
   String? _botToken;
   
@@ -34,17 +37,26 @@ class TelegramDownloadServiceV2 {
     await _networkService.initialize();
   }
   
-  /// 加载保存的 Bot Token
+  /// 加载保存的 Bot Token（优先安全存储，兼容旧版 SharedPreferences 迁移）
   Future<void> _loadBotToken() async {
-    final prefs = await SharedPreferences.getInstance();
-    _botToken = prefs.getString(_botTokenKey);
+    _botToken = await _secureStorage.read(key: _botTokenKey);
+    if (_botToken == null || _botToken!.isEmpty) {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final legacy = prefs.getString(_botTokenKey);
+        if (legacy != null && legacy.isNotEmpty) {
+          await _secureStorage.write(key: _botTokenKey, value: legacy);
+          await prefs.remove(_botTokenKey);
+          _botToken = legacy;
+        }
+      } catch (_) {}
+    }
   }
-  
-  /// 保存 Bot Token
+
+  /// 保存 Bot Token（安全存储，避免备份泄露）
   Future<bool> saveBotToken(String token) async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_botTokenKey, token);
+      await _secureStorage.write(key: _botTokenKey, value: token);
       _botToken = token;
       return true;
     } catch (e) {
@@ -276,7 +288,7 @@ class TelegramDownloadServiceV2 {
           mediaType = MediaType.audio;
         }
 
-        final fileHash = md5.convert(await appFile.readAsBytes()).toString();
+        final fileHash = (await md5.bind(appFile.openRead()).first).toString();
         final duplicate = await databaseService.findDuplicateMediaItem(fileHash, fileName, telegramFileId: fileId);
         if (duplicate != null) {
           return DownloadResult.success(localFilePath, fileName); // 已存在，视为成功

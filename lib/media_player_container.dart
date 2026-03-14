@@ -584,13 +584,13 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
     final originalFile = File(filePath);
     
     try {
-      // 尝试简单的读操作来检查权限
-      await originalFile.readAsBytes();
+      // 仅读取前 8KB 检查权限，避免大文件 OOM
+      await originalFile.openRead(0, 8192).first;
       return originalFile; // 如果能读取，直接返回原始文件
     } catch (e) {
       Logger.w('文件访问出错，创建临时副本: $e');
 
-     // 创建临时文件副本
+     // 创建临时文件副本（流式复制，避免大文件 OOM）
      final tempDir = await getTemporaryDirectory();
      final String fileName = path.basename(filePath);
      final String tempPath = '${tempDir.path}/$fileName';
@@ -598,9 +598,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
      final tempFile = File(tempPath);
 
      try {
-       // 尝试读取原始文件（即使是只读的）并写入临时文件
-       final bytes = await originalFile.readAsBytes();
-       await tempFile.writeAsBytes(bytes);
+       await originalFile.openRead().pipe(tempFile.openWrite());
        return tempFile;
      } catch (copyError) {
        Logger.w('创建临时副本失败: $copyError');
@@ -629,13 +627,12 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
        }
 
        // 确保文件可访问，可能需要创建临时副本
-       File fileToShare;
+       File fileToShare = originalFile;
        bool needsCleanup = false;
 
        try {
          // 尝试直接分享原始文件
          await Share.shareXFiles([XFile(filePath)], subject: '分享: ${_currentPlayingMedia!['name']}');
-         fileToShare = originalFile;
        } catch (shareError) {
          Logger.w('直接分享文件失败，尝试创建临时副本: $shareError');
 
@@ -648,7 +645,12 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
            await Share.shareXFiles([XFile(fileToShare.path)], subject: '分享: ${_currentPlayingMedia!['name']}');
          } catch (accessError) {
            Logger.w('文件访问错误: $accessError');
-
+           // 分享失败时清理临时文件，避免堆积
+           if (needsCleanup && fileToShare.path != filePath) {
+             try {
+               await fileToShare.delete();
+             } catch (_) {}
+           }
            if (!context.mounted) return false;
            _showMessage(context, '无法访问文件，导出失败');
            return false;

@@ -53,8 +53,11 @@ Future<int> copyFileWithStreaming(
   if (fileSize > threshold) {
     final sourceStream = source.openRead();
     final targetSink = targetFile.openWrite();
-    await sourceStream.pipe(targetSink);
-    await targetSink.close();
+    try {
+      await sourceStream.pipe(targetSink);
+    } finally {
+      await targetSink.close();
+    }
   } else {
     await source.copy(targetPath);
   }
@@ -74,8 +77,11 @@ Future<void> copyFileWithStreamingToFile(
   if (fileSize > threshold) {
     final sourceStream = source.openRead();
     final targetSink = target.openWrite();
-    await sourceStream.pipe(targetSink);
-    await targetSink.close();
+    try {
+      await sourceStream.pipe(targetSink);
+    } finally {
+      await targetSink.close();
+    }
   } else {
     await source.copy(target.path);
   }
