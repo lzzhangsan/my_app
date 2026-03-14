@@ -242,6 +242,14 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     }
   }
 
+  /// 移除当前项后清空所有视频控制器（索引已变化，需重新初始化）
+  void _disposeAllVideoControllers() {
+    final indices = _videoControllers.keys.toList();
+    for (final index in indices) {
+      _disposeVideoControllerAt(index);
+    }
+  }
+
   void _onPageChanged(int index) {
     setState(() {
       _currentIndex = index;
@@ -343,22 +351,13 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
       }
       // 否则保持当前索引，因为删除后当前索引会对应下一项
       
+      _disposeAllVideoControllers(); // 索引变化，清空控制器以便重新初始化
       setState(() {
         widget.mediaItems.removeAt(_currentIndex);
-        
-        // 调整当前索引
         _currentIndex = nextIndex;
-        
-        // 重新加载当前页面
         _pageController.jumpToPage(_currentIndex);
       });
-      
-      // 如果新的当前项是视频，立即播放
       _autoPlayCurrentVideo();
-      
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('媒体项已删除')),
-      );
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('删除失败: $e')),
@@ -512,37 +511,21 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
       
       // 从当前列表中移除
       if (!mounted) return;
-      
-      // 保存当前索引，确定是移动到下一个还是前一个
       int nextIndex = _currentIndex;
       if (_currentIndex >= widget.mediaItems.length - 1) {
-        // 如果移动的是最后一项，则移到前一项
         nextIndex = _currentIndex - 1;
       }
-      // 否则保持当前索引，因为移动后当前索引会对应下一项
-      
+      _disposeAllVideoControllers();
       setState(() {
         widget.mediaItems.removeAt(_currentIndex);
-        
-        // 如果没有更多媒体项，关闭预览页面
         if (widget.mediaItems.isEmpty) {
-          Navigator.of(context).pop(true); // 返回true表示有更改发生
+          Navigator.of(context).pop(true);
           return;
         }
-        
-        // 调整当前索引
         _currentIndex = nextIndex;
-        
-        // 重新加载当前页面
         _pageController.jumpToPage(_currentIndex);
       });
-      
-      // 如果新的当前项是视频，立即播放
       _autoPlayCurrentVideo();
-      
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('已移动到 ${targetFolder.name}')),
-      );
     } catch (e) {
       if (mounted) {
         Navigator.of(context).pop(); // 关闭进度对话框
@@ -686,6 +669,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
         children: [
           // 主内容 - 媒体预览
           PageView.builder(
+            key: ValueKey(widget.mediaItems.length), // 列表变更时强制重建，确保视频正确切换
             controller: _pageController,
             itemCount: widget.mediaItems.length,
             onPageChanged: (index) {
@@ -807,8 +791,8 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
         throw Exception('添加到收藏夹失败');
       }
       
-      // 从当前列表中移除并自动切换到下一个媒体
       if (!mounted) return;
+      _disposeAllVideoControllers();
       setState(() {
         widget.mediaItems.removeAt(_currentIndex);
         if (widget.mediaItems.isEmpty) {
@@ -820,9 +804,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
             : _currentIndex;
         _pageController.jumpToPage(_currentIndex);
       });
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('已添加到收藏夹')),
-      );
+      _autoPlayCurrentVideo();
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -863,9 +845,8 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
         throw Exception('移动到回收站失败');
       }
       
-      // 从当前列表中移除
       if (!mounted) return;
-      
+      _disposeAllVideoControllers();
       setState(() {
         widget.mediaItems.removeAt(_currentIndex);
         if (widget.mediaItems.isEmpty) {
@@ -877,10 +858,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
             : _currentIndex;
         _pageController.jumpToPage(_currentIndex);
       });
-      
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('已移动到回收站')),
-      );
+      _autoPlayCurrentVideo();
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(

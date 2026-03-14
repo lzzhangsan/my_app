@@ -574,12 +574,6 @@ class _PerformanceMonitorPageState extends State<PerformanceMonitorPage>
       });
       
       HapticFeedback.lightImpact();
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('数据已刷新'),
-          duration: Duration(seconds: 1),
-        ),
-      );
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -608,9 +602,6 @@ class _PerformanceMonitorPageState extends State<PerformanceMonitorPage>
               setState(() {
                 _averageMetric = null;
               });
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('历史数据已清空')),
-              );
             },
             child: const Text('确定'),
           ),
@@ -647,9 +638,6 @@ class _PerformanceMonitorPageState extends State<PerformanceMonitorPage>
             onPressed: () {
               // 这里可以实现实际的导出功能
               Navigator.pop(context);
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('报告已生成（演示功能）')),
-              );
             },
             child: const Text('导出'),
           ),

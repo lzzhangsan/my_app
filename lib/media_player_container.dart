@@ -538,7 +538,6 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
       }
       
       if (!context.mounted) return false;
-      _showMessage(context, '媒体文件已移动');
       
       // 如果列表为空，停止播放
       if (_mediaList.isEmpty) {
@@ -667,7 +666,6 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
        }
 
        if (!context.mounted) return false;
-       _showMessage(context, '文件已导出');
        return true;
      } catch (e) {
        Logger.e('导出媒体文件时出错', e);
@@ -715,7 +713,6 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
        }
 
        if (!context.mounted) return false;
-       _showMessage(context, '$mediaName 已删除');
 
        // 如果列表为空，停止播放
        if (_mediaList.isEmpty) {

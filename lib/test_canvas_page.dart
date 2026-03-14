@@ -33,12 +33,6 @@ class _TestCanvasPageState extends State<TestCanvasPage> {
 
       _canvases.add(newCanvas);
       
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('画布已创建！双击画布可翻转，长按可查看设置'),
-          duration: Duration(seconds: 3),
-        ),
-      );
     });
   }
 
@@ -55,9 +49,6 @@ class _TestCanvasPageState extends State<TestCanvasPage> {
     setState(() {
       _canvases.removeWhere((canvas) => canvas.id == canvasId);
     });
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('画布已删除')),
-    );
   }
 
   @override

@@ -222,9 +222,6 @@ class _CoverPageState extends State<CoverPage> {
           _hasCustomBackgroundColor = false;
         });
         
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('背景设置已清除')),
-        );
       } catch (e) {
         Logger.e('删除背景设置时出错', e);
         ScaffoldMessenger.of(context).showSnackBar(
@@ -270,9 +267,6 @@ class _CoverPageState extends State<CoverPage> {
         // 不重置背景颜色，保留当前颜色
       });
       
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('背景图片已删除')),
-      );
     } catch (e) {
       Logger.e('删除背景图片时出错', e);
       ScaffoldMessenger.of(context).showSnackBar(
@@ -936,9 +930,6 @@ class _CoverPageState extends State<CoverPage> {
       
       Logger.i('背景颜色已设置: ${color.value}');
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('背景颜色已更新')),
-      );
     } catch (e) {
       Logger.e('设置背景颜色时出错', e);
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1085,9 +1076,6 @@ class _CoverPageState extends State<CoverPage> {
           _textBoxes.clear();
         });
         
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('封面页已清空')),
-        );
       } catch (e) {
         Logger.e('清空封面页时出错', e);
         ScaffoldMessenger.of(context).showSnackBar(

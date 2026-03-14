@@ -1417,11 +1417,6 @@ class _DiaryPageState extends State<DiaryPage> {
       progress.value = 1.0;
       
       if (mounted) Navigator.of(context).pop();
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('日记数据导入成功')),
-        );
-      }
     } catch (e, stack) {
       debugPrint('导入日记数据失败 [$currentPhase]: $e\n$stack');
       if (mounted) Navigator.of(context).pop();

@@ -201,12 +201,6 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
     try {
       await _fileCleanupService.cleanAllTempFiles();
       await _loadStorageInfo();
-      
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('临时文件清理完成')),
-        );
-      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -222,12 +216,6 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
       try { await PhotoManager.clearFileCache(); } catch (_) {}
       await _fileCleanupService.cleanAllCacheFiles();
       await _loadStorageInfo();
-      
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('缓存文件清理完成')),
-        );
-      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -245,12 +233,6 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
       final validPaths = await _databaseService.getAllValidFilePaths();
       await _fileCleanupService.cleanOrphanedFiles(validPaths);
       await _loadStorageInfo();
-      
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('完整存储清理完成')),
-        );
-      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

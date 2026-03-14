@@ -230,9 +230,6 @@ class _ResizableAudioBoxState extends State<ResizableAudioBox> with SingleTicker
       // 告知父组件录音停止
       widget.onIsRecording(false);
       
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('录音已保存')),
-      );
     } catch (e) {
       print('停止录音时出错: $e');
       ScaffoldMessenger.of(context).showSnackBar(

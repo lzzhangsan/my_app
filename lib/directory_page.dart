@@ -225,14 +225,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         _selectedItems.clear();
         _isMultiSelectMode = false;
         if (mounted) {
-          // 删除后重新加载数据，确保界面和数据库状态一致
           await _loadData();
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('已删除选中的项目并释放存储空间'),
-              backgroundColor: Colors.green,
-            ),
-          );
         }
       } catch (e) {
         print('批量删除出错: $e');
@@ -285,9 +278,6 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       _isMultiSelectMode = false;
       if (mounted) {
         await _loadData();
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('已将选中的项目移动到${targetFolderName.isEmpty ? '根目录' : targetFolderName}')),
-        );
       }
     } catch (e) {
       print('批量移动出错: $e');
@@ -328,9 +318,6 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         if (mounted) {
           print('移动到根目录完成，重新加载数据...');
           await _loadData();
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('已将选中的项目移动到目录')),
-          );
         }
       } catch (e) {
         print('批量移动到目录出错: $e');
@@ -612,12 +599,6 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       });
       
       print('目录背景颜色已保存: ${color.value}');
-      
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('背景颜色已更新')),
-        );
-      }
     } catch (e) {
       print('保存背景颜色时出错: $e');
       if (mounted) {
@@ -1025,13 +1006,6 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
           setState(() {
             _items.removeWhere((item) => item.type == ItemType.document && item.name == documentName);
           });
-          
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('已删除文档 "$documentName" 并释放存储空间'),
-              backgroundColor: Colors.green,
-            ),
-          );
         }
       } catch (e) {
         print('Error deleting document: $e');
@@ -1064,14 +1038,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         await getService<DatabaseService>().deleteFolder(folderName, parentFolder: parentFolder);
         
         if (mounted) {
-          // 删除后重新加载数据，确保界面和数据库状态一致
           await _loadData();
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('文件夹 "$folderName" 已删除并释放存储空间'),
-              backgroundColor: Colors.green,
-            ),
-          );
         }
       } catch (e) {
         print('Error deleting folder: $e');
@@ -1324,9 +1291,6 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       }
       if (mounted) {
         await _loadData();
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('文件夹移动成功')),
-        );
       }
     } catch (e) {
       print('Error moving folder: $e');
@@ -1361,9 +1325,6 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       }
       if (mounted) {
         await _loadData();
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('文档移动成功')),
-        );
       }
     } catch (e) {
       print('Error moving document: $e');
@@ -1562,9 +1523,6 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       if (mounted) {
         await _loadData();
         _highlightNewItem(newDocName, ItemType.document);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('文档已复制为: $newDocName')),
-        );
       }
     } catch (e) {
       print('复制文档出错: $e');
@@ -1629,9 +1587,6 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
                     Navigator.pop(context);
                     await getService<DatabaseService>().setDocumentAsTemplate(documentName, !isTemplate);
                     if (mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text(isTemplate ? '已取消设为模板' : '已设为模板')),
-                      );
                       _loadData();
                     }
                   },
@@ -1992,9 +1947,6 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       if (mounted) {
         await _loadData();
         _highlightNewItem(newDocName, ItemType.document);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('已从模板创建文档: $newDocName')),
-        );
       }
     } catch (e) {
       print('从模板创建文档时出错: $e');
@@ -2316,9 +2268,6 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
           await _loadData();
           await _loadBackgroundSettings();
           forceRefresh(); // 强制刷新页面，确保背景图片立即生效
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('数据导入成功')),
-          );
         }
       }
     } catch (e, stack) {
@@ -2344,12 +2293,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       
       if (mounted) {
         if (report['isValid']) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('数据完整性检查通过！文件夹: ${report['folderCount']}, 文档: ${report['documentCount']}'),
-              backgroundColor: Colors.green,
-            ),
-          );
+          // 检查通过，界面无变化，不展示成功提示
         } else {
           showDialog(
             context: context,
@@ -2408,14 +2352,6 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       await getService<DatabaseService>().repairDataIntegrity();
       
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('数据问题修复完成！'),
-            backgroundColor: Colors.green,
-          ),
-        );
-        
-        // 重新加载数据
         await _loadData();
       }
     } catch (e) {
@@ -2583,9 +2519,6 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
                           }
                           if (mounted) {
                             await _loadData();
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(content: Text('已将 ${draggedItem.name} 移动到 ${item.name} 文件夹')),
-                            );
                           }
                         },
                         builder: (context, candidateItems, rejectedItems) {
@@ -2774,9 +2707,6 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       if (mounted) {
         await _loadData();
         _highlightNewItem(newFolderName, ItemType.folder);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('文件夹已复制为: $newFolderName')),
-        );
       }
     } catch (e) {
       print('复制文件夹出错: $e');

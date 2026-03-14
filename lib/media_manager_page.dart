@@ -299,10 +299,6 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       );
       await _databaseService.insertMediaItem(mediaItem.toMap());
       await _loadMediaItems();
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('已创建文件夹: $folderName')));
-      }
     } catch (e) {
       debugPrint('创建文件夹时出错: $e');
       if (mounted) {
@@ -759,15 +755,6 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       if (mounted) {
         if (!silent) Navigator.of(context).pop();
         await _loadMediaItems();
-        if (!silent) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                '导入完成: 成功导入 $importedCount 个${_getMediaTypeName(type)}文件${skippedCount > 0 ? '，跳过 $skippedCount 个重复文件' : ''}'
-              ),
-            ),
-          );
-        }
       }
     } catch (e) {
       if (mounted) {
@@ -829,13 +816,6 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         await _databaseService.deleteMediaItem(item.id);
         
         await _loadMediaItems();
-        if (mounted) {
-          ScaffoldMessenger.of(context)
-              .showSnackBar(SnackBar(
-                content: Text('已删除: ${item.name} 并释放存储空间'),
-                backgroundColor: Colors.green,
-              ));
-        }
       } catch (e) {
         debugPrint('删除媒体项时出错: $e');
         if (mounted) {
@@ -904,8 +884,6 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         await _databaseService.updateMediaItem(updatedItem.toMap());
         await _loadMediaItems();
         if (mounted) {
-          ScaffoldMessenger.of(context)
-              .showSnackBar(SnackBar(content: Text('已重命名为: $newName')));
         }
       } catch (e) {
         debugPrint('重命名媒体项时出错: $e');
@@ -946,8 +924,6 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       if (mounted) {
         Navigator.of(context).pop();
         await _loadMediaItems();
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('成功移动: ${item.name}')));
       }
     } catch (e) {
       if (mounted) {
@@ -1043,8 +1019,6 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           _isMultiSelectMode = false;
         });
         await _loadMediaItems();
-        ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('成功移动 $movedCount 个项')));
       }
     } catch (e) {
       if (mounted) {
@@ -1262,8 +1236,6 @@ class _MediaManagerPageState extends State<MediaManagerPage>
             _isMultiSelectMode = false;
           });
           await _loadMediaItems();
-          ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('已删除 $deletedCount 个项')));
         }
       } catch (e) {
         if (mounted) {
@@ -2968,12 +2940,6 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       } catch (e) {
         debugPrint('导入后自动清理失败: $e');
       }
-      
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('导入媒体数据成功')),
-        );
-      }
     } catch (e, stack) {
       importHadError = true;
       debugPrint('导入媒体数据失败 [$currentPhase]: $e\n$stack');
@@ -2988,11 +2954,6 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         try {
           await tempImportDir.delete(recursive: true);
           debugPrint('已彻底清理媒体导入临时目录: ${tempImportDir.path}');
-          if (mounted && !importHadError) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('临时导入文件已清理')),
-            );
-          }
         } catch (e) {
           debugPrint('警告：清理媒体导入临时目录失败: $e');
           if (mounted) {

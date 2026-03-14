@@ -159,9 +159,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
   // 保留此方法但简化功能，因为我们已移除编辑模式
   Future<void> _saveWebsites() async {
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('正在保存常用网站...')));
     await _saveCommonWebsites();
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('常用网站已保存')));
   }
 
   Future<void> _removeWebsite(int index) async {
@@ -1417,13 +1415,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
                   // 关闭主对话框
                   Navigator.of(dialogContext).pop();
-
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('已将"${nameController.text}"添加到标签栏'),
-                      duration: const Duration(seconds: 2),
-                    ),
-                  );
                 } else if (nameController.text == "获取中...") {
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
@@ -1487,7 +1478,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                 await _saveCommonWebsites();
                 Navigator.of(context).pop();
                 Navigator.of(context).pop();
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('网站名称已更新')));
               } else {
                 Navigator.pop(context);
               }
@@ -1575,7 +1565,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
               }
               if (pageContext.mounted) {
                 Navigator.of(pageContext).pop();
-                ScaffoldMessenger.of(pageContext).showSnackBar(const SnackBar(content: Text('网站已删除')));
               }
             },
           ),
@@ -2170,13 +2159,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
                 // 关闭主对话框
                 Navigator.of(context).pop();
-
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text('已将"${nameController.text}"添加到书签'),
-                    duration: const Duration(seconds: 2),
-                  ),
-                );
               } else if (nameController.text == "获取中...") {
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(
@@ -2254,7 +2236,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                                 _bookmarks.removeAt(index);
                               });
                               await _saveBookmarks();
-                              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已删除书签')));
                             }
                           },
                         ),
@@ -2307,7 +2288,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                 await _saveBookmarks();
                 Navigator.of(context).pop();
                 Navigator.of(context).pop();
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('书签名称已更新')));
               } else {
                 Navigator.pop(context);
               }
@@ -3679,7 +3659,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                   _history.clear();
                   await _saveHistory();
                   setState(() {});
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('历史记录已清空')));
                 },
               ),
               const Divider(),
