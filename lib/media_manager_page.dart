@@ -29,14 +29,16 @@ import 'create_folder_dialog.dart';
 import 'models/media_type.dart';
 import 'browser_page.dart';
 import 'services/cache_service.dart';
-import 'services/export_import_utils.dart';
+import 'services/export_import_utils.dart' show getExportSaveDirectory, kExportChunkSize, kProgressUpdateInterval, kShareSizeLimitBytes, kStreamingThresholdBytes, copyFileWithStreamingToFile;
 import 'utils/export_import_error_utils.dart';
 import 'utils/safe_path_utils.dart';
 import 'services/test_data_generator_service.dart';
 import 'storage_management_page.dart';
 
 class MediaManagerPage extends StatefulWidget {
-  const MediaManagerPage({super.key});
+  const MediaManagerPage({super.key, this.onMultiSelectModeChanged});
+
+  final void Function(bool isMultiSelectMode)? onMultiSelectModeChanged;
 
   @override
   _MediaManagerPageState createState() => _MediaManagerPageState();
@@ -57,6 +59,18 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   String? _lastViewedVideoId;
   final StreamController<String> _progressController = StreamController<String>.broadcast();
   final List<String> _availableDirectories = ['root'];
+  final ScrollController _gridScrollController = ScrollController();
+  bool _isDragSelecting = false;
+  bool _hasDragMoved = false;
+  bool _dragIsDeselectMode = false;
+  Offset? _dragStartPosition;
+  (int, int)? _dragStartColRow;
+  DateTime? _dragSelectFinishedAt;
+  final GlobalKey _gridContainerKey = GlobalKey();
+  static const double _dragSelectThreshold = 8.0;
+  /// 区分滑选与滚动：滑选有横向位移，滚动多为直上直下
+  String? _gestureCommitted;
+  double _scrollOffsetBeforeGesture = 0;
 
   // For automatic invalid media cleanup
   final Set<String> _itemsToCleanup = {};
@@ -97,6 +111,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   @override
   void dispose() {
     _progressController.close();
+    _gridScrollController.dispose();
     _cleanupTimer?.cancel(); // Cancel the cleanup timer
     // 注销媒体库监听
     PhotoManager.removeChangeCallback(_onPhotoLibraryChanged);
@@ -384,7 +399,51 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   Future<List<AssetEntity>> _showImageSelectionDialog(List<AssetEntity> images) async {
     List<AssetEntity> selected = [];
     bool isSelecting = false;
+    bool isDragSelecting = false;
+    (int, int)? dragStartColRow;
+    bool dragIsDeselectMode = false;
+    Offset? dragStartPosition;
+    bool hasDragMoved = false;
+    String? gestureCommitted;
+    double scrollOffsetBeforeGesture = 0;
+    final gridKey = GlobalKey();
+    final scrollController = ScrollController();
     final screenSize = MediaQuery.of(context).size;
+    const int crossAxisCount = 4;
+    const double childAspectRatio = 1;
+    const double crossAxisSpacing = 4;
+    const double mainAxisSpacing = 4;
+    const double padding = 4;
+    const double dragThreshold = 8;
+
+    (int, int)? getGridColRow(Offset globalPosition) {
+      final box = gridKey.currentContext?.findRenderObject() as RenderBox?;
+      if (box == null || !box.hasSize) return null;
+      final local = box.globalToLocal(globalPosition);
+      final w = box.size.width - padding * 2;
+      final cellWidth = (w - (crossAxisCount - 1) * crossAxisSpacing) / crossAxisCount;
+      final cellHeight = cellWidth / childAspectRatio;
+      final contentX = local.dx - padding;
+      final contentY = local.dy - padding + scrollController.offset;
+      if (contentX < 0 || contentY < 0) return null;
+      final col = (contentX / (cellWidth + crossAxisSpacing)).floor().clamp(0, crossAxisCount - 1);
+      final row = (contentY / (cellHeight + mainAxisSpacing)).floor().clamp(0, 999999);
+      return (col, row);
+    }
+
+    List<int> getIndicesInRectangle(int startCol, int startRow, int endCol, int endRow) {
+      final minCol = startCol < endCol ? startCol : endCol;
+      final maxCol = startCol > endCol ? startCol : endCol;
+      final minRow = startRow < endRow ? startRow : endRow;
+      final maxRow = startRow > endRow ? startRow : endRow;
+      final list = <int>[];
+      for (int r = minRow; r <= maxRow; r++) {
+        for (int c = minCol; c <= maxCol; c++) {
+          list.add(r * crossAxisCount + c);
+        }
+      }
+      return list;
+    }
 
     await showDialog(
       context: context,
@@ -402,57 +461,156 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                   child: Text('选择图片（按时间从新到旧）', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                 ),
                 Expanded(
-                  child: GridView.builder(
-                    padding: const EdgeInsets.all(4.0),
-                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 4,
-                      childAspectRatio: 1,
-                      crossAxisSpacing: 4,
-                      mainAxisSpacing: 4,
-                    ),
-                    itemCount: images.length,
-                    itemBuilder: (context, index) {
-                      final image = images[index];
-                      final isSelected = selected.contains(image);
-                      return GestureDetector(
-                        onTap: () {
-                          setDialogState(() {
-                            if (isSelected) {
-                              selected.remove(image);
+                  child: Listener(
+                    key: gridKey,
+                    behavior: HitTestBehavior.translucent,
+                    onPointerDown: (e) {
+                      scrollOffsetBeforeGesture = scrollController.offset;
+                      gestureCommitted = null;
+                      final startCr = getGridColRow(e.position);
+                      if (startCr != null) {
+                        final startIdx = startCr.$2 * crossAxisCount + startCr.$1;
+                        if (startIdx >= 0 && startIdx < images.length) {
+                          final asset = images[startIdx];
+                          hasDragMoved = false;
+                          dragStartPosition = e.position;
+                          dragStartColRow = startCr;
+                          dragIsDeselectMode = selected.contains(asset);
+                        }
+                      }
+                    },
+                    onPointerMove: (e) {
+                      if (dragStartColRow != null && dragStartPosition != null) {
+                        final dx = e.position.dx - dragStartPosition!.dx;
+                        final dy = e.position.dy - dragStartPosition!.dy;
+                        if (gestureCommitted == null) {
+                          final dist = math.sqrt(dx * dx + dy * dy);
+                          if (dist > dragThreshold) {
+                            if (dx.abs() > dy.abs()) {
+                              gestureCommitted = 'selection';
+                              isDragSelecting = true;
+                              hasDragMoved = true;
+                              setDialogState(() {});
+                              WidgetsBinding.instance.addPostFrameCallback((_) {
+                                if (scrollController.hasClients) {
+                                  scrollController.jumpTo(scrollOffsetBeforeGesture);
+                                }
+                              });
                             } else {
-                              selected.add(image);
+                              gestureCommitted = 'scroll';
+                            }
+                          }
+                        }
+                      }
+                      if (isDragSelecting && dragStartColRow != null) {
+                        if (!hasDragMoved) {
+                          final dx = e.position.dx - (dragStartPosition?.dx ?? 0);
+                          final dy = e.position.dy - (dragStartPosition?.dy ?? 0);
+                          final dist = math.sqrt(dx * dx + dy * dy);
+                          if (dist < dragThreshold) return;
+                          hasDragMoved = true;
+                        }
+                        final curCr = getGridColRow(e.position);
+                        if (curCr != null) {
+                          final indices = getIndicesInRectangle(
+                            dragStartColRow!.$1, dragStartColRow!.$2,
+                            curCr.$1, curCr.$2,
+                          );
+                          setDialogState(() {
+                            for (final idx in indices) {
+                              if (idx >= 0 && idx < images.length) {
+                                final asset = images[idx];
+                                if (dragIsDeselectMode) {
+                                  selected.remove(asset);
+                                } else if (!selected.contains(asset)) {
+                                  selected.add(asset);
+                                }
+                              }
                             }
                           });
-                        },
-                        child: Stack(
-                          fit: StackFit.expand,
-                          children: [
-                            FutureBuilder<Uint8List?>(
-                              future: image.thumbnailDataWithSize(const ThumbnailSize(200, 200)),
-                              builder: (context, snapshot) {
-                                if (snapshot.hasData && snapshot.data != null) {
-                                  return Image.memory(
-                                    snapshot.data!,
-                                    fit: BoxFit.cover,
-                                    width: double.infinity,
-                                    height: double.infinity,
-                                  );
-                                }
-                                return const Center(child: CircularProgressIndicator());
-                              },
-                            ),
-                            if (isSelected)
-                              const Positioned(
-                                top: 4,
-                                right: 4,
-                                child: Icon(Icons.check_circle, color: Colors.green, size: 24),
-                              ),
-                          ],
-                        ),
-                      );
+                        }
+                      }
                     },
+                    onPointerUp: (_) {
+                      if (isDragSelecting) {
+                        isDragSelecting = false;
+                        gestureCommitted = null;
+                        setDialogState(() {});
+                      } else {
+                        gestureCommitted = null;
+                      }
+                    },
+                    onPointerCancel: (_) {
+                      if (isDragSelecting) {
+                        isDragSelecting = false;
+                        gestureCommitted = null;
+                        setDialogState(() {});
+                      } else {
+                        gestureCommitted = null;
+                      }
+                    },
+                    child: Builder(
+                      builder: (ctx) => ScrollConfiguration(
+                        behavior: ScrollConfiguration.of(ctx).copyWith(
+                          physics: isDragSelecting
+                              ? const NeverScrollableScrollPhysics()
+                              : const ClampingScrollPhysics(),
+                        ),
+                        child: GridView.builder(
+                          controller: scrollController,
+                          padding: const EdgeInsets.all(4.0),
+                          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: 4,
+                            childAspectRatio: 1,
+                            crossAxisSpacing: 4,
+                            mainAxisSpacing: 4,
+                          ),
+                          itemCount: images.length,
+                          itemBuilder: (context, index) {
+                        final image = images[index];
+                        final isSelected = selected.contains(image);
+                        return GestureDetector(
+                          onTap: () {
+                            setDialogState(() {
+                              if (isSelected) {
+                                selected.remove(image);
+                              } else {
+                                selected.add(image);
+                              }
+                            });
+                          },
+                          child: Stack(
+                            fit: StackFit.expand,
+                            children: [
+                              FutureBuilder<Uint8List?>(
+                                future: image.thumbnailDataWithSize(const ThumbnailSize(200, 200)),
+                                builder: (context, snapshot) {
+                                  if (snapshot.hasData && snapshot.data != null) {
+                                    return Image.memory(
+                                      snapshot.data!,
+                                      fit: BoxFit.cover,
+                                      width: double.infinity,
+                                      height: double.infinity,
+                                    );
+                                  }
+                                  return const Center(child: CircularProgressIndicator());
+                                },
+                              ),
+                              if (isSelected)
+                                const Positioned(
+                                  top: 4,
+                                  right: 4,
+                                  child: Icon(Icons.check_circle, color: Colors.green, size: 24),
+                                ),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
                   ),
                 ),
+              ),
+            ),
                 Padding(
                   padding: const EdgeInsets.all(8.0),
                   child: Row(
@@ -549,7 +707,51 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   Future<List<AssetEntity>> _showVideoSelectionDialog(List<AssetEntity> videos) async {
     List<AssetEntity> selected = [];
     bool isSelecting = false;
+    bool isDragSelecting = false;
+    (int, int)? dragStartColRow;
+    bool dragIsDeselectMode = false;
+    Offset? dragStartPosition;
+    bool hasDragMoved = false;
+    String? gestureCommitted;
+    double scrollOffsetBeforeGesture = 0;
+    final gridKey = GlobalKey();
+    final scrollController = ScrollController();
     final screenSize = MediaQuery.of(context).size;
+    const int crossAxisCount = 4;
+    const double childAspectRatio = 1;
+    const double crossAxisSpacing = 4;
+    const double mainAxisSpacing = 4;
+    const double padding = 4;
+    const double dragThreshold = 8;
+
+    (int, int)? getGridColRow(Offset globalPosition) {
+      final box = gridKey.currentContext?.findRenderObject() as RenderBox?;
+      if (box == null || !box.hasSize) return null;
+      final local = box.globalToLocal(globalPosition);
+      final w = box.size.width - padding * 2;
+      final cellWidth = (w - (crossAxisCount - 1) * crossAxisSpacing) / crossAxisCount;
+      final cellHeight = cellWidth / childAspectRatio;
+      final contentX = local.dx - padding;
+      final contentY = local.dy - padding + scrollController.offset;
+      if (contentX < 0 || contentY < 0) return null;
+      final col = (contentX / (cellWidth + crossAxisSpacing)).floor().clamp(0, crossAxisCount - 1);
+      final row = (contentY / (cellHeight + mainAxisSpacing)).floor().clamp(0, 999999);
+      return (col, row);
+    }
+
+    List<int> getIndicesInRectangle(int startCol, int startRow, int endCol, int endRow) {
+      final minCol = startCol < endCol ? startCol : endCol;
+      final maxCol = startCol > endCol ? startCol : endCol;
+      final minRow = startRow < endRow ? startRow : endRow;
+      final maxRow = startRow > endRow ? startRow : endRow;
+      final list = <int>[];
+      for (int r = minRow; r <= maxRow; r++) {
+        for (int c = minCol; c <= maxCol; c++) {
+          list.add(r * crossAxisCount + c);
+        }
+      }
+      return list;
+    }
 
     await showDialog(
       context: context,
@@ -567,75 +769,174 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                   child: Text('选择视频', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                 ),
                 Expanded(
-                  child: GridView.builder(
-                    padding: const EdgeInsets.all(4.0),
-                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 4,
-                      childAspectRatio: 1,
-                      crossAxisSpacing: 4,
-                      mainAxisSpacing: 4,
-                    ),
-                    itemCount: videos.length,
-                    itemBuilder: (context, index) {
-                      final video = videos[index];
-                      final isSelected = selected.contains(video);
-                      return GestureDetector(
-                        onTap: () {
-                          setDialogState(() {
-                            if (isSelected) {
-                              selected.remove(video);
+                  child: Listener(
+                    key: gridKey,
+                    behavior: HitTestBehavior.translucent,
+                    onPointerDown: (e) {
+                      scrollOffsetBeforeGesture = scrollController.offset;
+                      gestureCommitted = null;
+                      final startCr = getGridColRow(e.position);
+                      if (startCr != null) {
+                        final startIdx = startCr.$2 * crossAxisCount + startCr.$1;
+                        if (startIdx >= 0 && startIdx < videos.length) {
+                          final asset = videos[startIdx];
+                          hasDragMoved = false;
+                          dragStartPosition = e.position;
+                          dragStartColRow = startCr;
+                          dragIsDeselectMode = selected.contains(asset);
+                        }
+                      }
+                    },
+                    onPointerMove: (e) {
+                      if (dragStartColRow != null && dragStartPosition != null) {
+                        final dx = e.position.dx - dragStartPosition!.dx;
+                        final dy = e.position.dy - dragStartPosition!.dy;
+                        if (gestureCommitted == null) {
+                          final dist = math.sqrt(dx * dx + dy * dy);
+                          if (dist > dragThreshold) {
+                            if (dx.abs() > dy.abs()) {
+                              gestureCommitted = 'selection';
+                              isDragSelecting = true;
+                              hasDragMoved = true;
+                              setDialogState(() {});
+                              WidgetsBinding.instance.addPostFrameCallback((_) {
+                                if (scrollController.hasClients) {
+                                  scrollController.jumpTo(scrollOffsetBeforeGesture);
+                                }
+                              });
                             } else {
-                              selected.add(video);
+                              gestureCommitted = 'scroll';
+                            }
+                          }
+                        }
+                      }
+                      if (isDragSelecting && dragStartColRow != null) {
+                        if (!hasDragMoved) {
+                          final dx = e.position.dx - (dragStartPosition?.dx ?? 0);
+                          final dy = e.position.dy - (dragStartPosition?.dy ?? 0);
+                          final dist = math.sqrt(dx * dx + dy * dy);
+                          if (dist < dragThreshold) return;
+                          hasDragMoved = true;
+                        }
+                        final curCr = getGridColRow(e.position);
+                        if (curCr != null) {
+                          final indices = getIndicesInRectangle(
+                            dragStartColRow!.$1, dragStartColRow!.$2,
+                            curCr.$1, curCr.$2,
+                          );
+                          setDialogState(() {
+                            for (final idx in indices) {
+                              if (idx >= 0 && idx < videos.length) {
+                                final asset = videos[idx];
+                                if (dragIsDeselectMode) {
+                                  selected.remove(asset);
+                                } else if (!selected.contains(asset)) {
+                                  selected.add(asset);
+                                }
+                              }
                             }
                           });
-                        },
-                        child: Stack(
-                          fit: StackFit.expand,
-                          children: [
-                            FutureBuilder<Uint8List?>(
-                              future: video.thumbnailDataWithSize(
-                                const ThumbnailSize(200, 200),
-                              ),
-                              builder: (context, snapshot) {
-                                if (snapshot.hasData && snapshot.data != null) {
-                                  return Image.memory(
-                                    snapshot.data!,
-                                    fit: BoxFit.cover,
-                                    width: double.infinity,
-                                    height: double.infinity,
-                                  );
-                                }
-                                return const Center(child: CircularProgressIndicator());
-                              },
-                            ),
-                            if (isSelected)
-                              const Positioned(
-                                top: 4,
-                                right: 4,
-                                child: Icon(
-                                  Icons.check_circle,
-                                  color: Colors.green,
-                                  size: 24,
-                                ),
-                              ),
-                            Positioned(
-                              bottom: 4,
-                              left: 4,
-                              child: Container(
-                                color: Colors.black54,
-                                padding: const EdgeInsets.all(2),
-                                child: Text(
-                                  _formatDuration(Duration(seconds: video.duration)),
-                                  style: const TextStyle(color: Colors.white, fontSize: 12),
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      );
+                        }
+                      }
                     },
+                    onPointerUp: (_) {
+                      if (isDragSelecting) {
+                        isDragSelecting = false;
+                        gestureCommitted = null;
+                        setDialogState(() {});
+                      } else {
+                        gestureCommitted = null;
+                      }
+                    },
+                    onPointerCancel: (_) {
+                      if (isDragSelecting) {
+                        isDragSelecting = false;
+                        gestureCommitted = null;
+                        setDialogState(() {});
+                      } else {
+                        gestureCommitted = null;
+                      }
+                    },
+                    child: Builder(
+                      builder: (ctx) => ScrollConfiguration(
+                        behavior: ScrollConfiguration.of(ctx).copyWith(
+                          physics: isDragSelecting
+                              ? const NeverScrollableScrollPhysics()
+                              : const ClampingScrollPhysics(),
+                        ),
+                        child: GridView.builder(
+                          controller: scrollController,
+                          padding: const EdgeInsets.all(4.0),
+                          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: 4,
+                            childAspectRatio: 1,
+                            crossAxisSpacing: 4,
+                            mainAxisSpacing: 4,
+                          ),
+                          itemCount: videos.length,
+                          itemBuilder: (context, index) {
+                        final video = videos[index];
+                        final isSelected = selected.contains(video);
+                        return GestureDetector(
+                          onTap: () {
+                            setDialogState(() {
+                              if (isSelected) {
+                                selected.remove(video);
+                              } else {
+                                selected.add(video);
+                              }
+                            });
+                          },
+                          child: Stack(
+                            fit: StackFit.expand,
+                            children: [
+                              FutureBuilder<Uint8List?>(
+                                future: video.thumbnailDataWithSize(
+                                  const ThumbnailSize(200, 200),
+                                ),
+                                builder: (context, snapshot) {
+                                  if (snapshot.hasData && snapshot.data != null) {
+                                    return Image.memory(
+                                      snapshot.data!,
+                                      fit: BoxFit.cover,
+                                      width: double.infinity,
+                                      height: double.infinity,
+                                    );
+                                  }
+                                  return const Center(child: CircularProgressIndicator());
+                                },
+                              ),
+                              if (isSelected)
+                                const Positioned(
+                                  top: 4,
+                                  right: 4,
+                                  child: Icon(
+                                    Icons.check_circle,
+                                    color: Colors.green,
+                                    size: 24,
+                                  ),
+                                ),
+                              Positioned(
+                                bottom: 4,
+                                left: 4,
+                                child: Container(
+                                  color: Colors.black54,
+                                  padding: const EdgeInsets.all(2),
+                                  child: Text(
+                                    _formatDuration(Duration(seconds: video.duration)),
+                                    style: const TextStyle(color: Colors.white, fontSize: 12),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
                   ),
                 ),
+              ),
+            ),
                 Padding(
                   padding: const EdgeInsets.all(8.0),
                   child: Row(
@@ -672,11 +973,11 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     return "$minutes:$seconds";
   }
 
+  /// 计算文件 MD5 哈希，大文件使用流式避免 OOM（支持数 GB 级视频）
   Future<String> _calculateFileHash(File file) async {
     try {
-      final bytes = await file.readAsBytes();
-      final hash = md5.convert(bytes);
-      return hash.toString();
+      final digest = await md5.bind(file.openRead()).first;
+      return digest.toString();
     } catch (e) {
       debugPrint('计算文件哈希值时出错: $e');
       return '';
@@ -957,6 +1258,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       _selectedItems.clear();
       _isMultiSelectMode = false;
     });
+    widget.onMultiSelectModeChanged?.call(false);
     await _loadMediaItems();
   }
 
@@ -969,6 +1271,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         _selectedItems.clear();
         _isMultiSelectMode = false;
       });
+      widget.onMultiSelectModeChanged?.call(false);
       await _loadMediaItems();
     }
   }
@@ -983,6 +1286,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       _isMultiSelectMode = !_isMultiSelectMode;
       if (!_isMultiSelectMode) _selectedItems.clear();
     });
+    widget.onMultiSelectModeChanged?.call(_isMultiSelectMode);
   }
 
   void _selectAll() {
@@ -1001,6 +1305,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         _selectedItems.addAll(selectableIds);
       }
     });
+    widget.onMultiSelectModeChanged?.call(true);
   }
 
   Future<void> _moveSelectedItems(String targetDirectory) async {
@@ -1051,6 +1356,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           _selectedItems.clear();
           _isMultiSelectMode = false;
         });
+        widget.onMultiSelectModeChanged?.call(false);
         await _loadMediaItems();
       }
     } catch (e) {
@@ -1287,6 +1593,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
             _selectedItems.clear();
             _isMultiSelectMode = false;
           });
+          widget.onMultiSelectModeChanged?.call(false);
           await _loadMediaItems();
         }
       } catch (e) {
@@ -1311,32 +1618,200 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
     if (!_mediaVisible) return Container();
 
-    return GestureDetector(
-      onTap: () {
-        if (_isMultiSelectMode) {
-          _toggleMultiSelectMode();
+    const int crossAxisCount = 5;
+    const double childAspectRatio = 0.7;
+    const double crossAxisSpacing = 4;
+    const double mainAxisSpacing = 4;
+    const double padding = 4;
+
+    return Listener(
+      behavior: HitTestBehavior.translucent,
+      onPointerDown: (e) {
+        if (_isMultiSelectMode && !_isDragSelecting) {
+          _scrollOffsetBeforeGesture = _gridScrollController.offset;
+          _gestureCommitted = null;
+          final startCr = _getGridColRow(e.position, crossAxisCount, childAspectRatio, crossAxisSpacing, mainAxisSpacing, padding);
+          if (startCr != null) {
+            final startIdx = startCr.$2 * crossAxisCount + startCr.$1;
+            if (startIdx >= 0 && startIdx < _mediaItems.length) {
+              final item = _mediaItems[startIdx];
+              if (item.id != 'recycle_bin' && item.id != 'favorites') {
+                setState(() {
+                  _hasDragMoved = false;
+                  _dragStartPosition = e.position;
+                  _dragStartColRow = startCr;
+                  _dragIsDeselectMode = _selectedItems.contains(item.id);
+                });
+              }
+            }
+          }
         }
       },
-      child: GridView.builder(
-        padding: EdgeInsets.only(
-          left: 4,
-          right: 4,
-          top: 4,
-          bottom: 4 + (_selectedItems.isNotEmpty ? 56 : 0),
-        ),
-        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: 5,
-          childAspectRatio: 0.7,
-          crossAxisSpacing: 4,
-          mainAxisSpacing: 4,
-        ),
-        itemCount: _mediaItems.length,
-        itemBuilder: (context, index) {
-          final item = _mediaItems[index];
-          return _buildMediaItem(item, index);
+      onPointerMove: (e) {
+        if (!_isMultiSelectMode || _dragStartColRow == null || _dragStartPosition == null) return;
+        final dx = e.position.dx - _dragStartPosition!.dx;
+        final dy = e.position.dy - _dragStartPosition!.dy;
+        if (_gestureCommitted == null) {
+          final dist = math.sqrt(dx * dx + dy * dy);
+          if (dist > _dragSelectThreshold) {
+            if (dx.abs() > dy.abs()) {
+              _gestureCommitted = 'selection';
+              setState(() {
+                _isDragSelecting = true;
+                _hasDragMoved = true;
+              });
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (_gridScrollController.hasClients) {
+                  _gridScrollController.jumpTo(_scrollOffsetBeforeGesture);
+                }
+              });
+            } else {
+              _gestureCommitted = 'scroll';
+            }
+          }
+        }
+        if (_isMultiSelectMode && _isDragSelecting && _dragStartColRow != null) {
+          if (!_hasDragMoved) {
+            final dist = math.sqrt(dx * dx + dy * dy);
+            if (dist < _dragSelectThreshold) return;
+            _hasDragMoved = true;
+          }
+          final curCr = _getGridColRow(e.position, crossAxisCount, childAspectRatio, crossAxisSpacing, mainAxisSpacing, padding);
+          if (curCr != null) {
+            final indices = _getIndicesInRectangle(
+              _dragStartColRow!.$1, _dragStartColRow!.$2,
+              curCr.$1, curCr.$2,
+              crossAxisCount,
+            );
+            setState(() {
+              for (final idx in indices) {
+                final item = _mediaItems[idx];
+                if (_dragIsDeselectMode) {
+                  _selectedItems.remove(item.id);
+                } else {
+                  _selectedItems.add(item.id);
+                }
+              }
+            });
+          }
+        }
+      },
+      onPointerUp: (e) {
+        if (_isDragSelecting) {
+          setState(() {
+            _isDragSelecting = false;
+            _gestureCommitted = null;
+            if (_hasDragMoved) _dragSelectFinishedAt = DateTime.now();
+          });
+        } else {
+          _gestureCommitted = null;
+        }
+      },
+      onPointerCancel: (e) {
+        if (_isDragSelecting) {
+          setState(() {
+            _isDragSelecting = false;
+            _gestureCommitted = null;
+          });
+        } else {
+          _gestureCommitted = null;
+        }
+      },
+      child: GestureDetector(
+        key: _gridContainerKey,
+        onTap: () {
+          if (_isMultiSelectMode && !_isDragSelecting) {
+            _toggleMultiSelectMode();
+          }
         },
+        child: ScrollConfiguration(
+          behavior: ScrollConfiguration.of(context).copyWith(
+            physics: _isDragSelecting
+                ? const NeverScrollableScrollPhysics()
+                : const ClampingScrollPhysics(),
+          ),
+          child: GridView.builder(
+            controller: _gridScrollController,
+            padding: EdgeInsets.only(
+            left: padding,
+            right: padding,
+            top: padding,
+            bottom: padding + (_selectedItems.isNotEmpty ? 56 : 0),
+          ),
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: crossAxisCount,
+            childAspectRatio: childAspectRatio,
+            crossAxisSpacing: crossAxisSpacing,
+            mainAxisSpacing: mainAxisSpacing,
+          ),
+          itemCount: _mediaItems.length,
+          itemBuilder: (context, index) {
+            final item = _mediaItems[index];
+            return _buildMediaItem(item, index);
+          },
+        ),
+        ),
       ),
     );
+  }
+
+  /// 根据触摸位置计算网格项索引，用于划选多选
+  int? _getGridIndexAtPosition(
+    Offset globalPosition,
+    int crossAxisCount,
+    double childAspectRatio,
+    double crossAxisSpacing,
+    double mainAxisSpacing,
+    double padding,
+  ) {
+    final cr = _getGridColRow(globalPosition, crossAxisCount, childAspectRatio, crossAxisSpacing, mainAxisSpacing, padding);
+    if (cr == null) return null;
+    final idx = cr.$2 * crossAxisCount + cr.$1;
+    return idx < _mediaItems.length ? idx : null;
+  }
+
+  /// 返回 (col, row)，用于矩形区域计算
+  (int, int)? _getGridColRow(
+    Offset globalPosition,
+    int crossAxisCount,
+    double childAspectRatio,
+    double crossAxisSpacing,
+    double mainAxisSpacing,
+    double padding,
+  ) {
+    final box = _gridContainerKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return null;
+    final local = box.globalToLocal(globalPosition);
+    final w = box.size.width - padding * 2;
+    final cellWidth = (w - (crossAxisCount - 1) * crossAxisSpacing) / crossAxisCount;
+    final cellHeight = cellWidth / childAspectRatio;
+    final contentX = local.dx - padding;
+    final contentY = local.dy - padding + _gridScrollController.offset;
+    if (contentX < 0 || contentY < 0) return null;
+    final col = (contentX / (cellWidth + crossAxisSpacing)).floor().clamp(0, crossAxisCount - 1);
+    final row = (contentY / (cellHeight + mainAxisSpacing)).floor().clamp(0, 999999);
+    return (col, row);
+  }
+
+  /// 获取矩形区域内所有可选的网格索引（7字形划选）
+  List<int> _getIndicesInRectangle(int startCol, int startRow, int endCol, int endRow, int crossAxisCount) {
+    final minCol = startCol < endCol ? startCol : endCol;
+    final maxCol = startCol > endCol ? startCol : endCol;
+    final minRow = startRow < endRow ? startRow : endRow;
+    final maxRow = startRow > endRow ? startRow : endRow;
+    final list = <int>[];
+    for (int r = minRow; r <= maxRow; r++) {
+      for (int c = minCol; c <= maxCol; c++) {
+        final idx = r * crossAxisCount + c;
+        if (idx >= 0 && idx < _mediaItems.length) {
+          final item = _mediaItems[idx];
+          if (item.id != 'recycle_bin' && item.id != 'favorites') {
+            list.add(idx);
+          }
+        }
+      }
+    }
+    return list;
   }
 
   Widget _buildMediaItem(MediaItem item, int index) {
@@ -1361,7 +1836,8 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           ? () => _navigateToFolder(item)
           : () {
               if (!_isMultiSelectMode) {
-                _toggleMultiSelectMode();
+                setState(() => _isMultiSelectMode = true);
+                widget.onMultiSelectModeChanged?.call(true);
               }
               _toggleItemSelection(item.id);
             },
@@ -1561,11 +2037,11 @@ class _MediaManagerPageState extends State<MediaManagerPage>
               gradient: LinearGradient(
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
-                colors: [Colors.pink.shade300, Colors.red.shade400],
+                colors: [Colors.pink.shade100, Colors.pink.shade200],
               ),
               borderRadius: BorderRadius.circular(8),
               boxShadow: [
-                BoxShadow(color: Colors.pink.withOpacity(0.3), blurRadius: 4, offset: const Offset(0, 2)),
+                BoxShadow(color: Colors.pink.shade200.withOpacity(0.2), blurRadius: 4, offset: const Offset(0, 2)),
               ],
             ),
             child: const Icon(Icons.favorite, size: 40, color: Colors.white),
@@ -1986,6 +2462,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   void _showSettingsMenu() {
     showModalBottomSheet(
       context: context,
+      backgroundColor: Colors.white.withOpacity(0.5),
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(12))),
       builder: (context) {
@@ -2044,6 +2521,16 @@ class _MediaManagerPageState extends State<MediaManagerPage>
               await _exportAllMediaData();
             },
           },
+          if (_currentDirectory != 'root')
+            {
+              'icon': Icons.folder_outlined,
+              'color': Colors.teal,
+              'title': '导出当前文件夹',
+              'onTap': () async {
+                Navigator.pop(context);
+                await _exportFolderData();
+              },
+            },
           {
             'icon': Icons.download,
             'color': Colors.indigo,
@@ -2051,6 +2538,15 @@ class _MediaManagerPageState extends State<MediaManagerPage>
             'onTap': () async {
               Navigator.pop(context);
               await _importAllMediaData();
+            },
+          },
+          {
+            'icon': Icons.folder_open,
+            'color': Colors.indigo,
+            'title': '导入文件夹数据',
+            'onTap': () async {
+              Navigator.pop(context);
+              await _importFolderData();
             },
           },
           {
@@ -2100,83 +2596,88 @@ class _MediaManagerPageState extends State<MediaManagerPage>
               constraints: const BoxConstraints(maxHeight: 340),
               child: Container(
                 width: dialogWidth,
-                padding: const EdgeInsets.symmetric(vertical: 8),
+                padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 4),
+                      padding: EdgeInsets.only(top: 2, bottom: 2),
                       child: Text(
                         '媒体管理选项',
-                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                        style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
                       ),
                     ),
-                    SwitchListTile(
-                      title: const Text('静默导入', style: TextStyle(fontSize: 14)),
-                      subtitle: Text(
-                        _autoImportSilentMode ? '仅复制到媒体库，不删除原件（无确认框）' : '导入后删除原件（会弹出系统确认）',
-                        style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 2),
+                      child: Row(
+                        children: [
+                          const Text('静默导入', style: TextStyle(fontSize: 14)),
+                          const SizedBox(width: 8),
+                          Switch(
+                            value: _autoImportSilentMode,
+                            onChanged: (v) async {
+                              setState(() => _autoImportSilentMode = v);
+                              setModalState(() {});
+                              await _saveSettings();
+                            },
+                          ),
+                        ],
                       ),
-                      value: _autoImportSilentMode,
-                      onChanged: (v) async {
-                        setState(() => _autoImportSilentMode = v);
-                        setModalState(() {}); // 立即刷新底部面板内开关显示
-                        await _saveSettings();
-                      },
                     ),
-                const Divider(height: 1),
-                GridView.builder(
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: 2,
-                    childAspectRatio: 4,
-                    crossAxisSpacing: 4,
-                    mainAxisSpacing: 0,
-                  ),
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                  itemCount: options.length,
-                  itemBuilder: (context, index) {
-                    final option = options[index];
-                    return GestureDetector(
-                      onTap: option['onTap'] as void Function(),
-                      child: Container(
-                        decoration: BoxDecoration(
-                          color: Colors.grey[100],
-                          borderRadius: BorderRadius.circular(8),
+                    const Divider(height: 1),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                      child: GridView.builder(
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: 2,
+                          childAspectRatio: 3.5,
+                          crossAxisSpacing: 6,
+                          mainAxisSpacing: 4,
                         ),
-                        padding:
-                        const EdgeInsets.symmetric(horizontal: 8, vertical: 1),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.start,
-                          children: [
-                            Icon(
-                              option['icon'] as IconData,
-                              size: 20,
-                              color: option['color'] as Color,
-                            ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                option['title'] as String,
-                                style: TextStyle(
-                                    fontSize: 14,
-                                    color: option['color'] == Colors.red
-                                        ? Colors.red
-                                        : Colors.black),
-                                overflow: TextOverflow.ellipsis,
+                          itemCount: options.length,
+                          itemBuilder: (context, index) {
+                            final option = options[index];
+                            return GestureDetector(
+                              onTap: option['onTap'] as void Function(),
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  color: Colors.grey[100],
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                child: Row(
+                                  children: [
+                                    Icon(
+                                      option['icon'] as IconData,
+                                      size: 20,
+                                      color: option['color'] as Color,
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: Text(
+                                        option['title'] as String,
+                                        style: TextStyle(
+                                            fontSize: 13,
+                                            color: option['color'] == Colors.red
+                                                ? Colors.red
+                                                : Colors.black),
+                                        overflow: TextOverflow.ellipsis,
+                                        maxLines: 1,
+                                      ),
+                                    ),
+                                  ],
+                                ),
                               ),
-                            ),
-                          ],
+                            );
+                          },
                         ),
                       ),
-                    );
-                  },
+                    ],
+                  ),
                 ),
-              ],
-            ),
-          ),
-        );
+              );
           },
         );
       },
@@ -2207,6 +2708,11 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
   void _toggleItemSelection(String id) {
     if (id == 'recycle_bin' || id == 'favorites') return;
+    if (_dragSelectFinishedAt != null &&
+        DateTime.now().difference(_dragSelectFinishedAt!) < const Duration(milliseconds: 300) &&
+        _selectedItems.contains(id)) {
+      return;
+    }
     setState(() {
       if (_selectedItems.contains(id)) {
         _selectedItems.remove(id);
@@ -2862,6 +3368,351 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)}GB';
   }
 
+  /// 导出当前文件夹（含子文件夹内所有媒体文件），格式与全量导出兼容，可被「导入文件夹数据」合并导入
+  Future<void> _exportFolderData() async {
+    if (_currentDirectory == 'root') return;
+    final folderItem = await _databaseService.getMediaItemById(_currentDirectory);
+    final folderName = folderItem?['name'] as String? ?? '未命名文件夹';
+
+    final progress = ValueNotifier<double>(0);
+    final message = ValueNotifier<String>('准备中...');
+    ZipFileEncoder? encoder;
+    String currentPhase = '准备';
+    try {
+      currentPhase = '查询文件夹内容';
+      message.value = '正在收集媒体文件...';
+      final folderMediaItems = await _getAllMediaItemsRecursively(_currentDirectory);
+      if (folderMediaItems.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('当前文件夹内没有可导出的媒体文件。')),
+          );
+        }
+        return;
+      }
+
+      currentPhase = '选择保存位置';
+      final Directory saveDir = await getExportSaveDirectory();
+      await saveDir.create(recursive: true);
+      final String safeName = folderName.replaceAll(RegExp(r'[^\w\s\u4e00-\u9fff-]'), '_');
+      final String timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.').first;
+      final zipFilePath = path.join(saveDir.path, 'media_folder_${safeName}_$timestamp.zip');
+
+      showProgressDialog(context, progress, message);
+
+      currentPhase = '压缩媒体文件';
+      message.value = '正在创建压缩包...';
+      encoder = ZipFileEncoder();
+      encoder.create(zipFilePath);
+
+      int totalFiles = folderMediaItems.length;
+      int processedFiles = 0;
+      int totalSize = 0;
+      const int kSkipTotalSizeThreshold = 500;
+      if (totalFiles <= kSkipTotalSizeThreshold) {
+        for (final item in folderMediaItems) {
+          final mediaFile = File(item['path']);
+          if (await mediaFile.exists()) totalSize += await mediaFile.length();
+        }
+      }
+      int processedSize = 0;
+
+      final batchSize = totalFiles > 3000 ? 1 : (totalFiles > 1000 ? 2 : 3);
+      const int level = 0;
+      for (int i = 0; i < folderMediaItems.length; i += batchSize) {
+        final endIndex = math.min(i + batchSize, folderMediaItems.length);
+        final batch = folderMediaItems.sublist(i, endIndex);
+        for (final item in batch) {
+          try {
+            final mediaFile = File(item['path']);
+            if (await mediaFile.exists()) {
+              final fileName = path.basename(item['path']);
+              await encoder.addFile(mediaFile, 'media/$fileName', level);
+              processedFiles++;
+              if (totalSize > 0) {
+                processedSize += await mediaFile.length();
+                progress.value = (processedSize / totalSize) * 0.8;
+              } else {
+                progress.value = (processedFiles / totalFiles) * 0.8;
+              }
+              message.value = totalSize > 0
+                  ? '正在压缩: $processedFiles/$totalFiles (${_formatFileSize(processedSize)}/${_formatFileSize(totalSize)})'
+                  : '正在压缩: $processedFiles/$totalFiles';
+              if (processedFiles % 50 == 0) {
+                await Future.delayed(Duration(milliseconds: totalFiles > 2000 ? 400 : 300));
+              } else if (processedFiles % 10 == 0) {
+                await Future.delayed(Duration(milliseconds: totalFiles > 2000 ? 120 : 80));
+              }
+            } else {
+              debugPrint('警告: 文件不存在，跳过导出: ${item['path']}');
+            }
+          } catch (e) {
+            debugPrint('导出文件失败: ${item['path']}, 错误: $e');
+          }
+        }
+        if (endIndex < folderMediaItems.length) {
+          await Future.delayed(const Duration(milliseconds: 150));
+        }
+      }
+
+      currentPhase = '导出数据库';
+      message.value = '正在导出元数据...';
+      final manifest = {'type': 'folder', 'folder_name': folderName};
+      encoder.addArchiveFile(ArchiveFile('folder_manifest.json', utf8.encode(jsonEncode(manifest)).length, utf8.encode(jsonEncode(manifest))));
+      if (folderMediaItems.length > kExportChunkSize) {
+        for (int chunkIdx = 0; chunkIdx < folderMediaItems.length; chunkIdx += kExportChunkSize) {
+          final end = math.min(chunkIdx + kExportChunkSize, folderMediaItems.length);
+          final chunk = folderMediaItems.sublist(chunkIdx, end);
+          final fileName = 'media_items_${chunkIdx ~/ kExportChunkSize}.json';
+          final bytes = utf8.encode(jsonEncode(chunk));
+          encoder.addArchiveFile(ArchiveFile(fileName, bytes.length, bytes));
+        }
+      } else {
+        final itemsJson = utf8.encode(jsonEncode(folderMediaItems));
+        encoder.addArchiveFile(ArchiveFile('media_items.json', itemsJson.length, itemsJson));
+      }
+      progress.value = 0.9;
+
+      currentPhase = '完成打包';
+      message.value = '正在完成...';
+      await Future.delayed(const Duration(milliseconds: 500));
+      encoder.close();
+      progress.value = 1.0;
+
+      if (mounted) Navigator.of(context).pop();
+      if (mounted) {
+        final zipFile = File(zipFilePath);
+        final zipSizeBytes = await zipFile.exists() ? await zipFile.length() : 0;
+        final bool isTooLarge = zipSizeBytes > kShareSizeLimitBytes;
+        if (!isTooLarge) {
+          try {
+            await Share.shareXFiles([XFile(zipFilePath)], text: '文件夹导出: $folderName');
+          } catch (shareErr) {
+            debugPrint('分享失败: $shareErr');
+          }
+        } else {
+          showExportResultDialog(
+            context,
+            zipFilePath,
+            zipSizeBytes,
+            shareText: '文件夹导出: $folderName',
+            showShareButton: false,
+            showSaveToFolderButton: true,
+          );
+        }
+      }
+    } catch (e, stack) {
+      try {
+        encoder?.close();
+      } catch (_) {}
+      if (mounted) Navigator.of(context).pop();
+      debugPrint('导出文件夹时出错 [$currentPhase]: $e\n$stack');
+      if (mounted) {
+        final userMsg = formatExportImportError(e, '导出失败');
+        showExportImportErrorDialog(context, '文件夹导出失败', '出错阶段：$currentPhase\n\n$userMsg');
+      }
+    }
+  }
+
+  /// 导入文件夹数据（合并模式，不覆盖现有媒体库）
+  Future<void> _importFolderData() async {
+    final progress = ValueNotifier<double>(0.0);
+    final message = ValueNotifier<String>('准备中...');
+    final Directory appDir = await getApplicationDocumentsDirectory();
+    final String tempImportPath = path.join(appDir.path, 'temp_folder_import_${const Uuid().v4()}');
+    final Directory tempImportDir = Directory(tempImportPath);
+    String currentPhase = '准备';
+    try {
+      await tempImportDir.create(recursive: true);
+
+      FilePickerResult? result = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['zip']);
+      if (result == null || result.files.isEmpty) return;
+
+      showProgressDialog(context, progress, message);
+      final zipFile = File(result.files.single.path!);
+      if (!await zipFile.exists()) {
+        throw Exception('所选文件不存在或无法访问');
+      }
+
+      currentPhase = '解压压缩包';
+      message.value = '正在解压数据...';
+      final inputStream = InputFileStream(zipFile.path);
+      Archive archive;
+      try {
+        archive = ZipDecoder().decodeStream(inputStream);
+      } catch (e) {
+        await inputStream.close();
+        rethrow;
+      }
+
+      int done = 0;
+      final total = archive.files.length;
+      final tempMediaDir = Directory(path.join(tempImportDir.path, 'media'));
+      if (!await tempMediaDir.exists()) await tempMediaDir.create(recursive: true);
+
+      for (final file in archive.files) {
+        final outPath = resolveSafeExtractPath(tempImportDir.path, file.name);
+        if (file.isFile) {
+          final outFile = File(outPath);
+          await outFile.parent.create(recursive: true);
+          final outputStream = OutputFileStream(outFile.path);
+          file.writeContent(outputStream);
+          await outputStream.close();
+        } else {
+          await Directory(outPath).create(recursive: true);
+        }
+        done++;
+        progress.value = (done / total) * 0.5;
+        message.value = '解压: $done/$total';
+        if (total > 500 && done % 100 == 0) {
+          await Future.delayed(const Duration(milliseconds: 50));
+        }
+      }
+      await inputStream.close();
+
+      final manifestFile = File(path.join(tempImportDir.path, 'folder_manifest.json'));
+      final chunk0File = File(path.join(tempImportDir.path, 'media_items_0.json'));
+      final jsonFile = File(path.join(tempImportDir.path, 'media_items.json'));
+      if (!await manifestFile.exists()) {
+        throw Exception('该压缩包不是有效的文件夹导出文件，请选择由「导出当前文件夹」生成的 ZIP 包。');
+      }
+      if (!await chunk0File.exists() && !await jsonFile.exists()) {
+        throw Exception('该压缩包不是有效的文件夹导出文件，缺少媒体元数据。');
+      }
+
+      final manifest = jsonDecode(await manifestFile.readAsString()) as Map<String, dynamic>?;
+      if ((manifest?['type'] ?? '') != 'folder') {
+        throw Exception('该压缩包不是有效的文件夹导出文件。');
+      }
+
+      final folderName = manifest?['folder_name']?.toString() ?? '导入的文件夹';
+      List<dynamic> mediaItemsToImport = [];
+      if (await chunk0File.exists()) {
+        int chunkIdx = 0;
+        while (true) {
+          final f = File(path.join(tempImportDir.path, 'media_items_$chunkIdx.json'));
+          if (!await f.exists()) break;
+          mediaItemsToImport.addAll(jsonDecode(await f.readAsString()) as List<dynamic>? ?? []);
+          chunkIdx++;
+        }
+      } else {
+        mediaItemsToImport = jsonDecode(await jsonFile.readAsString()) as List<dynamic>? ?? [];
+      }
+
+      currentPhase = '创建文件夹';
+      message.value = '正在创建目标文件夹...';
+      String targetFolderName = folderName;
+      int suffix = 0;
+      while (await _checkFolderNameExists(targetFolderName)) {
+        suffix++;
+        targetFolderName = '$folderName($suffix)';
+      }
+
+      final newFolderId = const Uuid().v4();
+      final newFolder = MediaItem(
+        id: newFolderId,
+        name: targetFolderName,
+        path: '',
+        type: MediaType.folder,
+        directory: _currentDirectory,
+        dateAdded: DateTime.now(),
+      );
+      await _databaseService.insertMediaItem(newFolder.toMap());
+
+      currentPhase = '导入媒体文件';
+      final mediaDirPath = path.join(appDir.path, 'media');
+      int importedCount = 0;
+      int skippedCount = 0;
+      final now = DateTime.now().millisecondsSinceEpoch;
+
+      for (int i = 0; i < mediaItemsToImport.length; i++) {
+        final item = mediaItemsToImport[i];
+        if (item is! Map<String, dynamic>) continue;
+        final typeIndex = item['type'] as int? ?? 0;
+        if (typeIndex == MediaType.folder.index) continue;
+
+        final oldPath = item['path']?.toString();
+        if (oldPath == null || oldPath.isEmpty) continue;
+
+        final fileName = path.basename(oldPath);
+        final sourceFile = File(path.join(tempImportDir.path, 'media', fileName));
+        if (!await sourceFile.exists()) {
+          debugPrint('跳过：文件不存在 $fileName');
+          skippedCount++;
+          continue;
+        }
+
+        final fileHash = await _calculateFileHash(sourceFile);
+        if (fileHash.isEmpty) {
+          skippedCount++;
+          continue;
+        }
+
+        final duplicate = await _databaseService.findDuplicateMediaItem(fileHash, fileName);
+        if (duplicate != null) {
+          // 原样导入：将重复项从其他位置移入本文件夹，保证导出多少导入多少
+          await _databaseService.updateMediaItemDirectory(duplicate['id'] as String, newFolderId);
+          importedCount++;
+          continue;
+        }
+
+        final uuid = const Uuid().v4();
+        final extension = path.extension(sourceFile.path);
+        final destinationPath = path.join(mediaDirPath, '$uuid$extension');
+        await Directory(mediaDirPath).create(recursive: true);
+        await copyFileWithStreamingToFile(sourceFile, File(destinationPath));
+
+        final newItem = Map<String, dynamic>.from(item);
+        newItem['id'] = uuid;
+        newItem['path'] = destinationPath;
+        newItem['directory'] = newFolderId;
+        newItem['thumbnail_path'] = null;
+        newItem['created_at'] = now;
+        newItem['updated_at'] = now;
+        newItem['file_hash'] = fileHash;
+        await _databaseService.insertMediaItem(newItem);
+        importedCount++;
+
+        progress.value = 0.5 + (i + 1) / mediaItemsToImport.length * 0.45;
+        message.value = '正在导入: ${i + 1}/${mediaItemsToImport.length}';
+        final totalItems = mediaItemsToImport.length;
+        if (totalItems > 500 && (i + 1) % 100 == 0) {
+          await Future.delayed(const Duration(milliseconds: 50));
+        } else if ((i + 1) % 10 == 0) {
+          await Future.delayed(const Duration(milliseconds: 30));
+        }
+      }
+
+      progress.value = 0.98;
+      message.value = '导入完成，正在刷新...';
+      _lastImportCompletedAt = DateTime.now();
+      await _loadMediaItems();
+      progress.value = 1.0;
+
+      if (mounted) Navigator.of(context).pop();
+      if (mounted) {
+        String msg = '已导入 $importedCount 个文件到「$targetFolderName」';
+        if (skippedCount > 0) msg += '（$skippedCount 个因文件缺失或无法读取已跳过）';
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+      }
+    } catch (e, stack) {
+      debugPrint('导入文件夹数据失败 [$currentPhase]: $e\n$stack');
+      if (mounted) Navigator.of(context).pop();
+      if (mounted) {
+        final userMsg = formatExportImportError(e, '导入失败');
+        showExportImportErrorDialog(context, '文件夹导入失败', '出错阶段：$currentPhase\n\n$userMsg');
+      }
+    } finally {
+      if (await tempImportDir.exists()) {
+        try {
+          await tempImportDir.delete(recursive: true);
+        } catch (e) {
+          debugPrint('清理临时目录失败: $e');
+        }
+      }
+    }
+  }
+
   Future<void> _importAllMediaData() async {
     final progress = ValueNotifier<double>(0.0);
     final message = ValueNotifier<String>('准备中...');
@@ -3336,15 +4187,17 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     }
 
     if (!hasSelection) {
+      // 多选模式下显示退出按钮，否则不显示（查重已移至 AppBar）
+      if (!_isMultiSelectMode) return const SizedBox.shrink();
       return Align(
         alignment: Alignment.centerRight,
         child: Padding(
           padding: const EdgeInsets.only(right: 16, bottom: 8),
           child: FloatingActionButton.small(
-            onPressed: _deduplicateCurrentFolder,
-            tooltip: '当前目录查重',
+            onPressed: _toggleMultiSelectMode,
+            tooltip: '退出多选',
             heroTag: 'deduplicate_current',
-            child: const Icon(Icons.find_replace),
+            child: const Icon(Icons.close),
           ),
         ),
       );
@@ -3392,9 +4245,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
               tooltip: '删除选定项',
             ),
             IconButton(
-              icon: const Icon(Icons.find_replace),
-              onPressed: _deduplicateCurrentFolder,
-              tooltip: '当前目录查重',
+              icon: const Icon(Icons.close),
+              onPressed: _toggleMultiSelectMode,
+              tooltip: '退出多选',
             ),
           ],
         ),
@@ -3416,64 +4269,86 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(
-            _currentDirectory == 'root' ? '媒体' : '媒体 / $_currentDirectory'),
+        leadingWidth: 56,
+        leading: _currentDirectory == 'root'
+            ? Padding(
+                padding: const EdgeInsets.only(left: 16),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    '媒体',
+                    style: Theme.of(context).appBarTheme.titleTextStyle ??
+                        const TextStyle(fontSize: 20, fontWeight: FontWeight.w500),
+                  ),
+                ),
+              )
+            : IconButton(
+                icon: const Icon(Icons.arrow_upward),
+                onPressed: _navigateUp,
+                tooltip: '返回上级',
+              ),
+        automaticallyImplyLeading: false,
+        title: _currentDirectory == 'root' ? null : Text('媒体 / $_currentDirectory'),
         actions: [
-          if (_currentDirectory != 'root')
-            IconButton(
-              icon: const Icon(Icons.arrow_upward),
-              onPressed: _navigateUp,
-              tooltip: '返回上级',
-              padding: const EdgeInsets.symmetric(horizontal: 4),
+          IconButton(
+            icon: const Icon(Icons.find_replace, size: 20),
+            onPressed: _deduplicateCurrentFolder,
+            tooltip: '当前目录查重',
+            style: IconButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 6),
+              minimumSize: const Size(36, 36),
             ),
+          ),
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 2.0),
+            padding: const EdgeInsets.symmetric(horizontal: 2),
             child: Center(
               child: Row(
+                mainAxisSize: MainAxisSize.min,
                 children: [
                   const Icon(Icons.image, size: 14),
-                  const SizedBox(width: 1),
-                  Text('$_imageCount', style: const TextStyle(fontSize: 10)),
-                ],
-              ),
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 2.0),
-            child: Center(
-              child: Row(
-                children: [
+                  Text('$_imageCount', style: const TextStyle(fontSize: 11)),
+                  const SizedBox(width: 4),
                   const Icon(Icons.videocam, size: 14),
-                  const SizedBox(width: 1),
-                  Text('$_videoCount', style: const TextStyle(fontSize: 10)),
+                  Text('$_videoCount', style: const TextStyle(fontSize: 11)),
                 ],
               ),
             ),
           ),
           IconButton(
-            icon: Icon(
-                _mediaVisible ? Icons.visibility : Icons.visibility_off),
+            icon: Icon(_mediaVisible ? Icons.visibility : Icons.visibility_off, size: 20),
             onPressed: _toggleMediaVisibility,
             tooltip: '切换媒体可见性',
-            padding: const EdgeInsets.symmetric(horizontal: 4),
+            style: IconButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 6),
+              minimumSize: const Size(36, 36),
+            ),
           ),
           IconButton(
-            icon: const Icon(Icons.storage),
+            icon: const Icon(Icons.storage, size: 20),
             onPressed: _showStorageManagement,
             tooltip: '存储管理',
-            padding: const EdgeInsets.symmetric(horizontal: 4),
+            style: IconButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 6),
+              minimumSize: const Size(36, 36),
+            ),
           ),
           IconButton(
-            icon: const Icon(Icons.settings),
+            icon: const Icon(Icons.settings, size: 20),
             onPressed: _showSettingsMenu,
             tooltip: '设置',
-            padding: const EdgeInsets.symmetric(horizontal: 4),
+            style: IconButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 6),
+              minimumSize: const Size(36, 36),
+            ),
           ),
           IconButton(
-            icon: const Icon(Icons.refresh),
+            icon: const Icon(Icons.refresh, size: 20),
             onPressed: _loadMediaItems,
             tooltip: '刷新',
-            padding: const EdgeInsets.symmetric(horizontal: 4),
+            style: IconButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 6),
+              minimumSize: const Size(36, 36),
+            ),
           ),
         ],
       ),

@@ -84,6 +84,7 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   final PageController _pageController = PageController(initialPage: 0);
   int _currentPage = 0;
   bool _isBrowserHomePage = true;
+  bool _isMediaMultiSelectMode = false;
 
   void _handleBrowserHomePageChanged(bool isHomePage) {
     if (_isBrowserHomePage != isHomePage) {
@@ -204,15 +205,23 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                     DirectoryPage.refresh();
                   }
                 },
-                physics: _currentPage == 3
-                    ? (_isBrowserHomePage
-                        ? const ClampingScrollPhysics()
-                        : const NeverScrollableScrollPhysics())
-                    : const ClampingScrollPhysics(),
+                physics: _currentPage == 2 && _isMediaMultiSelectMode
+                    ? const NeverScrollableScrollPhysics()
+                    : _currentPage == 3
+                        ? (_isBrowserHomePage
+                            ? const ClampingScrollPhysics()
+                            : const NeverScrollableScrollPhysics())
+                        : const ClampingScrollPhysics(),
                 children: [
                   const CoverPage(),
                   DirectoryPage(onDocumentOpen: _onDocumentOpen),
-                  const MediaManagerPage(),
+                  MediaManagerPage(
+                    onMultiSelectModeChanged: (v) {
+                      if (_isMediaMultiSelectMode != v) {
+                        setState(() => _isMediaMultiSelectMode = v);
+                      }
+                    },
+                  ),
                   BrowserPage(
                     onBrowserHomePageChanged: _handleBrowserHomePageChanged,
                     currentMainPageIndex: _currentPage,
