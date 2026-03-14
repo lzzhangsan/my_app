@@ -988,11 +988,18 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   void _selectAll() {
     setState(() {
       _isMultiSelectMode = true;
-      _selectedItems.clear();
-      // 只选择非文件夹的媒体项
-      _selectedItems.addAll(_mediaItems
+      final selectableIds = _mediaItems
           .where((item) => item.type != MediaType.folder)
-          .map((item) => item.id));
+          .map((item) => item.id)
+          .toSet();
+      if (selectableIds.isNotEmpty && selectableIds.every((id) => _selectedItems.contains(id))) {
+        // 已全选，再次点击则取消全选
+        _selectedItems.clear();
+      } else {
+        // 未全选，则全选
+        _selectedItems.clear();
+        _selectedItems.addAll(selectableIds);
+      }
     });
   }
 
@@ -3367,9 +3374,12 @@ class _MediaManagerPageState extends State<MediaManagerPage>
               ),
             ),
             IconButton(
-              icon: const Icon(Icons.select_all),
+              icon: Icon(_mediaItems.where((i) => i.type != MediaType.folder).every((i) => _selectedItems.contains(i)) &&
+                      _mediaItems.any((i) => i.type != MediaType.folder)
+                  ? Icons.deselect
+                  : Icons.select_all),
               onPressed: _selectAll,
-              tooltip: '全选',
+              tooltip: '全选/取消全选',
             ),
             IconButton(
               icon: const Icon(Icons.drive_file_move_outline),
