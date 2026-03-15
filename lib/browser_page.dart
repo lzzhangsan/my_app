@@ -138,15 +138,29 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         debugPrint('成功启动外部应用');
       } else {
         debugPrint('无法启动外部应用: $url');
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('无法打开: $url')),
-        );
+        final lower = url.toLowerCase();
+        final isAppScheme = lower.startsWith('baiduboxapp://') || lower.startsWith('bdapp://') ||
+            lower.startsWith('tbopen://') || lower.startsWith('snssdk://') ||
+            lower.startsWith('sinaweibo://') || lower.startsWith('weixin://') ||
+            lower.startsWith('alipays://') || lower.startsWith('intent://');
+        if (!isAppScheme && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('无法打开: $url')),
+          );
+        }
       }
     } catch (e) {
       debugPrint('启动外部应用时出错: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('打开链接时出错: $e')),
-      );
+      final lower = url.toLowerCase();
+      final isAppScheme = lower.startsWith('baiduboxapp://') || lower.startsWith('bdapp://') ||
+          lower.startsWith('tbopen://') || lower.startsWith('snssdk://') ||
+          lower.startsWith('sinaweibo://') || lower.startsWith('weixin://') ||
+          lower.startsWith('alipays://') || lower.startsWith('intent://');
+      if (!isAppScheme && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('打开链接时出错: $e')),
+        );
+      }
     }
   }
   bool _shouldKeepWebPageState = false;
@@ -1227,7 +1241,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       );
       final mimeType = _guessMimeType(resolvedUrl);
       final MediaType selectedType = _determineMediaType(mimeType);
-      final success = await _performBackgroundDownload(resolvedUrl, selectedType);
+      final success = await _performBackgroundDownload(resolvedUrl, selectedType, skipFailurePrompt: selectedType == MediaType.image || selectedType == MediaType.video);
         if (!success && (selectedType == MediaType.image || selectedType == MediaType.video) && mounted) {
         try {
           final ctrl = _controller;
@@ -1235,7 +1249,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
             _awaitingCanvasFallbackResult = true;
             _canvasFallbackSucceeded = false;
             await ctrl.evaluateJavascript(source: 'typeof tryCanvasCaptureFallback === "function" && tryCanvasCaptureFallback();');
-            await Future.delayed(const Duration(milliseconds: 600));
+            await Future.delayed(const Duration(milliseconds: 250));
             if (!_canvasFallbackSucceeded) await _tryScreenshotFallback(ctrl);
             _awaitingCanvasFallbackResult = false;
           }
@@ -2014,10 +2028,10 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     return false;
   }
 
-  Dio _createDownloadDio() {
+  Dio _createDownloadDio({Duration? connectTimeout, Duration? receiveTimeout}) {
     final dio = Dio(BaseOptions(
-      connectTimeout: const Duration(seconds: 15),
-      receiveTimeout: const Duration(seconds: 30),
+      connectTimeout: connectTimeout ?? const Duration(seconds: 15),
+      receiveTimeout: receiveTimeout ?? const Duration(seconds: 30),
       sendTimeout: const Duration(seconds: 15),
       followRedirects: true,
       maxRedirects: 5,
@@ -2035,7 +2049,9 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       final absoluteUrl = _toAbsoluteUrl(url);
       final downloadUrl = _getCleanMediaUrl(absoluteUrl);
       debugPrint('开始下载文件，URL: $downloadUrl');
-      final downloadDio = _createDownloadDio();
+      final downloadDio = mediaType == MediaType.image
+          ? _createDownloadDio(connectTimeout: const Duration(seconds: 5), receiveTimeout: const Duration(seconds: 10))
+          : _createDownloadDio();
 
       final appDir = await getApplicationDocumentsDirectory();
       final mediaDir = Directory('${appDir.path}/media');
@@ -2067,7 +2083,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       const browserUA = 'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
       final refererCandidates = _getRefererCandidates(absoluteUrl);
       int retryCount = 0;
-      const maxRetries = 5;
+      final maxRetries = mediaType == MediaType.image ? 2 : 5;
       String urlToTry = downloadUrl;
       int refererIdx = 0;
 
@@ -2135,7 +2151,10 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           } else {
             if (retryCount >= maxRetries) throw Exception('[下载失败] $e');
           }
-          await Future.delayed(Duration(milliseconds: (retryCount * 800).clamp(800, 3000)));
+          final retryDelayMs = mediaType == MediaType.image
+              ? (retryCount * 200).clamp(200, 500)
+              : (retryCount * 800).clamp(800, 3000);
+          await Future.delayed(Duration(milliseconds: retryDelayMs));
         }
       }
 
@@ -2266,7 +2285,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
   Future<void> _tryScreenshotFallback(InAppWebViewController ctrl) async {
     try {
-      await Future.delayed(const Duration(milliseconds: 500));
+      await Future.delayed(const Duration(milliseconds: 80));
       final screenshot = await ctrl.takeScreenshot();
       if (screenshot == null || screenshot.isEmpty || !mounted) return;
       final appDir = await getApplicationDocumentsDirectory();
@@ -2279,8 +2298,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: const Text('已通过截屏保存到媒体库'),
-            duration: const Duration(seconds: 3),
+            content: const Text('已截屏保存'),
+            duration: const Duration(seconds: 2),
             action: SnackBarAction(label: '查看', onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (context) => const MediaManagerPage()))),
           ),
         );
@@ -2858,6 +2877,13 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                                   if (url.startsWith('data:') || url.startsWith('blob:')) {
                                     return NavigationActionPolicy.ALLOW;
                                   }
+                                  final lower = url.toLowerCase();
+                                  if (lower.startsWith('baiduboxapp://') || lower.startsWith('bdapp://') ||
+                                      lower.startsWith('tbopen://') || lower.startsWith('snssdk://') ||
+                                      lower.startsWith('sinaweibo://') || lower.startsWith('weixin://') ||
+                                      lower.startsWith('alipays://') || lower.startsWith('intent://')) {
+                                    return NavigationActionPolicy.CANCEL;
+                                  }
                                   debugPrint('检测到自定义URL协议: $url');
                                   _launchExternalApp(url);
                                   return NavigationActionPolicy.CANCEL;
@@ -3042,7 +3068,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     super.dispose();
   }
 
-  Future<bool> _performBackgroundDownload(String url, MediaType mediaType) async {
+  Future<bool> _performBackgroundDownload(String url, MediaType mediaType, {bool skipFailurePrompt = false}) async {
     // 仅下载图片和视频，不下载语音/音频
     if (mediaType == MediaType.audio) {
       if (mounted) {
@@ -3097,11 +3123,13 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         }
         return true;
       } else {
-        if (mounted) {
+        if (mounted && !skipFailurePrompt) {
           _updateDownloadTask(taskId, status: 'failed');
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('下载失败: 文件未生成或格式无效'), duration: const Duration(seconds: 4)),
           );
+        } else if (mounted && skipFailurePrompt) {
+          _removeDownloadTask(taskId);
         }
         return false;
       }
@@ -3111,22 +3139,24 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         return false;
       }
       debugPrint('后台下载出错: $absoluteUrl, 错误: $e');
-      final msg = _getDioErrorReason(e);
-      if (mounted) {
+      if (mounted && !skipFailurePrompt) {
         _updateDownloadTask(taskId, status: 'failed');
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('下载失败: $msg'), duration: const Duration(seconds: 5)),
+          SnackBar(content: Text('下载失败: ${_getDioErrorReason(e)}'), duration: const Duration(seconds: 5)),
         );
+      } else if (mounted && skipFailurePrompt) {
+        _removeDownloadTask(taskId);
       }
       return false;
     } catch (e, st) {
       debugPrint('后台下载出错: $absoluteUrl, 错误: $e\n$st');
-      final msg = e.toString().replaceFirst('Exception: ', '');
-      if (mounted) {
+      if (mounted && !skipFailurePrompt) {
         _updateDownloadTask(taskId, status: 'failed');
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('下载失败: $msg'), duration: const Duration(seconds: 5)),
+          SnackBar(content: Text('下载失败: ${e.toString().replaceFirst('Exception: ', '')}'), duration: const Duration(seconds: 5)),
         );
+      } else if (mounted && skipFailurePrompt) {
+        _removeDownloadTask(taskId);
       }
       return false;
     } finally {
