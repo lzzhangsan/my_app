@@ -2594,7 +2594,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           setState(() {
             _commonWebsites.clear();
             final mapped = websitesList
-                .where((item) => !(item['url']?.toString() ?? '').contains('telegram.org'))
                 .map((item) => {
                   'name': item['name'],
                   'url': item['url'],

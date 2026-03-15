@@ -321,7 +321,6 @@ class TestDataGeneratorService {
         'duration': 0,
         'thumbnail_path': null,
         'file_hash': fileHash,
-        'telegram_file_id': null,
         'is_favorite': 0,
         'created_at': DateTime.now().millisecondsSinceEpoch,
         'updated_at': DateTime.now().millisecondsSinceEpoch,

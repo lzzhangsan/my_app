@@ -31,7 +31,7 @@
 | 路径遍历 | ✅ 已防护 | Zip 解压使用 `resolveSafeExtractPath` |
 | 明文 HTTP | ✅ 已禁用 | `usesCleartextTraffic` 未启用 |
 | HTTPS | ✅ 默认 | 浏览器/网络访问以 HTTPS 为主 |
-| 敏感数据存储 | ✅ 合理 | Telegram Token 存 SharedPreferences，用户配置 |
+| 敏感数据存储 | ✅ 合理 | 无硬编码敏感数据 |
 | 权限 | ⚠️ 偏多 | 含 MANAGE_EXTERNAL_STORAGE，需自行评估 |
 
 ---
@@ -61,7 +61,7 @@
 
 1. **print/debugPrint**：生产环境建议通过日志级别控制输出，避免敏感信息泄露
 2. **key.properties**：已加入 `.gitignore`，请勿提交
-3. **网络权限**：应用有 INTERNET 权限，用于浏览器、Telegram 等，属正常需求
+3. **网络权限**：应用有 INTERNET 权限，用于浏览器下载等，属正常需求
 
 ---
 

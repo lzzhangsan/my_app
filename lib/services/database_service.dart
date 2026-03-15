@@ -395,7 +395,7 @@ class DatabaseService {
         await _createIndexes(db);
         break;
       case 9:
-        // 添加Telegram文件ID字段
+        // 历史迁移：telegram_file_id 列（已废弃，保留以兼容旧数据）
         try {
           await db.execute('ALTER TABLE media_items ADD COLUMN telegram_file_id TEXT');
           await db.execute('CREATE INDEX idx_media_items_telegram_file_id ON media_items(telegram_file_id)');
@@ -730,23 +730,11 @@ class DatabaseService {
   }
 
   /// 查找重复的媒体项目
-  Future<Map<String, dynamic>?> findDuplicateMediaItem(String fileHash, String fileName, {String? telegramFileId}) async {
+  Future<Map<String, dynamic>?> findDuplicateMediaItem(String fileHash, String fileName) async {
     try {
       final db = await database;
       
-      // 首先通过Telegram文件ID查找（如果提供了）
-      if (telegramFileId != null && telegramFileId.isNotEmpty) {
-        final List<Map<String, dynamic>> telegramMatches = await db.query(
-          'media_items',
-          where: 'telegram_file_id = ?',
-          whereArgs: [telegramFileId],
-        );
-        if (telegramMatches.isNotEmpty) {
-          return telegramMatches.first;
-        }
-      }
-      
-      // 然后通过文件哈希查找
+      // 通过文件哈希查找
       if (fileHash.isNotEmpty) {
         final List<Map<String, dynamic>> hashMatches = await db.query(
           'media_items',
@@ -775,28 +763,6 @@ class DatabaseService {
     }
   }
   
-  /// 根据Telegram文件ID查找媒体项
-  Future<Map<String, dynamic>?> findMediaItemByTelegramFileId(String telegramFileId) async {
-    try {
-      if (telegramFileId.isEmpty) return null;
-      
-      final db = await database;
-      final List<Map<String, dynamic>> matches = await db.query(
-        'media_items',
-        where: 'telegram_file_id = ?',
-        whereArgs: [telegramFileId],
-      );
-      
-      if (matches.isNotEmpty) {
-        return matches.first;
-      }
-      return null;
-    } catch (e, stackTrace) {
-      _handleError('根据Telegram文件ID查找媒体项失败', e, stackTrace);
-      rethrow;
-    }
-  }
-
   /// 根据ID获取媒体项目
   Future<Map<String, dynamic>?> getMediaItemById(String id) async {
     try {

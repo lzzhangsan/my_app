@@ -17,7 +17,7 @@
 |------|------|
 | 全局异常捕获 | ✅ `runZonedGuarded` + `FlutterError.onError` |
 | 敏感文件排除 | ✅ key.properties、*.keystore 已在 .gitignore |
-| API Key 存储 | ✅ Telegram Token 使用 FlutterSecureStorage |
+| API Key 存储 | ✅ 无硬编码密钥 |
 | SQL 注入防护 | ✅ 参数化查询 |
 | 明文 HTTP | ✅ usesCleartextTraffic 未启用 |
 | 错误服务 | ✅ ErrorService 记录错误 |

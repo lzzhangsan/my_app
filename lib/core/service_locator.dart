@@ -37,6 +37,7 @@ class ServiceLocator {
 
       // 注册核心服务
       registerSingleton<ErrorService>(ErrorService());
+      await get<ErrorService>().initialize();
       registerSingleton<PerformanceService>(PerformanceService());
       registerSingleton<CacheService>(CacheService());
       registerSingleton<NetworkService>(NetworkService());
@@ -74,16 +75,7 @@ class ServiceLocator {
       
       _isInitialized = true;
     } catch (e, stackTrace) {
-      get<ErrorService>().handleError(
-        AppError(
-          id: DateTime.now().millisecondsSinceEpoch.toString(),
-          title: '服务初始化失败',
-          message: e.toString(),
-          timestamp: DateTime.now(),
-          severity: ErrorSeverity.critical,
-          stackTrace: stackTrace,
-        ),
-      );
+      get<ErrorService>().recordError(e, stackTrace, context: '服务初始化失败', severity: ErrorSeverity.critical);
       rethrow;
     }
   }

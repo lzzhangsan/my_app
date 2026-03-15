@@ -13,7 +13,7 @@
 | 项目 | 状态 |
 |------|------|
 | 敏感文件 (.gitignore) | ✅ key.properties、*.keystore、.continue/ 已排除 |
-| API Key 存储 | ✅ Telegram Bot Token 存 SharedPreferences，用户自行配置 |
+| API Key 存储 | ✅ 无硬编码密钥，敏感数据用户自行配置 |
 | SQL 注入防护 | ✅ 使用参数化查询 |
 | Zip 路径遍历 | ✅ resolveSafeExtractPath 防护 |
 | 明文 HTTP | ✅ usesCleartextTraffic 未启用 |

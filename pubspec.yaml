@@ -40,7 +40,6 @@ dependencies:
   http: ^1.5.0
   dio: ^5.9.0  # Updated to latest version
   reorderable_grid_view: ^2.2.8
-  teledart: ^0.6.1  # Telegram bot client - keep current version for compatibility
   html: ^0.15.6
   mime: ^2.0.0  # Updated to latest major version
   intl: ^0.20.2  # Updated to latest version
@@ -49,7 +48,6 @@ dependencies:
   flutter_background_service_android: ^6.3.1
   flutter_quill: ^11.5.0
   image: ^4.8.0
-  flutter_secure_storage: ^9.2.2
 
 dependency_overrides:
   chewie:
