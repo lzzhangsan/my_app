@@ -70,7 +70,9 @@ class _MediaDownloadDialogState extends State<MediaDownloadDialog>
         _errorMessage = '';
       });
 
-      final mediaList = await _snifferService.sniffMediaFromPage(widget.pageUrl);
+      var mediaList = await _snifferService.sniffMediaFromPage(widget.pageUrl);
+      // 仅保留图片和视频，不下载音频
+      mediaList = mediaList.where((m) => m.type != MediaType.audio).toList();
       
       // 获取文件大小信息
       for (final media in mediaList) {

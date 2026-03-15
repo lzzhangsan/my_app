@@ -211,11 +211,6 @@ class MediaSnifferService {
     final List<MediaInfo> media = [];
     
     try {
-      // Telegram Web处理
-      if (url.contains('web.telegram.org') || url.contains('t.me')) {
-        media.addAll(await _extractTelegramMedia(url));
-      }
-      
       // YouTube处理
       if (url.contains('youtube.com') || url.contains('youtu.be')) {
         media.addAll(await _extractYouTubeMedia(url));
@@ -248,48 +243,6 @@ class MediaSnifferService {
       
     } catch (e) {
       debugPrint('特定网站处理失败: $e');
-    }
-    
-    return media;
-  }
-
-  /// Telegram媒体提取
-  Future<List<MediaInfo>> _extractTelegramMedia(String url) async {
-    final List<MediaInfo> media = [];
-    
-    try {
-      // 分析Telegram的API模式
-      final telegramPatterns = [
-        r'https://web\.telegram\.org/a/progressive/document\?[^"\s]+',
-        r'https://cdn\d*\.telegram\.org/file/[^"\s]+',
-        r'https://t\.me/[^/]+/\d+',
-      ];
-      
-      final response = await _networkService.dio.get(url);
-      final content = response.data.toString();
-      
-      for (final pattern in telegramPatterns) {
-        final regex = RegExp(pattern);
-        final matches = regex.allMatches(content);
-        
-        for (final match in matches) {
-          final mediaUrl = match.group(0)!;
-          if (!_processedUrls.contains(mediaUrl)) {
-            _processedUrls.add(mediaUrl);
-            
-            media.add(MediaInfo(
-              url: mediaUrl,
-              name: 'telegram_media_${media.length + 1}',
-              format: _getFileExtension(mediaUrl) ?? 'unknown',
-              type: determineMediaType(mediaUrl),
-              downloadProbability: 0.9, // Telegram链接通常很可靠
-              metadata: {'source': 'telegram'},
-            ));
-          }
-        }
-      }
-    } catch (e) {
-      debugPrint('Telegram媒体提取失败: $e');
     }
     
     return media;

@@ -24,7 +24,6 @@ import 'package:archive/archive.dart';
 import 'core/service_locator.dart';
 import 'services/database_service.dart';
 import 'utils/export_import_error_utils.dart';
-import 'services/telegram_download_service_v2.dart';
 import 'models/media_item.dart';
 import 'models/media_type.dart';
 import 'main.dart';
@@ -104,16 +103,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   late final DatabaseService _databaseService;
   List<Map<String, String>> _bookmarks = [];
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
-  final TelegramDownloadServiceV2 _telegramService = TelegramDownloadServiceV2.instance;
-  
-  // 添加轮询相关变量
-  Timer? _telegramPollingTimer;
-  int _lastUpdateId = 0;
-  bool _isPollingActive = false;
-  
-  // 添加已下载文件ID集合
-  final Set<String> _downloadedFileIds = <String>{};
-  static const String _downloadedFileIdsKey = 'telegram_downloaded_file_ids';
 
   bool _showHomePage = true;
   bool _isBrowsingWebPage = false;
@@ -150,7 +139,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
   final List<Map<String, dynamic>> _commonWebsites = [
     {'name': 'Google', 'url': 'https://www.google.com', 'icon': Icons.search},
-    {'name': 'Telegram', 'url': 'https://web.telegram.org', 'icon': Icons.send},
     {'name': '百度', 'url': 'https://www.baidu.com', 'icon': Icons.search},
   ];
 
@@ -200,7 +188,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     _initializeDownloader();
     _loadBookmarks();
     _loadCommonWebsites();
-    _initializeTelegramService();
     _loadHistory();
   }
 
@@ -215,20 +202,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     }
   }
   
-  /// 初始化 Telegram 服务
-  Future<void> _initializeTelegramService() async {
-    await _telegramService.initialize();
-    
-    // 加载已下载的文件ID和最后更新ID
-    await _loadDownloadedFileIds();
-    await _loadLastUpdateId();
-    
-    // 如果已配置Bot Token，启动轮询
-    if (_telegramService.isConfigured) {
-      await _startTelegramPolling();
-    }
-  }
-
   Future<void> _initializeDownloader() async {
     await FlutterDownloader.initialize();
     await _requestPermissions();
@@ -253,35 +226,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         _handleJavaScriptMessage(args[0].toString());
       }
     });
-  }
-
-  bool _isTelegramMediaLink(String url) {
-    // 排除blob链接，让其由JavaScript处理
-    if (url.startsWith('blob:')) return false;
-    
-    final telegramMediaPatterns = [
-      'telegram.org/file/',
-      't.me/file/',
-      'web.telegram.org/file/',
-      'cdn.telegram.org/',
-      'cdn-telegram.org/',
-      'tg://file',
-      'tg://media',
-      'tg://photo',
-      'tg://video',
-      '/a/document',
-      '/progressive/',
-    ];
-    for (final pattern in telegramMediaPatterns) {
-      if (url.contains(pattern)) return true;
-    }
-    if (url.contains('telegram') || url.contains('t.me')) {
-      final mediaExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.mp4', '.webp', '.webm', '.m3u8'];
-      for (final ext in mediaExtensions) {
-        if (url.toLowerCase().contains(ext)) return true;
-      }
-    }
-    return false;
   }
 
   bool _isYouTubeLink(String url) {
@@ -1183,7 +1127,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   void _loadUrl(String url) {
     String processedUrl = url;
     if (!url.startsWith('http://') && !url.startsWith('https://')) processedUrl = 'https://$url';
-    if (processedUrl.contains('web.telegram.org')) processedUrl = 'https://web.telegram.org/a/';
     final uri = Uri.tryParse(processedUrl);
     if (uri != null) {
       _controller?.loadUrl(urlRequest: URLRequest(url: WebUri(processedUrl)));
@@ -1223,7 +1166,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
             {'name': 'Edge', 'url': 'https://www.bing.com', 'iconCode': Icons.public.codePoint},
             {'name': 'X', 'url': 'https://twitter.com', 'iconCode': Icons.public.codePoint},
             {'name': 'Facebook', 'url': 'https://www.facebook.com', 'iconCode': Icons.public.codePoint},
-            {'name': 'Telegram', 'url': 'https://web.telegram.org', 'iconCode': Icons.public.codePoint},
             {'name': '百度', 'url': 'https://www.baidu.com', 'iconCode': Icons.public.codePoint}
           ]);
         });
@@ -1627,7 +1569,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         debugPrint('警告：尝试保存空的常用网站列表，将加载默认网站');
         _commonWebsites.addAll([
           {'name': 'Google', 'url': 'https://www.google.com', 'iconCode': Icons.public.codePoint},
-          {'name': 'Telegram', 'url': 'https://web.telegram.org', 'iconCode': Icons.public.codePoint},
           {'name': '百度', 'url': 'https://www.baidu.com', 'iconCode': Icons.public.codePoint}
         ]);
       }
@@ -1669,15 +1610,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       }
 
       String processedUrl = absoluteUrl;
-      if (absoluteUrl.startsWith('blob:https://web.telegram.org/')) {
-        // Blob URL 由 JavaScript 处理，不直接下载
-        return;
-      } else if (absoluteUrl.contains('telegram.org') || absoluteUrl.contains('t.me')) {
-        if (!absoluteUrl.startsWith('http')) processedUrl = absoluteUrl.startsWith('//') ? 'https:$absoluteUrl' : 'https://$absoluteUrl';
-        if (processedUrl.contains('/progressive/https://')) {
-          processedUrl = processedUrl.substring(processedUrl.indexOf('/progressive/https://') + '/progressive/'.length);
-        }
-      } else if (absoluteUrl.contains('youtube.com') || absoluteUrl.contains('youtu.be')) {
+      if (absoluteUrl.contains('youtube.com') || absoluteUrl.contains('youtu.be')) {
         processedUrl = await _resolveYouTubeUrl(absoluteUrl);
       }
 
@@ -1689,9 +1622,11 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         if (result != null) {
           final bool shouldDownload = result['download'];
           final MediaType mediaType = result['mediaType'];
-          if (shouldDownload) {
+          if (shouldDownload && mediaType != MediaType.audio) {
             ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('开始下载，将在后台进行...'), duration: Duration(seconds: 2)));
             _performBackgroundDownload(processedUrl, mediaType);
+          } else if (mediaType == MediaType.audio) {
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('当前仅支持下载图片和视频，不支持音频')));
           }
         }
       } else {
@@ -1710,7 +1645,9 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   }
 
   Widget _buildDownloadDialog(String url, String mimeType) {
-    MediaType selectedType = _determineMediaType(mimeType);
+    MediaType detected = _determineMediaType(mimeType);
+    // 仅支持图片和视频，音频不提供下载
+    MediaType selectedType = (detected == MediaType.audio) ? MediaType.image : detected;
     return StatefulBuilder(
       builder: (context, setState) => AlertDialog(
         title: const Text('下载媒体'),
@@ -1732,12 +1669,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
             RadioListTile<MediaType>(
               title: const Text('视频'),
               value: MediaType.video,
-              groupValue: selectedType,
-              onChanged: (value) => setState(() => selectedType = value!),
-            ),
-            RadioListTile<MediaType>(
-              title: const Text('音频'),
-              value: MediaType.audio,
               groupValue: selectedType,
               onChanged: (value) => setState(() => selectedType = value!),
             ),
@@ -1763,7 +1694,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
   bool _isDownloadableLink(String url) {
     debugPrint('检查URL是否为可下载链接: $url');
-    if (url.startsWith('blob:https://web.telegram.org/')) return false; // Blob URL 由 JavaScript 处理
     final fileExtensions = [
       '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg', '.ico',
       '.mp4', '.avi', '.mov', '.wmv', '.flv', '.mkv', '.webm', '.m3u8', '.ts',
@@ -2376,11 +2306,15 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         if (websitesList.isNotEmpty) {
           setState(() {
             _commonWebsites.clear();
-            _commonWebsites.addAll(websitesList.map((item) => {
-              'name': item['name'],
-              'url': item['url'],
-              'iconCode': Icons.public.codePoint,
-            }).toList());
+            final mapped = websitesList
+                .where((item) => !(item['url']?.toString() ?? '').contains('telegram.org'))
+                .map((item) => {
+                  'name': item['name'],
+                  'url': item['url'],
+                  'iconCode': Icons.public.codePoint,
+                })
+                .toList();
+            _commonWebsites.addAll(mapped);
           });
           debugPrint('从SharedPreferences加载了${_commonWebsites.length}个常用网站');
           return;
@@ -2392,7 +2326,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         _commonWebsites.clear();
         _commonWebsites.addAll([
           {'name': 'Google', 'url': 'https://www.google.com', 'iconCode': Icons.public.codePoint},
-          {'name': 'Telegram', 'url': 'https://web.telegram.org', 'iconCode': Icons.public.codePoint},
           {'name': '百度', 'url': 'https://www.baidu.com', 'iconCode': Icons.public.codePoint}
         ]);
       });
@@ -2405,7 +2338,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         _commonWebsites.clear();
         _commonWebsites.addAll([
           {'name': 'Google', 'url': 'https://www.google.com', 'iconCode': Icons.public.codePoint},
-          {'name': 'Telegram', 'url': 'https://web.telegram.org', 'iconCode': Icons.public.codePoint},
           {'name': '百度', 'url': 'https://www.baidu.com', 'iconCode': Icons.public.codePoint}
         ]);
       });
@@ -2510,11 +2442,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                 icon: const Icon(Icons.import_export),
                 onPressed: _showExportImportMenu,
                 tooltip: '导入/导出数据',
-              ),
-              IconButton(
-                icon: const Icon(Icons.telegram),
-                onPressed: _showTelegramDownloadDialog,
-                tooltip: 'Telegram 下载',
               ),
             ],
             if (!_showHomePage)
@@ -2632,7 +2559,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                               shouldOverrideUrlLoading: (ctrl, nav) async {
                                 final url = nav.request.url?.toString() ?? '';
                                 debugPrint('导航请求: $url');
-                                if (_isDownloadableLink(url) || _isTelegramMediaLink(url) || _isYouTubeLink(url)) {
+                                if (_isDownloadableLink(url) || _isYouTubeLink(url)) {
                                   debugPrint('检测到可能的下载链接: $url');
                                   _handleDownload(url, '', _guessMimeType(url));
                                   return NavigationActionPolicy.CANCEL;
@@ -2717,7 +2644,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
   @override
   void dispose() {
-    _stopTelegramPolling();
     _urlController.dispose();
     _videoDownloadProgress.dispose(); // Dispose ValueNotifier
     _isDownloadingVideo.dispose(); // Dispose ValueNotifier
@@ -2741,6 +2667,15 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   }
 
   Future<bool> _performBackgroundDownload(String url, MediaType mediaType) async {
+    // 仅下载图片和视频，不下载语音/音频
+    if (mediaType == MediaType.audio) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('当前仅支持下载图片和视频，不支持音频文件')),
+        );
+      }
+      return false;
+    }
     final absoluteUrl = _toAbsoluteUrl(url);
     if (_isApiEndpointUrl(absoluteUrl)) {
       debugPrint('跳过 API 接口 URL（非媒体文件）: $absoluteUrl');
@@ -2809,589 +2744,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     }
   }
   
-  /// 显示 Telegram 下载对话框
-  void _showTelegramDownloadDialog() {
-    if (!_telegramService.isConfigured) {
-      _showBotTokenConfigDialog();
-    } else {
-      _showTelegramUrlInputDialog();
-    }
-  }
-  
-  /// 显示 Bot Token 配置对话框
-  void _showBotTokenConfigDialog() {
-    final tokenController = TextEditingController();
-    
-    showDialog(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('配置 Telegram Bot'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              '请先配置 Telegram Bot Token 以使用下载功能：\n\n'
-              '1. 在 Telegram 中找到 @BotFather\n'
-              '2. 发送 /newbot 创建新机器人\n'
-              '3. 按提示设置机器人名称\n'
-              '4. 复制获得的 Token 并粘贴到下方',
-              style: TextStyle(fontSize: 14),
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: tokenController,
-              decoration: const InputDecoration(
-                labelText: 'Bot Token',
-                hintText: '例如: 123456789:ABCdefGHIjklMNOpqrSTUVwxyz',
-                border: OutlineInputBorder(),
-                // 确保内容可以自动换行
-                helperMaxLines: 3,
-                errorMaxLines: 3,
-              ),
-              // 增加最大行数，防止溢出
-              maxLines: 3,
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('取消'),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              final token = tokenController.text.trim();
-              if (token.isEmpty) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('请输入 Bot Token')),
-                );
-                return;
-              }
-              
-              // 关闭当前配置对话框
-              Navigator.pop(dialogContext);
-              // 添加短暂延迟，确保对话框已完全关闭
-              await Future.delayed(const Duration(milliseconds: 100));
-              if (!mounted) return; // 如果组件已卸载，直接返回
-
-              // 创建一个变量存储加载对话框的context
-              BuildContext? loadingDialogContext;
-
-              // 显示加载对话框并保存context
-              showDialog(
-                context: context, // Use the main context here
-                barrierDismissible: false,
-                builder: (context) {
-                  loadingDialogContext = context;
-                  return const AlertDialog(
-                    content: Row(
-                      children: [
-                        CircularProgressIndicator(),
-                        SizedBox(width: 16),
-                        Text('验证 Bot Token...'),
-                      ],
-                    ),
-                  );
-                },
-              );
-              
-              bool isValid = false;
-              try {
-                // 添加超时处理
-                isValid = await _telegramService.validateBotToken(token).timeout(
-                  const Duration(seconds: 15),
-                  onTimeout: () {
-                    print('验证 Bot Token 超时');
-                    return false;
-                  },
-                );
-              } catch (e) {
-                print('验证 Bot Token 过程中发生错误: $e');
-                isValid = false;
-              }
-
-              // 安全地关闭加载对话框
-              if (loadingDialogContext != null && mounted) {
-                try {
-                  Navigator.pop(loadingDialogContext!); // 关闭加载对话框
-                } catch (e) {
-                  // 忽略导航错误，可能是因为widget已经被销毁
-                }
-              }
-              
-              if (mounted) { // 确保组件仍然挂载
-                // 显示验证结果对话框
-                showDialog(
-                  context: context, // Use the main context for this dialog
-                  builder: (context) => AlertDialog(
-                    title: Text(isValid ? '验证成功' : '验证失败'),
-                    content: Text(isValid ? 'Bot Token 验证通过！' : '无效的 Bot Token，请检查后重试'),
-                    actions: [
-                      TextButton(
-                        onPressed: () async {
-                          Navigator.pop(context); // 关闭验证结果对话框
-                          if (isValid) {
-                            final success = await _telegramService.saveBotToken(token);
-                            if (mounted) {
-                              if (success) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(
-                                    content: Text('Bot Token 配置成功！'),
-                                    backgroundColor: Colors.green,
-                                  ),
-                                );
-                                // 启动轮询
-                                _startTelegramPolling();
-                                if (mounted) {
-                                  _showTelegramUrlInputDialog();
-                                }
-                              } else {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(
-                                    content: Text('保存 Bot Token 失败'),
-                                    backgroundColor: Colors.red,
-                                  ),
-                                );
-                              }
-                            }
-                          } else {
-                            _showBotTokenConfigDialog(); // 重新显示配置对话框
-                          }
-                        },
-                        child: Text('确定'),
-                      ),
-                    ],
-                  ),
-                );
-              }
-            },
-            child: const Text('保存'),
-          ),
-        ],
-      ),
-    );
-  }
-  
-  /// 显示 Telegram URL 输入对话框
-  void _showTelegramUrlInputDialog() {
-    final urlController = TextEditingController();
-    
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Telegram 媒体下载'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-               'Telegram Bot 下载功能说明：\n\n'
-               '由于 Telegram Bot API 限制，机器人只能下载发送给它的消息。\n\n'
-               '使用方法：\n'
-               '1. 在 Telegram 中找到您的机器人\n'
-               '2. 将要下载的媒体文件转发给机器人\n'
-               '3. 机器人会自动处理并下载文件\n\n'
-               '或者输入消息链接进行解析测试：',
-               style: TextStyle(fontSize: 14),
-             ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: urlController,
-              decoration: const InputDecoration(
-                 labelText: 'Telegram 消息链接（测试解析）',
-                 hintText: '例如: https://t.me/channel/123',
-                 border: OutlineInputBorder(),
-               ),
-              maxLines: 3,
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              _showBotTokenConfigDialog();
-            },
-            child: const Text('重新配置 Bot'),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              final url = urlController.text.trim();
-              if (url.isEmpty) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('请输入 Telegram 消息链接')),
-                );
-                return;
-              }
-              
-              Navigator.pop(context);
-              if (mounted) {
-                await _downloadFromTelegram(url);
-              }
-            },
-            child: const Text('解析测试'),
-          ),
-        ],
-      ),
-    );
-  }
-  
-  /// 从 Telegram 下载媒体
-  Future<void> _downloadFromTelegram(String url) async {
-    // 显示下载进度对话框
-    double progress = 0.0;
-    bool isDownloading = true;
-    
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setState) => AlertDialog(
-          title: const Text('正在下载'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              LinearProgressIndicator(value: progress),
-              const SizedBox(height: 16),
-              Text('${(progress * 100).toInt()}%'),
-            ],
-          ),
-          actions: isDownloading
-              ? []
-              : [
-                  TextButton(
-                    onPressed: () => Navigator.pop(context),
-                    child: const Text('确定'),
-                  ),
-                ],
-        ),
-      ),
-    );
-    
-    try {
-      final result = await _telegramService.downloadFromMessage(
-        url,
-        onProgress: (p) {
-          if (mounted) {
-            // 更新进度
-            progress = p;
-            // 这里需要更新对话框状态，但由于 StatefulBuilder 的限制，
-            // 我们可能需要使用其他方法来更新进度
-          }
-        },
-      );
-      
-      isDownloading = false;
-      if (mounted) {
-        try {
-          Navigator.pop(context); // 关闭进度对话框
-        } catch (e) {
-          // 忽略导航错误，可能是因为widget已经被销毁
-        }
-        
-        // 显示成功或失败通知
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(result.success ? '下载成功：${result.fileName}' : '下载失败：${result.error}'),
-            backgroundColor: result.success ? Colors.green : Colors.red,
-            action: result.success ? SnackBarAction(
-              label: '查看',
-              onPressed: () {
-                Navigator.of(context).push(
-                  MaterialPageRoute(builder: (context) => const MediaManagerPage()),
-                );
-              },
-            ) : null,
-          ),
-        );
-      }
-    } catch (e) {
-      isDownloading = false;
-      if (mounted) {
-        try {
-          Navigator.pop(context); // 关闭进度对话框
-        } catch (navError) {
-          // 忽略导航错误，可能是因为widget已经被销毁
-        }
-        
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('下载出错：$e'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-    }
-  }
-  
-  /// 启动Telegram消息轮询
-  Future<void> _startTelegramPolling() async {
-    if (_isPollingActive) return;
-    
-    // 从SharedPreferences加载最后处理的更新ID
-    await _loadLastUpdateId();
-    
-    _isPollingActive = true;
-    _telegramPollingTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
-      _checkForNewMessages();
-    });
-    
-    debugPrint('Telegram消息轮询已启动，最后更新ID: $_lastUpdateId');
-  }
-  
-  /// 停止Telegram消息轮询
-  Future<void> _stopTelegramPolling() async {
-    _telegramPollingTimer?.cancel();
-    _telegramPollingTimer = null;
-    _isPollingActive = false;
-    
-    // 保存最后处理的更新ID
-    await _saveLastUpdateId();
-    
-    debugPrint('Telegram消息轮询已停止，最后更新ID: $_lastUpdateId');
-  }
-  
-  /// 加载最后处理的更新ID
-  Future<void> _loadLastUpdateId() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      _lastUpdateId = prefs.getInt('telegram_last_update_id') ?? 0;
-    } catch (e) {
-      debugPrint('加载最后更新ID失败: $e');
-      _lastUpdateId = 0;
-    }
-  }
-  
-  /// 保存最后处理的更新ID
-  Future<void> _saveLastUpdateId() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setInt('telegram_last_update_id', _lastUpdateId);
-    } catch (e) {
-      debugPrint('保存最后更新ID失败: $e');
-    }
-  }
-  
-  /// 加载已下载的文件ID
-  Future<void> _loadDownloadedFileIds() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final downloadedIds = prefs.getStringList(_downloadedFileIdsKey) ?? [];
-      _downloadedFileIds.clear();
-      _downloadedFileIds.addAll(downloadedIds);
-      debugPrint('已加载${_downloadedFileIds.length}个已下载文件ID');
-    } catch (e) {
-      debugPrint('加载已下载文件ID失败: $e');
-    }
-  }
-  
-  /// 保存已下载的文件ID
-  Future<void> _saveDownloadedFileIds() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setStringList(_downloadedFileIdsKey, _downloadedFileIds.toList());
-    } catch (e) {
-      debugPrint('保存已下载文件ID失败: $e');
-    }
-  }
-  
-  /// 添加已下载的文件ID
-  Future<void> _addDownloadedFileId(String fileId) async {
-    if (fileId.isEmpty) return;
-    
-    if (_downloadedFileIds.add(fileId)) {
-      // 只有当集合发生变化时才保存
-      await _saveDownloadedFileIds();
-    }
-  }
-  
-  /// 检查新消息
-  Future<void> _checkForNewMessages() async {
-    try {
-      if (!_telegramService.isConfigured) {
-        await _stopTelegramPolling();
-        return;
-      }
-      
-      final updates = await _telegramService.getUpdates();
-      bool hasNewUpdates = false;
-      
-      for (final update in updates) {
-        final updateId = update['update_id'] as int;
-        
-        // 只处理新消息
-        if (updateId > _lastUpdateId) {
-          _lastUpdateId = updateId;
-          hasNewUpdates = true;
-          await _processUpdate(update);
-        }
-      }
-      
-      // 如果有新消息，保存最后更新ID
-      if (hasNewUpdates) {
-        await _saveLastUpdateId();
-      }
-    } catch (e) {
-      debugPrint('检查新消息失败: $e');
-    }
-  }
-  
-  /// 处理单个更新
-  Future<void> _processUpdate(Map<String, dynamic> update) async {
-    try {
-      final message = update['message'];
-      if (message == null) return;
-      
-      // 检查是否有媒体文件
-      final mediaFileId = _extractMediaFileId(message);
-      if (mediaFileId != null) {
-        await _downloadMediaFromBot(mediaFileId, message);
-      }
-    } catch (e) {
-      debugPrint('处理更新失败: $e');
-    }
-  }
-  
-  /// 提取媒体文件ID
-  String? _extractMediaFileId(Map<String, dynamic> message) {
-    // 检查照片
-    if (message['photo'] != null) {
-      final photos = message['photo'] as List;
-      if (photos.isNotEmpty) {
-        // 获取最大尺寸的照片
-        final largestPhoto = photos.reduce((a, b) => 
-          (a['file_size'] ?? 0) > (b['file_size'] ?? 0) ? a : b);
-        return largestPhoto['file_id'];
-      }
-    }
-    
-    // 检查视频
-    if (message['video'] != null) {
-      return message['video']['file_id'];
-    }
-    
-    // 检查动画(GIF)
-    if (message['animation'] != null) {
-      return message['animation']['file_id'];
-    }
-    
-    // 检查文档(可能是视频或图片)
-    if (message['document'] != null) {
-      final document = message['document'];
-      final mimeType = document['mime_type'] ?? '';
-      if (mimeType.startsWith('image/') || mimeType.startsWith('video/')) {
-        return document['file_id'];
-      }
-    }
-    
-    return null;
-  }
-  
-  /// 从Bot下载媒体文件
-  Future<void> _downloadMediaFromBot(String fileId, Map<String, dynamic> message) async {
-    // Determine media type before starting download to control progress indicator
-    MediaType? mediaType;
-    if (message['video'] != null || message['animation'] != null) {
-      mediaType = MediaType.video;
-    } else if (message['photo'] != null) {
-      mediaType = MediaType.image;
-    } else if (message['document'] != null) {
-      final document = message['document'];
-      final mimeType = document['mime_type'] ?? '';
-      if (mimeType.startsWith('video/')) {
-        mediaType = MediaType.video;
-      } else if (mimeType.startsWith('image/')) {
-        mediaType = MediaType.image;
-      }
-    }
-
-    if (mediaType == MediaType.video) {
-      _isDownloadingVideo.value = true;
-      _videoDownloadProgress.value = 0.0;
-    }
-
-    try {
-      // 检查文件ID是否已经下载过
-      if (_downloadedFileIds.contains(fileId)) {
-        debugPrint('文件已存在，跳过下载: $fileId');
-        return;
-      }
-      
-      debugPrint('开始下载媒体文件: $fileId');
-      
-      final result = await _telegramService.downloadFileById(
-        fileId,
-        onProgress: (progress) {
-          debugPrint('下载进度: ${(progress * 100).toStringAsFixed(1)}%');
-          if (mediaType == MediaType.video) { // Use the inferred mediaType
-             _videoDownloadProgress.value = progress;
-          }
-        },
-      );
-      
-      if (result.success && mounted) {
-        // 如果是已存在的文件，显示不同的通知
-        if (result.isExisting) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('文件已存在：${result.fileName}'),
-              backgroundColor: Colors.blue,
-            ),
-          );
-          debugPrint('媒体文件已存在: ${result.fileName}');
-        } else {
-          // 显示成功通知
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('自动下载成功：${result.fileName}'),
-              backgroundColor: Colors.green,
-              action: SnackBarAction(
-                label: '查看',
-                onPressed: () {
-                  Navigator.of(context).push(
-                    MaterialPageRoute(builder: (context) => const MediaManagerPage()),
-                  );
-                },
-              ),
-            ),
-          );
-          
-          // 刷新媒体库
-          await _refreshMediaLibrary();
-          
-          debugPrint('媒体文件下载成功: ${result.fileName}');
-        }
-        
-        // 将文件ID添加到已下载集合中
-        await _addDownloadedFileId(fileId);
-      } else {
-        debugPrint('媒体文件下载失败: ${result.error}');
-      }
-    } catch (e) {
-      debugPrint('下载媒体文件异常: $e');
-    } finally {
-      if (mediaType == MediaType.video) {
-        _isDownloadingVideo.value = false;
-        _videoDownloadProgress.value = null;
-      }
-    }
-  }
-  
-  /// 刷新媒体库
-  Future<void> _refreshMediaLibrary() async {
-    try {
-      // 这里可以添加刷新媒体库的逻辑
-      // 例如通知MediaManagerPage刷新数据
-    } catch (e) {
-      debugPrint('刷新媒体库失败: $e');
-    }
-  }
-
   /// 显示导入导出菜单
   void _showExportImportMenu() {
     showModalBottomSheet(
