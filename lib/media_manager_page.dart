@@ -83,7 +83,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   Set<String> _initialAssetIds = {};
   /// 是否正在自动处理，防止重复
   bool _isAutoProcessing = false;
-  /// 静默导入：仅复制到应用媒体库，不删除系统相册原件。为 true 时不会弹出系统确认框
+  /// 静默导入开关：true=自动检测并导入手机相册/视频中的新媒体，无需确认；false=完全关闭自动导入，不导入任何新媒体
   bool _autoImportSilentMode = true;
 
   @override
@@ -2639,35 +2639,44 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         return StatefulBuilder(
           builder: (context, setModalState) {
             return ConstrainedBox(
-              constraints: const BoxConstraints(maxHeight: 340),
+              constraints: const BoxConstraints(maxHeight: 460),
               child: Container(
                 width: dialogWidth,
-                padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Padding(
-                      padding: EdgeInsets.only(top: 2, bottom: 2),
-                      child: Text(
-                        '媒体管理选项',
-                        style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
-                      ),
-                    ),
                     Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 2),
-                      child: Row(
-                        children: [
-                          const Text('静默导入', style: TextStyle(fontSize: 14)),
-                          const SizedBox(width: 8),
-                          Switch(
-                            value: _autoImportSilentMode,
-                            onChanged: (v) async {
-                              setState(() => _autoImportSilentMode = v);
-                              setModalState(() {});
-                              await _saveSettings();
-                            },
-                          ),
-                        ],
+                      padding: const EdgeInsets.only(top: 4, bottom: 12),
+                      child: SizedBox(
+                        height: 48,
+                        child: Stack(
+                          clipBehavior: Clip.none,
+                          alignment: Alignment.center,
+                          children: [
+                            const Center(
+                              child: Text(
+                                '媒体管理选项',
+                                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                              ),
+                            ),
+                            Positioned(
+                              right: 0,
+                              top: 0,
+                              bottom: 0,
+                              child: Center(
+                                child: Switch(
+                                  value: _autoImportSilentMode,
+                                  onChanged: (v) async {
+                                    setState(() => _autoImportSilentMode = v);
+                                    setModalState(() {});
+                                    await _saveSettings();
+                                  },
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                     const Divider(height: 1),
@@ -4164,14 +4173,16 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     }
   }
 
-  /// 初始化自动导入监听
+  /// 初始化自动导入监听。使用 RequestType.common + hasAll 覆盖所有相册（拍照/录像/下载/截屏/传输等）
   Future<void> _initPhotoAutoImport() async {
     try {
-      // 获取当前所有图片/视频的assetId快照
-      final List<AssetPathEntity> imgPaths = await PhotoManager.getAssetPathList(type: RequestType.image);
-      final List<AssetPathEntity> vidPaths = await PhotoManager.getAssetPathList(type: RequestType.video);
+      // 获取所有相册中的图片+视频（含 Recent/Camera/Downloads/Screenshots 等）
+      final List<AssetPathEntity> paths = await PhotoManager.getAssetPathList(
+        type: RequestType.common,
+        hasAll: true,
+      );
       final List<AssetEntity> allAssets = [];
-      for (final p in [...imgPaths, ...vidPaths]) {
+      for (final p in paths) {
         allAssets.addAll(await p.getAssetListRange(start: 0, end: 100000));
       }
       _initialAssetIds = allAssets.map((e) => e.id).toSet();
@@ -4188,14 +4199,17 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   /// 媒体库变更回调
   Future<void> _onPhotoLibraryChanged([MethodCall? call]) async {
     print('[自动导入] 媒体库变更回调被触发');
+    if (!_autoImportSilentMode) return; // 静默导入关闭时，不导入任何新媒体
     if (_isAutoProcessing) return;
     _isAutoProcessing = true;
     try {
-      // 获取最新所有图片/视频assetId
-      final List<AssetPathEntity> imgPaths = await PhotoManager.getAssetPathList(type: RequestType.image);
-      final List<AssetPathEntity> vidPaths = await PhotoManager.getAssetPathList(type: RequestType.video);
+      // 获取所有相册中的图片+视频（含拍照/录像/下载/截屏/传输等）
+      final List<AssetPathEntity> paths = await PhotoManager.getAssetPathList(
+        type: RequestType.common,
+        hasAll: true,
+      );
       final List<AssetEntity> allAssets = [];
-      for (final p in [...imgPaths, ...vidPaths]) {
+      for (final p in paths) {
         allAssets.addAll(await p.getAssetListRange(start: 0, end: 100000));
       }
       final Set<String> currentIds = allAssets.map((e) => e.id).toSet();
@@ -4218,26 +4232,20 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     }
   }
 
-  /// 自动导入媒体。静默模式下仅复制不删除原件（无确认框）；非静默模式会尝试删除原件（会弹出系统确认框）
+  /// 自动导入媒体。静默导入开启时仅复制到应用媒体库，不删除原件（无确认框）
   Future<void> _autoImportAndDeleteAsset(AssetEntity asset) async {
     try {
       final file = await asset.file;
       if (file == null) return;
       // 仅处理图片/视频
       if (asset.type != AssetType.image && asset.type != AssetType.video) return;
-      // 导入到应用媒体库（静默：无进度框、无成功提示）
+      // 导入到应用媒体库（静默：无进度框、无成功提示，原件保留）
       await _saveMultipleMediaToAppDirectory(
         [file],
         asset.type == AssetType.image ? MediaType.image : MediaType.video,
         silent: true,
       );
-      // 静默模式：不删除原件，避免 Android 系统弹出"要允许变化删除这张照片吗"确认框
-      if (!_autoImportSilentMode) {
-        final bool deleted = await PhotoManager.editor.deleteWithIds([asset.id]) == 1;
-        print('自动导入并彻底删除: ${file.path}，删除结果: $deleted');
-      } else {
-        print('自动导入（静默）: ${file.path}，原件已保留');
-      }
+      print('自动导入（静默）: ${file.path}，原件已保留');
     } catch (e) {
       print('自动导入媒体失败: $e');
     }

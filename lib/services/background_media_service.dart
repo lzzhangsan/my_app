@@ -28,6 +28,7 @@ class BackgroundMediaService {
   bool _isRunning = false;
   Set<String> _initialAssetIds = {};
   Timer? _healthCheckTimer;
+  Timer? _mediaScanTimer;
   
   bool get isInitialized => _isInitialized;
   bool get isRunning => _isRunning;
@@ -90,12 +91,12 @@ class BackgroundMediaService {
     try {
       final service = FlutterBackgroundService();
       
-      // 配置后台服务
+      // 配置后台服务。前台模式已暂时禁用（曾导致闪退），静默导入需打开媒体页时触发
       await service.configure(
         androidConfiguration: AndroidConfiguration(
           onStart: onStart,
           autoStart: true,
-          isForegroundMode: false, // 暂时禁用前台服务模式
+          isForegroundMode: false,
         ),
         iosConfiguration: IosConfiguration(
           autoStart: true,
@@ -163,6 +164,12 @@ class BackgroundMediaService {
       PhotoManager.addChangeCallback(_onPhotoLibraryChanged);
       PhotoManager.startChangeNotify();
       
+      // 每 60 秒轮询一次作为补充，确保及时检测（系统回调有时会延迟）
+      _instance._mediaScanTimer?.cancel();
+      _instance._mediaScanTimer = Timer.periodic(const Duration(seconds: 60), (_) {
+        _onPhotoLibraryChanged();
+      });
+      
       if (kDebugMode) {
         print('媒体库监听已启动，初始媒体数量: ${_instance._initialAssetIds.length}');
       }
@@ -176,17 +183,17 @@ class BackgroundMediaService {
     }
   }
 
-  /// 捕获初始媒体快照
+  /// 捕获初始媒体快照。使用 RequestType.common + hasAll 覆盖所有相册（拍照/录像/下载/截屏/传输等）
   static Future<void> _captureInitialMediaSnapshot() async {
     try {
-      final List<AssetPathEntity> imgPaths = await PhotoManager.getAssetPathList(type: RequestType.image);
-      final List<AssetPathEntity> vidPaths = await PhotoManager.getAssetPathList(type: RequestType.video);
-      
+      final List<AssetPathEntity> paths = await PhotoManager.getAssetPathList(
+        type: RequestType.common,
+        hasAll: true,
+      );
       final List<AssetEntity> allAssets = [];
-      for (final path in [...imgPaths, ...vidPaths]) {
+      for (final path in paths) {
         allAssets.addAll(await path.getAssetListRange(start: 0, end: 100000));
       }
-      
       _instance._initialAssetIds = allAssets.map((e) => e.id).toSet();
       
       if (kDebugMode) {
@@ -206,15 +213,24 @@ class BackgroundMediaService {
     }
     
     try {
-      // 获取当前所有媒体
-      final List<AssetPathEntity> imgPaths = await PhotoManager.getAssetPathList(type: RequestType.image);
-      final List<AssetPathEntity> vidPaths = await PhotoManager.getAssetPathList(type: RequestType.video);
-      
+      // 静默导入关闭时，不导入任何新媒体
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.reload();
+      final autoImportEnabled = prefs.getBool('auto_import_silent') ?? true;
+      if (!autoImportEnabled) {
+        if (kDebugMode) print('[后台服务] 静默导入已关闭，跳过自动导入');
+        return;
+      }
+
+      // 获取所有相册中的图片+视频（含拍照/录像/下载/截屏/传输等）
+      final List<AssetPathEntity> paths = await PhotoManager.getAssetPathList(
+        type: RequestType.common,
+        hasAll: true,
+      );
       final List<AssetEntity> allAssets = [];
-      for (final path in [...imgPaths, ...vidPaths]) {
+      for (final path in paths) {
         allAssets.addAll(await path.getAssetListRange(start: 0, end: 100000));
       }
-      
       final Set<String> currentAssetIds = allAssets.map((e) => e.id).toSet();
       
       // 找出新增的媒体
@@ -251,21 +267,10 @@ class BackgroundMediaService {
             print('[后台服务] 处理新增媒体: ${asset.title}');
           }
           
-          // 导入媒体到应用媒体库（含查重）
+          // 导入媒体到应用媒体库（含查重），静默模式仅复制不删除原件
           final imported = await _importMediaToApp(asset, databaseService);
-          
-          if (imported) {
-            // 静默模式下不删除原件，避免 Android 弹出系统确认框
-            // 后台 isolate 的 SharedPreferences 需 reload 才能拿到主 isolate 的最新设置
-            final prefs = await SharedPreferences.getInstance();
-            await prefs.reload();
-            final silent = prefs.getBool('auto_import_silent') ?? true;
-            if (!silent) {
-              await _deleteLocalMedia(asset);
-              if (kDebugMode) print('[后台服务] 成功导入并删除媒体: ${asset.title}');
-            } else if (kDebugMode) {
-              print('[后台服务] 成功导入媒体（静默，原件已保留）: ${asset.title}');
-            }
+          if (imported && kDebugMode) {
+            print('[后台服务] 成功导入媒体（静默，原件已保留）: ${asset.title}');
           }
         } catch (e) {
           if (kDebugMode) {
@@ -380,6 +385,7 @@ class BackgroundMediaService {
     try {
       _isRunning = false;
       _healthCheckTimer?.cancel();
+      _mediaScanTimer?.cancel();
       
       // 停止媒体库监听
       PhotoManager.removeChangeCallback(_onPhotoLibraryChanged);
