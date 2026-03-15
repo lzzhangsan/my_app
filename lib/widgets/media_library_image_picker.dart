@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'dart:io';
 import '../core/service_locator.dart';
+import '../services/logger.dart';
 import '../services/database_service.dart';
 import '../models/media_type.dart';
 
@@ -37,7 +38,7 @@ class _MediaLibraryImagePickerState extends State<MediaLibraryImagePicker> {
     });
     try {
       final items = await _databaseService.getMediaItems(_currentDirectory);
-      print('加载媒体项: $_currentDirectory, 共 ${items.length} 项');
+      Logger.log('加载媒体项: $_currentDirectory, 共 ${items.length} 项');
       
       setState(() {
         // 分离图片和文件夹
@@ -46,7 +47,7 @@ class _MediaLibraryImagePickerState extends State<MediaLibraryImagePicker> {
         _isLoading = false;
       });
     } catch (e) {
-      print('加载媒体项时出错: $e');
+      Logger.log('加载媒体项时出错: $e');
       setState(() {
         _isLoading = false;
       });

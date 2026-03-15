@@ -89,14 +89,11 @@ class _VideoControlsOverlayState extends State<VideoControlsOverlay> {
       return SizedBox.shrink();
     }
 
-    return Positioned(
-      bottom: 0, // 紧贴屏幕最下沿
-      left: 0,
-      right: 0,
+    return Material(
+      type: MaterialType.transparency,
       child: Container(
-        height: 40, // 稍微增加高度以便操作
-        // 移除背景色，只保留关键控制元素
-        padding: EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+        height: 28,
+        padding: EdgeInsets.symmetric(horizontal: 8, vertical: 2),
         decoration: BoxDecoration(
           gradient: LinearGradient(
             begin: Alignment.topCenter,
@@ -110,7 +107,6 @@ class _VideoControlsOverlayState extends State<VideoControlsOverlay> {
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            // 播放/暂停按钮
             Container(
               decoration: BoxDecoration(
                 color: Colors.black.withOpacity(0.4),
@@ -120,10 +116,10 @@ class _VideoControlsOverlayState extends State<VideoControlsOverlay> {
                 icon: Icon(
                   (controller.value.isInitialized && controller.value.isPlaying) ? Icons.pause : Icons.play_arrow,
                   color: Colors.white,
-                  size: 18,
+                  size: 12,
                 ),
-                padding: EdgeInsets.all(4),
-                constraints: BoxConstraints(minWidth: 32, minHeight: 32),
+                padding: EdgeInsets.all(2),
+                constraints: BoxConstraints(minWidth: 22, minHeight: 22),
                 onPressed: controller.value.isInitialized ? () {
                   setState(() {
                     if (controller.value.isPlaying) {
@@ -135,42 +131,49 @@ class _VideoControlsOverlayState extends State<VideoControlsOverlay> {
                 } : null,
               ),
             ),
-            SizedBox(width: 8),
+            SizedBox(width: 4),
             Container(
-              padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              padding: EdgeInsets.symmetric(horizontal: 4, vertical: 1),
               decoration: BoxDecoration(
                 color: Colors.black.withOpacity(0.4),
-                borderRadius: BorderRadius.circular(4),
+                borderRadius: BorderRadius.circular(3),
               ),
               child: Text(
                 _formatDuration(position),
-                style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w500),
+                style: TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.w500),
               ),
             ),
             Expanded(
-              child: Slider(
-                value: duration.inMilliseconds > 0 ? position.inMilliseconds.toDouble().clamp(0.0, duration.inMilliseconds.toDouble()) : 0.0,
-                min: 0.0,
-                max: duration.inMilliseconds > 0 ? duration.inMilliseconds.toDouble() : 1.0,
-                activeColor: Colors.white,
-                inactiveColor: Colors.white.withOpacity(0.3),
-                thumbColor: Colors.white,
-                onChanged: controller.value.isInitialized ? (value) {
-                  final newPosition = Duration(milliseconds: value.toInt());
-                  controller.seekTo(newPosition);
-                  setState(() {}); // 强制更新UI
-                } : null,
+              child: SliderTheme(
+                data: SliderTheme.of(context).copyWith(
+                  trackHeight: 4,
+                  thumbShape: RoundSliderThumbShape(enabledThumbRadius: 6),
+                  overlayShape: RoundSliderOverlayShape(overlayRadius: 12),
+                  activeTrackColor: Colors.white,
+                  inactiveTrackColor: Colors.white.withOpacity(0.3),
+                  thumbColor: Colors.white,
+                ),
+                child: Slider(
+                  value: duration.inMilliseconds > 0 ? position.inMilliseconds.toDouble().clamp(0.0, duration.inMilliseconds.toDouble()) : 0.0,
+                  min: 0.0,
+                  max: duration.inMilliseconds > 0 ? duration.inMilliseconds.toDouble() : 1.0,
+                  onChanged: controller.value.isInitialized ? (value) {
+                    final newPosition = Duration(milliseconds: value.toInt());
+                    controller.seekTo(newPosition);
+                    setState(() {});
+                  } : null,
+                ),
               ),
             ),
             Container(
-              padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              padding: EdgeInsets.symmetric(horizontal: 4, vertical: 1),
               decoration: BoxDecoration(
                 color: Colors.black.withOpacity(0.4),
-                borderRadius: BorderRadius.circular(4),
+                borderRadius: BorderRadius.circular(3),
               ),
               child: Text(
                 _formatDuration(duration),
-                style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w500),
+                style: TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.w500),
               ),
             ),
           ],

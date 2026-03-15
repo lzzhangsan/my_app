@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'logger.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
@@ -84,7 +85,7 @@ class ImagePickerService {
       
       return savedImage.path;
     } catch (e) {
-      print('选择图片时出错: $e');
+      Logger.log('选择图片时出错: $e');
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('选择图片时出错，请重试\n${e.toString()}')),
@@ -138,7 +139,7 @@ class ImagePickerService {
       await File(pickedFile.path).copy(savedVideo.path);
       return savedVideo.path;
     } catch (e) {
-      print('选择视频时出错: $e');
+      Logger.log('选择视频时出错: $e');
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('选择视频时出错，请重试\n${e.toString()}')),

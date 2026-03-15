@@ -9,6 +9,7 @@ import 'package:archive/archive_io.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show kIsWeb, ValueNotifier;
+import 'services/logger.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
@@ -98,7 +99,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         _initPhotoAutoImport(); // 初始化自动导入监听
       });
     } else {
-      print("Web environment: Skipping database and permission operations in MediaManagerPage");
+      Logger.log("Web environment: Skipping database and permission operations in MediaManagerPage");
       // 为Web环境设置默认状态
       if (mounted) {
         setState(() {
@@ -2910,7 +2911,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           updatedCount++;
           processedCount++;
         } catch (e) {
-          print('处理文件时出错: ${item['name']}, 错误: $e');
+          Logger.log('处理文件时出错: ${item['name']}, 错误: $e');
           errorCount++;
           processedCount++;
         }
@@ -2928,7 +2929,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
               try {
                 await _databaseService.updateMediaItemDirectory(duplicate['id'], 'recycle_bin');
               } catch (e) {
-                print('移动重复文件到回收站时出错: ${duplicate['name']}, 错误: $e');
+                Logger.log('移动重复文件到回收站时出错: ${duplicate['name']}, 错误: $e');
                 errorCount++;
               }
             }
@@ -2961,7 +2962,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         await _loadMediaItems();
       }
     } catch (e) {
-      print('扫描文件哈希时出错: $e');
+      Logger.log('扫描文件哈希时出错: $e');
       if (mounted) {
         Navigator.of(context).pop(); // 关闭进度对话框
         ScaffoldMessenger.of(context).showSnackBar(
@@ -3080,7 +3081,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         }
       }
     } catch (e) {
-      print('递归获取媒体项时出错: $e');
+      Logger.log('递归获取媒体项时出错: $e');
     }
     
     return allItems;
@@ -4146,7 +4147,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           }
 
         } catch (e) {
-          print('复制文件失败: ${entity.path} -> $newPath, 错误: $e');
+          Logger.log('复制文件失败: ${entity.path} -> $newPath, 错误: $e');
           // 继续处理其他文件
         }
       }
@@ -4190,15 +4191,15 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       // 注册媒体库变化监听
       PhotoManager.addChangeCallback(_onPhotoLibraryChanged);
       PhotoManager.startChangeNotify(); // 必须调用，确保监听生效
-      print('已注册媒体库变更监听，初始媒体数量: ${_initialAssetIds.length}');
+      Logger.log('已注册媒体库变更监听，初始媒体数量: ${_initialAssetIds.length}');
     } catch (e) {
-      print('初始化自动导入监听失败: $e');
+      Logger.log('初始化自动导入监听失败: $e');
     }
   }
 
   /// 媒体库变更回调
   Future<void> _onPhotoLibraryChanged([MethodCall? call]) async {
-    print('[自动导入] 媒体库变更回调被触发');
+    Logger.log('[自动导入] 媒体库变更回调被触发');
     if (!_autoImportSilentMode) return; // 静默导入关闭时，不导入任何新媒体
     if (_isAutoProcessing) return;
     _isAutoProcessing = true;
@@ -4216,7 +4217,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       // 找出新增的assetId
       final Set<String> newIds = currentIds.difference(_initialAssetIds);
       if (newIds.isNotEmpty) {
-        print('检测到新增媒体: ${newIds.length} 个');
+        Logger.log('检测到新增媒体: ${newIds.length} 个');
         // 按 id 去重：同一图片可能出现在多个相册（Recent/Camera/Screenshots），避免重复导入
         for (final id in newIds) {
           final asset = allAssets.firstWhere((e) => e.id == id);
@@ -4226,7 +4227,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         _initialAssetIds = currentIds;
       }
     } catch (e) {
-      print('自动导入处理异常: $e');
+      Logger.log('自动导入处理异常: $e');
     } finally {
       _isAutoProcessing = false;
     }
@@ -4245,9 +4246,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         asset.type == AssetType.image ? MediaType.image : MediaType.video,
         silent: true,
       );
-      print('自动导入（静默）: ${file.path}，原件已保留');
+      Logger.log('自动导入（静默）: ${file.path}，原件已保留');
     } catch (e) {
-      print('自动导入媒体失败: $e');
+      Logger.log('自动导入媒体失败: $e');
     }
   }
 

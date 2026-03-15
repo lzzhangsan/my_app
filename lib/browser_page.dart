@@ -9,10 +9,10 @@ import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_downloader/flutter_downloader.dart';
 import 'package:dio/dio.dart';
+import 'package:dio/io.dart';
 import 'package:uuid/uuid.dart';
 import 'package:crypto/crypto.dart';
 import 'dart:convert';
-import 'dart:math';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/foundation.dart';
 import 'package:reorderable_grid_view/reorderable_grid_view.dart';
@@ -26,8 +26,8 @@ import 'services/database_service.dart';
 import 'utils/export_import_error_utils.dart';
 import 'models/media_item.dart';
 import 'models/media_type.dart';
-import 'main.dart';
 import 'media_manager_page.dart';
+import 'services/logger.dart';
 import 'services/network_service.dart';
 
 // Top-level function for ZIP encoding to avoid blocking UI
@@ -2014,13 +2014,28 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     return false;
   }
 
+  Dio _createDownloadDio() {
+    final dio = Dio(BaseOptions(
+      connectTimeout: const Duration(seconds: 15),
+      receiveTimeout: const Duration(seconds: 30),
+      sendTimeout: const Duration(seconds: 15),
+      followRedirects: true,
+      maxRedirects: 5,
+    ));
+    (dio.httpClientAdapter as IOHttpClientAdapter).createHttpClient = () {
+      final client = HttpClient();
+      client.badCertificateCallback = (_, __, ___) => true;
+      return client;
+    };
+    return dio;
+  }
+
   Future<File?> _downloadFile(String url, MediaType mediaType, {CancelToken? cancelToken, void Function(double)? onProgress}) async {
     try {
       final absoluteUrl = _toAbsoluteUrl(url);
       final downloadUrl = _getCleanMediaUrl(absoluteUrl);
       debugPrint('开始下载文件，URL: $downloadUrl');
-      final networkService = NetworkService();
-      await networkService.initialize();
+      final downloadDio = _createDownloadDio();
 
       final appDir = await getApplicationDocumentsDirectory();
       final mediaDir = Directory('${appDir.path}/media');
@@ -2060,7 +2075,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         try {
           final referer = refererIdx < refererCandidates.length ? refererCandidates[refererIdx] : refererCandidates.last;
           debugPrint('下载尝试 ${retryCount + 1}/$maxRetries, Referer: $referer');
-          final response = await networkService.dio.download(
+          final response = await downloadDio.download(
             urlToTry,
             filePath,
             deleteOnError: true,
@@ -2083,7 +2098,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
               }
             },
           );
-          if (extension == '.m3u8') await _handleM3u8Download(filePath, downloadUrl);
+          if (extension == '.m3u8') await _handleM3u8Download(filePath, downloadUrl, downloadDio);
           break;
         } catch (e, stackTrace) {
           retryCount++;
@@ -2168,17 +2183,23 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     }
   }
 
-  Future<void> _handleM3u8Download(String m3u8Path, String url) async {
-    final networkService = NetworkService();
-    await networkService.initialize();
-    String content = (await networkService.dio.get(url)).data.toString();
+  Future<void> _handleM3u8Download(String m3u8Path, String url, [Dio? dio]) async {
+    Dio http;
+    if (dio != null) {
+      http = dio;
+    } else {
+      final ns = NetworkService();
+      await ns.initialize();
+      http = ns.dio;
+    }
+    String content = (await http.get(url)).data.toString();
     Uri baseUri = Uri.parse(url);
     final lines = content.split('\n').map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
     if (lines.any((l) => l.contains('EXT-X-STREAM-INF')) && !lines.any((l) => l.contains('EXTINF'))) {
       for (int i = 0; i < lines.length; i++) {
         if (lines[i].contains('EXT-X-STREAM-INF') && i + 1 < lines.length && !lines[i + 1].startsWith('#')) {
           final mediaUrl = lines[i + 1].startsWith('http') ? lines[i + 1] : baseUri.resolve(lines[i + 1]).toString();
-          content = (await networkService.dio.get(mediaUrl)).data.toString();
+          content = (await http.get(mediaUrl)).data.toString();
           baseUri = Uri.parse(mediaUrl);
           break;
         }
@@ -2200,7 +2221,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       final sink = file.openWrite();
       final referer = _getMediaReferer(url);
       for (final segmentUrl in segments) {
-        final segmentResponse = await networkService.dio.get(
+        final segmentResponse = await http.get(
           segmentUrl,
           options: Options(
             responseType: ResponseType.bytes,
@@ -2679,7 +2700,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
               IconButton(
                 icon: const Icon(Icons.photo_library),
                 onPressed: () {
-                  print('[BrowserPage] 媒体库按钮被点击');
+                  Logger.log('[BrowserPage] 媒体库按钮被点击');
                   Navigator.of(context).push(
                     MaterialPageRoute(builder: (context) => const MediaManagerPage()),
                   );

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import '../services/logger.dart';
 import '../services/performance_service.dart';
 import '../performance_monitor_page.dart';
 
@@ -82,7 +83,7 @@ class _PerformanceIndicatorState extends State<PerformanceIndicator>
       }
     } catch (e) {
       // 静默处理错误，不影响主应用
-      print('性能指示器初始化失败: $e');
+      Logger.log('性能指示器初始化失败: $e');
     }
   }
 

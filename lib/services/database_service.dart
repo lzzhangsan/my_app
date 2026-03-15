@@ -2,6 +2,7 @@
 // 重构后的数据库服务 - 提供更好的性能和错误处理
 
 import 'package:flutter/foundation.dart';
+import 'logger.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -77,7 +78,7 @@ class DatabaseService {
       _startPerformanceMonitoring();
       
       if (kDebugMode) {
-        print('DatabaseService: 数据库初始化完成');
+        Logger.log('DatabaseService: 数据库初始化完成');
       }
     } catch (e, stackTrace) {
       _handleError('数据库初始化失败', e, stackTrace);
@@ -106,12 +107,12 @@ class DatabaseService {
       await db.rawQuery('PRAGMA auto_vacuum = INCREMENTAL');
       
       if (kDebugMode) {
-        print('数据库配置成功应用');
+        Logger.log('数据库配置成功应用');
       }
     } catch (e, stackTrace) {
       _handleError('配置数据库连接失败', e, stackTrace);
       if (kDebugMode) {
-        print('配置数据库连接失败: $e');
+        Logger.log('配置数据库连接失败: $e');
       }
       rethrow;
     }
@@ -366,7 +367,7 @@ class DatabaseService {
       )
     ''');
     if (kDebugMode) {
-      print('DatabaseService: 升级数据库从版本 $oldVersion 到 $newVersion');
+      Logger.log('DatabaseService: 升级数据库从版本 $oldVersion 到 $newVersion');
     }
     
     await db.transaction((txn) async {
@@ -399,11 +400,11 @@ class DatabaseService {
           await db.execute('ALTER TABLE media_items ADD COLUMN telegram_file_id TEXT');
           await db.execute('CREATE INDEX idx_media_items_telegram_file_id ON media_items(telegram_file_id)');
           if (kDebugMode) {
-            print('已添加telegram_file_id列到media_items表');
+            Logger.log('已添加telegram_file_id列到media_items表');
           }
         } catch (e) {
           if (kDebugMode) {
-            print('添加telegram_file_id列失败: $e');
+            Logger.log('添加telegram_file_id列失败: $e');
           }
         }
         break;
@@ -412,11 +413,11 @@ class DatabaseService {
         try {
           await db.execute('ALTER TABLE document_settings ADD COLUMN position_locked INTEGER DEFAULT 1');
           if (kDebugMode) {
-            print('已添加position_locked列到document_settings表');
+            Logger.log('已添加position_locked列到document_settings表');
           }
         } catch (e) {
           if (kDebugMode) {
-            print('添加position_locked列失败: $e');
+            Logger.log('添加position_locked列失败: $e');
           }
         }
         break;
@@ -439,20 +440,20 @@ class DatabaseService {
       
       if (!hasPositionLocked) {
         if (kDebugMode) {
-          print('🔧 [DB] document_settings表缺少position_locked字段，正在添加...');
+          Logger.log('🔧 [DB] document_settings表缺少position_locked字段，正在添加...');
         }
         await _database!.execute('ALTER TABLE document_settings ADD COLUMN position_locked INTEGER DEFAULT 1');
         if (kDebugMode) {
-          print('✅ [DB] 已成功添加position_locked字段到document_settings表');
+          Logger.log('✅ [DB] 已成功添加position_locked字段到document_settings表');
         }
       } else {
         if (kDebugMode) {
-          print('✅ [DB] document_settings表已存在position_locked字段');
+          Logger.log('✅ [DB] document_settings表已存在position_locked字段');
         }
       }
     } catch (e) {
       if (kDebugMode) {
-        print('❌ [DB] 检查或添加position_locked字段失败: $e');
+        Logger.log('❌ [DB] 检查或添加position_locked字段失败: $e');
       }
       // 不抛出异常，避免影响数据库初始化
     }
@@ -464,7 +465,7 @@ class DatabaseService {
       final tables = await _database!.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name='canvases'");
       if (tables.isEmpty) {
         if (kDebugMode) {
-          print('🔧 [DB] canvases表不存在，正在创建...');
+          Logger.log('🔧 [DB] canvases表不存在，正在创建...');
         }
         await _database!.execute('''
           CREATE TABLE IF NOT EXISTS canvases(
@@ -487,7 +488,7 @@ class DatabaseService {
           )
         ''');
         if (kDebugMode) {
-          print('✅ [DB] canvases表创建完成');
+          Logger.log('✅ [DB] canvases表创建完成');
         }
         // 创建索引（如果未创建）
         try {
@@ -495,12 +496,12 @@ class DatabaseService {
         } catch (_) {}
       } else {
         if (kDebugMode) {
-          print('✅ [DB] canvases表已存在');
+          Logger.log('✅ [DB] canvases表已存在');
         }
       }
     } catch (e) {
       if (kDebugMode) {
-        print('❌ [DB] 检查或创建canvases表失败: $e');
+        Logger.log('❌ [DB] 检查或创建canvases表失败: $e');
       }
     }
   }
@@ -534,7 +535,7 @@ class DatabaseService {
       }
     } catch (e) {
       if (kDebugMode) {
-        print('DatabaseService: 性能分析失败 - $e');
+        Logger.log('DatabaseService: 性能分析失败 - $e');
       }
     }
   }
@@ -579,11 +580,11 @@ class DatabaseService {
       _isInitialized = false;
       
       if (kDebugMode) {
-        print('DatabaseService: 资源清理完成');
+        Logger.log('DatabaseService: 资源清理完成');
       }
     } catch (e) {
       if (kDebugMode) {
-        print('DatabaseService dispose error: $e');
+        Logger.log('DatabaseService dispose error: $e');
       }
     }
   }
@@ -623,7 +624,7 @@ class DatabaseService {
             file_hash TEXT
           )
         ''');
-        print('已创建media_items表');
+        Logger.log('已创建media_items表');
       } else {
         // 检查file_hash列是否存在
         final columns = await db.rawQuery("PRAGMA table_info(media_items);");
@@ -632,9 +633,9 @@ class DatabaseService {
         if (!hasFileHash) {
           // 添加file_hash列
           await db.execute('ALTER TABLE media_items ADD COLUMN file_hash TEXT;');
-          print('已添加file_hash列到media_items表');
+          Logger.log('已添加file_hash列到media_items表');
         }
-        print('media_items表已存在');
+        Logger.log('media_items表已存在');
       }
     } catch (e, stackTrace) {
       _handleError('确保媒体项表存在失败', e, stackTrace);
@@ -703,7 +704,7 @@ class DatabaseService {
     try {
       final db = await database;
       if (kDebugMode) {
-        print('正在插入媒体项: ${item['name']}');
+        Logger.log('正在插入媒体项: ${item['name']}');
       }
       
       // Ensure required fields are present
@@ -719,7 +720,7 @@ class DatabaseService {
       );
       
       if (kDebugMode) {
-        print('插入结果: $result');
+        Logger.log('插入结果: $result');
       }
       return result;
     } catch (e, stackTrace) {
@@ -1060,7 +1061,7 @@ class DatabaseService {
   /// 允许部分图片/音频文件缺失（已删除或路径无效），缺失文件会跳过并写入 missing_audio_files.txt
   Future<String> exportDirectoryData({ValueNotifier<String>? progressNotifier, String? outputDirectory}) async {
     try {
-      print('开始导出目录数据...');
+      Logger.log('开始导出目录数据...');
       progressNotifier?.value = "准备导出...";
       
       // 临时目录用于打包，导出完成后删除；不占用 backups
@@ -1102,7 +1103,7 @@ class DatabaseService {
         }
         
         tableData[tableName] = allRows;
-        print('已导出表 $tableName: ${allRows.length} 条记录');
+        Logger.log('已导出表 $tableName: ${allRows.length} 条记录');
       }
 
       // 文件名安全化函数
@@ -1134,9 +1135,9 @@ class DatabaseService {
               String relativePath = 'images/$fileName';
               await Directory('$tempDirPath/images').create(recursive: true);
               await copyFileWithStreaming(imageFile, '$tempDirPath/$relativePath');
-              print('已导出图片框图片: $relativePath');
+              Logger.log('已导出图片框图片: $relativePath');
             } else {
-              print('警告：图片文件不存在: $imagePath');
+              Logger.log('警告：图片文件不存在: $imagePath');
             }
           }
           imageBoxesToExport.add(imageBoxCopy);
@@ -1161,9 +1162,9 @@ class DatabaseService {
             String relativePath = 'background_images/$fileName';
             await Directory('$tempDirPath/background_images').create(recursive: true);
             await copyFileWithStreaming(imageFile, '$tempDirPath/$relativePath');
-            print('已导出目录背景图片: $relativePath');
+            Logger.log('已导出目录背景图片: $relativePath');
           } else {
-            print('警告：目录背景图片不存在: $backgroundImagePath');
+            Logger.log('警告：目录背景图片不存在: $backgroundImagePath');
           }
         }
         directorySettingsToExport.add(settingsCopy);
@@ -1186,9 +1187,9 @@ class DatabaseService {
             String relativePath = 'background_images/$fileName';
             await Directory('$tempDirPath/background_images').create(recursive: true);
             await copyFileWithStreaming(imageFile, '$tempDirPath/$relativePath');
-            print('已导出文档背景图片: $relativePath');
+            Logger.log('已导出文档背景图片: $relativePath');
           } else {
-            print('警告：文档背景图片不存在: $backgroundImagePath');
+            Logger.log('警告：文档背景图片不存在: $backgroundImagePath');
           }
         }
         documentSettingsToExport.add(settingsCopy);
@@ -1218,9 +1219,9 @@ class DatabaseService {
               String relativePath = 'audios/$fileName';
               await Directory('$tempDirPath/audios').create(recursive: true);
               await copyFileWithStreaming(audioFile, '$tempDirPath/$relativePath');
-              print('已导出音频文件: $relativePath');
+              Logger.log('已导出音频文件: $relativePath');
             } else {
-              print('警告：音频文件不存在: $audioPath');
+              Logger.log('警告：音频文件不存在: $audioPath');
               missingAudioFiles.add(audioPath);
             }
           }
@@ -1234,10 +1235,10 @@ class DatabaseService {
       if (missingAudioFiles.isNotEmpty) {
         final File missingFile = File('$tempDirPath/missing_audio_files.txt');
         await missingFile.writeAsString(missingAudioFiles.join('\n'));
-        print('[导出] 丢失音频文件数量: ${missingAudioFiles.length}');
-        print('[导出] 丢失音频文件列表:');
+        Logger.log('[导出] 丢失音频文件数量: ${missingAudioFiles.length}');
+        Logger.log('[导出] 丢失音频文件列表:');
         for (final f in missingAudioFiles) {
-          print('  - $f');
+          Logger.log('  - $f');
         }
       }
 
@@ -1280,16 +1281,16 @@ class DatabaseService {
       };
       final manifestFile = File('$dirDataPath/directory_manifest.json');
       await manifestFile.writeAsString(jsonEncode(manifest), encoding: utf8);
-      print('[导出] SPLIT格式数据文件写入完成: $dirDataPath');
+      Logger.log('[导出] SPLIT格式数据文件写入完成: $dirDataPath');
       if (!await manifestFile.exists() || await manifestFile.length() == 0) {
         throw Exception('导出失败：未生成有效的directory_manifest.json');
       }
-      print('[导出] 数据文件存在且有效，准备压缩...');
+      Logger.log('[导出] 数据文件存在且有效，准备压缩...');
       // 压缩前打印临时目录下所有文件
       final allFilesPreZip = await Directory(tempDirPath).list(recursive: true).toList();
-      print('[导出] 临时目录下文件:');
+      Logger.log('[导出] 临时目录下文件:');
       for (final f in allFilesPreZip) {
-        print('  - ${f.path}');
+        Logger.log('  - ${f.path}');
       }
       progressNotifier?.value = "正在创建压缩文件...";
       
@@ -1313,14 +1314,14 @@ class DatabaseService {
       await for (final entity in tempDirEntity.list(recursive: true, followLinks: false)) {
         if (entity is File) {
           final relativePath = p.relative(entity.path, from: tempDirPath);
-          print('[导出] 添加到ZIP: $relativePath');
+          Logger.log('[导出] 添加到ZIP: $relativePath');
           // addFile会以流的方式处理文件，避免读入内存；level:0 不压缩，降低大容量导出时的内存占用
           await encoder.addFile(entity, relativePath, 0);
         }
       }
       encoder.close();
 
-      print('[导出] ZIP文件写入完成: $zipPath');
+      Logger.log('[导出] ZIP文件写入完成: $zipPath');
 
       // 压缩后校验ZIP包内容和音频/图片文件数量 - 使用流式解码避免内存溢出
       final inputStream = InputFileStream(zipPath);
@@ -1334,12 +1335,12 @@ class DatabaseService {
           return path != null && path.toString().isNotEmpty;
         }).length;
         int zipImageCount = archiveCheck.where((file) => file.name.startsWith('images/') && !file.isDirectory).length;
-        print('[导出] 图片框总数: $imageBoxCount，其中有路径的: $imageBoxesWithPath，ZIP内文件: $zipImageCount');
+        Logger.log('[导出] 图片框总数: $imageBoxCount，其中有路径的: $imageBoxesWithPath，ZIP内文件: $zipImageCount');
         if (zipImageCount > imageBoxCount) {
           throw Exception('导出失败：图片文件数量异常，ZIP包内$zipImageCount个多于数据库$imageBoxCount个，请联系开发者排查。');
         }
         if (zipImageCount < imageBoxesWithPath && kDebugMode) {
-          print('[导出] 警告：部分图片文件不存在已跳过，有路径的$imageBoxesWithPath个，实际导出$zipImageCount个');
+          Logger.log('[导出] 警告：部分图片文件不存在已跳过，有路径的$imageBoxesWithPath个，实际导出$zipImageCount个');
         }
         // 校验音频文件数量（允许 ZIP 少于期望：部分音频文件可能已被删除）
         final audioBoxesWithFile = audioBoxesToExport.where((row) {
@@ -1348,12 +1349,12 @@ class DatabaseService {
         }).toList();
         int expectedAudioFileCount = audioBoxesWithFile.length;
         int zipAudioCount = archiveCheck.where((file) => file.name.startsWith('audios/') && !file.isDirectory).length;
-        print('[导出] 音频框总数: ${audioBoxesToExport.length}，其中有文件的: $expectedAudioFileCount，ZIP内: $zipAudioCount');
+        Logger.log('[导出] 音频框总数: ${audioBoxesToExport.length}，其中有文件的: $expectedAudioFileCount，ZIP内: $zipAudioCount');
         if (zipAudioCount > expectedAudioFileCount) {
           throw Exception('导出失败：音频文件数量异常，ZIP包内$zipAudioCount个多于有路径的$expectedAudioFileCount个，请联系开发者排查。');
         }
         if (zipAudioCount < expectedAudioFileCount && missingAudioFiles.isNotEmpty && kDebugMode) {
-          print('[导出] 警告：${missingAudioFiles.length}个音频文件不存在已跳过');
+          Logger.log('[导出] 警告：${missingAudioFiles.length}个音频文件不存在已跳过');
         }
       } finally {
         await inputStream.close();
@@ -1364,10 +1365,10 @@ class DatabaseService {
       try {
         await tempDir.delete(recursive: true);
       } catch (e) {
-        print('警告：清理临时目录失败: $e');
+        Logger.log('警告：清理临时目录失败: $e');
       }
       progressNotifier?.value = "导出完成";
-      print('目录数据导出完成，ZIP文件路径: $zipPath');
+      Logger.log('目录数据导出完成，ZIP文件路径: $zipPath');
       return zipPath;
     } catch (e, stackTrace) {
       _handleError('导出目录数据失败', e, stackTrace);
@@ -1381,7 +1382,7 @@ class DatabaseService {
     final String tempDirPath = '${appDocDir.path}/temp_import';
     final Directory tempDir = Directory(tempDirPath);
     try {
-      print('开始导入目录数据...');
+      Logger.log('开始导入目录数据...');
       progressNotifier?.value = "准备导入...";
       
       // 清理临时目录
@@ -1488,7 +1489,7 @@ class DatabaseService {
             await txn.execute('ALTER TABLE text_boxes ADD COLUMN text_segments TEXT');
           }
         } catch (e) {
-          print('[导入] 检查/添加 text_segments 列失败: $e');
+          Logger.log('[导入] 检查/添加 text_segments 列失败: $e');
         }
 
         // 构建每张真实表的列白名单
@@ -1565,7 +1566,7 @@ class DatabaseService {
               try {
                 await txn.insert(tableName, clean, conflictAlgorithm: ConflictAlgorithm.replace);
               } catch (rowErr) {
-                print('[导入] 行插入失败(表:$tableName): $rowErr');
+                Logger.log('[导入] 行插入失败(表:$tableName): $rowErr');
               }
               processedRows++;
               if (processedRows % kProgressUpdateInterval == 0) {
@@ -1573,7 +1574,7 @@ class DatabaseService {
               }
             }
           }
-          print('[导入] 表 $tableName 导入完成，共 $processedRows 行');
+          Logger.log('[导入] 表 $tableName 导入完成，共 $processedRows 行');
         }
 
         if (useSplitFormat) {
@@ -1595,7 +1596,7 @@ class DatabaseService {
         } on DatabaseException catch (e) {
           final msg = e.toString();
           if (msg.contains('no current transaction') && msg.contains('COMMIT') && attempt < maxAttempts) {
-            print('[导入] 事务异常，${200 * attempt}ms 后重试 ($attempt/$maxAttempts): $msg');
+            Logger.log('[导入] 事务异常，${200 * attempt}ms 后重试 ($attempt/$maxAttempts): $msg');
             await Future.delayed(Duration(milliseconds: 200 * attempt));
           } else {
             rethrow;
@@ -1608,12 +1609,12 @@ class DatabaseService {
       try {
         await Directory(tempDirPath).delete(recursive: true);
       } catch (e) {
-        print('警告：清理临时目录失败: $e');
+        Logger.log('警告：清理临时目录失败: $e');
         // 不影响主要功能，继续执行
       }
 
       progressNotifier?.value = "导入完成";
-      print('目录数据导入完成');
+      Logger.log('目录数据导入完成');
     } catch (e, stackTrace) {
       _handleError('导入数据失败', e, stackTrace);
       rethrow;
@@ -1622,7 +1623,7 @@ class DatabaseService {
         try {
           await tempDir.delete(recursive: true);
         } catch (e) {
-          print('清理导入临时目录失败: $e');
+          Logger.log('清理导入临时目录失败: $e');
         }
       }
     }
@@ -1679,11 +1680,11 @@ class DatabaseService {
         try {
           await fileCleanupService.deleteMediaFileCompletely(filePath);
         } catch (e) {
-          if (kDebugMode) print('删除文档关联文件失败: $filePath, $e');
+          if (kDebugMode) Logger.log('删除文档关联文件失败: $filePath, $e');
         }
       }
     } catch (e) {
-      if (kDebugMode) print('_deleteDocumentPhysicalFiles 失败: $e');
+      if (kDebugMode) Logger.log('_deleteDocumentPhysicalFiles 失败: $e');
     }
   }
 
@@ -1746,10 +1747,10 @@ class DatabaseService {
           await fileCleanupService.deleteDocumentCompletely(documentName);
         }
       } catch (e) {
-        if (kDebugMode) print('文件清理服务删除文档失败: $e');
+        if (kDebugMode) Logger.log('文件清理服务删除文档失败: $e');
       }
       
-      if (kDebugMode) print('成功删除文档: $documentName');
+      if (kDebugMode) Logger.log('成功删除文档: $documentName');
     } catch (e, stackTrace) {
       _handleError('删除文档失败: $documentName', e, stackTrace);
       rethrow;
@@ -1775,9 +1776,9 @@ class DatabaseService {
           where: 'document_id = ?',
           whereArgs: [documentId],
         );
-        print('Background image path deleted for document: $documentName');
+        Logger.log('Background image path deleted for document: $documentName');
       } else {
-        print('Document not found: $documentName');
+        Logger.log('Document not found: $documentName');
       }
     } catch (e, stackTrace) {
       _handleError('Failed to delete document background image for $documentName', e, stackTrace);
@@ -1827,10 +1828,10 @@ class DatabaseService {
           await fileCleanupService.deleteFolderCompletely(folderName);
         }
       } catch (e) {
-        if (kDebugMode) print('文件清理服务删除文件夹失败: $e');
+        if (kDebugMode) Logger.log('文件清理服务删除文件夹失败: $e');
       }
       
-      if (kDebugMode) print('成功删除文件夹: $folderName');
+      if (kDebugMode) Logger.log('成功删除文件夹: $folderName');
     } catch (e, stackTrace) {
       _handleError('删除文件夹失败: $folderName', e, stackTrace);
       rethrow;
@@ -1840,7 +1841,7 @@ class DatabaseService {
   /// 在事务内部递归删除文件夹
   Future<void> _deleteFolderRecursive(Transaction txn, String folderId, String folderName) async {
     if (kDebugMode) {
-      print('开始递归删除文件夹: $folderName (ID: $folderId)');
+      Logger.log('开始递归删除文件夹: $folderName (ID: $folderId)');
     }
     
     // 获取子文档
@@ -1851,7 +1852,7 @@ class DatabaseService {
     );
     
     if (kDebugMode) {
-      print('文件夹 $folderName 包含 ${documents.length} 个文档');
+      Logger.log('文件夹 $folderName 包含 ${documents.length} 个文档');
     }
     
     // 删除子文档
@@ -1859,7 +1860,7 @@ class DatabaseService {
       final docId = doc['id'] as String;
       final docName = doc['name'] as String;
       if (kDebugMode) {
-        print('删除文档: $docName (ID: $docId)');
+        Logger.log('删除文档: $docName (ID: $docId)');
       }
       await txn.delete('text_boxes', where: 'document_id = ?', whereArgs: [docId]);
       await txn.delete('image_boxes', where: 'document_id = ?', whereArgs: [docId]);
@@ -1876,7 +1877,7 @@ class DatabaseService {
     );
     
     if (kDebugMode) {
-      print('文件夹 $folderName 包含 ${subFolders.length} 个子文件夹');
+      Logger.log('文件夹 $folderName 包含 ${subFolders.length} 个子文件夹');
     }
     
     // 递归删除子文件夹
@@ -1884,14 +1885,14 @@ class DatabaseService {
       final subFolderId = subFolder['id'] as String;
       final subFolderName = subFolder['name'] as String;
       if (kDebugMode) {
-        print('递归删除子文件夹: $subFolderName (ID: $subFolderId)');
+        Logger.log('递归删除子文件夹: $subFolderName (ID: $subFolderId)');
       }
       await _deleteFolderRecursive(txn, subFolderId, subFolderName);
     }
 
     // 删除当前文件夹
     if (kDebugMode) {
-      print('删除文件夹本身: $folderName (ID: $folderId)');
+      Logger.log('删除文件夹本身: $folderName (ID: $folderId)');
     }
     await txn.delete('folders', where: 'id = ?', whereArgs: [folderId]);
   }
@@ -1918,19 +1919,19 @@ class DatabaseService {
           validResults.add(Map<String, dynamic>.from(folder));
         } else {
           if (kDebugMode) {
-            print('警告：发现无效文件夹数据，已跳过: $folder');
+            Logger.log('警告：发现无效文件夹数据，已跳过: $folder');
           }
         }
       }
       
       if (kDebugMode) {
-        print('获取文件夹成功: ${validResults.length} 个有效文件夹');
+        Logger.log('获取文件夹成功: ${validResults.length} 个有效文件夹');
       }
       
       return validResults;
     } catch (e, stackTrace) {
       _handleError('获取文件夹时出错', e, stackTrace);
-      print('获取文件夹时出错: $e');
+      Logger.log('获取文件夹时出错: $e');
       return [];
     }
   }
@@ -1958,19 +1959,19 @@ class DatabaseService {
           validResults.add(Map<String, dynamic>.from(document));
         } else {
           if (kDebugMode) {
-            print('警告：发现无效文档数据，已跳过: $document');
+            Logger.log('警告：发现无效文档数据，已跳过: $document');
           }
         }
       }
       
       if (kDebugMode) {
-        print('获取文档成功: ${validResults.length} 个有效文档');
+        Logger.log('获取文档成功: ${validResults.length} 个有效文档');
       }
       
       return validResults;
     } catch (e, stackTrace) {
       _handleError('获取文档时出错', e, stackTrace);
-      print('获取文档时出错: $e');
+      Logger.log('获取文档时出错: $e');
       return [];
     }
   }
@@ -1988,7 +1989,7 @@ class DatabaseService {
       }
       return null;
     } catch (e) {
-      print('根据名称获取文件夹时出错: $e');
+      Logger.log('根据名称获取文件夹时出错: $e');
       return null;
     }
   }
@@ -2006,14 +2007,14 @@ class DatabaseService {
       }
       return null;
     } catch (e) {
-      print('根据名称获取文档时出错: $e');
+      Logger.log('根据名称获取文档时出错: $e');
       return null;
     }
   }
 
   Future<String> exportDocument(String documentName) async {
     try {
-      print('开始导出文档: $documentName');
+      Logger.log('开始导出文档: $documentName');
       final Directory appDocDir = await getApplicationDocumentsDirectory();
       final String backupPath = '${appDocDir.path}/backups';
       
@@ -2076,9 +2077,9 @@ class DatabaseService {
             String relativePath = 'images/$fileName';
             await Directory('$tempDirPath/images').create(recursive: true);
             await imageFile.copy('$tempDirPath/$relativePath');
-            print('已导出图片: $relativePath');
+            Logger.log('已导出图片: $relativePath');
           } else {
-            print('警告：图片文件不存在: $imagePath');
+            Logger.log('警告：图片文件不存在: $imagePath');
           }
         }
         imageBoxesToExport.add(imageBoxCopy);
@@ -2100,9 +2101,9 @@ class DatabaseService {
             String relativePath = 'audios/$fileName';
             await Directory('$tempDirPath/audios').create(recursive: true);
             await audioFile.copy('$tempDirPath/$relativePath');
-            print('已导出音频: $relativePath');
+            Logger.log('已导出音频: $relativePath');
           } else {
-            print('警告：音频文件不存在: $audioPath');
+            Logger.log('警告：音频文件不存在: $audioPath');
           }
         }
         audioBoxesToExport.add(audioBoxCopy);
@@ -2126,9 +2127,9 @@ class DatabaseService {
             String relativePath = 'background_images/$fileName';
             await Directory('$tempDirPath/background_images').create(recursive: true);
             await imageFile.copy('$tempDirPath/$relativePath');
-            print('已导出背景图片: $relativePath');
+            Logger.log('已导出背景图片: $relativePath');
           } else {
-            print('警告：背景图片不存在: $backgroundImagePath');
+            Logger.log('警告：背景图片不存在: $backgroundImagePath');
           }
         }
         documentSettingsToExport.add(settingsCopy);
@@ -2151,7 +2152,7 @@ class DatabaseService {
       // 清理临时目录
       await tempDir.delete(recursive: true);
       
-      print('文档导出完成: $zipPath');
+      Logger.log('文档导出完成: $zipPath');
       return zipPath;
     } catch (e, stackTrace) {
       _handleError('导出文档失败', e, stackTrace);
@@ -2176,7 +2177,7 @@ class DatabaseService {
 
   Future<void> importDocument(String zipPath, {String? targetDocumentName, String? targetParentFolder}) async {
     try {
-      print('开始导入文档: $zipPath');
+      Logger.log('开始导入文档: $zipPath');
       final Directory appDocDir = await getApplicationDocumentsDirectory();
       final String tempDirPath = '${appDocDir.path}/temp_import';
       final Directory tempDir = Directory(tempDirPath);
@@ -2281,7 +2282,7 @@ class DatabaseService {
         documentData.remove('parent_folder_id');
         
         await txn.insert('documents', documentData);
-        print('已导入文档: $uniqueName');
+        Logger.log('已导入文档: $uniqueName');
         
         // === 先处理文本/图片/音频框并记录旧->新ID映射，供画布重映射 ===
         final Map<String,String> textIdMap = {};
@@ -2385,7 +2386,7 @@ class DatabaseService {
             await txn.insert('text_boxes', data, conflictAlgorithm: ConflictAlgorithm.replace);
           }
         }
-        print('已导入 ${textBoxes.length} 个文本框');
+        Logger.log('已导入 ${textBoxes.length} 个文本框');
         
         // 处理图片框和图片文件
         List<dynamic> imageBoxes = importData['image_boxes'] ?? [];
@@ -2406,7 +2407,7 @@ class DatabaseService {
               await Directory(p.dirname(targetPath)).create(recursive: true);
               await sourceFile.copy(targetPath);
               imageBoxData['image_path'] = targetPath;
-              print('已导入图片: $imageFileName -> $targetPath');
+              Logger.log('已导入图片: $imageFileName -> $targetPath');
             }
           }
           
@@ -2416,7 +2417,7 @@ class DatabaseService {
           await txn.insert('image_boxes', imageBoxData);
           imageIdMap[oldId] = newImageBoxId;
         }
-        print('已导入 ${imageBoxes.length} 个图片框');
+        Logger.log('已导入 ${imageBoxes.length} 个图片框');
         
         // 处理音频框和音频文件
         List<dynamic> audioBoxes = importData['audio_boxes'] ?? [];
@@ -2436,7 +2437,7 @@ class DatabaseService {
               await Directory(p.dirname(targetPath)).create(recursive: true);
               await sourceFile.copy(targetPath);
               audioBoxData['audio_path'] = targetPath;
-              print('已导入音频: $audioFileName -> $targetPath');
+              Logger.log('已导入音频: $audioFileName -> $targetPath');
             }
           }
           // 移除临时字段和错误字段名
@@ -2445,7 +2446,7 @@ class DatabaseService {
           await txn.insert('audio_boxes', audioBoxData);
           audioIdMap[oldId] = newAudioBoxId;
         }
-        print('已导入 ${audioBoxes.length} 个音频框');
+        Logger.log('已导入 ${audioBoxes.length} 个音频框');
 
         // === 导入画布并重映射内部关联 ID ===
         List<dynamic> canvases = importData['canvases'] ?? [];
@@ -2468,7 +2469,7 @@ class DatabaseService {
           c['updated_at'] = now;
           await txn.insert('canvases', c);
         }
-        print('已导入 ${canvases.length} 个画布');
+        Logger.log('已导入 ${canvases.length} 个画布');
         
         // 处理文档设置和背景图片
         List<dynamic> documentSettings = importData['document_settings'] ?? [];
@@ -2488,7 +2489,7 @@ class DatabaseService {
               await Directory(p.dirname(targetPath)).create(recursive: true);
               await sourceFile.copy(targetPath);
               settingsData['background_image_path'] = targetPath;
-              print('已导入背景图片: $backgroundImageFileName -> $targetPath');
+              Logger.log('已导入背景图片: $backgroundImageFileName -> $targetPath');
             }
           }
           
@@ -2496,13 +2497,13 @@ class DatabaseService {
           settingsData.remove('backgroundImageFileName');
           await txn.insert('document_settings', settingsData);
         }
-        print('已导入 ${documentSettings.length} 个文档设置');
+        Logger.log('已导入 ${documentSettings.length} 个文档设置');
       });
       
       // 清理临时目录
       await tempDir.delete(recursive: true);
       
-      print('文档导入完成');
+      Logger.log('文档导入完成');
     } catch (e, stackTrace) {
       _handleError('导入文档失败', e, stackTrace);
       rethrow;
@@ -2581,7 +2582,7 @@ class DatabaseService {
       List<Map<String, dynamic>> result = await db.query('folders');
       return result.map((map) => Map<String, dynamic>.from(map)).toList();
     } catch (e) {
-      print('获取所有目录文件夹时出错: $e');
+      Logger.log('获取所有目录文件夹时出错: $e');
       return [];
     }
   }
@@ -2608,7 +2609,7 @@ class DatabaseService {
 
   // Future<void> copyDocument(String sourceName, String targetName) async { // OLD SIGNATURE
   Future<String> copyDocument(String sourceDocumentName, {String? parentFolder}) async { // NEW SIGNATURE
-    print('copyDocument called for $sourceDocumentName, parentFolder: $parentFolder');
+    Logger.log('copyDocument called for $sourceDocumentName, parentFolder: $parentFolder');
     final db = await database;
 
     // 1. 生成唯一的文档名称
@@ -2620,11 +2621,11 @@ class DatabaseService {
       attempt++;
       finalNewDocumentName = attempt > 1 ? '$baseName($attempt)' : baseName;
       if (attempt > 100) {
-        print('Failed to generate a unique name for document copy after 100 attempts.');
+        Logger.log('Failed to generate a unique name for document copy after 100 attempts.');
         throw Exception('Failed to generate a unique name for document copy.');
       }
     }
-    print('Final new document name for copy: $finalNewDocumentName');
+    Logger.log('Final new document name for copy: $finalNewDocumentName');
 
     try {
       // 2. 预读取所有数据（事务外）
@@ -2687,12 +2688,12 @@ class DatabaseService {
               final newBackgroundPath = '${backgroundDir.path}/${const Uuid().v4()}$ext';
               await originalFile.copy(newBackgroundPath);
               newSettings!['background_image_path'] = newBackgroundPath;
-              print('复制背景图片: $originalBackgroundPath -> $newBackgroundPath');
+              Logger.log('复制背景图片: $originalBackgroundPath -> $newBackgroundPath');
             } else {
               newSettings!['background_image_path'] = null;
             }
           } catch (e) {
-            print('复制背景图片时出错: $e');
+            Logger.log('复制背景图片时出错: $e');
             newSettings!['background_image_path'] = null;
           }
         }
@@ -2765,17 +2766,17 @@ class DatabaseService {
         }
       });
 
-      print('Successfully copied document: $finalNewDocumentName');
+      Logger.log('Successfully copied document: $finalNewDocumentName');
       return finalNewDocumentName;
     } catch (e, stackTrace) {
       _handleError('复制文档时出错', e, stackTrace);
-      print('复制文档时出错: $e');
+      Logger.log('复制文档时出错: $e');
       rethrow;
     }
   }
 
   Future<String> createDocumentFromTemplate(String templateName, String newDocumentName, {String? parentFolder}) async {
-    print('createDocumentFromTemplate called for template $templateName, newName: $newDocumentName, parentFolder: $parentFolder');
+    Logger.log('createDocumentFromTemplate called for template $templateName, newName: $newDocumentName, parentFolder: $parentFolder');
     final db = await database;
 
     String finalNewDocumentName = newDocumentName;
@@ -2785,11 +2786,11 @@ class DatabaseService {
       attempt++;
       finalNewDocumentName = attempt > 1 ? '$baseName($attempt)' : baseName;
       if (attempt > 100) {
-        print('Failed to generate a unique name for document from template after 100 attempts.');
+        Logger.log('Failed to generate a unique name for document from template after 100 attempts.');
         throw Exception('Failed to generate a unique name for document from template.');
       }
     }
-    print('Final new document name from template: $finalNewDocumentName');
+    Logger.log('Final new document name from template: $finalNewDocumentName');
 
     try {
       final templateDocs = await db.query('documents', where: 'name = ?', whereArgs: [templateName]);
@@ -2847,12 +2848,12 @@ class DatabaseService {
               final newBackgroundPath = p.join(backgroundsDir.path, '${const Uuid().v4()}$ext');
               await originalFile.copy(newBackgroundPath);
               newSettings!['background_image_path'] = newBackgroundPath;
-              print('从模板复制背景图片: $originalBackgroundPath -> $newBackgroundPath');
+              Logger.log('从模板复制背景图片: $originalBackgroundPath -> $newBackgroundPath');
             } else {
               newSettings!['background_image_path'] = null;
             }
           } catch (e) {
-            print('复制模板背景图片时出错: $e');
+            Logger.log('复制模板背景图片时出错: $e');
             newSettings!['background_image_path'] = null;
           }
         }
@@ -2926,21 +2927,21 @@ class DatabaseService {
         }
       });
 
-      print('Successfully created document from template: $finalNewDocumentName');
+      Logger.log('Successfully created document from template: $finalNewDocumentName');
       return finalNewDocumentName;
     } catch (e, stackTrace) {
       _handleError('从模板创建文档时出错', e, stackTrace);
-      print('从模板创建文档时出错: $e');
+      Logger.log('从模板创建文档时出错: $e');
       rethrow;
     }
   }
 
   Future<void> importDirectoryDataImpl(String zipPath) async {
     try {
-      print('开始导入目录数据...');
+      Logger.log('开始导入目录数据...');
       final Directory appDocDir = await getApplicationDocumentsDirectory();
       final String tempDirPath = '${appDocDir.path}/temp_import';
-      print('临时目录路径: $tempDirPath');
+      Logger.log('临时目录路径: $tempDirPath');
 
       // 清理临时目录
       if (await Directory(tempDirPath).exists()) {
@@ -2997,7 +2998,7 @@ class DatabaseService {
         for (var entry in tableData.entries) {
           final String tableName = entry.key;
           final List<dynamic> rows = entry.value;
-          print('处理表: $tableName, 行数: ${rows.length}');
+          Logger.log('处理表: $tableName, 行数: ${rows.length}');
 
           if (tableName == 'directory_settings') {
             for (var row in rows) {
@@ -3010,7 +3011,7 @@ class DatabaseService {
                 if (await File(tempPath).exists()) {
                   await File(tempPath).copy(newPath);
                   settings['background_image_path'] = newPath;
-                  print('已导入目录背景图片: $newPath');
+                  Logger.log('已导入目录背景图片: $newPath');
                 }
               }
               await txn.insert(tableName, settings);
@@ -3026,7 +3027,7 @@ class DatabaseService {
                 if (await File(tempPath).exists()) {
                   await File(tempPath).copy(newPath);
                   settings['background_image_path'] = newPath;
-                  print('已导入文档背景图片: $newPath');
+                  Logger.log('已导入文档背景图片: $newPath');
                 }
               }
               await txn.insert(tableName, settings);
@@ -3041,7 +3042,7 @@ class DatabaseService {
                 if (await File(tempPath).exists()) {
                   await File(tempPath).copy(newPath);
                   imageBox['image_path'] = newPath;
-                  print('已导入图片框图片: $newPath');
+                  Logger.log('已导入图片框图片: $newPath');
                 } else {
                   imageBox['image_path'] = null; // 导出时文件已缺失，导入时清空路径
                 }
@@ -3049,29 +3050,29 @@ class DatabaseService {
               await txn.insert(tableName, imageBox);
             }
           } else if (tableName == 'audio_boxes') {
-            print('[导入调试] 正在导入audio_boxes, 行数: '+rows.length.toString());
+            Logger.log('[导入调试] 正在导入audio_boxes, 行数: '+rows.length.toString());
             for (var row in rows) {
               Map<String, dynamic> audioBox = Map<String, dynamic>.from(row);
               String? audioFileName = audioBox.remove('audioFileName');
-              print('[导入调试] audioBox: '+audioBox.toString()+', audioFileName: '+(audioFileName??'null'));
+              Logger.log('[导入调试] audioBox: '+audioBox.toString()+', audioFileName: '+(audioFileName??'null'));
               if (audioFileName != null) {
                 String audiosDirPath = p.join(appDocDir.path, 'audios');
                 await Directory(audiosDirPath).create(recursive: true);
                 String newPath = p.join(audiosDirPath, audioFileName);
                 String tempPath = p.join(tempDirPath, 'audios', audioFileName);
-                print('[导入音频] audioFileName: $audioFileName');
-                print('[导入音频] tempPath: $tempPath');
-                print('[导入音频] tempPath文件是否存在: ${await File(tempPath).exists()}');
+                Logger.log('[导入音频] audioFileName: $audioFileName');
+                Logger.log('[导入音频] tempPath: $tempPath');
+                Logger.log('[导入音频] tempPath文件是否存在: ${await File(tempPath).exists()}');
                 if (await File(tempPath).exists()) {
                   await File(tempPath).copy(newPath);
-                  print('[导入音频] 已复制音频文件: $tempPath -> $newPath');
+                  Logger.log('[导入音频] 已复制音频文件: $tempPath -> $newPath');
                   audioBox['audio_path'] = newPath;
                 } else {
-                  print('[导入音频] 警告：未找到音频文件: $tempPath');
+                  Logger.log('[导入音频] 警告：未找到音频文件: $tempPath');
                   audioBox['audio_path'] = null;
                 }
               } else {
-                print('[导入音频] audioFileName字段为null');
+                Logger.log('[导入音频] audioFileName字段为null');
               }
               audioBox.remove('audioPath');
               await txn.insert(tableName, audioBox);
@@ -3094,10 +3095,10 @@ class DatabaseService {
         String? audioPath = audioBox['audio_path'];
         if (audioPath != null && audioPath.isNotEmpty) {
           if (!await File(audioPath).exists()) {
-            print('[导入后校验] 音频文件不存在，清空路径: $audioPath');
+            Logger.log('[导入后校验] 音频文件不存在，清空路径: $audioPath');
             await db2.update('audio_boxes', {'audio_path': null}, where: 'id = ?', whereArgs: [audioBox['id']]);
           } else {
-            print('[导入后校验] 音频文件存在: $audioPath');
+            Logger.log('[导入后校验] 音频文件存在: $audioPath');
           }
         }
       }
@@ -3105,7 +3106,7 @@ class DatabaseService {
       // 清理临时目录
       await Directory(tempDirPath).delete(recursive: true);
 
-      print('目录数据导入完成');
+      Logger.log('目录数据导入完成');
     } catch (e, stackTrace) {
       _handleError('导入数据失败', e, stackTrace);
       rethrow;
@@ -3359,7 +3360,7 @@ class DatabaseService {
 
   /// Get text boxes by document
   Future<List<Map<String, dynamic>>> getTextBoxesByDocument(String documentName) async {
-    print('🔍 [DB] 开始查询文本框数据，文档名: $documentName');
+    Logger.log('🔍 [DB] 开始查询文本框数据，文档名: $documentName');
     try {
       final db = await database;
       List<Map<String, dynamic>> result = await db.query(
@@ -3367,10 +3368,10 @@ class DatabaseService {
         where: 'document_id = (SELECT id FROM documents WHERE name = ?)',
         whereArgs: [documentName],
       );
-      print('✅ [DB] 文本框查询成功，返回 ${result.length} 条记录');
+      Logger.log('✅ [DB] 文本框查询成功，返回 ${result.length} 条记录');
       if (result.isNotEmpty) {
-        print('📋 [DB] 第一条文本框数据字段: ${result.first.keys.toList()}');
-        print('📋 [DB] 第一条文本框数据值: ${result.first}');
+        Logger.log('📋 [DB] 第一条文本框数据字段: ${result.first.keys.toList()}');
+        Logger.log('📋 [DB] 第一条文本框数据值: ${result.first}');
       }
       
       // 转换字段名
@@ -3426,7 +3427,7 @@ class DatabaseService {
         return convertedMap;
       }).toList();
     } catch (e, stackTrace) {
-      print('❌ [DB] 获取文档文本框失败: $e');
+      Logger.log('❌ [DB] 获取文档文本框失败: $e');
       _handleError('获取文档文本框失败', e, stackTrace);
       return [];
     }
@@ -3434,7 +3435,7 @@ class DatabaseService {
 
   /// Get image boxes by document
   Future<List<Map<String, dynamic>>> getImageBoxesByDocument(String documentName) async {
-    print('🔍 [DB] 开始查询图片框数据，文档名: $documentName');
+    Logger.log('🔍 [DB] 开始查询图片框数据，文档名: $documentName');
     try {
       final db = await database;
       List<Map<String, dynamic>> result = await db.query(
@@ -3442,10 +3443,10 @@ class DatabaseService {
         where: 'document_id = (SELECT id FROM documents WHERE name = ?)',
         whereArgs: [documentName],
       );
-      print('✅ [DB] 图片框查询成功，返回 ${result.length} 条记录');
+      Logger.log('✅ [DB] 图片框查询成功，返回 ${result.length} 条记录');
       if (result.isNotEmpty) {
-        print('📋 [DB] 第一条图片框数据字段: ${result.first.keys.toList()}');
-        print('📋 [DB] 第一条图片框数据值: ${result.first}');
+        Logger.log('📋 [DB] 第一条图片框数据字段: ${result.first.keys.toList()}');
+        Logger.log('📋 [DB] 第一条图片框数据值: ${result.first}');
       }
       
       // 转换字段名
@@ -3464,7 +3465,7 @@ class DatabaseService {
         return convertedMap;
       }).toList();
     } catch (e, stackTrace) {
-      print('❌ [DB] 获取文档图片框失败: $e');
+      Logger.log('❌ [DB] 获取文档图片框失败: $e');
       _handleError('获取文档图片框失败', e, stackTrace);
       return [];
     }
@@ -3472,7 +3473,7 @@ class DatabaseService {
 
   /// Get audio boxes by document
   Future<List<Map<String, dynamic>>> getAudioBoxesByDocument(String documentName) async {
-    print('🔍 [DB] 开始查询音频框数据，文档名: $documentName');
+    Logger.log('🔍 [DB] 开始查询音频框数据，文档名: $documentName');
     try {
       final db = await database;
       List<Map<String, dynamic>> result = await db.query(
@@ -3480,10 +3481,10 @@ class DatabaseService {
         where: 'document_id = (SELECT id FROM documents WHERE name = ?)',
         whereArgs: [documentName],
       );
-      print('✅ [DB] 音频框查询成功，返回 ${result.length} 条记录');
+      Logger.log('✅ [DB] 音频框查询成功，返回 ${result.length} 条记录');
       if (result.isNotEmpty) {
-        print('📋 [DB] 第一条音频框数据字段: ${result.first.keys.toList()}');
-        print('📋 [DB] 第一条音频框数据值: ${result.first}');
+        Logger.log('📋 [DB] 第一条音频框数据字段: ${result.first.keys.toList()}');
+        Logger.log('📋 [DB] 第一条音频框数据值: ${result.first}');
       }
       
       // 转换字段名
@@ -3502,7 +3503,7 @@ class DatabaseService {
         return convertedMap;
       }).toList();
     } catch (e, stackTrace) {
-      print('❌ [DB] 获取文档音频框失败: $e');
+      Logger.log('❌ [DB] 获取文档音频框失败: $e');
       _handleError('获取文档音频框失败', e, stackTrace);
       return [];
     }
@@ -3510,7 +3511,7 @@ class DatabaseService {
 
   /// 获取指定文档的画布列表
   Future<List<Map<String, dynamic>>> getCanvasesByDocument(String documentName) async {
-    print('🔍 [DB] 开始查询画布数据，文档名: $documentName');
+    Logger.log('🔍 [DB] 开始查询画布数据，文档名: $documentName');
     try {
       final db = await database;
       final List<Map<String, dynamic>> result = await db.query(
@@ -3519,14 +3520,14 @@ class DatabaseService {
         whereArgs: [documentName],
         orderBy: 'created_at ASC'
       );
-      print('✅ [DB] 画布查询成功，返回 ${result.length} 条记录');
+      Logger.log('✅ [DB] 画布查询成功，返回 ${result.length} 条记录');
       if (result.isNotEmpty) {
-        print('📋 [DB] 第一条画布数据字段: ${result.first.keys.toList()}');
-        print('📋 [DB] 第一条画布数据值: ${result.first}');
+        Logger.log('📋 [DB] 第一条画布数据字段: ${result.first.keys.toList()}');
+        Logger.log('📋 [DB] 第一条画布数据值: ${result.first}');
       }
       return result;
     } catch (e, stackTrace) {
-      print('❌ [DB] 获取画布失败: $e');
+      Logger.log('❌ [DB] 获取画布失败: $e');
       _handleError('获取画布失败', e, stackTrace);
       return [];
     }
@@ -3534,13 +3535,13 @@ class DatabaseService {
 
   /// 保存画布列表（新增 / 更新 / 删除）
   Future<void> saveCanvases(List<Map<String, dynamic>> canvases, List<String> deletedCanvasIds, String documentName) async {
-    print('🔧 [DB] 开始保存画布，文档名: $documentName, 传入画布数: ${canvases.length}, 已删除数: ${deletedCanvasIds.length}');
+    Logger.log('🔧 [DB] 开始保存画布，文档名: $documentName, 传入画布数: ${canvases.length}, 已删除数: ${deletedCanvasIds.length}');
     final db = await database;
     await db.transaction((txn) async {
       // 获取文档ID
       final docRows = await txn.query('documents', columns: ['id'], where: 'name = ?', whereArgs: [documentName]);
       if (docRows.isEmpty) {
-        print('❌ [DB] 保存画布失败：文档不存在');
+        Logger.log('❌ [DB] 保存画布失败：文档不存在');
         return;
       }
       final documentId = docRows.first['id'];
@@ -3550,12 +3551,12 @@ class DatabaseService {
       final existingIds = existingRows.map((e) => e['id'] as String).toSet();
       final incomingIds = canvases.map((c) => c['id'] as String).toSet();
       final idsToDelete = existingIds.difference(incomingIds).union(deletedCanvasIds.toSet());
-      print('🔧 [DB] existingIds=${existingIds.length}, incomingIds=${incomingIds.length}, idsToDelete=${idsToDelete.length}');
+      Logger.log('🔧 [DB] existingIds=${existingIds.length}, incomingIds=${incomingIds.length}, idsToDelete=${idsToDelete.length}');
 
       // 删除遗失或标记删除的画布
       for (final delId in idsToDelete) {
         final count = await txn.delete('canvases', where: 'id = ?', whereArgs: [delId]);
-        print('🗑️ [DB] 删除画布 id=$delId, affected=$count');
+        Logger.log('🗑️ [DB] 删除画布 id=$delId, affected=$count');
       }
 
       final now = DateTime.now().millisecondsSinceEpoch;
@@ -3581,15 +3582,15 @@ class DatabaseService {
         if (!existingIds.contains(id)) {
           data['created_at'] = now;
           await txn.insert('canvases', data, conflictAlgorithm: ConflictAlgorithm.replace);
-          print('➕ [DB] 新增画布 id=$id');
+          Logger.log('➕ [DB] 新增画布 id=$id');
         } else {
           await txn.update('canvases', data, where: 'id = ?', whereArgs: [id]);
-          print('✏️ [DB] 更新画布 id=$id');
+          Logger.log('✏️ [DB] 更新画布 id=$id');
         }
       }
 
       final total = Sqflite.firstIntValue(await txn.rawQuery('SELECT COUNT(*) FROM canvases WHERE document_id = ?', [documentId])) ?? 0;
-      print('📊 [DB] 保存完成，当前文档画布总数: $total');
+      Logger.log('📊 [DB] 保存完成，当前文档画布总数: $total');
     });
   }
 
@@ -3598,7 +3599,7 @@ class DatabaseService {
     final db = await database;
     final count = await db.delete('canvases', where: 'id = ?', whereArgs: [canvasId]);
     if (kDebugMode) {
-      print('🗑️ [DB] deleteCanvasById id=$canvasId affected=$count');
+      Logger.log('🗑️ [DB] deleteCanvasById id=$canvasId affected=$count');
     }
   }
 
@@ -3951,7 +3952,7 @@ class DatabaseService {
 
   /// Get document settings
   Future<Map<String, dynamic>?> getDocumentSettings(String documentName) async {
-    print('🔍 [DB] 开始查询文档设置，文档名: $documentName');
+    Logger.log('🔍 [DB] 开始查询文档设置，文档名: $documentName');
     try {
       final db = await database;
       List<Map<String, dynamic>> result = await db.query(
@@ -3959,16 +3960,16 @@ class DatabaseService {
         where: 'document_id = (SELECT id FROM documents WHERE name = ?)',
         whereArgs: [documentName],
       );
-      print('✅ [DB] 文档设置查询成功，返回 ${result.length} 条记录');
+      Logger.log('✅ [DB] 文档设置查询成功，返回 ${result.length} 条记录');
       if (result.isNotEmpty) {
-        print('📋 [DB] 文档设置数据字段: ${result.first.keys.toList()}');
-        print('📋 [DB] 文档设置数据值: ${result.first}');
+        Logger.log('📋 [DB] 文档设置数据字段: ${result.first.keys.toList()}');
+        Logger.log('📋 [DB] 文档设置数据值: ${result.first}');
         return result.first;
       }
-      print('ℹ️ [DB] 未找到文档设置数据');
+      Logger.log('ℹ️ [DB] 未找到文档设置数据');
       return null;
     } catch (e, stackTrace) {
-      print('❌ [DB] 获取文档设置失败: $e');
+      Logger.log('❌ [DB] 获取文档设置失败: $e');
       _handleError('获取文档设置失败', e, stackTrace);
       return null;
     }
@@ -3983,8 +3984,8 @@ class DatabaseService {
     bool? positionLocked,
   }) async {
     try {
-      print('🔧 [DB] 开始插入或更新文档设置，文档名: $documentName');
-      print('🔧 [DB] 传入参数 - imagePath: $imagePath, colorValue: $colorValue, textEnhanceMode: $textEnhanceMode, positionLocked: $positionLocked');
+      Logger.log('🔧 [DB] 开始插入或更新文档设置，文档名: $documentName');
+      Logger.log('🔧 [DB] 传入参数 - imagePath: $imagePath, colorValue: $colorValue, textEnhanceMode: $textEnhanceMode, positionLocked: $positionLocked');
       
       final db = await database;
       
@@ -4001,7 +4002,7 @@ class DatabaseService {
       }
       
       final documentId = docResult.first['id'] as String;
-      print('🔧 [DB] 找到文档ID: $documentId');
+      Logger.log('🔧 [DB] 找到文档ID: $documentId');
       
       // Check if settings exist
       List<Map<String, dynamic>> existingSettings = await db.query(
@@ -4010,9 +4011,9 @@ class DatabaseService {
         whereArgs: [documentId],
       );
       
-      print('🔧 [DB] 现有设置数量: ${existingSettings.length}');
+      Logger.log('🔧 [DB] 现有设置数量: ${existingSettings.length}');
       if (existingSettings.isNotEmpty) {
-        print('🔧 [DB] 现有设置: ${existingSettings.first}');
+        Logger.log('🔧 [DB] 现有设置: ${existingSettings.first}');
       }
       
       Map<String, dynamic> settingsData = {
@@ -4032,17 +4033,17 @@ class DatabaseService {
             : existing['position_locked'];
         // 保留原有的created_at字段
         settingsData['created_at'] = existing['created_at'];
-        print('🔧 [DB] 更新现有设置 - text_enhance_mode: ${settingsData['text_enhance_mode']}, position_locked: ${settingsData['position_locked']}');
+        Logger.log('🔧 [DB] 更新现有设置 - text_enhance_mode: ${settingsData['text_enhance_mode']}, position_locked: ${settingsData['position_locked']}');
       } else {
         settingsData['background_image_path'] = imagePath;
         settingsData['background_color'] = colorValue;
         settingsData['text_enhance_mode'] = textEnhanceMode != null ? (textEnhanceMode ? 1 : 0) : 1;
         settingsData['position_locked'] = positionLocked != null ? (positionLocked ? 1 : 0) : 1;
         settingsData['created_at'] = DateTime.now().millisecondsSinceEpoch;
-        print('🔧 [DB] 创建新设置 - text_enhance_mode: ${settingsData['text_enhance_mode']}, position_locked: ${settingsData['position_locked']}');
+        Logger.log('🔧 [DB] 创建新设置 - text_enhance_mode: ${settingsData['text_enhance_mode']}, position_locked: ${settingsData['position_locked']}');
       }
       
-      print('🔧 [DB] 最终写入数据: $settingsData');
+      Logger.log('🔧 [DB] 最终写入数据: $settingsData');
       
       if (existingSettings.isNotEmpty) {
         // 使用UPDATE操作更新现有记录
@@ -4052,14 +4053,14 @@ class DatabaseService {
           where: 'document_id = ?',
           whereArgs: [documentId],
         );
-        print('🔧 [DB] UPDATE操作完成');
+        Logger.log('🔧 [DB] UPDATE操作完成');
       } else {
         // 使用INSERT操作创建新记录
         await db.insert('document_settings', settingsData);
-        print('🔧 [DB] INSERT操作完成');
+        Logger.log('🔧 [DB] INSERT操作完成');
       }
       
-      print('🔧 [DB] 数据库写入完成');
+      Logger.log('🔧 [DB] 数据库写入完成');
       
       // 验证写入结果
       List<Map<String, dynamic>> verifySettings = await db.query(
@@ -4068,11 +4069,11 @@ class DatabaseService {
         whereArgs: [documentId],
       );
       if (verifySettings.isNotEmpty) {
-        print('🔧 [DB] 验证写入结果: ${verifySettings.first}');
+        Logger.log('🔧 [DB] 验证写入结果: ${verifySettings.first}');
       }
       
     } catch (e, stackTrace) {
-      print('❌ [DB] 插入或更新文档设置失败: $e');
+      Logger.log('❌ [DB] 插入或更新文档设置失败: $e');
       _handleError('插入或更新文档设置失败', e, stackTrace);
       rethrow;
     }
@@ -4109,7 +4110,7 @@ class DatabaseService {
             timestamp INTEGER
           )
         ''');
-        print('在insertCoverImage中创建了cover_image表');
+        Logger.log('在insertCoverImage中创建了cover_image表');
       }
 
       // Delete existing records and insert new one
@@ -4118,10 +4119,10 @@ class DatabaseService {
         'cover_image',
         {'path': imagePath, 'timestamp': DateTime.now().millisecondsSinceEpoch},
       );
-      print('成功插入封面图片路径: $imagePath');
+      Logger.log('成功插入封面图片路径: $imagePath');
     } catch (e, stackTrace) {
       _handleError('插入封面图片路径失败', e, stackTrace);
-      print('插入封面图片路径时出错: $e');
+      Logger.log('插入封面图片路径时出错: $e');
       rethrow;
     }
   }
@@ -4144,7 +4145,7 @@ class DatabaseService {
             timestamp INTEGER
           )
         ''');
-        print('在getCoverImage中创建了cover_image表');
+        Logger.log('在getCoverImage中创建了cover_image表');
         return [];
       }
 
@@ -4155,7 +4156,7 @@ class DatabaseService {
       );
     } catch (e, stackTrace) {
       _handleError('获取封面图片失败', e, stackTrace);
-      print('获取封面图片时出错: $e');
+      Logger.log('获取封面图片时出错: $e');
       return [];
     }
   }
@@ -4178,15 +4179,15 @@ class DatabaseService {
             timestamp INTEGER
           )
         ''');
-        print('在deleteCoverImage中创建了cover_image表');
+        Logger.log('在deleteCoverImage中创建了cover_image表');
         return;
       }
 
       await db.delete('cover_image');
-      print('成功删除所有封面图片记录');
+      Logger.log('成功删除所有封面图片记录');
     } catch (e, stackTrace) {
       _handleError('删除封面图片失败', e, stackTrace);
-      print('删除封面图片时出错: $e');
+      Logger.log('删除封面图片时出错: $e');
     }
   }
 
@@ -4306,7 +4307,7 @@ class DatabaseService {
       validPaths.remove('');
       return validPaths;
     } catch (e) {
-      if (kDebugMode) print('getAllValidFilePaths 失败: $e');
+      if (kDebugMode) Logger.log('getAllValidFilePaths 失败: $e');
       return {};
     }
   }
@@ -4588,11 +4589,11 @@ class DatabaseService {
       }
       
       if (kDebugMode) {
-        print('数据完整性检查完成: ${report['isValid'] ? '通过' : '发现问题'}');
+        Logger.log('数据完整性检查完成: ${report['isValid'] ? '通过' : '发现问题'}');
         if (report['issues'].isNotEmpty) {
-          print('发现的问题:');
+          Logger.log('发现的问题:');
           for (var issue in report['issues']) {
-            print('  - $issue');
+            Logger.log('  - $issue');
           }
         }
       }
@@ -4641,7 +4642,7 @@ class DatabaseService {
       });
       
       if (kDebugMode) {
-        print('数据完整性修复完成');
+        Logger.log('数据完整性修复完成');
       }
     } catch (e, stackTrace) {
       _handleError('数据完整性修复失败', e, stackTrace);

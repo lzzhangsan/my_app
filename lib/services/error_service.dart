@@ -4,6 +4,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
+import 'logger.dart';
 import '../core/app_state.dart';
 
 class ErrorService {
@@ -230,7 +231,7 @@ class ErrorService {
     if (error.severity == ErrorSeverity.critical) {
       // 严重错误处理逻辑
       if (kDebugMode) {
-        print('CRITICAL ERROR DETECTED: ${error.error}');
+        Logger.log('CRITICAL ERROR DETECTED: ${error.error}');
       }
       
       // 这里可以添加崩溃报告、用户通知等逻辑

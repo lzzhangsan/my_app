@@ -38,5 +38,10 @@ class Logger {
       }
     }
   }
+
+  /// 通用日志，release 模式下不输出（用于替代 print）
+  static void log(Object? message) {
+    if (enabled) debugPrint(message?.toString());
+  }
 }
 

@@ -1,5 +1,5 @@
 name: change_copy  # Project identifier; keep unchanged for compatibility
-description: "A second copy of the original app."
+description: "变化 - 文档、媒体与日记管理应用"
 publish_to: 'none'
 
 version: 1.0.0+3
@@ -50,6 +50,10 @@ dependencies:
   flutter_quill: ^11.5.0
   image: ^4.8.0
   flutter_secure_storage: ^9.2.2
+
+dependency_overrides:
+  chewie:
+    path: packages/chewie
 
 dev_dependencies:
   flutter_test:

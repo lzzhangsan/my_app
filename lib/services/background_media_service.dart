@@ -5,6 +5,7 @@ import 'dart:async';
 import 'dart:io';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
+import 'logger.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:path/path.dart' as p;
@@ -47,11 +48,11 @@ class BackgroundMediaService {
       _isInitialized = true;
       
       if (kDebugMode) {
-        print('BackgroundMediaService: 初始化完成');
+        Logger.log('BackgroundMediaService: 初始化完成');
       }
     } catch (e) {
       if (kDebugMode) {
-        print('BackgroundMediaService 初始化失败: $e');
+        Logger.log('BackgroundMediaService 初始化失败: $e');
       }
       rethrow;
     }
@@ -63,25 +64,25 @@ class BackgroundMediaService {
       // 请求存储权限
       var storageStatus = await Permission.storage.request();
       if (kDebugMode) {
-        print('存储权限状态: $storageStatus');
+        Logger.log('存储权限状态: $storageStatus');
       }
       
       // 请求媒体库权限
       var photosStatus = await Permission.photos.request();
       if (kDebugMode) {
-        print('媒体库权限状态: $photosStatus');
+        Logger.log('媒体库权限状态: $photosStatus');
       }
       
       // 请求管理外部存储权限（Android 11+）
       if (Platform.isAndroid) {
         var manageStorageStatus = await Permission.manageExternalStorage.request();
         if (kDebugMode) {
-          print('管理外部存储权限状态: $manageStorageStatus');
+          Logger.log('管理外部存储权限状态: $manageStorageStatus');
         }
       }
     } catch (e) {
       if (kDebugMode) {
-        print('请求权限失败: $e');
+        Logger.log('请求权限失败: $e');
       }
     }
   }
@@ -109,11 +110,11 @@ class BackgroundMediaService {
       await service.startService();
       
       if (kDebugMode) {
-        print('后台服务已启动');
+        Logger.log('后台服务已启动');
       }
     } catch (e) {
       if (kDebugMode) {
-        print('初始化后台服务失败: $e');
+        Logger.log('初始化后台服务失败: $e');
       }
       rethrow;
     }
@@ -123,7 +124,7 @@ class BackgroundMediaService {
   @pragma('vm:entry-point')
   static void onStart(ServiceInstance service) async {
     if (kDebugMode) {
-      print('后台媒体服务启动');
+      Logger.log('后台媒体服务启动');
     }
     
     try {
@@ -140,7 +141,7 @@ class BackgroundMediaService {
       
     } catch (e) {
       if (kDebugMode) {
-        print('后台服务启动失败: $e');
+        Logger.log('后台服务启动失败: $e');
       }
     }
   }
@@ -149,7 +150,7 @@ class BackgroundMediaService {
   @pragma('vm:entry-point')
   static Future<bool> onIosBackground(ServiceInstance service) async {
     if (kDebugMode) {
-      print('iOS后台服务运行');
+      Logger.log('iOS后台服务运行');
     }
     return true;
   }
@@ -171,14 +172,14 @@ class BackgroundMediaService {
       });
       
       if (kDebugMode) {
-        print('媒体库监听已启动，初始媒体数量: ${_instance._initialAssetIds.length}');
+        Logger.log('媒体库监听已启动，初始媒体数量: ${_instance._initialAssetIds.length}');
       }
       
       _instance._isRunning = true;
       
     } catch (e) {
       if (kDebugMode) {
-        print('启动媒体库监听失败: $e');
+        Logger.log('启动媒体库监听失败: $e');
       }
     }
   }
@@ -197,11 +198,11 @@ class BackgroundMediaService {
       _instance._initialAssetIds = allAssets.map((e) => e.id).toSet();
       
       if (kDebugMode) {
-        print('已捕获初始媒体快照，共 ${_instance._initialAssetIds.length} 个媒体');
+        Logger.log('已捕获初始媒体快照，共 ${_instance._initialAssetIds.length} 个媒体');
       }
     } catch (e) {
       if (kDebugMode) {
-        print('捕获初始媒体快照失败: $e');
+        Logger.log('捕获初始媒体快照失败: $e');
       }
     }
   }
@@ -209,7 +210,7 @@ class BackgroundMediaService {
   /// 媒体库变化回调
   static Future<void> _onPhotoLibraryChanged([MethodCall? call]) async {
     if (kDebugMode) {
-      print('[后台服务] 媒体库变更回调被触发');
+      Logger.log('[后台服务] 媒体库变更回调被触发');
     }
     
     try {
@@ -218,7 +219,7 @@ class BackgroundMediaService {
       await prefs.reload();
       final autoImportEnabled = prefs.getBool('auto_import_silent') ?? true;
       if (!autoImportEnabled) {
-        if (kDebugMode) print('[后台服务] 静默导入已关闭，跳过自动导入');
+        if (kDebugMode) Logger.log('[后台服务] 静默导入已关闭，跳过自动导入');
         return;
       }
 
@@ -238,7 +239,7 @@ class BackgroundMediaService {
       
       if (newAssetIds.isNotEmpty) {
         if (kDebugMode) {
-          print('[后台服务] 检测到 ${newAssetIds.length} 个新增媒体');
+          Logger.log('[后台服务] 检测到 ${newAssetIds.length} 个新增媒体');
         }
         
         // 处理新增媒体
@@ -249,7 +250,7 @@ class BackgroundMediaService {
       }
     } catch (e) {
       if (kDebugMode) {
-        print('[后台服务] 处理媒体库变化失败: $e');
+        Logger.log('[后台服务] 处理媒体库变化失败: $e');
       }
     }
   }
@@ -264,23 +265,23 @@ class BackgroundMediaService {
           final asset = allAssets.firstWhere((e) => e.id == assetId);
           
           if (kDebugMode) {
-            print('[后台服务] 处理新增媒体: ${asset.title}');
+            Logger.log('[后台服务] 处理新增媒体: ${asset.title}');
           }
           
           // 导入媒体到应用媒体库（含查重），静默模式仅复制不删除原件
           final imported = await _importMediaToApp(asset, databaseService);
           if (imported && kDebugMode) {
-            print('[后台服务] 成功导入媒体（静默，原件已保留）: ${asset.title}');
+            Logger.log('[后台服务] 成功导入媒体（静默，原件已保留）: ${asset.title}');
           }
         } catch (e) {
           if (kDebugMode) {
-            print('[后台服务] 处理单个媒体失败: $e');
+            Logger.log('[后台服务] 处理单个媒体失败: $e');
           }
         }
       }
     } catch (e) {
       if (kDebugMode) {
-        print('[后台服务] 批量处理新增媒体失败: $e');
+        Logger.log('[后台服务] 批量处理新增媒体失败: $e');
       }
     }
   }
@@ -290,11 +291,11 @@ class BackgroundMediaService {
     try {
       final File? mediaFile = await asset.file;
       if (mediaFile == null || !await mediaFile.exists()) {
-        if (kDebugMode) print('[后台服务] 媒体文件不存在: ${asset.title}');
+        if (kDebugMode) Logger.log('[后台服务] 媒体文件不存在: ${asset.title}');
         return false;
       }
       if (asset.type != AssetType.image && asset.type != AssetType.video) {
-        if (kDebugMode) print('[后台服务] 不支持的媒体类型: ${asset.type}');
+        if (kDebugMode) Logger.log('[后台服务] 不支持的媒体类型: ${asset.type}');
         return false;
       }
 
@@ -303,12 +304,12 @@ class BackgroundMediaService {
       try {
         fileHash = (await md5.bind(mediaFile.openRead()).first).toString();
       } catch (e) {
-        if (kDebugMode) print('[后台服务] 读取文件失败: $fileName');
+        if (kDebugMode) Logger.log('[后台服务] 读取文件失败: $fileName');
         return false;
       }
       final duplicate = await databaseService.findDuplicateMediaItem(fileHash, fileName);
       if (duplicate != null) {
-        if (kDebugMode) print('[后台服务] 跳过重复文件: $fileName');
+        if (kDebugMode) Logger.log('[后台服务] 跳过重复文件: $fileName');
         return false;
       }
 
@@ -325,7 +326,7 @@ class BackgroundMediaService {
       final duplicateBeforeInsert = await databaseService.findDuplicateMediaItem(fileHash, fileName);
       if (duplicateBeforeInsert != null) {
         try { await File(destPath).delete(); } catch (_) {}
-        if (kDebugMode) print('[后台服务] 插入前发现重复，已跳过: $fileName');
+        if (kDebugMode) Logger.log('[后台服务] 插入前发现重复，已跳过: $fileName');
         return false;
       }
 
@@ -340,10 +341,10 @@ class BackgroundMediaService {
       };
       await databaseService.insertMediaItem(mediaItemMap);
 
-      if (kDebugMode) print('[后台服务] 成功导入媒体: $fileName');
+      if (kDebugMode) Logger.log('[后台服务] 成功导入媒体: $fileName');
       return true;
     } catch (e) {
-      if (kDebugMode) print('[后台服务] 导入媒体失败: $e');
+      if (kDebugMode) Logger.log('[后台服务] 导入媒体失败: $e');
       return false;
     }
   }
@@ -356,16 +357,16 @@ class BackgroundMediaService {
       
       if (result.isNotEmpty) {
         if (kDebugMode) {
-          print('[后台服务] 成功删除本地媒体: ${asset.title}');
+          Logger.log('[后台服务] 成功删除本地媒体: ${asset.title}');
         }
       } else {
         if (kDebugMode) {
-          print('[后台服务] 删除本地媒体失败: ${asset.title}');
+          Logger.log('[后台服务] 删除本地媒体失败: ${asset.title}');
         }
       }
     } catch (e) {
       if (kDebugMode) {
-        print('[后台服务] 删除本地媒体异常: $e');
+        Logger.log('[后台服务] 删除本地媒体异常: $e');
       }
     }
   }
@@ -375,7 +376,7 @@ class BackgroundMediaService {
     _instance._healthCheckTimer?.cancel();
     _instance._healthCheckTimer = Timer.periodic(const Duration(minutes: 5), (timer) {
       if (kDebugMode) {
-        print('[后台服务] 健康检查 - 服务运行正常');
+        Logger.log('[后台服务] 健康检查 - 服务运行正常');
       }
     });
   }
@@ -396,11 +397,11 @@ class BackgroundMediaService {
       service.invoke('stopService');
       
       if (kDebugMode) {
-        print('后台媒体服务已停止');
+        Logger.log('后台媒体服务已停止');
       }
     } catch (e) {
       if (kDebugMode) {
-        print('停止后台服务失败: $e');
+        Logger.log('停止后台服务失败: $e');
       }
     }
   }
@@ -413,7 +414,7 @@ class BackgroundMediaService {
       return isRunning;
     } catch (e) {
       if (kDebugMode) {
-        print('检查服务状态失败: $e');
+        Logger.log('检查服务状态失败: $e');
       }
       return false;
     }
@@ -427,11 +428,11 @@ class BackgroundMediaService {
       await _initializeBackgroundService();
       
       if (kDebugMode) {
-        print('后台媒体服务已重启');
+        Logger.log('后台媒体服务已重启');
       }
     } catch (e) {
       if (kDebugMode) {
-        print('重启后台服务失败: $e');
+        Logger.log('重启后台服务失败: $e');
       }
     }
   }

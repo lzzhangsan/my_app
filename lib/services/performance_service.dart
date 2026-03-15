@@ -4,6 +4,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'logger.dart';
 import 'package:flutter/services.dart';
 
 class PerformanceService {
@@ -368,7 +369,7 @@ class PerformanceService {
   void clearMetrics() {
     _metrics.clear();
     if (kDebugMode) {
-      print('性能指标历史已清空');
+      Logger.log('性能指标历史已清空');
     }
   }
 
@@ -376,7 +377,7 @@ class PerformanceService {
   void pauseMonitoring() {
     _monitoringTimer?.cancel();
     if (kDebugMode) {
-      print('性能监控已暂停');
+      Logger.log('性能监控已暂停');
     }
   }
 
@@ -385,7 +386,7 @@ class PerformanceService {
     if (_isInitialized) {
       _startMonitoring();
       if (kDebugMode) {
-        print('性能监控已恢复');
+        Logger.log('性能监控已恢复');
       }
     }
   }
@@ -398,7 +399,7 @@ class PerformanceService {
     _isInitialized = false;
     
     if (kDebugMode) {
-      print('PerformanceService: 资源已释放');
+      Logger.log('PerformanceService: 资源已释放');
     }
   }
 }

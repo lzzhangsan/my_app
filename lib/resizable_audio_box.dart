@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../services/logger.dart';
 import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:record/record.dart';  // 重新启用record依赖
@@ -106,8 +107,8 @@ class _ResizableAudioBoxState extends State<ResizableAudioBox> with SingleTicker
   // 播放音频
   Future<void> _togglePlay() async {
     try {
-      print('[音频播放调试] audioPath: $_recordedPath');
-      print('[音频播放调试] 文件是否存在: ${File(_recordedPath).existsSync()}');
+      Logger.log('[音频播放调试] audioPath: $_recordedPath');
+      Logger.log('[音频播放调试] 文件是否存在: ${File(_recordedPath).existsSync()}');
       if (_isPlaying) {
         await _player.stop();
         setState(() {
@@ -123,14 +124,14 @@ class _ResizableAudioBoxState extends State<ResizableAudioBox> with SingleTicker
             _generateRandomWaves();
           });
         } else {
-          print('[音频播放调试] 找不到音频文件或路径无效: $_recordedPath');
+          Logger.log('[音频播放调试] 找不到音频文件或路径无效: $_recordedPath');
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('找不到音频文件或路径无效')),
           );
         }
       }
     } catch (e) {
-      print('播放音频时出错: $e');
+      Logger.log('播放音频时出错: $e');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('播放失败: $e')),
       );
@@ -205,7 +206,7 @@ class _ResizableAudioBoxState extends State<ResizableAudioBox> with SingleTicker
         );
       }
     } catch (e) {
-      print('开始录音时出错: $e');
+      Logger.log('开始录音时出错: $e');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('无法开始录音: $e')),
       );
@@ -231,7 +232,7 @@ class _ResizableAudioBoxState extends State<ResizableAudioBox> with SingleTicker
       widget.onIsRecording(false);
       
     } catch (e) {
-      print('停止录音时出错: $e');
+      Logger.log('停止录音时出错: $e');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('停止录音时出错')),
       );

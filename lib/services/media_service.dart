@@ -3,6 +3,7 @@
 
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'logger.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../models/media_item.dart';
@@ -48,11 +49,11 @@ class MediaService {
       _isInitialized = true;
       
       if (kDebugMode) {
-        print('MediaService: 初始化完成，找到 ${_mediaCache.length} 个媒体文件');
+        Logger.log('MediaService: 初始化完成，找到 ${_mediaCache.length} 个媒体文件');
       }
     } catch (e) {
       if (kDebugMode) {
-        print('MediaService 初始化失败: $e');
+        Logger.log('MediaService 初始化失败: $e');
       }
       rethrow;
     }
@@ -98,7 +99,7 @@ class MediaService {
       _mediaNotifier.value = List.from(_mediaCache);
     } catch (e) {
       if (kDebugMode) {
-        print('加载媒体文件失败: $e');
+        Logger.log('加载媒体文件失败: $e');
       }
     }
   }
@@ -131,7 +132,7 @@ class MediaService {
       );
     } catch (e) {
       if (kDebugMode) {
-        print('创建MediaItem失败: $e');
+        Logger.log('创建MediaItem失败: $e');
       }
       return null;
     }
@@ -158,14 +159,14 @@ class MediaService {
         _mediaNotifier.value = List.from(_mediaCache);
         
         if (kDebugMode) {
-          print('添加媒体文件成功: ${mediaItem.name}');
+          Logger.log('添加媒体文件成功: ${mediaItem.name}');
         }
       }
       
       return mediaItem;
     } catch (e) {
       if (kDebugMode) {
-        print('添加媒体文件失败: $e');
+        Logger.log('添加媒体文件失败: $e');
       }
       rethrow;
     }
@@ -190,13 +191,13 @@ class MediaService {
       _mediaNotifier.value = List.from(_mediaCache);
       
       if (kDebugMode) {
-        print('删除媒体文件成功: ${mediaItem.name}');
+        Logger.log('删除媒体文件成功: ${mediaItem.name}');
       }
       
       return true;
     } catch (e) {
       if (kDebugMode) {
-        print('删除媒体文件失败: $e');
+        Logger.log('删除媒体文件失败: $e');
       }
       return false;
     }
@@ -258,7 +259,7 @@ class MediaService {
     _isInitialized = false;
     
     if (kDebugMode) {
-      print('MediaService: 资源已释放');
+      Logger.log('MediaService: 资源已释放');
     }
   }
 
@@ -280,7 +281,7 @@ class MediaService {
       }
       return null;
     } catch (e) {
-      print('生成视频缩略图失败: $e');
+      Logger.log('生成视频缩略图失败: $e');
       return null;
     }
   }

@@ -9,6 +9,7 @@ import 'package:crypto/crypto.dart';
 import 'package:uuid/uuid.dart';
 import '../core/service_locator.dart';
 import 'database_service.dart';
+import 'logger.dart';
 import 'network_service.dart';
 import '../models/media_type.dart';
 
@@ -60,7 +61,7 @@ class TelegramDownloadServiceV2 {
       _botToken = token;
       return true;
     } catch (e) {
-      print('保存 Bot Token 失败: $e');
+      Logger.log('保存 Bot Token 失败: $e');
       return false;
     }
   }
@@ -86,7 +87,7 @@ class TelegramDownloadServiceV2 {
       );
       return response.statusCode == 200 && response.data['ok'] == true;
     } catch (e) {
-      print('验证 Bot Token 失败: $e');
+      Logger.log('验证 Bot Token 失败: $e');
       return false;
     }
   }
@@ -158,7 +159,7 @@ class TelegramDownloadServiceV2 {
       );
       
     } catch (e) {
-      print('下载失败: $e');
+      Logger.log('下载失败: $e');
       return DownloadResult.error('下载失败: ${e.toString()}');
     }
   }
@@ -178,7 +179,7 @@ class TelegramDownloadServiceV2 {
         return response.data['result'];
       }
     } catch (e) {
-      print('获取机器人信息失败: $e');
+      Logger.log('获取机器人信息失败: $e');
     }
     
     return null;
@@ -199,7 +200,7 @@ class TelegramDownloadServiceV2 {
         return List<Map<String, dynamic>>.from(response.data['result']);
       }
     } catch (e) {
-      print('获取更新失败: $e');
+      Logger.log('获取更新失败: $e');
     }
     
     return [];
@@ -220,7 +221,7 @@ class TelegramDownloadServiceV2 {
       
       if (existingItem != null) {
         // 文件已存在，直接返回成功
-        print('文件已存在，跳过下载: ${existingItem['name']}');
+        Logger.log('文件已存在，跳过下载: ${existingItem['name']}');
         return DownloadResult.success(
           existingItem['path'],
           existingItem['name'],
@@ -326,10 +327,10 @@ class TelegramDownloadServiceV2 {
       } else if (e.type == DioExceptionType.unknown) {
          errorMessage = '网络连接异常或未知错误。请检查您的网络。';
       }
-      print('下载文件失败 (DioError): $errorMessage, URL: ${e.requestOptions.path}');
+      Logger.log('下载文件失败 (DioError): $errorMessage, URL: ${e.requestOptions.path}');
       return DownloadResult.error(errorMessage);
     } catch (e) {
-      print('下载文件失败: $e');
+      Logger.log('下载文件失败: $e');
       return DownloadResult.error('下载失败: ${e.toString()}');
     }
   }

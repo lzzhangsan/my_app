@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
+import 'logger.dart';
 
 /// 网络服务 - 提供统一的HTTP请求处理，包含超时、重试和错误处理
 class NetworkService {
@@ -34,7 +35,7 @@ class NetworkService {
     _isInitialized = true;
 
     if (kDebugMode) {
-      print('$_tag: 网络服务初始化完成');
+      Logger.log('$_tag: 网络服务初始化完成');
     }
     return;
   }
@@ -59,7 +60,7 @@ class NetworkService {
           requestOptions.extra['retryCount'] = retryCount + 1;
 
           if (kDebugMode) {
-            print('$_tag: 重试请求 ${retryCount + 1}/$maxRetries, 延迟 ${delay.inSeconds}s');
+            Logger.log('$_tag: 重试请求 ${retryCount + 1}/$maxRetries, 延迟 ${delay.inSeconds}s');
           }
 
           await Future.delayed(delay);
@@ -91,19 +92,19 @@ class NetworkService {
     return InterceptorsWrapper(
       onRequest: (options, handler) {
         if (kDebugMode) {
-          print('$_tag: [${options.method}] ${options.uri}');
+          Logger.log('$_tag: [${options.method}] ${options.uri}');
         }
         handler.next(options);
       },
       onResponse: (response, handler) {
         if (kDebugMode) {
-          print('$_tag: [${response.statusCode}] ${response.requestOptions.uri}');
+          Logger.log('$_tag: [${response.statusCode}] ${response.requestOptions.uri}');
         }
         handler.next(response);
       },
       onError: (error, handler) {
         if (kDebugMode) {
-          print('$_tag: [ERROR] ${error.requestOptions.uri} - ${error.message}');
+          Logger.log('$_tag: [ERROR] ${error.requestOptions.uri} - ${error.message}');
         }
         handler.next(error);
       },
@@ -244,7 +245,7 @@ class NetworkService {
     _isInitialized = false;
 
     if (kDebugMode) {
-      print('$_tag: 网络服务已清理');
+      Logger.log('$_tag: 网络服务已清理');
     }
   }
 }

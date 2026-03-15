@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart' show kIsWeb, ValueNotifier;
 import 'package:flutter/material.dart';
 import 'core/service_locator.dart';
+import 'services/logger.dart';
 import 'services/database_service.dart';
 import 'document_editor_page.dart';
 import 'package:flutter/services.dart'; // For haptic feedback
@@ -87,7 +88,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       // 启动时检查数据完整性
       _checkDataIntegrityOnStartup();
     } else {
-      print("Web environment detected: Database-dependent features in initState are skipped.");
+      Logger.log("Web environment detected: Database-dependent features in initState are skipped.");
       // Initialize with empty or default states for web
       if (mounted) {
         setState(() {
@@ -104,10 +105,10 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     try {
       final report = await getService<DatabaseService>().checkDataIntegrity();
       if (!report['isValid']) {
-        print('启动时发现数据完整性问题: ${report['issues']}');
+        Logger.log('启动时发现数据完整性问题: ${report['issues']}');
         // 自动修复数据完整性问题
         await getService<DatabaseService>().repairDataIntegrity();
-        print('已自动修复数据完整性问题');
+        Logger.log('已自动修复数据完整性问题');
         
         // 重新加载数据
         if (mounted) {
@@ -115,7 +116,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         }
       }
     } catch (e) {
-      print('启动时数据完整性检查失败: $e');
+      Logger.log('启动时数据完整性检查失败: $e');
     }
   }
 
@@ -143,14 +144,14 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
 
   @override
   void didPushNext() {
-    print('DirectoryPage被覆盖 - 保存当前状态');
+    Logger.log('DirectoryPage被覆盖 - 保存当前状态');
     _saveCurrentBackgroundState();
   }
 
   @override
   void didPopNext() {
-    print('DirectoryPage重新显示 - 重新加载设置');
-    print('当前文件夹: $_currentParentFolder, 文件夹栈: $_folderStack');
+    Logger.log('DirectoryPage重新显示 - 重新加载设置');
+    Logger.log('当前文件夹: $_currentParentFolder, 文件夹栈: $_folderStack');
     if (mounted) {
       // 重新加载数据，这会自动加载背景设置
       _loadData();
@@ -224,7 +225,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
           await _loadData();
         }
       } catch (e) {
-        print('批量删除出错: $e');
+        Logger.log('批量删除出错: $e');
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('批量删除出错，请重试')),
@@ -285,7 +286,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         await _loadData();
       }
     } catch (e) {
-      print('批量移动出错: $e');
+      Logger.log('批量移动出错: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('批量移动出错，请重试')),
@@ -311,21 +312,21 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         
         for (var item in _selectedItems) {
           if (item.type == ItemType.document) {
-            print('移动文档 ${item.name} 到根目录');
+            Logger.log('移动文档 ${item.name} 到根目录');
             await dbService.updateDocumentParentFolder(item.name, null);
           } else if (item.type == ItemType.folder) {
-            print('移动文件夹 ${item.name} 到根目录');
+            Logger.log('移动文件夹 ${item.name} 到根目录');
             await dbService.updateFolderParentFolder(item.name, null);
           }
         }
         _selectedItems.clear();
         _isMultiSelectMode = false;
         if (mounted) {
-          print('移动到根目录完成，重新加载数据...');
+          Logger.log('移动到根目录完成，重新加载数据...');
           await _loadData();
         }
       } catch (e) {
-        print('批量移动到目录出错: $e');
+        Logger.log('批量移动到目录出错: $e');
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('批量移动到目录出错，请重试')),
@@ -337,7 +338,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
 
   Future<void> _loadBackgroundSettings() async {
     if (kIsWeb) {
-      print("Web environment: Skipping background settings load from database.");
+      Logger.log("Web environment: Skipping background settings load from database.");
       if (mounted) {
         setState(() {
           _backgroundImage = null;
@@ -347,23 +348,23 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       return;
     }
     try {
-      print('开始加载背景设置 for folder: $_currentParentFolder');
+      Logger.log('开始加载背景设置 for folder: $_currentParentFolder');
       Map<String, dynamic>? settings = await getService<DatabaseService>().getDirectorySettings(_currentParentFolder);
 
       if (settings != null) {
         String? imagePath = settings['background_image_path'];
         int? colorValue = settings['background_color'];
 
-        print('从数据库加载设置 - 图片路径: ${imagePath ?? "空"}, 颜色值: ${colorValue ?? "空"}');
+        Logger.log('从数据库加载设置 - 图片路径: ${imagePath ?? "空"}, 颜色值: ${colorValue ?? "空"}');
 
         if (mounted) {
           setState(() {
             if (colorValue != null) {
               _backgroundColor = Color(colorValue);
-              print('已加载背景颜色: $colorValue');
+              Logger.log('已加载背景颜色: $colorValue');
             } else {
               _backgroundColor = null;
-              print('背景颜色为空，使用默认白色');
+              Logger.log('背景颜色为空，使用默认白色');
             }
           });
         }
@@ -371,15 +372,15 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         if (imagePath != null && imagePath.isNotEmpty) {
           File imageFile = File(imagePath);
           bool exists = await imageFile.exists();
-          print('检查图片文件: $imagePath, 是否存在: $exists');
+          Logger.log('检查图片文件: $imagePath, 是否存在: $exists');
 
           if (exists && mounted) {
             setState(() {
               _backgroundImage = imageFile;
-              print('已加载背景图片: $imagePath');
+              Logger.log('已加载背景图片: $imagePath');
             });
           } else {
-            print('背景图片文件不存在: $imagePath');
+            Logger.log('背景图片文件不存在: $imagePath');
             if (mounted) {
               setState(() {
                 _backgroundImage = null;
@@ -390,11 +391,11 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         } else if (mounted) {
           setState(() {
             _backgroundImage = null;
-            print('背景图片路径为空');
+            Logger.log('背景图片路径为空');
           });
         }
       } else {
-        print('未找到目录设置，使用默认背景');
+        Logger.log('未找到目录设置，使用默认背景');
         if (mounted) {
           setState(() {
             _backgroundImage = null;
@@ -403,7 +404,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         }
       }
     } catch (e) {
-      print('加载背景设置时出错: $e');
+      Logger.log('加载背景设置时出错: $e');
       if (mounted) {
         setState(() {
           _backgroundImage = null;
@@ -446,10 +447,10 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
           imagePath: permanentPath,
         );
 
-        print('已持久化保存背景图片: $permanentPath');
+        Logger.log('已持久化保存背景图片: $permanentPath');
       }
     } catch (e) {
-      print('选择背景图片出错: $e');
+      Logger.log('选择背景图片出错: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('选择背景图像出错。请重试。')),
@@ -474,9 +475,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
           });
         }
 
-        print('背景图片已删除');
+        Logger.log('背景图片已删除');
       } catch (e) {
-        print('移除背景图片出错: $e');
+        Logger.log('移除背景图片出错: $e');
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('移除背景图像出错。请重试。')),
@@ -505,9 +506,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
           colorValue: _backgroundColor!.value,
         );
 
-        print('成功更新背景颜色: ${_backgroundColor!.value}');
+        Logger.log('成功更新背景颜色: ${_backgroundColor!.value}');
       } catch (e) {
-        print('设置背景颜色时出错: $e');
+        Logger.log('设置背景颜色时出错: $e');
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('设置背景颜色出错。请重试。')),
@@ -603,9 +604,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         _backgroundColor = color;
       });
       
-      print('目录背景颜色已保存: ${color.value}');
+      Logger.log('目录背景颜色已保存: ${color.value}');
     } catch (e) {
-      print('保存背景颜色时出错: $e');
+      Logger.log('保存背景颜色时出错: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('保存背景颜色失败: $e')),
@@ -616,7 +617,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
 
   Future<void> _loadTemplateDocuments() async {
     if (kIsWeb) {
-      print("Web environment: Skipping template documents load from database.");
+      Logger.log("Web environment: Skipping template documents load from database.");
       if (mounted) {
         setState(() {
           _templateDocuments = [];
@@ -627,13 +628,13 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     try {
       _templateDocuments = await getService<DatabaseService>().getTemplateDocuments();
     } catch (e) {
-      print('加载模板文档出错: $e');
+      Logger.log('加载模板文档出错: $e');
     }
   }
 
   Future<void> _loadData() async {
     if (kIsWeb) {
-      print("Web environment: Skipping data load from database.");
+      Logger.log("Web environment: Skipping data load from database.");
       if (mounted) {
         setState(() {
           _items = [];
@@ -642,22 +643,22 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       return;
     }
     try {
-      print('开始加载数据 for folder: $_currentParentFolder');
+      Logger.log('开始加载数据 for folder: $_currentParentFolder');
       
       // 加载文件夹数据
       List<Map<String, dynamic>> folders = await getService<DatabaseService>().getFolders(parentFolder: _currentParentFolder);
-      print('从数据库加载了 ${folders.length} 个文件夹');
+      Logger.log('从数据库加载了 ${folders.length} 个文件夹');
 
       // 加载文档数据
       List<Map<String, dynamic>> documents = await getService<DatabaseService>().getDocuments(parentFolder: _currentParentFolder);
-      print('从数据库加载了 ${documents.length} 个文档');
+      Logger.log('从数据库加载了 ${documents.length} 个文档');
 
       List<DirectoryItem> directoryItems = [];
 
       // 处理文件夹数据
       for (var folder in folders) {
         if (folder['name'] != null && folder['name'].toString().isNotEmpty) {
-          print('加载文件夹: ${folder['name']}, 顺序: ${folder['order_index']}');
+          Logger.log('加载文件夹: ${folder['name']}, 顺序: ${folder['order_index']}');
           directoryItems.add(DirectoryItem(
             name: folder['name'],
             type: ItemType.folder,
@@ -666,7 +667,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
             parentFolder: folder['parent_folder'],
           ));
         } else {
-          print('警告：发现无效文件夹数据: $folder');
+          Logger.log('警告：发现无效文件夹数据: $folder');
         }
       }
 
@@ -674,12 +675,12 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       for (var document in documents) {
         // 跳过封面页文档，不在目录页显示
         if (document['name'] == '__CoverPage__') {
-          print('跳过封面页文档，不在目录页显示');
+          Logger.log('跳过封面页文档，不在目录页显示');
           continue;
         }
         
         if (document['name'] != null && document['name'].toString().isNotEmpty) {
-          print('加载文档: ${document['name']}, 顺序: ${document['order_index']}');
+          Logger.log('加载文档: ${document['name']}, 顺序: ${document['order_index']}');
           directoryItems.add(DirectoryItem(
             name: document['name'],
             type: ItemType.document,
@@ -688,7 +689,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
             parentFolder: document['parent_folder'],
           ));
         } else {
-          print('警告：发现无效文档数据: $document');
+          Logger.log('警告：发现无效文档数据: $document');
         }
       }
 
@@ -707,9 +708,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       // 加载模板文档
       await _loadTemplateDocuments();
       
-      print('数据加载完成，共 ${_items.length} 个项目');
+      Logger.log('数据加载完成，共 ${_items.length} 个项目');
     } catch (e) {
-      print('加载数据时出错: $e');
+      Logger.log('加载数据时出错: $e');
       if (mounted) {
         setState(() {
           _items = [];
@@ -774,7 +775,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       }
       return null;
     } catch (e) {
-      print('Error getting parent folder: $e');
+      Logger.log('Error getting parent folder: $e');
       return null;
     }
   }
@@ -789,7 +790,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       }
       await Share.shareXFiles([XFile(exportPath)], text: '文档备份文件');
     } catch (e) {
-      print('Error exporting document: $e');
+      Logger.log('Error exporting document: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('导出文档出错：$e')),
@@ -844,7 +845,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         }
       }
     } catch (e) {
-      print('Error adding folder: $e');
+      Logger.log('Error adding folder: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('添加文件夹出错。请重试。')),
@@ -876,7 +877,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         }
       }
     } catch (e) {
-      print('Error adding document: $e');
+      Logger.log('Error adding document: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('添加文档出错。请重试。')),
@@ -934,7 +935,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
               );
               successFiles.add(originalName);
             } catch (e) {
-              print('导入文档 $originalName 时出错: $e');
+              Logger.log('导入文档 $originalName 时出错: $e');
               failedFiles.add(originalName);
             }
           }
@@ -978,7 +979,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         }
       }
     } catch (e) {
-      print('批量导入文档时出错: $e');
+      Logger.log('批量导入文档时出错: $e');
       if (mounted) {
         Navigator.of(context).pop(); // 确保关闭进度对话框
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1001,7 +1002,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
             await fileCleanupService.deleteDocumentCompletely(documentName);
           }
         } catch (e) {
-          print('文件清理服务删除文档失败: $e');
+          Logger.log('文件清理服务删除文档失败: $e');
         }
         
         // 从数据库中删除
@@ -1013,7 +1014,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
           });
         }
       } catch (e) {
-        print('Error deleting document: $e');
+        Logger.log('Error deleting document: $e');
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('删除文档出错。请重试。')),
@@ -1036,7 +1037,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
             await fileCleanupService.deleteFolderCompletely(folderName);
           }
         } catch (e) {
-          print('文件清理服务删除文件夹失败: $e');
+          Logger.log('文件清理服务删除文件夹失败: $e');
         }
         
         // 从数据库中删除
@@ -1046,7 +1047,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
           await _loadData();
         }
       } catch (e) {
-        print('Error deleting folder: $e');
+        Logger.log('Error deleting folder: $e');
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('删除文件夹出错。请重试。')),
@@ -1092,7 +1093,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
             await _loadData();
           }
         } catch (e) {
-          print('Error renaming document: $e');
+          Logger.log('Error renaming document: $e');
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(content: Text('重命名文档出错。请重试。')),
@@ -1119,7 +1120,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
             await _loadData();
           }
         } catch (e) {
-          print('Error renaming folder: $e');
+          Logger.log('Error renaming folder: $e');
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(content: Text('重命名文件夹出错。请重试。')),
@@ -1139,7 +1140,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         await _loadData();
       }
     } catch (e) {
-      print('Error moving document to directory: $e');
+      Logger.log('Error moving document to directory: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('移动文档到目录出错。请重试。')),
@@ -1155,7 +1156,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         await _loadData();
       }
     } catch (e) {
-      print('Error moving folder to directory: $e');
+      Logger.log('Error moving folder to directory: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('移动文件夹到目录出错。请重试。')),
@@ -1262,7 +1263,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       );
       return selectedFolder;
     } catch (e) {
-      print('Error selecting folder: $e');
+      Logger.log('Error selecting folder: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('选择文件夹时出错')),
@@ -1298,7 +1299,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         await _loadData();
       }
     } catch (e) {
-      print('Error moving folder: $e');
+      Logger.log('Error moving folder: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(e.toString())),
@@ -1332,7 +1333,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         await _loadData();
       }
     } catch (e) {
-      print('Error moving document: $e');
+      Logger.log('Error moving document: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(e.toString())),
@@ -1384,7 +1385,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       
       return currentPath;
     } catch (e) {
-      print('获取文件夹路径出错: $e');
+      Logger.log('获取文件夹路径出错: $e');
       return folderName; // 出错时至少返回文件夹名称
     }
   }
@@ -1475,7 +1476,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         }
       }
     } catch (e) {
-      print('Error updating order: $e');
+      Logger.log('Error updating order: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('更新顺序出错。请重试。')),
@@ -1494,7 +1495,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         ),
       ),
     ).then((_) {
-      print('从文档编辑页面返回');
+      Logger.log('从文档编辑页面返回');
       if (mounted) {
         _loadBackgroundSettings();
         _loadData();
@@ -1530,7 +1531,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         _highlightNewItem(newDocName, ItemType.document);
       }
     } catch (e) {
-      print('复制文档出错: $e');
+      Logger.log('复制文档出错: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('复制文档出错，请重试。')),
@@ -1954,7 +1955,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         _highlightNewItem(newDocName, ItemType.document);
       }
     } catch (e) {
-      print('从模板创建文档时出错: $e');
+      Logger.log('从模板创建文档时出错: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('创建文档时出错，请重试。')),
@@ -2009,24 +2010,24 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
 
   Future<void> _saveCurrentBackgroundState() async {
     if (kIsWeb) {
-      print("Web environment: Skipping save current background state.");
+      Logger.log("Web environment: Skipping save current background state.");
       return;
     }
     try {
       if (_backgroundImage != null) {
-        print('保存当前背景图片: ${_backgroundImage!.path}');
+        Logger.log('保存当前背景图片: ${_backgroundImage!.path}');
       }
       if (_backgroundColor != null) {
-        print('保存当前背景颜色: ${_backgroundColor!.value}');
+        Logger.log('保存当前背景颜色: ${_backgroundColor!.value}');
       }
     } catch (e) {
-      print('保存当前背景状态时出错: $e');
+      Logger.log('保存当前背景状态时出错: $e');
     }
   }
 
   Future<void> _checkAndRestoreBackgroundImage() async {
     if (kIsWeb) {
-      print("Web environment: Skipping background image check/restore from database.");
+      Logger.log("Web environment: Skipping background image check/restore from database.");
       return;
     }
     try {
@@ -2038,19 +2039,19 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
           if (await imageFile.exists() && mounted) {
             setState(() {
               _backgroundImage = imageFile;
-              print('恢复背景图片: $imagePath');
+              Logger.log('恢复背景图片: $imagePath');
             });
           }
         }
       }
     } catch (e) {
-      print('恢复背景图片时出错: $e');
+      Logger.log('恢复背景图片时出错: $e');
     }
   }
 
   void forceRefresh() {
     if (mounted) {
-      print('强制刷新页面状态');
+      Logger.log('强制刷新页面状态');
       _loadBackgroundSettings();
       _loadData(); // 重新加载目录数据
       setState(() {});
@@ -2091,7 +2092,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
               exportPaths.add(exportPath);
             }
           } catch (e) {
-            print('导出文档 ${item.name} 时出错: $e');
+            Logger.log('导出文档 ${item.name} 时出错: $e');
           }
         }
       }
@@ -2336,7 +2337,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         }
       }
     } catch (e) {
-      print('检查数据完整性时出错: $e');
+      Logger.log('检查数据完整性时出错: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('检查数据完整性时出错: $e')),
@@ -2360,7 +2361,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         await _loadData();
       }
     } catch (e) {
-      print('修复数据完整性问题时出错: $e');
+      Logger.log('修复数据完整性问题时出错: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('修复数据问题时出错: $e')),
@@ -2714,7 +2715,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         _highlightNewItem(newFolderName, ItemType.folder);
       }
     } catch (e) {
-      print('复制文件夹出错: $e');
+      Logger.log('复制文件夹出错: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('复制文件夹出错，请重试。')),

@@ -3,6 +3,7 @@
 
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'logger.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as path;
 import 'cache_service.dart';
@@ -50,17 +51,17 @@ class FileCleanupService {
       _isInitialized = true;
       
       if (kDebugMode) {
-        print('FileCleanupService: 初始化完成');
-        print('应用文档目录: ${_appDocumentsDirectory!.path}');
-        print('应用缓存目录: ${_appCacheDirectory!.path}');
-        print('临时目录: ${_tempDirectory!.path}');
+        Logger.log('FileCleanupService: 初始化完成');
+        Logger.log('应用文档目录: ${_appDocumentsDirectory!.path}');
+        Logger.log('应用缓存目录: ${_appCacheDirectory!.path}');
+        Logger.log('临时目录: ${_tempDirectory!.path}');
         if (_externalStorageDirectory != null) {
-          print('应用外部存储: ${_externalStorageDirectory!.path}');
+          Logger.log('应用外部存储: ${_externalStorageDirectory!.path}');
         }
       }
     } catch (e) {
       if (kDebugMode) {
-        print('FileCleanupService 初始化失败: $e');
+        Logger.log('FileCleanupService 初始化失败: $e');
       }
       rethrow;
     }
@@ -76,7 +77,7 @@ class FileCleanupService {
       final file = File(filePath);
       if (!await file.exists()) {
         if (kDebugMode) {
-          print('文件不存在，无需删除: $filePath');
+          Logger.log('文件不存在，无需删除: $filePath');
         }
         return true;
       }
@@ -94,13 +95,13 @@ class FileCleanupService {
       await _deleteRelatedCacheFiles(filePath);
       
       if (kDebugMode) {
-        print('彻底删除媒体文件成功: $filePath (释放空间: ${_formatFileSize(fileSize)})');
+        Logger.log('彻底删除媒体文件成功: $filePath (释放空间: ${_formatFileSize(fileSize)})');
       }
       
       return true;
     } catch (e) {
       if (kDebugMode) {
-        print('彻底删除媒体文件失败: $filePath, 错误: $e');
+        Logger.log('彻底删除媒体文件失败: $filePath, 错误: $e');
       }
       return false;
     }
@@ -116,7 +117,7 @@ class FileCleanupService {
       final documentDir = Directory('${_appDocumentsDirectory!.path}/documents/$documentName');
       if (!await documentDir.exists()) {
         if (kDebugMode) {
-          print('文档目录不存在，无需删除: $documentName');
+          Logger.log('文档目录不存在，无需删除: $documentName');
         }
         return true;
       }
@@ -131,13 +132,13 @@ class FileCleanupService {
       await _deleteDocumentCacheFiles(documentName);
       
       if (kDebugMode) {
-        print('彻底删除文档成功: $documentName (释放空间: ${_formatFileSize(directorySize)})');
+        Logger.log('彻底删除文档成功: $documentName (释放空间: ${_formatFileSize(directorySize)})');
       }
       
       return true;
     } catch (e) {
       if (kDebugMode) {
-        print('彻底删除文档失败: $documentName, 错误: $e');
+        Logger.log('彻底删除文档失败: $documentName, 错误: $e');
       }
       return false;
     }
@@ -153,7 +154,7 @@ class FileCleanupService {
       final folderDir = Directory('${_appDocumentsDirectory!.path}/folders/$folderName');
       if (!await folderDir.exists()) {
         if (kDebugMode) {
-          print('文件夹不存在，无需删除: $folderName');
+          Logger.log('文件夹不存在，无需删除: $folderName');
         }
         return true;
       }
@@ -168,13 +169,13 @@ class FileCleanupService {
       await _deleteFolderCacheFiles(folderName);
       
       if (kDebugMode) {
-        print('彻底删除文件夹成功: $folderName (释放空间: ${_formatFileSize(directorySize)})');
+        Logger.log('彻底删除文件夹成功: $folderName (释放空间: ${_formatFileSize(directorySize)})');
       }
       
       return true;
     } catch (e) {
       if (kDebugMode) {
-        print('彻底删除文件夹失败: $folderName, 错误: $e');
+        Logger.log('彻底删除文件夹失败: $folderName, 错误: $e');
       }
       return false;
     }
@@ -207,11 +208,11 @@ class FileCleanupService {
               try {
                 await file.delete();
                 if (kDebugMode) {
-                  print('删除缩略图文件: ${file.path}');
+                  Logger.log('删除缩略图文件: ${file.path}');
                 }
               } catch (e) {
                 if (kDebugMode) {
-                  print('删除缩略图文件失败: ${file.path}, 错误: $e');
+                  Logger.log('删除缩略图文件失败: ${file.path}, 错误: $e');
                 }
               }
             }
@@ -220,7 +221,7 @@ class FileCleanupService {
       }
     } catch (e) {
       if (kDebugMode) {
-        print('删除相关缩略图失败: $e');
+        Logger.log('删除相关缩略图失败: $e');
       }
     }
   }
@@ -241,11 +242,11 @@ class FileCleanupService {
               try {
                 await entity.delete();
                 if (kDebugMode) {
-                  print('删除缓存文件: ${entity.path}');
+                  Logger.log('删除缓存文件: ${entity.path}');
                 }
               } catch (e) {
                 if (kDebugMode) {
-                  print('删除缓存文件失败: ${entity.path}, 错误: $e');
+                  Logger.log('删除缓存文件失败: ${entity.path}, 错误: $e');
                 }
               }
             }
@@ -254,7 +255,7 @@ class FileCleanupService {
       }
     } catch (e) {
       if (kDebugMode) {
-        print('删除相关缓存文件失败: $e');
+        Logger.log('删除相关缓存文件失败: $e');
       }
     }
   }
@@ -270,11 +271,11 @@ class FileCleanupService {
               try {
                 await entity.delete();
                 if (kDebugMode) {
-                  print('删除文档缓存文件: ${entity.path}');
+                  Logger.log('删除文档缓存文件: ${entity.path}');
                 }
               } catch (e) {
                 if (kDebugMode) {
-                  print('删除文档缓存文件失败: ${entity.path}, 错误: $e');
+                  Logger.log('删除文档缓存文件失败: ${entity.path}, 错误: $e');
                 }
               }
             }
@@ -283,7 +284,7 @@ class FileCleanupService {
       }
     } catch (e) {
       if (kDebugMode) {
-        print('删除文档缓存文件失败: $e');
+        Logger.log('删除文档缓存文件失败: $e');
       }
     }
   }
@@ -299,11 +300,11 @@ class FileCleanupService {
               try {
                 await entity.delete();
                 if (kDebugMode) {
-                  print('删除文件夹缓存文件: ${entity.path}');
+                  Logger.log('删除文件夹缓存文件: ${entity.path}');
                 }
               } catch (e) {
                 if (kDebugMode) {
-                  print('删除文件夹缓存文件失败: ${entity.path}, 错误: $e');
+                  Logger.log('删除文件夹缓存文件失败: ${entity.path}, 错误: $e');
                 }
               }
             }
@@ -312,7 +313,7 @@ class FileCleanupService {
       }
     } catch (e) {
       if (kDebugMode) {
-        print('删除文件夹缓存文件失败: $e');
+        Logger.log('删除文件夹缓存文件失败: $e');
       }
     }
   }
@@ -343,7 +344,7 @@ class FileCleanupService {
             if (_isProtectedThumbnailOrCache(fileName)) {
               skippedCount++;
               if (kDebugMode) {
-                print('保留缩略图缓存: ${entity.path}');
+                Logger.log('保留缩略图缓存: ${entity.path}');
               }
               continue;
             }
@@ -354,7 +355,7 @@ class FileCleanupService {
               totalSize += fileSize;
             } catch (e) {
               if (kDebugMode) {
-                print('删除临时文件失败: ${entity.path}, 错误: $e');
+                Logger.log('删除临时文件失败: ${entity.path}, 错误: $e');
               }
             }
           }
@@ -362,11 +363,11 @@ class FileCleanupService {
       }
 
       if (kDebugMode) {
-        print('清理临时文件完成: 删除 $deletedCount 个文件，保留 $skippedCount 个缩略图，释放空间: ${_formatFileSize(totalSize)}');
+        Logger.log('清理临时文件完成: 删除 $deletedCount 个文件，保留 $skippedCount 个缩略图，释放空间: ${_formatFileSize(totalSize)}');
       }
     } catch (e) {
       if (kDebugMode) {
-        print('清理临时文件失败: $e');
+        Logger.log('清理临时文件失败: $e');
       }
     }
   }
@@ -388,7 +389,7 @@ class FileCleanupService {
             if (_isProtectedThumbnailOrCache(fileName)) {
               skippedCount++;
               if (kDebugMode) {
-                print('保留缩略图缓存: ${entity.path}');
+                Logger.log('保留缩略图缓存: ${entity.path}');
               }
               continue;
             }
@@ -399,7 +400,7 @@ class FileCleanupService {
               totalSize += fileSize;
             } catch (e) {
               if (kDebugMode) {
-                print('删除缓存文件失败: ${entity.path}, 错误: $e');
+                Logger.log('删除缓存文件失败: ${entity.path}, 错误: $e');
               }
             }
           }
@@ -407,11 +408,11 @@ class FileCleanupService {
       }
 
       if (kDebugMode) {
-        print('清理缓存文件完成: 删除 $deletedCount 个文件，保留 $skippedCount 个缩略图，释放空间: ${_formatFileSize(totalSize)}');
+        Logger.log('清理缓存文件完成: 删除 $deletedCount 个文件，保留 $skippedCount 个缩略图，释放空间: ${_formatFileSize(totalSize)}');
       }
     } catch (e) {
       if (kDebugMode) {
-        print('清理缓存文件失败: $e');
+        Logger.log('清理缓存文件失败: $e');
       }
     }
   }
@@ -433,7 +434,7 @@ class FileCleanupService {
         .toSet();
 
     if (validSet.isEmpty) {
-      if (kDebugMode) print('清理孤立文件: 有效路径集合为空，跳过清理以确保安全');
+      if (kDebugMode) Logger.log('清理孤立文件: 有效路径集合为空，跳过清理以确保安全');
       return {'count': 0, 'bytes': 0};
     }
 
@@ -457,9 +458,9 @@ class FileCleanupService {
               await entity.delete();
               deletedCount++;
               totalSize += fileSize;
-              if (kDebugMode) print('删除孤立文件: $filePath');
+              if (kDebugMode) Logger.log('删除孤立文件: $filePath');
             } catch (e) {
-              if (kDebugMode) print('删除孤立文件失败: $filePath, 错误: $e');
+              if (kDebugMode) Logger.log('删除孤立文件失败: $filePath, 错误: $e');
             }
           }
         }
@@ -476,11 +477,11 @@ class FileCleanupService {
       await scanAndDelete(Directory('$base/documents'));
 
       if (kDebugMode) {
-        print('清理孤立文件完成: 删除 $deletedCount 个文件，释放空间: ${_formatFileSize(totalSize)}');
+        Logger.log('清理孤立文件完成: 删除 $deletedCount 个文件，释放空间: ${_formatFileSize(totalSize)}');
       }
       return {'count': deletedCount, 'bytes': totalSize};
     } catch (e) {
-      if (kDebugMode) print('清理孤立文件失败: $e');
+      if (kDebugMode) Logger.log('清理孤立文件失败: $e');
       return {'count': deletedCount, 'bytes': totalSize};
     }
   }
@@ -551,7 +552,7 @@ class FileCleanupService {
       return totalSize;
     } catch (e) {
       if (kDebugMode) {
-        print('获取应用存储使用量失败: $e');
+        Logger.log('获取应用存储使用量失败: $e');
       }
       return 0;
     }
@@ -571,7 +572,7 @@ class FileCleanupService {
         }
       }
     } catch (e) {
-      if (kDebugMode) print('获取外部存储大小失败: $e');
+      if (kDebugMode) Logger.log('获取外部存储大小失败: $e');
     }
     return total;
   }
@@ -623,10 +624,10 @@ class FileCleanupService {
         } catch (_) {}
       }
       if (kDebugMode && totalBytes > 0) {
-        print('清理外部存储: 删除 $deletedCount 项，释放 ${_formatFileSize(totalBytes)}');
+        Logger.log('清理外部存储: 删除 $deletedCount 项，释放 ${_formatFileSize(totalBytes)}');
       }
     } catch (e) {
-      if (kDebugMode) print('清理外部存储失败: $e');
+      if (kDebugMode) Logger.log('清理外部存储失败: $e');
     }
     return {'count': deletedCount, 'bytes': totalBytes};
   }
@@ -659,10 +660,10 @@ class FileCleanupService {
         } catch (_) {}
       }
       if (kDebugMode && totalBytes > 0) {
-        print('清理备份文件: 删除 $deletedCount 项，释放 ${_formatFileSize(totalBytes)}');
+        Logger.log('清理备份文件: 删除 $deletedCount 项，释放 ${_formatFileSize(totalBytes)}');
       }
     } catch (e) {
-      if (kDebugMode) print('清理备份文件失败: $e');
+      if (kDebugMode) Logger.log('清理备份文件失败: $e');
     }
     return {'count': deletedCount, 'bytes': totalBytes};
   }
@@ -673,7 +674,7 @@ class FileCleanupService {
 
     try {
       if (kDebugMode) {
-        print('开始执行完整存储清理...');
+        Logger.log('开始执行完整存储清理...');
       }
       
       // 清理临时文件
@@ -686,11 +687,11 @@ class FileCleanupService {
       await cleanExternalStorage();
       
       if (kDebugMode) {
-        print('完整存储清理完成');
+        Logger.log('完整存储清理完成');
       }
     } catch (e) {
       if (kDebugMode) {
-        print('完整存储清理失败: $e');
+        Logger.log('完整存储清理失败: $e');
       }
     }
   }
@@ -700,7 +701,7 @@ class FileCleanupService {
     _isInitialized = false;
     
     if (kDebugMode) {
-      print('FileCleanupService: 资源已释放');
+      Logger.log('FileCleanupService: 资源已释放');
     }
   }
 }

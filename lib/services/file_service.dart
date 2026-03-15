@@ -4,6 +4,7 @@
 import 'dart:io';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
+import 'logger.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 
@@ -43,14 +44,14 @@ class FileService {
       _isInitialized = true;
       
       if (kDebugMode) {
-        print('FileService: 初始化完成');
-        print('文档目录: ${_documentsDirectory!.path}');
-        print('临时目录: ${_tempDirectory!.path}');
-        print('缓存目录: ${_cacheDirectory!.path}');
+        Logger.log('FileService: 初始化完成');
+        Logger.log('文档目录: ${_documentsDirectory!.path}');
+        Logger.log('临时目录: ${_tempDirectory!.path}');
+        Logger.log('缓存目录: ${_cacheDirectory!.path}');
       }
     } catch (e) {
       if (kDebugMode) {
-        print('FileService 初始化失败: $e');
+        Logger.log('FileService 初始化失败: $e');
       }
       rethrow;
     }
@@ -82,13 +83,13 @@ class FileService {
       await file.writeAsString(content, encoding: utf8);
       
       if (kDebugMode) {
-        print('创建文件成功: $path');
+        Logger.log('创建文件成功: $path');
       }
       
       return file;
     } catch (e) {
       if (kDebugMode) {
-        print('创建文件失败: $e');
+        Logger.log('创建文件失败: $e');
       }
       rethrow;
     }
@@ -105,7 +106,7 @@ class FileService {
       return await file.readAsString(encoding: utf8);
     } catch (e) {
       if (kDebugMode) {
-        print('读取文件失败: $e');
+        Logger.log('读取文件失败: $e');
       }
       rethrow;
     }
@@ -125,11 +126,11 @@ class FileService {
       await file.writeAsString(content, encoding: utf8);
       
       if (kDebugMode) {
-        print('写入文件成功: $path');
+        Logger.log('写入文件成功: $path');
       }
     } catch (e) {
       if (kDebugMode) {
-        print('写入文件失败: $e');
+        Logger.log('写入文件失败: $e');
       }
       rethrow;
     }
@@ -154,13 +155,13 @@ class FileService {
       await sourceFile.copy(targetPath);
       
       if (kDebugMode) {
-        print('复制文件成功: $sourcePath -> $targetPath');
+        Logger.log('复制文件成功: $sourcePath -> $targetPath');
       }
       
       return targetFile;
     } catch (e) {
       if (kDebugMode) {
-        print('复制文件失败: $e');
+        Logger.log('复制文件失败: $e');
       }
       rethrow;
     }
@@ -184,13 +185,13 @@ class FileService {
       final movedFile = await sourceFile.rename(targetPath);
       
       if (kDebugMode) {
-        print('移动文件成功: $sourcePath -> $targetPath');
+        Logger.log('移动文件成功: $sourcePath -> $targetPath');
       }
       
       return movedFile;
     } catch (e) {
       if (kDebugMode) {
-        print('移动文件失败: $e');
+        Logger.log('移动文件失败: $e');
       }
       rethrow;
     }
@@ -204,7 +205,7 @@ class FileService {
         await file.delete();
         
         if (kDebugMode) {
-          print('删除文件成功: $path');
+          Logger.log('删除文件成功: $path');
         }
         
         return true;
@@ -212,7 +213,7 @@ class FileService {
       return false;
     } catch (e) {
       if (kDebugMode) {
-        print('删除文件失败: $e');
+        Logger.log('删除文件失败: $e');
       }
       return false;
     }
@@ -226,13 +227,13 @@ class FileService {
         await directory.create(recursive: true);
         
         if (kDebugMode) {
-          print('创建目录成功: $path');
+          Logger.log('创建目录成功: $path');
         }
       }
       return directory;
     } catch (e) {
       if (kDebugMode) {
-        print('创建目录失败: $e');
+        Logger.log('创建目录失败: $e');
       }
       rethrow;
     }
@@ -246,7 +247,7 @@ class FileService {
         await directory.delete(recursive: recursive);
         
         if (kDebugMode) {
-          print('删除目录成功: $path');
+          Logger.log('删除目录成功: $path');
         }
         
         return true;
@@ -254,7 +255,7 @@ class FileService {
       return false;
     } catch (e) {
       if (kDebugMode) {
-        print('删除目录失败: $e');
+        Logger.log('删除目录失败: $e');
       }
       return false;
     }
@@ -271,7 +272,7 @@ class FileService {
       return await directory.list().toList();
     } catch (e) {
       if (kDebugMode) {
-        print('列出目录内容失败: $e');
+        Logger.log('列出目录内容失败: $e');
       }
       rethrow;
     }
@@ -342,7 +343,7 @@ class FileService {
       return totalSize;
     } catch (e) {
       if (kDebugMode) {
-        print('获取目录大小失败: $e');
+        Logger.log('获取目录大小失败: $e');
       }
       return 0;
     }
@@ -361,11 +362,11 @@ class FileService {
       }
       
       if (kDebugMode) {
-        print('清理临时文件完成');
+        Logger.log('清理临时文件完成');
       }
     } catch (e) {
       if (kDebugMode) {
-        print('清理临时文件失败: $e');
+        Logger.log('清理临时文件失败: $e');
       }
     }
   }
@@ -383,11 +384,11 @@ class FileService {
       }
       
       if (kDebugMode) {
-        print('清理缓存文件完成');
+        Logger.log('清理缓存文件完成');
       }
     } catch (e) {
       if (kDebugMode) {
-        print('清理缓存文件失败: $e');
+        Logger.log('清理缓存文件失败: $e');
       }
     }
   }
@@ -397,7 +398,7 @@ class FileService {
     _isInitialized = false;
     
     if (kDebugMode) {
-      print('FileService: 资源已释放');
+      Logger.log('FileService: 资源已释放');
     }
   }
 }

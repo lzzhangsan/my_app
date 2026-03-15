@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import '../core/service_locator.dart';
+import '../services/logger.dart';
 import '../services/file_cleanup_service.dart';
 import '../services/database_service.dart';
 import 'dart:io' show Directory, File, Platform;
@@ -155,7 +156,7 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
       
     } catch (e) {
       if (kDebugMode) {
-        print('加载存储信息失败: $e');
+        Logger.log('加载存储信息失败: $e');
       }
     } finally {
       setState(() {

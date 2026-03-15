@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
 import 'core/service_locator.dart';
+import 'services/logger.dart';
 import 'services/database_service.dart';
 import 'resizable_and_configurable_text_box.dart' show ResizableAndConfigurableTextBox, CustomTextStyle, TextSegment;
 import 'resizable_image_box.dart';
@@ -87,7 +88,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
     // 优化自动保存：减少频率到30秒，并添加防抖机制
     _autoSaveTimer = Timer.periodic(Duration(seconds: 30), (timer) {
       if (_contentChanged && !_isSaving) {
-        print('自动保存文档内容...');
+        Logger.log('自动保存文档内容...');
         _saveContent();
       }
     });
@@ -97,7 +98,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     if (_contentChanged && !_isSaving) {
-      print('依赖变化时保存文档内容...');
+      Logger.log('依赖变化时保存文档内容...');
       _saveContent();
     }
   }
@@ -163,7 +164,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
         );
       }
     } catch (e) {
-      print('加载背景设置和增强模式时出错: $e');
+      Logger.log('加载背景设置和增强模式时出错: $e');
     } finally {
       setState(() {
         _isLoading = false;
@@ -205,7 +206,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
           try {
             await _backgroundImage!.delete();
           } catch (e) {
-            print('删除旧背景图片时出错: $e');
+            Logger.log('删除旧背景图片时出错: $e');
           }
         }
 
@@ -223,7 +224,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
         _saveStateToHistory();
       }
     } catch (e) {
-      print('选择背景图片时出错: $e');
+      Logger.log('选择背景图片时出错: $e');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('选择背景图片时出错，请重试。')),
       );
@@ -236,7 +237,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
       try {
         await _backgroundImage!.delete();
       } catch (e) {
-        print('删除背景图片文件时出错: $e');
+        Logger.log('删除背景图片文件时出错: $e');
       }
     }
 
@@ -255,7 +256,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
 
       _saveStateToHistory();
     } catch (e) {
-      print('移除背景图片时出错: $e');
+      Logger.log('移除背景图片时出错: $e');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('移除背景图片时出错，请重试。')),
       );
@@ -341,7 +342,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
         );
         _saveStateToHistory();
       } catch (e) {
-        print('设置背景颜色时出错: $e');
+        Logger.log('设置背景颜色时出错: $e');
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('设置背景颜色时出错，请重试。')),
         );
@@ -377,15 +378,15 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
   }
 
   Future<void> _loadContent() async {
-    print('🔍 开始加载文档内容: ${widget.documentName}');
+    Logger.log('🔍 开始加载文档内容: ${widget.documentName}');
     try {
-      print('📄 正在从数据库获取文本框数据...');
+      Logger.log('📄 正在从数据库获取文本框数据...');
       List<Map<String, dynamic>> textBoxes =
       await _databaseService.getTextBoxesByDocument(widget.documentName);
-      print('✅ 成功获取 ${textBoxes.length} 个文本框');
+      Logger.log('✅ 成功获取 ${textBoxes.length} 个文本框');
 
       for (var textBox in textBoxes) {
-        print('🔧 处理文本框数据: ${textBox.keys.toList()}');
+        Logger.log('🔧 处理文本框数据: ${textBox.keys.toList()}');
         if (!textBox.containsKey('positionX') && textBox.containsKey('left')) {
           textBox['positionX'] = textBox['left'];
         }
@@ -400,13 +401,13 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
         }
       }
 
-      print('🖼️ 正在从数据库获取图片框数据...');
+      Logger.log('🖼️ 正在从数据库获取图片框数据...');
       List<Map<String, dynamic>> imageBoxes =
       await _databaseService.getImageBoxesByDocument(widget.documentName);
-      print('✅ 成功获取 ${imageBoxes.length} 个图片框');
+      Logger.log('✅ 成功获取 ${imageBoxes.length} 个图片框');
 
       for (var imageBox in imageBoxes) {
-        print('🔧 处理图片框数据: ${imageBox.keys.toList()}');
+        Logger.log('🔧 处理图片框数据: ${imageBox.keys.toList()}');
         if (!imageBox.containsKey('positionX') && imageBox.containsKey('left')) {
           imageBox['positionX'] = imageBox['left'];
         }
@@ -421,25 +422,25 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
         }
       }
 
-      print('🎵 正在从数据库获取音频框数据...');
+      Logger.log('🎵 正在从数据库获取音频框数据...');
       List<Map<String, dynamic>> audioBoxes =
       await _databaseService.getAudioBoxesByDocument(widget.documentName);
-      print('✅ 成功获取 ${audioBoxes.length} 个音频框');
+      Logger.log('✅ 成功获取 ${audioBoxes.length} 个音频框');
 
   // 新增：加载画布
-  print('🖼️🔁 正在从数据库获取画布数据...');
+  Logger.log('🖼️🔁 正在从数据库获取画布数据...');
   final canvasRows = await _databaseService.getCanvasesByDocument(widget.documentName);
-  print('✅ 成功获取 ${canvasRows.length} 个画布');
+  Logger.log('✅ 成功获取 ${canvasRows.length} 个画布');
   List<FlippableCanvas> canvases = canvasRows.map((row) => FlippableCanvas.fromMap(row)).toList();
 
-      print('⚙️ 正在获取文档设置...');
+      Logger.log('⚙️ 正在获取文档设置...');
       Map<String, dynamic>? docSettings =
       await _databaseService.getDocumentSettings(widget.documentName);
-      print('✅ 文档设置: ${docSettings?.keys.toList() ?? "无设置"}');
+      Logger.log('✅ 文档设置: ${docSettings?.keys.toList() ?? "无设置"}');
       // 注意：textEnhanceMode已经在_loadBackgroundSettingsAndEnhanceMode中加载，这里不再重复加载
-      print('📝 当前文本增强模式: $_textEnhanceMode');
+      Logger.log('📝 当前文本增强模式: $_textEnhanceMode');
 
-      print('🔄 正在更新UI状态...');
+      Logger.log('🔄 正在更新UI状态...');
       setState(() {
         _textBoxes = textBoxes;
         _imageBoxes = imageBoxes;
@@ -451,9 +452,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
         // 保持现有的_textEnhanceMode值，不覆盖
         _isLoading = false;
       });
-      print('✅ UI状态更新完成');
+      Logger.log('✅ UI状态更新完成');
 
-      print('🔄 正在添加历史记录...');
+      Logger.log('🔄 正在添加历史记录...');
       try {
         // 安全地复制数据，处理null值
         List<Map<String, dynamic>> safeTextBoxes = _textBoxes.map((map) {
@@ -480,7 +481,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
           return safeMap;
         }).toList();
         
-        print('📊 安全数据统计: 文本框${safeTextBoxes.length}个, 图片框${safeImageBoxes.length}个, 音频框${safeAudioBoxes.length}个');
+        Logger.log('📊 安全数据统计: 文本框${safeTextBoxes.length}个, 图片框${safeImageBoxes.length}个, 音频框${safeAudioBoxes.length}个');
         
         _history.add({
           'textBoxes': safeTextBoxes,
@@ -495,23 +496,23 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
           'backgroundColor': _backgroundColor?.value,
           'textEnhanceMode': _textEnhanceMode,
         });
-        print('✅ 历史记录添加成功');
+        Logger.log('✅ 历史记录添加成功');
       } catch (e, stackTrace) {
-        print('❌ 添加历史记录时发生错误: $e');
-        print('📍 错误堆栈: $stackTrace');
+        Logger.log('❌ 添加历史记录时发生错误: $e');
+        Logger.log('📍 错误堆栈: $stackTrace');
         // 即使历史记录添加失败，也不影响文档加载
       }
       _historyIndex = 0;
     } catch (e, stackTrace) {
-      print('❌ 加载文档内容时发生错误!');
-      print('📄 文档名称: ${widget.documentName}');
-      print('🚨 错误类型: ${e.runtimeType}');
-      print('💥 错误详情: $e');
-      print('📍 堆栈跟踪: $stackTrace');
+      Logger.log('❌ 加载文档内容时发生错误!');
+      Logger.log('📄 文档名称: ${widget.documentName}');
+      Logger.log('🚨 错误类型: ${e.runtimeType}');
+      Logger.log('💥 错误详情: $e');
+      Logger.log('📍 堆栈跟踪: $stackTrace');
       
       // 检查是否是类型转换错误
       if (e.toString().contains('type') && e.toString().contains('null')) {
-        print('⚠️ 检测到空值类型转换错误，可能是数据库返回了null值');
+        Logger.log('⚠️ 检测到空值类型转换错误，可能是数据库返回了null值');
       }
       
       setState(() {
@@ -536,13 +537,13 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
   Future<void> _saveContent() async {
     // 防重入机制：如果正在保存，则跳过本次保存
     if (_isSaving) {
-      print('保存操作正在进行中，跳过本次保存请求');
+      Logger.log('保存操作正在进行中，跳过本次保存请求');
       return;
     }
     
     _isSaving = true;
     try {
-      print('正在保存文档内容...');
+      Logger.log('正在保存文档内容...');
       await _databaseService.saveTextBoxes(List<Map<String, dynamic>>.from(_textBoxes), widget.documentName);
       await _databaseService.saveImageBoxes(List<Map<String, dynamic>>.from(_imageBoxes), widget.documentName);
       await _databaseService.saveAudioBoxes(List<Map<String, dynamic>>.from(_audioBoxes), widget.documentName);
@@ -565,10 +566,10 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
         _contentChanged = false;
       }
       widget.onSave(List<Map<String, dynamic>>.from(_textBoxes));
-      print('文档内容已保存');
+      Logger.log('文档内容已保存');
     } catch (e) {
-      print('保存内容时出错: $e');
-      print('堆栈跟踪: $e');
+      Logger.log('保存内容时出错: $e');
+      Logger.log('堆栈跟踪: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -680,7 +681,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
         _saveStateToHistory();
       }
     } catch (e) {
-      print('选择图片时出错: $e');
+      Logger.log('选择图片时出错: $e');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('选择图片时出错，请重试。')),
       );
@@ -1156,7 +1157,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
             break;
         }
         
-        print('内容 $contentId 已关联到画布 ${canvas.id} 的${canvas.isFlipped ? "反面" : "正面"}');
+        Logger.log('内容 $contentId 已关联到画布 ${canvas.id} 的${canvas.isFlipped ? "反面" : "正面"}');
         break; // 只关联到第一个匹配的画布
       }
     }
@@ -1360,7 +1361,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
         'textEnhanceMode': _textEnhanceMode,
       });
     } catch (e) {
-      print('❌ 保存历史状态时发生错误: $e');
+      Logger.log('❌ 保存历史状态时发生错误: $e');
       // 创建一个空的历史状态作为备用
       _history.add({
         'textBoxes': <Map<String, dynamic>>[],
@@ -1442,7 +1443,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
       positionLocked: _isPositionLocked,
     );
     if (_contentChanged) {
-      print('页面销毁前保存文档内容...');
+      Logger.log('页面销毁前保存文档内容...');
       _saveContentOnDispose();
     }
     _autoSaveTimer?.cancel();
@@ -1456,7 +1457,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
   Future<void> _saveContentOnDispose() async {
     // 防重入机制：如果正在保存，则等待当前保存完成
     if (_isSaving) {
-      print('等待当前保存操作完成...');
+      Logger.log('等待当前保存操作完成...');
       // 等待最多3秒，避免无限等待
       int waitCount = 0;
       while (_isSaving && waitCount < 30) {
@@ -1464,26 +1465,26 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
         waitCount++;
       }
       if (_isSaving) {
-        print('等待保存超时，强制执行保存');
+        Logger.log('等待保存超时，强制执行保存');
       } else {
-        print('当前保存操作已完成，无需重复保存');
+        Logger.log('当前保存操作已完成，无需重复保存');
         return;
       }
     }
     
     _isSaving = true;
     try {
-      print('正在保存文档内容...');
+      Logger.log('正在保存文档内容...');
       await _databaseService.saveTextBoxes(List<Map<String, dynamic>>.from(_textBoxes), widget.documentName);
       await _databaseService.saveImageBoxes(List<Map<String, dynamic>>.from(_imageBoxes), widget.documentName);
       await _databaseService.saveAudioBoxes(List<Map<String, dynamic>>.from(_audioBoxes), widget.documentName);
       // 不调用setState，因为页面已经销毁
       _contentChanged = false;
       widget.onSave(List<Map<String, dynamic>>.from(_textBoxes));
-      print('文档内容已保存');
+      Logger.log('文档内容已保存');
     } catch (e) {
-      print('保存内容时出错: $e');
-      print('堆栈跟踪: $e');
+      Logger.log('保存内容时出错: $e');
+      Logger.log('堆栈跟踪: $e');
       // 不显示SnackBar，因为页面已经销毁
     } finally {
       _isSaving = false;
@@ -1607,11 +1608,14 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
       onWillPop: () async {
         if (_contentChanged) {
           await _saveContent();
-          print('退出页面前保存文档内容...');
+          Logger.log('退出页面前保存文档内容...');
         }
         return true;
       },
-      child: Scaffold(
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          Scaffold(
         extendBody: true,
         appBar: PreferredSize(
           preferredSize: Size.fromHeight(28.0),
@@ -1925,20 +1929,6 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
                 ),
               ),
             ),
-            // 视频控制覆盖层 - 显示在最上层
-            StreamBuilder<Object?>(
-              stream: Stream.periodic(Duration(milliseconds: 200)), // 降低检查频率
-              builder: (context, snapshot) {
-                final videoWidget = _mediaPlayerKey.currentState?.getCurrentVideoWidget();
-                if (videoWidget == null) {
-                  return SizedBox.shrink();
-                }
-                return VideoControlsOverlay(
-                  videoPlayerWidget: videoWidget,
-                  key: ValueKey('video_controls_${videoWidget.key}'), // 使用稳定的key
-                );
-              },
-            ),
           ],
         ),
         bottomNavigationBar: toolBar.GlobalToolBar(
@@ -1956,6 +1946,24 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
           onMediaDelete: _handleMediaDelete,
           onMediaFavorite: _handleMediaFavorite,
         ),
+          ),
+          Positioned(
+            bottom: 0,
+            left: 0,
+            right: 0,
+            child: StreamBuilder<Object?>(
+              stream: Stream.periodic(Duration(milliseconds: 200)),
+              builder: (context, snapshot) {
+                final videoWidget = _mediaPlayerKey.currentState?.getCurrentVideoWidget();
+                if (videoWidget == null) return const SizedBox.shrink();
+                return VideoControlsOverlay(
+                  videoPlayerWidget: videoWidget,
+                  key: ValueKey('video_controls_${videoWidget.key}'),
+                );
+              },
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -2145,7 +2153,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
         });
       }
     } catch (e) {
-      print('检查模板状态时出错: $e');
+      Logger.log('检查模板状态时出错: $e');
     }
   }
 
@@ -2160,7 +2168,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
       });
 
     } catch (e) {
-      print('设置模板状态时出错: $e');
+      Logger.log('设置模板状态时出错: $e');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('设置模板状态时出错，请重试。')),
       );
@@ -2425,7 +2433,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
       
       return savedImage.path;
     } catch (e) {
-      print('选择图片时出错: $e');
+      Logger.log('选择图片时出错: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('选择图片时出错，请重试')),

@@ -67,6 +67,11 @@ class MyApp extends StatelessWidget {
           backgroundColor: Colors.transparent,
           elevation: 0,
         ),
+        sliderTheme: const SliderThemeData(
+          trackHeight: 10,
+          thumbShape: RoundSliderThumbShape(enabledThumbRadius: 14),
+          overlayShape: RoundSliderOverlayShape(overlayRadius: 28),
+        ),
       ),
       navigatorKey: navigatorKey,
       debugShowCheckedModeBanner: false,

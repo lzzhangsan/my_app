@@ -116,10 +116,9 @@ packages:
   chewie:
     dependency: "direct main"
     description:
-      name: chewie
-      sha256: "44bcfc5f0dfd1de290c87c9d86a61308b3282a70b63435d5557cfd60f54a69ca"
-      url: "https://pub.dev"
-    source: hosted
+      path: "packages/chewie"
+      relative: true
+    source: path
     version: "1.13.0"
   cli_util:
     dependency: transitive
@@ -1532,4 +1531,4 @@ packages:
     version: "3.1.3"
 sdks:
   dart: ">=3.9.0 <4.0.0"
-  flutter: ">=3.32.0"
+  flutter: ">=3.29.0"

@@ -637,7 +637,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
                       width: videoController.value.size.width,
                       height: videoController.value.size.height,
                       child: Theme(
-                        data: ThemeData.light().copyWith(
+                        data: Theme.of(context).copyWith(
                           platform: TargetPlatform.iOS,
                         ),
                         child: Chewie(controller: chewieController),
