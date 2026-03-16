@@ -265,6 +265,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   final Set<String> _processedUrls = {};
   bool _awaitingCanvasFallbackResult = false;
   bool _canvasFallbackSucceeded = false;
+  Completer<bool>? _canvasFallbackCompleter;
 
   void _injectDownloadHandlers() {
     if (_controller == null) return;
@@ -1224,7 +1225,10 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       debugPrint('Received URL from JavaScript with download action: $urlValue, type: $mediaType, isBase64: $isBase64');
 
       if (isBase64) {
-        if (_awaitingCanvasFallbackResult) _canvasFallbackSucceeded = true;
+        if (_awaitingCanvasFallbackResult) {
+          _canvasFallbackSucceeded = true;
+          _canvasFallbackCompleter?.complete(true);
+        }
         await _handleBlobUrl(urlValue, mediaType);
         return;
       }
@@ -1248,13 +1252,22 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           if (ctrl != null) {
             _awaitingCanvasFallbackResult = true;
             _canvasFallbackSucceeded = false;
+            _canvasFallbackCompleter = Completer<bool>();
             await ctrl.evaluateJavascript(source: 'typeof tryCanvasCaptureFallback === "function" && tryCanvasCaptureFallback();');
-            await Future.delayed(const Duration(milliseconds: 250));
-            if (!_canvasFallbackSucceeded) await _tryScreenshotFallback(ctrl);
+            final canvasSucceeded = await _canvasFallbackCompleter!.future.timeout(
+              const Duration(seconds: 5),
+              onTimeout: () {
+                if (!_canvasFallbackCompleter!.isCompleted) _canvasFallbackCompleter!.complete(false);
+                return false;
+              },
+            );
+            if (!canvasSucceeded) await _tryScreenshotFallback(ctrl);
             _awaitingCanvasFallbackResult = false;
+            _canvasFallbackCompleter = null;
           }
         } catch (_) {
           _awaitingCanvasFallbackResult = false;
+          _canvasFallbackCompleter = null;
         }
       }
     } catch (e, stackTrace) {
