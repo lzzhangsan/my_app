@@ -87,6 +87,17 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   /// 静默导入开关：true=自动检测并导入手机相册/视频中的新媒体，无需确认；false=完全关闭自动导入，不导入任何新媒体
   bool _autoImportSilentMode = true;
 
+  /// 目录分页：单次加载上限，避免大目录内存压力
+  static const int _mediaLoadBatchSize = 400;
+  bool _hasMoreMediaItems = false;
+  int _mediaItemsLoadOffset = 0;
+  bool _isLoadingMore = false;
+
+  /// 视频缩略图并发限制，避免同时生成过多导致内存飙升
+  static int _activeThumbnailCount = 0;
+  static const int _maxConcurrentThumbnails = 3;
+  static final List<Completer<void>> _thumbnailWaitQueue = [];
+
   @override
   void initState() {
     super.initState();
@@ -155,72 +166,71 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     }
   }
 
-  Future<void> _loadMediaItems() async {
-    setState(() {
-      _isLoading = true;
-    });
+  Future<void> _loadMediaItems({bool append = false}) async {
+    if (append && _isLoadingMore) return;
+    if (append) {
+      setState(() => _isLoadingMore = true);
+    } else {
+      setState(() => _isLoading = true);
+    }
 
     try {
-      debugPrint('开始加载媒体项...');
+      if (!append) debugPrint('开始加载媒体项...');
       
-      // 检查并创建回收站文件夹
-      final recycleBinFolder = await _databaseService.getMediaItemById('recycle_bin');
-      debugPrint('检查回收站文件夹: ${recycleBinFolder != null ? '存在' : '不存在'}');
-      
-      if (recycleBinFolder == null) {
-        debugPrint('创建回收站文件夹...');
-        await _databaseService.insertMediaItem({
-          'id': 'recycle_bin',
-          'name': '回收站',
-          'path': '',
-          'type': MediaType.folder.index,
-          'directory': 'root',
-          'date_added': DateTime.now().toIso8601String(),
-        });
-        debugPrint('回收站文件夹创建成功');
-      } else if ((recycleBinFolder['directory'] ?? '').toString() != 'root') {
-        // 修复：回收站被误移后，强制恢复其在根目录
-        debugPrint('修复回收站目录为 root');
-        await _databaseService.updateMediaItemDirectory('recycle_bin', 'root');
+      // 非追加模式：检查并创建回收站/收藏夹（仅首次加载根目录时）
+      if (!append && _currentDirectory == 'root') {
+        final recycleBinFolder = await _databaseService.getMediaItemById('recycle_bin');
+        debugPrint('检查回收站文件夹: ${recycleBinFolder != null ? '存在' : '不存在'}');
+        if (recycleBinFolder == null) {
+          debugPrint('创建回收站文件夹...');
+          await _databaseService.insertMediaItem({
+            'id': 'recycle_bin',
+            'name': '回收站',
+            'path': '',
+            'type': MediaType.folder.index,
+            'directory': 'root',
+            'date_added': DateTime.now().toIso8601String(),
+          });
+          debugPrint('回收站文件夹创建成功');
+        } else if ((recycleBinFolder['directory'] ?? '').toString() != 'root') {
+          debugPrint('修复回收站目录为 root');
+          await _databaseService.updateMediaItemDirectory('recycle_bin', 'root');
+        }
+        final favoritesFolder = await _databaseService.getMediaItemById('favorites');
+        debugPrint('检查收藏夹: ${favoritesFolder != null ? '存在' : '不存在'}');
+        if (favoritesFolder == null) {
+          debugPrint('创建收藏夹...');
+          await _databaseService.insertMediaItem({
+            'id': 'favorites',
+            'name': '收藏夹',
+            'path': '',
+            'type': MediaType.folder.index,
+            'directory': 'root',
+            'date_added': DateTime.now().toIso8601String(),
+          });
+          debugPrint('收藏夹创建成功');
+        } else if ((favoritesFolder['directory'] ?? '').toString() != 'root') {
+          debugPrint('修复收藏夹目录为 root');
+          await _databaseService.updateMediaItemDirectory('favorites', 'root');
+        }
+        if (!_availableDirectories.contains('recycle_bin')) {
+          setState(() => _availableDirectories.add('recycle_bin'));
+        }
+        if (!_availableDirectories.contains('favorites')) {
+          setState(() => _availableDirectories.add('favorites'));
+        }
       }
 
-      // 检查并创建收藏夹
-      final favoritesFolder = await _databaseService.getMediaItemById('favorites');
-      debugPrint('检查收藏夹: ${favoritesFolder != null ? '存在' : '不存在'}');
-      
-      if (favoritesFolder == null) {
-        debugPrint('创建收藏夹...');
-        await _databaseService.insertMediaItem({
-          'id': 'favorites',
-          'name': '收藏夹',
-          'path': '',
-          'type': MediaType.folder.index,
-          'directory': 'root',
-          'date_added': DateTime.now().toIso8601String(),
-        });
-        debugPrint('收藏夹创建成功');
-      } else if ((favoritesFolder['directory'] ?? '').toString() != 'root') {
-        // 修复：收藏夹被误移后，强制恢复其在根目录
-        debugPrint('修复收藏夹目录为 root');
-        await _databaseService.updateMediaItemDirectory('favorites', 'root');
-      }
-
-      // 更新可用目录列表，确保包含回收站和收藏夹
-      if (!_availableDirectories.contains('recycle_bin')) {
-        setState(() {
-          _availableDirectories.add('recycle_bin');
-        });
-      }
-      
-      if (!_availableDirectories.contains('favorites')) {
-        setState(() {
-          _availableDirectories.add('favorites');
-        });
-      }
-
-      // 加载当前目录的媒体项
-      final items = await _databaseService.getMediaItems(_currentDirectory);
-      debugPrint('从目录 $_currentDirectory 加载了 ${items.length} 个项目');
+      // 分页加载：单次最多 _mediaLoadBatchSize 条，避免大目录内存压力
+      final offset = append ? _mediaItemsLoadOffset : 0;
+      final items = await _databaseService.getMediaItems(
+        _currentDirectory,
+        limit: _mediaLoadBatchSize,
+        offset: offset,
+      );
+      final total = await _databaseService.getMediaItemCount(_currentDirectory);
+      final hasMore = offset + items.length < total;
+      debugPrint('从目录 $_currentDirectory 加载了 ${items.length} 个项目 (offset=$offset, total=$total, hasMore=$hasMore)');
 
       // 路径修复：跨设备导入后 path 可能指向旧设备，若文件不存在则尝试 media 目录按文件名查找
       final appDir = await getApplicationDocumentsDirectory();
@@ -257,33 +267,29 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         }
       }
 
-      // 计算图片和视频数量
-      int imageCount = items.where((item) {
-        final typeIndex = item['type'] as int;
-        if (typeIndex >= MediaType.values.length) return false;
-        return MediaType.values[typeIndex] == MediaType.image;
-      }).length;
-      
-      int videoCount = items.where((item) {
-        final typeIndex = item['type'] as int;
-        if (typeIndex >= MediaType.values.length) return false;
-        return MediaType.values[typeIndex] == MediaType.video;
-      }).length;
-      
-      debugPrint('当前目录下有 $imageCount 张图片和 $videoCount 个视频');
-      
       // 更新状态
+      final newMediaItems = items.map((item) => MediaItem.fromMap(item)).toList();
       setState(() {
-        _mediaItems.clear();
-        _mediaItems.addAll(items.map((item) => MediaItem.fromMap(item)));
-        _isLoading = false;
-        _imageCount = imageCount;
-        _videoCount = videoCount;
+        if (append) {
+          _mediaItems.addAll(newMediaItems);
+          _isLoadingMore = false;
+        } else {
+          _mediaItems.clear();
+          _mediaItems.addAll(newMediaItems);
+          _isLoading = false;
+        }
+        _hasMoreMediaItems = hasMore;
+        _mediaItemsLoadOffset = offset + items.length;
+        // 图片/视频数量：从当前已加载列表统计
+        _imageCount = _mediaItems.where((i) => i.type == MediaType.image).length;
+        _videoCount = _mediaItems.where((i) => i.type == MediaType.video).length;
       });
+      debugPrint('当前已加载 ${_mediaItems.length} 项，其中 $_imageCount 张图片、$_videoCount 个视频');
     } catch (e) {
       debugPrint('加载媒体项时出错: $e');
       setState(() {
         _isLoading = false;
+        _isLoadingMore = false;
       });
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -2080,8 +2086,11 @@ class _MediaManagerPageState extends State<MediaManagerPage>
             crossAxisSpacing: crossAxisSpacing,
             mainAxisSpacing: mainAxisSpacing,
           ),
-          itemCount: _mediaItems.length,
+          itemCount: _mediaItems.length + (_hasMoreMediaItems ? 1 : 0),
           itemBuilder: (context, index) {
+            if (index >= _mediaItems.length) {
+              return _buildLoadMoreButton();
+            }
             final item = _mediaItems[index];
             return _buildMediaItem(item, index);
           },
@@ -2148,6 +2157,42 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       }
     }
     return list;
+  }
+
+  Widget _buildLoadMoreButton() {
+    return GestureDetector(
+      onTap: _isLoadingMore ? null : () => _loadMediaItems(append: true),
+      child: Card(
+        elevation: 2,
+        margin: const EdgeInsets.all(0),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+        child: Center(
+          child: _isLoadingMore
+              ? const Padding(
+                  padding: EdgeInsets.all(16),
+                  child: SizedBox(
+                    width: 24,
+                    height: 24,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                )
+              : Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.add_circle_outline, size: 32, color: Theme.of(context).colorScheme.primary),
+                    const SizedBox(height: 4),
+                    Text(
+                      '加载更多',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Theme.of(context).colorScheme.primary,
+                      ),
+                    ),
+                  ],
+                ),
+        ),
+      ),
+    );
   }
 
   Widget _buildMediaItem(MediaItem item, int index) {
@@ -2492,65 +2537,79 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       final thumbnailPath = '${tempDir.path}/${cacheKey}_thumbnail.jpg';
       final thumbnailFile = File(thumbnailPath);
 
-      // 检查缓存
+      // 检查缓存：命中则直接返回，不占用并发槽位
       if (await thumbnailFile.exists() && await thumbnailFile.length() > 100) {
         return thumbnailFile;
       }
 
-      // 1. 优先尝试 thumbnailFile（直接写文件，部分机型更稳定）
-      if (Platform.isAndroid || Platform.isIOS) {
-        for (final timeMs in [0, 500, 1500, 3000, 5000]) {
-          try {
-            final outPath = '${tempDir.path}/${cacheKey}_t${timeMs}.jpg';
-            final resultPath = await VideoThumbnail.thumbnailFile(
-              video: videoPath,
-              thumbnailPath: outPath,
-              imageFormat: ImageFormat.JPEG,
-              maxWidth: 250,
-              quality: 75,
-              timeMs: timeMs,
-            );
-            if (resultPath != null) {
-              final f = File(resultPath);
-              if (await f.exists() && await f.length() > 100) {
-                await f.copy(thumbnailPath);
-                try { await f.delete(); } catch (_) {}
-                debugPrint('thumbnailFile 成功 (timeMs=$timeMs)');
-                return thumbnailFile;
+      // 并发限制：最多同时生成 3 个缩略图，避免快速滑动时内存飙升
+      while (_activeThumbnailCount >= _maxConcurrentThumbnails) {
+        final completer = Completer<void>();
+        _thumbnailWaitQueue.add(completer);
+        await completer.future;
+      }
+      _activeThumbnailCount++;
+      try {
+        // 1. 优先尝试 thumbnailFile（直接写文件，部分机型更稳定）
+        if (Platform.isAndroid || Platform.isIOS) {
+          for (final timeMs in [0, 500, 1500, 3000, 5000]) {
+            try {
+              final outPath = '${tempDir.path}/${cacheKey}_t${timeMs}.jpg';
+              final resultPath = await VideoThumbnail.thumbnailFile(
+                video: videoPath,
+                thumbnailPath: outPath,
+                imageFormat: ImageFormat.JPEG,
+                maxWidth: 250,
+                quality: 75,
+                timeMs: timeMs,
+              );
+              if (resultPath != null) {
+                final f = File(resultPath);
+                if (await f.exists() && await f.length() > 100) {
+                  await f.copy(thumbnailPath);
+                  try { await f.delete(); } catch (_) {}
+                  debugPrint('thumbnailFile 成功 (timeMs=$timeMs)');
+                  return thumbnailFile;
+                }
               }
+            } catch (e) {
+              if (timeMs == 5000) debugPrint('thumbnailFile 失败: $e');
             }
-          } catch (e) {
-            if (timeMs == 5000) debugPrint('thumbnailFile 失败: $e');
           }
         }
-      }
 
-      // 2. 备选：thumbnailData + 多时间点
-      if (Platform.isAndroid || Platform.isIOS) {
-        for (final timeMs in [0, 1000, 3000, 5000]) {
-          try {
-            final thumbnailBytes = await VideoThumbnail.thumbnailData(
-              video: videoPath,
-              imageFormat: ImageFormat.JPEG,
-              maxWidth: 250,
-              quality: 75,
-              timeMs: timeMs,
-            );
-            if (thumbnailBytes != null && thumbnailBytes.isNotEmpty) {
-              await thumbnailFile.writeAsBytes(thumbnailBytes);
-              if (await thumbnailFile.exists()) {
-                debugPrint('thumbnailData 成功 (timeMs=$timeMs)');
-                return thumbnailFile;
+        // 2. 备选：thumbnailData + 多时间点
+        if (Platform.isAndroid || Platform.isIOS) {
+          for (final timeMs in [0, 1000, 3000, 5000]) {
+            try {
+              final thumbnailBytes = await VideoThumbnail.thumbnailData(
+                video: videoPath,
+                imageFormat: ImageFormat.JPEG,
+                maxWidth: 250,
+                quality: 75,
+                timeMs: timeMs,
+              );
+              if (thumbnailBytes != null && thumbnailBytes.isNotEmpty) {
+                await thumbnailFile.writeAsBytes(thumbnailBytes);
+                if (await thumbnailFile.exists()) {
+                  debugPrint('thumbnailData 成功 (timeMs=$timeMs)');
+                  return thumbnailFile;
+                }
               }
+            } catch (e) {
+              if (timeMs == 5000) debugPrint('thumbnailData 失败: $e');
             }
-          } catch (e) {
-            if (timeMs == 5000) debugPrint('thumbnailData 失败: $e');
           }
         }
-      }
 
-      debugPrint('标准方法失败，尝试彩色占位缩略图');
-      return _generateColoredThumbnail(videoPath);
+        debugPrint('标准方法失败，尝试彩色占位缩略图');
+        return _generateColoredThumbnail(videoPath);
+      } finally {
+        _activeThumbnailCount--;
+        if (_thumbnailWaitQueue.isNotEmpty) {
+          _thumbnailWaitQueue.removeAt(0).complete();
+        }
+      }
     } catch (e) {
       debugPrint('缩略图生成异常: $videoPath, 错误: $e');
       return null;

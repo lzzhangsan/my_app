@@ -678,21 +678,14 @@ class DatabaseService {
   }
 
   /// 获取媒体项
-  Future<List<Map<String, dynamic>>> getMediaItems(String directory) async {
+  /// [limit] 和 [offset] 用于分页，避免大目录一次性加载导致内存压力
+  Future<List<Map<String, dynamic>>> getMediaItems(String directory, {int? limit, int? offset}) async {
     try {
       final db = await database;
-      // 使用自定义排序逻辑：
-      // 1. 回收站和收藏夹固定在最前面
-      // 2. 其他文件夹
-      // 3. 视频
-      // 4. 图片
-      // 所有项按添加时间倒序排列（最新添加的在前）
-      final folderTypeIndex = 3; // MediaType.folder.index
-      final imageTypeIndex = 0; // MediaType.image.index
-      final videoTypeIndex = 1; // MediaType.video.index
-      return await db.rawQuery('''
-        SELECT * FROM media_items 
-        WHERE directory = ? 
+      final folderTypeIndex = 3;
+      final imageTypeIndex = 0;
+      final videoTypeIndex = 1;
+      final orderBy = '''
         ORDER BY 
           CASE 
             WHEN id = 'recycle_bin' THEN 0 
@@ -706,9 +699,33 @@ class DatabaseService {
             WHEN id = 'recycle_bin' OR id = 'favorites' THEN 0 
             ELSE datetime(date_added) 
           END DESC
+      ''';
+      final limitClause = (limit != null && offset != null)
+          ? ' LIMIT $limit OFFSET $offset'
+          : '';
+      return await db.rawQuery('''
+        SELECT * FROM media_items 
+        WHERE directory = ? 
+        $orderBy
+        $limitClause
       ''', [directory]);
     } catch (e, stackTrace) {
       _handleError('获取媒体项失败', e, stackTrace);
+      rethrow;
+    }
+  }
+
+  /// 获取指定目录下的媒体项总数（不含 limit/offset）
+  Future<int> getMediaItemCount(String directory) async {
+    try {
+      final db = await database;
+      final result = await db.rawQuery(
+        'SELECT COUNT(*) as c FROM media_items WHERE directory = ?',
+        [directory],
+      );
+      return (result.first['c'] as int?) ?? 0;
+    } catch (e, stackTrace) {
+      _handleError('获取媒体项数量失败', e, stackTrace);
       rethrow;
     }
   }
