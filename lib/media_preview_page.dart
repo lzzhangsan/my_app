@@ -180,16 +180,10 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
           
           _chewieControllers[index] = chewieController;
           
-          // 添加视频控制器状态变化监听
-          controller.addListener(() {
-            debugPrint('视频播放位置: ${controller.value.position}');
-            debugPrint('缓冲进度: ${controller.value.buffered}');
-            debugPrint('播放状态: ${controller.value.isPlaying}');
-          });
-          
-          // 如果是当前页面，立即开始播放
+          // 如果是当前页面，立即开始播放，并添加完成监听（手动/非自动模式下用于循环）
           if (shouldAutoPlay && controller.value.isInitialized) {
             await controller.play();
+            _addVideoCompleteListenerFor(controller, index);
           }
         } catch (chewieError) {
           if (_videoControllers.containsKey(index)) {
@@ -639,6 +633,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
                   videoController.pause();
                 } else {
                   videoController.play();
+                  _addVideoCompleteListenerFor(videoController, index);
                 }
               },
               child: Container(
@@ -695,20 +690,18 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
                 _currentIndex = index;
               });
               
+              // 确保当前页面的视频控制器已初始化，然后立即播放（手动/自动模式一致）
+              _initializeVideoControllerAt(index).then((_) {
+                if (!mounted) return;
+                _cleanupUnusedControllers();
+                _playCurrentMedia();
+              });
               // 预加载相邻页面的视频
               if (index > 0) {
                 _initializeVideoControllerAt(index - 1);
               }
               if (index < widget.mediaItems.length - 1) {
                 _initializeVideoControllerAt(index + 1);
-              }
-              
-              // 清理不需要的视频控制器
-              _cleanupUnusedControllers();
-              
-              // 如果处于自动播放模式，开始播放当前媒体
-              if (_mediaMode == MediaMode.auto) {
-                _playCurrentMedia();
               }
             },
             itemBuilder: (context, index) {
@@ -967,29 +960,31 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
   VoidCallback? _videoCompleteListener;
   int? _videoCompleteListenerIndex;
 
+  /// 为视频添加播放完成监听（手动/非自动模式下用于循环；自动模式下用于切换下一项）
+  void _addVideoCompleteListenerFor(VideoPlayerController controller, int index) {
+    _removeVideoCompleteListener();
+    void listener() {
+      final pos = controller.value.position;
+      final dur = controller.value.duration;
+      if (dur > Duration.zero && pos >= dur - const Duration(milliseconds: 200)) {
+        _removeVideoCompleteListener();
+        _onMediaComplete();
+      }
+    }
+    _videoCompleteListener = listener;
+    _videoCompleteListenerIndex = index;
+    controller.addListener(listener);
+  }
+
   Future<void> _playCurrentMedia() async {
     final currentItem = widget.mediaItems[_currentIndex];
     
     if (currentItem.type == MediaType.video) {
       final controller = _videoControllers[_currentIndex];
       if (controller != null && controller.value.isInitialized) {
-        // 移除上一视频的完成监听，避免重复触发
         _removeVideoCompleteListener();
         await controller.play();
-        
-        // 监听视频播放完成：仅在 duration 已加载且接近结束时切换，避免 duration 为 0 时误触发
-        final idx = _currentIndex;
-        void listener() {
-          final pos = controller.value.position;
-          final dur = controller.value.duration;
-          if (dur > Duration.zero && pos >= dur - const Duration(milliseconds: 200)) {
-            _removeVideoCompleteListener();
-            _onMediaComplete();
-          }
-        }
-        _videoCompleteListener = listener;
-        _videoCompleteListenerIndex = idx;
-        controller.addListener(listener);
+        _addVideoCompleteListenerFor(controller, _currentIndex);
       }
     } else if (currentItem.type == MediaType.image) {
       // 图片显示5秒后自动切换
@@ -1015,8 +1010,14 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
         duration: const Duration(milliseconds: 300),
         curve: Curves.easeInOut,
       );
-    } else if (_mediaMode == MediaMode.manual) {
-      stop();
+    } else if (_mediaMode != MediaMode.auto) {
+      // 手动/非自动模式：循环播放，从头开始
+      final controller = _videoControllers[_currentIndex];
+      if (controller != null && controller.value.isInitialized) {
+        controller.seekTo(Duration.zero);
+        controller.play();
+        _addVideoCompleteListenerFor(controller, _currentIndex);
+      }
     }
   }
 }
