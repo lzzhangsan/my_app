@@ -36,6 +36,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
   late final DatabaseService _dbService;
   MediaMode _mediaMode = MediaMode.none;
   Timer? _mediaTimer;
+  bool _skipNextPageChanged = false; // 删除/收藏/移动后忽略一次 onPageChanged，避免跳回第一项
 
   @override
   void initState() {
@@ -59,6 +60,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
 
   @override
   void dispose() {
+    _removeVideoCompleteListener();
     _pageController.dispose();
     _mediaTimer?.cancel();
     
@@ -352,12 +354,18 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
       // 否则保持当前索引，因为删除后当前索引会对应下一项
       
       _disposeAllVideoControllers(); // 索引变化，清空控制器以便重新初始化
+      _skipNextPageChanged = true; // 防止新 PageView 触发 onPageChanged(0) 覆盖索引
       setState(() {
         widget.mediaItems.removeAt(_currentIndex);
         _currentIndex = nextIndex;
         _pageController.jumpToPage(_currentIndex);
       });
-      _autoPlayCurrentVideo();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _pageController.jumpToPage(_currentIndex);
+          _autoPlayCurrentVideo();
+        }
+      });
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('删除失败: $e')),
@@ -516,6 +524,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
         nextIndex = _currentIndex - 1;
       }
       _disposeAllVideoControllers();
+      _skipNextPageChanged = true;
       setState(() {
         widget.mediaItems.removeAt(_currentIndex);
         if (widget.mediaItems.isEmpty) {
@@ -525,7 +534,12 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
         _currentIndex = nextIndex;
         _pageController.jumpToPage(_currentIndex);
       });
-      _autoPlayCurrentVideo();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && widget.mediaItems.isNotEmpty) {
+          _pageController.jumpToPage(_currentIndex);
+          _autoPlayCurrentVideo();
+        }
+      });
     } catch (e) {
       if (mounted) {
         Navigator.of(context).pop(); // 关闭进度对话框
@@ -673,6 +687,10 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
             controller: _pageController,
             itemCount: widget.mediaItems.length,
             onPageChanged: (index) {
+              if (_skipNextPageChanged) {
+                _skipNextPageChanged = false;
+                return;
+              }
               setState(() {
                 _currentIndex = index;
               });
@@ -793,18 +811,25 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
       
       if (!mounted) return;
       _disposeAllVideoControllers();
+      final nextIndex = _currentIndex >= widget.mediaItems.length - 1
+          ? widget.mediaItems.length - 2
+          : _currentIndex;
+      _skipNextPageChanged = true;
       setState(() {
         widget.mediaItems.removeAt(_currentIndex);
         if (widget.mediaItems.isEmpty) {
           Navigator.of(context).pop(true);
           return;
         }
-        _currentIndex = _currentIndex >= widget.mediaItems.length
-            ? widget.mediaItems.length - 1
-            : _currentIndex;
+        _currentIndex = nextIndex;
         _pageController.jumpToPage(_currentIndex);
       });
-      _autoPlayCurrentVideo();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && widget.mediaItems.isNotEmpty) {
+          _pageController.jumpToPage(_currentIndex);
+          _autoPlayCurrentVideo();
+        }
+      });
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -847,18 +872,25 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
       
       if (!mounted) return;
       _disposeAllVideoControllers();
+      final nextIndex = _currentIndex >= widget.mediaItems.length - 1
+          ? widget.mediaItems.length - 2
+          : _currentIndex;
+      _skipNextPageChanged = true;
       setState(() {
         widget.mediaItems.removeAt(_currentIndex);
         if (widget.mediaItems.isEmpty) {
           Navigator.of(context).pop(true);
           return;
         }
-        _currentIndex = _currentIndex >= widget.mediaItems.length 
-            ? widget.mediaItems.length - 1 
-            : _currentIndex;
+        _currentIndex = nextIndex;
         _pageController.jumpToPage(_currentIndex);
       });
-      _autoPlayCurrentVideo();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && widget.mediaItems.isNotEmpty) {
+          _pageController.jumpToPage(_currentIndex);
+          _autoPlayCurrentVideo();
+        }
+      });
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -932,25 +964,48 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     _mediaTimer = null;
   }
 
+  VoidCallback? _videoCompleteListener;
+  int? _videoCompleteListenerIndex;
+
   Future<void> _playCurrentMedia() async {
     final currentItem = widget.mediaItems[_currentIndex];
     
     if (currentItem.type == MediaType.video) {
       final controller = _videoControllers[_currentIndex];
       if (controller != null && controller.value.isInitialized) {
+        // 移除上一视频的完成监听，避免重复触发
+        _removeVideoCompleteListener();
         await controller.play();
         
-        // 监听视频播放完成
-        controller.addListener(() {
-          if (controller.value.position >= controller.value.duration) {
+        // 监听视频播放完成：仅在 duration 已加载且接近结束时切换，避免 duration 为 0 时误触发
+        final idx = _currentIndex;
+        void listener() {
+          final pos = controller.value.position;
+          final dur = controller.value.duration;
+          if (dur > Duration.zero && pos >= dur - const Duration(milliseconds: 200)) {
+            _removeVideoCompleteListener();
             _onMediaComplete();
           }
-        });
+        }
+        _videoCompleteListener = listener;
+        _videoCompleteListenerIndex = idx;
+        controller.addListener(listener);
       }
     } else if (currentItem.type == MediaType.image) {
       // 图片显示5秒后自动切换
       _mediaTimer?.cancel();
       _mediaTimer = Timer(const Duration(seconds: 5), _onMediaComplete);
+    }
+  }
+
+  void _removeVideoCompleteListener() {
+    if (_videoCompleteListener != null && _videoCompleteListenerIndex != null) {
+      final controller = _videoControllers[_videoCompleteListenerIndex!];
+      if (controller != null) {
+        controller.removeListener(_videoCompleteListener!);
+      }
+      _videoCompleteListener = null;
+      _videoCompleteListenerIndex = null;
     }
   }
 
