@@ -21,7 +21,7 @@ import '../utils/safe_path_utils.dart';
 /// 数据库服务 - 统一管理所有数据库操作
 class DatabaseService {
   static const String _databaseName = 'change_app.db';
-  static const int _databaseVersion = 12; // 强制升级版本号
+  static const int _databaseVersion = 13; // 添加 imported_asset_ids 表防止静默导入重复
   
   Database? _database;
   final Completer<Database> _initCompleter = Completer<Database>();
@@ -338,6 +338,11 @@ class DatabaseService {
     await db.execute('CREATE INDEX idx_media_items_type ON media_items(type)');
     await db.execute('CREATE INDEX idx_media_items_hash ON media_items(file_hash)');
     await db.execute('CREATE INDEX idx_media_items_telegram_file_id ON media_items(telegram_file_id)');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS imported_asset_ids(
+        asset_id TEXT PRIMARY KEY
+      )
+    ''');
   }
 
   /// 数据库升级
@@ -384,6 +389,15 @@ class DatabaseService {
       case 11:
       case 12:
         // 版本 11/12 无 schema 变更，仅用于强制升级或兼容性
+        break;
+      case 13:
+        // 静默导入去重：记录已导入的 asset_id，防止重复导入
+        await db.execute('''
+          CREATE TABLE IF NOT EXISTS imported_asset_ids(
+            asset_id TEXT PRIMARY KEY
+          )
+        ''');
+        if (kDebugMode) Logger.log('已创建 imported_asset_ids 表');
         break;
       case 8:
         // 添加新的字段和索引
@@ -760,6 +774,36 @@ class DatabaseService {
     } catch (e, stackTrace) {
       _handleError('查找重复媒体项失败', e, stackTrace);
       rethrow;
+    }
+  }
+
+  /// 检查 asset_id 是否已导入（静默导入去重，防止重复导入）
+  Future<bool> isAssetImported(String assetId) async {
+    try {
+      final db = await database;
+      final rows = await db.query(
+        'imported_asset_ids',
+        where: 'asset_id = ?',
+        whereArgs: [assetId],
+      );
+      return rows.isNotEmpty;
+    } catch (e, stackTrace) {
+      _handleError('检查asset是否已导入失败', e, stackTrace);
+      return false; // 出错时保守处理，允许导入
+    }
+  }
+
+  /// 标记 asset_id 已导入
+  Future<void> markAssetImported(String assetId) async {
+    try {
+      final db = await database;
+      await db.insert(
+        'imported_asset_ids',
+        {'asset_id': assetId},
+        conflictAlgorithm: ConflictAlgorithm.ignore,
+      );
+    } catch (e, stackTrace) {
+      _handleError('标记asset已导入失败', e, stackTrace);
     }
   }
   

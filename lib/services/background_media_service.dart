@@ -28,6 +28,7 @@ class BackgroundMediaService {
   bool _isInitialized = false;
   bool _isRunning = false;
   Set<String> _initialAssetIds = {};
+  static bool _isAutoProcessing = false;
   Timer? _healthCheckTimer;
   Timer? _mediaScanTimer;
   
@@ -212,7 +213,11 @@ class BackgroundMediaService {
     if (kDebugMode) {
       Logger.log('[后台服务] 媒体库变更回调被触发');
     }
-    
+    if (_isAutoProcessing) {
+      if (kDebugMode) Logger.log('[后台服务] 正在处理中，跳过本次回调');
+      return;
+    }
+    _isAutoProcessing = true;
     try {
       // 静默导入关闭时，不导入任何新媒体
       final prefs = await SharedPreferences.getInstance();
@@ -235,23 +240,24 @@ class BackgroundMediaService {
       final Set<String> currentAssetIds = allAssets.map((e) => e.id).toSet();
       
       // 找出新增的媒体
-      final Set<String> newAssetIds = currentAssetIds.difference(_instance._initialAssetIds);
+      Set<String> newAssetIds = currentAssetIds.difference(_instance._initialAssetIds);
       
       if (newAssetIds.isNotEmpty) {
         if (kDebugMode) {
           Logger.log('[后台服务] 检测到 ${newAssetIds.length} 个新增媒体');
         }
+        // 立即更新快照，防止并发回调重复处理同一批媒体
+        _instance._initialAssetIds = currentAssetIds;
         
         // 处理新增媒体
         await _processNewMedia(newAssetIds, allAssets);
-        
-        // 更新快照
-        _instance._initialAssetIds = currentAssetIds;
       }
     } catch (e) {
       if (kDebugMode) {
         Logger.log('[后台服务] 处理媒体库变化失败: $e');
       }
+    } finally {
+      _isAutoProcessing = false;
     }
   }
 
@@ -286,9 +292,16 @@ class BackgroundMediaService {
     }
   }
 
-  /// 导入媒体到应用媒体库（含查重：file_hash/fileName，重复则跳过）
+  /// 导入媒体到应用媒体库（含查重：asset_id/file_hash/fileName，重复则跳过）
   static Future<bool> _importMediaToApp(AssetEntity asset, DatabaseService databaseService) async {
     try {
+      // 先检查 asset_id 是否已导入（跨进程/回调去重）
+      final alreadyImported = await databaseService.isAssetImported(asset.id);
+      if (alreadyImported) {
+        if (kDebugMode) Logger.log('[后台服务] 已导入过该 asset，跳过: ${asset.id}');
+        return false;
+      }
+
       final File? mediaFile = await asset.file;
       if (mediaFile == null || !await mediaFile.exists()) {
         if (kDebugMode) Logger.log('[后台服务] 媒体文件不存在: ${asset.title}');
@@ -309,6 +322,7 @@ class BackgroundMediaService {
       }
       final duplicate = await databaseService.findDuplicateMediaItem(fileHash, fileName);
       if (duplicate != null) {
+        await databaseService.markAssetImported(asset.id); // 已存在，标记避免重复尝试
         if (kDebugMode) Logger.log('[后台服务] 跳过重复文件: $fileName');
         return false;
       }
@@ -326,6 +340,7 @@ class BackgroundMediaService {
       final duplicateBeforeInsert = await databaseService.findDuplicateMediaItem(fileHash, fileName);
       if (duplicateBeforeInsert != null) {
         try { await File(destPath).delete(); } catch (_) {}
+        await databaseService.markAssetImported(asset.id); // 已存在，标记避免重复尝试
         if (kDebugMode) Logger.log('[后台服务] 插入前发现重复，已跳过: $fileName');
         return false;
       }
@@ -340,6 +355,7 @@ class BackgroundMediaService {
         'file_hash': fileHash,
       };
       await databaseService.insertMediaItem(mediaItemMap);
+      await databaseService.markAssetImported(asset.id);
 
       if (kDebugMode) Logger.log('[后台服务] 成功导入媒体: $fileName');
       return true;
