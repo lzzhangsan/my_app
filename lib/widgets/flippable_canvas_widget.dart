@@ -9,6 +9,12 @@ class FlippableCanvasWidget extends StatefulWidget {
   final FlippableCanvas canvas;
   final Function(FlippableCanvas) onCanvasUpdated;
   final VoidCallback? onSettingsPressed;
+  /// 一键复制：将当前面所有内容复制到另一面
+  final VoidCallback? onCopyCurrentSideToOther;
+  /// 一键移动：将当前面所有内容移动到另一面
+  final VoidCallback? onMoveCurrentSideToOther;
+  /// 一键删除：删除当前面所有内容（不删除画布本身）
+  final VoidCallback? onDeleteCurrentSideContent;
   final bool isPositionLocked;
 
   const FlippableCanvasWidget({
@@ -16,6 +22,9 @@ class FlippableCanvasWidget extends StatefulWidget {
     required this.canvas,
     required this.onCanvasUpdated,
     this.onSettingsPressed,
+    this.onCopyCurrentSideToOther,
+    this.onMoveCurrentSideToOther,
+    this.onDeleteCurrentSideContent,
     this.isPositionLocked = false,
   });
 
@@ -344,24 +353,64 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
                       ),
                       Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-                        child: Row(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
-                            TextButton.icon(
-                              onPressed: () { Navigator.pop(context); _flipCanvas(); },
-                              icon: Icon(widget.canvas.isFlipped ? Icons.flip_to_front : Icons.flip_to_back, size: 18, color: Colors.blue),
-                              label: Text(widget.canvas.isFlipped ? '正面' : '反面'),
+                            Row(
+                              children: [
+                                TextButton.icon(
+                                  onPressed: () { Navigator.pop(context); _flipCanvas(); },
+                                  icon: Icon(widget.canvas.isFlipped ? Icons.flip_to_front : Icons.flip_to_back, size: 18, color: Colors.blue),
+                                  label: Text(widget.canvas.isFlipped ? '正面' : '反面'),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    '正:${widget.canvas.frontTextBoxIds.length + widget.canvas.frontImageBoxIds.length + widget.canvas.frontAudioBoxIds.length} 反:${widget.canvas.backTextBoxIds.length + widget.canvas.backImageBoxIds.length + widget.canvas.backAudioBoxIds.length}',
+                                    style: TextStyle(fontSize: 12, color: Colors.grey[700]),
+                                  ),
+                                ),
+                                TextButton.icon(
+                                  onPressed: () { Navigator.pop(context); if (widget.onSettingsPressed != null) widget.onSettingsPressed!(); },
+                                  icon: const Icon(Icons.delete_forever, size: 18, color: Colors.red),
+                                  label: const Text('删除画布', style: TextStyle(color: Colors.red, fontSize: 12)),
+                                ),
+                              ],
                             ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                '正:${widget.canvas.frontTextBoxIds.length + widget.canvas.frontImageBoxIds.length + widget.canvas.frontAudioBoxIds.length} 反:${widget.canvas.backTextBoxIds.length + widget.canvas.backImageBoxIds.length + widget.canvas.backAudioBoxIds.length}',
-                                style: TextStyle(fontSize: 12, color: Colors.grey[700]),
-                              ),
-                            ),
-                            TextButton.icon(
-                              onPressed: () { Navigator.pop(context); if (widget.onSettingsPressed != null) widget.onSettingsPressed!(); },
-                              icon: const Icon(Icons.delete, size: 18, color: Colors.red),
-                              label: const Text('删除', style: TextStyle(color: Colors.red)),
+                            const SizedBox(height: 6),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: TextButton.icon(
+                                    onPressed: () {
+                                      Navigator.pop(context);
+                                      widget.onCopyCurrentSideToOther?.call();
+                                    },
+                                    icon: const Icon(Icons.copy, size: 16, color: Colors.blue),
+                                    label: const Text('一键复制', style: TextStyle(fontSize: 12, color: Colors.blue)),
+                                  ),
+                                ),
+                                Expanded(
+                                  child: TextButton.icon(
+                                    onPressed: () {
+                                      Navigator.pop(context);
+                                      widget.onMoveCurrentSideToOther?.call();
+                                    },
+                                    icon: const Icon(Icons.drive_file_move, size: 16, color: Colors.orange),
+                                    label: const Text('一键移动', style: TextStyle(fontSize: 12, color: Colors.orange)),
+                                  ),
+                                ),
+                                Expanded(
+                                  child: TextButton.icon(
+                                    onPressed: () {
+                                      Navigator.pop(context);
+                                      widget.onDeleteCurrentSideContent?.call();
+                                    },
+                                    icon: const Icon(Icons.delete_outline, size: 16, color: Colors.red),
+                                    label: const Text('一键删除', style: TextStyle(fontSize: 12, color: Colors.red)),
+                                  ),
+                                ),
+                              ],
                             ),
                           ],
                         ),

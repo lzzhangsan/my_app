@@ -1124,6 +1124,208 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
     }
   }
 
+  /// 一键复制：将当前画布当前面的所有内容复制到另一面
+  void _copyCanvasCurrentSideToOther(FlippableCanvas canvas) {
+    final textIds = List<String>.from(canvas.getCurrentTextBoxIds());
+    final imageIds = List<String>.from(canvas.getCurrentImageBoxIds());
+    final audioIds = List<String>.from(canvas.getCurrentAudioBoxIds());
+    if (textIds.isEmpty && imageIds.isEmpty && audioIds.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('当前面没有内容可复制')));
+      return;
+    }
+    setState(() {
+      final uuid = Uuid();
+      final isCurrentBack = canvas.isFlipped;
+      for (final id in textIds) {
+        final idx = _textBoxes.indexWhere((b) => b['id'] == id);
+        if (idx == -1) continue;
+        final orig = _textBoxes[idx];
+        final newId = uuid.v4();
+        final newBox = {
+          'id': newId,
+          'documentName': widget.documentName,
+          'positionX': orig['positionX'] ?? 0.0,
+          'positionY': orig['positionY'] ?? 0.0,
+          'width': orig['width'],
+          'height': orig['height'],
+          'text': orig['text'],
+          'fontSize': orig['fontSize'],
+          'fontColor': orig['fontColor'],
+          'fontWeight': orig['fontWeight'],
+          'isItalic': orig['isItalic'],
+          'backgroundColor': orig['backgroundColor'],
+          'textAlign': orig['textAlign'],
+          if (orig['textSegments'] != null) 'textSegments': List.from(orig['textSegments']),
+        };
+        if (_databaseService.validateTextBoxData(newBox)) {
+          _textBoxes.add(newBox);
+          if (isCurrentBack) {
+            if (!canvas.frontTextBoxIds.contains(newId)) canvas.frontTextBoxIds.add(newId);
+          } else {
+            if (!canvas.backTextBoxIds.contains(newId)) canvas.backTextBoxIds.add(newId);
+          }
+        }
+      }
+      for (final id in imageIds) {
+        final idx = _imageBoxes.indexWhere((b) => b['id'] == id);
+        if (idx == -1) continue;
+        final orig = _imageBoxes[idx];
+        if (orig['imagePath'] == null || orig['imagePath'].toString().isEmpty) continue;
+        final newId = uuid.v4();
+        final newBox = {
+          'id': newId,
+          'document_id': orig['document_id'] ?? orig['documentId'],
+          'documentName': widget.documentName,
+          'position_x': (orig['positionX'] ?? 0.0) + 20,
+          'position_y': (orig['positionY'] ?? 0.0) + 20,
+          'positionX': (orig['positionX'] ?? 0.0) + 20,
+          'positionY': (orig['positionY'] ?? 0.0) + 20,
+          'width': orig['width'],
+          'height': orig['height'],
+          'image_path': orig['imagePath'],
+          'imagePath': orig['imagePath'],
+        };
+        if (_databaseService.validateImageBoxData(newBox)) {
+          _imageBoxes.add(newBox);
+          if (isCurrentBack) {
+            if (!canvas.frontImageBoxIds.contains(newId)) canvas.frontImageBoxIds.add(newId);
+          } else {
+            if (!canvas.backImageBoxIds.contains(newId)) canvas.backImageBoxIds.add(newId);
+          }
+        }
+      }
+      for (final id in audioIds) {
+        final idx = _audioBoxes.indexWhere((b) => b['id'] == id);
+        if (idx == -1) continue;
+        final orig = _audioBoxes[idx];
+        final newId = uuid.v4();
+        final newBox = {
+          'id': newId,
+          'documentName': widget.documentName,
+          'positionX': (orig['positionX'] ?? 0.0) + 20,
+          'positionY': (orig['positionY'] ?? 0.0) + 20,
+          'audioPath': orig['audioPath'] ?? '',
+        };
+        _audioBoxes.add(newBox);
+        if (isCurrentBack) {
+          if (!canvas.frontAudioBoxIds.contains(newId)) canvas.frontAudioBoxIds.add(newId);
+        } else {
+          if (!canvas.backAudioBoxIds.contains(newId)) canvas.backAudioBoxIds.add(newId);
+        }
+      }
+      _updateCanvas(canvas);
+      _contentChanged = true;
+      _debouncedSave();
+      _saveStateToHistory();
+    });
+  }
+
+  /// 一键移动：将当前画布当前面的所有内容移动到另一面
+  void _moveCanvasCurrentSideToOther(FlippableCanvas canvas) {
+    final textIds = List<String>.from(canvas.getCurrentTextBoxIds());
+    final imageIds = List<String>.from(canvas.getCurrentImageBoxIds());
+    final audioIds = List<String>.from(canvas.getCurrentAudioBoxIds());
+    if (textIds.isEmpty && imageIds.isEmpty && audioIds.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('当前面没有内容可移动')));
+      return;
+    }
+    setState(() {
+      final isCurrentBack = canvas.isFlipped;
+      for (final id in textIds) {
+        if (isCurrentBack) {
+          canvas.backTextBoxIds.remove(id);
+          if (!canvas.frontTextBoxIds.contains(id)) canvas.frontTextBoxIds.add(id);
+        } else {
+          canvas.frontTextBoxIds.remove(id);
+          if (!canvas.backTextBoxIds.contains(id)) canvas.backTextBoxIds.add(id);
+        }
+      }
+      for (final id in imageIds) {
+        if (isCurrentBack) {
+          canvas.backImageBoxIds.remove(id);
+          if (!canvas.frontImageBoxIds.contains(id)) canvas.frontImageBoxIds.add(id);
+        } else {
+          canvas.frontImageBoxIds.remove(id);
+          if (!canvas.backImageBoxIds.contains(id)) canvas.backImageBoxIds.add(id);
+        }
+      }
+      for (final id in audioIds) {
+        if (isCurrentBack) {
+          canvas.backAudioBoxIds.remove(id);
+          if (!canvas.frontAudioBoxIds.contains(id)) canvas.frontAudioBoxIds.add(id);
+        } else {
+          canvas.frontAudioBoxIds.remove(id);
+          if (!canvas.backAudioBoxIds.contains(id)) canvas.backAudioBoxIds.add(id);
+        }
+      }
+      _updateCanvas(canvas);
+      _contentChanged = true;
+      _debouncedSave();
+      _saveStateToHistory();
+    });
+  }
+
+  /// 一键删除：删除当前画布当前面的所有内容（不删除画布本身）
+  void _deleteCanvasCurrentSideContent(FlippableCanvas canvas) {
+    final textIds = List<String>.from(canvas.getCurrentTextBoxIds());
+    final imageIds = List<String>.from(canvas.getCurrentImageBoxIds());
+    final audioIds = List<String>.from(canvas.getCurrentAudioBoxIds());
+    if (textIds.isEmpty && imageIds.isEmpty && audioIds.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('当前面没有内容可删除')));
+      return;
+    }
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('确认删除'),
+        content: Text('确定要删除当前面的 ${textIds.length + imageIds.length + audioIds.length} 项内容吗？'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              setState(() {
+                final isCurrentBack = canvas.isFlipped;
+                for (final id in textIds) {
+                  _textBoxes.removeWhere((b) => b['id'] == id);
+                  _deletedTextBoxIds.add(id);
+                  if (isCurrentBack) {
+                    canvas.backTextBoxIds.remove(id);
+                  } else {
+                    canvas.frontTextBoxIds.remove(id);
+                  }
+                }
+                for (final id in imageIds) {
+                  _imageBoxes.removeWhere((b) => b['id'] == id);
+                  _deletedImageBoxIds.add(id);
+                  if (isCurrentBack) {
+                    canvas.backImageBoxIds.remove(id);
+                  } else {
+                    canvas.frontImageBoxIds.remove(id);
+                  }
+                }
+                for (final id in audioIds) {
+                  _audioBoxes.removeWhere((b) => b['id'] == id);
+                  _deletedAudioBoxIds.add(id);
+                  if (isCurrentBack) {
+                    canvas.backAudioBoxIds.remove(id);
+                  } else {
+                    canvas.frontAudioBoxIds.remove(id);
+                  }
+                }
+                _updateCanvas(canvas);
+                _contentChanged = true;
+                _debouncedSave();
+                _saveStateToHistory();
+              });
+            },
+            child: const Text('删除', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+  }
+
   // 新增：更新画布
   void _updateCanvas(FlippableCanvas canvas) {
     setState(() {
@@ -1765,6 +1967,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
                             });
                           },
                           onSettingsPressed: () => _deleteCanvas(canvas.id),
+                          onCopyCurrentSideToOther: () => _copyCanvasCurrentSideToOther(canvas),
+                          onMoveCurrentSideToOther: () => _moveCanvasCurrentSideToOther(canvas),
+                          onDeleteCurrentSideContent: () => _deleteCanvasCurrentSideContent(canvas),
                           isPositionLocked: _isPositionLocked,
                         ),
                       );
