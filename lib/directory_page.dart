@@ -2293,50 +2293,76 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     try {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('正在检查数据完整性...')),
+          const SnackBar(content: Text('正在检查数据完整性...')),
         );
       }
-      
+
       final report = await getService<DatabaseService>().checkDataIntegrity();
-      
-      if (mounted) {
-        if (report['isValid']) {
-          // 检查通过，界面无变化，不展示成功提示
-        } else {
-          showDialog(
-            context: context,
-            builder: (context) => AlertDialog(
-              title: Text('发现数据完整性问题'),
-              content: SingleChildScrollView(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text('发现 ${report['issues'].length} 个问题:'),
-                    SizedBox(height: 8),
-                    ...report['issues'].map((issue) => Padding(
-                      padding: EdgeInsets.only(bottom: 4),
-                      child: Text('• $issue', style: TextStyle(fontSize: 12)),
-                    )).toList(),
-                  ],
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: Text('关闭'),
-                ),
-                TextButton(
-                  onPressed: () {
-                    Navigator.pop(context);
-                    _repairDataIntegrity();
-                  },
-                  child: Text('修复问题'),
-                ),
+
+      if (!mounted) return;
+      if (report['isValid']) {
+        final folderCount = report['folderCount'] as int? ?? 0;
+        final documentCount = report['documentCount'] as int? ?? 0;
+        final mediaItemCount = report['mediaItemCount'] as int? ?? 0;
+        final diaryEntryCount = report['diaryEntryCount'] as int? ?? 0;
+        showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Row(
+              children: [
+                Icon(Icons.check_circle, color: Colors.green, size: 28),
+                SizedBox(width: 8),
+                Text('检查完成'),
               ],
             ),
-          );
-        }
+            content: Text(
+              '数据完整性检查通过，未发现问题。\n\n'
+              '目录：$folderCount 个文件夹，$documentCount 个文档\n'
+              '媒体：$mediaItemCount 项\n'
+              '日记：$diaryEntryCount 条',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('确定'),
+              ),
+            ],
+          ),
+        );
+      } else {
+        showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('发现数据完整性问题'),
+            content: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text('发现 ${report['issues'].length} 个问题:'),
+                  const SizedBox(height: 8),
+                  ...(report['issues'] as List).map((issue) => Padding(
+                    padding: const EdgeInsets.only(bottom: 4),
+                    child: Text('• $issue', style: const TextStyle(fontSize: 12)),
+                  )).toList(),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('关闭'),
+              ),
+              TextButton(
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  _repairDataIntegrity();
+                },
+                child: const Text('修复问题'),
+              ),
+            ],
+          ),
+        );
       }
     } catch (e) {
       Logger.log('检查数据完整性时出错: $e');
@@ -2353,14 +2379,20 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     try {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('正在修复数据问题...')),
+          const SnackBar(content: Text('正在修复数据问题...')),
         );
       }
-      
+
       await getService<DatabaseService>().repairDataIntegrity();
-      
+
       if (mounted) {
         await _loadData();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('修复完成，数据已更新'),
+            backgroundColor: Colors.green,
+          ),
+        );
       }
     } catch (e) {
       Logger.log('修复数据完整性问题时出错: $e');

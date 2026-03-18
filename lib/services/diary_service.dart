@@ -117,6 +117,101 @@ class DiaryService {
     }
     return entries;
   }
+
+  /// 在全部日记中搜索（数据库级，不限于已加载条目）
+  Future<List<DiaryEntry>> searchAllEntries({
+    required String keyword,
+    bool favoritesOnly = false,
+  }) async {
+    await migrateOldDataIfNeeded();
+    final db = await getService<DatabaseService>().database;
+    final cleanKeyword = keyword.replaceAll(' ', '');
+    String? where;
+    List<Object?>? whereArgs = [];
+
+    final yearRegex = RegExp(r'(\d{4})(年)?$');
+    final yearMatch = yearRegex.firstMatch(cleanKeyword);
+    if (yearMatch != null) {
+      final year = int.parse(yearMatch.group(1)!);
+      where = "date LIKE ?";
+      whereArgs = ['$year%'];
+    } else {
+      final yearMonthRegex = RegExp(r'(\d{4})[年\-\.\//](\d{1,2})(月)?$');
+      final yearMonthMatch = yearMonthRegex.firstMatch(cleanKeyword);
+      if (yearMonthMatch != null) {
+        final year = int.parse(yearMonthMatch.group(1)!);
+        final month = int.parse(yearMonthMatch.group(2)!);
+        if (month >= 1 && month <= 12) {
+          final start = DateTime(year, month, 1).toIso8601String();
+          final end = DateTime(year, month + 1, 1).toIso8601String();
+          where = 'date >= ? AND date < ?';
+          whereArgs = [start, end];
+        }
+      } else {
+        final dateRegex = RegExp(r'(\d{4})[年\-\.\//](\d{1,2})[月\-\.\//](\d{1,2})(日)?$');
+        final dateMatch = dateRegex.firstMatch(cleanKeyword);
+        if (dateMatch != null) {
+          final year = int.parse(dateMatch.group(1)!);
+          final month = int.parse(dateMatch.group(2)!);
+          final day = int.parse(dateMatch.group(3)!);
+          if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+            final start = DateTime(year, month, day).toIso8601String().substring(0, 10);
+            final end = DateTime(year, month, day + 1).toIso8601String().substring(0, 10);
+            where = 'date >= ? AND date < ?';
+            whereArgs = [start, end];
+          }
+        } else {
+          final monthDayRegex = RegExp(r'^(\d{1,2})[月\-\.\//](\d{1,2})(日)?$');
+          final monthDayMatch = monthDayRegex.firstMatch(cleanKeyword);
+          if (monthDayMatch != null) {
+            final month = int.parse(monthDayMatch.group(1)!);
+            final day = int.parse(monthDayMatch.group(2)!);
+            if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+              where = "strftime('%m', date) = ? AND strftime('%d', date) = ?";
+              whereArgs = [month.toString().padLeft(2, '0'), day.toString().padLeft(2, '0')];
+            }
+          } else {
+            final monthRegex = RegExp(r'^(\d{1,2})(月)$');
+            final monthMatch = monthRegex.firstMatch(cleanKeyword);
+            if (monthMatch != null) {
+              final month = int.parse(monthMatch.group(1)!);
+              if (month >= 1 && month <= 12) {
+                where = "strftime('%m', date) = ?";
+                whereArgs = [month.toString().padLeft(2, '0')];
+              }
+            } else {
+              final dayRegex = RegExp(r'^(\d{1,2})(日)$');
+              final dayMatch = dayRegex.firstMatch(cleanKeyword);
+              if (dayMatch != null) {
+                final day = int.parse(dayMatch.group(1)!);
+                if (day >= 1 && day <= 31) {
+                  where = "strftime('%d', date) = ?";
+                  whereArgs = [day.toString().padLeft(2, '0')];
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if (where == null) {
+      where = 'content LIKE ?';
+      whereArgs = ['%$keyword%'];
+    }
+
+    if (favoritesOnly) {
+      where = '$where AND is_favorite = 1';
+    }
+
+    final maps = await db.query(
+      'diary_entries',
+      where: where,
+      whereArgs: whereArgs,
+      orderBy: 'date DESC',
+    );
+    return _mapsToEntries(maps);
+  }
   
   // 将数据库记录转换为DiaryEntry对象
   List<DiaryEntry> _mapsToEntries(List<Map<String, dynamic>> maps) {

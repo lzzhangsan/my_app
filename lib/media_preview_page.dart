@@ -436,32 +436,36 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
               ),
             ),
             Flexible(
-              child: ListView(
-                children: [
-                  ListTile(
-                    dense: true,
-                    visualDensity: const VisualDensity(horizontal: 0, vertical: -4),
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 16),
-                    leading: const Icon(Icons.folder_open, size: 20),
-                    title: const Text('根目录', style: TextStyle(fontSize: 13)),
-                    onTap: () => Navigator.pop(context, MediaItem(
-                      id: 'root',
-                      name: '根目录',
-                      path: '',
-                      type: MediaType.folder,
-                      directory: '',
-                      dateAdded: DateTime.now(),
-                    )),
-                  ),
-                  ...folders.map((folder) => ListTile(
+              child: ListView.builder(
+                itemCount: folders.length + 1,
+                itemBuilder: (context, index) {
+                  if (index == 0) {
+                    return ListTile(
+                      dense: true,
+                      visualDensity: const VisualDensity(horizontal: 0, vertical: -4),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+                      leading: const Icon(Icons.folder_open, size: 20),
+                      title: const Text('根目录', style: TextStyle(fontSize: 13)),
+                      onTap: () => Navigator.pop(context, MediaItem(
+                        id: 'root',
+                        name: '根目录',
+                        path: '',
+                        type: MediaType.folder,
+                        directory: '',
+                        dateAdded: DateTime.now(),
+                      )),
+                    );
+                  }
+                  final folder = folders[index - 1];
+                  return ListTile(
                     dense: true,
                     visualDensity: const VisualDensity(horizontal: 0, vertical: -4),
                     contentPadding: const EdgeInsets.symmetric(horizontal: 16),
                     leading: const Icon(Icons.folder, size: 20),
                     title: Text(folder.name, style: const TextStyle(fontSize: 13)),
                     onTap: () => Navigator.pop(context, folder),
-                  )),
-                ],
+                  );
+                },
               ),
             ),
           ],

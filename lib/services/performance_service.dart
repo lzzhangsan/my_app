@@ -1,11 +1,40 @@
 // lib/services/performance_service.dart
-// 性能监控服务 - 监控应用性能指标
+// 性能监控服务 - 监控应用性能指标（使用真实数据）
 
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/scheduler.dart';
 import 'logger.dart';
 import 'package:flutter/services.dart';
+
+/// 真实帧率追踪（通过 Flutter 帧回调）
+class _FpsTracker {
+  static final List<int> _frameTimestamps = [];
+  static const int _maxSamples = 60;
+
+  static void _onFrame(Duration timestamp) {
+    final ms = timestamp.inMilliseconds;
+    _frameTimestamps.add(ms);
+    if (_frameTimestamps.length > _maxSamples) {
+      _frameTimestamps.removeAt(0);
+    }
+  }
+
+  static double get currentFps {
+    if (_frameTimestamps.length < 2) return 60.0;
+    final first = _frameTimestamps.first;
+    final last = _frameTimestamps.last;
+    final elapsedMs = last - first;
+    if (elapsedMs <= 0) return 60.0;
+    final fps = (_frameTimestamps.length - 1) * 1000.0 / elapsedMs;
+    return fps.clamp(0.0, 120.0);
+  }
+
+  static void start() {
+    SchedulerBinding.instance.addPersistentFrameCallback(_onFrame);
+  }
+}
 
 class PerformanceService {
   static final PerformanceService _instance = PerformanceService._internal();
@@ -32,13 +61,11 @@ class PerformanceService {
     if (_isInitialized) return;
 
     try {
-      // 开始性能监控
+      _FpsTracker.start();
       _startMonitoring();
-      
       _isInitialized = true;
-      
       if (kDebugMode) {
-        debugPrint('PerformanceService: 初始化完成，监控间隔: ${_monitoringInterval.inSeconds}秒');
+        debugPrint('PerformanceService: 初始化完成，使用真实内存/CPU/FPS 数据');
       }
     } catch (e) {
       if (kDebugMode) {
@@ -133,28 +160,29 @@ class PerformanceService {
     }
   }
 
-  /// 获取Dart VM内存信息
+  /// 获取 Dart/非 Android 平台的内存信息（回退方案）
   Map<String, dynamic> _getDartVMMemoryInfo() {
     try {
-      // 基于应用运行时间和复杂度估算内存使用
-      final runningTime = DateTime.now().millisecondsSinceEpoch;
-      final baseMemory = 50 * 1024 * 1024; // 50MB基础内存
-      final variableMemory = (runningTime % 100000) * 1024; // 可变内存
-      
-      final used = baseMemory + variableMemory;
-      final total = 512 * 1024 * 1024; // 512MB估算总内存
-      final percentage = used / total;
-      
+      if (Platform.isAndroid || Platform.isIOS) {
+        final rss = ProcessInfo.currentRss;
+        if (rss > 0) {
+          const totalEstimate = 4 * 1024 * 1024 * 1024; // 4GB 估算设备内存
+          return {
+            'used': rss,
+            'total': totalEstimate,
+            'percentage': (rss / totalEstimate).clamp(0.0, 1.0),
+          };
+        }
+      }
       return {
-        'used': used,
-        'total': total,
-        'percentage': percentage.clamp(0.0, 1.0),
+        'used': 80 * 1024 * 1024,
+        'total': 512 * 1024 * 1024,
+        'percentage': 0.15,
       };
     } catch (e) {
-      // 如果无法获取，返回估算值
       return {
-        'used': 80 * 1024 * 1024, // 80MB
-        'total': 512 * 1024 * 1024, // 512MB
+        'used': 80 * 1024 * 1024,
+        'total': 512 * 1024 * 1024,
         'percentage': 0.15,
       };
     }
@@ -212,47 +240,9 @@ class PerformanceService {
     return cpuUsage.clamp(0.0, 1.0);
   }
 
-  /// 获取帧率
+  /// 获取帧率（真实 FPS，来自 Flutter 帧回调）
   Future<double> _getFrameRate() async {
-    try {
-      // 使用Flutter的性能监控来获取实际帧率
-      return _measureFrameRate();
-    } catch (e) {
-      return 60.0; // 默认值
-    }
-  }
-
-  /// 测量实际帧率
-  double _measureFrameRate() {
-    // 这是一个简化的帧率估算
-    // 在实际应用中，可以通过WidgetsBinding.instance.addPersistentFrameCallback
-    // 来监控实际的帧渲染性能
-    
-    final stopwatch = Stopwatch()..start();
-    
-    // 模拟一些UI操作的响应时间
-    var result = 0.0;
-    for (int i = 0; i < 1000; i++) {
-      result += i * 0.1;
-    }
-    
-    stopwatch.stop();
-    
-    // 基于执行时间估算帧率
-    final executionTime = stopwatch.elapsedMicroseconds;
-    
-    double frameRate;
-    if (executionTime < 500) {
-      frameRate = 60.0; // 流畅
-    } else if (executionTime < 1000) {
-      frameRate = 45.0; // 较流畅
-    } else if (executionTime < 2000) {
-      frameRate = 30.0; // 基本流畅
-    } else {
-      frameRate = 15.0; // 卡顿
-    }
-    
-    return frameRate;
+    return _FpsTracker.currentFps;
   }
 
   /// 获取电池电量（已移除，不再使用）

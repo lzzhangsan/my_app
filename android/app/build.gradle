@@ -20,7 +20,7 @@ if (keystorePropertiesFile.exists()) {
 android {
     namespace "com.example.change_copy2"
     compileSdk 36
-    ndkVersion "26.1.10909125"  // Use a recent NDK build
+    ndkVersion "27.0.12077973"  // integration_test 要求，向后兼容
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
@@ -61,7 +61,7 @@ android {
 
     buildTypes {
         release {
-            // 使用 debug 签名，保证与旧版覆盖安装时签名一致、数据保留
+            // 固定使用 debug 签名，便于覆盖安装旧版并保留数据；上架商店时再改用正式签名
             signingConfig signingConfigs.debug
             minifyEnabled false
             shrinkResources false

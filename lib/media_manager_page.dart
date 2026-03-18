@@ -4160,6 +4160,29 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   }
 
   Future<void> _importAllMediaData() async {
+    if (!mounted) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('导入全部媒体数据'),
+        content: const Text(
+          '导入将替换当前所有媒体数据，现有媒体会被覆盖。\n\n'
+          '请确认您已备份重要数据，或确定要执行此操作。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('确认导入', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
     final progress = ValueNotifier<double>(0.0);
     final message = ValueNotifier<String>('准备中...');
 

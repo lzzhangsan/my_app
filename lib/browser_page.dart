@@ -2476,76 +2476,79 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                 ),
                 const Divider(height: 1),
                 Expanded(
-                  child: ReorderableListView(
-              onReorder: (oldIndex, newIndex) async {
-                if (oldIndex < newIndex) newIndex -= 1;
-                final item = _bookmarks.removeAt(oldIndex);
-                _bookmarks.insert(newIndex, item);
-                modalSetState(() {});
-                await _saveBookmarks();
-              },
-              children: [
-                for (int index = 0; index < _bookmarks.length; index++)
-                  ListTile(
-                    key: ValueKey('bookmark_$index'),
-                    title: Text(_bookmarks[index]['name'] ?? _bookmarks[index]['url']!),
-                    onTap: () {
-                      _loadUrl(_bookmarks[index]['url']!);
-                      Navigator.pop(context);
+                  child: ReorderableListView.builder(
+                    itemCount: _bookmarks.length,
+                    onReorder: (oldIndex, newIndex) async {
+                      if (oldIndex < newIndex) newIndex -= 1;
+                      final item = _bookmarks.removeAt(oldIndex);
+                      _bookmarks.insert(newIndex, item);
+                      modalSetState(() {});
+                      await _saveBookmarks();
                     },
-                    trailing: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        IconButton(
-                          icon: const Icon(Icons.edit, color: Colors.blue),
-                          onPressed: () {
-                            Navigator.pop(context);
-                            _showRenameBookmarkDialog(context, index);
-                          },
-                          tooltip: '重命名',
+                    buildDefaultDragHandles: true,
+                    itemBuilder: (context, index) {
+                      final bookmark = _bookmarks[index];
+                      final url = bookmark['url']?.toString() ?? '';
+                      final name = bookmark['name'] ?? url;
+                      return ListTile(
+                        key: ValueKey('bookmark_$url$index'),
+                        title: Text(name),
+                        onTap: () {
+                          _loadUrl(url);
+                          Navigator.pop(context);
+                        },
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              icon: const Icon(Icons.edit, color: Colors.blue),
+                              onPressed: () {
+                                Navigator.pop(context);
+                                _showRenameBookmarkDialog(context, index);
+                              },
+                              tooltip: '重命名',
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.delete, color: Colors.red),
+                              onPressed: () async {
+                                final shouldDelete = await showDialog<bool>(
+                                  context: context,
+                                  builder: (context) => AlertDialog(
+                                    title: const Text('删除书签'),
+                                    content: Text('确定要删除书签 "$name" 吗？'),
+                                    actions: [
+                                      TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+                                      TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('删除')),
+                                    ],
+                                  ),
+                                ) ?? false;
+                                if (shouldDelete) {
+                                  modalSetState(() {
+                                    _bookmarks.removeAt(index);
+                                  });
+                                  await _saveBookmarks();
+                                }
+                              },
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.content_copy, color: Colors.green),
+                              onPressed: () {
+                                if (url.isNotEmpty) {
+                                  Clipboard.setData(ClipboardData(text: url));
+                                  if (context.mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(content: Text('书签网址已复制到剪贴板'), duration: Duration(seconds: 1)),
+                                    );
+                                  }
+                                }
+                              },
+                              tooltip: '复制网址',
+                            ),
+                          ],
                         ),
-                        IconButton(
-                          icon: const Icon(Icons.delete, color: Colors.red),
-                          onPressed: () async {
-                            final shouldDelete = await showDialog<bool>(
-                              context: context,
-                              builder: (context) => AlertDialog(
-                                title: const Text('删除书签'),
-                                content: Text('确定要删除书签 "${_bookmarks[index]['name']}" 吗？'),
-                                actions: [
-                                  TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-                                  TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('删除')),
-                                ],
-                              ),
-                            ) ?? false;
-                            if (shouldDelete) {
-                              modalSetState(() {
-                                _bookmarks.removeAt(index);
-                              });
-                              await _saveBookmarks();
-                            }
-                          },
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.content_copy, color: Colors.green),
-                          onPressed: () {
-                            final url = _bookmarks[index]['url']?.toString() ?? '';
-                            if (url.isNotEmpty) {
-                              Clipboard.setData(ClipboardData(text: url));
-                              if (context.mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(content: Text('书签网址已复制到剪贴板'), duration: Duration(seconds: 1)),
-                                );
-                              }
-                            }
-                          },
-                          tooltip: '复制网址',
-                        ),
-                      ],
-                    ),
+                      );
+                    },
                   ),
-              ],
-            ),
                 ),
               ],
             ),

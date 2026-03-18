@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'models/diary_entry.dart';
@@ -70,6 +71,9 @@ class _DiaryPageState extends State<DiaryPage> {
   String _searchKeyword = '';
   bool _showFavoritesOnly = false;
   bool _calendarExpanded = false;
+  List<DiaryEntry>? _searchResults;
+  bool _isSearching = false;
+  Timer? _searchDebounce;
 
   // 新增：日记本背景图片和颜色
   File? _diaryBgImage;
@@ -80,6 +84,12 @@ class _DiaryPageState extends State<DiaryPage> {
     super.initState();
     _loadEntries();
     _loadDiarySettings();
+  }
+
+  @override
+  void dispose() {
+    _searchDebounce?.cancel();
+    super.dispose();
   }
 
   Future<void> _loadDiarySettings() async {
@@ -208,13 +218,13 @@ class _DiaryPageState extends State<DiaryPage> {
     if (append) _isLoadingMore = true;
     final year = _selectedDate.year;
     final month = _selectedDate.month;
-    final dates = await _diaryService.getDatesWithEntries(year, month);
     final offset = append ? _entries.length : 0;
+    final dates = await _diaryService.getDatesWithEntries(year, month);
     final entries = await _diaryService.loadEntriesPaged(
       offset,
       _entriesPageSize,
-      year: year,
-      month: month,
+      year: null,
+      month: null,
     );
     if (mounted) {
       setState(() {
@@ -230,92 +240,43 @@ class _DiaryPageState extends State<DiaryPage> {
     }
   }
 
+  Future<void> _refreshCalendarDots() async {
+    final dates = await _diaryService.getDatesWithEntries(_selectedDate.year, _selectedDate.month);
+    if (mounted) setState(() => _datesWithEntries = dates);
+  }
+
   List<DiaryEntry> get _entriesForSelectedDate {
     final filtered = _showFavoritesOnly ? _entries.where((e) => e.isFavorite).toList() : _entries;
-    if (_searchKeyword.isEmpty) return filtered..sort((a, b) => b.date.compareTo(a.date));
-    
-    // 尝试解析搜索关键词中的日期信息
-    final dateSearchResult = _searchEntriesByDate(_searchKeyword, filtered);
-    if (dateSearchResult.isNotEmpty) {
-      return dateSearchResult..sort((a, b) => b.date.compareTo(a.date));
-    }
-    
-    // 如果不是日期搜索，则按内容搜索
-    return filtered.where((e) => (e.content ?? '').contains(_searchKeyword)).toList()..sort((a, b) => b.date.compareTo(a.date));
+    return filtered..sort((a, b) => b.date.compareTo(a.date));
   }
-  
-  // 根据日期搜索日记条目
-  List<DiaryEntry> _searchEntriesByDate(String keyword, List<DiaryEntry> entries) {
-    // 移除所有空格
-    final cleanKeyword = keyword.replaceAll(' ', '');
-    
-    // 匹配年份：2023年、2023
-    final yearRegex = RegExp(r'(\d{4})(年)?$');
-    final yearMatch = yearRegex.firstMatch(cleanKeyword);
-    if (yearMatch != null) {
-      final year = int.parse(yearMatch.group(1)!);
-      return entries.where((e) => e.date.year == year).toList();
+
+  void _onSearchChanged(String value) {
+    setState(() => _searchKeyword = value);
+    _searchDebounce?.cancel();
+    if (value.isEmpty) {
+      setState(() {
+        _searchResults = null;
+        _isSearching = false;
+      });
+      return;
     }
-    
-    // 匹配年月：2023年5月、2023-5、2023.5、2023/5
-    final yearMonthRegex = RegExp(r'(\d{4})[年\-\.\//](\d{1,2})(月)?$');
-    final yearMonthMatch = yearMonthRegex.firstMatch(cleanKeyword);
-    if (yearMonthMatch != null) {
-      final year = int.parse(yearMonthMatch.group(1)!);
-      final month = int.parse(yearMonthMatch.group(2)!);
-      if (month >= 1 && month <= 12) {
-        return entries.where((e) => e.date.year == year && e.date.month == month).toList();
-      }
+    _searchDebounce = Timer(const Duration(milliseconds: 350), () => _performSearch());
+  }
+
+  Future<void> _performSearch() async {
+    if (_searchKeyword.isEmpty) return;
+    if (!mounted) return;
+    setState(() => _isSearching = true);
+    final results = await _diaryService.searchAllEntries(
+      keyword: _searchKeyword,
+      favoritesOnly: _showFavoritesOnly,
+    );
+    if (mounted) {
+      setState(() {
+        _searchResults = results;
+        _isSearching = false;
+      });
     }
-    
-    // 匹配年月日：2023年5月1日、2023-5-1、2023.5.1、2023/5/1
-    final dateRegex = RegExp(r'(\d{4})[年\-\.\//](\d{1,2})[月\-\.\//](\d{1,2})(日)?$');
-    final dateMatch = dateRegex.firstMatch(cleanKeyword);
-    if (dateMatch != null) {
-      final year = int.parse(dateMatch.group(1)!);
-      final month = int.parse(dateMatch.group(2)!);
-      final day = int.parse(dateMatch.group(3)!);
-      if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
-        return entries.where((e) => 
-          e.date.year == year && 
-          e.date.month == month && 
-          e.date.day == day
-        ).toList();
-      }
-    }
-    
-    // 匹配月日：5月1日、5-1、5.1、5/1
-    final monthDayRegex = RegExp(r'^(\d{1,2})[月\-\.\//](\d{1,2})(日)?$');
-    final monthDayMatch = monthDayRegex.firstMatch(cleanKeyword);
-    if (monthDayMatch != null) {
-      final month = int.parse(monthDayMatch.group(1)!);
-      final day = int.parse(monthDayMatch.group(2)!);
-      if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
-        return entries.where((e) => e.date.month == month && e.date.day == day).toList();
-      }
-    }
-    
-    // 匹配月份：5月
-    final monthRegex = RegExp(r'^(\d{1,2})(月)$');
-    final monthMatch = monthRegex.firstMatch(cleanKeyword);
-    if (monthMatch != null) {
-      final month = int.parse(monthMatch.group(1)!);
-      if (month >= 1 && month <= 12) {
-        return entries.where((e) => e.date.month == month).toList();
-      }
-    }
-    
-    // 匹配日期：1日
-    final dayRegex = RegExp(r'^(\d{1,2})(日)$');
-    final dayMatch = dayRegex.firstMatch(cleanKeyword);
-    if (dayMatch != null) {
-      final day = int.parse(dayMatch.group(1)!);
-      if (day >= 1 && day <= 31) {
-        return entries.where((e) => e.date.day == day).toList();
-      }
-    }
-    
-    return [];
   }
 
   bool isSameDay(DateTime a, DateTime b) {
@@ -327,7 +288,7 @@ class _DiaryPageState extends State<DiaryPage> {
     setState(() {
       _selectedDate = date;
     });
-    if (monthChanged) _loadEntries();
+    if (monthChanged) _refreshCalendarDots();
   }
 
   void _addOrEditEntry({DiaryEntry? entry}) async {
@@ -595,7 +556,10 @@ class _DiaryPageState extends State<DiaryPage> {
               IconButton(
                 icon: Icon(_showFavoritesOnly ? Icons.favorite : Icons.favorite_border, color: _showFavoritesOnly ? Colors.red : null),
                 tooltip: _showFavoritesOnly ? '显示全部' : '只看收藏',
-                onPressed: () => setState(() => _showFavoritesOnly = !_showFavoritesOnly),
+                onPressed: () {
+                  setState(() => _showFavoritesOnly = !_showFavoritesOnly);
+                  if (_searchKeyword.isNotEmpty) _performSearch();
+                },
               ),
               IconButton(
                 icon: _TodayCircleIcon(),
@@ -630,7 +594,7 @@ class _DiaryPageState extends State<DiaryPage> {
                     border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
                     contentPadding: EdgeInsets.symmetric(vertical: 0, horizontal: 8),
                   ),
-                  onChanged: (value) => setState(() => _searchKeyword = value),
+                  onChanged: _onSearchChanged,
                 ),
               ),
               Expanded(child: _buildDiaryList()),
@@ -704,7 +668,7 @@ class _DiaryPageState extends State<DiaryPage> {
                       tooltip: '上一年',
                       onPressed: () {
                         setState(() => _selectedDate = DateTime(_selectedDate.year - 1, _selectedDate.month, 1));
-                        _loadEntries();
+                        _refreshCalendarDots();
                       },
                     ),
                     IconButton(
@@ -725,7 +689,7 @@ class _DiaryPageState extends State<DiaryPage> {
                       tooltip: '下一年',
                       onPressed: () {
                         setState(() => _selectedDate = DateTime(_selectedDate.year + 1, _selectedDate.month, 1));
-                        _loadEntries();
+                        _refreshCalendarDots();
                       },
                     ),
                   ],
@@ -804,16 +768,29 @@ class _DiaryPageState extends State<DiaryPage> {
   }
 
   Widget _buildDiaryList() {
-    final entries = _entriesForSelectedDate;
-    final itemCount = entries.length + (_hasMoreEntries ? 1 : 0);
-    if (entries.isEmpty && !_hasMoreEntries) {
-      return const Center(child: Text('这一天还没有日记，快来记录吧~'));
+    final isSearchMode = _searchKeyword.isNotEmpty;
+    final entries = isSearchMode
+        ? (_searchResults ?? [])
+        : _entriesForSelectedDate;
+    final showLoadMore = !isSearchMode && _hasMoreEntries;
+    final itemCount = entries.length + (showLoadMore ? 1 : 0);
+
+    if (isSearchMode && _isSearching) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (entries.isEmpty && (!showLoadMore || !_hasMoreEntries)) {
+      return Center(
+        child: Text(
+          isSearchMode ? '未找到匹配的日记' : '还没有日记，快来记录吧~',
+        ),
+      );
     }
     return ListView.builder(
       padding: const EdgeInsets.all(12),
       itemCount: itemCount,
       itemBuilder: (context, index) {
         if (index >= entries.length) {
+          if (!showLoadMore) return const SizedBox.shrink();
           return Padding(
             padding: const EdgeInsets.all(16),
             child: Center(
