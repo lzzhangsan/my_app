@@ -62,6 +62,10 @@ class DiaryPage extends StatefulWidget {
 class _DiaryPageState extends State<DiaryPage> {
   final DiaryService _diaryService = DiaryService();
   List<DiaryEntry> _entries = [];
+  List<DateTime> _datesWithEntries = []; // 当前月有日记的日期，用于日历圆点（轻量）
+  static const int _entriesPageSize = 300;
+  bool _hasMoreEntries = true;
+  bool _isLoadingMore = false;
   DateTime _selectedDate = DateTime.now();
   String _searchKeyword = '';
   bool _showFavoritesOnly = false;
@@ -199,11 +203,31 @@ class _DiaryPageState extends State<DiaryPage> {
     }
   }
 
-  Future<void> _loadEntries() async {
-    final entries = await _diaryService.loadEntries();
-    setState(() {
-      _entries = entries;
-    });
+  Future<void> _loadEntries({bool append = false}) async {
+    if (append && _isLoadingMore) return;
+    if (append) _isLoadingMore = true;
+    final year = _selectedDate.year;
+    final month = _selectedDate.month;
+    final dates = await _diaryService.getDatesWithEntries(year, month);
+    final offset = append ? _entries.length : 0;
+    final entries = await _diaryService.loadEntriesPaged(
+      offset,
+      _entriesPageSize,
+      year: year,
+      month: month,
+    );
+    if (mounted) {
+      setState(() {
+        _datesWithEntries = dates;
+        if (append) {
+          _entries.addAll(entries);
+          _isLoadingMore = false;
+        } else {
+          _entries = entries;
+        }
+        _hasMoreEntries = entries.length >= _entriesPageSize;
+      });
+    }
   }
 
   List<DiaryEntry> get _entriesForSelectedDate {
@@ -299,9 +323,11 @@ class _DiaryPageState extends State<DiaryPage> {
   }
 
   void _onDateSelected(DateTime date) {
+    final monthChanged = date.year != _selectedDate.year || date.month != _selectedDate.month;
     setState(() {
       _selectedDate = date;
     });
+    if (monthChanged) _loadEntries();
   }
 
   void _addOrEditEntry({DiaryEntry? entry}) async {
@@ -676,7 +702,10 @@ class _DiaryPageState extends State<DiaryPage> {
                     IconButton(
                       icon: Icon(Icons.keyboard_double_arrow_left, size: 28),
                       tooltip: '上一年',
-                      onPressed: () => setState(() => _selectedDate = DateTime(_selectedDate.year - 1, _selectedDate.month, 1)),
+                      onPressed: () {
+                        setState(() => _selectedDate = DateTime(_selectedDate.year - 1, _selectedDate.month, 1));
+                        _loadEntries();
+                      },
                     ),
                     IconButton(
                       icon: const Icon(Icons.chevron_left),
@@ -694,7 +723,10 @@ class _DiaryPageState extends State<DiaryPage> {
                     IconButton(
                       icon: Icon(Icons.keyboard_double_arrow_right, size: 28),
                       tooltip: '下一年',
-                      onPressed: () => setState(() => _selectedDate = DateTime(_selectedDate.year + 1, _selectedDate.month, 1)),
+                      onPressed: () {
+                        setState(() => _selectedDate = DateTime(_selectedDate.year + 1, _selectedDate.month, 1));
+                        _loadEntries();
+                      },
                     ),
                   ],
                 ),
@@ -723,7 +755,7 @@ class _DiaryPageState extends State<DiaryPage> {
                   }
                   final day = days[index - weekDayOffset];
                   final isSelected = isSameDay(day, _selectedDate);
-                  final hasEntry = _entries.any((e) => isSameDay(e.date, day));
+                  final hasEntry = _datesWithEntries.any((d) => isSameDay(d, day));
                   return GestureDetector(
                     onTap: () => _onDateSelected(day),
                     child: Container(
@@ -773,13 +805,26 @@ class _DiaryPageState extends State<DiaryPage> {
 
   Widget _buildDiaryList() {
     final entries = _entriesForSelectedDate;
-    if (entries.isEmpty) {
+    final itemCount = entries.length + (_hasMoreEntries ? 1 : 0);
+    if (entries.isEmpty && !_hasMoreEntries) {
       return const Center(child: Text('这一天还没有日记，快来记录吧~'));
     }
     return ListView.builder(
       padding: const EdgeInsets.all(12),
-      itemCount: entries.length,
+      itemCount: itemCount,
       itemBuilder: (context, index) {
+        if (index >= entries.length) {
+          return Padding(
+            padding: const EdgeInsets.all(16),
+            child: Center(
+              child: TextButton.icon(
+                onPressed: _isLoadingMore ? null : () => _loadEntries(append: true),
+                icon: _isLoadingMore ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.add_circle_outline),
+                label: Text(_isLoadingMore ? '加载中...' : '加载更多'),
+              ),
+            ),
+          );
+        }
         final entry = entries[index];
         return Card(
           margin: const EdgeInsets.symmetric(vertical: 8),
@@ -1149,7 +1194,11 @@ class _DiaryPageState extends State<DiaryPage> {
 
       showProgressDialog(context, progress, message);
 
-      final zipFile = File(result.files.single.path!);
+      final p = result.files.single.path;
+      if (p == null || p.isEmpty) {
+        throw Exception('无法获取所选文件路径');
+      }
+      final zipFile = File(p);
       if (!await zipFile.exists()) {
         throw Exception('所选文件不存在或无法访问');
       }
@@ -1177,106 +1226,13 @@ class _DiaryPageState extends State<DiaryPage> {
         message.value = '正在解压: $done/$total';
       }
 
-      // 4. 读取并处理JSON数据 - 支持分块格式与旧版diary_data.json
-      currentPhase = '处理日记数据';
-      message.value = '正在处理日记数据...';
-      List<dynamic> entriesJson = [];
-      final chunk0File = File(path.join(tempImportDir.path, 'diary_data_0.json'));
-      if (await chunk0File.exists()) {
-        int chunkIdx = 0;
-        while (true) {
-          final f = File(path.join(tempImportDir.path, 'diary_data_$chunkIdx.json'));
-          if (!await f.exists()) break;
-          message.value = '正在读取: diary_data_$chunkIdx.json';
-          final chunk = jsonDecode(await f.readAsString()) as List;
-          entriesJson.addAll(chunk);
-          chunkIdx++;
-        }
-      } else {
-        final jsonFile = File(path.join(tempImportDir.path, 'diary_data.json'));
-        if (!await jsonFile.exists()) {
-          throw Exception('压缩包中未找到 diary_data.json');
-        }
-        entriesJson = jsonDecode(await jsonFile.readAsString()) as List;
-      }
-      final List<DiaryEntry> entriesToImport = [];
+      // 4. 获取永久媒体目录（路径重映射需要）
       final permanentMediaDir = await _getPermanentMediaDirectory();
-
-      Logger.i('开始处理JSON数据，共 ${entriesJson.length} 个条目');
-
-      for (int i = 0; i < entriesJson.length; i++) {
-        final item = entriesJson[i];
-        final entryMap = item as Map<String, dynamic>;
-        
-        Logger.d('处理第 $i 个条目:');
-        Logger.d('  原始imagePaths: ${entryMap['image_paths']}');
-        Logger.d('  原始videoPaths: ${entryMap['video_paths']}');
-        Logger.d('  原始audioPaths: ${entryMap['audio_paths']}');
-
-        // 路径重映射 - 处理media/前缀的路径
-        List<String> remapPaths(List<dynamic> originalPaths) {
-          return originalPaths.map((p) {
-            final pathStr = p.toString();
-            Logger.d('处理媒体路径: $pathStr');
-
-            if (pathStr.startsWith('media/')) {
-              // 如果是media/开头的路径，提取文件名并映射到永久目录
-              final fileName = path.basename(pathStr);
-              final mappedPath = path.join(permanentMediaDir.path, fileName);
-              Logger.d('映射 media/ 路径: $pathStr -> $mappedPath');
-              return mappedPath;
-            } else if (pathStr.contains('media/')) {
-              // 如果路径中包含media/，提取media/后面的部分
-              final mediaIndex = pathStr.indexOf('media/');
-              final mediaPath = pathStr.substring(mediaIndex + 6); // 去掉"media/"
-              final fileName = path.basename(mediaPath);
-              final mappedPath = path.join(permanentMediaDir.path, fileName);
-              Logger.d('映射包含media/的路径: $pathStr -> $mappedPath');
-              return mappedPath;
-            } else {
-              // 如果是完整路径，直接使用文件名
-              final fileName = path.basename(pathStr);
-              final mappedPath = path.join(permanentMediaDir.path, fileName);
-              Logger.d('映射完整路径: $pathStr -> $mappedPath');
-              return mappedPath;
-            }
-          }).toList();
-        }
-        
-        // 解析媒体路径
-        List<String> parseMediaPaths(dynamic paths) {
-          if (paths == null) return [];
-          if (paths is List) {
-            return paths.map((p) => p.toString()).toList();
-          }
-          if (paths is String) {
-            try {
-              final decoded = jsonDecode(paths) as List;
-              return decoded.map((p) => p.toString()).toList();
-            } catch (_) {
-              return [paths];
-            }
-          }
-          return [];
-        }
-        
-        final imagePaths = remapPaths(parseMediaPaths(entryMap['image_paths']));
-        final videoPaths = remapPaths(parseMediaPaths(entryMap['video_paths']));
-        final audioPaths = remapPaths(parseMediaPaths(entryMap['audio_paths']));
-        
-        Logger.d('  映射后imagePaths: $imagePaths');
-        Logger.d('  映射后videoPaths: $videoPaths');
-        Logger.d('  映射后audioPaths: $audioPaths');
-
-        // 创建临时Map，使用已处理的媒体路径
-        final processedEntryMap = Map<String, dynamic>.from(entryMap);
-        processedEntryMap['imagePaths'] = imagePaths;
-        processedEntryMap['videoPaths'] = videoPaths;
-        processedEntryMap['audioPaths'] = audioPaths;
-        
-        entriesToImport.add(DiaryEntry.fromMap(processedEntryMap));
+      final chunk0Exists = await File(path.join(tempImportDir.path, 'diary_data_0.json')).exists();
+      final legacyExists = await File(path.join(tempImportDir.path, 'diary_data.json')).exists();
+      if (!chunk0Exists && !legacyExists) {
+        throw Exception('压缩包中未找到 diary_data.json 或 diary_data_0.json');
       }
-      progress.value = 0.65;
 
       // 5. 先迁移媒体文件到永久目录，再写入数据库（避免崩溃时 DB 引用不存在的文件）
       currentPhase = '迁移媒体文件';
@@ -1331,10 +1287,75 @@ class _DiaryPageState extends State<DiaryPage> {
       }
       progress.value = 0.75;
 
-      // 6. 媒体文件就位后，再导入数据库（事务安全）
+      // 6. 媒体文件就位后，分块写入数据库（避免大容量 OOM）
       currentPhase = '写入数据库';
       message.value = '正在写入数据库...';
-      await _diaryService.replaceAllEntries(entriesToImport);
+      int chunkFileIdx = 0;
+      List<DiaryEntry> parseBuffer = [];
+      int parseBufferIdx = 0;
+      const dbBatchSize = 500;
+
+      List<String> remapPaths(List<dynamic> originalPaths, Directory permDir) {
+        return originalPaths.map((p) {
+          final pathStr = p.toString();
+          if (pathStr.startsWith('media/')) {
+            return path.join(permDir.path, path.basename(pathStr));
+          } else if (pathStr.contains('media/')) {
+            final mediaIndex = pathStr.indexOf('media/');
+            final mediaPath = pathStr.substring(mediaIndex + 6);
+            return path.join(permDir.path, path.basename(mediaPath));
+          } else {
+            return path.join(permDir.path, path.basename(pathStr));
+          }
+        }).toList();
+      }
+      List<String> parseMediaPaths(dynamic paths) {
+        if (paths == null) return [];
+        if (paths is List) return paths.map((p) => p.toString()).toList();
+        if (paths is String) {
+          try {
+            return (jsonDecode(paths) as List).map((p) => p.toString()).toList();
+          } catch (_) { return [paths]; }
+        }
+        return [];
+      }
+
+      await _diaryService.replaceAllEntriesFromChunks(() async {
+        final batch = <DiaryEntry>[];
+        while (batch.length < dbBatchSize) {
+          if (parseBufferIdx >= parseBuffer.length) {
+            List<dynamic> rawChunk;
+            final chunkFile = File(path.join(tempImportDir.path, 'diary_data_$chunkFileIdx.json'));
+            if (await chunkFile.exists()) {
+              message.value = '正在读取: diary_data_$chunkFileIdx.json';
+              rawChunk = jsonDecode(await chunkFile.readAsString()) as List;
+              chunkFileIdx++;
+            } else if (chunkFileIdx == 0) {
+              final legacyFile = File(path.join(tempImportDir.path, 'diary_data.json'));
+              if (!await legacyFile.exists()) break;
+              rawChunk = jsonDecode(await legacyFile.readAsString()) as List;
+              chunkFileIdx = 1;
+            } else {
+              break;
+            }
+            parseBuffer = [];
+            for (final item in rawChunk) {
+              final entryMap = item as Map<String, dynamic>;
+              final processedEntryMap = Map<String, dynamic>.from(entryMap);
+              processedEntryMap['imagePaths'] = remapPaths(parseMediaPaths(entryMap['image_paths']), permanentMediaDir);
+              processedEntryMap['videoPaths'] = remapPaths(parseMediaPaths(entryMap['video_paths']), permanentMediaDir);
+              processedEntryMap['audioPaths'] = remapPaths(parseMediaPaths(entryMap['audio_paths']), permanentMediaDir);
+              parseBuffer.add(DiaryEntry.fromMap(processedEntryMap));
+            }
+            parseBufferIdx = 0;
+          }
+          if (parseBufferIdx >= parseBuffer.length) break;
+          for (int i = 0; i < dbBatchSize - batch.length && parseBufferIdx < parseBuffer.length; i++) {
+            batch.add(parseBuffer[parseBufferIdx++]);
+          }
+        }
+        return batch.isEmpty ? null : batch;
+      });
       progress.value = 0.8;
 
       // 7. 导入日记本设置（背景图片、背景色）
@@ -1371,44 +1392,11 @@ class _DiaryPageState extends State<DiaryPage> {
 
       progress.value = 0.95;
 
-      // 7. 验证媒体文件映射
-      message.value = '正在验证媒体文件...';
-      int validMediaCount = 0;
-      int invalidMediaCount = 0;
-      
-      Logger.i('开始验证媒体文件映射...');
-      Logger.d('永久媒体目录: ${permanentMediaDir.path}');
-
-       for (var entry in entriesToImport) {
-         final allMediaPaths = [...entry.imagePaths, ...entry.videoPaths, ...entry.audioPaths];
-         Logger.d('日记条目 ${entry.id} 的媒体路径: $allMediaPaths');
-
-         for (var mediaPath in allMediaPaths) {
-           if (mediaPath.isNotEmpty) {
-             final mediaFile = File(mediaPath);
-             Logger.d('检查媒体文件: $mediaPath');
-
-             if (await mediaFile.exists()) {
-               validMediaCount++;
-               Logger.i('✓ 媒体文件存在: $mediaPath');
-             } else {
-               invalidMediaCount++;
-               Logger.w('✗ 媒体文件不存在: $mediaPath');
-
-                // 尝试列出永久媒体目录中的所有文件
-                try {
-                  final files = await permanentMediaDir.list().toList();
-                  Logger.d('永久媒体目录中的文件: ${files.map((f) => path.basename(f.path)).toList()}');
-                } catch (e) {
-                  Logger.w('无法列出永久媒体目录: $e');
-                }
-             }
-           }
-         }
-       }
-
-      Logger.i('媒体文件验证完成: $validMediaCount 个有效, $invalidMediaCount 个无效');
-       progress.value = 0.98;
+      // 7. 验证导入结果（分块导入后不再持有全量数据，仅记录条数）
+      message.value = '正在验证...';
+      final importedCount = await _diaryService.getEntryCount();
+      Logger.i('日记导入完成，共 $importedCount 条');
+      progress.value = 0.98;
 
       // 8. 刷新UI
       message.value = '导入完成!';
@@ -1554,8 +1542,8 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
     });
     
     try {
-      final entries = await _diaryService.loadEntries();
-      DiaryEntry? draft = entries.firstWhere((e) => e.id == _entryId, orElse: () => DiaryEntry(
+      DiaryEntry? draft = await _diaryService.getEntryById(_entryId);
+      draft ??= DiaryEntry(
         id: _entryId,
         date: widget.entry?.date ?? widget.date,
         content: widget.entry?.content ?? '',
@@ -1566,26 +1554,27 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
         mood: widget.entry?.mood,
         location: widget.entry?.location,
         isFavorite: widget.entry?.isFavorite ?? false,
-      ));
-      
+      );
+      final entry = draft!;
+
       // 在设置状态之前预加载所有缩略图
       await _preloadThumbnails(
-        List<String>.from(draft.imagePaths), 
-        List<String>.from(draft.videoPaths)
+        List<String>.from(entry.imagePaths),
+        List<String>.from(entry.videoPaths),
       );
-      
+
       if (mounted) {
         setState(() {
-          _date = draft.date;
-          _contentController.text = draft.content ?? '';
-          _imagePaths = List<String>.from(draft.imagePaths);
-          _audioPaths = List<String>.from(draft.audioPaths);
-          _videoPaths = List<String>.from(draft.videoPaths);
-          _weather = draft.weather;
-          _mood = draft.mood;
-          _location = draft.location;
-          _locationController.text = draft.location ?? '';
-          _isFavorite = draft.isFavorite;
+          _date = entry.date;
+          _contentController.text = entry.content ?? '';
+          _imagePaths = List<String>.from(entry.imagePaths);
+          _audioPaths = List<String>.from(entry.audioPaths);
+          _videoPaths = List<String>.from(entry.videoPaths);
+          _weather = entry.weather;
+          _mood = entry.mood;
+          _location = entry.location;
+          _locationController.text = entry.location ?? '';
+          _isFavorite = entry.isFavorite;
           _isLoading = false;
         });
       }

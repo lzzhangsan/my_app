@@ -3433,7 +3433,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         allowedExtensions: ['zip'],
       );
 
-      if (result != null && result.files.single.path != null) {
+      final zipPath = result?.files.single.path;
+      if (result != null && zipPath != null && zipPath.isNotEmpty) {
         // 创建进度通知器
         final ValueNotifier<String> progressNotifier = ValueNotifier<String>('准备导入...');
         
@@ -3467,7 +3468,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
         // 读取ZIP文件（限制 100MB 避免 OOM）
         const int kMaxZipSizeBytes = 100 * 1024 * 1024;
-        final File zipFile = File(result.files.single.path!);
+        final File zipFile = File(zipPath);
         final fileSize = await zipFile.length();
         if (fileSize > kMaxZipSizeBytes) {
           throw Exception('ZIP 文件过大 (${(fileSize / 1024 / 1024).toStringAsFixed(1)}MB)，超过 100MB 限制，请选择较小的备份文件');

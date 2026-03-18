@@ -27,24 +27,95 @@ class DiaryService {
     }
   }
 
+  Future<int> getEntryCount() async {
+    await migrateOldDataIfNeeded();
+    final db = await getService<DatabaseService>().database;
+    return Sqflite.firstIntValue(await db.rawQuery('SELECT COUNT(*) FROM diary_entries')) ?? 0;
+  }
+
   Future<List<DiaryEntry>> loadEntries() async {
     await migrateOldDataIfNeeded();
     final db = await getService<DatabaseService>().database;
     final maps = await db.query('diary_entries', orderBy: 'date DESC');
     return _mapsToEntries(maps);
   }
-  
-  // 分页加载日记数据，用于处理大量数据
-  Future<List<DiaryEntry>> loadEntriesPaged(int offset, int limit) async {
+
+  /// 按 ID 获取单条日记（用于编辑页，避免全量加载）
+  Future<DiaryEntry?> getEntryById(String id) async {
     await migrateOldDataIfNeeded();
     final db = await getService<DatabaseService>().database;
+    final maps = await db.query('diary_entries', where: 'id = ?', whereArgs: [id]);
+    if (maps.isEmpty) return null;
+    return _mapsToEntries(maps).first;
+  }
+  
+  // 分页加载日记数据，用于处理大量数据（可按月份筛选）
+  Future<List<DiaryEntry>> loadEntriesPaged(int offset, int limit, {int? year, int? month}) async {
+    await migrateOldDataIfNeeded();
+    final db = await getService<DatabaseService>().database;
+    String? where;
+    List<Object?>? whereArgs;
+    if (year != null && month != null) {
+      final start = DateTime(year, month, 1).toIso8601String();
+      final end = DateTime(year, month + 1, 1).toIso8601String();
+      where = 'date >= ? AND date < ?';
+      whereArgs = [start, end];
+    }
     final maps = await db.query(
-      'diary_entries', 
+      'diary_entries',
+      where: where,
+      whereArgs: whereArgs,
       orderBy: 'date DESC',
       limit: limit,
-      offset: offset
+      offset: offset,
     );
     return _mapsToEntries(maps);
+  }
+
+  /// 获取指定月份有日记的日期列表（轻量，用于日历圆点）
+  Future<List<DateTime>> getDatesWithEntries(int year, int month) async {
+    await migrateOldDataIfNeeded();
+    final db = await getService<DatabaseService>().database;
+    final start = DateTime(year, month, 1).toIso8601String();
+    final end = DateTime(year, month + 1, 1).toIso8601String();
+    final rows = await db.rawQuery(
+      "SELECT DISTINCT date FROM diary_entries WHERE date >= ? AND date < ?",
+      [start, end],
+    );
+    return rows.map((r) => DateTime.parse(r['date'] as String)).toList();
+  }
+
+  /// 加载指定日期的日记（通常数量少，避免全量加载）
+  Future<List<DiaryEntry>> loadEntriesForDate(DateTime date, {String? searchKeyword, bool? favoritesOnly}) async {
+    await migrateOldDataIfNeeded();
+    final db = await getService<DatabaseService>().database;
+    final dateStr = DateTime(date.year, date.month, date.day).toIso8601String().substring(0, 10);
+    final nextDateStr = DateTime(date.year, date.month, date.day + 1).toIso8601String().substring(0, 10);
+    var maps = await db.query(
+      'diary_entries',
+      where: 'date >= ? AND date < ?',
+      whereArgs: [dateStr, nextDateStr],
+      orderBy: 'date DESC',
+    );
+    var entries = _mapsToEntries(maps);
+    if (favoritesOnly == true) entries = entries.where((e) => e.isFavorite).toList();
+    if (searchKeyword != null && searchKeyword.isNotEmpty) {
+      entries = entries.where((e) => (e.content ?? '').contains(searchKeyword)).toList();
+    }
+    return entries;
+  }
+
+  /// 加载所有日记（保留用于导出、搜索等需要全量的场景）
+  Future<List<DiaryEntry>> loadEntriesFiltered({String? searchKeyword, bool? favoritesOnly, int? limit}) async {
+    await migrateOldDataIfNeeded();
+    final db = await getService<DatabaseService>().database;
+    var maps = await db.query('diary_entries', orderBy: 'date DESC', limit: limit ?? 99999);
+    var entries = _mapsToEntries(maps);
+    if (favoritesOnly == true) entries = entries.where((e) => e.isFavorite).toList();
+    if (searchKeyword != null && searchKeyword.isNotEmpty) {
+      entries = entries.where((e) => (e.content ?? '').contains(searchKeyword)).toList();
+    }
+    return entries;
   }
   
   // 将数据库记录转换为DiaryEntry对象
@@ -85,6 +156,12 @@ class DiaryService {
   Future<void> replaceAllEntries(List<DiaryEntry> entries) async {
     final dbService = getService<DatabaseService>();
     await dbService.replaceAllDiaryEntries(entries);
+  }
+
+  /// 分块替换所有日记条目，避免大容量导入时 OOM
+  Future<void> replaceAllEntriesFromChunks(Future<List<DiaryEntry>?> Function() getNextChunk) async {
+    final dbService = getService<DatabaseService>();
+    await dbService.replaceAllDiaryEntriesFromChunks(getNextChunk);
   }
 
   Future<void> addEntry(DiaryEntry entry) async {

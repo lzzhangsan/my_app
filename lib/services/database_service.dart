@@ -4415,6 +4415,41 @@ class DatabaseService {
     });
   }
 
+  /// 替换所有日记条目（分块读取，不一次性加载）- 用于大容量导入，避免 OOM
+  Future<void> replaceAllDiaryEntriesFromChunks(Future<List<DiaryEntry>?> Function() getNextChunk) async {
+    final db = await database;
+    const tempTable = 'diary_entries_temp';
+    await db.transaction((txn) async {
+      await txn.execute('DROP TABLE IF EXISTS $tempTable');
+      await txn.execute('''
+        CREATE TABLE $tempTable (
+          id TEXT PRIMARY KEY,
+          date TEXT NOT NULL,
+          content TEXT,
+          image_paths TEXT,
+          audio_paths TEXT,
+          video_paths TEXT,
+          weather TEXT,
+          mood TEXT,
+          location TEXT,
+          is_favorite INTEGER DEFAULT 0
+        )
+      ''');
+      List<DiaryEntry>? chunk;
+      while (true) {
+        chunk = await getNextChunk();
+        if (chunk == null || chunk.isEmpty) break;
+        final batch = txn.batch();
+        for (var entry in chunk) {
+          batch.insert(tempTable, entry.toMap(), conflictAlgorithm: ConflictAlgorithm.replace);
+        }
+        await batch.commit(noResult: true);
+      }
+      await txn.execute('DROP TABLE IF EXISTS diary_entries');
+      await txn.execute('ALTER TABLE $tempTable RENAME TO diary_entries');
+    });
+  }
+
   /// 替换所有日记条目（清空并批量插入）- 使用临时表保证事务安全
   Future<void> replaceAllDiaryEntries(List<DiaryEntry> entries) async {
     final db = await database;

@@ -914,8 +914,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         List<String> failedFiles = [];
 
         for (var file in result.files) {
-          if (file.path != null) {
-            String zipPath = file.path!;
+          final fp = file.path;
+          if (fp != null && fp.isNotEmpty) {
+            String zipPath = fp;
             String fileName = path.basenameWithoutExtension(zipPath);
             
             // 自动去掉时间戳，保持原名
@@ -2230,7 +2231,8 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         allowedExtensions: ['zip'],
       );
 
-      if (result != null && result.files.single.path != null) {
+      final zipPath = result?.files.single.path;
+      if (result != null && zipPath != null && zipPath.isNotEmpty) {
         // 创建进度通知器
         final ValueNotifier<String> progressNotifier = ValueNotifier<String>('准备导入...');
         
@@ -2260,7 +2262,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         );
 
         await getService<DatabaseService>().importDirectoryData(
-          result.files.single.path!,
+          zipPath,
           progressNotifier: progressNotifier,
         );
 

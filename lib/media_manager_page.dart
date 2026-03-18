@@ -982,7 +982,10 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           }
           return [];
         }
-        return result.files.map((file) => File(file.path!)).toList();
+        return result.files
+            .where((f) => f.path != null && f.path!.isNotEmpty)
+            .map((f) => File(f.path!))
+            .toList();
       }
 
       List<AssetEntity> allVideos = [];
@@ -3968,7 +3971,11 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       if (!mounted) return;
 
       showProgressDialog(context, progress, message);
-      final zipFile = File(result.files.single.path!);
+      final p = result.files.single.path;
+      if (p == null || p.isEmpty) {
+        throw Exception('无法获取所选文件路径');
+      }
+      final zipFile = File(p);
       if (!await zipFile.exists()) {
         throw Exception('所选文件不存在或无法访问');
       }
@@ -4173,7 +4180,11 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
       showProgressDialog(context, progress, message);
 
-      final zipFile = File(result.files.single.path!);
+      final p = result.files.single.path;
+      if (p == null || p.isEmpty) {
+        throw Exception('无法获取所选文件路径');
+      }
+      final zipFile = File(p);
       if (!await zipFile.exists()) {
         throw Exception('所选文件不存在或无法访问');
       }
