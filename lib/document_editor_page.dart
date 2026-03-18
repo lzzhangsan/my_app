@@ -832,48 +832,54 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
     });
   }
 
-  void _duplicateImageBox(String id) {
-    Future.microtask(() {
-      setState(() {
-        int index = _imageBoxes.indexWhere((imageBox) => imageBox['id'] == id);
-        if (index != -1) {
-          var uuid = Uuid();
-          Map<String, dynamic> original = _imageBoxes[index];
-          // 获取 document_id
-          final documentId = original['document_id'] ?? original['documentId'];
-          // 复制时必须保证 imagePath 有效
-          if (original['imagePath'] == null || original['imagePath'].toString().isEmpty) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('图片框无图片，无法复制。')),
-            );
-            return;
-          }
-          Map<String, dynamic> newImageBox = {
-            'id': uuid.v4(),
-            'document_id': documentId,
-            'documentName': widget.documentName,
-            'position_x': (original['positionX'] ?? 0.0) + 20,
-            'position_y': (original['positionY'] ?? 0.0) + 20,
-            'positionX': (original['positionX'] ?? 0.0) + 20,
-            'positionY': (original['positionY'] ?? 0.0) + 20,
-            'width': original['width'],
-            'height': original['height'],
-            'image_path': original['imagePath'],
-            'imagePath': original['imagePath'],
-          };
-          if (_databaseService.validateImageBoxData(newImageBox)) {
-            _imageBoxes.add(newImageBox);
-            Future.microtask(() {
-              _debouncedSave();
-            });
-            Future.microtask(() => _saveStateToHistory());
-          } else {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('图片框数据无效，无法复制。')),
-            );
-          }
-        }
-      });
+  Future<void> _duplicateImageBox(String id) async {
+    final index = _imageBoxes.indexWhere((imageBox) => imageBox['id'] == id);
+    if (index == -1) return;
+    final original = _imageBoxes[index];
+    final imagePath = original['imagePath'] ?? original['image_path'];
+    if (imagePath == null || imagePath.toString().isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('图片框无图片，无法复制。')),
+        );
+      }
+      return;
+    }
+    // 获取 document_id：内存中的图片框可能没有，需从数据库查询
+    var documentId = original['document_id'] ?? original['documentId'];
+    if (documentId == null) {
+      final doc = await _databaseService.getDocumentByName(widget.documentName);
+      documentId = doc?['id'] as String?;
+    }
+    if (documentId == null && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('无法获取文档信息，复制失败。')),
+      );
+      return;
+    }
+    setState(() {
+      var uuid = Uuid();
+      final posX = (original['positionX'] ?? original['position_x'] ?? 0.0).toDouble();
+      final posY = (original['positionY'] ?? original['position_y'] ?? 0.0).toDouble();
+      final h = (original['height'] ?? 200.0).toDouble();
+      final newPosY = posY + h + 9.45;
+      final newImageBox = {
+        'id': uuid.v4(),
+        'document_id': documentId,
+        'documentName': widget.documentName,
+        'position_x': posX,
+        'position_y': newPosY,
+        'positionX': posX,
+        'positionY': newPosY,
+        'width': original['width'] ?? 200.0,
+        'height': original['height'] ?? 200.0,
+        'image_path': imagePath,
+        'imagePath': imagePath,
+      };
+      _imageBoxes.add(newImageBox);
+      _contentChanged = true;
+      _debouncedSave();
+      _saveStateToHistory();
     });
   }
 
@@ -1125,7 +1131,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
   }
 
   /// 一键复制：将当前画布当前面的所有内容复制到另一面
-  void _copyCanvasCurrentSideToOther(FlippableCanvas canvas) {
+  Future<void> _copyCanvasCurrentSideToOther(FlippableCanvas canvas) async {
     final textIds = List<String>.from(canvas.getCurrentTextBoxIds());
     final imageIds = List<String>.from(canvas.getCurrentImageBoxIds());
     final audioIds = List<String>.from(canvas.getCurrentAudioBoxIds());
@@ -1133,6 +1139,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('当前面没有内容可复制')));
       return;
     }
+    // 提前获取 document_id，确保图片框复制时 validateImageBoxData 能通过
+    final doc = await _databaseService.getDocumentByName(widget.documentName);
+    final documentId = doc?['id'] as String?;
     setState(() {
       final uuid = Uuid();
       final isCurrentBack = canvas.isFlipped;
@@ -1170,20 +1179,24 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
         final idx = _imageBoxes.indexWhere((b) => b['id'] == id);
         if (idx == -1) continue;
         final orig = _imageBoxes[idx];
-        if (orig['imagePath'] == null || orig['imagePath'].toString().isEmpty) continue;
+        final imagePath = orig['imagePath'] ?? orig['image_path'];
+        if (imagePath == null || imagePath.toString().isEmpty) continue;
         final newId = uuid.v4();
+        final posX = (orig['positionX'] ?? orig['position_x'] ?? 0.0).toDouble();
+        final posY = (orig['positionY'] ?? orig['position_y'] ?? 0.0).toDouble();
+        // 一键复制到另一面：位置与原件相同
         final newBox = {
           'id': newId,
-          'document_id': orig['document_id'] ?? orig['documentId'],
+          'document_id': documentId ?? orig['document_id'] ?? orig['documentId'],
           'documentName': widget.documentName,
-          'position_x': (orig['positionX'] ?? 0.0) + 20,
-          'position_y': (orig['positionY'] ?? 0.0) + 20,
-          'positionX': (orig['positionX'] ?? 0.0) + 20,
-          'positionY': (orig['positionY'] ?? 0.0) + 20,
-          'width': orig['width'],
-          'height': orig['height'],
-          'image_path': orig['imagePath'],
-          'imagePath': orig['imagePath'],
+          'position_x': posX,
+          'position_y': posY,
+          'positionX': posX,
+          'positionY': posY,
+          'width': orig['width'] ?? 200.0,
+          'height': orig['height'] ?? 200.0,
+          'image_path': imagePath,
+          'imagePath': imagePath,
         };
         if (_databaseService.validateImageBoxData(newBox)) {
           _imageBoxes.add(newBox);
@@ -1198,13 +1211,19 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
         final idx = _audioBoxes.indexWhere((b) => b['id'] == id);
         if (idx == -1) continue;
         final orig = _audioBoxes[idx];
+        final audioPath = orig['audioPath'] ?? orig['audio_path'] ?? '';
+        final posX = (orig['positionX'] ?? orig['position_x'] ?? 0.0).toDouble();
+        final posY = (orig['positionY'] ?? orig['position_y'] ?? 0.0).toDouble();
         final newId = uuid.v4();
+        // 一键复制到另一面：位置与原件相同
         final newBox = {
           'id': newId,
+          'document_id': documentId ?? orig['document_id'] ?? orig['documentId'],
           'documentName': widget.documentName,
-          'positionX': (orig['positionX'] ?? 0.0) + 20,
-          'positionY': (orig['positionY'] ?? 0.0) + 20,
-          'audioPath': orig['audioPath'] ?? '',
+          'positionX': posX,
+          'positionY': posY,
+          'audioPath': audioPath,
+          'audio_path': audioPath,
         };
         _audioBoxes.add(newBox);
         if (isCurrentBack) {
