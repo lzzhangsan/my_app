@@ -1,0 +1,2470 @@
+import 'dart:async';
+import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
+import 'models/diary_entry.dart';
+import 'services/diary_service.dart';
+import 'package:uuid/uuid.dart';
+import 'resizable_audio_box.dart';
+import 'services/image_picker_service.dart';
+import 'resizable_image_box.dart';
+import 'dart:io';
+import 'package:flutter_svg/flutter_svg.dart';
+import 'widgets/video_player_widget.dart';
+import 'services/media_service.dart';
+import 'dart:ui';
+import 'package:share_plus/share_plus.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:archive/archive_io.dart';
+import 'dart:convert';
+import 'package:flutter/services.dart';
+import 'package:path/path.dart' as path;
+import 'package:flutter_colorpicker/flutter_colorpicker.dart';
+import 'services/database_service.dart';
+import 'core/service_locator.dart';
+import 'services/logger.dart';
+import 'services/export_import_utils.dart';
+import 'utils/export_import_error_utils.dart';
+import 'utils/safe_path_utils.dart';
+import 'services/test_data_generator_service.dart';
+
+// 全局函数：显示进度条弹窗，支持取消操作
+void showProgressDialog(BuildContext context, ValueNotifier<double> progress, ValueNotifier<String> message, {bool barrierDismissible = false}) {
+  showDialog(
+    context: context,
+    barrierDismissible: barrierDismissible,
+    builder: (context) => AlertDialog(
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ValueListenableBuilder<double>(
+            valueListenable: progress,
+            builder: (context, value, child) => LinearProgressIndicator(value: value),
+          ),
+          const SizedBox(height: 8),
+          ValueListenableBuilder<String>(
+            valueListenable: message,
+            builder: (context, value, child) => Text(value),
+          ),
+        ],
+      ),
+      actions: barrierDismissible ? [TextButton(onPressed: () => Navigator.pop(context), child: Text('取消'))] : null,
+    ),
+  );
+}
+
+class DiaryPage extends StatefulWidget {
+  const DiaryPage({super.key});
+
+  @override
+  State<DiaryPage> createState() => _DiaryPageState();
+}
+
+class _DiaryPageState extends State<DiaryPage> {
+  final DiaryService _diaryService = DiaryService();
+  List<DiaryEntry> _entries = [];
+  List<DateTime> _datesWithEntries = []; // 当前月有日记的日期，用于日历圆点（轻量）
+  static const int _entriesPageSize = 300;
+  bool _hasMoreEntries = true;
+  bool _isLoadingMore = false;
+  DateTime _selectedDate = DateTime.now();
+  String _searchKeyword = '';
+  bool _showFavoritesOnly = false;
+  bool _calendarExpanded = false;
+  List<DiaryEntry>? _searchResults;
+  bool _isSearching = false;
+  Timer? _searchDebounce;
+
+  // 新增：日记本背景图片和颜色
+  File? _diaryBgImage;
+  Color? _diaryBgColor;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadEntries();
+    _loadDiarySettings();
+  }
+
+  @override
+  void dispose() {
+    _searchDebounce?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _loadDiarySettings() async {
+    final db = getService<DatabaseService>();
+    final settings = await db.getDiarySettings();
+    if (mounted) {
+      setState(() {
+        if (settings != null) {
+          final imagePath = settings['background_image_path'] as String?;
+          final colorValue = settings['background_color'] as int?;
+          if (imagePath != null && imagePath.isNotEmpty && File(imagePath).existsSync()) {
+            _diaryBgImage = File(imagePath);
+          } else {
+            _diaryBgImage = null;
+          }
+          if (colorValue != null) {
+            _diaryBgColor = Color(colorValue);
+          } else {
+            _diaryBgColor = null;
+          }
+        } else {
+          _diaryBgImage = null;
+          _diaryBgColor = null;
+        }
+      });
+    }
+  }
+
+  Future<void> _pickDiaryBackgroundImage() async {
+    final imagePath = await ImagePickerService.pickImage(context);
+    if (imagePath != null) {
+      final appDir = await getApplicationDocumentsDirectory();
+      final bgDir = Directory('${appDir.path}/diary_backgrounds');
+      if (!await bgDir.exists()) await bgDir.create(recursive: true);
+      final fileName = 'diary_bg_${DateTime.now().millisecondsSinceEpoch}${path.extension(imagePath)}';
+      final destPath = '${bgDir.path}/$fileName';
+      final newImage = await File(imagePath).copy(destPath);
+      await getService<DatabaseService>().insertOrUpdateDiarySettings(imagePath: destPath, colorValue: _diaryBgColor?.value);
+      setState(() {
+        _diaryBgImage = newImage;
+      });
+    }
+  }
+
+  Future<void> _removeDiaryBackgroundImage() async {
+    await getService<DatabaseService>().deleteDiaryBackgroundImage();
+    setState(() {
+      _diaryBgImage = null;
+    });
+  }
+
+  Future<void> _pickDiaryBackgroundColor() async {
+    // 保存原始颜色，用于取消时恢复
+    final originalColor = _diaryBgColor;
+    
+    final pickedColor = await showDialog<Color>(
+      context: context,
+      builder: (context) {
+        Color tempColor = _diaryBgColor ?? Colors.white;
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              contentPadding: EdgeInsets.all(8.0),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // 颜色选择器，增加高度
+                  ColorPicker(
+                    pickerColor: tempColor,
+                    onColorChanged: (Color color) {
+                      tempColor = color;
+                      // 实时预览：立即更新背景颜色
+                      setState(() {
+                        _diaryBgColor = color;
+                      });
+                    },
+                    colorPickerWidth: 280.0, // 加长滑块条
+                    pickerAreaHeightPercent: 0.6, // 增加颜色选择区域高度
+                    enableAlpha: true,
+                    displayThumbColor: true,
+                    showLabel: false,
+                    paletteType: PaletteType.hsv,
+                  ),
+                  SizedBox(height: 2), // 进一步紧凑间距
+                  // 按钮行，向上移动
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextButton(
+                          child: Text('取消', style: TextStyle(fontSize: 14)),
+                          onPressed: () {
+                            // 恢复原始颜色
+                            setState(() {
+                              _diaryBgColor = originalColor;
+                            });
+                            Navigator.of(context).pop();
+                          },
+                        ),
+                      ),
+                      SizedBox(width: 8),
+                      Expanded(
+                        child: TextButton(
+                          child: Text('确定', style: TextStyle(fontSize: 14)),
+                          onPressed: () => Navigator.of(context).pop(tempColor),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+    if (pickedColor != null) {
+      await getService<DatabaseService>().insertOrUpdateDiarySettings(imagePath: _diaryBgImage?.path, colorValue: pickedColor.value);
+      setState(() {
+        _diaryBgColor = pickedColor;
+      });
+    }
+  }
+
+  Future<void> _loadEntries({bool append = false}) async {
+    if (append && _isLoadingMore) return;
+    if (append) _isLoadingMore = true;
+    final year = _selectedDate.year;
+    final month = _selectedDate.month;
+    final offset = append ? _entries.length : 0;
+    final dates = await _diaryService.getDatesWithEntries(year, month);
+    final entries = await _diaryService.loadEntriesPaged(
+      offset,
+      _entriesPageSize,
+      year: null,
+      month: null,
+    );
+    if (mounted) {
+      setState(() {
+        _datesWithEntries = dates;
+        if (append) {
+          _entries.addAll(entries);
+          _isLoadingMore = false;
+        } else {
+          _entries = entries;
+        }
+        _hasMoreEntries = entries.length >= _entriesPageSize;
+      });
+    }
+  }
+
+  Future<void> _refreshCalendarDots() async {
+    final dates = await _diaryService.getDatesWithEntries(_selectedDate.year, _selectedDate.month);
+    if (mounted) setState(() => _datesWithEntries = dates);
+  }
+
+  List<DiaryEntry> get _entriesForSelectedDate {
+    final filtered = _showFavoritesOnly ? _entries.where((e) => e.isFavorite).toList() : _entries;
+    return filtered..sort((a, b) => b.date.compareTo(a.date));
+  }
+
+  void _onSearchChanged(String value) {
+    setState(() => _searchKeyword = value);
+    _searchDebounce?.cancel();
+    if (value.isEmpty) {
+      setState(() {
+        _searchResults = null;
+        _isSearching = false;
+      });
+      return;
+    }
+    _searchDebounce = Timer(const Duration(milliseconds: 350), () => _performSearch());
+  }
+
+  Future<void> _performSearch() async {
+    if (_searchKeyword.isEmpty) return;
+    if (!mounted) return;
+    setState(() => _isSearching = true);
+    final results = await _diaryService.searchAllEntries(
+      keyword: _searchKeyword,
+      favoritesOnly: _showFavoritesOnly,
+    );
+    if (mounted) {
+      setState(() {
+        _searchResults = results;
+        _isSearching = false;
+      });
+    }
+  }
+
+  bool isSameDay(DateTime a, DateTime b) {
+    return a.year == b.year && a.month == b.month && a.day == b.day;
+  }
+
+  void _onDateSelected(DateTime date) {
+    final monthChanged = date.year != _selectedDate.year || date.month != _selectedDate.month;
+    setState(() {
+      _selectedDate = date;
+    });
+    if (monthChanged) _refreshCalendarDots();
+  }
+
+  void _addOrEditEntry({DiaryEntry? entry}) async {
+    final result = await Navigator.of(context).push<DiaryEntry>(
+      MaterialPageRoute(
+        builder: (context) => DiaryEditPage(entry: entry, date: _selectedDate),
+      ),
+    );
+    if (result != null) {
+      if (entry == null) {
+        await _diaryService.addEntry(result);
+      } else {
+        await _diaryService.updateEntry(result);
+      }
+      _loadEntries();
+    }
+  }
+
+  void _deleteEntry(DiaryEntry entry) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('确认删除'),
+        content: const Text('确定要删除这条日记吗？此操作无法撤销。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('删除', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+    
+    if (confirmed == true) {
+      await _diaryService.deleteEntry(entry.id);
+      _loadEntries();
+    }
+  }
+
+  void _toggleCalendar([bool? expand]) {
+    setState(() {
+      if (expand != null) {
+        _calendarExpanded = expand;
+      } else {
+        _calendarExpanded = !_calendarExpanded;
+      }
+    });
+  }
+
+  void _showDiarySettings() {
+    showModalBottomSheet(
+      context: context,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: Icon(Icons.image),
+              title: Text('设置背景图片'),
+              onTap: () async {
+                Navigator.pop(context);
+                await _pickDiaryBackgroundImage();
+              },
+            ),
+            ListTile(
+              leading: Icon(Icons.color_lens),
+              title: Text('设置背景颜色'),
+              onTap: () async {
+                Navigator.pop(context);
+                await _pickDiaryBackgroundColor();
+              },
+            ),
+            if (_diaryBgImage != null)
+              ListTile(
+                leading: Icon(Icons.delete, color: Colors.red),
+                title: Text('清除背景图片'),
+                onTap: () async {
+                  Navigator.pop(context);
+                  await _removeDiaryBackgroundImage();
+                },
+              ),
+            Divider(),
+            ListTile(
+              leading: Icon(Icons.upload_file),
+              title: Text('导出日记本数据'),
+              onTap: () {
+                Navigator.pop(context);
+                _exportDiaryData();
+              },
+            ),
+            ListTile(
+              leading: Icon(Icons.download_rounded),
+              title: Text('导入日记本数据'),
+              onTap: () {
+                Navigator.pop(context);
+                _importDiaryData();
+              },
+            ),
+            ListTile(
+              leading: Icon(Icons.science, color: Colors.orange),
+              title: Text('生成测试数据'),
+              subtitle: Text('用于验证导出/导入性能'),
+              onTap: () {
+                Navigator.pop(context);
+                _showGenerateTestDataDialog();
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showGenerateTestDataDialog() async {
+    final scale = await showDialog<TestDataScale>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('选择测试数据规模'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: TestDataScale.diaryScales
+                  .map((s) {
+                    final suffix = s.formulaDiary.substring(s.label.length) +
+                        (s.isPeakTarget ? '（需数分钟）' : '');
+                    return ListTile(
+                      dense: true,
+                      title: RichText(
+                        text: TextSpan(
+                          style: TextStyle(
+                            color: Theme.of(ctx).brightness == Brightness.dark
+                                ? Colors.white
+                                : Colors.black87,
+                            fontSize: 14,
+                          ),
+                          children: [
+                            TextSpan(
+                              text: s.label,
+                              style: TextStyle(
+                                color: Colors.blue,
+                                fontSize: 16,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            TextSpan(text: suffix),
+                          ],
+                        ),
+                      ),
+                      onTap: () => Navigator.pop(ctx, s),
+                    );
+                  })
+              .toList(),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text('取消'),
+          ),
+        ],
+      ),
+    );
+    if (scale == null || !mounted) return;
+    if (scale.isPeakTarget) {
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Text('确认峰值测试'),
+          content: Text(
+            '将生成约 10GB 测试数据，预计耗时数分钟。\n请确保设备有足够存储空间。\n\n继续？',
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text('取消')),
+            TextButton(onPressed: () => Navigator.pop(ctx, true), child: Text('继续')),
+          ],
+        ),
+      );
+      if (confirm != true || !mounted) return;
+    }
+    final progress = ValueNotifier<String>('准备中...');
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(height: 16),
+            ValueListenableBuilder<String>(
+              valueListenable: progress,
+              builder: (_, v, __) => Text(v),
+            ),
+          ],
+        ),
+      ),
+    );
+    try {
+      final result = await TestDataGeneratorService().generateDiaryTestData(scale, progress: progress);
+      if (!mounted) return;
+      Navigator.pop(context);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '测试数据已生成：${result['count']} 篇日记，已生成约 ${result['actualSizeMB']} MB',
+          ),
+          duration: Duration(seconds: 4),
+        ),
+      );
+      await _loadEntries();
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('生成失败: $e')));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        // 第一层：背景图片层（最底层）
+        if (_diaryBgImage != null)
+          Positioned.fill(
+            child: Image.file(_diaryBgImage!, fit: BoxFit.cover),
+          ),
+        // 第二层：背景颜色层（在背景图片之上）
+        if (_diaryBgColor != null)
+          Container(color: _diaryBgColor),
+        // 主内容层
+        Scaffold(
+          backgroundColor: Colors.transparent,
+          appBar: AppBar(
+            leading: IconButton(
+              icon: Icon(Icons.settings),
+              tooltip: '设置',
+              onPressed: _showDiarySettings,
+            ),
+            title: const Text('日记本'),
+            centerTitle: true,
+            actions: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                margin: const EdgeInsets.only(right: 8),
+                decoration: BoxDecoration(
+                  color: Colors.blue.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.blue.withOpacity(0.3)),
+                ),
+                child: Text(
+                  '${_entries.length}篇',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                    color: Colors.blue,
+                  ),
+                ),
+              ),
+              IconButton(
+                icon: Icon(_showFavoritesOnly ? Icons.favorite : Icons.favorite_border, color: _showFavoritesOnly ? Colors.red : null),
+                tooltip: _showFavoritesOnly ? '显示全部' : '只看收藏',
+                onPressed: () {
+                  setState(() => _showFavoritesOnly = !_showFavoritesOnly);
+                  if (_searchKeyword.isNotEmpty) _performSearch();
+                },
+              ),
+              IconButton(
+                icon: _TodayCircleIcon(),
+                tooltip: '回到今天',
+                onPressed: () => setState(() => _selectedDate = DateTime.now()),
+              ),
+            ]
+          ),
+          body: Column(
+            children: [
+              GestureDetector(
+                onVerticalDragUpdate: (details) {
+                  if (details.delta.dy > 8) {
+                    _toggleCalendar(true);
+                  } else if (details.delta.dy < -8) {
+                    _toggleCalendar(false);
+                  }
+                },
+                child: AnimatedCrossFade(
+                  duration: const Duration(milliseconds: 250),
+                  crossFadeState: _calendarExpanded ? CrossFadeState.showFirst : CrossFadeState.showSecond,
+                  firstChild: _buildCalendar(full: true),
+                  secondChild: _buildCalendar(full: false),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                child: TextField(
+                  decoration: InputDecoration(
+                    prefixIcon: Icon(Icons.search),
+                    hintText: '搜索日记内容或日期(如2023年、5月1日)...',
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                    contentPadding: EdgeInsets.symmetric(vertical: 0, horizontal: 8),
+                  ),
+                  onChanged: _onSearchChanged,
+                ),
+              ),
+              Expanded(child: _buildDiaryList()),
+            ],
+          ),
+          floatingActionButton: ClipRRect(
+            borderRadius: BorderRadius.circular(24),
+            child: BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: 5, sigmaY: 5),
+              child: Container(
+                height: 48,
+                width: 48,
+                decoration: BoxDecoration(
+                  color: Colors.purple.withOpacity(0.3),
+                  borderRadius: BorderRadius.circular(24),
+                  border: Border.all(
+                    color: Colors.white.withOpacity(0.15),
+                    width: 0.5,
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.1),
+                      blurRadius: 10,
+                      spreadRadius: 1,
+                    ),
+                  ],
+                ),
+                child: FloatingActionButton(
+                  onPressed: () => _addOrEditEntry(),
+                  heroTag: 'addDiaryBtn',
+                  backgroundColor: Colors.transparent,
+                  elevation: 0,
+                  focusElevation: 0,
+                  hoverElevation: 0,
+                  highlightElevation: 0,
+                  splashColor: Colors.white.withOpacity(0.1),
+                  child: Icon(
+                    Icons.add,
+                    size: 24,
+                    color: Colors.white.withOpacity(0.9),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildCalendar({bool full = true}) {
+    final now = DateTime.now();
+    final firstDayOfMonth = DateTime(_selectedDate.year, _selectedDate.month, 1);
+    final lastDayOfMonth = DateTime(_selectedDate.year, _selectedDate.month + 1, 0);
+    final daysInMonth = lastDayOfMonth.day;
+    final weekDayOffset = firstDayOfMonth.weekday % 7;
+    final days = List.generate(daysInMonth, (i) => DateTime(_selectedDate.year, _selectedDate.month, i + 1));
+    return Card(
+      margin: const EdgeInsets.all(8),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 4),
+        child: Column(
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Row(
+                  children: [
+                    IconButton(
+                      icon: Icon(Icons.keyboard_double_arrow_left, size: 28),
+                      tooltip: '上一年',
+                      onPressed: () {
+                        setState(() => _selectedDate = DateTime(_selectedDate.year - 1, _selectedDate.month, 1));
+                        _refreshCalendarDots();
+                      },
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.chevron_left),
+                      onPressed: () => _onDateSelected(DateTime(_selectedDate.year, _selectedDate.month - 1, 1)),
+                    ),
+                  ],
+                ),
+                Text(full ? '${_selectedDate.year}年${_selectedDate.month}月' : '${_selectedDate.year}年${_selectedDate.month}月 ${_selectedDate.day}日', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                Row(
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.chevron_right),
+                      onPressed: () => _onDateSelected(DateTime(_selectedDate.year, _selectedDate.month + 1, 1)),
+                    ),
+                    IconButton(
+                      icon: Icon(Icons.keyboard_double_arrow_right, size: 28),
+                      tooltip: '下一年',
+                      onPressed: () {
+                        setState(() => _selectedDate = DateTime(_selectedDate.year + 1, _selectedDate.month, 1));
+                        _refreshCalendarDots();
+                      },
+                    ),
+                  ],
+                ),
+              ],
+            ),
+            if (full) ...[
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceAround,
+                children: const [
+                  Text('日'), Text('一'), Text('二'), Text('三'), Text('四'), Text('五'), Text('六'),
+                ],
+              ),
+              GridView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 7,
+                  childAspectRatio: 1.1,
+                  mainAxisSpacing: 2,
+                  crossAxisSpacing: 2,
+                ),
+                itemCount: weekDayOffset + days.length,
+                itemBuilder: (context, index) {
+                  if (index < weekDayOffset) {
+                    return const SizedBox.shrink();
+                  }
+                  final day = days[index - weekDayOffset];
+                  final isSelected = isSameDay(day, _selectedDate);
+                  final hasEntry = _datesWithEntries.any((d) => isSameDay(d, day));
+                  return GestureDetector(
+                    onTap: () => _onDateSelected(day),
+                    child: Container(
+                      margin: const EdgeInsets.all(1),
+                      decoration: BoxDecoration(
+                        color: isSelected ? Colors.blueAccent : (hasEntry ? Colors.blue.withOpacity(0.2) : null),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Center(
+                        child: Text(
+                          '${day.day}',
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: isSelected ? Colors.white : Colors.black87,
+                            fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ] else ...[
+              const SizedBox(height: 8),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceAround,
+                children: List.generate(7, (index) {
+                  final weekday = ['日', '一', '二', '三', '四', '五', '六'][index];
+                  final isCurrentWeekday = (_selectedDate.weekday % 7) == index;
+                  return Text(
+                    weekday,
+                    style: TextStyle(
+                      color: isCurrentWeekday ? Colors.blue : Colors.black87,
+                      fontWeight: isCurrentWeekday ? FontWeight.bold : FontWeight.normal,
+                      fontSize: isCurrentWeekday ? 16 : 14,
+                    ),
+                  );
+                }),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDiaryList() {
+    final isSearchMode = _searchKeyword.isNotEmpty;
+    final entries = isSearchMode
+        ? (_searchResults ?? [])
+        : _entriesForSelectedDate;
+    final showLoadMore = !isSearchMode && _hasMoreEntries;
+    final itemCount = entries.length + (showLoadMore ? 1 : 0);
+
+    if (isSearchMode && _isSearching) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (entries.isEmpty && (!showLoadMore || !_hasMoreEntries)) {
+      return Center(
+        child: Text(
+          isSearchMode ? '未找到匹配的日记' : '还没有日记，快来记录吧~',
+        ),
+      );
+    }
+    return ListView.builder(
+      padding: const EdgeInsets.all(12),
+      itemCount: itemCount,
+      itemBuilder: (context, index) {
+        if (index >= entries.length) {
+          if (!showLoadMore) return const SizedBox.shrink();
+          return Padding(
+            padding: const EdgeInsets.all(16),
+            child: Center(
+              child: TextButton.icon(
+                onPressed: _isLoadingMore ? null : () => _loadEntries(append: true),
+                icon: _isLoadingMore ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.add_circle_outline),
+                label: Text(_isLoadingMore ? '加载中...' : '加载更多'),
+              ),
+            ),
+          );
+        }
+        final entry = entries[index];
+        return Card(
+          margin: const EdgeInsets.symmetric(vertical: 8),
+          child: ListTile(
+            title: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  DateFormat('yyyy年MM月dd日').format(entry.date),
+                  style: TextStyle(fontWeight: FontWeight.w500),
+                ),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      icon: Icon(entry.isFavorite ? Icons.favorite : Icons.favorite_border, color: entry.isFavorite ? Colors.red : null),
+                      tooltip: entry.isFavorite ? '取消收藏' : '收藏',
+                      onPressed: () async {
+                        final updated = entry.copyWith(isFavorite: !entry.isFavorite);
+                        await _diaryService.updateEntry(updated);
+                        _loadEntries();
+                      },
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.delete_outline, color: Colors.red),
+                      tooltip: '删除',
+                      onPressed: () => _deleteEntry(entry),
+                      padding: EdgeInsets.zero,
+                    ),
+                  ],
+                ),
+              ],
+            ),
+            subtitle: Text(entry.content ?? '', maxLines: 2, overflow: TextOverflow.ellipsis),
+            leading: FutureBuilder<Widget>(
+              future: _getEntryThumbnail(entry),
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.done && snapshot.hasData) {
+                  return snapshot.data!;
+                } else {
+                  return const Icon(Icons.book, size: 40);
+                }
+              },
+            ),
+            trailing: null,
+            onTap: () => _addOrEditEntry(entry: entry),
+          ),
+        );
+      },
+    );
+  }
+
+  // 获取日记条目的缩略图
+  Future<Widget> _getEntryThumbnail(DiaryEntry entry) async {
+    // 如果有图片，优先显示第一张图片
+    if (entry.imagePaths.isNotEmpty) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: Image.file(
+          File(entry.imagePaths.first),
+          width: 48,
+          height: 48,
+          fit: BoxFit.cover,
+          errorBuilder: (context, error, stackTrace) => Icon(Icons.broken_image, size: 40),
+        ),
+      );
+    }
+    
+    // 如果有视频，显示第一个视频的缩略图
+    if (entry.videoPaths.isNotEmpty) {
+      // 尝试获取视频缩略图
+      try {
+        final videoPath = entry.videoPaths.first;
+        final mediaService = MediaService();
+        final thumbnailFile = await mediaService.generateVideoThumbnail(videoPath);
+        
+        if (thumbnailFile != null) {
+          return ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: Image.file(
+              thumbnailFile,
+              width: 48,
+              height: 48,
+              fit: BoxFit.cover,
+              errorBuilder: (context, error, stackTrace) => Icon(Icons.videocam, size: 40),
+            ),
+          );
+        }
+      } catch (e) {
+        debugPrint('获取视频缩略图失败: $e');
+      }
+      
+      // 如果获取缩略图失败，显示视频图标
+      return Container(
+        width: 48,
+        height: 48,
+        decoration: BoxDecoration(
+          color: Colors.grey[300],
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Icon(
+          Icons.videocam,
+          size: 32,
+          color: Colors.grey[700],
+        ),
+      );
+    }
+    
+    // 如果既没有图片也没有视频，显示默认图标
+    return const Icon(Icons.book, size: 40);
+  }
+
+  // 日记本数据导出 - 优化版，支持超大数据处理（几十G）
+  Future<void> _exportDiaryData() async {
+    final progress = ValueNotifier<double>(0.0);
+    final message = ValueNotifier<String>('准备导出...');
+
+    final Directory appDir = await getApplicationDocumentsDirectory();
+    final String tempExportPath = path.join(appDir.path, 'temp_diary_export_${const Uuid().v4()}');
+    final Directory tempExportDir = Directory(tempExportPath);
+
+    String currentPhase = '准备';
+    try {
+      await tempExportDir.create(recursive: true);
+      if (!mounted) return;
+
+      showProgressDialog(context, progress, message);
+
+      currentPhase = '获取日记数据';
+      message.value = '正在获取日记数据...';
+      final allEntries = await _diaryService.loadEntries();
+      if (allEntries.isEmpty) {
+        if (mounted) Navigator.of(context).pop();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('没有日记可供导出')),
+          );
+        }
+        return;
+      }
+      progress.value = 0.1;
+
+      currentPhase = '整理媒体文件';
+      message.value = '正在整理媒体文件...';
+      final List<Map<String, dynamic>> entriesForJson = [];
+      final Set<String> mediaPathsToExport = {};
+
+      for (var entry in allEntries) {
+        entriesForJson.add(entry.toMap());
+        // 合并所有类型的媒体路径
+        final allPaths = [...entry.imagePaths, ...entry.videoPaths, ...entry.audioPaths];
+        for (var mediaPath in allPaths) {
+          // 只添加有效的文件路径
+          if (mediaPath.isNotEmpty && await File(mediaPath).exists()) {
+            mediaPathsToExport.add(mediaPath);
+          }
+        }
+      }
+      progress.value = 0.3;
+
+      // 4. 将元数据写入临时目录 - 超过1000条时分块
+      if (entriesForJson.length > 1000) {
+        for (int i = 0; i < entriesForJson.length; i += kExportChunkSize) {
+          final end = (i + kExportChunkSize < entriesForJson.length) ? i + kExportChunkSize : entriesForJson.length;
+          final chunk = entriesForJson.sublist(i, end);
+          final f = File(path.join(tempExportDir.path, 'diary_data_${i ~/ kExportChunkSize}.json'));
+          await f.writeAsString(jsonEncode(chunk), encoding: utf8);
+          message.value = '正在导出日记数据: $end/${entriesForJson.length}';
+        }
+      } else {
+        final jsonFile = File(path.join(tempExportDir.path, 'diary_data.json'));
+        await jsonFile.writeAsString(jsonEncode(entriesForJson), encoding: utf8);
+      }
+
+      // 5. 将媒体文件复制到临时目录的media子文件夹中
+      message.value = '正在复制媒体文件...';
+      final tempMediaDir = Directory(path.join(tempExportDir.path, 'media'));
+      await tempMediaDir.create();
+
+      int mediaDone = 0;
+      int mediaTotal = mediaPathsToExport.isEmpty ? 1 : mediaPathsToExport.length;
+      final Map<String, String> mediaPathMapping = {}; // 记录原始路径到新文件名的映射
+      
+      for (var mediaPath in mediaPathsToExport) {
+        final originalFileName = path.basename(mediaPath);
+        final fileExtension = path.extension(originalFileName);
+        final baseName = path.basenameWithoutExtension(originalFileName);
+        
+        // 生成唯一的文件名，避免冲突
+        String uniqueFileName = originalFileName;
+        int counter = 1;
+        while (mediaPathMapping.values.contains(uniqueFileName)) {
+          uniqueFileName = '${baseName}_$counter$fileExtension';
+          counter++;
+        }
+        
+        final targetPath = path.join(tempMediaDir.path, uniqueFileName);
+        await copyFileWithStreaming(File(mediaPath), targetPath);
+        mediaPathMapping[mediaPath] = uniqueFileName;
+        mediaDone++;
+        progress.value = 0.3 + (mediaDone / mediaTotal) * 0.5;
+        if (mediaDone % kProgressUpdateInterval == 0 || mediaDone == mediaTotal) {
+          message.value = '正在复制媒体文件: $mediaDone/$mediaTotal';
+        }
+        Logger.i('已复制媒体文件: $originalFileName -> $uniqueFileName');
+      }
+
+      // 5.5. 更新JSON数据中的媒体路径
+      message.value = '正在更新媒体路径...';
+      for (var entry in entriesForJson) {
+        // 更新图片路径
+        if (entry['image_paths'] != null) {
+          final List<String> updatedImagePaths = [];
+          final originalImagePaths = jsonDecode(entry['image_paths']) as List;
+          for (var imagePath in originalImagePaths) {
+            if (mediaPathMapping.containsKey(imagePath)) {
+              updatedImagePaths.add('media/${mediaPathMapping[imagePath]}');
+            } else {
+              updatedImagePaths.add(imagePath);
+            }
+          }
+          entry['image_paths'] = jsonEncode(updatedImagePaths);
+        }
+        
+        // 更新视频路径
+        if (entry['video_paths'] != null) {
+          final List<String> updatedVideoPaths = [];
+          final originalVideoPaths = jsonDecode(entry['video_paths']) as List;
+          for (var videoPath in originalVideoPaths) {
+            if (mediaPathMapping.containsKey(videoPath)) {
+              updatedVideoPaths.add('media/${mediaPathMapping[videoPath]}');
+            } else {
+              updatedVideoPaths.add(videoPath);
+            }
+          }
+          entry['video_paths'] = jsonEncode(updatedVideoPaths);
+        }
+        
+        // 更新音频路径
+        if (entry['audio_paths'] != null) {
+          final List<String> updatedAudioPaths = [];
+          final originalAudioPaths = jsonDecode(entry['audio_paths']) as List;
+          for (var audioPath in originalAudioPaths) {
+            if (mediaPathMapping.containsKey(audioPath)) {
+              updatedAudioPaths.add('media/${mediaPathMapping[audioPath]}');
+            } else {
+              updatedAudioPaths.add(audioPath);
+            }
+          }
+          entry['audio_paths'] = jsonEncode(updatedAudioPaths);
+        }
+      }
+      
+      // 重新写入更新后的JSON文件
+      if (entriesForJson.length > 1000) {
+        for (int i = 0; i < entriesForJson.length; i += kExportChunkSize) {
+          final end = (i + kExportChunkSize < entriesForJson.length) ? i + kExportChunkSize : entriesForJson.length;
+          final chunk = entriesForJson.sublist(i, end);
+          final f = File(path.join(tempExportDir.path, 'diary_data_${i ~/ kExportChunkSize}.json'));
+          await f.writeAsString(jsonEncode(chunk), encoding: utf8);
+        }
+      } else {
+        final jsonFile = File(path.join(tempExportDir.path, 'diary_data.json'));
+        await jsonFile.writeAsString(jsonEncode(entriesForJson), encoding: utf8);
+      }
+
+      // 5.6. 导出日记本设置（背景图片、背景色）
+      message.value = '正在导出日记本设置...';
+      final db = getService<DatabaseService>();
+      final diarySettings = await db.getDiarySettings();
+      if (diarySettings != null) {
+        final settingsExport = <String, dynamic>{};
+        final bgImagePath = diarySettings['background_image_path'] as String?;
+        final bgColor = diarySettings['background_color'] as int?;
+        if (bgColor != null) settingsExport['background_color'] = bgColor;
+        if (bgImagePath != null && bgImagePath.isNotEmpty) {
+          final imageFile = File(bgImagePath);
+          if (await imageFile.exists()) {
+            final fileName = path.basename(bgImagePath);
+            final bgDir = Directory(path.join(tempExportDir.path, 'diary_background'));
+            await bgDir.create(recursive: true);
+            final targetPath = path.join(bgDir.path, fileName);
+            await copyFileWithStreaming(imageFile, targetPath);
+            settingsExport['background_image_file'] = 'diary_background/$fileName';
+          }
+        }
+        if (settingsExport.isNotEmpty) {
+          final settingsFile = File(path.join(tempExportDir.path, 'diary_settings.json'));
+          await settingsFile.writeAsString(jsonEncode(settingsExport), encoding: utf8);
+        }
+      }
+
+      currentPhase = '选择保存位置';
+      final Directory saveDir = await getExportSaveDirectory();
+      await saveDir.create(recursive: true);
+
+      currentPhase = '压缩文件';
+      message.value = '正在压缩文件...';
+      final zipFilePath = path.join(saveDir.path, 'diary_export_${DateTime.now().toIso8601String().split('T').first}.zip');
+      
+      final encoder = ZipFileEncoder();
+      encoder.create(zipFilePath);
+      await encoder.addDirectory(tempExportDir, includeDirName: false);
+      encoder.close();
+
+      progress.value = 1.0;
+      if (mounted) Navigator.of(context).pop();
+
+      // 7. 小文件：仅原生分享；大文件(>500MB)：跳过分享，弹窗提供「直达」等（share_plus 大文件会 ANR）
+      if (mounted) {
+        final zipFile = File(zipFilePath);
+        final size = await zipFile.exists() ? await zipFile.length() : 0;
+        if (size <= kShareSizeLimitBytes) {
+          try {
+            await Share.shareXFiles([XFile(zipFilePath)], text: '日记数据导出');
+          } catch (_) {}
+          // 小文件：分享后即完成，不再弹第二个界面
+        } else {
+          showExportResultDialog(
+            context,
+            zipFilePath,
+            size,
+            shareText: '日记数据导出',
+            showShareButton: false,
+            showSaveToFolderButton: true,
+          );
+        }
+      }
+
+    } catch (e, stack) {
+      debugPrint('导出日记数据失败 [$currentPhase]: $e\n$stack');
+      if (mounted) Navigator.of(context).pop();
+      if (mounted) {
+        final userMsg = formatExportImportError(e, '导出失败');
+        showExportImportErrorDialog(context, '日记导出失败', '出错阶段：$currentPhase\n\n$userMsg');
+      }
+    } finally {
+      // 关键：无论成功或失败，都清理临时目录
+      if (await tempExportDir.exists()) {
+        try {
+          await tempExportDir.delete(recursive: true);
+          Logger.i('成功清理日记导出临时文件: ${tempExportDir.path}');
+        } catch (e) {
+          Logger.w('警告：清理日记导出临时目录时失败: $e');
+        }
+      }
+    }
+  }
+
+  // 日记本数据导入 - 优化版，支持超大数据处理
+  Future<void> _importDiaryData() async {
+    final progress = ValueNotifier<double>(0.0);
+    final message = ValueNotifier<String>('准备导入...');
+
+    final Directory appDir = await getApplicationDocumentsDirectory();
+    final String tempImportPath = path.join(appDir.path, 'temp_diary_import_${const Uuid().v4()}');
+    final Directory tempImportDir = Directory(tempImportPath);
+
+    String currentPhase = '准备';
+    try {
+      await tempImportDir.create(recursive: true);
+
+      // 2. 选择ZIP文件
+      final result = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['zip']);
+      if (result == null || result.files.isEmpty) return;
+      if (!mounted) return;
+
+      showProgressDialog(context, progress, message);
+
+      final p = result.files.single.path;
+      if (p == null || p.isEmpty) {
+        throw Exception('无法获取所选文件路径');
+      }
+      final zipFile = File(p);
+      if (!await zipFile.exists()) {
+        throw Exception('所选文件不存在或无法访问');
+      }
+
+      currentPhase = '解压压缩包';
+      final archive = ZipDecoder().decodeStream(InputFileStream(zipFile.path));
+
+      // 3. 解压到临时目录
+      int total = archive.files.length;
+      int done = 0;
+      for (final file in archive) {
+        final filename = file.name;
+        final outPath = resolveSafeExtractPath(tempImportDir.path, filename);
+        if (file.isFile) {
+          final outFile = File(outPath);
+          await outFile.parent.create(recursive: true);
+          final outputStream = OutputFileStream(outFile.path);
+          file.writeContent(outputStream);
+          await outputStream.close();
+        } else {
+          await Directory(outPath).create(recursive: true);
+        }
+        done++;
+        progress.value = (done / total) * 0.5; // 解压占50%
+        message.value = '正在解压: $done/$total';
+      }
+
+      // 4. 获取永久媒体目录（路径重映射需要）
+      final permanentMediaDir = await _getPermanentMediaDirectory();
+      final chunk0Exists = await File(path.join(tempImportDir.path, 'diary_data_0.json')).exists();
+      final legacyExists = await File(path.join(tempImportDir.path, 'diary_data.json')).exists();
+      if (!chunk0Exists && !legacyExists) {
+        throw Exception('压缩包中未找到 diary_data.json 或 diary_data_0.json');
+      }
+
+      // 5. 先迁移媒体文件到永久目录，再写入数据库（避免崩溃时 DB 引用不存在的文件）
+      currentPhase = '迁移媒体文件';
+      message.value = '正在迁移媒体文件...';
+      final tempMediaDir = Directory(path.join(tempImportDir.path, 'media'));
+      if (await tempMediaDir.exists()) {
+        final mediaFiles = await tempMediaDir.list().toList();
+        int mediaCount = 0;
+        int skippedCount = 0;
+        
+        int fileIdx = 0;
+        for (var entity in mediaFiles) {
+          if (entity is File) {
+            final fileName = path.basename(entity.path);
+            final targetPath = path.join(permanentMediaDir.path, fileName);
+            
+            try {
+              if (await entity.exists()) {
+                final targetFile = File(targetPath);
+                if (await targetFile.exists()) {
+                  await targetFile.delete();
+                }
+                await copyFileWithStreaming(entity, targetPath);
+                if (await File(targetPath).exists()) {
+                  mediaCount++;
+                  fileIdx++;
+                  if (fileIdx % kProgressUpdateInterval == 0) {
+                    message.value = '正在迁移媒体文件: $mediaCount';
+                  }
+                  Logger.i('已迁移媒体文件: $fileName');
+                } else {
+                  Logger.w('警告：媒体文件复制失败: $fileName');
+                  skippedCount++;
+                }
+              } else {
+                Logger.w('警告：源媒体文件不存在: ${entity.path}');
+                skippedCount++;
+              }
+            } catch (e) {
+              Logger.w('警告：迁移媒体文件时出错: $fileName, 错误: $e');
+              skippedCount++;
+            }
+          }
+        }
+        Logger.i('总共迁移了 $mediaCount 个媒体文件，跳过 $skippedCount 个文件');
+
+        if (mediaCount == 0 && mediaFiles.isNotEmpty) {
+          Logger.w('警告：没有成功迁移任何媒体文件，可能存在权限或路径问题');
+        }
+      } else {
+        Logger.w('临时媒体目录不存在，跳过媒体文件迁移');
+      }
+      progress.value = 0.75;
+
+      // 6. 媒体文件就位后，分块写入数据库（避免大容量 OOM）
+      currentPhase = '写入数据库';
+      message.value = '正在写入数据库...';
+      int chunkFileIdx = 0;
+      List<DiaryEntry> parseBuffer = [];
+      int parseBufferIdx = 0;
+      const dbBatchSize = 500;
+
+      List<String> remapPaths(List<dynamic> originalPaths, Directory permDir) {
+        return originalPaths.map((p) {
+          final pathStr = p.toString();
+          if (pathStr.startsWith('media/')) {
+            return path.join(permDir.path, path.basename(pathStr));
+          } else if (pathStr.contains('media/')) {
+            final mediaIndex = pathStr.indexOf('media/');
+            final mediaPath = pathStr.substring(mediaIndex + 6);
+            return path.join(permDir.path, path.basename(mediaPath));
+          } else {
+            return path.join(permDir.path, path.basename(pathStr));
+          }
+        }).toList();
+      }
+      List<String> parseMediaPaths(dynamic paths) {
+        if (paths == null) return [];
+        if (paths is List) return paths.map((p) => p.toString()).toList();
+        if (paths is String) {
+          try {
+            return (jsonDecode(paths) as List).map((p) => p.toString()).toList();
+          } catch (_) { return [paths]; }
+        }
+        return [];
+      }
+
+      await _diaryService.replaceAllEntriesFromChunks(() async {
+        final batch = <DiaryEntry>[];
+        while (batch.length < dbBatchSize) {
+          if (parseBufferIdx >= parseBuffer.length) {
+            List<dynamic> rawChunk;
+            final chunkFile = File(path.join(tempImportDir.path, 'diary_data_$chunkFileIdx.json'));
+            if (await chunkFile.exists()) {
+              message.value = '正在读取: diary_data_$chunkFileIdx.json';
+              rawChunk = jsonDecode(await chunkFile.readAsString()) as List;
+              chunkFileIdx++;
+            } else if (chunkFileIdx == 0) {
+              final legacyFile = File(path.join(tempImportDir.path, 'diary_data.json'));
+              if (!await legacyFile.exists()) break;
+              rawChunk = jsonDecode(await legacyFile.readAsString()) as List;
+              chunkFileIdx = 1;
+            } else {
+              break;
+            }
+            parseBuffer = [];
+            for (final item in rawChunk) {
+              final entryMap = item as Map<String, dynamic>;
+              final processedEntryMap = Map<String, dynamic>.from(entryMap);
+              processedEntryMap['imagePaths'] = remapPaths(parseMediaPaths(entryMap['image_paths']), permanentMediaDir);
+              processedEntryMap['videoPaths'] = remapPaths(parseMediaPaths(entryMap['video_paths']), permanentMediaDir);
+              processedEntryMap['audioPaths'] = remapPaths(parseMediaPaths(entryMap['audio_paths']), permanentMediaDir);
+              parseBuffer.add(DiaryEntry.fromMap(processedEntryMap));
+            }
+            parseBufferIdx = 0;
+          }
+          if (parseBufferIdx >= parseBuffer.length) break;
+          for (int i = 0; i < dbBatchSize - batch.length && parseBufferIdx < parseBuffer.length; i++) {
+            batch.add(parseBuffer[parseBufferIdx++]);
+          }
+        }
+        return batch.isEmpty ? null : batch;
+      });
+      progress.value = 0.8;
+
+      // 7. 导入日记本设置（背景图片、背景色）
+      final settingsFile = File(path.join(tempImportDir.path, 'diary_settings.json'));
+      if (await settingsFile.exists()) {
+        message.value = '正在恢复日记本设置...';
+        try {
+          final settingsJson = jsonDecode(await settingsFile.readAsString()) as Map<String, dynamic>;
+          final bgColor = settingsJson['background_color'] as int?;
+          final bgImageRel = settingsJson['background_image_file'] as String?;
+          String? newBgImagePath;
+          if (bgImageRel != null && bgImageRel.isNotEmpty) {
+            final sourcePath = path.join(tempImportDir.path, bgImageRel);
+            final sourceFile = File(sourcePath);
+            if (await sourceFile.exists()) {
+              final appDir = await getApplicationDocumentsDirectory();
+              final bgDir = Directory(path.join(appDir.path, 'diary_backgrounds'));
+              if (!await bgDir.exists()) await bgDir.create(recursive: true);
+              final fileName = path.basename(bgImageRel);
+              final destPath = path.join(bgDir.path, fileName);
+              await copyFileWithStreaming(sourceFile, destPath);
+              newBgImagePath = destPath;
+              Logger.i('已导入日记本背景图片: $fileName');
+            }
+          }
+          await getService<DatabaseService>().insertOrUpdateDiarySettings(
+            imagePath: newBgImagePath,
+            colorValue: bgColor,
+          );
+        } catch (e) {
+          Logger.w('导入日记本设置时出错: $e');
+        }
+      }
+
+      progress.value = 0.95;
+
+      // 7. 验证导入结果（分块导入后不再持有全量数据，仅记录条数）
+      message.value = '正在验证...';
+      final importedCount = await _diaryService.getEntryCount();
+      Logger.i('日记导入完成，共 $importedCount 条');
+      progress.value = 0.98;
+
+      // 8. 刷新UI
+      message.value = '导入完成!';
+      await _loadEntries();
+      await _loadDiarySettings();
+      progress.value = 1.0;
+      
+      if (mounted) Navigator.of(context).pop();
+    } catch (e, stack) {
+      debugPrint('导入日记数据失败 [$currentPhase]: $e\n$stack');
+      if (mounted) Navigator.of(context).pop();
+      if (mounted) {
+        final userMsg = formatExportImportError(e, '导入失败');
+        showExportImportErrorDialog(context, '日记导入失败', '出错阶段：$currentPhase\n\n$userMsg');
+      }
+    } finally {
+      // 关键：无论成功或失败，都清理临时目录
+      if (await tempImportDir.exists()) {
+        try {
+          await tempImportDir.delete(recursive: true);
+          Logger.i('成功清理日记导入临时文件: ${tempImportDir.path}');
+        } catch (e) {
+          Logger.w('警告：清理日记导入临时目录时失败: $e');
+        }
+      }
+    }
+  }
+
+  Future<Directory> _getPermanentMediaDirectory() async {
+    final docDir = await getApplicationDocumentsDirectory();
+    final mediaDir = Directory(path.join(docDir.path, 'media'));
+    if (!await mediaDir.exists()) {
+      await mediaDir.create(recursive: true);
+    }
+    return mediaDir;
+  }
+
+  void _showEntryDetails(DiaryEntry entry) {
+    // ... existing code ...
+  }
+}
+
+class DiaryEditPage extends StatefulWidget {
+  final DiaryEntry? entry;
+  final DateTime date;
+  const DiaryEditPage({super.key, this.entry, required this.date});
+
+  @override
+  State<DiaryEditPage> createState() => _DiaryEditPageState();
+}
+
+class _DiaryEditPageState extends State<DiaryEditPage> {
+  late TextEditingController _contentController;
+  late DateTime _date;
+  late String _entryId;
+  List<String> _imagePaths = [];
+  List<String> _audioPaths = [];
+  List<String> _videoPaths = [];
+  String? _weather;
+  String? _mood;
+  String? _location;
+  bool _isFavorite = false;
+  final DiaryService _diaryService = DiaryService();
+  bool _isSaving = false;
+  bool _isLoading = true; // 加载状态标志
+  Directory? _tempDir; // 缓存目录
+  final Map<String, File> _videoThumbnailCache = {}; // 视频缩略图内存缓存
+  late TextEditingController _locationController;
+
+  final List<Map<String, dynamic>> _weatherSvgOptions = [
+    {'icon': 'assets/icon/weather_sunny.svg', 'label': '晴'},
+    {'icon': 'assets/icon/weather_cloudy.svg', 'label': '多云'},
+    {'icon': 'assets/icon/weather_rain.svg', 'label': '雨'},
+    {'icon': 'assets/icon/weather_snow.svg', 'label': '雪'},
+    {'icon': 'assets/icon/weather_fog.svg', 'label': '雾'},
+    {'icon': 'assets/icon/weather_wind.svg', 'label': '风'},
+    {'icon': 'assets/icon/weather_thunder.svg', 'label': '雷'},
+    {'icon': 'assets/icon/weather_haze.svg', 'label': '霾'},
+  ];
+  final List<Map<String, dynamic>> _moodSvgOptions = [
+    {'icon': 'assets/icon/mood_happy.svg', 'label': '开心'},
+    {'icon': 'assets/icon/mood_calm.svg', 'label': '平静'},
+    {'icon': 'assets/icon/mood_sad.svg', 'label': '难过'},
+    {'icon': 'assets/icon/mood_angry.svg', 'label': '生气'},
+    {'icon': 'assets/icon/mood_excited.svg', 'label': '激动'},
+    {'icon': 'assets/icon/mood_depressed.svg', 'label': '沮丧'},
+    {'icon': 'assets/icon/mood_surprised.svg', 'label': '惊讶'},
+    {'icon': 'assets/icon/mood_neutral.svg', 'label': '一般'},
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _initEntryId();
+    // 初始化late变量，防止在异步加载完成前访问它们
+    _date = widget.entry?.date ?? widget.date;
+    _contentController = TextEditingController(text: '');
+    _initTempDir();
+    _loadDraftOrEntry();
+    _locationController = TextEditingController(text: _location ?? '');
+  }
+  
+  Future<void> _initTempDir() async {
+    _tempDir = await getTemporaryDirectory();
+  }
+
+  void _initEntryId() {
+    if (widget.entry?.id != null) {
+      _entryId = widget.entry!.id;
+    } else {
+      _entryId = const Uuid().v4();
+    }
+  }
+
+  // 预加载所有缩略图的缓存，避免界面上一张一张显示的情况
+  Future<void> _preloadThumbnails(List<String> imagePaths, List<String> videoPaths) async {
+    Logger.d('开始预加载所有缩略图...');
+
+    // 清空之前的缓存
+    _videoThumbnailCache.clear();
+    
+    // 预加载所有视频缩略图到内存缓存
+    for (final videoPath in videoPaths) {
+      try {
+        final thumbnailFile = await _getCachedVideoThumbnail(videoPath);
+        if (thumbnailFile != null) {
+          final fileName = videoPath.split(Platform.pathSeparator).last;
+          final cacheKey = 'video_thumb_$fileName';
+          _videoThumbnailCache[cacheKey] = thumbnailFile;
+          Logger.d('视频缩略图已缓存: $cacheKey');
+        }
+      } catch (e) {
+        Logger.w('预加载视频缩略图失败: $videoPath, 错误: $e');
+      }
+    }
+    
+    Logger.d('所有缩略图预加载完成，视频缓存数量: ${_videoThumbnailCache.length}');
+  }
+
+  Future<void> _loadDraftOrEntry() async {
+    setState(() {
+      _isLoading = true;
+    });
+    
+    try {
+      DiaryEntry? draft = await _diaryService.getEntryById(_entryId);
+      draft ??= DiaryEntry(
+        id: _entryId,
+        date: widget.entry?.date ?? widget.date,
+        content: widget.entry?.content ?? '',
+        imagePaths: widget.entry?.imagePaths ?? [],
+        audioPaths: widget.entry?.audioPaths ?? [],
+        videoPaths: widget.entry?.videoPaths ?? [],
+        weather: widget.entry?.weather,
+        mood: widget.entry?.mood,
+        location: widget.entry?.location,
+        isFavorite: widget.entry?.isFavorite ?? false,
+      );
+      final entry = draft!;
+
+      // 在设置状态之前预加载所有缩略图
+      await _preloadThumbnails(
+        List<String>.from(entry.imagePaths),
+        List<String>.from(entry.videoPaths),
+      );
+
+      if (mounted) {
+        setState(() {
+          _date = entry.date;
+          _contentController.text = entry.content ?? '';
+          _imagePaths = List<String>.from(entry.imagePaths);
+          _audioPaths = List<String>.from(entry.audioPaths);
+          _videoPaths = List<String>.from(entry.videoPaths);
+          _weather = entry.weather;
+          _mood = entry.mood;
+          _location = entry.location;
+          _locationController.text = entry.location ?? '';
+          _isFavorite = entry.isFavorite;
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('加载日记数据失败: $e')),
+        );
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _contentController.dispose();
+    _locationController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return WillPopScope(
+      onWillPop: () async {
+        await _autoSave();
+        Navigator.of(context).pop(_buildEntry());
+        return false;
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          leading: IconButton(icon: Icon(Icons.close), onPressed: () async {
+            await _autoSave();
+            Navigator.of(context).pop(_buildEntry());
+          }),
+          title: _isLoading 
+            ? Text('加载中...', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 22))
+            : Text('${_date.month}月${_date.day}日  ${_date.hour.toString().padLeft(2, '0')}:${_date.minute.toString().padLeft(2, '0')}  ${_weekdayStr(_date.weekday)}', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 22)),
+          centerTitle: true,
+          actions: [
+            IconButton(
+              icon: Icon(_isFavorite ? Icons.favorite : Icons.favorite_border, color: _isFavorite ? Colors.red : Colors.grey),
+              tooltip: _isFavorite ? '取消收藏' : '收藏',
+              onPressed: () async {
+                setState(() {
+                  _isFavorite = !_isFavorite;
+                });
+                await _autoSave();
+              },
+            ),
+          ],
+        ),
+        body: _isLoading
+          ? Center(child: CircularProgressIndicator())
+          : SafeArea(
+              child: SingleChildScrollView(
+            padding: EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TextField(
+                  controller: _contentController,
+                  maxLines: null,
+                  style: TextStyle(
+                    fontSize: 18,
+                  ),
+                  decoration: InputDecoration(
+                    hintText: '记录今日',
+                    border: InputBorder.none,
+                    enabledBorder: UnderlineInputBorder(
+                      borderSide: BorderSide(
+                        color: Colors.grey.withOpacity(0.5),
+                        width: 1.0,
+                      ),
+                    ),
+                    focusedBorder: UnderlineInputBorder(
+                      borderSide: BorderSide(
+                        color: Colors.blue.withOpacity(0.7),
+                        width: 1.5,
+                      ),
+                    ),
+                  ),
+                  onChanged: (_) async {
+                    await _autoSave();
+                  },
+                ),
+                SizedBox(height: 12),
+                // 图片+视频混合九宫格
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    ..._imagePaths.asMap().entries.map((e) => Stack(
+                      children: [
+                        GestureDetector(
+                          onTap: () => showDialog(
+                            context: context,
+                            builder: (_) => MediaPreviewDialog(
+                              mediaPaths: [..._imagePaths, ..._videoPaths],
+                              initialIndex: e.key,
+                              isVideo: false,
+                              onDelete: (idx) {
+                                if (idx < _imagePaths.length) {
+                                  _removeImage(idx);
+                                } else {
+                                  _removeVideo(idx - _imagePaths.length);
+                                }
+                                Navigator.of(context).pop();
+                              },
+                            ),
+                          ),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(10),
+                            child: _buildImageThumbnail(e.value, 90, 90),
+                          ),
+                        ),
+                        Positioned(
+                          right: 0,
+                          top: 0,
+                          child: GestureDetector(
+                            onTap: () => _removeImage(e.key),
+                            child: Container(
+                              padding: const EdgeInsets.all(4),
+                              decoration: const BoxDecoration(
+                                color: Colors.black54,
+                                shape: BoxShape.circle,
+                              ),
+                              child: const Icon(
+                                Icons.close,
+                                color: Colors.white,
+                                size: 14,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    )),
+                    ..._videoPaths.asMap().entries.map((e) => Stack(
+                      children: [
+                        GestureDetector(
+                          onTap: () => showDialog(
+                            context: context,
+                            builder: (_) => MediaPreviewDialog(
+                              mediaPaths: [..._imagePaths, ..._videoPaths],
+                              initialIndex: _imagePaths.length + e.key,
+                              isVideo: true,
+                              onDelete: (idx) {
+                                if (idx < _imagePaths.length) {
+                                  _removeImage(idx);
+                                } else {
+                                  _removeVideo(idx - _imagePaths.length);
+                                }
+                                Navigator.of(context).pop();
+                              },
+                            ),
+                          ),
+                          child: SizedBox(
+                            width: 90,
+                            height: 90,
+                            child: _buildVideoThumbnail(_videoPaths[e.key], e.key),
+                          ),
+                        ),
+                        Positioned(
+                          right: 0,
+                          top: 0,
+                          child: GestureDetector(
+                            onTap: () => _removeVideo(e.key),
+                            child: Container(
+                              padding: const EdgeInsets.all(4),
+                              decoration: const BoxDecoration(
+                                color: Colors.black54,
+                                shape: BoxShape.circle,
+                              ),
+                              child: const Icon(
+                                Icons.close,
+                                color: Colors.white,
+                                size: 14,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    )),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        GestureDetector(
+                          onTap: _pickImage,
+                          child: Container(
+                            width: 90,
+                            height: 90,
+                            decoration: BoxDecoration(
+                              color: Colors.grey[200],
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: const Icon(
+                              Icons.add_photo_alternate,
+                              size: 32,
+                              color: Colors.grey,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        GestureDetector(
+                          onTap: _pickVideo,
+                          child: Container(
+                            width: 90,
+                            height: 90,
+                            decoration: BoxDecoration(
+                              color: Colors.grey[200],
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: const Icon(
+                              Icons.video_call,
+                              size: 32,
+                              color: Colors.grey,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        GestureDetector(
+                          onTap: _addAudioBox,
+                          child: Container(
+                            width: 90,
+                            height: 90,
+                            decoration: BoxDecoration(
+                              color: Colors.grey[200],
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: const Icon(
+                              Icons.mic,
+                              size: 32,
+                              color: Colors.grey,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+                if (_audioPaths.isNotEmpty) ...[
+                  SizedBox(height: 16),
+                  // 语音
+                  SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      ..._audioPaths.asMap().entries.map((entry) {
+                        final idx = entry.key;
+                        final path = entry.value;
+                        return SizedBox(
+                          width: MediaQuery.of(context).size.width / 5 - 24,
+                          child: ResizableAudioBox(
+                            audioPath: path,
+                            onIsRecording: (isRec) {},
+                            onSettingsPressed: () {
+                              showModalBottomSheet(
+                                context: context,
+                                builder: (ctx) => SafeArea(
+                                  child: Wrap(
+                                    children: [
+                                      ListTile(
+                                        leading: Icon(Icons.mic),
+                                        title: Text('录制新语音'),
+                                        onTap: () {
+                                          Navigator.pop(ctx);
+                                          _updateAudioPath(idx, '');
+                                        },
+                                      ),
+                                      ListTile(
+                                        leading: Icon(Icons.delete),
+                                        title: Text('删除语音框'),
+                                        onTap: () {
+                                          Navigator.pop(ctx);
+                                          _removeAudioBox(idx);
+                                        },
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              );
+                            },
+                            onPathUpdated: (newPath) async {
+                              _updateAudioPath(idx, newPath);
+                              await _autoSave();
+                            },
+                          ),
+                        );
+                      }),
+                  ],
+                ),
+                ],
+                SizedBox(height: 16),
+                // 天气和心情下拉选择
+                Row(
+                  children: [
+                    Expanded(
+                      child: DropdownButtonFormField<String>(
+                        value: _mood,
+                        decoration: InputDecoration(
+                          labelText: '今天的心情',
+                          prefixIcon: _mood != null
+                              ? SvgPicture.asset(_moodSvgOptions.firstWhere((e) => e['label'] == _mood)['icon'], width: 20, height: 20)
+                              : null,
+                          border: OutlineInputBorder(),
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        ),
+                        isExpanded: true,
+                        selectedItemBuilder: (context) => _moodSvgOptions.map((opt) => Center(
+                          child: SvgPicture.asset(opt['icon'], width: 22, height: 22),
+                        )).toList(),
+                        items: _moodSvgOptions.map((opt) => DropdownMenuItem<String>(
+                          value: opt['label'],
+                          child: Row(
+                            children: [
+                              SvgPicture.asset(opt['icon'], width: 24, height: 24),
+                              SizedBox(width: 8),
+                              Text(opt['label']),
+                            ],
+                          ),
+                        )).toList(),
+                        onChanged: (val) async {
+                          setState(() {
+                            _mood = val;
+                          });
+                          await _autoSave();
+                        },
+                      ),
+                    ),
+                    SizedBox(width: 16),
+                    Expanded(
+                      child: DropdownButtonFormField<String>(
+                        value: _weather,
+                        decoration: InputDecoration(
+                          labelText: '今天的天气',
+                          prefixIcon: _weather != null
+                              ? SvgPicture.asset(_weatherSvgOptions.firstWhere((e) => e['label'] == _weather)['icon'], width: 20, height: 20)
+                              : null,
+                          border: OutlineInputBorder(),
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        ),
+                        isExpanded: true,
+                        selectedItemBuilder: (context) => _weatherSvgOptions.map((opt) => Center(
+                          child: SvgPicture.asset(opt['icon'], width: 22, height: 22),
+                        )).toList(),
+                        items: _weatherSvgOptions.map((opt) => DropdownMenuItem<String>(
+                          value: opt['label'],
+                          child: Row(
+                            children: [
+                              SvgPicture.asset(opt['icon'], width: 24, height: 24),
+                              SizedBox(width: 8),
+                              Text(opt['label']),
+                            ],
+                          ),
+                        )).toList(),
+                        onChanged: (val) async {
+                          setState(() {
+                            _weather = val;
+                          });
+                          await _autoSave();
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+                SizedBox(height: 16),
+                // 地点
+                Row(
+                  children: [
+                    const Icon(Icons.location_on_outlined, color: Colors.grey),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: TextField(
+                        controller: _locationController,
+                        decoration: const InputDecoration(
+                          hintText: '请输入地点',
+                          border: InputBorder.none,
+                        ),
+                        onChanged: (val) async {
+                          setState(() {
+                            _location = val;
+                          });
+                          await _autoSave();
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+                SizedBox(height: 24),
+              ],
+          ),
+        ),
+      ),
+      ),
+  );
+  }
+
+  DiaryEntry _buildEntry() {
+    return DiaryEntry(
+      id: _entryId,
+      date: _date,
+      content: _contentController.text,
+      imagePaths: _imagePaths,
+      audioPaths: _audioPaths.where((p) => p.isNotEmpty).toList(),
+      videoPaths: _videoPaths,
+      weather: _weather,
+      mood: _mood,
+      location: _location,
+      isFavorite: _isFavorite,
+    );
+  }
+
+  Future<void> _autoSave() async {
+    if (_isSaving) return;
+    _isSaving = true;
+    try {
+      await _diaryService.autoSaveEntry(_buildEntry());
+    } catch (e) {
+      debugPrint('自动保存失败: \\${e.toString()}');
+    } finally {
+      _isSaving = false;
+    }
+  }
+
+  Future<void> _pickImage() async {
+    final path = await ImagePickerService.pickImage(context);
+    if (path != null) {
+      setState(() {
+        _imagePaths.add(path);
+      });
+      await _autoSave();
+    }
+  }
+
+  void _removeImage(int idx) async {
+    setState(() {
+      _imagePaths.removeAt(idx);
+    });
+    await _autoSave();
+  }
+
+  void _addAudioBox() async {
+    setState(() {
+      _audioPaths.add('');
+    });
+    await _autoSave();
+  }
+
+  void _updateAudioPath(int idx, String newPath) async {
+    setState(() {
+      _audioPaths[idx] = newPath;
+    });
+    await _autoSave();
+  }
+
+  void _removeAudioBox(int idx) async {
+    setState(() {
+      _audioPaths.removeAt(idx);
+    });
+    await _autoSave();
+  }
+
+  void _removeVideo(int idx) async {
+    setState(() {
+      _videoPaths.removeAt(idx);
+    });
+    await _autoSave();
+  }
+
+  Widget _buildVideoThumbnail(String path, int index) {
+    // 使用全局缓存Map存储缩略图，实现瞬间显示
+    final fileName = path.split(Platform.pathSeparator).last;
+    final cacheKey = 'video_thumb_$fileName';
+    
+    // 检查内存缓存
+    if (_videoThumbnailCache.containsKey(cacheKey) && _videoThumbnailCache[cacheKey] != null) {
+      final thumbnailFile = _videoThumbnailCache[cacheKey]!;
+      return Stack(
+        fit: StackFit.expand,
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(10),
+            child: Image.file(
+              thumbnailFile,
+              width: 90,
+              height: 90,
+              fit: BoxFit.cover,
+            ),
+          ),
+          Positioned(
+            right: 8,
+            bottom: 8,
+            child: Container(
+              padding: const EdgeInsets.all(2),
+              decoration: BoxDecoration(
+                color: Colors.black45,
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(
+                Icons.play_arrow,
+                size: 18,
+                color: Colors.white,
+              ),
+            ),
+          ),
+        ],
+      );
+    } else {
+      // 显示占位符
+      return Container(
+        width: 90,
+        height: 90,
+        decoration: BoxDecoration(
+          color: Colors.grey[300],
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: const Center(
+          child: Icon(
+            Icons.videocam,
+            size: 32,
+            color: Colors.grey,
+          ),
+        ),
+      );
+    }
+  }
+  
+  // 获取持久化缓存的视频缩略图
+  Future<File?> _getCachedVideoThumbnail(String videoPath) async {
+    try {
+      // 使用文件名作为缓存标识符，而不是hashCode
+      final fileName = videoPath.split(Platform.pathSeparator).last;
+      final tempDir = await getTemporaryDirectory();
+      final thumbnailPath = '${tempDir.path}/video_thumb_$fileName.jpg';
+      final thumbnailFile = File(thumbnailPath);
+      
+      // 检查缓存是否存在
+      if (await thumbnailFile.exists() && await thumbnailFile.length() > 100) {
+        Logger.d('使用视频缩略图缓存: $thumbnailPath');
+        return thumbnailFile;
+      }
+      
+      Logger.d('生成新的视频缩略图: $videoPath');
+      // 缓存不存在，生成新的缩略图
+      final newThumbnail = await MediaService().generateVideoThumbnail(videoPath);
+      if (newThumbnail != null) {
+        // 复制到持久化缓存位置
+        await newThumbnail.copy(thumbnailPath);
+        return thumbnailFile;
+      }
+      
+      return null;
+    } catch (e) {
+      Logger.w('获取缓存视频缩略图失败: $e');
+      return null;
+    }
+  }
+
+  Widget _buildVideoPlayer(String path) {
+    return VideoPlayerWidget(
+      file: File(path),
+    );
+  }
+  
+  // 构建图片缩略图，直接显示原图实现瞬间加载
+  Widget _buildImageThumbnail(String imagePath, double width, double height) {
+    // 直接显示原图，无需缓存检查，实现瞬间显示
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(10),
+      child: Image.file(
+        File(imagePath),
+        width: width,
+        height: height,
+        fit: BoxFit.cover,
+        errorBuilder: (context, error, stackTrace) {
+          return Container(
+            width: width,
+            height: height,
+            decoration: BoxDecoration(
+              color: Colors.grey[300],
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: const Icon(
+              Icons.image,
+              size: 32,
+              color: Colors.grey,
+            ),
+          );
+        },
+      ),
+    );
+  }
+  
+  // 获取持久化缓存的图片缩略图
+  Future<File?> _getCachedImageThumbnail(String imagePath) async {
+    try {
+      // 使用文件名作为缓存标识符，而不是hashCode
+      final fileName = imagePath.split(Platform.pathSeparator).last;
+      final tempDir = await getTemporaryDirectory();
+      final thumbnailPath = '${tempDir.path}/img_thumb_$fileName';
+      final thumbnailFile = File(thumbnailPath);
+      
+      // 检查缓存是否存在
+      if (await thumbnailFile.exists() && await thumbnailFile.length() > 100) {
+        Logger.d('使用图片缩略图缓存: $thumbnailPath');
+        return thumbnailFile;
+      }
+      
+      Logger.d('生成新的图片缩略图: $imagePath');
+      // 缓存不存在，创建新的缩略图
+      final originalFile = File(imagePath);
+      if (await originalFile.exists()) {
+        // 简单地复制原图作为缩略图
+        // 在实际应用中，你可能需要使用图像处理库来调整大小和质量
+        await originalFile.copy(thumbnailPath);
+        return thumbnailFile;
+      }
+      
+      return null;
+    } catch (e) {
+      Logger.w('获取缓存图片缩略图失败: $e');
+      return null;
+    }
+  }
+
+  String _weekdayStr(int weekday) {
+    const weekdays = ['一', '二', '三', '四', '五', '六', '日'];
+    return '周${weekdays[(weekday - 1) % 7]}';
+  }
+
+  @override
+  Future<void> _pickVideo() async {
+    try {
+      final path = await ImagePickerService.pickVideo(context);
+      if (path != null && path.isNotEmpty) {
+        setState(() {
+          _videoPaths.add(path);
+        });
+        // 预加载缩略图
+        final thumb = await _getCachedVideoThumbnail(path);
+        if (thumb != null) {
+          final fileName = path.split(Platform.pathSeparator).last;
+          final cacheKey = 'video_thumb_$fileName';
+          setState(() {
+            _videoThumbnailCache[cacheKey] = thumb;
+          });
+        }
+        await _autoSave();
+      } else {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('未选择或保存视频')),
+          );
+        }
+      }
+    } catch (e) {
+      if (context.mounted) {
+        Logger.e('选择视频时发生错误', e);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('选择视频时发生错误：\n${e.toString()}')),
+        );
+      }
+    }
+  }
+}
+
+// 图片全屏滑动放大组件
+class _ImageGalleryViewer extends StatefulWidget {
+  final List<String> imagePaths;
+  final int initialIndex;
+  const _ImageGalleryViewer({required this.imagePaths, required this.initialIndex});
+  @override
+  State<_ImageGalleryViewer> createState() => _ImageGalleryViewerState();
+}
+
+class _ImageGalleryViewerState extends State<_ImageGalleryViewer> {
+  late PageController _pageController;
+  double _scale = 1.0;
+  int _currentIndex = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _currentIndex = widget.initialIndex;
+    _pageController = PageController(initialPage: _currentIndex);
+  }
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onDoubleTap: () {
+        setState(() {
+          _scale = _scale == 1.0 ? 2.0 : 1.0;
+        });
+      },
+      child: Stack(
+        children: [
+          PageView.builder(
+            controller: _pageController,
+            itemCount: widget.imagePaths.length,
+            onPageChanged: (idx) => setState(() => _currentIndex = idx),
+            itemBuilder: (context, idx) {
+              return Center(
+                child: InteractiveViewer(
+                  minScale: 1.0,
+                  maxScale: 4.0,
+                  scaleEnabled: true,
+                  child: Image.file(
+                    File(widget.imagePaths[idx]),
+                    fit: BoxFit.contain,
+                    width: MediaQuery.of(context).size.width,
+                    height: MediaQuery.of(context).size.height,
+                  ),
+                ),
+              );
+            },
+          ),
+          Positioned(
+            top: 40,
+            right: 20,
+            child: IconButton(
+              icon: Icon(Icons.close, color: Colors.white, size: 32),
+              onPressed: () => Navigator.of(context).pop(),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// 自定义"今"字圆圈icon
+class _TodayCircleIcon extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 32,
+      height: 32,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        border: Border.all(color: Colors.black, width: 2),
+      ),
+      child: Center(
+        child: Text('今', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 16)),
+      ),
+    );
+  }
+}
+
+// 新增视频全屏播放组件
+class _VideoPlayerViewer extends StatefulWidget {
+  final List<String> videoPaths;
+  final int initialIndex;
+  const _VideoPlayerViewer({
+    required this.videoPaths,
+    required this.initialIndex,
+  });
+
+  @override
+  State<_VideoPlayerViewer> createState() => _VideoPlayerViewerState();
+}
+
+class _VideoPlayerViewerState extends State<_VideoPlayerViewer> {
+  late PageController _pageController;
+  int _currentIndex = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _currentIndex = widget.initialIndex;
+    _pageController = PageController(initialPage: _currentIndex);
+  }
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        PageView.builder(
+          controller: _pageController,
+          itemCount: widget.videoPaths.length,
+          onPageChanged: (idx) => setState(() => _currentIndex = idx),
+          itemBuilder: (context, idx) {
+            return VideoPlayerWidget(
+              file: File(widget.videoPaths[idx]),
+            );
+          },
+        ),
+        Positioned(
+          top: 40,
+          right: 20,
+          child: IconButton(
+            icon: const Icon(Icons.close, color: Colors.white, size: 32),
+            onPressed: () => Navigator.of(context).pop(),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// 新增MediaPreviewDialog组件，支持图片/视频混合滑动预览、删除、放大、关闭等操作，操作方式与媒体管理界面一致。
+class MediaPreviewDialog extends StatefulWidget {
+  final List<String> mediaPaths;
+  final int initialIndex;
+  final bool isVideo;
+  final void Function(int idx) onDelete;
+  const MediaPreviewDialog({
+    super.key,
+    required this.mediaPaths,
+    required this.initialIndex,
+    required this.isVideo,
+    required this.onDelete,
+  });
+
+  @override
+  State<MediaPreviewDialog> createState() => _MediaPreviewDialogState();
+}
+
+class _MediaPreviewDialogState extends State<MediaPreviewDialog> {
+  late PageController _pageController;
+  late int _currentIndex;
+
+  @override
+  void initState() {
+    super.initState();
+    _currentIndex = widget.initialIndex;
+    _pageController = PageController(initialPage: _currentIndex);
+  }
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      insetPadding: EdgeInsets.zero,
+      child: Stack(
+        children: [
+          PageView.builder(
+            controller: _pageController,
+            itemCount: widget.mediaPaths.length,
+            onPageChanged: (index) {
+              setState(() {
+                _currentIndex = index;
+              });
+              Logger.d('日记页面切换到媒体: $_currentIndex');
+            },
+            itemBuilder: (context, idx) {
+              final path = widget.mediaPaths[idx];
+              Logger.d('构建日记媒体项: $path');
+              if (path.endsWith('.mp4') || path.endsWith('.mov') || path.endsWith('.avi')) {
+                // 视频
+                Logger.d('日记页面视频: $path');
+                Logger.d('幕尺寸: \\${MediaQuery.of(context).size.width}x\\${MediaQuery.of(context).size.height}');
+                Logger.d('BoxFit设置: BoxFit.cover');
+                return SizedBox.expand(
+                  child: VideoPlayerWidget(file: File(path)),
+                );
+              } else {
+                // 图片
+                Logger.d('日记页面图片: $path');
+                return SizedBox.expand(
+                  child: FittedBox(
+                    fit: BoxFit.cover,
+                    child: Image.file(
+                      File(path),
+                      width: MediaQuery.of(context).size.width,
+                      height: MediaQuery.of(context).size.height,
+                    ),
+                  ),
+                );
+              }
+            },
+          ),
+          Positioned(
+            right: 0,
+            top: 0,
+            child: IconButton(
+              icon: Icon(Icons.close, color: Colors.white, size: 28),
+              onPressed: () => Navigator.of(context).pop(),
+            ),
+          ),
+          Positioned(
+            right: 0,
+            bottom: 0,
+            child: IconButton(
+              icon: Icon(Icons.delete, color: Colors.red, size: 28),
+              onPressed: () => widget.onDelete(_currentIndex),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+

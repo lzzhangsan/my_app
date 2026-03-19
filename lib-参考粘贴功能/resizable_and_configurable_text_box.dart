@@ -1,7 +1,6 @@
 // lib/resizable_and_configurable_text_box.dart
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'dart:ui' as ui;
 import 'package:uuid/uuid.dart';
@@ -349,124 +348,6 @@ class TextBoxData {
   }
 }
 
-/// 光标折叠时显示的小雨滴手柄，位于光标竖线正下方，样式与选中文字时的紫色小雨滴一致（竖直）。
-class _CursorHandleOverlay extends StatefulWidget {
-  const _CursorHandleOverlay({
-    required this.editorKey,
-    required this.quillController,
-    required this.stackKey,
-    required this.onTap,
-  });
-
-  final GlobalKey<quill.EditorState> editorKey;
-  final quill.QuillController quillController;
-  final GlobalKey stackKey;
-  final VoidCallback onTap;
-
-  @override
-  State<_CursorHandleOverlay> createState() => _CursorHandleOverlayState();
-}
-
-class _CursorHandleOverlayState extends State<_CursorHandleOverlay> {
-  Offset? _handlePosition;
-  double _lineHeight = 20.0;
-
-  void _updatePosition() {
-    if (!mounted) return;
-    // 必须在布局完成后才能访问 getLocalRectForCaret、localToGlobal 等，否则会触发 debugNeedsLayout 断言
-    SchedulerBinding.instance.addPostFrameCallback((_) => _computePositionAfterLayout());
-  }
-
-  void _computePositionAfterLayout() {
-    if (!mounted) return;
-    final state = widget.editorKey.currentState;
-    final stackContext = widget.stackKey.currentContext;
-    if (state == null || stackContext == null) return;
-    if (widget.editorKey.currentContext == null) return;
-
-    final selection = widget.quillController.selection;
-    if (!selection.isCollapsed) return;
-
-    try {
-      final renderEditor = state.renderEditor;
-      final textPosition = TextPosition(offset: selection.baseOffset);
-      final caretRect = renderEditor.getLocalRectForCaret(textPosition);
-      _lineHeight = renderEditor.preferredLineHeight(textPosition);
-
-      final renderBox = renderEditor as RenderBox;
-      final globalBottomCenter = renderBox.localToGlobal(caretRect.bottomCenter);
-      final stackBox = stackContext.findRenderObject() as RenderBox?;
-      if (stackBox == null) return;
-
-      final localPos = stackBox.globalToLocal(globalBottomCenter);
-      const belowOffset = 2.0;
-      final newPos = Offset(localPos.dx, localPos.dy + belowOffset);
-
-      if (_handlePosition == null ||
-          (_handlePosition!.dx - newPos.dx).abs() > 0.5 ||
-          (_handlePosition!.dy - newPos.dy).abs() > 0.5) {
-        if (mounted) setState(() => _handlePosition = newPos);
-      }
-    } catch (_) {
-      // 布局尚未就绪或 render 对象不可用时忽略
-    }
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    widget.quillController.addListener(_updatePosition);
-    _updatePosition();
-  }
-
-  @override
-  void didUpdateWidget(_CursorHandleOverlay oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.quillController != widget.quillController) {
-      oldWidget.quillController.removeListener(_updatePosition);
-      widget.quillController.addListener(_updatePosition);
-    }
-    _updatePosition();
-  }
-
-  @override
-  void dispose() {
-    widget.quillController.removeListener(_updatePosition);
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    if (_handlePosition == null) return const SizedBox.shrink();
-
-    const handleSize = 22.0;
-    final left = _handlePosition!.dx - handleSize / 2;
-    final top = _handlePosition!.dy;
-
-    return Positioned(
-      left: left,
-      top: top,
-      child: Material(
-        color: Colors.transparent,
-        child: GestureDetector(
-          onTap: widget.onTap,
-          behavior: HitTestBehavior.translucent,
-          child: SizedBox(
-            width: handleSize,
-            height: handleSize,
-            child: MaterialTextSelectionControls().buildHandle(
-              context,
-              TextSelectionHandleType.collapsed,
-              _lineHeight,
-              widget.onTap,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 class ResizableAndConfigurableTextBox extends StatefulWidget {
   final Size initialSize;
   final String initialText;
@@ -520,8 +401,6 @@ class _ResizableAndConfigurableTextBoxState
   TextSelection? _lastSelectionForHaptic;
   DateTime? _lastHapticTime;
   Timer? _saveDebounceTimer; // 防抖：连续输入/格式调整合并为一次历史记录
-  final GlobalKey<quill.EditorState> _editorKey = GlobalKey<quill.EditorState>();
-  final GlobalKey _cursorHandleStackKey = GlobalKey();
 
   @override
   void initState() {
@@ -551,21 +430,10 @@ class _ResizableAndConfigurableTextBoxState
             final clipboardData =
                 await Clipboard.getData(Clipboard.kTextPlain);
             final clipboardText = clipboardData?.text;
-            final d = _quillClipboardStore.tryGetDelta(clipboardText);
-            Delta? delta = (d != null && d is Delta) ? d : null;
-            if (delta == null &&
-                clipboardText != null &&
-                clipboardText == _quillController.pastePlainText &&
-                _quillController.pasteDelta.isNotEmpty) {
-              delta = _quillController.pasteDelta;
-            }
+            final delta = _quillClipboardStore.tryGetDelta(clipboardText);
             if (delta != null && delta is Delta) {
               final sel = _quillController.selection;
-              _quillController.toggledStyle = const quill.Style();
-              final pastedLen = delta.operations.fold<int>(
-                0, (sum, op) => sum + (op.length ?? 0),
-              );
-              final newOffset = (sel.start + pastedLen).clamp(0, _quillController.document.length - 1);
+              final newOffset = sel.start + delta.length;
               _quillController.replaceText(
                 sel.start,
                 sel.end - sel.start,
@@ -600,26 +468,15 @@ class _ResizableAndConfigurableTextBoxState
     _saveChanges();
   }
 
-  /// 粘贴时优先使用应用内存储的富文本 Delta，以保留格式（参考 lib-参考粘贴功能）
+  /// 粘贴时优先使用应用内存储的富文本 Delta，以保留格式
   Future<void> _onPaste(dynamic state) async {
     final clipboardData =
         await Clipboard.getData(Clipboard.kTextPlain);
     final clipboardText = clipboardData?.text;
-    final d = _quillClipboardStore.tryGetDelta(clipboardText);
-    Delta? delta = (d != null && d is Delta) ? d : null;
-    if (delta == null &&
-        clipboardText != null &&
-        clipboardText == _quillController.pastePlainText &&
-        _quillController.pasteDelta.isNotEmpty) {
-      delta = _quillController.pasteDelta;
-    }
+    final delta = _quillClipboardStore.tryGetDelta(clipboardText);
     if (delta != null && delta is Delta) {
       final sel = _quillController.selection;
-      _quillController.toggledStyle = const quill.Style();
-      final pastedLen = delta.operations.fold<int>(
-        0, (sum, op) => sum + (op.length ?? 0),
-      );
-      final newOffset = (sel.start + pastedLen).clamp(0, _quillController.document.length - 1);
+      final newOffset = sel.start + delta.length;
       _quillController.replaceText(
         sel.start,
         sel.end - sel.start,
@@ -627,11 +484,7 @@ class _ResizableAndConfigurableTextBoxState
         TextSelection.collapsed(offset: newOffset),
       );
       state.hideToolbar();
-      SchedulerBinding.instance.addPostFrameCallback((_) {
-        if (mounted) {
-          state.bringIntoView(TextPosition(offset: newOffset));
-        }
-      });
+      state.bringIntoView(TextPosition(offset: newOffset));
     } else {
       await state.pasteText(SelectionChangedCause.toolbar);
     }
@@ -649,7 +502,7 @@ class _ResizableAndConfigurableTextBoxState
             sel.extentOffset != _lastSelectionForHaptic!.extentOffset)) {
       final now = DateTime.now();
       if (_lastHapticTime == null ||
-          now.difference(_lastHapticTime!).inMilliseconds >= 25) {
+          now.difference(_lastHapticTime!).inMilliseconds >= 40) {
         HapticFeedback.selectionClick();
         _lastHapticTime = now;
       }
@@ -724,23 +577,12 @@ class _ResizableAndConfigurableTextBoxState
     );
   }
 
-  /// 是否在行首插入：文档开头或紧跟换行符后。
+  /// 是否在行首插入：文档开头或紧跟换行符后。只有行首插入才应用默认格式，否则继承上下文格式。
   bool _isAtLineStart(int index) {
     if (index <= 0) return true;
     final doc = _quillController.document;
     if (index > doc.length) return false;
     final char = doc.toPlainText().substring(index - 1, index);
-    return char == '\n';
-  }
-
-  /// 插入后该行是否为空（无右侧内容）：仅当另起一行时为空，此时用默认格式。
-  /// 若行首有右侧内容，应继承右侧格式。
-  bool _isLineEmptyAfterInsert(int start, int insertedLength) {
-    final doc = _quillController.document;
-    final rightIndex = start + insertedLength;
-    if (rightIndex >= doc.length) return true;
-    final plainText = doc.toPlainText();
-    final char = plainText.substring(rightIndex, rightIndex + 1);
     return char == '\n';
   }
 
@@ -765,19 +607,7 @@ class _ResizableAndConfigurableTextBoxState
     if (!_isAtLineStart(start)) return;
     _applyingDefaultStyle = true;
     try {
-      if (_isLineEmptyAfterInsert(start, insertedLength)) {
-        // 另起一行：使用默认格式
-        _applyDefaultStyleToRange(start, insertedLength);
-      } else {
-        // 行首插入但该行有内容：继承右侧字符的格式
-        final rightStyle = _quillController.document.collectStyle(
-          start + insertedLength,
-          1,
-        );
-        if (rightStyle.isNotEmpty) {
-          _quillController.formatTextStyle(start, insertedLength, rightStyle);
-        }
-      }
+      _applyDefaultStyleToRange(start, insertedLength);
     } finally {
       _applyingDefaultStyle = false;
     }
@@ -1356,27 +1186,10 @@ class _ResizableAndConfigurableTextBoxState
                   ),
                 ],
               ),
-              child: Stack(
-                key: _cursorHandleStackKey,
-                clipBehavior: Clip.none,
-                children: [
-                  _buildCustomTextField(),
-                  if (_focusNode.hasFocus &&
-                      _quillController.selection.isCollapsed)
-                    _CursorHandleOverlay(
-                      editorKey: _editorKey,
-                      quillController: _quillController,
-                      stackKey: _cursorHandleStackKey,
-                      onTap: () {
-                        HapticFeedback.selectionClick();
-                        _editorKey.currentState?.showToolbar();
-                      },
-                    ),
-                ],
-              ),
+              child: _buildCustomTextField(),
             ),
             Positioned(
-              right: -10,
+              left: -10,
               top: -12,
               child: Opacity(
                 opacity: 0.125,
@@ -1456,7 +1269,6 @@ class _ResizableAndConfigurableTextBoxState
         focusNode: _focusNode,
         scrollController: _textScrollController,
         config: quill.QuillEditorConfig(
-          editorKey: _editorKey,
           padding: EdgeInsets.zero,
           placeholder: '',
           paintCursorAboveText: true,
@@ -1597,7 +1409,7 @@ class _ResizableAndConfigurableTextBoxState
     );
   }
 
-  /// 自定义放大镜：使用默认实现。Overlay 方案曾导致 !_debugDoingPaint 崩溃，已回退。
+  /// 自定义放大镜：尽量保持在选区附近，减少随手指远距离移动
   Widget _buildMagnifierAboveText(Offset dragPos) {
     return quill.defaultQuillMagnifierBuilder(dragPos);
   }
