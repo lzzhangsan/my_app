@@ -577,12 +577,23 @@ class _ResizableAndConfigurableTextBoxState
     );
   }
 
-  /// 是否在行首插入：文档开头或紧跟换行符后。只有行首插入才应用默认格式，否则继承上下文格式。
+  /// 是否在行首插入：文档开头或紧跟换行符后。
   bool _isAtLineStart(int index) {
     if (index <= 0) return true;
     final doc = _quillController.document;
     if (index > doc.length) return false;
     final char = doc.toPlainText().substring(index - 1, index);
+    return char == '\n';
+  }
+
+  /// 插入后该行是否为空（无右侧内容）：仅当另起一行时为空，此时用默认格式。
+  /// 若行首有右侧内容，应继承右侧格式。
+  bool _isLineEmptyAfterInsert(int start, int insertedLength) {
+    final doc = _quillController.document;
+    final rightIndex = start + insertedLength;
+    if (rightIndex >= doc.length) return true;
+    final plainText = doc.toPlainText();
+    final char = plainText.substring(rightIndex, rightIndex + 1);
     return char == '\n';
   }
 
@@ -607,7 +618,19 @@ class _ResizableAndConfigurableTextBoxState
     if (!_isAtLineStart(start)) return;
     _applyingDefaultStyle = true;
     try {
-      _applyDefaultStyleToRange(start, insertedLength);
+      if (_isLineEmptyAfterInsert(start, insertedLength)) {
+        // 另起一行：使用默认格式
+        _applyDefaultStyleToRange(start, insertedLength);
+      } else {
+        // 行首插入但该行有内容：继承右侧字符的格式
+        final rightStyle = _quillController.document.collectStyle(
+          start + insertedLength,
+          1,
+        );
+        if (rightStyle.isNotEmpty) {
+          _quillController.formatTextStyle(start, insertedLength, rightStyle);
+        }
+      }
     } finally {
       _applyingDefaultStyle = false;
     }
