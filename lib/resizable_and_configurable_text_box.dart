@@ -21,7 +21,11 @@ class _QuillClipboardStore {
 
   Object? tryGetDelta(String? clipboardText) {
     if (clipboardText == null || _plainText == null || _delta == null) return null;
-    if (clipboardText == _plainText && _plainText!.isNotEmpty) return _delta;
+    if (_plainText!.isEmpty) return null;
+    final a = (clipboardText ?? '').replaceAll('\r\n', '\n').replaceAll('\r', '\n');
+    final b = _plainText!.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
+    if (a.isEmpty || b.isEmpty) return null;
+    if (a == b) return _delta;
     return null;
   }
 }
@@ -545,6 +549,42 @@ class _ResizableAndConfigurableTextBoxState
       document: doc,
       selection: const TextSelection.collapsed(offset: 0),
       keepStyleOnNewLine: false,
+      onReplaceText: (index, len, data) {
+        if (data is! String) return true;
+        final d = _quillClipboardStore.tryGetDelta(data);
+        Delta? pasteDelta = (d != null && d is Delta) ? d : null;
+        final norm = (String s) => s.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
+        if (pasteDelta == null &&
+            norm(data) == norm(_quillController.pastePlainText) &&
+            _quillController.pasteDelta.isNotEmpty) {
+          pasteDelta = _quillController.pasteDelta;
+        }
+        if (pasteDelta == null) {
+          final plain = _quillController.pastePlainText;
+          final docText = _quillController.document.toPlainText();
+          final isAtStartOrNewLine = index == 0 ||
+              (index > 0 && index <= docText.length && docText[index - 1] == '\n');
+          if (isAtStartOrNewLine &&
+              plain.isNotEmpty &&
+              _quillController.pasteDelta.isNotEmpty &&
+              norm(data).isNotEmpty &&
+              norm(plain).startsWith(norm(data))) {
+            pasteDelta = _quillController.pasteDelta;
+          }
+        }
+        if (pasteDelta == null) return true;
+        _quillController.toggledStyle = const quill.Style();
+        _quillController.document.replace(index, len, pasteDelta);
+        final pastedLen = pasteDelta.operations.fold<int>(
+          0, (sum, op) => sum + (op.length ?? 0),
+        );
+        final newOffset = (index + pastedLen).clamp(0, _quillController.document.length - 1);
+        _quillController.updateSelection(
+          TextSelection.collapsed(offset: newOffset),
+          quill.ChangeSource.local,
+        );
+        return false;
+      },
       config: quill.QuillControllerConfig(
         clipboardConfig: quill.QuillClipboardConfig(
           onClipboardPaste: () async {
@@ -562,15 +602,11 @@ class _ResizableAndConfigurableTextBoxState
             if (delta != null && delta is Delta) {
               final sel = _quillController.selection;
               _quillController.toggledStyle = const quill.Style();
-              final pastedLen = delta.operations.fold<int>(
-                0, (sum, op) => sum + (op.length ?? 0),
-              );
-              final newOffset = (sel.start + pastedLen).clamp(0, _quillController.document.length - 1);
               _quillController.replaceText(
                 sel.start,
                 sel.end - sel.start,
                 delta,
-                TextSelection.collapsed(offset: newOffset),
+                TextSelection.collapsed(offset: sel.end),
               );
               return true;
             }
@@ -616,20 +652,16 @@ class _ResizableAndConfigurableTextBoxState
     if (delta != null && delta is Delta) {
       final sel = _quillController.selection;
       _quillController.toggledStyle = const quill.Style();
-      final pastedLen = delta.operations.fold<int>(
-        0, (sum, op) => sum + (op.length ?? 0),
-      );
-      final newOffset = (sel.start + pastedLen).clamp(0, _quillController.document.length - 1);
       _quillController.replaceText(
         sel.start,
         sel.end - sel.start,
         delta,
-        TextSelection.collapsed(offset: newOffset),
+        TextSelection.collapsed(offset: sel.end),
       );
       state.hideToolbar();
       SchedulerBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
-          state.bringIntoView(TextPosition(offset: newOffset));
+          state.bringIntoView(TextPosition(offset: _quillController.selection.extentOffset));
         }
       });
     } else {
