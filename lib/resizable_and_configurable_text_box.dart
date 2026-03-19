@@ -545,6 +545,20 @@ class _ResizableAndConfigurableTextBoxState
       document: doc,
       selection: const TextSelection.collapsed(offset: 0),
       keepStyleOnNewLine: false,
+      onReplaceText: (index, len, data) {
+        // 粘贴 Delta 时自行处理，绕过 replaceText 的 shouldRetainDelta 逻辑，
+        // 避免用光标位置/默认格式覆盖粘贴内容（开头粘贴、换行粘贴等场景）
+        if (data is Delta) {
+          _quillController.document.replace(index, len, data);
+          final newOffset = (index + (data as Delta).length).clamp(0, _quillController.document.length - 1);
+          _quillController.updateSelection(
+            TextSelection.collapsed(offset: newOffset),
+            quill.ChangeSource.local,
+          );
+          return false; // 已处理，拦截默认 replaceText
+        }
+        return true; // 非 Delta（输入文字等），继续执行默认 replaceText
+      },
       config: quill.QuillControllerConfig(
         clipboardConfig: quill.QuillClipboardConfig(
           onClipboardPaste: () async {
@@ -554,12 +568,12 @@ class _ResizableAndConfigurableTextBoxState
             final delta = _quillClipboardStore.tryGetDelta(clipboardText);
             if (delta != null && delta is Delta) {
               final sel = _quillController.selection;
-              final newOffset = sel.start + delta.length;
+              // 传入粘贴前位置，replaceText 内部会加 positionDelta 得到粘贴后光标位置
               _quillController.replaceText(
                 sel.start,
                 sel.end - sel.start,
                 delta,
-                TextSelection.collapsed(offset: newOffset),
+                TextSelection.collapsed(offset: sel.end),
               );
               return true;
             }
@@ -597,15 +611,15 @@ class _ResizableAndConfigurableTextBoxState
     final delta = _quillClipboardStore.tryGetDelta(clipboardText);
     if (delta != null && delta is Delta) {
       final sel = _quillController.selection;
-      final newOffset = sel.start + delta.length;
+      // 传入粘贴前位置，replaceText 内部会加 positionDelta 得到粘贴后光标位置
       _quillController.replaceText(
         sel.start,
         sel.end - sel.start,
         delta,
-        TextSelection.collapsed(offset: newOffset),
+        TextSelection.collapsed(offset: sel.end),
       );
       state.hideToolbar();
-      state.bringIntoView(TextPosition(offset: newOffset));
+      state.bringIntoView(TextPosition(offset: _quillController.selection.extentOffset));
     } else {
       await state.pasteText(SelectionChangedCause.toolbar);
     }
