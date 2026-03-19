@@ -8,6 +8,10 @@ import 'package:uuid/uuid.dart';
 import 'package:flutter_quill/flutter_quill.dart' as quill;
 import 'package:flutter_quill/quill_delta.dart';
 
+String _normalizeClipboardText(String? s) {
+  return (s ?? '').replaceAll('\r\n', '\n').replaceAll('\r', '\n');
+}
+
 /// 全局剪贴板存储：用于在同一应用内复制/粘贴时保留富文本格式。
 /// 因 Flutter 系统剪贴板仅支持纯文本，需在应用内维护 Delta 以恢复格式。
 class _QuillClipboardStore {
@@ -22,8 +26,8 @@ class _QuillClipboardStore {
   Object? tryGetDelta(String? clipboardText) {
     if (clipboardText == null || _plainText == null || _delta == null) return null;
     if (_plainText!.isEmpty) return null;
-    final a = (clipboardText ?? '').replaceAll('\r\n', '\n').replaceAll('\r', '\n');
-    final b = _plainText!.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
+    final a = _normalizeClipboardText(clipboardText);
+    final b = _normalizeClipboardText(_plainText);
     if (a.isEmpty || b.isEmpty) return null;
     if (a == b) return _delta;
     return null;
@@ -524,8 +528,34 @@ class _ResizableAndConfigurableTextBoxState
   TextSelection? _lastSelectionForHaptic;
   DateTime? _lastHapticTime;
   Timer? _saveDebounceTimer; // 防抖：连续输入/格式调整合并为一次历史记录
+  DateTime? _imePasteGuardUntil;
+  int _imePasteGuardStart = -1;
+  int _imePasteGuardEnd = -1;
+  DateTime? _skipAutoStyleUntil;
+  int _skipAutoStyleStart = -1;
+  int _skipAutoStyleEnd = -1;
+  bool _isPastingRichDelta = false;
   final GlobalKey<quill.EditorState> _editorKey = GlobalKey<quill.EditorState>();
   final GlobalKey _cursorHandleStackKey = GlobalKey();
+
+  void _armImePasteGuard(int start, int insertedLength) {
+    _imePasteGuardStart = start;
+    _imePasteGuardEnd = start + (insertedLength < 0 ? 0 : insertedLength);
+    _imePasteGuardUntil = DateTime.now().add(const Duration(milliseconds: 1200));
+  }
+
+  void _armAutoStyleSkip(int start, int insertedLength) {
+    _skipAutoStyleStart = start;
+    _skipAutoStyleEnd = start + (insertedLength < 0 ? 0 : insertedLength);
+    _skipAutoStyleUntil = DateTime.now().add(const Duration(milliseconds: 1200));
+  }
+
+  bool _isInImePasteGuardWindow(int index, int len, String data) {
+    final until = _imePasteGuardUntil;
+    if (until == null || DateTime.now().isAfter(until)) return false;
+    if (index < _imePasteGuardStart || index > _imePasteGuardEnd) return false;
+    return len > 0 || data.isNotEmpty;
+  }
 
   @override
   void initState() {
@@ -551,9 +581,12 @@ class _ResizableAndConfigurableTextBoxState
       keepStyleOnNewLine: false,
       onReplaceText: (index, len, data) {
         if (data is! String) return true;
+        if (_isInImePasteGuardWindow(index, len, data)) {
+          return false;
+        }
         final d = _quillClipboardStore.tryGetDelta(data);
         Delta? pasteDelta = (d != null && d is Delta) ? d : null;
-        final norm = (String s) => s.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
+        final norm = _normalizeClipboardText;
         if (pasteDelta == null &&
             norm(data) == norm(_quillController.pastePlainText) &&
             _quillController.pasteDelta.isNotEmpty) {
@@ -574,15 +607,22 @@ class _ResizableAndConfigurableTextBoxState
         }
         if (pasteDelta == null) return true;
         _quillController.toggledStyle = const quill.Style();
-        _quillController.document.replace(index, len, pasteDelta);
         final pastedLen = pasteDelta.operations.fold<int>(
           0, (sum, op) => sum + (op.length ?? 0),
         );
-        final newOffset = (index + pastedLen).clamp(0, _quillController.document.length - 1);
-        _quillController.updateSelection(
-          TextSelection.collapsed(offset: newOffset),
-          quill.ChangeSource.local,
-        );
+        try {
+          _isPastingRichDelta = true;
+          _quillController.document.replace(index, len, pasteDelta);
+          final newOffset = (index + pastedLen).clamp(0, _quillController.document.length - 1);
+          _quillController.updateSelection(
+            TextSelection.collapsed(offset: newOffset),
+            quill.ChangeSource.local,
+          );
+        } finally {
+          _isPastingRichDelta = false;
+        }
+        _armImePasteGuard(index, pastedLen);
+        _armAutoStyleSkip(index, pastedLen);
         return false;
       },
       config: quill.QuillControllerConfig(
@@ -594,20 +634,30 @@ class _ResizableAndConfigurableTextBoxState
             final d = _quillClipboardStore.tryGetDelta(clipboardText);
             Delta? delta = (d != null && d is Delta) ? d : null;
             if (delta == null &&
-                clipboardText != null &&
-                clipboardText == _quillController.pastePlainText &&
+                _normalizeClipboardText(clipboardText) ==
+                    _normalizeClipboardText(_quillController.pastePlainText) &&
                 _quillController.pasteDelta.isNotEmpty) {
               delta = _quillController.pasteDelta;
             }
             if (delta != null && delta is Delta) {
               final sel = _quillController.selection;
               _quillController.toggledStyle = const quill.Style();
-              _quillController.replaceText(
-                sel.start,
-                sel.end - sel.start,
-                delta,
-                TextSelection.collapsed(offset: sel.end),
+              final pastedLen = delta.operations.fold<int>(
+                0, (sum, op) => sum + (op.length ?? 0),
               );
+              try {
+                _isPastingRichDelta = true;
+                _quillController.replaceText(
+                  sel.start,
+                  sel.end - sel.start,
+                  delta,
+                  TextSelection.collapsed(offset: sel.end),
+                );
+              } finally {
+                _isPastingRichDelta = false;
+              }
+              _armImePasteGuard(sel.start, pastedLen);
+              _armAutoStyleSkip(sel.start, pastedLen);
               return true;
             }
             return false;
@@ -644,20 +694,30 @@ class _ResizableAndConfigurableTextBoxState
     final d = _quillClipboardStore.tryGetDelta(clipboardText);
     Delta? delta = (d != null && d is Delta) ? d : null;
     if (delta == null &&
-        clipboardText != null &&
-        clipboardText == _quillController.pastePlainText &&
+        _normalizeClipboardText(clipboardText) ==
+            _normalizeClipboardText(_quillController.pastePlainText) &&
         _quillController.pasteDelta.isNotEmpty) {
       delta = _quillController.pasteDelta;
     }
     if (delta != null && delta is Delta) {
       final sel = _quillController.selection;
       _quillController.toggledStyle = const quill.Style();
-      _quillController.replaceText(
-        sel.start,
-        sel.end - sel.start,
-        delta,
-        TextSelection.collapsed(offset: sel.end),
+      final pastedLen = delta.operations.fold<int>(
+        0, (sum, op) => sum + (op.length ?? 0),
       );
+      try {
+        _isPastingRichDelta = true;
+        _quillController.replaceText(
+          sel.start,
+          sel.end - sel.start,
+          delta,
+          TextSelection.collapsed(offset: sel.end),
+        );
+      } finally {
+        _isPastingRichDelta = false;
+      }
+      _armImePasteGuard(sel.start, pastedLen);
+      _armAutoStyleSkip(sel.start, pastedLen);
       state.hideToolbar();
       SchedulerBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
@@ -777,6 +837,7 @@ class _ResizableAndConfigurableTextBoxState
   }
 
   void _handleDocChange(quill.DocChange change) {
+    if (_isPastingRichDelta) return;
     if (_applyingDefaultStyle) return;
     if (change.source != quill.ChangeSource.local) return;
 
@@ -793,6 +854,13 @@ class _ResizableAndConfigurableTextBoxState
     final end = _quillController.selection.baseOffset;
     final start = end - insertedLength;
     if (start < 0) return;
+
+    final skipUntil = _skipAutoStyleUntil;
+    if (skipUntil != null && DateTime.now().isBefore(skipUntil)) {
+      final insertedEnd = start + insertedLength;
+      final overlap = insertedEnd > _skipAutoStyleStart && start < _skipAutoStyleEnd;
+      if (overlap) return;
+    }
 
     if (!_isAtLineStart(start)) return;
     _applyingDefaultStyle = true;
