@@ -5,6 +5,27 @@ import 'package:flutter/services.dart';
 import 'dart:ui' as ui;
 import 'package:uuid/uuid.dart';
 import 'package:flutter_quill/flutter_quill.dart' as quill;
+import 'package:flutter_quill/quill_delta.dart';
+
+/// 全局剪贴板存储：用于在同一应用内复制/粘贴时保留富文本格式。
+/// 因 Flutter 系统剪贴板仅支持纯文本，需在应用内维护 Delta 以恢复格式。
+class _QuillClipboardStore {
+  String? _plainText;
+  Object? _delta; // quill.Delta，使用 Object 避免直接依赖内部类型
+
+  void store(String plainText, Object delta) {
+    _plainText = plainText;
+    _delta = delta;
+  }
+
+  Object? tryGetDelta(String? clipboardText) {
+    if (clipboardText == null || _plainText == null || _delta == null) return null;
+    if (clipboardText == _plainText && _plainText!.isNotEmpty) return _delta;
+    return null;
+  }
+}
+
+final _quillClipboardStore = _QuillClipboardStore();
 
 // 配置类，定义常用的颜色和其他配置
 class Config {
@@ -403,6 +424,28 @@ class _ResizableAndConfigurableTextBoxState
       document: doc,
       selection: const TextSelection.collapsed(offset: 0),
       keepStyleOnNewLine: false,
+      config: quill.QuillControllerConfig(
+        clipboardConfig: quill.QuillClipboardConfig(
+          onClipboardPaste: () async {
+            final clipboardData =
+                await Clipboard.getData(Clipboard.kTextPlain);
+            final clipboardText = clipboardData?.text;
+            final delta = _quillClipboardStore.tryGetDelta(clipboardText);
+            if (delta != null && delta is Delta) {
+              final sel = _quillController.selection;
+              final newOffset = sel.start + delta.length;
+              _quillController.replaceText(
+                sel.start,
+                sel.end - sel.start,
+                delta,
+                TextSelection.collapsed(offset: newOffset),
+              );
+              return true;
+            }
+            return false;
+          },
+        ),
+      ),
     );
     if (_textStyle.textAlign != TextAlign.left && _quillController.document.length > 0) {
       final alignVal = _textStyle.textAlign == TextAlign.center ? 'center' : _textStyle.textAlign == TextAlign.right ? 'right' : 'justify';
@@ -423,6 +466,28 @@ class _ResizableAndConfigurableTextBoxState
     _saveDebounceTimer?.cancel();
     _saveDebounceTimer = null;
     _saveChanges();
+  }
+
+  /// 粘贴时优先使用应用内存储的富文本 Delta，以保留格式
+  Future<void> _onPaste(dynamic state) async {
+    final clipboardData =
+        await Clipboard.getData(Clipboard.kTextPlain);
+    final clipboardText = clipboardData?.text;
+    final delta = _quillClipboardStore.tryGetDelta(clipboardText);
+    if (delta != null && delta is Delta) {
+      final sel = _quillController.selection;
+      final newOffset = sel.start + delta.length;
+      _quillController.replaceText(
+        sel.start,
+        sel.end - sel.start,
+        delta,
+        TextSelection.collapsed(offset: newOffset),
+      );
+      state.hideToolbar();
+      state.bringIntoView(TextPosition(offset: newOffset));
+    } else {
+      await state.pasteText(SelectionChangedCause.toolbar);
+    }
   }
 
   void _debouncedSaveChanges() {
@@ -1245,9 +1310,15 @@ class _ResizableAndConfigurableTextBoxState
                           tooltip: '剪切',
                           splashRadius: 18,
                           onPressed: state.cutEnabled
-                              ? () => state.cutSelection(
+                              ? () {
+                                  state.cutSelection(
                                     SelectionChangedCause.toolbar,
-                                  )
+                                  );
+                                  _quillClipboardStore.store(
+                                    _quillController.pastePlainText,
+                                    _quillController.pasteDelta,
+                                  );
+                                }
                               : null,
                         ),
                         IconButton(
@@ -1255,9 +1326,15 @@ class _ResizableAndConfigurableTextBoxState
                           tooltip: '复制',
                           splashRadius: 18,
                           onPressed: state.copyEnabled
-                              ? () => state.copySelection(
+                              ? () {
+                                  state.copySelection(
                                     SelectionChangedCause.toolbar,
-                                  )
+                                  );
+                                  _quillClipboardStore.store(
+                                    _quillController.pastePlainText,
+                                    _quillController.pasteDelta,
+                                  );
+                                }
                               : null,
                         ),
                         IconButton(
@@ -1265,9 +1342,7 @@ class _ResizableAndConfigurableTextBoxState
                           tooltip: '粘贴',
                           splashRadius: 18,
                           onPressed: state.pasteEnabled
-                              ? () => state.pasteText(
-                                    SelectionChangedCause.toolbar,
-                                  )
+                              ? () => _onPaste(state)
                               : null,
                         ),
                         IconButton(
