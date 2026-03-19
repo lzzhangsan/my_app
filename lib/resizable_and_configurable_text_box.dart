@@ -1212,7 +1212,7 @@ class _ResizableAndConfigurableTextBoxState
               child: _buildCustomTextField(),
             ),
             Positioned(
-              left: -10,
+              right: -10,
               top: -12,
               child: Opacity(
                 opacity: 0.125,
