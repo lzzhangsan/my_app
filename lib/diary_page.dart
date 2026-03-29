@@ -21,6 +21,7 @@ import 'package:flutter/services.dart';
 import 'package:path/path.dart' as path;
 import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 import 'services/database_service.dart';
+import 'package:sqflite/sqflite.dart';
 import 'core/service_locator.dart';
 import 'services/logger.dart';
 import 'services/export_import_utils.dart';
@@ -933,8 +934,11 @@ class _DiaryPageState extends State<DiaryPage> {
 
       currentPhase = '获取日记数据';
       message.value = '正在获取日记数据...';
-      final allEntries = await _diaryService.loadEntries();
-      if (allEntries.isEmpty) {
+      final dbSvc = getService<DatabaseService>();
+      final db = await dbSvc.database;
+      final int totalCount =
+          Sqflite.firstIntValue(await db.rawQuery('SELECT COUNT(*) FROM diary_entries')) ?? 0;
+      if (totalCount == 0) {
         if (mounted) Navigator.of(context).pop();
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -947,35 +951,46 @@ class _DiaryPageState extends State<DiaryPage> {
 
       currentPhase = '整理媒体文件';
       message.value = '正在整理媒体文件...';
-      final List<Map<String, dynamic>> entriesForJson = [];
       final Set<String> mediaPathsToExport = {};
-
-      for (var entry in allEntries) {
-        entriesForJson.add(entry.toMap());
-        // 合并所有类型的媒体路径
-        final allPaths = [...entry.imagePaths, ...entry.videoPaths, ...entry.audioPaths];
-        for (var mediaPath in allPaths) {
-          // 只添加有效的文件路径
-          if (mediaPath.isNotEmpty && await File(mediaPath).exists()) {
-            mediaPathsToExport.add(mediaPath);
+      const int pageSize = 300;
+      int offset = 0;
+      while (true) {
+        final rows = await db.query(
+          'diary_entries',
+          orderBy: 'date DESC',
+          limit: pageSize,
+          offset: offset,
+        );
+        if (rows.isEmpty) break;
+        for (final row in rows) {
+          for (final key in ['image_paths', 'video_paths', 'audio_paths']) {
+            final v = row[key];
+            if (v == null) continue;
+            List<String> paths;
+            try {
+              if (v is String) {
+                paths = (jsonDecode(v) as List).map((e) => e.toString()).toList();
+              } else if (v is List) {
+                paths = v.map((e) => e.toString()).toList();
+              } else {
+                continue;
+              }
+            } catch (_) {
+              continue;
+            }
+            for (final p in paths) {
+              if (p.isEmpty) continue;
+              if (await File(p).exists()) {
+                mediaPathsToExport.add(p);
+              }
+            }
           }
         }
+        offset += rows.length;
+        message.value = '正在扫描媒体路径: $offset/$totalCount';
+        if (rows.length < pageSize) break;
       }
       progress.value = 0.3;
-
-      // 4. 将元数据写入临时目录 - 超过1000条时分块
-      if (entriesForJson.length > 1000) {
-        for (int i = 0; i < entriesForJson.length; i += kExportChunkSize) {
-          final end = (i + kExportChunkSize < entriesForJson.length) ? i + kExportChunkSize : entriesForJson.length;
-          final chunk = entriesForJson.sublist(i, end);
-          final f = File(path.join(tempExportDir.path, 'diary_data_${i ~/ kExportChunkSize}.json'));
-          await f.writeAsString(jsonEncode(chunk), encoding: utf8);
-          message.value = '正在导出日记数据: $end/${entriesForJson.length}';
-        }
-      } else {
-        final jsonFile = File(path.join(tempExportDir.path, 'diary_data.json'));
-        await jsonFile.writeAsString(jsonEncode(entriesForJson), encoding: utf8);
-      }
 
       // 5. 将媒体文件复制到临时目录的media子文件夹中
       message.value = '正在复制媒体文件...';
@@ -1010,69 +1025,95 @@ class _DiaryPageState extends State<DiaryPage> {
         Logger.i('已复制媒体文件: $originalFileName -> $uniqueFileName');
       }
 
-      // 5.5. 更新JSON数据中的媒体路径
-      message.value = '正在更新媒体路径...';
-      for (var entry in entriesForJson) {
-        // 更新图片路径
-        if (entry['image_paths'] != null) {
-          final List<String> updatedImagePaths = [];
-          final originalImagePaths = jsonDecode(entry['image_paths']) as List;
-          for (var imagePath in originalImagePaths) {
-            if (mediaPathMapping.containsKey(imagePath)) {
-              updatedImagePaths.add('media/${mediaPathMapping[imagePath]}');
+      void remapMediaPathsInEntryMap(Map<String, dynamic> entry) {
+        for (final key in ['image_paths', 'video_paths', 'audio_paths']) {
+          final raw = entry[key];
+          if (raw == null) continue;
+          final List<String> originalPaths = [];
+          try {
+            if (raw is String) {
+              originalPaths.addAll((jsonDecode(raw) as List).map((e) => e.toString()));
+            } else if (raw is List) {
+              originalPaths.addAll(raw.map((e) => e.toString()));
             } else {
-              updatedImagePaths.add(imagePath);
+              continue;
+            }
+          } catch (_) {
+            continue;
+          }
+          final List<String> updated = [];
+          for (final mediaPath in originalPaths) {
+            if (mediaPathMapping.containsKey(mediaPath)) {
+              updated.add('media/${mediaPathMapping[mediaPath]}');
+            } else {
+              updated.add(mediaPath);
             }
           }
-          entry['image_paths'] = jsonEncode(updatedImagePaths);
-        }
-        
-        // 更新视频路径
-        if (entry['video_paths'] != null) {
-          final List<String> updatedVideoPaths = [];
-          final originalVideoPaths = jsonDecode(entry['video_paths']) as List;
-          for (var videoPath in originalVideoPaths) {
-            if (mediaPathMapping.containsKey(videoPath)) {
-              updatedVideoPaths.add('media/${mediaPathMapping[videoPath]}');
-            } else {
-              updatedVideoPaths.add(videoPath);
-            }
-          }
-          entry['video_paths'] = jsonEncode(updatedVideoPaths);
-        }
-        
-        // 更新音频路径
-        if (entry['audio_paths'] != null) {
-          final List<String> updatedAudioPaths = [];
-          final originalAudioPaths = jsonDecode(entry['audio_paths']) as List;
-          for (var audioPath in originalAudioPaths) {
-            if (mediaPathMapping.containsKey(audioPath)) {
-              updatedAudioPaths.add('media/${mediaPathMapping[audioPath]}');
-            } else {
-              updatedAudioPaths.add(audioPath);
-            }
-          }
-          entry['audio_paths'] = jsonEncode(updatedAudioPaths);
+          entry[key] = jsonEncode(updated);
         }
       }
-      
-      // 重新写入更新后的JSON文件
-      if (entriesForJson.length > 1000) {
-        for (int i = 0; i < entriesForJson.length; i += kExportChunkSize) {
-          final end = (i + kExportChunkSize < entriesForJson.length) ? i + kExportChunkSize : entriesForJson.length;
-          final chunk = entriesForJson.sublist(i, end);
-          final f = File(path.join(tempExportDir.path, 'diary_data_${i ~/ kExportChunkSize}.json'));
-          await f.writeAsString(jsonEncode(chunk), encoding: utf8);
+
+      message.value = '正在写入日记数据...';
+      offset = 0;
+      if (totalCount <= 1000) {
+        final List<Map<String, dynamic>> entriesForJson = [];
+        while (true) {
+          final rows = await db.query(
+            'diary_entries',
+            orderBy: 'date DESC',
+            limit: pageSize,
+            offset: offset,
+          );
+          if (rows.isEmpty) break;
+          for (final row in rows) {
+            final e = DiaryEntry.fromMap(Map<String, dynamic>.from(row)).toMap();
+            remapMediaPathsInEntryMap(e);
+            entriesForJson.add(e);
+          }
+          offset += rows.length;
+          message.value = '正在写入日记数据: ${entriesForJson.length}/$totalCount';
+          if (rows.length < pageSize) break;
         }
-      } else {
         final jsonFile = File(path.join(tempExportDir.path, 'diary_data.json'));
         await jsonFile.writeAsString(jsonEncode(entriesForJson), encoding: utf8);
+      } else {
+        int chunkIdx = 0;
+        var buffer = <Map<String, dynamic>>[];
+        int writtenRows = 0;
+        while (true) {
+          final rows = await db.query(
+            'diary_entries',
+            orderBy: 'date DESC',
+            limit: pageSize,
+            offset: offset,
+          );
+          if (rows.isEmpty) break;
+          for (final row in rows) {
+            final e = DiaryEntry.fromMap(Map<String, dynamic>.from(row)).toMap();
+            remapMediaPathsInEntryMap(e);
+            buffer.add(e);
+            if (buffer.length >= kExportChunkSize) {
+              final f = File(path.join(tempExportDir.path, 'diary_data_$chunkIdx.json'));
+              await f.writeAsString(jsonEncode(buffer), encoding: utf8);
+              writtenRows += buffer.length;
+              chunkIdx++;
+              buffer = <Map<String, dynamic>>[];
+              message.value = '正在写入日记数据: $writtenRows/$totalCount';
+            }
+          }
+          offset += rows.length;
+          message.value = '正在写入日记数据: $offset/$totalCount';
+          if (rows.length < pageSize) break;
+        }
+        if (buffer.isNotEmpty) {
+          final f = File(path.join(tempExportDir.path, 'diary_data_$chunkIdx.json'));
+          await f.writeAsString(jsonEncode(buffer), encoding: utf8);
+        }
       }
 
       // 5.6. 导出日记本设置（背景图片、背景色）
       message.value = '正在导出日记本设置...';
-      final db = getService<DatabaseService>();
-      final diarySettings = await db.getDiarySettings();
+      final diarySettings = await dbSvc.getDiarySettings();
       if (diarySettings != null) {
         final settingsExport = <String, dynamic>{};
         final bgImagePath = diarySettings['background_image_path'] as String?;

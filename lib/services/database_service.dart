@@ -1103,37 +1103,6 @@ class DatabaseService {
       await tempDir.create(recursive: true);
 
       final db = await database;
-      final Map<String, List<Map<String, dynamic>>> tableData = {};
-      
-      // 分批导出数据库表，避免一次性加载全部数据
-  final List<String> tables = ['folders', 'documents', 'text_boxes', 'image_boxes', 'audio_boxes', 'canvases'];
-      
-      for (String tableName in tables) {
-        progressNotifier?.value = "正在导出$tableName表数据...";
-        
-        // 分页查询，每次处理500条记录
-        const int batchSize = 500;
-        int offset = 0;
-        List<Map<String, dynamic>> allRows = [];
-        
-        while (true) {
-          final batch = await db.query(
-            tableName,
-            limit: batchSize,
-            offset: offset,
-          );
-          
-          if (batch.isEmpty) break;
-          
-          allRows.addAll(batch);
-          offset += batch.length;
-          
-          progressNotifier?.value = "正在导出$tableName表数据: ${allRows.length}条";
-        }
-        
-        tableData[tableName] = allRows;
-        Logger.log('已导出表 $tableName: ${allRows.length} 条记录');
-      }
 
       // 文件名安全化函数
       String safeFileName(String base, String ext) {
@@ -1142,38 +1111,150 @@ class DatabaseService {
         return name + ext;
       }
 
-      // 处理图片框数据和图片文件 - 分批处理优化
-      List<Map<String, dynamic>> imageBoxes = tableData['image_boxes'] ?? [];
-      List<Map<String, dynamic>> imageBoxesToExport = [];
-      progressNotifier?.value = "正在处理图片文件...";
-      const int imageBatchSize = 20;
-      for (int i = 0; i < imageBoxes.length; i += imageBatchSize) {
-        final int end = (i + imageBatchSize < imageBoxes.length) ? i + imageBatchSize : imageBoxes.length;
-        final batch = imageBoxes.sublist(i, end);
-        await Future.wait(batch.map((imageBox) async {
-          Map<String, dynamic> imageBoxCopy = Map<String, dynamic>.from(imageBox);
-          String? imagePath = imageBox['image_path'];
-          String? imageBoxId = imageBox['id']?.toString();
-          if (imagePath != null && imagePath.isNotEmpty && imageBoxId != null && imageBoxId.isNotEmpty) {
-            String ext = p.extension(imagePath);
-            String originalFileName = p.basenameWithoutExtension(imagePath);
-            String fileName = safeFileName('${imageBoxId}_$originalFileName', ext);
-            imageBoxCopy['imageFileName'] = fileName;
-            File imageFile = File(imagePath);
-            if (await imageFile.exists()) {
-              String relativePath = 'images/$fileName';
-              await Directory('$tempDirPath/images').create(recursive: true);
-              await copyFileWithStreaming(imageFile, '$tempDirPath/$relativePath');
-              Logger.log('已导出图片框图片: $relativePath');
-            } else {
-              Logger.log('警告：图片文件不存在: $imagePath');
+      // SPLIT 格式：分页流式写入 JSON，不把整表载入内存（与媒体导出同级的大容量能力）
+      progressNotifier?.value = "正在生成数据文件...";
+      final String dirDataPath = '$tempDirPath/directory_data';
+      await Directory(dirDataPath).create(recursive: true);
+
+      final List<String> tableFileList = [];
+      final List<String> missingAudioFiles = [];
+      int imageBoxesWithPathCount = 0;
+      int imageFilesInZipCount = 0;
+      int audioBoxesWithPathCount = 0;
+
+      Future<void> streamTableToDirectoryData(
+        String tableName,
+        Future<List<Map<String, dynamic>>> Function(List<Map<String, dynamic>> batch) processBatch,
+      ) async {
+        const int pageSize = 500;
+        int offset = 0;
+        final buffer = <Map<String, dynamic>>[];
+        int chunkIndex = 0;
+        bool wroteAnyChunk = false;
+
+        while (true) {
+          final batch = await db.query(tableName, limit: pageSize, offset: offset);
+          if (batch.isEmpty) break;
+          final processed = await processBatch(batch);
+          for (final row in processed) {
+            buffer.add(row);
+            if (buffer.length >= kExportChunkSize) {
+              final fn = '${tableName}_$chunkIndex.json';
+              await File('$dirDataPath/$fn').writeAsString(jsonEncode(buffer), encoding: utf8);
+              tableFileList.add(fn);
+              buffer.clear();
+              chunkIndex++;
+              wroteAnyChunk = true;
+              progressNotifier?.value = '正在生成数据文件: $tableName ...';
             }
           }
-          imageBoxesToExport.add(imageBoxCopy);
-        }));
-        progressNotifier?.value = "正在处理图片文件: ${i + batch.length}/${imageBoxes.length}";
+          offset += batch.length;
+          progressNotifier?.value = "正在导出$tableName表数据: $offset 条";
+          if (batch.length < pageSize) break;
+        }
+        if (buffer.isEmpty) return;
+        if (!wroteAnyChunk) {
+          final fn = '$tableName.json';
+          await File('$dirDataPath/$fn').writeAsString(jsonEncode(buffer), encoding: utf8);
+          tableFileList.add(fn);
+        } else {
+          final fn = '${tableName}_$chunkIndex.json';
+          await File('$dirDataPath/$fn').writeAsString(jsonEncode(buffer), encoding: utf8);
+          tableFileList.add(fn);
+        }
       }
-      tableData['image_boxes'] = imageBoxesToExport;
+
+      progressNotifier?.value = "正在导出folders表数据...";
+      await streamTableToDirectoryData('folders', (b) async => b);
+
+      progressNotifier?.value = "正在导出documents表数据...";
+      await streamTableToDirectoryData('documents', (b) async => b);
+
+      progressNotifier?.value = "正在导出text_boxes表数据...";
+      await streamTableToDirectoryData('text_boxes', (b) async => b);
+
+      progressNotifier?.value = "正在处理图片文件...";
+      await streamTableToDirectoryData('image_boxes', (List<Map<String, dynamic>> batch) async {
+        const int imageBatchSize = 20;
+        final out = <Map<String, dynamic>>[];
+        for (int i = 0; i < batch.length; i += imageBatchSize) {
+          final end = (i + imageBatchSize < batch.length) ? i + imageBatchSize : batch.length;
+          final sub = batch.sublist(i, end);
+          final part = await Future.wait(sub.map((imageBox) async {
+            final imageBoxCopy = Map<String, dynamic>.from(imageBox);
+            final String? imagePath = imageBox['image_path']?.toString();
+            final String? imageBoxId = imageBox['id']?.toString();
+            if (imagePath != null && imagePath.isNotEmpty) {
+              imageBoxesWithPathCount++;
+            }
+            if (imagePath != null &&
+                imagePath.isNotEmpty &&
+                imageBoxId != null &&
+                imageBoxId.isNotEmpty) {
+              final String ext = p.extension(imagePath);
+              final String originalFileName = p.basenameWithoutExtension(imagePath);
+              final String fileName = safeFileName('${imageBoxId}_$originalFileName', ext);
+              imageBoxCopy['imageFileName'] = fileName;
+              final File imageFile = File(imagePath);
+              if (await imageFile.exists()) {
+                final String relativePath = 'images/$fileName';
+                await Directory('$tempDirPath/images').create(recursive: true);
+                await copyFileWithStreaming(imageFile, '$tempDirPath/$relativePath');
+                imageFilesInZipCount++;
+                Logger.log('已导出图片框图片: $relativePath');
+              } else {
+                Logger.log('警告：图片文件不存在: $imagePath');
+              }
+            }
+            return imageBoxCopy;
+          }));
+          out.addAll(part);
+        }
+        return out;
+      });
+
+      progressNotifier?.value = "正在处理音频文件...";
+      await streamTableToDirectoryData('audio_boxes', (List<Map<String, dynamic>> batch) async {
+        const int audioBatchSize = 10;
+        final out = <Map<String, dynamic>>[];
+        for (int i = 0; i < batch.length; i += audioBatchSize) {
+          final end = (i + audioBatchSize < batch.length) ? i + audioBatchSize : batch.length;
+          final sub = batch.sublist(i, end);
+          final part = await Future.wait(sub.map((audioBox) async {
+            final audioBoxCopy = Map<String, dynamic>.from(audioBox);
+            final String? audioPath = audioBox['audio_path']?.toString();
+            final String? audioBoxId = audioBox['id']?.toString();
+            if (audioPath != null && audioPath.isNotEmpty) {
+              audioBoxesWithPathCount++;
+            }
+            if (audioPath != null &&
+                audioPath.isNotEmpty &&
+                audioBoxId != null &&
+                audioBoxId.isNotEmpty) {
+              final String ext = p.extension(audioPath);
+              final String originalFileName = p.basenameWithoutExtension(audioPath);
+              final String fileName = safeFileName('${audioBoxId}_$originalFileName', ext);
+              audioBoxCopy['audioFileName'] = fileName;
+              final File audioFile = File(audioPath);
+              if (await audioFile.exists()) {
+                final String relativePath = 'audios/$fileName';
+                await Directory('$tempDirPath/audios').create(recursive: true);
+                await copyFileWithStreaming(audioFile, '$tempDirPath/$relativePath');
+                Logger.log('已导出音频文件: $relativePath');
+              } else {
+                Logger.log('警告：音频文件不存在: $audioPath');
+                missingAudioFiles.add(audioPath);
+              }
+            }
+            return audioBoxCopy;
+          }));
+          out.addAll(part);
+        }
+        return out;
+      });
+
+      progressNotifier?.value = "正在导出canvases表数据...";
+      await streamTableToDirectoryData('canvases', (b) async => b);
 
       // 处理目录设置和背景图片
       List<Map<String, dynamic>> directorySettings = await db.query('directory_settings');
@@ -1184,8 +1265,7 @@ class DatabaseService {
         if (backgroundImagePath != null && backgroundImagePath.isNotEmpty) {
           String fileName = p.basename(backgroundImagePath);
           settingsCopy['backgroundImageFileName'] = fileName;
-          
-          // 复制目录背景图片
+
           File imageFile = File(backgroundImagePath);
           if (await imageFile.exists()) {
             String relativePath = 'background_images/$fileName';
@@ -1198,7 +1278,11 @@ class DatabaseService {
         }
         directorySettingsToExport.add(settingsCopy);
       }
-      tableData['directory_settings'] = directorySettingsToExport;
+      if (directorySettingsToExport.isNotEmpty) {
+        await File('$dirDataPath/directory_settings.json')
+            .writeAsString(jsonEncode(directorySettingsToExport), encoding: utf8);
+        tableFileList.add('directory_settings.json');
+      }
 
       // 处理文档设置和背景图片
       List<Map<String, dynamic>> documentSettings = await db.query('document_settings');
@@ -1209,8 +1293,7 @@ class DatabaseService {
         if (backgroundImagePath != null && backgroundImagePath.isNotEmpty) {
           String fileName = p.basename(backgroundImagePath);
           settingsCopy['backgroundImageFileName'] = fileName;
-          
-          // 复制文档背景图片
+
           File imageFile = File(backgroundImagePath);
           if (await imageFile.exists()) {
             String relativePath = 'background_images/$fileName';
@@ -1223,42 +1306,11 @@ class DatabaseService {
         }
         documentSettingsToExport.add(settingsCopy);
       }
-      tableData['document_settings'] = documentSettingsToExport;
-
-      // 处理音频框数据和音频文件 - 分批处理优化
-      List<Map<String, dynamic>> audioBoxes = tableData['audio_boxes'] ?? [];
-      List<Map<String, dynamic>> audioBoxesToExport = [];
-      List<String> missingAudioFiles = [];
-      progressNotifier?.value = "正在处理音频文件...";
-      const int audioBatchSize = 10;
-      for (int i = 0; i < audioBoxes.length; i += audioBatchSize) {
-        final int end = (i + audioBatchSize < audioBoxes.length) ? i + audioBatchSize : audioBoxes.length;
-        final batch = audioBoxes.sublist(i, end);
-        await Future.wait(batch.map((audioBox) async {
-          Map<String, dynamic> audioBoxCopy = Map<String, dynamic>.from(audioBox);
-          String? audioPath = audioBox['audio_path'];
-          String? audioBoxId = audioBox['id']?.toString();
-          if (audioPath != null && audioPath.isNotEmpty && audioBoxId != null && audioBoxId.isNotEmpty) {
-            String ext = p.extension(audioPath);
-            String originalFileName = p.basenameWithoutExtension(audioPath);
-            String fileName = safeFileName('${audioBoxId}_$originalFileName', ext);
-            audioBoxCopy['audioFileName'] = fileName;
-            File audioFile = File(audioPath);
-            if (await audioFile.exists()) {
-              String relativePath = 'audios/$fileName';
-              await Directory('$tempDirPath/audios').create(recursive: true);
-              await copyFileWithStreaming(audioFile, '$tempDirPath/$relativePath');
-              Logger.log('已导出音频文件: $relativePath');
-            } else {
-              Logger.log('警告：音频文件不存在: $audioPath');
-              missingAudioFiles.add(audioPath);
-            }
-          }
-          audioBoxesToExport.add(audioBoxCopy);
-        }));
-        progressNotifier?.value = "正在处理音频文件: ${i + batch.length}/${audioBoxes.length}";
+      if (documentSettingsToExport.isNotEmpty) {
+        await File('$dirDataPath/document_settings.json')
+            .writeAsString(jsonEncode(documentSettingsToExport), encoding: utf8);
+        tableFileList.add('document_settings.json');
       }
-      tableData['audio_boxes'] = audioBoxesToExport;
 
       // 写入丢失音频文件列表到missing_audio_files.txt
       if (missingAudioFiles.isNotEmpty) {
@@ -1269,39 +1321,6 @@ class DatabaseService {
         for (final f in missingAudioFiles) {
           Logger.log('  - $f');
         }
-      }
-
-      // SPLIT格式：将数据库表数据保存到directory_data/目录，每表一文件，大表分块
-      progressNotifier?.value = "正在生成数据文件...";
-      final String dirDataPath = '$tempDirPath/directory_data';
-      await Directory(dirDataPath).create(recursive: true);
-
-      final List<String> tableFileList = [];
-      const List<String> largeTables = ['text_boxes', 'image_boxes', 'audio_boxes'];
-
-      Future<void> writeTableToFile(String tableName, List<Map<String, dynamic>> rows) async {
-        if (rows.isEmpty) return;
-        if (largeTables.contains(tableName) && rows.length > kExportChunkSize) {
-          for (int chunkIdx = 0; chunkIdx < rows.length; chunkIdx += kExportChunkSize) {
-            final end = (chunkIdx + kExportChunkSize < rows.length) ? chunkIdx + kExportChunkSize : rows.length;
-            final chunk = rows.sublist(chunkIdx, end);
-            final fileName = '${tableName}_${chunkIdx ~/ kExportChunkSize}.json';
-            final f = File('$dirDataPath/$fileName');
-            await f.writeAsString(jsonEncode(chunk), encoding: utf8);
-            tableFileList.add(fileName);
-            progressNotifier?.value = "正在生成数据文件: $tableName ${end}/${rows.length}";
-          }
-        } else {
-          final fileName = '$tableName.json';
-          final f = File('$dirDataPath/$fileName');
-          await f.writeAsString(jsonEncode(rows), encoding: utf8);
-          tableFileList.add(fileName);
-        }
-      }
-
-      for (String tableName in tableData.keys) {
-        final rows = tableData[tableName]!;
-        await writeTableToFile(tableName, rows);
       }
 
       final manifest = {
@@ -1352,41 +1371,50 @@ class DatabaseService {
 
       Logger.log('[导出] ZIP文件写入完成: $zipPath');
 
-      // 压缩后校验ZIP包内容和音频/图片文件数量 - 使用流式解码避免内存溢出
-      final inputStream = InputFileStream(zipPath);
-      final archiveCheck = ZipDecoder().decodeStream(inputStream);
+      final int imageBoxTotalRows =
+          Sqflite.firstIntValue(await db.rawQuery('SELECT COUNT(*) FROM image_boxes')) ?? 0;
+      final int audioBoxTotalRows =
+          Sqflite.firstIntValue(await db.rawQuery('SELECT COUNT(*) FROM audio_boxes')) ?? 0;
 
-      try {
-        // 校验图片文件数量（允许 ZIP 少于 DB：部分图片文件可能已被删除或路径无效）
-        int imageBoxCount = imageBoxesToExport.length;
-        int imageBoxesWithPath = imageBoxesToExport.where((row) {
-          final path = row['image_path'];
-          return path != null && path.toString().isNotEmpty;
-        }).length;
-        int zipImageCount = archiveCheck.where((file) => file.name.startsWith('images/') && !file.isDirectory).length;
-        Logger.log('[导出] 图片框总数: $imageBoxCount，其中有路径的: $imageBoxesWithPath，ZIP内文件: $zipImageCount');
-        if (zipImageCount > imageBoxCount) {
-          throw Exception('导出失败：图片文件数量异常，ZIP包内$zipImageCount个多于数据库$imageBoxCount个，请联系开发者排查。');
+      final int zipFileBytes = await File(zipPath).length();
+      const int kMaxZipVerifySizeBytes = 400 * 1024 * 1024;
+
+      if (zipFileBytes <= kMaxZipVerifySizeBytes) {
+        final inputStream = InputFileStream(zipPath);
+        final archiveCheck = ZipDecoder().decodeStream(inputStream);
+
+        try {
+          final int zipImageCount =
+              archiveCheck.where((file) => file.name.startsWith('images/') && !file.isDirectory).length;
+          Logger.log(
+              '[导出] 图片框总数: $imageBoxTotalRows，其中有路径的: $imageBoxesWithPathCount，ZIP内文件: $zipImageCount');
+          if (zipImageCount > imageBoxTotalRows) {
+            throw Exception(
+                '导出失败：图片文件数量异常，ZIP包内$zipImageCount个多于数据库$imageBoxTotalRows个，请联系开发者排查。');
+          }
+          if (zipImageCount < imageBoxesWithPathCount && kDebugMode) {
+            Logger.log(
+                '[导出] 警告：部分图片文件不存在已跳过，有路径的$imageBoxesWithPathCount个，实际导出$zipImageCount个');
+          }
+          final int zipAudioCount =
+              archiveCheck.where((file) => file.name.startsWith('audios/') && !file.isDirectory).length;
+          Logger.log(
+              '[导出] 音频框总数: $audioBoxTotalRows，其中有路径的: $audioBoxesWithPathCount，ZIP内: $zipAudioCount');
+          if (zipAudioCount > audioBoxesWithPathCount) {
+            throw Exception(
+                '导出失败：音频文件数量异常，ZIP包内$zipAudioCount个多于有路径的$audioBoxesWithPathCount个，请联系开发者排查。');
+          }
+          if (zipAudioCount < audioBoxesWithPathCount && missingAudioFiles.isNotEmpty && kDebugMode) {
+            Logger.log('[导出] 警告：${missingAudioFiles.length}个音频文件不存在已跳过');
+          }
+        } finally {
+          await inputStream.close();
         }
-        if (zipImageCount < imageBoxesWithPath && kDebugMode) {
-          Logger.log('[导出] 警告：部分图片文件不存在已跳过，有路径的$imageBoxesWithPath个，实际导出$zipImageCount个');
-        }
-        // 校验音频文件数量（允许 ZIP 少于期望：部分音频文件可能已被删除）
-        final audioBoxesWithFile = audioBoxesToExport.where((row) {
-          final path = row['audio_path'];
-          return path != null && path.toString().isNotEmpty;
-        }).toList();
-        int expectedAudioFileCount = audioBoxesWithFile.length;
-        int zipAudioCount = archiveCheck.where((file) => file.name.startsWith('audios/') && !file.isDirectory).length;
-        Logger.log('[导出] 音频框总数: ${audioBoxesToExport.length}，其中有文件的: $expectedAudioFileCount，ZIP内: $zipAudioCount');
-        if (zipAudioCount > expectedAudioFileCount) {
-          throw Exception('导出失败：音频文件数量异常，ZIP包内$zipAudioCount个多于有路径的$expectedAudioFileCount个，请联系开发者排查。');
-        }
-        if (zipAudioCount < expectedAudioFileCount && missingAudioFiles.isNotEmpty && kDebugMode) {
-          Logger.log('[导出] 警告：${missingAudioFiles.length}个音频文件不存在已跳过');
-        }
-      } finally {
-        await inputStream.close();
+      } else {
+        Logger.log(
+            '[导出] 压缩包较大 (${(zipFileBytes / (1024 * 1024)).toStringAsFixed(1)}MB)，跳过完整 ZIP 解码校验以降低内存风险');
+        Logger.log(
+            '[导出] 已统计：图片框有路径 $imageBoxesWithPathCount 条，已复制 $imageFilesInZipCount 个；音频框有路径 $audioBoxesWithPathCount 条；丢失音频路径 ${missingAudioFiles.length} 条');
       }
 
       // 清理临时目录
