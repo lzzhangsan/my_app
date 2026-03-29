@@ -17,6 +17,7 @@ import 'package:uuid/uuid.dart';
 import '../core/service_locator.dart';
 import 'database_service.dart';
 import '../models/media_type.dart';
+import '../utils/photo_album_paths.dart';
 
 @pragma('vm:entry-point')
 /// 后台媒体服务 - 全局媒体库监听和自动导入
@@ -185,13 +186,10 @@ class BackgroundMediaService {
     }
   }
 
-  /// 捕获初始媒体快照。使用 RequestType.common + hasAll 覆盖所有相册（拍照/录像/下载/截屏/传输等）
+  /// 捕获初始媒体快照。相册列表与前台批量导入一致（见 [getMergedAlbumPathListForImport]）。
   static Future<void> _captureInitialMediaSnapshot() async {
     try {
-      final List<AssetPathEntity> paths = await PhotoManager.getAssetPathList(
-        type: RequestType.common,
-        hasAll: true,
-      );
+      final List<AssetPathEntity> paths = await getMergedAlbumPathListForImport();
       final List<AssetEntity> allAssets = [];
       for (final path in paths) {
         allAssets.addAll(await path.getAssetListRange(start: 0, end: 100000));
@@ -228,11 +226,7 @@ class BackgroundMediaService {
         return;
       }
 
-      // 获取所有相册中的图片+视频（含拍照/录像/下载/截屏/传输等）
-      final List<AssetPathEntity> paths = await PhotoManager.getAssetPathList(
-        type: RequestType.common,
-        hasAll: true,
-      );
+      final List<AssetPathEntity> paths = await getMergedAlbumPathListForImport();
       final List<AssetEntity> allAssets = [];
       for (final path in paths) {
         allAssets.addAll(await path.getAssetListRange(start: 0, end: 100000));
