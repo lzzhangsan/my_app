@@ -118,7 +118,7 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
           final name = entity.path.split(Platform.pathSeparator).last;
           if (name.startsWith('.') || name == 'change_app.db' || name == 'change_app.db-journal' || name == 'change_app.db-wal') continue;
           final known = {
-            'documents', 'images', 'audios', 'media', 'diary_media',
+            'documents', 'images', 'audios', 'audio', 'media', 'diary_media',
             'background_images', 'backgrounds', 'diary_backgrounds', 'backups', 'videos',
           };
           if (known.contains(name)) continue;

@@ -471,6 +471,7 @@ class FileCleanupService {
       final base = _appDocumentsDirectory!.path;
       await scanAndDelete(Directory('$base/media'));
       await scanAndDelete(Directory('$base/images'));
+      await scanAndDelete(Directory('$base/audio'));
       await scanAndDelete(Directory('$base/audios'));
       await scanAndDelete(Directory('$base/background_images'));
       await scanAndDelete(Directory('$base/diary_media'));

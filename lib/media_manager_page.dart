@@ -4319,8 +4319,11 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       builder: (ctx) => AlertDialog(
         title: const Text('导入全部媒体数据'),
         content: const Text(
-          '导入将替换当前所有媒体数据，现有媒体会被覆盖。\n\n'
-          '请确认您已备份重要数据，或确定要执行此操作。',
+          '将仅替换「媒体库」目录（应用文档下的 media 文件夹）及媒体库数据库；'
+          '日记本专属目录 diary_media、日记录音目录 audio、拍照/相册的 images 与 videos 等不会被此操作删除。\n\n'
+          '若压缩包中缺少某些文件，仍会自动保留其它模块仍引用的 media 内文件；'
+          '若压缩包内存在同名文件，则以压缩包为准覆盖。\n\n'
+          '请确认已备份重要数据，或确定要执行此操作。',
         ),
         actions: [
           TextButton(
@@ -4449,6 +4452,20 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           message.value = msg;
           progress.value = 0.75 + (t > 0 ? (p / t) * 0.15 : 0);
         });
+        final Set<String> importBasenames = {};
+        if (await tempMediaDir.exists()) {
+          await for (final entity in tempMediaDir.list(recursive: true)) {
+            if (entity is File) importBasenames.add(path.basename(entity.path));
+          }
+        }
+        final pathsToPreserve = await _databaseService.getAllValidFilePaths();
+        message.value = '正在保留日记等引用的媒体文件...';
+        await _mergePreservedMediaFilesIntoDir(
+          sourceMediaDir: finalMediaDir,
+          targetDir: mediaNewDir,
+          importBasenames: importBasenames,
+          validPathsAbsolute: pathsToPreserve,
+        );
         if (await finalMediaDir.exists()) {
           await finalMediaDir.delete(recursive: true);
         }
@@ -4659,6 +4676,40 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       if (mounted) {
         Navigator.pop(context);
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('生成失败: $e')));
+      }
+    }
+  }
+
+  /// 在删除旧 `media` 目录前，将仍被日记/文档/封面等引用、且压缩包中**没有同名文件**的现有文件复制到导入目标目录。
+  /// 避免「整目录替换」误删日记本等媒体（此前仅替换 `media_items` 表，物理文件却被删光）。
+  Future<void> _mergePreservedMediaFilesIntoDir({
+    required Directory sourceMediaDir,
+    required Directory targetDir,
+    required Set<String> importBasenames,
+    required Set<String> validPathsAbsolute,
+  }) async {
+    if (!await sourceMediaDir.exists()) return;
+    final sourceRoot = path.normalize(path.absolute(sourceMediaDir.path));
+    for (final abs in validPathsAbsolute) {
+      final normalized = path.normalize(path.absolute(abs));
+      String rel;
+      try {
+        rel = path.relative(normalized, from: sourceRoot);
+      } catch (_) {
+        continue;
+      }
+      if (rel.startsWith('..')) continue;
+      final f = File(normalized);
+      if (!await f.exists()) continue;
+      final bn = path.basename(normalized);
+      if (importBasenames.contains(bn)) continue;
+      final dest = File(path.join(targetDir.path, bn));
+      if (!await dest.exists()) {
+        try {
+          await copyFileWithStreamingToFile(f, dest);
+        } catch (e) {
+          debugPrint('保留非导入媒体文件失败: $normalized -> $e');
+        }
       }
     }
   }

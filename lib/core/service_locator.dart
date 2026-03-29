@@ -52,6 +52,7 @@ class ServiceLocator {
       if (!kIsWeb) {
         registerSingleton<DatabaseService>(DatabaseService());
         await get<DatabaseService>().initialize();
+        await get<DatabaseService>().migrateDiaryMediaOutOfLibraryFolderIfNeeded();
       }
       
       // 注册文件服务

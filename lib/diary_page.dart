@@ -26,6 +26,7 @@ import 'services/logger.dart';
 import 'services/export_import_utils.dart';
 import 'utils/export_import_error_utils.dart';
 import 'utils/safe_path_utils.dart';
+import 'utils/app_storage_paths.dart';
 import 'services/test_data_generator_service.dart';
 
 // 全局函数：显示进度条弹窗，支持取消操作
@@ -1272,18 +1273,26 @@ class _DiaryPageState extends State<DiaryPage> {
       int parseBufferIdx = 0;
       const dbBatchSize = 500;
 
+      // 将 zip 内路径映射到 permDir（日记专属 diary_media）。兼容旧版 media/、绝对路径、可选 diary_media/ 前缀。
       List<String> remapPaths(List<dynamic> originalPaths, Directory permDir) {
         return originalPaths.map((p) {
-          final pathStr = p.toString();
+          final pathStr = p.toString().trim();
+          if (pathStr.isEmpty) return pathStr;
           if (pathStr.startsWith('media/')) {
             return path.join(permDir.path, path.basename(pathStr));
-          } else if (pathStr.contains('media/')) {
+          }
+          if (pathStr.startsWith('diary_media/')) {
+            return path.join(permDir.path, path.basename(pathStr));
+          }
+          if (path.isAbsolute(pathStr)) {
+            return path.join(permDir.path, path.basename(pathStr));
+          }
+          if (pathStr.contains('media/')) {
             final mediaIndex = pathStr.indexOf('media/');
             final mediaPath = pathStr.substring(mediaIndex + 6);
             return path.join(permDir.path, path.basename(mediaPath));
-          } else {
-            return path.join(permDir.path, path.basename(pathStr));
           }
+          return path.join(permDir.path, path.basename(pathStr));
         }).toList();
       }
       List<String> parseMediaPaths(dynamic paths) {
@@ -1403,12 +1412,7 @@ class _DiaryPageState extends State<DiaryPage> {
   }
 
   Future<Directory> _getPermanentMediaDirectory() async {
-    final docDir = await getApplicationDocumentsDirectory();
-    final mediaDir = Directory(path.join(docDir.path, 'media'));
-    if (!await mediaDir.exists()) {
-      await mediaDir.create(recursive: true);
-    }
-    return mediaDir;
+    return ensureDiaryMediaDirectory();
   }
 
   void _showEntryDetails(DiaryEntry entry) {

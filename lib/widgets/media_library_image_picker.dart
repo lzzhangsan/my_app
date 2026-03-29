@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 import 'dart:io';
+import 'package:path/path.dart' as path;
+import 'package:uuid/uuid.dart';
 import '../core/service_locator.dart';
 import '../services/logger.dart';
 import '../services/database_service.dart';
 import '../models/media_type.dart';
+import '../utils/app_storage_paths.dart';
 
 class MediaLibraryImagePicker extends StatefulWidget {
   final Function(String)? onImageSelected;
@@ -115,11 +118,34 @@ class _MediaLibraryImagePickerState extends State<MediaLibraryImagePicker> {
   Widget _buildImageItem(Map<String, dynamic> item) {
     return Card(
       child: InkWell(
-        onTap: () {
-          if (widget.onImageSelected != null) {
-            widget.onImageSelected!(item['path']);
-          } else {
-            Navigator.of(context).pop(item['path']);
+        onTap: () async {
+          final srcPath = item['path'] as String?;
+          if (srcPath == null || srcPath.isEmpty) return;
+          final src = File(srcPath);
+          if (!await src.exists()) {
+            if (!mounted) return;
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('文件不存在或已被移动')),
+            );
+            return;
+          }
+          try {
+            final diaryDir = await ensureDiaryMediaDirectory();
+            final dest = File(path.join(diaryDir.path, '${const Uuid().v4()}${path.extension(srcPath)}'));
+            await src.copy(dest.path);
+            if (!mounted) return;
+            if (widget.onImageSelected != null) {
+              widget.onImageSelected!(dest.path);
+            } else {
+              Navigator.of(context).pop(dest.path);
+            }
+          } catch (e) {
+            Logger.log('复制媒体库图片到日记目录失败: $e');
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('复制图片失败: $e')),
+              );
+            }
           }
         },
         child: Container(

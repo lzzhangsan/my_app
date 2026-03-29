@@ -17,6 +17,8 @@ import 'file_cleanup_service.dart';
 import 'export_import_utils.dart';
 import '../models/diary_entry.dart';
 import '../utils/safe_path_utils.dart';
+import '../utils/app_storage_paths.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 /// 数据库服务 - 统一管理所有数据库操作
 class DatabaseService {
@@ -4336,6 +4338,135 @@ class DatabaseService {
     } catch (e) {
       if (kDebugMode) Logger.log('getAllValidFilePaths 失败: $e');
       return {};
+    }
+  }
+
+  /// 将仍位于「媒体库」目录 [kMediaLibraryDirName] 下的日记引用（含图片/视频/音频路径及日记背景若落在该目录）复制到 [kDiaryOwnedMediaDirName]。
+  /// 与媒体库整目录替换解耦；应用内录音目录 `audio/` 不受此迁移影响。仅执行一次（SharedPreferences `diary_media_isolation_v1_done`）。
+  Future<void> migrateDiaryMediaOutOfLibraryFolderIfNeeded() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (prefs.getBool('diary_media_isolation_v1_done') == true) return;
+
+      final appDoc = await getApplicationDocumentsDirectory();
+      final appDocPath = appDoc.path;
+      final mediaLibRoot = p.join(appDocPath, kMediaLibraryDirName);
+      final diaryDir = await ensureDiaryMediaDirectory();
+
+      String toAbs(String? s) {
+        if (s == null) return '';
+        final t = s.trim();
+        if (t.isEmpty) return '';
+        if (t.startsWith('/') || (t.length > 1 && t[1] == ':')) {
+          return p.normalize(p.absolute(t));
+        }
+        return p.normalize(p.join(appDocPath, t));
+      }
+
+      Future<String?> copyOneToDiary(String srcAbs) async {
+        final src = File(srcAbs);
+        if (!await src.exists()) return null;
+        final ext = p.extension(srcAbs);
+        final dest = File(p.join(diaryDir.path, '${const Uuid().v4()}$ext'));
+        await copyFileWithStreamingToFile(src, dest);
+        return dest.path;
+      }
+
+      Future<List<String>> migratePathList(List<String> raw) async {
+        final out = <String>[];
+        for (final item in raw) {
+          final abs = toAbs(item);
+          if (abs.isEmpty) {
+            out.add(item);
+            continue;
+          }
+          if (isPathUnderDirectory(abs, mediaLibRoot)) {
+            final n = await copyOneToDiary(abs);
+            if (n != null) {
+              out.add(n);
+            } else {
+              out.add(item);
+            }
+          } else {
+            out.add(item);
+          }
+        }
+        return out;
+      }
+
+      List<String> decodeList(dynamic val) {
+        if (val == null) return [];
+        if (val is String) {
+          try {
+            final list = jsonDecode(val) as List?;
+            return list?.map((e) => e.toString()).toList() ?? [];
+          } catch (_) {
+            return [];
+          }
+        }
+        if (val is List) return val.map((e) => e.toString()).toList();
+        return [];
+      }
+
+      final db = await database;
+      final rows = await db.query('diary_entries');
+      for (final row in rows) {
+        final id = row['id'] as String;
+        final images = decodeList(row['image_paths']);
+        final videos = decodeList(row['video_paths']);
+        final audios = decodeList(row['audio_paths']);
+        final newImages = await migratePathList(images);
+        final newVideos = await migratePathList(videos);
+        final newAudios = await migratePathList(audios);
+        final changed = jsonEncode(images) != jsonEncode(newImages) ||
+            jsonEncode(videos) != jsonEncode(newVideos) ||
+            jsonEncode(audios) != jsonEncode(newAudios);
+        if (changed) {
+          await db.update(
+            'diary_entries',
+            {
+              'image_paths': jsonEncode(newImages),
+              'video_paths': jsonEncode(newVideos),
+              'audio_paths': jsonEncode(newAudios),
+            },
+            where: 'id = ?',
+            whereArgs: [id],
+          );
+        }
+      }
+
+      final dsRows = await db.query('diary_settings');
+      if (dsRows.isNotEmpty) {
+        final first = dsRows.first;
+        final bg = first['background_image_path']?.toString();
+        if (bg != null && bg.isNotEmpty) {
+          final abs = toAbs(bg);
+          if (isPathUnderDirectory(abs, mediaLibRoot)) {
+            final n = await copyOneToDiary(abs);
+            if (n != null) {
+              final now = DateTime.now().millisecondsSinceEpoch;
+              await db.update(
+                'diary_settings',
+                {
+                  'background_image_path': n,
+                  'updated_at': now,
+                },
+                where: 'id = ?',
+                whereArgs: [first['id']],
+              );
+            }
+          }
+        }
+      }
+
+      await prefs.setBool('diary_media_isolation_v1_done', true);
+      if (kDebugMode) {
+        Logger.log('日记媒体已迁移到 $kDiaryOwnedMediaDirName，与媒体库目录隔离');
+      }
+    } catch (e, stack) {
+      if (kDebugMode) {
+        Logger.log('migrateDiaryMediaOutOfLibraryFolderIfNeeded 失败: $e\n$stack');
+      }
     }
   }
 
