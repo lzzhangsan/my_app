@@ -17,9 +17,12 @@ class FileCleanupService {
   bool _isInitialized = false;
   Directory? _appDocumentsDirectory;
   Directory? _appCacheDirectory;
+  Directory? _appSupportDirectory;
   Directory? _tempDirectory;
+
   /// 应用专属外部存储（Android: /Android/data/<package>/files/，系统计入「数据」）
   Directory? _externalStorageDirectory;
+
   /// 应用外部缓存目录（插件如 WebView、PhotoManager 可能使用）
   List<Directory> _externalCacheDirectories = [];
   CacheService? _cacheService;
@@ -35,6 +38,7 @@ class FileCleanupService {
       // 获取各种目录
       _appDocumentsDirectory = await getApplicationDocumentsDirectory();
       _appCacheDirectory = await getApplicationCacheDirectory();
+      _appSupportDirectory = await getApplicationSupportDirectory();
       _tempDirectory = await getTemporaryDirectory();
       try {
         _externalStorageDirectory = await getExternalStorageDirectory();
@@ -43,17 +47,18 @@ class FileCleanupService {
         final extCaches = await getExternalCacheDirectories();
         _externalCacheDirectories = extCaches ?? [];
       } catch (_) {}
-      
+
       // 获取服务实例
       _cacheService = CacheService();
       _fileService = FileService();
-      
+
       _isInitialized = true;
-      
+
       if (kDebugMode) {
         Logger.log('FileCleanupService: 初始化完成');
         Logger.log('应用文档目录: ${_appDocumentsDirectory!.path}');
         Logger.log('应用缓存目录: ${_appCacheDirectory!.path}');
+        Logger.log('应用支持目录: ${_appSupportDirectory!.path}');
         Logger.log('临时目录: ${_tempDirectory!.path}');
         if (_externalStorageDirectory != null) {
           Logger.log('应用外部存储: ${_externalStorageDirectory!.path}');
@@ -84,20 +89,23 @@ class FileCleanupService {
 
       // 获取文件大小用于日志记录
       final fileSize = await file.length();
-      
+
       // 删除主文件
       await file.delete();
-      
+
       // 删除相关的缩略图文件
       await _deleteRelatedThumbnails(filePath);
-      
+
       // 删除相关的缓存文件
       await _deleteRelatedCacheFiles(filePath);
-      
+      await _deleteSupportVideoThumbnailCacheForMedia(filePath);
+
       if (kDebugMode) {
-        Logger.log('彻底删除媒体文件成功: $filePath (释放空间: ${_formatFileSize(fileSize)})');
+        Logger.log(
+          '彻底删除媒体文件成功: $filePath (释放空间: ${_formatFileSize(fileSize)})',
+        );
       }
-      
+
       return true;
     } catch (e) {
       if (kDebugMode) {
@@ -114,7 +122,9 @@ class FileCleanupService {
     }
 
     try {
-      final documentDir = Directory('${_appDocumentsDirectory!.path}/documents/$documentName');
+      final documentDir = Directory(
+        '${_appDocumentsDirectory!.path}/documents/$documentName',
+      );
       if (!await documentDir.exists()) {
         if (kDebugMode) {
           Logger.log('文档目录不存在，无需删除: $documentName');
@@ -124,17 +134,19 @@ class FileCleanupService {
 
       // 计算文档目录大小
       final directorySize = await _getDirectorySize(documentDir.path);
-      
+
       // 删除整个文档目录
       await documentDir.delete(recursive: true);
-      
+
       // 删除相关的缓存文件
       await _deleteDocumentCacheFiles(documentName);
-      
+
       if (kDebugMode) {
-        Logger.log('彻底删除文档成功: $documentName (释放空间: ${_formatFileSize(directorySize)})');
+        Logger.log(
+          '彻底删除文档成功: $documentName (释放空间: ${_formatFileSize(directorySize)})',
+        );
       }
-      
+
       return true;
     } catch (e) {
       if (kDebugMode) {
@@ -151,7 +163,9 @@ class FileCleanupService {
     }
 
     try {
-      final folderDir = Directory('${_appDocumentsDirectory!.path}/folders/$folderName');
+      final folderDir = Directory(
+        '${_appDocumentsDirectory!.path}/folders/$folderName',
+      );
       if (!await folderDir.exists()) {
         if (kDebugMode) {
           Logger.log('文件夹不存在，无需删除: $folderName');
@@ -161,17 +175,19 @@ class FileCleanupService {
 
       // 计算文件夹大小
       final directorySize = await _getDirectorySize(folderDir.path);
-      
+
       // 删除整个文件夹
       await folderDir.delete(recursive: true);
-      
+
       // 删除相关的缓存文件
       await _deleteFolderCacheFiles(folderName);
-      
+
       if (kDebugMode) {
-        Logger.log('彻底删除文件夹成功: $folderName (释放空间: ${_formatFileSize(directorySize)})');
+        Logger.log(
+          '彻底删除文件夹成功: $folderName (释放空间: ${_formatFileSize(directorySize)})',
+        );
       }
-      
+
       return true;
     } catch (e) {
       if (kDebugMode) {
@@ -187,7 +203,7 @@ class FileCleanupService {
       final fileName = path.basename(filePath);
       final fileNameWithoutExt = path.basenameWithoutExtension(fileName);
       final extension = path.extension(fileName);
-      
+
       // 查找可能的缩略图文件
       final thumbnailPatterns = [
         '${fileNameWithoutExt}_thumb$extension',
@@ -196,15 +212,17 @@ class FileCleanupService {
         'thumb_$fileName',
         'thumbnail_$fileName',
       ];
-      
+
       final fileDir = Directory(path.dirname(filePath));
       if (await fileDir.exists()) {
         final files = await fileDir.list().toList();
-        
+
         for (final file in files) {
           if (file is File) {
             final fileName = path.basename(file.path);
-            if (thumbnailPatterns.any((pattern) => fileName.contains(pattern))) {
+            if (thumbnailPatterns.any(
+              (pattern) => fileName.contains(pattern),
+            )) {
               try {
                 await file.delete();
                 if (kDebugMode) {
@@ -231,13 +249,13 @@ class FileCleanupService {
     try {
       final fileName = path.basename(filePath);
       final fileNameWithoutExt = path.basenameWithoutExtension(fileName);
-      
+
       // 在缓存目录中查找相关文件
       if (_appCacheDirectory != null && await _appCacheDirectory!.exists()) {
         await for (final entity in _appCacheDirectory!.list(recursive: true)) {
           if (entity is File) {
             final cacheFileName = path.basename(entity.path);
-            if (cacheFileName.contains(fileNameWithoutExt) || 
+            if (cacheFileName.contains(fileNameWithoutExt) ||
                 cacheFileName.contains(fileName)) {
               try {
                 await entity.delete();
@@ -256,6 +274,82 @@ class FileCleanupService {
     } catch (e) {
       if (kDebugMode) {
         Logger.log('删除相关缓存文件失败: $e');
+      }
+    }
+  }
+
+  Directory? _getVideoThumbnailCacheDirectorySync() {
+    if (_appSupportDirectory == null) return null;
+    return Directory(path.join(_appSupportDirectory!.path, 'video_thumbnails'));
+  }
+
+  Future<Directory?> _getExistingVideoThumbnailCacheDirectory() async {
+    final dir = _getVideoThumbnailCacheDirectorySync();
+    if (dir == null || !await dir.exists()) return null;
+    return dir;
+  }
+
+  bool _looksLikeVideoFile(String filePath) {
+    final ext = path.extension(filePath).toLowerCase();
+    const videoExts = {
+      '.mp4',
+      '.mov',
+      '.m4v',
+      '.mkv',
+      '.avi',
+      '.wmv',
+      '.flv',
+      '.webm',
+      '.3gp',
+      '.3gpp',
+      '.3g2',
+      '.mpeg',
+      '.mpg',
+      '.mts',
+      '.m2ts',
+      '.ts',
+    };
+    return videoExts.contains(ext);
+  }
+
+  String _buildVideoThumbnailCacheKey(String videoPath) {
+    return '${videoPath.hashCode.abs()}_${videoPath.length}';
+  }
+
+  Set<String> _buildExpectedVideoThumbnailCacheNames(
+    Iterable<String> validFilePaths,
+  ) {
+    final expected = <String>{};
+    for (final filePath in validFilePaths) {
+      if (!_looksLikeVideoFile(filePath)) continue;
+      final key = _buildVideoThumbnailCacheKey(
+        path.normalize(path.absolute(filePath)),
+      );
+      expected.add('${key}_color_thumbnail.jpg');
+    }
+    return expected;
+  }
+
+  Future<void> _deleteSupportVideoThumbnailCacheForMedia(
+    String filePath,
+  ) async {
+    if (!_looksLikeVideoFile(filePath)) return;
+    final thumbnailDir = await _getExistingVideoThumbnailCacheDirectory();
+    if (thumbnailDir == null) return;
+
+    final key = _buildVideoThumbnailCacheKey(
+      path.normalize(path.absolute(filePath)),
+    );
+    await for (final entity in thumbnailDir.list()) {
+      if (entity is! File) continue;
+      final name = path.basename(entity.path);
+      if (!name.startsWith(key)) continue;
+      try {
+        await entity.delete();
+      } catch (e) {
+        if (kDebugMode) {
+          Logger.log('删除支持目录视频缩略图失败: ${entity.path}, 错误: $e');
+        }
       }
     }
   }
@@ -363,7 +457,9 @@ class FileCleanupService {
       }
 
       if (kDebugMode) {
-        Logger.log('清理临时文件完成: 删除 $deletedCount 个文件，保留 $skippedCount 个缩略图，释放空间: ${_formatFileSize(totalSize)}');
+        Logger.log(
+          '清理临时文件完成: 删除 $deletedCount 个文件，保留 $skippedCount 个缩略图，释放空间: ${_formatFileSize(totalSize)}',
+        );
       }
     } catch (e) {
       if (kDebugMode) {
@@ -408,7 +504,9 @@ class FileCleanupService {
       }
 
       if (kDebugMode) {
-        Logger.log('清理缓存文件完成: 删除 $deletedCount 个文件，保留 $skippedCount 个缩略图，释放空间: ${_formatFileSize(totalSize)}');
+        Logger.log(
+          '清理缓存文件完成: 删除 $deletedCount 个文件，保留 $skippedCount 个缩略图，释放空间: ${_formatFileSize(totalSize)}',
+        );
       }
     } catch (e) {
       if (kDebugMode) {
@@ -420,18 +518,20 @@ class FileCleanupService {
   /// 清理孤立文件（数据库中不存在但文件系统中存在的文件）
   /// validFilePaths: 数据库中有效引用的文件路径集合
   /// 安全策略：仅删除不在有效路径集合中的文件，且路径比较使用规范化+大小写不敏感（Windows/Android）
-  Future<Map<String, int>> cleanOrphanedFiles(Iterable<String> validFilePaths) async {
+  Future<Map<String, int>> cleanOrphanedFiles(
+    Iterable<String> validFilePaths,
+  ) async {
     if (!_isInitialized) return {'count': 0, 'bytes': 0};
 
     String toKey(String p) {
       final n = path.normalize(path.absolute(p));
-      return n.isEmpty ? n : (Platform.isWindows || Platform.isAndroid ? n.toLowerCase() : n);
+      return n.isEmpty
+          ? n
+          : (Platform.isWindows || Platform.isAndroid ? n.toLowerCase() : n);
     }
 
-    final validSet = validFilePaths
-        .map((p) => toKey(p))
-        .where((p) => p.isNotEmpty)
-        .toSet();
+    final validSet =
+        validFilePaths.map((p) => toKey(p)).where((p) => p.isNotEmpty).toSet();
 
     if (validSet.isEmpty) {
       if (kDebugMode) Logger.log('清理孤立文件: 有效路径集合为空，跳过清理以确保安全');
@@ -467,6 +567,33 @@ class FileCleanupService {
       }
     }
 
+    Future<void> cleanSupportVideoThumbnails() async {
+      final thumbnailDir = await _getExistingVideoThumbnailCacheDirectory();
+      if (thumbnailDir == null) return;
+
+      final expectedNames = _buildExpectedVideoThumbnailCacheNames(
+        validFilePaths,
+      );
+      await for (final entity in thumbnailDir.list()) {
+        if (entity is! File) continue;
+        final fileName = path.basename(entity.path);
+        if (expectedNames.contains(fileName)) continue;
+        try {
+          final fileSize = await entity.length();
+          await entity.delete();
+          deletedCount++;
+          totalSize += fileSize;
+          if (kDebugMode) {
+            Logger.log('删除孤立视频缩略图缓存: ${entity.path}');
+          }
+        } catch (e) {
+          if (kDebugMode) {
+            Logger.log('删除孤立视频缩略图缓存失败: ${entity.path}, 错误: $e');
+          }
+        }
+      }
+    }
+
     try {
       final base = _appDocumentsDirectory!.path;
       await scanAndDelete(Directory('$base/media'));
@@ -476,9 +603,12 @@ class FileCleanupService {
       await scanAndDelete(Directory('$base/background_images'));
       await scanAndDelete(Directory('$base/diary_media'));
       await scanAndDelete(Directory('$base/documents'));
+      await cleanSupportVideoThumbnails();
 
       if (kDebugMode) {
-        Logger.log('清理孤立文件完成: 删除 $deletedCount 个文件，释放空间: ${_formatFileSize(totalSize)}');
+        Logger.log(
+          '清理孤立文件完成: 删除 $deletedCount 个文件，释放空间: ${_formatFileSize(totalSize)}',
+        );
       }
       return {'count': deletedCount, 'bytes': totalSize};
     } catch (e) {
@@ -492,7 +622,7 @@ class FileCleanupService {
     try {
       int totalSize = 0;
       final directory = Directory(dirPath);
-      
+
       if (await directory.exists()) {
         await for (final entity in directory.list(recursive: true)) {
           if (entity is File) {
@@ -504,7 +634,7 @@ class FileCleanupService {
           }
         }
       }
-      
+
       return totalSize;
     } catch (e) {
       return 0;
@@ -515,7 +645,8 @@ class FileCleanupService {
   String _formatFileSize(int bytes) {
     if (bytes < 1024) return '${bytes}B';
     if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)}KB';
-    if (bytes < 1024 * 1024 * 1024) return '${(bytes / (1024 * 1024)).toStringAsFixed(1)}MB';
+    if (bytes < 1024 * 1024 * 1024)
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)}MB';
     return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)}GB';
   }
 
@@ -525,31 +656,38 @@ class FileCleanupService {
 
     try {
       int totalSize = 0;
-      
-      if (_appDocumentsDirectory != null && await _appDocumentsDirectory!.exists()) {
+
+      if (_appDocumentsDirectory != null &&
+          await _appDocumentsDirectory!.exists()) {
         totalSize += await _getDirectorySize(_appDocumentsDirectory!.path);
       }
-      
+
       if (_appCacheDirectory != null && await _appCacheDirectory!.exists()) {
         totalSize += await _getDirectorySize(_appCacheDirectory!.path);
       }
-      
+
+      if (_appSupportDirectory != null &&
+          await _appSupportDirectory!.exists()) {
+        totalSize += await _getDirectorySize(_appSupportDirectory!.path);
+      }
+
       if (_tempDirectory != null && await _tempDirectory!.exists()) {
         totalSize += await _getDirectorySize(_tempDirectory!.path);
       }
-      
+
       // 应用专属外部存储（Android: browser_backups、导出文件等，系统计入「数据」）
-      if (_externalStorageDirectory != null && await _externalStorageDirectory!.exists()) {
+      if (_externalStorageDirectory != null &&
+          await _externalStorageDirectory!.exists()) {
         totalSize += await _getDirectorySize(_externalStorageDirectory!.path);
       }
-      
+
       // 应用外部缓存（插件如 WebView、PhotoManager 可能使用）
       for (final d in _externalCacheDirectories) {
         if (await d.exists()) {
           totalSize += await _getDirectorySize(d.path);
         }
       }
-      
+
       return totalSize;
     } catch (e) {
       if (kDebugMode) {
@@ -564,7 +702,8 @@ class FileCleanupService {
     if (!_isInitialized) return 0;
     int total = 0;
     try {
-      if (_externalStorageDirectory != null && await _externalStorageDirectory!.exists()) {
+      if (_externalStorageDirectory != null &&
+          await _externalStorageDirectory!.exists()) {
         total += await _getDirectorySize(_externalStorageDirectory!.path);
       }
       for (final d in _externalCacheDirectories) {
@@ -578,23 +717,70 @@ class FileCleanupService {
     return total;
   }
 
+  Future<int> getVideoThumbnailCacheUsage() async {
+    if (!_isInitialized) return 0;
+    try {
+      final dir = await _getExistingVideoThumbnailCacheDirectory();
+      if (dir == null) return 0;
+      return await _getDirectorySize(dir.path);
+    } catch (e) {
+      if (kDebugMode) Logger.log('获取视频缩略图缓存大小失败: $e');
+      return 0;
+    }
+  }
+
+  bool _shouldDeleteExternalStorageFile(String fileName) {
+    final lower = fileName.toLowerCase();
+    const knownPrefixes = [
+      'directory_backup_',
+      'media_backup_',
+      'media_folder_',
+      'browser_backup_',
+      'diary_export_',
+      'exported_docs_',
+      'browser_data',
+    ];
+    const knownExtensions = {'.zip', '.json', '.tmp', '.part', '.temp'};
+    return knownPrefixes.any(lower.startsWith) &&
+        knownExtensions.contains(path.extension(lower));
+  }
+
+  bool _shouldDeleteExternalStorageDirectory(String dirName) {
+    final lower = dirName.toLowerCase();
+    const exactNames = {
+      'browser_backups',
+      'browser_cache',
+      'webview',
+      'photo_manager',
+    };
+    return exactNames.contains(lower) ||
+        lower.endsWith('_cache') ||
+        lower.endsWith('_temp') ||
+        lower.startsWith('tmp');
+  }
+
   /// 清理应用专属外部存储（含外部缓存，释放系统「数据」占用）
-  /// 包括：外部文件目录下全部内容（导出 ZIP、browser_backups、插件缓存等）、外部缓存目录
+  /// 仅清理已知可重建的导出文件/插件缓存，避免误删用户仍需保留的外部文件。
   Future<Map<String, int>> cleanExternalStorage() async {
     int deletedCount = 0;
     int totalBytes = 0;
     if (!_isInitialized) return {'count': 0, 'bytes': 0};
     try {
-      // 1. 清理外部文件目录下全部内容（导出 ZIP、browser_backups、PhotoManager/WebView 等插件缓存）
-      if (_externalStorageDirectory != null && await _externalStorageDirectory!.exists()) {
+      // 1. 清理外部文件目录下已知的导出文件和可重建缓存目录
+      if (_externalStorageDirectory != null &&
+          await _externalStorageDirectory!.exists()) {
         await for (final entity in _externalStorageDirectory!.list()) {
           try {
             if (entity is File) {
+              final fileName = path.basename(entity.path);
+              if (!_shouldDeleteExternalStorageFile(fileName)) continue;
               final len = await entity.length();
               await entity.delete();
               deletedCount++;
               totalBytes += len;
             } else if (entity is Directory) {
+              final dirName = path.basename(entity.path);
+              if (!_shouldDeleteExternalStorageDirectory(dirName)) continue;
               final size = await _getDirectorySize(entity.path);
               await entity.delete(recursive: true);
               deletedCount++;
@@ -625,7 +811,9 @@ class FileCleanupService {
         } catch (_) {}
       }
       if (kDebugMode && totalBytes > 0) {
-        Logger.log('清理外部存储: 删除 $deletedCount 项，释放 ${_formatFileSize(totalBytes)}');
+        Logger.log(
+          '清理外部存储: 删除 $deletedCount 项，释放 ${_formatFileSize(totalBytes)}',
+        );
       }
     } catch (e) {
       if (kDebugMode) Logger.log('清理外部存储失败: $e');
@@ -638,7 +826,8 @@ class FileCleanupService {
   Future<Map<String, int>> cleanBackupFiles() async {
     int deletedCount = 0;
     int totalBytes = 0;
-    if (!_isInitialized || _appDocumentsDirectory == null) return {'count': 0, 'bytes': 0};
+    if (!_isInitialized || _appDocumentsDirectory == null)
+      return {'count': 0, 'bytes': 0};
     try {
       final backupsDir = Directory('${_appDocumentsDirectory!.path}/backups');
       if (!await backupsDir.exists()) return {'count': 0, 'bytes': 0};
@@ -661,7 +850,9 @@ class FileCleanupService {
         } catch (_) {}
       }
       if (kDebugMode && totalBytes > 0) {
-        Logger.log('清理备份文件: 删除 $deletedCount 项，释放 ${_formatFileSize(totalBytes)}');
+        Logger.log(
+          '清理备份文件: 删除 $deletedCount 项，释放 ${_formatFileSize(totalBytes)}',
+        );
       }
     } catch (e) {
       if (kDebugMode) Logger.log('清理备份文件失败: $e');
@@ -677,16 +868,16 @@ class FileCleanupService {
       if (kDebugMode) {
         Logger.log('开始执行完整存储清理...');
       }
-      
+
       // 清理临时文件
       await cleanAllTempFiles();
-      
+
       // 清理缓存文件
       await cleanAllCacheFiles();
-      
+
       // 清理应用外部存储
       await cleanExternalStorage();
-      
+
       if (kDebugMode) {
         Logger.log('完整存储清理完成');
       }
@@ -700,7 +891,7 @@ class FileCleanupService {
   /// 释放资源
   Future<void> dispose() async {
     _isInitialized = false;
-    
+
     if (kDebugMode) {
       Logger.log('FileCleanupService: 资源已释放');
     }

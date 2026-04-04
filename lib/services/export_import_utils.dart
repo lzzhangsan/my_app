@@ -2,6 +2,7 @@
 // Shared utilities for export/import - streaming, chunk sizes, thresholds
 
 import 'dart:io';
+import 'package:archive/archive_io.dart';
 import 'package:path_provider/path_provider.dart';
 
 /// 获取导出文件的保存目录，优先公共下载目录（用户可在文件管理器中找到）
@@ -84,5 +85,17 @@ Future<void> copyFileWithStreamingToFile(
     }
   } else {
     await source.copy(target.path);
+  }
+}
+
+/// Extract a single archive file to disk without materializing the whole entry in memory again.
+Future<void> extractArchiveFileToPath(ArchiveFile file, String targetPath) async {
+  final targetFile = File(targetPath);
+  await targetFile.parent.create(recursive: true);
+  final outputStream = OutputFileStream(targetFile.path);
+  try {
+    file.writeContent(outputStream);
+  } finally {
+    await outputStream.close();
   }
 }

@@ -1,7 +1,7 @@
-
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'package:crypto/crypto.dart';
 import 'package:archive/archive.dart';
@@ -31,7 +31,14 @@ import 'create_folder_dialog.dart';
 import 'models/media_type.dart';
 import 'browser_page.dart';
 import 'services/cache_service.dart';
-import 'services/export_import_utils.dart' show getExportSaveDirectory, kExportChunkSize, kProgressUpdateInterval, kShareSizeLimitBytes, kStreamingThresholdBytes, copyFileWithStreamingToFile;
+import 'services/export_import_utils.dart'
+    show
+        getExportSaveDirectory,
+        kExportChunkSize,
+        kProgressUpdateInterval,
+        kShareSizeLimitBytes,
+        kStreamingThresholdBytes,
+        copyFileWithStreamingToFile;
 import 'utils/export_import_error_utils.dart';
 import 'utils/safe_path_utils.dart';
 import 'services/test_data_generator_service.dart';
@@ -49,7 +56,8 @@ Future<List<AssetEntity>> _loadMediaAssetsForAlbumIndex(
     for (final pathEntity in paths) {
       final assets = await pathEntity.getAssetListRange(start: 0, end: 100000);
       for (final asset in assets) {
-        if (asset.type != AssetType.image && asset.type != AssetType.video) continue;
+        if (asset.type != AssetType.image && asset.type != AssetType.video)
+          continue;
         if (!mediaIds.contains(asset.id)) {
           allMedia.add(asset);
           mediaIds.add(asset.id);
@@ -63,7 +71,10 @@ Future<List<AssetEntity>> _loadMediaAssetsForAlbumIndex(
   if (idx < 0 || idx >= paths.length) return [];
   final pathEntity = paths[idx];
   final assets = await pathEntity.getAssetListRange(start: 0, end: 100000);
-  final list = assets.where((a) => a.type == AssetType.image || a.type == AssetType.video).toList();
+  final list =
+      assets
+          .where((a) => a.type == AssetType.image || a.type == AssetType.video)
+          .toList();
   list.sort((a, b) => b.createDateTime.compareTo(a.createDateTime));
   return list;
 }
@@ -82,10 +93,12 @@ class _BatchMediaSelectionDialog extends StatefulWidget {
   final List<AssetPathEntity> albums;
 
   @override
-  State<_BatchMediaSelectionDialog> createState() => _BatchMediaSelectionDialogState();
+  State<_BatchMediaSelectionDialog> createState() =>
+      _BatchMediaSelectionDialogState();
 }
 
-class _BatchMediaSelectionDialogState extends State<_BatchMediaSelectionDialog> {
+class _BatchMediaSelectionDialogState
+    extends State<_BatchMediaSelectionDialog> {
   List<AssetEntity> items = [];
   bool loading = true;
   int albumIndex = 0;
@@ -148,17 +161,29 @@ class _BatchMediaSelectionDialogState extends State<_BatchMediaSelectionDialog> 
     if (box == null || !box.hasSize) return null;
     final local = box.globalToLocal(globalPosition);
     final w = box.size.width - padding * 2;
-    final cellWidth = (w - (crossAxisCount - 1) * crossAxisSpacing) / crossAxisCount;
+    final cellWidth =
+        (w - (crossAxisCount - 1) * crossAxisSpacing) / crossAxisCount;
     final cellHeight = cellWidth / childAspectRatio;
     final contentX = local.dx - padding;
     final contentY = local.dy - padding + scrollController.offset;
     if (contentX < 0 || contentY < 0) return null;
-    final col = (contentX / (cellWidth + crossAxisSpacing)).floor().clamp(0, crossAxisCount - 1);
-    final row = (contentY / (cellHeight + mainAxisSpacing)).floor().clamp(0, 999999);
+    final col = (contentX / (cellWidth + crossAxisSpacing)).floor().clamp(
+      0,
+      crossAxisCount - 1,
+    );
+    final row = (contentY / (cellHeight + mainAxisSpacing)).floor().clamp(
+      0,
+      999999,
+    );
     return (col, row);
   }
 
-  List<int> _indicesInRectangle(int startCol, int startRow, int endCol, int endRow) {
+  List<int> _indicesInRectangle(
+    int startCol,
+    int startRow,
+    int endCol,
+    int endRow,
+  ) {
     final minCol = startCol < endCol ? startCol : endCol;
     final maxCol = startCol > endCol ? startCol : endCol;
     final minRow = startRow < endRow ? startRow : endRow;
@@ -175,8 +200,7 @@ class _BatchMediaSelectionDialogState extends State<_BatchMediaSelectionDialog> 
   void _toggleSelectAllInCurrentAlbum() {
     if (loading || items.isEmpty) return;
     setState(() {
-      final allSelected =
-          items.every((a) => selected.any((e) => e.id == a.id));
+      final allSelected = items.every((a) => selected.any((e) => e.id == a.id));
       if (allSelected) {
         final ids = items.map((a) => a.id).toSet();
         selected.removeWhere((e) => ids.contains(e.id));
@@ -195,7 +219,8 @@ class _BatchMediaSelectionDialogState extends State<_BatchMediaSelectionDialog> 
     final screenSize = MediaQuery.of(context).size;
     final imageSel = selected.where((e) => e.type == AssetType.image).length;
     final videoSel = selected.where((e) => e.type == AssetType.video).length;
-    final allInViewSelected = !loading &&
+    final allInViewSelected =
+        !loading &&
         items.isNotEmpty &&
         items.every((a) => selected.any((e) => e.id == a.id));
 
@@ -221,7 +246,10 @@ class _BatchMediaSelectionDialogState extends State<_BatchMediaSelectionDialog> 
                         items: [
                           const DropdownMenuItem(
                             value: 0,
-                            child: Text('全部（所有相册合并）', overflow: TextOverflow.ellipsis),
+                            child: Text(
+                              '全部（所有相册合并）',
+                              overflow: TextOverflow.ellipsis,
+                            ),
                           ),
                           ...List<DropdownMenuItem<int>>.generate(
                             widget.albums.length,
@@ -245,7 +273,10 @@ class _BatchMediaSelectionDialogState extends State<_BatchMediaSelectionDialog> 
                   ),
                   const SizedBox(width: 4),
                   TextButton(
-                    onPressed: loading || items.isEmpty ? null : _toggleSelectAllInCurrentAlbum,
+                    onPressed:
+                        loading || items.isEmpty
+                            ? null
+                            : _toggleSelectAllInCurrentAlbum,
                     style: TextButton.styleFrom(
                       padding: const EdgeInsets.symmetric(horizontal: 6),
                       minimumSize: Size.zero,
@@ -282,165 +313,199 @@ class _BatchMediaSelectionDialogState extends State<_BatchMediaSelectionDialog> 
               ),
             ),
             Expanded(
-              child: loading
-                  ? const Center(child: CircularProgressIndicator())
-                  : Listener(
-                      key: gridKey,
-                      behavior: HitTestBehavior.translucent,
-                      onPointerDown: (e) {
-                        scrollOffsetBeforeGesture = scrollController.offset;
-                        gestureCommitted = null;
-                        final startCr = _getGridColRow(e.position);
-                        if (startCr != null) {
-                          final startIdx = startCr.$2 * crossAxisCount + startCr.$1;
-                          if (startIdx >= 0 && startIdx < items.length) {
-                            final asset = items[startIdx];
-                            hasDragMoved = false;
-                            dragStartPosition = e.position;
-                            dragStartColRow = startCr;
-                            dragIsDeselectMode = _isSelected(asset);
+              child:
+                  loading
+                      ? const Center(child: CircularProgressIndicator())
+                      : Listener(
+                        key: gridKey,
+                        behavior: HitTestBehavior.translucent,
+                        onPointerDown: (e) {
+                          scrollOffsetBeforeGesture = scrollController.offset;
+                          gestureCommitted = null;
+                          final startCr = _getGridColRow(e.position);
+                          if (startCr != null) {
+                            final startIdx =
+                                startCr.$2 * crossAxisCount + startCr.$1;
+                            if (startIdx >= 0 && startIdx < items.length) {
+                              final asset = items[startIdx];
+                              hasDragMoved = false;
+                              dragStartPosition = e.position;
+                              dragStartColRow = startCr;
+                              dragIsDeselectMode = _isSelected(asset);
+                            }
                           }
-                        }
-                      },
-                      onPointerMove: (e) {
-                        if (dragStartColRow != null && dragStartPosition != null) {
-                          final dx = e.position.dx - dragStartPosition!.dx;
-                          final dy = e.position.dy - dragStartPosition!.dy;
-                          if (gestureCommitted == null) {
-                            final dist = math.sqrt(dx * dx + dy * dy);
-                            if (dist > dragThreshold) {
-                              if (dx.abs() > dy.abs()) {
-                                gestureCommitted = 'selection';
-                                isDragSelecting = true;
-                                hasDragMoved = true;
-                                setState(() {});
-                                WidgetsBinding.instance.addPostFrameCallback((_) {
-                                  if (scrollController.hasClients) {
-                                    scrollController.jumpTo(scrollOffsetBeforeGesture);
-                                  }
-                                });
-                              } else {
-                                gestureCommitted = 'scroll';
+                        },
+                        onPointerMove: (e) {
+                          if (dragStartColRow != null &&
+                              dragStartPosition != null) {
+                            final dx = e.position.dx - dragStartPosition!.dx;
+                            final dy = e.position.dy - dragStartPosition!.dy;
+                            if (gestureCommitted == null) {
+                              final dist = math.sqrt(dx * dx + dy * dy);
+                              if (dist > dragThreshold) {
+                                if (dx.abs() > dy.abs()) {
+                                  gestureCommitted = 'selection';
+                                  isDragSelecting = true;
+                                  hasDragMoved = true;
+                                  setState(() {});
+                                  WidgetsBinding.instance.addPostFrameCallback((
+                                    _,
+                                  ) {
+                                    if (scrollController.hasClients) {
+                                      scrollController.jumpTo(
+                                        scrollOffsetBeforeGesture,
+                                      );
+                                    }
+                                  });
+                                } else {
+                                  gestureCommitted = 'scroll';
+                                }
                               }
                             }
                           }
-                        }
-                        if (isDragSelecting && dragStartColRow != null) {
-                          if (!hasDragMoved) {
-                            final dx = e.position.dx - (dragStartPosition?.dx ?? 0);
-                            final dy = e.position.dy - (dragStartPosition?.dy ?? 0);
-                            final dist = math.sqrt(dx * dx + dy * dy);
-                            if (dist < dragThreshold) return;
-                            hasDragMoved = true;
-                          }
-                          final curCr = _getGridColRow(e.position);
-                          if (curCr != null) {
-                            final indices = _indicesInRectangle(
-                              dragStartColRow!.$1,
-                              dragStartColRow!.$2,
-                              curCr.$1,
-                              curCr.$2,
-                            );
-                            setState(() {
-                              for (final idx in indices) {
-                                if (idx >= 0 && idx < items.length) {
-                                  final asset = items[idx];
-                                  if (dragIsDeselectMode) {
-                                    selected.removeWhere((e) => e.id == asset.id);
-                                  } else if (!_isSelected(asset)) {
-                                    selected.add(asset);
+                          if (isDragSelecting && dragStartColRow != null) {
+                            if (!hasDragMoved) {
+                              final dx =
+                                  e.position.dx - (dragStartPosition?.dx ?? 0);
+                              final dy =
+                                  e.position.dy - (dragStartPosition?.dy ?? 0);
+                              final dist = math.sqrt(dx * dx + dy * dy);
+                              if (dist < dragThreshold) return;
+                              hasDragMoved = true;
+                            }
+                            final curCr = _getGridColRow(e.position);
+                            if (curCr != null) {
+                              final indices = _indicesInRectangle(
+                                dragStartColRow!.$1,
+                                dragStartColRow!.$2,
+                                curCr.$1,
+                                curCr.$2,
+                              );
+                              setState(() {
+                                for (final idx in indices) {
+                                  if (idx >= 0 && idx < items.length) {
+                                    final asset = items[idx];
+                                    if (dragIsDeselectMode) {
+                                      selected.removeWhere(
+                                        (e) => e.id == asset.id,
+                                      );
+                                    } else if (!_isSelected(asset)) {
+                                      selected.add(asset);
+                                    }
                                   }
                                 }
-                              }
-                            });
+                              });
+                            }
                           }
-                        }
-                      },
-                      onPointerUp: (_) {
-                        if (isDragSelecting) {
-                          isDragSelecting = false;
-                          gestureCommitted = null;
-                          setState(() {});
-                        } else {
-                          gestureCommitted = null;
-                        }
-                      },
-                      onPointerCancel: (_) {
-                        if (isDragSelecting) {
-                          isDragSelecting = false;
-                          gestureCommitted = null;
-                          setState(() {});
-                        } else {
-                          gestureCommitted = null;
-                        }
-                      },
-                      child: Builder(
-                        builder: (ctx) => ScrollConfiguration(
-                          behavior: ScrollConfiguration.of(ctx).copyWith(
-                            physics: isDragSelecting
-                                ? const NeverScrollableScrollPhysics()
-                                : const ClampingScrollPhysics(),
-                          ),
-                          child: GridView.builder(
-                            controller: scrollController,
-                            padding: const EdgeInsets.all(4.0),
-                            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                              crossAxisCount: 4,
-                              childAspectRatio: 1,
-                              crossAxisSpacing: 4,
-                              mainAxisSpacing: 4,
-                            ),
-                            itemCount: items.length,
-                            itemBuilder: (context, index) {
-                              final asset = items[index];
-                              final isSelected = _isSelected(asset);
-                              final isVideo = asset.type == AssetType.video;
-                              return GestureDetector(
-                                onTap: () => _toggle(asset),
-                                child: Stack(
-                                  fit: StackFit.expand,
-                                  children: [
-                                    FutureBuilder<Uint8List?>(
-                                      future: asset.thumbnailDataWithSize(const ThumbnailSize(200, 200)),
-                                      builder: (context, snapshot) {
-                                        if (snapshot.hasData && snapshot.data != null) {
-                                          return Image.memory(
-                                            snapshot.data!,
-                                            fit: BoxFit.cover,
-                                            width: double.infinity,
-                                            height: double.infinity,
-                                          );
-                                        }
-                                        return const Center(child: CircularProgressIndicator());
-                                      },
-                                    ),
-                                    if (isSelected)
-                                      const Positioned(
-                                        top: 4,
-                                        right: 4,
-                                        child: Icon(Icons.check_circle, color: Colors.green, size: 24),
-                                      ),
-                                    if (isVideo)
-                                      Positioned(
-                                        bottom: 4,
-                                        left: 4,
-                                        child: Container(
-                                          color: Colors.black54,
-                                          padding: const EdgeInsets.all(2),
-                                          child: Text(
-                                            _formatMediaPickerDuration(Duration(seconds: asset.duration)),
-                                            style: const TextStyle(color: Colors.white, fontSize: 12),
-                                          ),
-                                        ),
-                                      ),
-                                  ],
+                        },
+                        onPointerUp: (_) {
+                          if (isDragSelecting) {
+                            isDragSelecting = false;
+                            gestureCommitted = null;
+                            setState(() {});
+                          } else {
+                            gestureCommitted = null;
+                          }
+                        },
+                        onPointerCancel: (_) {
+                          if (isDragSelecting) {
+                            isDragSelecting = false;
+                            gestureCommitted = null;
+                            setState(() {});
+                          } else {
+                            gestureCommitted = null;
+                          }
+                        },
+                        child: Builder(
+                          builder:
+                              (ctx) => ScrollConfiguration(
+                                behavior: ScrollConfiguration.of(ctx).copyWith(
+                                  physics:
+                                      isDragSelecting
+                                          ? const NeverScrollableScrollPhysics()
+                                          : const ClampingScrollPhysics(),
                                 ),
-                              );
-                            },
-                          ),
+                                child: GridView.builder(
+                                  controller: scrollController,
+                                  padding: const EdgeInsets.all(4.0),
+                                  gridDelegate:
+                                      const SliverGridDelegateWithFixedCrossAxisCount(
+                                        crossAxisCount: 4,
+                                        childAspectRatio: 1,
+                                        crossAxisSpacing: 4,
+                                        mainAxisSpacing: 4,
+                                      ),
+                                  itemCount: items.length,
+                                  itemBuilder: (context, index) {
+                                    final asset = items[index];
+                                    final isSelected = _isSelected(asset);
+                                    final isVideo =
+                                        asset.type == AssetType.video;
+                                    return GestureDetector(
+                                      onTap: () => _toggle(asset),
+                                      child: Stack(
+                                        fit: StackFit.expand,
+                                        children: [
+                                          FutureBuilder<Uint8List?>(
+                                            future: asset.thumbnailDataWithSize(
+                                              const ThumbnailSize(200, 200),
+                                            ),
+                                            builder: (context, snapshot) {
+                                              if (snapshot.hasData &&
+                                                  snapshot.data != null) {
+                                                return Image.memory(
+                                                  snapshot.data!,
+                                                  fit: BoxFit.cover,
+                                                  width: double.infinity,
+                                                  height: double.infinity,
+                                                );
+                                              }
+                                              return const Center(
+                                                child:
+                                                    CircularProgressIndicator(),
+                                              );
+                                            },
+                                          ),
+                                          if (isSelected)
+                                            const Positioned(
+                                              top: 4,
+                                              right: 4,
+                                              child: Icon(
+                                                Icons.check_circle,
+                                                color: Colors.green,
+                                                size: 24,
+                                              ),
+                                            ),
+                                          if (isVideo)
+                                            Positioned(
+                                              bottom: 4,
+                                              left: 4,
+                                              child: Container(
+                                                color: Colors.black54,
+                                                padding: const EdgeInsets.all(
+                                                  2,
+                                                ),
+                                                child: Text(
+                                                  _formatMediaPickerDuration(
+                                                    Duration(
+                                                      seconds: asset.duration,
+                                                    ),
+                                                  ),
+                                                  style: const TextStyle(
+                                                    color: Colors.white,
+                                                    fontSize: 12,
+                                                  ),
+                                                ),
+                                              ),
+                                            ),
+                                        ],
+                                      ),
+                                    );
+                                  },
+                                ),
+                              ),
                         ),
                       ),
-                    ),
             ),
             Padding(
               padding: const EdgeInsets.all(8.0),
@@ -448,11 +513,16 @@ class _BatchMediaSelectionDialogState extends State<_BatchMediaSelectionDialog> 
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
                   TextButton(
-                    onPressed: () => Navigator.pop<List<AssetEntity>?>(context, null),
+                    onPressed:
+                        () => Navigator.pop<List<AssetEntity>?>(context, null),
                     child: const Text('取消'),
                   ),
                   TextButton(
-                    onPressed: () => Navigator.pop<List<AssetEntity>>(context, List<AssetEntity>.from(selected)),
+                    onPressed:
+                        () => Navigator.pop<List<AssetEntity>>(
+                          context,
+                          List<AssetEntity>.from(selected),
+                        ),
                     child: const Text('确定'),
                   ),
                 ],
@@ -485,9 +555,22 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   bool _mediaVisible = true;
   final Set<String> _selectedItems = {};
   bool _isMultiSelectMode = false;
-  final Map<String, File?> _videoThumbnailCache = {};
+
+  /// 复用同一路径的缩略图任务，避免 FutureBuilder 重建时重复触发生成。
+  final Map<String, Future<File?>> _videoThumbnailFutureCache = {};
+  final Map<String, File> _videoThumbnailFileCache = {};
+
+  /// 对本次会话中已失败的路径不再反复重试，防止导入后触发“失败风暴”。
+  final Set<String> _thumbnailGenerationFailed = <String>{};
+  final Map<String, Timer> _thumbnailRetryCooldownTimers = {};
+  final Set<String> _imageThumbnailPrefetching = <String>{};
+  final ListQueue<String> _thumbnailPrefetchQueue = ListQueue<String>();
+  final Set<String> _thumbnailPrefetchQueued = <String>{};
+  Timer? _thumbnailPrefetchDebounce;
+  bool _isThumbnailPrefetchRunning = false;
   String? _lastViewedVideoId;
-  final StreamController<String> _progressController = StreamController<String>.broadcast();
+  final StreamController<String> _progressController =
+      StreamController<String>.broadcast();
   final List<String> _availableDirectories = ['root'];
   final ScrollController _gridScrollController = ScrollController();
   bool _isDragSelecting = false;
@@ -498,20 +581,25 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   DateTime? _dragSelectFinishedAt;
   final GlobalKey _gridContainerKey = GlobalKey();
   static const double _dragSelectThreshold = 8.0;
+
   /// 区分滑选与滚动：滑选有横向位移，滚动多为直上直下
   String? _gestureCommitted;
   double _scrollOffsetBeforeGesture = 0;
 
   // For automatic invalid media cleanup
   final Set<String> _itemsToCleanup = {};
+  final Map<String, int> _invalidMediaRetryCounts = {};
   Timer? _cleanupTimer;
+
   /// 导入完成时间，导入后 30 秒内不触发自动清理，避免大量缩略图生成时的误判
   DateTime? _lastImportCompletedAt;
 
   /// 启动时的媒体ID快照，仅用于自动导入逻辑
   Set<String> _initialAssetIds = {};
+
   /// 是否正在自动处理，防止重复
   bool _isAutoProcessing = false;
+
   /// 静默导入开关：true=自动检测并导入手机相册/视频中的新媒体，无需确认；false=完全关闭自动导入，不导入任何新媒体
   bool _autoImportSilentMode = true;
 
@@ -520,16 +608,27 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   bool _hasMoreMediaItems = false;
   int _mediaItemsLoadOffset = 0;
   bool _isLoadingMore = false;
+  static const int _gridCrossAxisCount = 5;
+  static const double _gridChildAspectRatio = 0.7;
+  static const double _gridCrossAxisSpacing = 4;
+  static const double _gridMainAxisSpacing = 4;
+  static const double _gridPadding = 4;
+  static const int _thumbnailVisiblePrefetchPaddingRows = 2;
+  static const int _thumbnailBackgroundBatchSize = 18;
+  static const int _thumbnailQueueTrimSize = 1200;
+  static const int _invalidMediaRetryThreshold = 3;
+  static const Duration _thumbnailRetryCooldown = Duration(seconds: 20);
 
   /// 视频缩略图并发限制，避免同时生成过多导致内存飙升
   static int _activeThumbnailCount = 0;
-  static const int _maxConcurrentThumbnails = 3;
+  static const int _maxConcurrentThumbnails = 2;
   static final List<Completer<void>> _thumbnailWaitQueue = [];
 
   @override
   void initState() {
     super.initState();
-    
+    _gridScrollController.addListener(_handleGridScroll);
+
     if (!kIsWeb) {
       _databaseService = getService<DatabaseService>();
       _loadSettings();
@@ -538,7 +637,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         _initPhotoAutoImport(); // 初始化自动导入监听
       });
     } else {
-      Logger.log("Web environment: Skipping database and permission operations in MediaManagerPage");
+      Logger.log(
+        "Web environment: Skipping database and permission operations in MediaManagerPage",
+      );
       // 为Web环境设置默认状态
       if (mounted) {
         setState(() {
@@ -551,9 +652,26 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
   @override
   void dispose() {
+    _videoThumbnailFutureCache.clear();
+    _videoThumbnailFileCache.clear();
+    _thumbnailGenerationFailed.clear();
+    for (final timer in _thumbnailRetryCooldownTimers.values) {
+      timer.cancel();
+    }
+    _thumbnailRetryCooldownTimers.clear();
+    _invalidMediaRetryCounts.clear();
+    _imageThumbnailPrefetching.clear();
+    _thumbnailPrefetchQueue.clear();
+    _thumbnailPrefetchQueued.clear();
+    _thumbnailPrefetchDebounce?.cancel();
     _progressController.close();
+    _gridScrollController.removeListener(_handleGridScroll);
     _gridScrollController.dispose();
     _cleanupTimer?.cancel(); // Cancel the cleanup timer
+    while (_thumbnailWaitQueue.isNotEmpty) {
+      final c = _thumbnailWaitQueue.removeAt(0);
+      if (!c.isCompleted) c.complete();
+    }
     // 注销媒体库监听
     PhotoManager.removeChangeCallback(_onPhotoLibraryChanged);
     PhotoManager.stopChangeNotify();
@@ -586,6 +704,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     try {
       await _databaseService.ensureMediaItemsTableExists();
       await _loadMediaItems();
+      unawaited(_warmCurrentDirectoryVideoThumbnailsInBackground());
     } catch (e) {
       debugPrint('确保媒体表存在时出错: $e');
       setState(() {
@@ -604,10 +723,12 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
     try {
       if (!append) debugPrint('开始加载媒体项...');
-      
+
       // 非追加模式：检查并创建回收站/收藏夹（仅首次加载根目录时）
       if (!append && _currentDirectory == 'root') {
-        final recycleBinFolder = await _databaseService.getMediaItemById('recycle_bin');
+        final recycleBinFolder = await _databaseService.getMediaItemById(
+          'recycle_bin',
+        );
         debugPrint('检查回收站文件夹: ${recycleBinFolder != null ? '存在' : '不存在'}');
         if (recycleBinFolder == null) {
           debugPrint('创建回收站文件夹...');
@@ -622,9 +743,14 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           debugPrint('回收站文件夹创建成功');
         } else if ((recycleBinFolder['directory'] ?? '').toString() != 'root') {
           debugPrint('修复回收站目录为 root');
-          await _databaseService.updateMediaItemDirectory('recycle_bin', 'root');
+          await _databaseService.updateMediaItemDirectory(
+            'recycle_bin',
+            'root',
+          );
         }
-        final favoritesFolder = await _databaseService.getMediaItemById('favorites');
+        final favoritesFolder = await _databaseService.getMediaItemById(
+          'favorites',
+        );
         debugPrint('检查收藏夹: ${favoritesFolder != null ? '存在' : '不存在'}');
         if (favoritesFolder == null) {
           debugPrint('创建收藏夹...');
@@ -658,7 +784,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       );
       final total = await _databaseService.getMediaItemCount(_currentDirectory);
       final hasMore = offset + items.length < total;
-      debugPrint('从目录 $_currentDirectory 加载了 ${items.length} 个项目 (offset=$offset, total=$total, hasMore=$hasMore)');
+      debugPrint(
+        '从目录 $_currentDirectory 加载了 ${items.length} 个项目 (offset=$offset, total=$total, hasMore=$hasMore)',
+      );
 
       // 路径修复：跨设备导入后 path 可能指向旧设备，若文件不存在则尝试 media 目录按文件名查找
       final appDir = await getApplicationDocumentsDirectory();
@@ -677,18 +805,24 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       const batchSize = 30;
       for (var i = 0; i < toRepair.length; i += batchSize) {
         final batch = toRepair.skip(i).take(batchSize).toList();
-        final checks = await Future.wait(batch.map((item) async {
-          final oldPath = item['path']?.toString() ?? '';
-          final file = File(oldPath);
-          if (await file.exists()) return null;
-          final fileName = path.basename(oldPath);
-          final candidatePath = path.join(mediaDirPath, fileName);
-          if (await File(candidatePath).exists()) return (item, candidatePath);
-          return null;
-        }));
+        final checks = await Future.wait(
+          batch.map((item) async {
+            final oldPath = item['path']?.toString() ?? '';
+            final file = File(oldPath);
+            if (await file.exists()) return null;
+            final fileName = path.basename(oldPath);
+            final candidatePath = path.join(mediaDirPath, fileName);
+            if (await File(candidatePath).exists())
+              return (item, candidatePath);
+            return null;
+          }),
+        );
         for (var r in checks) {
           if (r != null) {
-            await _databaseService.updateMediaItemPath(r.$1['id'] as String, r.$2);
+            await _databaseService.updateMediaItemPath(
+              r.$1['id'] as String,
+              r.$2,
+            );
             r.$1['path'] = r.$2;
             debugPrint('路径已修复: ${r.$1['id']} -> ${r.$2}');
           }
@@ -696,7 +830,35 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       }
 
       // 更新状态
-      final newMediaItems = items.map((item) => MediaItem.fromMap(item)).toList();
+      final newMediaItems =
+          items.map((item) => MediaItem.fromMap(item)).toList();
+      final validVideoPaths =
+          newMediaItems
+              .where((i) => i.type == MediaType.video)
+              .map((i) => i.path)
+              .toSet();
+      _videoThumbnailFutureCache.removeWhere(
+        (videoPath, _) => !validVideoPaths.contains(videoPath),
+      );
+      _videoThumbnailFileCache.removeWhere(
+        (videoPath, _) => !validVideoPaths.contains(videoPath),
+      );
+      _thumbnailGenerationFailed.removeWhere(
+        (videoPath) => !validVideoPaths.contains(videoPath),
+      );
+      final validImagePaths =
+          newMediaItems
+              .where((i) => i.type == MediaType.image)
+              .map((i) => i.path)
+              .toSet();
+      _imageThumbnailPrefetching.removeWhere(
+        (imagePath) => !validImagePaths.contains(imagePath),
+      );
+      if (!append) {
+        _thumbnailPrefetchQueue.clear();
+        _thumbnailPrefetchQueued.clear();
+      }
+
       setState(() {
         if (append) {
           _mediaItems.addAll(newMediaItems);
@@ -709,10 +871,23 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         _hasMoreMediaItems = hasMore;
         _mediaItemsLoadOffset = offset + items.length;
         // 图片/视频数量：从当前已加载列表统计
-        _imageCount = _mediaItems.where((i) => i.type == MediaType.image).length;
-        _videoCount = _mediaItems.where((i) => i.type == MediaType.video).length;
+        _imageCount =
+            _mediaItems.where((i) => i.type == MediaType.image).length;
+        _videoCount =
+            _mediaItems.where((i) => i.type == MediaType.video).length;
       });
-      debugPrint('当前已加载 ${_mediaItems.length} 项，其中 $_imageCount 张图片、$_videoCount 个视频');
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _scheduleThumbnailPrefetch(includeBackground: true);
+        if (_lastImportCompletedAt != null &&
+            DateTime.now().difference(_lastImportCompletedAt!) <
+                const Duration(minutes: 2)) {
+          unawaited(_warmCurrentDirectoryVideoThumbnailsInBackground());
+        }
+      });
+      debugPrint(
+        '当前已加载 ${_mediaItems.length} 项，其中 $_imageCount 张图片、$_videoCount 个视频',
+      );
     } catch (e) {
       debugPrint('加载媒体项时出错: $e');
       setState(() {
@@ -720,10 +895,169 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         _isLoadingMore = false;
       });
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('加载媒体文件时出错。请重试。')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('加载媒体文件时出错。请重试。')));
       }
+    }
+  }
+
+  void _handleGridScroll() {
+    if (!_gridScrollController.hasClients || _isLoading) return;
+    _scheduleThumbnailPrefetch(includeBackground: false);
+  }
+
+  void _scheduleThumbnailPrefetch({required bool includeBackground}) {
+    _thumbnailPrefetchDebounce?.cancel();
+    _thumbnailPrefetchDebounce = Timer(
+      includeBackground
+          ? const Duration(milliseconds: 30)
+          : const Duration(milliseconds: 120),
+      () {
+        if (!mounted || _mediaItems.isEmpty) return;
+        unawaited(
+          _prefetchVisibleThumbnails(includeBackground: includeBackground),
+        );
+      },
+    );
+  }
+
+  Future<void> _prefetchVisibleThumbnails({
+    required bool includeBackground,
+  }) async {
+    final range = _computeVisibleItemRange();
+    if (range == null) return;
+
+    final visibleItems = _mediaItems
+        .skip(range.$1)
+        .take(range.$2 - range.$1 + 1)
+        .toList(growable: false);
+    _primeImageThumbnails(visibleItems);
+    _enqueueVideoThumbnailPrefetch(visibleItems, prioritize: true);
+
+    if (includeBackground) {
+      final backgroundItems = <MediaItem>[];
+      for (
+        int i = range.$2 + 1;
+        i < _mediaItems.length &&
+            backgroundItems.length < _thumbnailBackgroundBatchSize;
+        i++
+      ) {
+        backgroundItems.add(_mediaItems[i]);
+      }
+      if (backgroundItems.length < _thumbnailBackgroundBatchSize) {
+        for (
+          int i = 0;
+          i < range.$1 &&
+              backgroundItems.length < _thumbnailBackgroundBatchSize;
+          i++
+        ) {
+          backgroundItems.add(_mediaItems[i]);
+        }
+      }
+      _primeImageThumbnails(backgroundItems);
+      _enqueueVideoThumbnailPrefetch(backgroundItems, prioritize: false);
+    }
+
+    unawaited(_drainThumbnailPrefetchQueue());
+  }
+
+  (int, int)? _computeVisibleItemRange() {
+    if (_mediaItems.isEmpty) return null;
+
+    final viewportWidth =
+        _gridContainerKey.currentContext?.size?.width ??
+        MediaQuery.of(context).size.width;
+    final viewportHeight =
+        _gridScrollController.hasClients
+            ? _gridScrollController.position.viewportDimension
+            : MediaQuery.of(context).size.height;
+    if (viewportWidth <= 0 || viewportHeight <= 0) return null;
+
+    final tileWidth =
+        (viewportWidth -
+            (_gridPadding * 2) -
+            (_gridCrossAxisSpacing * (_gridCrossAxisCount - 1))) /
+        _gridCrossAxisCount;
+    if (tileWidth <= 0) return null;
+    final tileHeight =
+        (tileWidth / _gridChildAspectRatio) + _gridMainAxisSpacing;
+    final scrollOffset =
+        _gridScrollController.hasClients ? _gridScrollController.offset : 0.0;
+
+    final startRow = math.max(
+      0,
+      (scrollOffset / tileHeight).floor() -
+          _thumbnailVisiblePrefetchPaddingRows,
+    );
+    final endRow = math.max(
+      startRow,
+      ((scrollOffset + viewportHeight) / tileHeight).ceil() +
+          _thumbnailVisiblePrefetchPaddingRows,
+    );
+    final startIndex = math.max(0, startRow * _gridCrossAxisCount);
+    final endIndex = math.min(
+      _mediaItems.length - 1,
+      ((endRow + 1) * _gridCrossAxisCount) - 1,
+    );
+    return (startIndex, endIndex);
+  }
+
+  void _primeImageThumbnails(Iterable<MediaItem> items) {
+    for (final item in items) {
+      if (item.type != MediaType.image || item.path.isEmpty) continue;
+      if (_imageThumbnailPrefetching.contains(item.path)) continue;
+      _imageThumbnailPrefetching.add(item.path);
+      final provider = _buildImageThumbnailProvider(item.path);
+      unawaited(
+        precacheImage(provider, context).catchError((_) {}).whenComplete(() {
+          _imageThumbnailPrefetching.remove(item.path);
+        }),
+      );
+    }
+  }
+
+  void _enqueueVideoThumbnailPrefetch(
+    Iterable<MediaItem> items, {
+    required bool prioritize,
+  }) {
+    for (final item in items) {
+      if (item.type != MediaType.video || item.path.isEmpty) continue;
+      if (_videoThumbnailFileCache.containsKey(item.path)) continue;
+      if (_thumbnailGenerationFailed.contains(item.path)) continue;
+      if (_thumbnailPrefetchQueued.contains(item.path)) continue;
+      if (_videoThumbnailFutureCache.containsKey(item.path)) continue;
+
+      if (prioritize) {
+        _thumbnailPrefetchQueue.addFirst(item.path);
+      } else {
+        _thumbnailPrefetchQueue.addLast(item.path);
+      }
+      _thumbnailPrefetchQueued.add(item.path);
+    }
+
+    while (_thumbnailPrefetchQueue.length > _thumbnailQueueTrimSize) {
+      final removed = _thumbnailPrefetchQueue.removeLast();
+      _thumbnailPrefetchQueued.remove(removed);
+    }
+  }
+
+  Future<void> _drainThumbnailPrefetchQueue() async {
+    if (_isThumbnailPrefetchRunning) return;
+    _isThumbnailPrefetchRunning = true;
+    try {
+      while (mounted && _thumbnailPrefetchQueue.isNotEmpty) {
+        final videoPath = _thumbnailPrefetchQueue.removeFirst();
+        _thumbnailPrefetchQueued.remove(videoPath);
+        if (_videoThumbnailFileCache.containsKey(videoPath) ||
+            _thumbnailGenerationFailed.contains(videoPath)) {
+          continue;
+        }
+        await _getOrCreateVideoThumbnailFuture(videoPath);
+        await Future<void>.delayed(const Duration(milliseconds: 8));
+      }
+    } finally {
+      _isThumbnailPrefetchRunning = false;
     }
   }
 
@@ -732,7 +1066,8 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     return items.any((item) {
       final typeIndex = item['type'] as int;
       if (typeIndex >= MediaType.values.length) return false;
-      return item['name'] == folderName && MediaType.values[typeIndex] == MediaType.folder;
+      return item['name'] == folderName &&
+          MediaType.values[typeIndex] == MediaType.folder;
     });
   }
 
@@ -761,8 +1096,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     } catch (e) {
       debugPrint('创建文件夹时出错: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('创建文件夹时出错: $e')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('创建文件夹时出错: $e')));
       }
     }
   }
@@ -770,18 +1106,20 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   void _showCreateFolderDialog() {
     showDialog(
       context: context,
-      builder: (context) => CreateFolderDialog(
-        onCreate: (name) {
-          _createFolder(name);
-        },
-      ),
+      builder:
+          (context) => CreateFolderDialog(
+            onCreate: (name) {
+              _createFolder(name);
+            },
+          ),
     );
   }
 
   Future<List<(File, MediaType)>> _pickMultipleMedia() async {
     try {
       debugPrint('开始加载媒体文件（图片+视频）...');
-      final List<AssetPathEntity> paths = await getMergedAlbumPathListForImport();
+      final List<AssetPathEntity> paths =
+          await getMergedAlbumPathListForImport();
       debugPrint('找到 ${paths.length} 个媒体路径（已合并相册列表）');
       if (paths.isEmpty) {
         if (mounted) {
@@ -803,7 +1141,8 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       for (final asset in selected) {
         final file = await asset.file;
         if (file != null) {
-          final mediaType = asset.type == AssetType.image ? MediaType.image : MediaType.video;
+          final mediaType =
+              asset.type == AssetType.image ? MediaType.image : MediaType.video;
           result.add((file, mediaType));
         }
       }
@@ -811,9 +1150,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     } catch (e) {
       debugPrint('选择媒体时出错: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('加载媒体文件时出错: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('加载媒体文件时出错: $e')));
       }
       return [];
     }
@@ -853,7 +1192,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       });
 
       debugPrint('总共找到 ${allImages.length} 个唯一图片（按时间从新到旧）');
-      List<AssetEntity> selectedImages = await _showImageSelectionDialog(allImages);
+      List<AssetEntity> selectedImages = await _showImageSelectionDialog(
+        allImages,
+      );
       if (selectedImages.isEmpty) return [];
 
       List<File> imageFiles = [];
@@ -865,15 +1206,17 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     } catch (e) {
       debugPrint('选择图片时出错: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('加载图片时出错: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('加载图片时出错: $e')));
       }
       return [];
     }
   }
 
-  Future<List<AssetEntity>> _showImageSelectionDialog(List<AssetEntity> images) async {
+  Future<List<AssetEntity>> _showImageSelectionDialog(
+    List<AssetEntity> images,
+  ) async {
     List<AssetEntity> selected = [];
     bool isSelecting = false;
     bool isDragSelecting = false;
@@ -898,17 +1241,29 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       if (box == null || !box.hasSize) return null;
       final local = box.globalToLocal(globalPosition);
       final w = box.size.width - padding * 2;
-      final cellWidth = (w - (crossAxisCount - 1) * crossAxisSpacing) / crossAxisCount;
+      final cellWidth =
+          (w - (crossAxisCount - 1) * crossAxisSpacing) / crossAxisCount;
       final cellHeight = cellWidth / childAspectRatio;
       final contentX = local.dx - padding;
       final contentY = local.dy - padding + scrollController.offset;
       if (contentX < 0 || contentY < 0) return null;
-      final col = (contentX / (cellWidth + crossAxisSpacing)).floor().clamp(0, crossAxisCount - 1);
-      final row = (contentY / (cellHeight + mainAxisSpacing)).floor().clamp(0, 999999);
+      final col = (contentX / (cellWidth + crossAxisSpacing)).floor().clamp(
+        0,
+        crossAxisCount - 1,
+      );
+      final row = (contentY / (cellHeight + mainAxisSpacing)).floor().clamp(
+        0,
+        999999,
+      );
       return (col, row);
     }
 
-    List<int> getIndicesInRectangle(int startCol, int startRow, int endCol, int endRow) {
+    List<int> getIndicesInRectangle(
+      int startCol,
+      int startRow,
+      int endCol,
+      int endRow,
+    ) {
       final minCol = startCol < endCol ? startCol : endCol;
       final maxCol = startCol > endCol ? startCol : endCol;
       final minRow = startRow < endRow ? startRow : endRow;
@@ -924,191 +1279,237 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
     await showDialog(
       context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) => Dialog(
-          insetPadding: EdgeInsets.zero,
-          child: SizedBox(
-            width: screenSize.width,
-            height: screenSize.height * 0.9,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Padding(
-                  padding: EdgeInsets.all(8.0),
-                  child: Text('选择图片（按时间从新到旧）', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                ),
-                Expanded(
-                  child: Listener(
-                    key: gridKey,
-                    behavior: HitTestBehavior.translucent,
-                    onPointerDown: (e) {
-                      scrollOffsetBeforeGesture = scrollController.offset;
-                      gestureCommitted = null;
-                      final startCr = getGridColRow(e.position);
-                      if (startCr != null) {
-                        final startIdx = startCr.$2 * crossAxisCount + startCr.$1;
-                        if (startIdx >= 0 && startIdx < images.length) {
-                          final asset = images[startIdx];
-                          hasDragMoved = false;
-                          dragStartPosition = e.position;
-                          dragStartColRow = startCr;
-                          dragIsDeselectMode = selected.contains(asset);
-                        }
-                      }
-                    },
-                    onPointerMove: (e) {
-                      if (dragStartColRow != null && dragStartPosition != null) {
-                        final dx = e.position.dx - dragStartPosition!.dx;
-                        final dy = e.position.dy - dragStartPosition!.dy;
-                        if (gestureCommitted == null) {
-                          final dist = math.sqrt(dx * dx + dy * dy);
-                          if (dist > dragThreshold) {
-                            if (dx.abs() > dy.abs()) {
-                              gestureCommitted = 'selection';
-                              isDragSelecting = true;
-                              hasDragMoved = true;
-                              setDialogState(() {});
-                              WidgetsBinding.instance.addPostFrameCallback((_) {
-                                if (scrollController.hasClients) {
-                                  scrollController.jumpTo(scrollOffsetBeforeGesture);
-                                }
-                              });
-                            } else {
-                              gestureCommitted = 'scroll';
-                            }
-                          }
-                        }
-                      }
-                      if (isDragSelecting && dragStartColRow != null) {
-                        if (!hasDragMoved) {
-                          final dx = e.position.dx - (dragStartPosition?.dx ?? 0);
-                          final dy = e.position.dy - (dragStartPosition?.dy ?? 0);
-                          final dist = math.sqrt(dx * dx + dy * dy);
-                          if (dist < dragThreshold) return;
-                          hasDragMoved = true;
-                        }
-                        final curCr = getGridColRow(e.position);
-                        if (curCr != null) {
-                          final indices = getIndicesInRectangle(
-                            dragStartColRow!.$1, dragStartColRow!.$2,
-                            curCr.$1, curCr.$2,
-                          );
-                          setDialogState(() {
-                            for (final idx in indices) {
-                              if (idx >= 0 && idx < images.length) {
-                                final asset = images[idx];
-                                if (dragIsDeselectMode) {
-                                  selected.remove(asset);
-                                } else if (!selected.contains(asset)) {
-                                  selected.add(asset);
-                                }
-                              }
-                            }
-                          });
-                        }
-                      }
-                    },
-                    onPointerUp: (_) {
-                      if (isDragSelecting) {
-                        isDragSelecting = false;
-                        gestureCommitted = null;
-                        setDialogState(() {});
-                      } else {
-                        gestureCommitted = null;
-                      }
-                    },
-                    onPointerCancel: (_) {
-                      if (isDragSelecting) {
-                        isDragSelecting = false;
-                        gestureCommitted = null;
-                        setDialogState(() {});
-                      } else {
-                        gestureCommitted = null;
-                      }
-                    },
-                    child: Builder(
-                      builder: (ctx) => ScrollConfiguration(
-                        behavior: ScrollConfiguration.of(ctx).copyWith(
-                          physics: isDragSelecting
-                              ? const NeverScrollableScrollPhysics()
-                              : const ClampingScrollPhysics(),
-                        ),
-                        child: GridView.builder(
-                          controller: scrollController,
-                          padding: const EdgeInsets.all(4.0),
-                          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                            crossAxisCount: 4,
-                            childAspectRatio: 1,
-                            crossAxisSpacing: 4,
-                            mainAxisSpacing: 4,
+      builder:
+          (context) => StatefulBuilder(
+            builder:
+                (context, setDialogState) => Dialog(
+                  insetPadding: EdgeInsets.zero,
+                  child: SizedBox(
+                    width: screenSize.width,
+                    height: screenSize.height * 0.9,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Padding(
+                          padding: EdgeInsets.all(8.0),
+                          child: Text(
+                            '选择图片（按时间从新到旧）',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
                           ),
-                          itemCount: images.length,
-                          itemBuilder: (context, index) {
-                        final image = images[index];
-                        final isSelected = selected.contains(image);
-                        return GestureDetector(
-                          onTap: () {
-                            setDialogState(() {
-                              if (isSelected) {
-                                selected.remove(image);
-                              } else {
-                                selected.add(image);
+                        ),
+                        Expanded(
+                          child: Listener(
+                            key: gridKey,
+                            behavior: HitTestBehavior.translucent,
+                            onPointerDown: (e) {
+                              scrollOffsetBeforeGesture =
+                                  scrollController.offset;
+                              gestureCommitted = null;
+                              final startCr = getGridColRow(e.position);
+                              if (startCr != null) {
+                                final startIdx =
+                                    startCr.$2 * crossAxisCount + startCr.$1;
+                                if (startIdx >= 0 && startIdx < images.length) {
+                                  final asset = images[startIdx];
+                                  hasDragMoved = false;
+                                  dragStartPosition = e.position;
+                                  dragStartColRow = startCr;
+                                  dragIsDeselectMode = selected.contains(asset);
+                                }
                               }
-                            });
-                          },
-                          child: Stack(
-                            fit: StackFit.expand,
-                            children: [
-                              FutureBuilder<Uint8List?>(
-                                future: image.thumbnailDataWithSize(const ThumbnailSize(200, 200)),
-                                builder: (context, snapshot) {
-                                  if (snapshot.hasData && snapshot.data != null) {
-                                    return Image.memory(
-                                      snapshot.data!,
-                                      fit: BoxFit.cover,
-                                      width: double.infinity,
-                                      height: double.infinity,
-                                    );
+                            },
+                            onPointerMove: (e) {
+                              if (dragStartColRow != null &&
+                                  dragStartPosition != null) {
+                                final dx =
+                                    e.position.dx - dragStartPosition!.dx;
+                                final dy =
+                                    e.position.dy - dragStartPosition!.dy;
+                                if (gestureCommitted == null) {
+                                  final dist = math.sqrt(dx * dx + dy * dy);
+                                  if (dist > dragThreshold) {
+                                    if (dx.abs() > dy.abs()) {
+                                      gestureCommitted = 'selection';
+                                      isDragSelecting = true;
+                                      hasDragMoved = true;
+                                      setDialogState(() {});
+                                      WidgetsBinding.instance
+                                          .addPostFrameCallback((_) {
+                                            if (scrollController.hasClients) {
+                                              scrollController.jumpTo(
+                                                scrollOffsetBeforeGesture,
+                                              );
+                                            }
+                                          });
+                                    } else {
+                                      gestureCommitted = 'scroll';
+                                    }
                                   }
-                                  return const Center(child: CircularProgressIndicator());
-                                },
+                                }
+                              }
+                              if (isDragSelecting && dragStartColRow != null) {
+                                if (!hasDragMoved) {
+                                  final dx =
+                                      e.position.dx -
+                                      (dragStartPosition?.dx ?? 0);
+                                  final dy =
+                                      e.position.dy -
+                                      (dragStartPosition?.dy ?? 0);
+                                  final dist = math.sqrt(dx * dx + dy * dy);
+                                  if (dist < dragThreshold) return;
+                                  hasDragMoved = true;
+                                }
+                                final curCr = getGridColRow(e.position);
+                                if (curCr != null) {
+                                  final indices = getIndicesInRectangle(
+                                    dragStartColRow!.$1,
+                                    dragStartColRow!.$2,
+                                    curCr.$1,
+                                    curCr.$2,
+                                  );
+                                  setDialogState(() {
+                                    for (final idx in indices) {
+                                      if (idx >= 0 && idx < images.length) {
+                                        final asset = images[idx];
+                                        if (dragIsDeselectMode) {
+                                          selected.remove(asset);
+                                        } else if (!selected.contains(asset)) {
+                                          selected.add(asset);
+                                        }
+                                      }
+                                    }
+                                  });
+                                }
+                              }
+                            },
+                            onPointerUp: (_) {
+                              if (isDragSelecting) {
+                                isDragSelecting = false;
+                                gestureCommitted = null;
+                                setDialogState(() {});
+                              } else {
+                                gestureCommitted = null;
+                              }
+                            },
+                            onPointerCancel: (_) {
+                              if (isDragSelecting) {
+                                isDragSelecting = false;
+                                gestureCommitted = null;
+                                setDialogState(() {});
+                              } else {
+                                gestureCommitted = null;
+                              }
+                            },
+                            child: Builder(
+                              builder:
+                                  (ctx) => ScrollConfiguration(
+                                    behavior: ScrollConfiguration.of(
+                                      ctx,
+                                    ).copyWith(
+                                      physics:
+                                          isDragSelecting
+                                              ? const NeverScrollableScrollPhysics()
+                                              : const ClampingScrollPhysics(),
+                                    ),
+                                    child: GridView.builder(
+                                      controller: scrollController,
+                                      padding: const EdgeInsets.all(4.0),
+                                      gridDelegate:
+                                          const SliverGridDelegateWithFixedCrossAxisCount(
+                                            crossAxisCount: 4,
+                                            childAspectRatio: 1,
+                                            crossAxisSpacing: 4,
+                                            mainAxisSpacing: 4,
+                                          ),
+                                      itemCount: images.length,
+                                      itemBuilder: (context, index) {
+                                        final image = images[index];
+                                        final isSelected = selected.contains(
+                                          image,
+                                        );
+                                        return GestureDetector(
+                                          onTap: () {
+                                            setDialogState(() {
+                                              if (isSelected) {
+                                                selected.remove(image);
+                                              } else {
+                                                selected.add(image);
+                                              }
+                                            });
+                                          },
+                                          child: Stack(
+                                            fit: StackFit.expand,
+                                            children: [
+                                              FutureBuilder<Uint8List?>(
+                                                future: image
+                                                    .thumbnailDataWithSize(
+                                                      const ThumbnailSize(
+                                                        200,
+                                                        200,
+                                                      ),
+                                                    ),
+                                                builder: (context, snapshot) {
+                                                  if (snapshot.hasData &&
+                                                      snapshot.data != null) {
+                                                    return Image.memory(
+                                                      snapshot.data!,
+                                                      fit: BoxFit.cover,
+                                                      width: double.infinity,
+                                                      height: double.infinity,
+                                                    );
+                                                  }
+                                                  return const Center(
+                                                    child:
+                                                        CircularProgressIndicator(),
+                                                  );
+                                                },
+                                              ),
+                                              if (isSelected)
+                                                const Positioned(
+                                                  top: 4,
+                                                  right: 4,
+                                                  child: Icon(
+                                                    Icons.check_circle,
+                                                    color: Colors.green,
+                                                    size: 24,
+                                                  ),
+                                                ),
+                                            ],
+                                          ),
+                                        );
+                                      },
+                                    ),
+                                  ),
+                            ),
+                          ),
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.all(8.0),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.end,
+                            children: [
+                              TextButton(
+                                onPressed: () => Navigator.pop(context),
+                                child: const Text('取消'),
                               ),
-                              if (isSelected)
-                                const Positioned(
-                                  top: 4,
-                                  right: 4,
-                                  child: Icon(Icons.check_circle, color: Colors.green, size: 24),
-                                ),
+                              TextButton(
+                                onPressed: () {
+                                  isSelecting = true;
+                                  Navigator.pop(context);
+                                },
+                                child: const Text('确定'),
+                              ),
                             ],
                           ),
-                        );
-                      },
+                        ),
+                      ],
                     ),
                   ),
                 ),
-              ),
-            ),
-                Padding(
-                  padding: const EdgeInsets.all(8.0),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
-                      TextButton(
-                        onPressed: () {
-                          isSelecting = true;
-                          Navigator.pop(context);
-                        },
-                        child: const Text('确定'),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
           ),
-        ),
-      ),
     );
 
     return isSelecting ? selected : [];
@@ -1156,7 +1557,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
       debugPrint('总共找到 ${allVideos.length} 个唯一视频');
 
-      List<AssetEntity> selectedVideos = await _showVideoSelectionDialog(allVideos);
+      List<AssetEntity> selectedVideos = await _showVideoSelectionDialog(
+        allVideos,
+      );
       debugPrint('用户选择了 ${selectedVideos.length} 个视频');
       if (selectedVideos.isEmpty) return [];
 
@@ -1176,15 +1579,17 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     } catch (e) {
       debugPrint('选择视频时出错: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('加载视频文件时出错: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('加载视频文件时出错: $e')));
       }
       return [];
     }
   }
 
-  Future<List<AssetEntity>> _showVideoSelectionDialog(List<AssetEntity> videos) async {
+  Future<List<AssetEntity>> _showVideoSelectionDialog(
+    List<AssetEntity> videos,
+  ) async {
     List<AssetEntity> selected = [];
     bool isSelecting = false;
     bool isDragSelecting = false;
@@ -1209,17 +1614,29 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       if (box == null || !box.hasSize) return null;
       final local = box.globalToLocal(globalPosition);
       final w = box.size.width - padding * 2;
-      final cellWidth = (w - (crossAxisCount - 1) * crossAxisSpacing) / crossAxisCount;
+      final cellWidth =
+          (w - (crossAxisCount - 1) * crossAxisSpacing) / crossAxisCount;
       final cellHeight = cellWidth / childAspectRatio;
       final contentX = local.dx - padding;
       final contentY = local.dy - padding + scrollController.offset;
       if (contentX < 0 || contentY < 0) return null;
-      final col = (contentX / (cellWidth + crossAxisSpacing)).floor().clamp(0, crossAxisCount - 1);
-      final row = (contentY / (cellHeight + mainAxisSpacing)).floor().clamp(0, 999999);
+      final col = (contentX / (cellWidth + crossAxisSpacing)).floor().clamp(
+        0,
+        crossAxisCount - 1,
+      );
+      final row = (contentY / (cellHeight + mainAxisSpacing)).floor().clamp(
+        0,
+        999999,
+      );
       return (col, row);
     }
 
-    List<int> getIndicesInRectangle(int startCol, int startRow, int endCol, int endRow) {
+    List<int> getIndicesInRectangle(
+      int startCol,
+      int startRow,
+      int endCol,
+      int endRow,
+    ) {
       final minCol = startCol < endCol ? startCol : endCol;
       final maxCol = startCol > endCol ? startCol : endCol;
       final minRow = startRow < endRow ? startRow : endRow;
@@ -1235,212 +1652,258 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
     await showDialog(
       context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) => Dialog(
-          insetPadding: EdgeInsets.zero,
-          child: SizedBox(
-            width: screenSize.width,
-            height: screenSize.height * 0.9,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Padding(
-                  padding: EdgeInsets.all(8.0),
-                  child: Text('选择视频', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                ),
-                Expanded(
-                  child: Listener(
-                    key: gridKey,
-                    behavior: HitTestBehavior.translucent,
-                    onPointerDown: (e) {
-                      scrollOffsetBeforeGesture = scrollController.offset;
-                      gestureCommitted = null;
-                      final startCr = getGridColRow(e.position);
-                      if (startCr != null) {
-                        final startIdx = startCr.$2 * crossAxisCount + startCr.$1;
-                        if (startIdx >= 0 && startIdx < videos.length) {
-                          final asset = videos[startIdx];
-                          hasDragMoved = false;
-                          dragStartPosition = e.position;
-                          dragStartColRow = startCr;
-                          dragIsDeselectMode = selected.contains(asset);
-                        }
-                      }
-                    },
-                    onPointerMove: (e) {
-                      if (dragStartColRow != null && dragStartPosition != null) {
-                        final dx = e.position.dx - dragStartPosition!.dx;
-                        final dy = e.position.dy - dragStartPosition!.dy;
-                        if (gestureCommitted == null) {
-                          final dist = math.sqrt(dx * dx + dy * dy);
-                          if (dist > dragThreshold) {
-                            if (dx.abs() > dy.abs()) {
-                              gestureCommitted = 'selection';
-                              isDragSelecting = true;
-                              hasDragMoved = true;
-                              setDialogState(() {});
-                              WidgetsBinding.instance.addPostFrameCallback((_) {
-                                if (scrollController.hasClients) {
-                                  scrollController.jumpTo(scrollOffsetBeforeGesture);
-                                }
-                              });
-                            } else {
-                              gestureCommitted = 'scroll';
-                            }
-                          }
-                        }
-                      }
-                      if (isDragSelecting && dragStartColRow != null) {
-                        if (!hasDragMoved) {
-                          final dx = e.position.dx - (dragStartPosition?.dx ?? 0);
-                          final dy = e.position.dy - (dragStartPosition?.dy ?? 0);
-                          final dist = math.sqrt(dx * dx + dy * dy);
-                          if (dist < dragThreshold) return;
-                          hasDragMoved = true;
-                        }
-                        final curCr = getGridColRow(e.position);
-                        if (curCr != null) {
-                          final indices = getIndicesInRectangle(
-                            dragStartColRow!.$1, dragStartColRow!.$2,
-                            curCr.$1, curCr.$2,
-                          );
-                          setDialogState(() {
-                            for (final idx in indices) {
-                              if (idx >= 0 && idx < videos.length) {
-                                final asset = videos[idx];
-                                if (dragIsDeselectMode) {
-                                  selected.remove(asset);
-                                } else if (!selected.contains(asset)) {
-                                  selected.add(asset);
-                                }
-                              }
-                            }
-                          });
-                        }
-                      }
-                    },
-                    onPointerUp: (_) {
-                      if (isDragSelecting) {
-                        isDragSelecting = false;
-                        gestureCommitted = null;
-                        setDialogState(() {});
-                      } else {
-                        gestureCommitted = null;
-                      }
-                    },
-                    onPointerCancel: (_) {
-                      if (isDragSelecting) {
-                        isDragSelecting = false;
-                        gestureCommitted = null;
-                        setDialogState(() {});
-                      } else {
-                        gestureCommitted = null;
-                      }
-                    },
-                    child: Builder(
-                      builder: (ctx) => ScrollConfiguration(
-                        behavior: ScrollConfiguration.of(ctx).copyWith(
-                          physics: isDragSelecting
-                              ? const NeverScrollableScrollPhysics()
-                              : const ClampingScrollPhysics(),
-                        ),
-                        child: GridView.builder(
-                          controller: scrollController,
-                          padding: const EdgeInsets.all(4.0),
-                          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                            crossAxisCount: 4,
-                            childAspectRatio: 1,
-                            crossAxisSpacing: 4,
-                            mainAxisSpacing: 4,
+      builder:
+          (context) => StatefulBuilder(
+            builder:
+                (context, setDialogState) => Dialog(
+                  insetPadding: EdgeInsets.zero,
+                  child: SizedBox(
+                    width: screenSize.width,
+                    height: screenSize.height * 0.9,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Padding(
+                          padding: EdgeInsets.all(8.0),
+                          child: Text(
+                            '选择视频',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
                           ),
-                          itemCount: videos.length,
-                          itemBuilder: (context, index) {
-                        final video = videos[index];
-                        final isSelected = selected.contains(video);
-                        return GestureDetector(
-                          onTap: () {
-                            setDialogState(() {
-                              if (isSelected) {
-                                selected.remove(video);
-                              } else {
-                                selected.add(video);
+                        ),
+                        Expanded(
+                          child: Listener(
+                            key: gridKey,
+                            behavior: HitTestBehavior.translucent,
+                            onPointerDown: (e) {
+                              scrollOffsetBeforeGesture =
+                                  scrollController.offset;
+                              gestureCommitted = null;
+                              final startCr = getGridColRow(e.position);
+                              if (startCr != null) {
+                                final startIdx =
+                                    startCr.$2 * crossAxisCount + startCr.$1;
+                                if (startIdx >= 0 && startIdx < videos.length) {
+                                  final asset = videos[startIdx];
+                                  hasDragMoved = false;
+                                  dragStartPosition = e.position;
+                                  dragStartColRow = startCr;
+                                  dragIsDeselectMode = selected.contains(asset);
+                                }
                               }
-                            });
-                          },
-                          child: Stack(
-                            fit: StackFit.expand,
-                            children: [
-                              FutureBuilder<Uint8List?>(
-                                future: video.thumbnailDataWithSize(
-                                  const ThumbnailSize(200, 200),
-                                ),
-                                builder: (context, snapshot) {
-                                  if (snapshot.hasData && snapshot.data != null) {
-                                    return Image.memory(
-                                      snapshot.data!,
-                                      fit: BoxFit.cover,
-                                      width: double.infinity,
-                                      height: double.infinity,
-                                    );
+                            },
+                            onPointerMove: (e) {
+                              if (dragStartColRow != null &&
+                                  dragStartPosition != null) {
+                                final dx =
+                                    e.position.dx - dragStartPosition!.dx;
+                                final dy =
+                                    e.position.dy - dragStartPosition!.dy;
+                                if (gestureCommitted == null) {
+                                  final dist = math.sqrt(dx * dx + dy * dy);
+                                  if (dist > dragThreshold) {
+                                    if (dx.abs() > dy.abs()) {
+                                      gestureCommitted = 'selection';
+                                      isDragSelecting = true;
+                                      hasDragMoved = true;
+                                      setDialogState(() {});
+                                      WidgetsBinding.instance
+                                          .addPostFrameCallback((_) {
+                                            if (scrollController.hasClients) {
+                                              scrollController.jumpTo(
+                                                scrollOffsetBeforeGesture,
+                                              );
+                                            }
+                                          });
+                                    } else {
+                                      gestureCommitted = 'scroll';
+                                    }
                                   }
-                                  return const Center(child: CircularProgressIndicator());
-                                },
+                                }
+                              }
+                              if (isDragSelecting && dragStartColRow != null) {
+                                if (!hasDragMoved) {
+                                  final dx =
+                                      e.position.dx -
+                                      (dragStartPosition?.dx ?? 0);
+                                  final dy =
+                                      e.position.dy -
+                                      (dragStartPosition?.dy ?? 0);
+                                  final dist = math.sqrt(dx * dx + dy * dy);
+                                  if (dist < dragThreshold) return;
+                                  hasDragMoved = true;
+                                }
+                                final curCr = getGridColRow(e.position);
+                                if (curCr != null) {
+                                  final indices = getIndicesInRectangle(
+                                    dragStartColRow!.$1,
+                                    dragStartColRow!.$2,
+                                    curCr.$1,
+                                    curCr.$2,
+                                  );
+                                  setDialogState(() {
+                                    for (final idx in indices) {
+                                      if (idx >= 0 && idx < videos.length) {
+                                        final asset = videos[idx];
+                                        if (dragIsDeselectMode) {
+                                          selected.remove(asset);
+                                        } else if (!selected.contains(asset)) {
+                                          selected.add(asset);
+                                        }
+                                      }
+                                    }
+                                  });
+                                }
+                              }
+                            },
+                            onPointerUp: (_) {
+                              if (isDragSelecting) {
+                                isDragSelecting = false;
+                                gestureCommitted = null;
+                                setDialogState(() {});
+                              } else {
+                                gestureCommitted = null;
+                              }
+                            },
+                            onPointerCancel: (_) {
+                              if (isDragSelecting) {
+                                isDragSelecting = false;
+                                gestureCommitted = null;
+                                setDialogState(() {});
+                              } else {
+                                gestureCommitted = null;
+                              }
+                            },
+                            child: Builder(
+                              builder:
+                                  (ctx) => ScrollConfiguration(
+                                    behavior: ScrollConfiguration.of(
+                                      ctx,
+                                    ).copyWith(
+                                      physics:
+                                          isDragSelecting
+                                              ? const NeverScrollableScrollPhysics()
+                                              : const ClampingScrollPhysics(),
+                                    ),
+                                    child: GridView.builder(
+                                      controller: scrollController,
+                                      padding: const EdgeInsets.all(4.0),
+                                      gridDelegate:
+                                          const SliverGridDelegateWithFixedCrossAxisCount(
+                                            crossAxisCount: 4,
+                                            childAspectRatio: 1,
+                                            crossAxisSpacing: 4,
+                                            mainAxisSpacing: 4,
+                                          ),
+                                      itemCount: videos.length,
+                                      itemBuilder: (context, index) {
+                                        final video = videos[index];
+                                        final isSelected = selected.contains(
+                                          video,
+                                        );
+                                        return GestureDetector(
+                                          onTap: () {
+                                            setDialogState(() {
+                                              if (isSelected) {
+                                                selected.remove(video);
+                                              } else {
+                                                selected.add(video);
+                                              }
+                                            });
+                                          },
+                                          child: Stack(
+                                            fit: StackFit.expand,
+                                            children: [
+                                              FutureBuilder<Uint8List?>(
+                                                future: video
+                                                    .thumbnailDataWithSize(
+                                                      const ThumbnailSize(
+                                                        200,
+                                                        200,
+                                                      ),
+                                                    ),
+                                                builder: (context, snapshot) {
+                                                  if (snapshot.hasData &&
+                                                      snapshot.data != null) {
+                                                    return Image.memory(
+                                                      snapshot.data!,
+                                                      fit: BoxFit.cover,
+                                                      width: double.infinity,
+                                                      height: double.infinity,
+                                                    );
+                                                  }
+                                                  return const Center(
+                                                    child:
+                                                        CircularProgressIndicator(),
+                                                  );
+                                                },
+                                              ),
+                                              if (isSelected)
+                                                const Positioned(
+                                                  top: 4,
+                                                  right: 4,
+                                                  child: Icon(
+                                                    Icons.check_circle,
+                                                    color: Colors.green,
+                                                    size: 24,
+                                                  ),
+                                                ),
+                                              Positioned(
+                                                bottom: 4,
+                                                left: 4,
+                                                child: Container(
+                                                  color: Colors.black54,
+                                                  padding: const EdgeInsets.all(
+                                                    2,
+                                                  ),
+                                                  child: Text(
+                                                    _formatDuration(
+                                                      Duration(
+                                                        seconds: video.duration,
+                                                      ),
+                                                    ),
+                                                    style: const TextStyle(
+                                                      color: Colors.white,
+                                                      fontSize: 12,
+                                                    ),
+                                                  ),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        );
+                                      },
+                                    ),
+                                  ),
+                            ),
+                          ),
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.all(8.0),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.end,
+                            children: [
+                              TextButton(
+                                onPressed: () => Navigator.pop(context),
+                                child: const Text('取消'),
                               ),
-                              if (isSelected)
-                                const Positioned(
-                                  top: 4,
-                                  right: 4,
-                                  child: Icon(
-                                    Icons.check_circle,
-                                    color: Colors.green,
-                                    size: 24,
-                                  ),
-                                ),
-                              Positioned(
-                                bottom: 4,
-                                left: 4,
-                                child: Container(
-                                  color: Colors.black54,
-                                  padding: const EdgeInsets.all(2),
-                                  child: Text(
-                                    _formatDuration(Duration(seconds: video.duration)),
-                                    style: const TextStyle(color: Colors.white, fontSize: 12),
-                                  ),
-                                ),
+                              TextButton(
+                                onPressed: () {
+                                  isSelecting = true;
+                                  Navigator.pop(context);
+                                },
+                                child: const Text('确定'),
                               ),
                             ],
                           ),
-                        );
-                      },
+                        ),
+                      ],
                     ),
                   ),
                 ),
-              ),
-            ),
-                Padding(
-                  padding: const EdgeInsets.all(8.0),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      TextButton(
-                        onPressed: () => Navigator.pop(context),
-                        child: const Text('取消'),
-                      ),
-                      TextButton(
-                        onPressed: () {
-                          isSelecting = true;
-                          Navigator.pop(context);
-                        },
-                        child: const Text('确定'),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
           ),
-        ),
-      ),
     );
 
     return isSelecting ? selected : [];
@@ -1465,28 +1928,34 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   }
 
   Future<void> _saveMultipleMediaToAppDirectory(
-      List<File> sourceFiles, MediaType type, {bool silent = false}) async {
+    List<File> sourceFiles,
+    MediaType type, {
+    bool silent = false,
+  }) async {
     final items = sourceFiles.map((f) => (f, type)).toList();
     await _saveMultipleMediaWithTypes(items, silent: silent);
   }
 
   Future<void> _saveMultipleMediaWithTypes(
-      List<(File, MediaType)> items, {bool silent = false}) async {
+    List<(File, MediaType)> items, {
+    bool silent = false,
+  }) async {
     if (items.isEmpty) return;
 
     if (!silent) {
       showDialog(
         context: context,
         barrierDismissible: false,
-        builder: (context) => const AlertDialog(
-          content: Row(
-            children: [
-              CircularProgressIndicator(),
-              SizedBox(width: 20),
-              Text('正在导入媒体...')
-            ],
-          ),
-        ),
+        builder:
+            (context) => const AlertDialog(
+              content: Row(
+                children: [
+                  CircularProgressIndicator(),
+                  SizedBox(width: 20),
+                  Text('正在导入媒体...'),
+                ],
+              ),
+            ),
       );
     }
 
@@ -1511,7 +1980,10 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         }
 
         // 检查是否存在重复文件（file_hash 优先，可识别同内容不同文件名）
-        final duplicate = await _databaseService.findDuplicateMediaItem(fileHash, fileName);
+        final duplicate = await _databaseService.findDuplicateMediaItem(
+          fileHash,
+          fileName,
+        );
         if (duplicate != null) {
           debugPrint('发现重复文件: ${duplicate['name']}');
           skippedCount++;
@@ -1524,9 +1996,12 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         await sourceFile.copy(destinationPath);
 
         // 插入前再次查重，防止并发导入时的竞态
-        final duplicateBeforeInsert = await _databaseService.findDuplicateMediaItem(fileHash, fileName);
+        final duplicateBeforeInsert = await _databaseService
+            .findDuplicateMediaItem(fileHash, fileName);
         if (duplicateBeforeInsert != null) {
-          try { await File(destinationPath).delete(); } catch (_) {}
+          try {
+            await File(destinationPath).delete();
+          } catch (_) {}
           debugPrint('插入前发现重复，已跳过: $fileName');
           skippedCount++;
           continue;
@@ -1540,11 +2015,11 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           directory: _currentDirectory,
           dateAdded: DateTime.now(),
         );
-        
+
         // 将文件哈希值添加到数据库记录中
         final mediaItemMap = mediaItem.toMap();
         mediaItemMap['file_hash'] = fileHash;
-        
+
         await _databaseService.insertMediaItem(mediaItemMap);
         importedCount++;
       }
@@ -1558,7 +2033,10 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           if (skippedCount > 0) parts.add('因重复跳过 $skippedCount 个');
           final msg = parts.isEmpty ? '无新文件导入（全部为重复）' : parts.join('，');
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('导入完成：$msg'), duration: const Duration(seconds: 4)),
+            SnackBar(
+              content: Text('导入完成：$msg'),
+              duration: const Duration(seconds: 4),
+            ),
           );
         }
       }
@@ -1567,8 +2045,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         if (!silent) Navigator.of(context).pop();
         debugPrint('批量导入媒体时出错: $e');
         if (!silent) {
-          ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('导入媒体文件时出错: $e')));
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('导入媒体文件时出错: $e')));
         }
       }
     }
@@ -1589,21 +2068,28 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   }
 
   Future<void> _deleteMediaItem(MediaItem item) async {
-    final shouldDelete = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('删除媒体'),
-        content: Text('确定要删除 "${item.name}" 吗？此操作不可撤销。'),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
-              child: const Text('取消')),
-          TextButton(
-              onPressed: () => Navigator.of(context).pop(true),
-              child: const Text('删除', style: TextStyle(color: Colors.red))),
-        ],
-      ),
-    ) ??
+    final shouldDelete =
+        await showDialog<bool>(
+          context: context,
+          builder:
+              (context) => AlertDialog(
+                title: const Text('删除媒体'),
+                content: Text('确定要删除 "${item.name}" 吗？此操作不可撤销。'),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(false),
+                    child: const Text('取消'),
+                  ),
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(true),
+                    child: const Text(
+                      '删除',
+                      style: TextStyle(color: Colors.red),
+                    ),
+                  ),
+                ],
+              ),
+        ) ??
         false;
 
     if (shouldDelete) {
@@ -1617,60 +2103,67 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           final file = File(item.path);
           if (await file.exists()) await file.delete();
         }
-        
+
         // 从数据库中删除
         await _databaseService.deleteMediaItem(item.id);
-        
+
         await _loadMediaItems();
+        _invalidMediaRetryCounts.remove(item.id);
+        _invalidMediaRetryCounts.remove(item.id);
       } catch (e) {
         debugPrint('删除媒体项时出错: $e');
         if (mounted) {
-          ScaffoldMessenger.of(context)
-              .showSnackBar(SnackBar(content: Text('删除媒体项时出错: $e')));
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('删除媒体项时出错: $e')));
         }
       }
     }
   }
 
   Future<void> _renameMediaItem(MediaItem item) async {
-    TextEditingController renameController =
-    TextEditingController(text: item.name);
+    TextEditingController renameController = TextEditingController(
+      text: item.name,
+    );
 
     final newName = await showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('重命名'),
-        content: TextField(
-          controller: renameController,
-          decoration: const InputDecoration(
-            labelText: '新名称',
-            border: OutlineInputBorder(),
+      builder:
+          (context) => AlertDialog(
+            title: const Text('重命名'),
+            content: TextField(
+              controller: renameController,
+              decoration: const InputDecoration(
+                labelText: '新名称',
+                border: OutlineInputBorder(),
+              ),
+              autofocus: true,
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('取消'),
+              ),
+              TextButton(
+                onPressed: () {
+                  final name = renameController.text.trim();
+                  if (name.isNotEmpty) {
+                    Navigator.pop(context, name);
+                  }
+                },
+                child: const Text('确定'),
+              ),
+            ],
           ),
-          autofocus: true,
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            onPressed: () {
-              final name = renameController.text.trim();
-              if (name.isNotEmpty) {
-                Navigator.pop(context, name);
-              }
-            },
-            child: const Text('确定'),
-          ),
-        ],
-      ),
     );
 
     if (newName != null && newName.isNotEmpty && newName != item.name) {
       try {
         final items = await _databaseService.getMediaItems(_currentDirectory);
-        if (items.any((existingItem) =>
-        existingItem['name'] == newName && existingItem['id'] != item.id)) {
+        if (items.any(
+          (existingItem) =>
+              existingItem['name'] == newName && existingItem['id'] != item.id,
+        )) {
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(content: Text('名称 "$newName" 已存在，请使用其他名称')),
@@ -1689,13 +2182,13 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         );
         await _databaseService.updateMediaItem(updatedItem.toMap());
         await _loadMediaItems();
-        if (mounted) {
-        }
+        if (mounted) {}
       } catch (e) {
         debugPrint('重命名媒体项时出错: $e');
         if (mounted) {
-          ScaffoldMessenger.of(context)
-              .showSnackBar(SnackBar(content: Text('重命名时出错: $e')));
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('重命名时出错: $e')));
         }
       }
     }
@@ -1704,24 +2197,25 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   Future<void> _moveMediaItem(MediaItem item, String targetDirectory) async {
     if (item.id == 'recycle_bin' || item.id == 'favorites') {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('回收站和收藏夹为系统文件夹，不可移动')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('回收站和收藏夹为系统文件夹，不可移动')));
       }
       return;
     }
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (context) => const AlertDialog(
-        content: Row(
-          children: [
-            CircularProgressIndicator(),
-            SizedBox(width: 20),
-            Text('正在移动媒体...')
-          ],
-        ),
-      ),
+      builder:
+          (context) => const AlertDialog(
+            content: Row(
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(width: 20),
+                Text('正在移动媒体...'),
+              ],
+            ),
+          ),
     );
 
     try {
@@ -1743,8 +2237,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       if (mounted) {
         Navigator.of(context).pop();
         debugPrint('移动媒体项时出错: $e');
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('移动媒体项时出错: $e')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('移动媒体项时出错: $e')));
       }
     }
   }
@@ -1761,8 +2256,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
   Future<void> _navigateUp() async {
     if (_currentDirectory != 'root') {
-      final parentDir =
-      await _databaseService.getMediaItemParentDirectory(_currentDirectory);
+      final parentDir = await _databaseService.getMediaItemParentDirectory(
+        _currentDirectory,
+      );
       setState(() {
         _currentDirectory = parentDir ?? 'root';
         _selectedItems.clear();
@@ -1789,11 +2285,13 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   void _selectAll() {
     setState(() {
       _isMultiSelectMode = true;
-      final selectableIds = _mediaItems
-          .where((item) => item.type != MediaType.folder)
-          .map((item) => item.id)
-          .toSet();
-      if (selectableIds.isNotEmpty && selectableIds.every((id) => _selectedItems.contains(id))) {
+      final selectableIds =
+          _mediaItems
+              .where((item) => item.type != MediaType.folder)
+              .map((item) => item.id)
+              .toSet();
+      if (selectableIds.isNotEmpty &&
+          selectableIds.every((id) => _selectedItems.contains(id))) {
         // 已全选，再次点击则取消全选
         _selectedItems.clear();
       } else {
@@ -1808,12 +2306,15 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   Future<void> _moveSelectedItems(String targetDirectory) async {
     if (_selectedItems.isEmpty) return;
     // 排除系统文件夹，不可移动
-    final idsToMove = _selectedItems.where((id) => id != 'recycle_bin' && id != 'favorites').toSet();
+    final idsToMove =
+        _selectedItems
+            .where((id) => id != 'recycle_bin' && id != 'favorites')
+            .toSet();
     if (idsToMove.isEmpty) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('回收站和收藏夹为系统文件夹，不可移动')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('回收站和收藏夹为系统文件夹，不可移动')));
       }
       return;
     }
@@ -1821,15 +2322,16 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (context) => const AlertDialog(
-        content: Row(
-          children: [
-            CircularProgressIndicator(),
-            SizedBox(width: 20),
-            Text('正在移动媒体...')
-          ],
-        ),
-      ),
+      builder:
+          (context) => const AlertDialog(
+            content: Row(
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(width: 20),
+                Text('正在移动媒体...'),
+              ],
+            ),
+          ),
     );
 
     try {
@@ -1860,8 +2362,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       if (mounted) {
         Navigator.of(context).pop();
         debugPrint('移动媒体项时出错: $e');
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('移动媒体项时出错: $e')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('移动媒体项时出错: $e')));
       }
     }
   }
@@ -1869,9 +2372,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   Future<void> _showMoveDialog({MediaItem? item}) async {
     if (item != null && (item.id == 'recycle_bin' || item.id == 'favorites')) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('回收站和收藏夹为系统文件夹，不可移动')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('回收站和收藏夹为系统文件夹，不可移动')));
       }
       return;
     }
@@ -1893,76 +2396,83 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
     showDialog(
       context: context,
-      builder: (context) => FutureBuilder<List<MediaItem>>(
-        future: _getAllAvailableFolders(
-          excludeFolderId: excludeId,
-          excludeCurrentDirectoryId: _currentDirectory,
-        ),
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const AlertDialog(
-                content: Row(children: [
-                  CircularProgressIndicator(),
-                  SizedBox(width: 20),
-                  Text('加载中...')
-                ]));
-          }
-          if (snapshot.hasError || !snapshot.hasData) {
-            return AlertDialog(
-              title: const Text('移动到'),
-              content: const Text('没有可用的目标文件夹。'),
-              actions: [
-                TextButton(
-                    onPressed: () => Navigator.pop(context),
-                    child: const Text('取消')),
-              ],
-            );
-          }
-
-          final folders = snapshot.data!;
-          return AlertDialog(
-            title: const Text('移动到'),
-            content: SingleChildScrollView(
-              child: Column(
-                children: [
-                  ListTile(
-                    title: const Text('根目录'),
-                    enabled: _currentDirectory != 'root',
-                    onTap: _currentDirectory != 'root'
-                        ? () {
-                      Navigator.of(context).pop();
-                      if (item != null) {
-                        _moveMediaItem(item, 'root');
-                      } else {
-                        _moveSelectedItems('root');
-                      }
-                    }
-                        : null,
-                  ),
-                  ...folders.map((folder) {
-                    return ListTile(
-                      title: Text(folder.name),
-                      onTap: () {
-                        Navigator.of(context).pop();
-                        if (item != null) {
-                          _moveMediaItem(item, folder.id);
-                        } else {
-                          _moveSelectedItems(folder.id);
-                        }
-                      },
-                    );
-                  }),
-                ],
-              ),
+      builder:
+          (context) => FutureBuilder<List<MediaItem>>(
+            future: _getAllAvailableFolders(
+              excludeFolderId: excludeId,
+              excludeCurrentDirectoryId: _currentDirectory,
             ),
-            actions: [
-              TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: const Text('取消')),
-            ],
-          );
-        },
-      ),
+            builder: (context, snapshot) {
+              if (snapshot.connectionState == ConnectionState.waiting) {
+                return const AlertDialog(
+                  content: Row(
+                    children: [
+                      CircularProgressIndicator(),
+                      SizedBox(width: 20),
+                      Text('加载中...'),
+                    ],
+                  ),
+                );
+              }
+              if (snapshot.hasError || !snapshot.hasData) {
+                return AlertDialog(
+                  title: const Text('移动到'),
+                  content: const Text('没有可用的目标文件夹。'),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: const Text('取消'),
+                    ),
+                  ],
+                );
+              }
+
+              final folders = snapshot.data!;
+              return AlertDialog(
+                title: const Text('移动到'),
+                content: SingleChildScrollView(
+                  child: Column(
+                    children: [
+                      ListTile(
+                        title: const Text('根目录'),
+                        enabled: _currentDirectory != 'root',
+                        onTap:
+                            _currentDirectory != 'root'
+                                ? () {
+                                  Navigator.of(context).pop();
+                                  if (item != null) {
+                                    _moveMediaItem(item, 'root');
+                                  } else {
+                                    _moveSelectedItems('root');
+                                  }
+                                }
+                                : null,
+                      ),
+                      ...folders.map((folder) {
+                        return ListTile(
+                          title: Text(folder.name),
+                          onTap: () {
+                            Navigator.of(context).pop();
+                            if (item != null) {
+                              _moveMediaItem(item, folder.id);
+                            } else {
+                              _moveSelectedItems(folder.id);
+                            }
+                          },
+                        );
+                      }),
+                    ],
+                  ),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('取消'),
+                  ),
+                ],
+              );
+            },
+          ),
     );
   }
 
@@ -1972,43 +2482,81 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   }) async {
     try {
       final rootItems = await _databaseService.getMediaItems('root');
-      final rootFolders = rootItems
-          .where((item) => item['type'] == MediaType.folder.index)
-          .map((item) => MediaItem.fromMap(item))
-          .toList();
+      final rootFolders =
+          rootItems
+              .where((item) => item['type'] == MediaType.folder.index)
+              .map((item) => MediaItem.fromMap(item))
+              .toList();
 
-      final currentFolders = _currentDirectory != 'root'
-          ? (await _databaseService.getMediaItems(_currentDirectory))
-          .where((item) => item['type'] == MediaType.folder.index)
-          .map((item) => MediaItem.fromMap(item))
-          .toList()
-          : <MediaItem>[];
+      final currentFolders =
+          _currentDirectory != 'root'
+              ? (await _databaseService.getMediaItems(_currentDirectory))
+                  .where((item) => item['type'] == MediaType.folder.index)
+                  .map((item) => MediaItem.fromMap(item))
+                  .toList()
+              : <MediaItem>[];
 
       // Remove Recycle Bin and Favorites from fetched folders if they are already there
-      final filteredRootFolders = rootFolders.where((folder) => folder.id != 'recycle_bin' && folder.id != 'favorites').toList();
-      final filteredCurrentFolders = currentFolders.where((folder) => folder.id != 'recycle_bin' && folder.id != 'favorites').toList();
+      final filteredRootFolders =
+          rootFolders
+              .where(
+                (folder) =>
+                    folder.id != 'recycle_bin' && folder.id != 'favorites',
+              )
+              .toList();
+      final filteredCurrentFolders =
+          currentFolders
+              .where(
+                (folder) =>
+                    folder.id != 'recycle_bin' && folder.id != 'favorites',
+              )
+              .toList();
 
       // Explicitly add Recycle Bin and Favorites, ensuring they are always available
-      final recycleBin = await _databaseService.getMediaItemById('recycle_bin') ??
-          <String, dynamic>{'id': 'recycle_bin', 'name': '回收站', 'path': '', 'type': MediaType.folder.index, 'directory': 'root', 'date_added': DateTime.now().toIso8601String()};
-      final favorites = await _databaseService.getMediaItemById('favorites') ??
-          <String, dynamic>{'id': 'favorites', 'name': '收藏夹', 'path': '', 'type': MediaType.folder.index, 'directory': 'root', 'date_added': DateTime.now().toIso8601String()};
+      final recycleBin =
+          await _databaseService.getMediaItemById('recycle_bin') ??
+          <String, dynamic>{
+            'id': 'recycle_bin',
+            'name': '回收站',
+            'path': '',
+            'type': MediaType.folder.index,
+            'directory': 'root',
+            'date_added': DateTime.now().toIso8601String(),
+          };
+      final favorites =
+          await _databaseService.getMediaItemById('favorites') ??
+          <String, dynamic>{
+            'id': 'favorites',
+            'name': '收藏夹',
+            'path': '',
+            'type': MediaType.folder.index,
+            'directory': 'root',
+            'date_added': DateTime.now().toIso8601String(),
+          };
 
-      final allFolders = <MediaItem>{}
-        ..addAll(filteredRootFolders)
-        ..addAll(filteredCurrentFolders)
-        ..add(MediaItem.fromMap(recycleBin))
-        ..add(MediaItem.fromMap(favorites));
+      final allFolders =
+          <MediaItem>{}
+            ..addAll(filteredRootFolders)
+            ..addAll(filteredCurrentFolders)
+            ..add(MediaItem.fromMap(recycleBin))
+            ..add(MediaItem.fromMap(favorites));
 
       // 排除正在移动的文件夹及其所有子文件夹（避免移入自身或子级导致循环）
       if (excludeFolderId != null) {
         final excludedSubfolders = await _getAllSubfolderIds(excludeFolderId);
-        allFolders.removeWhere((folder) => folder.id == excludeFolderId || excludedSubfolders.contains(folder.id));
+        allFolders.removeWhere(
+          (folder) =>
+              folder.id == excludeFolderId ||
+              excludedSubfolders.contains(folder.id),
+        );
       }
 
       // 排除当前所在文件夹（项目已在此文件夹内，无需再选）
-      if (excludeCurrentDirectoryId != null && excludeCurrentDirectoryId != 'root') {
-        allFolders.removeWhere((folder) => folder.id == excludeCurrentDirectoryId);
+      if (excludeCurrentDirectoryId != null &&
+          excludeCurrentDirectoryId != 'root') {
+        allFolders.removeWhere(
+          (folder) => folder.id == excludeCurrentDirectoryId,
+        );
       }
 
       return allFolders.toList();
@@ -2022,7 +2570,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   Future<Set<String>> _getAllSubfolderIds(String parentFolderId) async {
     Set<String> subfolderIds = {};
     try {
-      final itemsInParent = await _databaseService.getMediaItems(parentFolderId);
+      final itemsInParent = await _databaseService.getMediaItems(
+        parentFolderId,
+      );
       for (var item in itemsInParent) {
         if (item['type'] == MediaType.folder.index) {
           subfolderIds.add(item['id']);
@@ -2038,36 +2588,44 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   Future<void> _deleteSelectedItems() async {
     if (_selectedItems.isEmpty) return;
 
-    final shouldDelete = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('删除选定项'),
-        content: Text('确定要删除 ${_selectedItems.length} 个选定项吗？此操作不可撤销。'),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
-              child: const Text('取消')),
-          TextButton(
-              onPressed: () => Navigator.of(context).pop(true),
-              child: const Text('删除', style: TextStyle(color: Colors.red))),
-        ],
-      ),
-    ) ??
+    final shouldDelete =
+        await showDialog<bool>(
+          context: context,
+          builder:
+              (context) => AlertDialog(
+                title: const Text('删除选定项'),
+                content: Text('确定要删除 ${_selectedItems.length} 个选定项吗？此操作不可撤销。'),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(false),
+                    child: const Text('取消'),
+                  ),
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(true),
+                    child: const Text(
+                      '删除',
+                      style: TextStyle(color: Colors.red),
+                    ),
+                  ),
+                ],
+              ),
+        ) ??
         false;
 
     if (shouldDelete) {
       showDialog(
         context: context,
         barrierDismissible: false,
-        builder: (context) => const AlertDialog(
-          content: Row(
-            children: [
-              CircularProgressIndicator(),
-              SizedBox(width: 20),
-              Text('正在删除...')
-            ],
-          ),
-        ),
+        builder:
+            (context) => const AlertDialog(
+              content: Row(
+                children: [
+                  CircularProgressIndicator(),
+                  SizedBox(width: 20),
+                  Text('正在删除...'),
+                ],
+              ),
+            ),
       );
 
       try {
@@ -2098,8 +2656,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         if (mounted) {
           Navigator.of(context).pop();
           debugPrint('删除选定项时出错: $e');
-          ScaffoldMessenger.of(context)
-              .showSnackBar(SnackBar(content: Text('删除选定项时出错: $e')));
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('删除选定项时出错: $e')));
         }
       }
     }
@@ -2110,17 +2669,20 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
     if (_mediaItems.isEmpty) {
       return const Center(
-        child: Text('没有媒体文件', style: TextStyle(fontSize: 18, color: Colors.grey)),
+        child: Text(
+          '没有媒体文件',
+          style: TextStyle(fontSize: 18, color: Colors.grey),
+        ),
       );
     }
 
     if (!_mediaVisible) return Container();
 
-    const int crossAxisCount = 5;
-    const double childAspectRatio = 0.7;
-    const double crossAxisSpacing = 4;
-    const double mainAxisSpacing = 4;
-    const double padding = 4;
+    const int crossAxisCount = _gridCrossAxisCount;
+    const double childAspectRatio = _gridChildAspectRatio;
+    const double crossAxisSpacing = _gridCrossAxisSpacing;
+    const double mainAxisSpacing = _gridMainAxisSpacing;
+    const double padding = _gridPadding;
 
     return Listener(
       behavior: HitTestBehavior.translucent,
@@ -2128,7 +2690,14 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         if (_isMultiSelectMode && !_isDragSelecting) {
           _scrollOffsetBeforeGesture = _gridScrollController.offset;
           _gestureCommitted = null;
-          final startCr = _getGridColRow(e.position, crossAxisCount, childAspectRatio, crossAxisSpacing, mainAxisSpacing, padding);
+          final startCr = _getGridColRow(
+            e.position,
+            crossAxisCount,
+            childAspectRatio,
+            crossAxisSpacing,
+            mainAxisSpacing,
+            padding,
+          );
           if (startCr != null) {
             final startIdx = startCr.$2 * crossAxisCount + startCr.$1;
             if (startIdx >= 0 && startIdx < _mediaItems.length) {
@@ -2146,7 +2715,10 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         }
       },
       onPointerMove: (e) {
-        if (!_isMultiSelectMode || _dragStartColRow == null || _dragStartPosition == null) return;
+        if (!_isMultiSelectMode ||
+            _dragStartColRow == null ||
+            _dragStartPosition == null)
+          return;
         final dx = e.position.dx - _dragStartPosition!.dx;
         final dy = e.position.dy - _dragStartPosition!.dy;
         if (_gestureCommitted == null) {
@@ -2168,17 +2740,28 @@ class _MediaManagerPageState extends State<MediaManagerPage>
             }
           }
         }
-        if (_isMultiSelectMode && _isDragSelecting && _dragStartColRow != null) {
+        if (_isMultiSelectMode &&
+            _isDragSelecting &&
+            _dragStartColRow != null) {
           if (!_hasDragMoved) {
             final dist = math.sqrt(dx * dx + dy * dy);
             if (dist < _dragSelectThreshold) return;
             _hasDragMoved = true;
           }
-          final curCr = _getGridColRow(e.position, crossAxisCount, childAspectRatio, crossAxisSpacing, mainAxisSpacing, padding);
+          final curCr = _getGridColRow(
+            e.position,
+            crossAxisCount,
+            childAspectRatio,
+            crossAxisSpacing,
+            mainAxisSpacing,
+            padding,
+          );
           if (curCr != null) {
             final indices = _getIndicesInRectangle(
-              _dragStartColRow!.$1, _dragStartColRow!.$2,
-              curCr.$1, curCr.$2,
+              _dragStartColRow!.$1,
+              _dragStartColRow!.$2,
+              curCr.$1,
+              curCr.$2,
               crossAxisCount,
             );
             setState(() {
@@ -2224,33 +2807,34 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         },
         child: ScrollConfiguration(
           behavior: ScrollConfiguration.of(context).copyWith(
-            physics: _isDragSelecting
-                ? const NeverScrollableScrollPhysics()
-                : const ClampingScrollPhysics(),
+            physics:
+                _isDragSelecting
+                    ? const NeverScrollableScrollPhysics()
+                    : const ClampingScrollPhysics(),
           ),
           child: GridView.builder(
             controller: _gridScrollController,
             padding: EdgeInsets.only(
-            left: padding,
-            right: padding,
-            top: padding,
-            bottom: padding + (_selectedItems.isNotEmpty ? 56 : 0),
+              left: padding,
+              right: padding,
+              top: padding,
+              bottom: padding + (_selectedItems.isNotEmpty ? 56 : 0),
+            ),
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: crossAxisCount,
+              childAspectRatio: childAspectRatio,
+              crossAxisSpacing: crossAxisSpacing,
+              mainAxisSpacing: mainAxisSpacing,
+            ),
+            itemCount: _mediaItems.length + (_hasMoreMediaItems ? 1 : 0),
+            itemBuilder: (context, index) {
+              if (index >= _mediaItems.length) {
+                return _buildLoadMoreButton();
+              }
+              final item = _mediaItems[index];
+              return _buildMediaItem(item, index);
+            },
           ),
-          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: crossAxisCount,
-            childAspectRatio: childAspectRatio,
-            crossAxisSpacing: crossAxisSpacing,
-            mainAxisSpacing: mainAxisSpacing,
-          ),
-          itemCount: _mediaItems.length + (_hasMoreMediaItems ? 1 : 0),
-          itemBuilder: (context, index) {
-            if (index >= _mediaItems.length) {
-              return _buildLoadMoreButton();
-            }
-            final item = _mediaItems[index];
-            return _buildMediaItem(item, index);
-          },
-        ),
         ),
       ),
     );
@@ -2265,7 +2849,14 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     double mainAxisSpacing,
     double padding,
   ) {
-    final cr = _getGridColRow(globalPosition, crossAxisCount, childAspectRatio, crossAxisSpacing, mainAxisSpacing, padding);
+    final cr = _getGridColRow(
+      globalPosition,
+      crossAxisCount,
+      childAspectRatio,
+      crossAxisSpacing,
+      mainAxisSpacing,
+      padding,
+    );
     if (cr == null) return null;
     final idx = cr.$2 * crossAxisCount + cr.$1;
     return idx < _mediaItems.length ? idx : null;
@@ -2280,22 +2871,36 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     double mainAxisSpacing,
     double padding,
   ) {
-    final box = _gridContainerKey.currentContext?.findRenderObject() as RenderBox?;
+    final box =
+        _gridContainerKey.currentContext?.findRenderObject() as RenderBox?;
     if (box == null || !box.hasSize) return null;
     final local = box.globalToLocal(globalPosition);
     final w = box.size.width - padding * 2;
-    final cellWidth = (w - (crossAxisCount - 1) * crossAxisSpacing) / crossAxisCount;
+    final cellWidth =
+        (w - (crossAxisCount - 1) * crossAxisSpacing) / crossAxisCount;
     final cellHeight = cellWidth / childAspectRatio;
     final contentX = local.dx - padding;
     final contentY = local.dy - padding + _gridScrollController.offset;
     if (contentX < 0 || contentY < 0) return null;
-    final col = (contentX / (cellWidth + crossAxisSpacing)).floor().clamp(0, crossAxisCount - 1);
-    final row = (contentY / (cellHeight + mainAxisSpacing)).floor().clamp(0, 999999);
+    final col = (contentX / (cellWidth + crossAxisSpacing)).floor().clamp(
+      0,
+      crossAxisCount - 1,
+    );
+    final row = (contentY / (cellHeight + mainAxisSpacing)).floor().clamp(
+      0,
+      999999,
+    );
     return (col, row);
   }
 
   /// 获取矩形区域内所有可选的网格索引（7字形划选）
-  List<int> _getIndicesInRectangle(int startCol, int startRow, int endCol, int endRow, int crossAxisCount) {
+  List<int> _getIndicesInRectangle(
+    int startCol,
+    int startRow,
+    int endCol,
+    int endRow,
+    int crossAxisCount,
+  ) {
     final minCol = startCol < endCol ? startCol : endCol;
     final maxCol = startCol > endCol ? startCol : endCol;
     final minRow = startRow < endRow ? startRow : endRow;
@@ -2323,29 +2928,34 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         margin: const EdgeInsets.all(0),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
         child: Center(
-          child: _isLoadingMore
-              ? const Padding(
-                  padding: EdgeInsets.all(16),
-                  child: SizedBox(
-                    width: 24,
-                    height: 24,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
-                )
-              : Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.add_circle_outline, size: 32, color: Theme.of(context).colorScheme.primary),
-                    const SizedBox(height: 4),
-                    Text(
-                      '加载更多',
-                      style: TextStyle(
-                        fontSize: 12,
+          child:
+              _isLoadingMore
+                  ? const Padding(
+                    padding: EdgeInsets.all(16),
+                    child: SizedBox(
+                      width: 24,
+                      height: 24,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  )
+                  : Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        Icons.add_circle_outline,
+                        size: 32,
                         color: Theme.of(context).colorScheme.primary,
                       ),
-                    ),
-                  ],
-                ),
+                      const SizedBox(height: 4),
+                      Text(
+                        '加载更多',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                      ),
+                    ],
+                  ),
         ),
       ),
     );
@@ -2358,34 +2968,37 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
     return GestureDetector(
       key: ValueKey(item.id),
-      onTap: isSystemFolder
-          ? () => _navigateToFolder(item)
-          : (_isMultiSelectMode
-              ? () => _toggleItemSelection(item.id)
+      onTap:
+          isSystemFolder
+              ? () => _navigateToFolder(item)
+              : (_isMultiSelectMode
+                  ? () => _toggleItemSelection(item.id)
+                  : () {
+                    if (item.type == MediaType.folder) {
+                      _navigateToFolder(item);
+                    } else {
+                      _previewMediaItem(item);
+                    }
+                  }),
+      onLongPress:
+          isSystemFolder
+              ? () => _navigateToFolder(item)
               : () {
-                  if (item.type == MediaType.folder) {
-                    _navigateToFolder(item);
-                  } else {
-                    _previewMediaItem(item);
-                  }
-                }),
-      onLongPress: isSystemFolder
-          ? () => _navigateToFolder(item)
-          : () {
-              if (!_isMultiSelectMode) {
-                setState(() => _isMultiSelectMode = true);
-                widget.onMultiSelectModeChanged?.call(true);
-              }
-              _toggleItemSelection(item.id);
-            },
+                if (!_isMultiSelectMode) {
+                  setState(() => _isMultiSelectMode = true);
+                  widget.onMultiSelectModeChanged?.call(true);
+                }
+                _toggleItemSelection(item.id);
+              },
       child: Card(
         elevation: isLastViewed ? 6 : 2,
         margin: const EdgeInsets.all(0),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(6),
-          side: isLastViewed 
-              ? const BorderSide(color: Colors.blue, width: 2.0)
-              : BorderSide.none,
+          side:
+              isLastViewed
+                  ? const BorderSide(color: Colors.blue, width: 2.0)
+                  : BorderSide.none,
         ),
         child: Padding(
           padding: const EdgeInsets.all(2),
@@ -2397,7 +3010,10 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                 children: [
                   Expanded(child: _buildMediaThumbnail(item)),
                   Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 2),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 2,
+                      vertical: 2,
+                    ),
                     child: Text(
                       item.name,
                       maxLines: 1,
@@ -2413,7 +3029,10 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                   top: 2,
                   right: 2,
                   child: Container(
-                    constraints: const BoxConstraints(maxWidth: 24, maxHeight: 24),
+                    constraints: const BoxConstraints(
+                      maxWidth: 24,
+                      maxHeight: 24,
+                    ),
                     child: Checkbox(
                       value: isSelected,
                       onChanged: (value) => _toggleItemSelection(item.id),
@@ -2454,17 +3073,37 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                           _exportMediaItem(item);
                         }
                       },
-                      itemBuilder: (context) => [
-                        const PopupMenuItem(value: 'rename', child: Text('重命名')),
-                        const PopupMenuItem(value: 'move', child: Text('移动到')),
-                        if (item.type != MediaType.folder)
-                          const PopupMenuItem(value: 'export', child: Text('导出')),
-                        const PopupMenuItem(
-                            value: 'delete',
-                            child: Text('删除', style: TextStyle(color: Colors.red))),
-                        const PopupMenuItem(value: 'multi_select', child: Text('多选')),
-                        const PopupMenuItem(value: 'select_all', child: Text('全选')),
-                      ],
+                      itemBuilder:
+                          (context) => [
+                            const PopupMenuItem(
+                              value: 'rename',
+                              child: Text('重命名'),
+                            ),
+                            const PopupMenuItem(
+                              value: 'move',
+                              child: Text('移动到'),
+                            ),
+                            if (item.type != MediaType.folder)
+                              const PopupMenuItem(
+                                value: 'export',
+                                child: Text('导出'),
+                              ),
+                            const PopupMenuItem(
+                              value: 'delete',
+                              child: Text(
+                                '删除',
+                                style: TextStyle(color: Colors.red),
+                              ),
+                            ),
+                            const PopupMenuItem(
+                              value: 'multi_select',
+                              child: Text('多选'),
+                            ),
+                            const PopupMenuItem(
+                              value: 'select_all',
+                              child: Text('全选'),
+                            ),
+                          ],
                     ),
                   ),
                 ),
@@ -2476,9 +3115,13 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   }
 
   /// 文件夹缩略图底部显示媒体数量
-  Widget _buildFolderThumbnailWithCount({required Widget child, required String folderId}) {
+  Widget _buildFolderThumbnailWithCount({
+    required Widget child,
+    required String folderId,
+  }) {
     final isSystemFolder = folderId == 'recycle_bin' || folderId == 'favorites';
-    final countColor = isSystemFolder ? Colors.white : Colors.lightBlue.shade400;
+    final countColor =
+        isSystemFolder ? Colors.white : Colors.lightBlue.shade400;
     return Stack(
       fit: StackFit.expand,
       children: [
@@ -2489,7 +3132,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           bottom: 4,
           child: Center(
             child: FutureBuilder<int>(
-              future: _databaseService.getMediaItems(folderId).then((list) => list.length),
+              future: _databaseService
+                  .getMediaItems(folderId)
+                  .then((list) => list.length),
               builder: (context, snapshot) {
                 if (snapshot.hasData && snapshot.data != null) {
                   return Text(
@@ -2513,9 +3158,16 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   Widget _buildMediaThumbnail(MediaItem item) {
     switch (item.type) {
       case MediaType.image:
-        return Image.file(
-          File(item.path),
+        return Image(
+          image: _buildImageThumbnailProvider(item.path),
+          filterQuality: FilterQuality.low,
           fit: BoxFit.cover,
+          frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
+            if (frame != null || wasSynchronouslyLoaded) {
+              _invalidMediaRetryCounts.remove(item.id);
+            }
+            return child;
+          },
           errorBuilder: (context, error, stackTrace) {
             _scheduleCleanup(item.id); // 加载失败时安排清理（文件缺失或损坏）
             return const Icon(Icons.image, size: 32);
@@ -2523,7 +3175,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         );
       case MediaType.video:
         return FutureBuilder<File?>(
-          future: _generateVideoThumbnail(item.path),
+          future: _getOrCreateVideoThumbnailFuture(item.path),
           builder: (context, snapshot) {
             if (snapshot.connectionState == ConnectionState.done &&
                 snapshot.hasData &&
@@ -2568,14 +3220,16 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                       height: 20,
                       child: CircularProgressIndicator(
                         strokeWidth: 2,
-                        valueColor: AlwaysStoppedAnimation<Color>(Colors.white70),
+                        valueColor: AlwaysStoppedAnimation<Color>(
+                          Colors.white70,
+                        ),
                       ),
                     ),
                   ),
                 ],
               );
-            } else { // Handle cases where thumbnail generation failed or data is null
-              _scheduleCleanup(item.id); // Schedule cleanup if thumbnail is not available
+            } else {
+              // 缩略图失败不代表视频文件无效；仅显示占位，避免误清理造成“导入后文件消失”。
               return _buildVideoPlaceholder();
             }
           },
@@ -2598,10 +3252,18 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                 ),
                 borderRadius: BorderRadius.circular(8),
                 boxShadow: [
-                  BoxShadow(color: Colors.black26, blurRadius: 4, offset: const Offset(0, 2)),
+                  BoxShadow(
+                    color: Colors.black26,
+                    blurRadius: 4,
+                    offset: const Offset(0, 2),
+                  ),
                 ],
               ),
-              child: const Icon(Icons.delete_outline, size: 40, color: Colors.white),
+              child: const Icon(
+                Icons.delete_outline,
+                size: 40,
+                color: Colors.white,
+              ),
             ),
             folderId: item.id,
           );
@@ -2617,7 +3279,11 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                 ),
                 borderRadius: BorderRadius.circular(8),
                 boxShadow: [
-                  BoxShadow(color: Colors.pink.shade200.withOpacity(0.2), blurRadius: 4, offset: const Offset(0, 2)),
+                  BoxShadow(
+                    color: Colors.pink.shade200.withOpacity(0.2),
+                    blurRadius: 4,
+                    offset: const Offset(0, 2),
+                  ),
                 ],
               ),
               child: const Icon(Icons.favorite, size: 40, color: Colors.white),
@@ -2637,6 +3303,10 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     }
   }
 
+  ImageProvider _buildImageThumbnailProvider(String imagePath) {
+    return ResizeImage(FileImage(File(imagePath)), width: 360);
+  }
+
   Widget _buildVideoPlaceholder() {
     return Container(
       decoration: BoxDecoration(
@@ -2654,7 +3324,10 @@ class _MediaManagerPageState extends State<MediaManagerPage>
               children: const [
                 Icon(Icons.videocam, size: 36, color: Colors.white70),
                 SizedBox(height: 4),
-                Text('视频', style: TextStyle(color: Colors.white70, fontSize: 12)),
+                Text(
+                  '视频',
+                  style: TextStyle(color: Colors.white70, fontSize: 12),
+                ),
               ],
             ),
           ),
@@ -2688,10 +3361,14 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         return null;
       }
 
-      final tempDir = await getTemporaryDirectory();
       final cacheKey = '${videoPath.hashCode.abs()}_${videoPath.length}';
-      final thumbnailPath = '${tempDir.path}/${cacheKey}_thumbnail.jpg';
+      final thumbnailDir = await _getVideoThumbnailCacheDirectory();
+      final thumbnailPath = path.join(
+        thumbnailDir.path,
+        '${cacheKey}_thumbnail.jpg',
+      );
       final thumbnailFile = File(thumbnailPath);
+      _videoThumbnailFileCache[videoPath] = thumbnailFile;
 
       // 检查缓存：命中则直接返回，不占用并发槽位
       if (await thumbnailFile.exists() && await thumbnailFile.length() > 100) {
@@ -2708,43 +3385,48 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       try {
         // 1. 优先尝试 thumbnailFile（直接写文件，部分机型更稳定）
         if (Platform.isAndroid || Platform.isIOS) {
-          for (final timeMs in [0, 500, 1500, 3000, 5000]) {
+          for (final timeMs in [1000, 3000]) {
             try {
-              final outPath = '${tempDir.path}/${cacheKey}_t${timeMs}.jpg';
+              final outPath = path.join(
+                thumbnailDir.path,
+                '${cacheKey}_t${timeMs}.jpg',
+              );
               final resultPath = await VideoThumbnail.thumbnailFile(
                 video: videoPath,
                 thumbnailPath: outPath,
                 imageFormat: ImageFormat.JPEG,
-                maxWidth: 250,
-                quality: 75,
+                maxWidth: 180,
+                quality: 60,
                 timeMs: timeMs,
-              );
+              ).timeout(const Duration(seconds: 4));
               if (resultPath != null) {
                 final f = File(resultPath);
                 if (await f.exists() && await f.length() > 100) {
                   await f.copy(thumbnailPath);
-                  try { await f.delete(); } catch (_) {}
+                  try {
+                    await f.delete();
+                  } catch (_) {}
                   debugPrint('thumbnailFile 成功 (timeMs=$timeMs)');
                   return thumbnailFile;
                 }
               }
             } catch (e) {
-              if (timeMs == 5000) debugPrint('thumbnailFile 失败: $e');
+              if (timeMs == 3000) debugPrint('thumbnailFile 失败: $e');
             }
           }
         }
 
         // 2. 备选：thumbnailData + 多时间点
         if (Platform.isAndroid || Platform.isIOS) {
-          for (final timeMs in [0, 1000, 3000, 5000]) {
+          for (final timeMs in [1000, 3000]) {
             try {
               final thumbnailBytes = await VideoThumbnail.thumbnailData(
                 video: videoPath,
                 imageFormat: ImageFormat.JPEG,
-                maxWidth: 250,
-                quality: 75,
+                maxWidth: 180,
+                quality: 60,
                 timeMs: timeMs,
-              );
+              ).timeout(const Duration(seconds: 4));
               if (thumbnailBytes != null && thumbnailBytes.isNotEmpty) {
                 await thumbnailFile.writeAsBytes(thumbnailBytes);
                 if (await thumbnailFile.exists()) {
@@ -2753,7 +3435,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                 }
               }
             } catch (e) {
-              if (timeMs == 5000) debugPrint('thumbnailData 失败: $e');
+              if (timeMs == 3000) debugPrint('thumbnailData 失败: $e');
             }
           }
         }
@@ -2771,12 +3453,105 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       return null;
     }
   }
-  
+
+  Future<File?> _getOrCreateVideoThumbnailFuture(String videoPath) {
+    final cachedFile = _videoThumbnailFileCache[videoPath];
+    if (cachedFile != null) {
+      return cachedFile.exists().then((exists) async {
+        if (exists && await cachedFile.length() > 100) {
+          _clearVideoThumbnailFailure(videoPath);
+          final itemId = _findMediaItemIdByPath(videoPath);
+          if (itemId != null) {
+            _invalidMediaRetryCounts.remove(itemId);
+          }
+          return cachedFile;
+        }
+        _videoThumbnailFileCache.remove(videoPath);
+        return _getOrCreateVideoThumbnailFuture(videoPath);
+      });
+    }
+    final cachedFuture = _videoThumbnailFutureCache[videoPath];
+    if (cachedFuture != null) {
+      return cachedFuture;
+    }
+    if (_thumbnailGenerationFailed.contains(videoPath)) {
+      return Future<File?>.value(null);
+    }
+
+    final future = _generateVideoThumbnail(
+      videoPath,
+    ).timeout(const Duration(seconds: 12), onTimeout: () => null).then((file) {
+      if (file == null) {
+        _markVideoThumbnailFailure(videoPath);
+        _videoThumbnailFileCache.remove(videoPath);
+      } else {
+        _clearVideoThumbnailFailure(videoPath);
+        _thumbnailGenerationFailed.remove(videoPath);
+        _videoThumbnailFileCache[videoPath] = file;
+        final itemId = _findMediaItemIdByPath(videoPath);
+        if (itemId != null) {
+          _invalidMediaRetryCounts.remove(itemId);
+        }
+      }
+      _videoThumbnailFutureCache.remove(videoPath);
+      return file;
+    });
+
+    _videoThumbnailFutureCache[videoPath] = future;
+    if (_videoThumbnailFutureCache.length > 1200) {
+      final staleKeys = _videoThumbnailFutureCache.keys.take(300).toList();
+      for (final key in staleKeys) {
+        _videoThumbnailFutureCache.remove(key);
+      }
+    }
+    return future;
+  }
+
+  void _markVideoThumbnailFailure(String videoPath) {
+    _thumbnailGenerationFailed.add(videoPath);
+    _thumbnailRetryCooldownTimers.remove(videoPath)?.cancel();
+    _thumbnailRetryCooldownTimers[videoPath] = Timer(
+      _thumbnailRetryCooldown,
+      () {
+        _thumbnailGenerationFailed.remove(videoPath);
+        _thumbnailRetryCooldownTimers.remove(videoPath);
+        if (!mounted) return;
+        final itemId = _findMediaItemIdByPath(videoPath);
+        if (itemId != null) {
+          _scheduleCleanup(itemId);
+        }
+      },
+    );
+  }
+
+  void _clearVideoThumbnailFailure(String videoPath) {
+    _thumbnailGenerationFailed.remove(videoPath);
+    _thumbnailRetryCooldownTimers.remove(videoPath)?.cancel();
+  }
+
+  String? _findMediaItemIdByPath(String mediaPath) {
+    return _mediaItems.firstWhereOrNull((item) => item.path == mediaPath)?.id;
+  }
+
+  Future<Directory> _getVideoThumbnailCacheDirectory() async {
+    final supportDir = await getApplicationSupportDirectory();
+    final thumbnailDir = Directory(
+      path.join(supportDir.path, 'video_thumbnails'),
+    );
+    if (!await thumbnailDir.exists()) {
+      await thumbnailDir.create(recursive: true);
+    }
+    return thumbnailDir;
+  }
+
   Future<File?> _generateColoredThumbnail(String videoPath) async {
     try {
-      final tempDir = await getTemporaryDirectory();
       final cacheKey = '${videoPath.hashCode.abs()}_${videoPath.length}';
-      final thumbnailPath = '${tempDir.path}/${cacheKey}_color_thumbnail.jpg';
+      final thumbnailDir = await _getVideoThumbnailCacheDirectory();
+      final thumbnailPath = path.join(
+        thumbnailDir.path,
+        '${cacheKey}_color_thumbnail.jpg',
+      );
       final thumbnailFile = File(thumbnailPath);
 
       // 检查缓存
@@ -2792,7 +3567,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         if (await f.exists()) colorSeed += await f.length();
       } catch (_) {}
       final colorMap = _generateUniqueColors(colorSeed);
-      
+
       // 使用简单的位图方法生成缩略图，而不依赖Canvas
       final imageBytes = await _createSimpleBitmapThumbnail(
         const Size(250, 141), // 16:9宽高比
@@ -2800,19 +3575,19 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         colorMap['primary']!,
         colorMap['secondary']!,
       );
-      
+
       await thumbnailFile.writeAsBytes(imageBytes);
       if (await thumbnailFile.exists()) {
         return thumbnailFile;
       }
-      
+
       return null;
     } catch (e) {
       debugPrint('生成彩色缩略图失败: $e');
       return null;
     }
   }
-  
+
   Map<String, Color> _generateUniqueColors(int seed) {
     final random = math.Random(seed);
     final List<Color> primaryColors = [
@@ -2839,12 +3614,12 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     final secondaryIndex = random.nextInt(secondaryColors.length);
     return {
       'primary': primaryColors[primaryIndex],
-      'secondary': secondaryColors[secondaryIndex]
+      'secondary': secondaryColors[secondaryIndex],
     };
   }
-  
+
   Future<Uint8List> _createSimpleBitmapThumbnail(
-    Size size, 
+    Size size,
     String fileName,
     Color primaryColor,
     Color secondaryColor,
@@ -2855,68 +3630,82 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     final int rowStrideBytes = width * bytesPerPixel;
     final int totalBytes = rowStrideBytes * height;
     final Uint8List bytes = Uint8List(totalBytes);
-    
+
     // 绘制渐变背景
     for (int y = 0; y < height; y++) {
       for (int x = 0; x < width; x++) {
         final int pixelOffset = (y * rowStrideBytes) + (x * bytesPerPixel);
-        
+
         // 计算当前位置的渐变颜色
         final double normalizedY = y / height;
         final double normalizedX = x / width;
-        final double distanceFromCenter = math.sqrt(
-          math.pow(normalizedX - 0.5, 2) + math.pow(normalizedY - 0.5, 2)
-        ) * 2;
-        
+        final double distanceFromCenter =
+            math.sqrt(
+              math.pow(normalizedX - 0.5, 2) + math.pow(normalizedY - 0.5, 2),
+            ) *
+            2;
+
         final double ratio = (normalizedY * 0.7) + (distanceFromCenter * 0.3);
         final double inverseRatio = 1 - ratio;
-        
+
         // 混合两种颜色
-        final int r = (primaryColor.red * inverseRatio + secondaryColor.red * ratio).toInt();
-        final int g = (primaryColor.green * inverseRatio + secondaryColor.green * ratio).toInt();
-        final int b = (primaryColor.blue * inverseRatio + secondaryColor.blue * ratio).toInt();
+        final int r =
+            (primaryColor.red * inverseRatio + secondaryColor.red * ratio)
+                .toInt();
+        final int g =
+            (primaryColor.green * inverseRatio + secondaryColor.green * ratio)
+                .toInt();
+        final int b =
+            (primaryColor.blue * inverseRatio + secondaryColor.blue * ratio)
+                .toInt();
         const int a = 255;
-        
+
         bytes[pixelOffset] = r;
         bytes[pixelOffset + 1] = g;
         bytes[pixelOffset + 2] = b;
         bytes[pixelOffset + 3] = a;
       }
     }
-    
+
     // 在中心绘制视频播放图标
     _drawPlayIcon(bytes, width, height, rowStrideBytes);
-    
+
     // 在底部添加文件名
     _drawFileName(bytes, width, height, rowStrideBytes, fileName);
-    
+
     return bytes;
   }
-  
+
   // 绘制播放图标
-  void _drawPlayIcon(Uint8List bytes, int width, int height, int rowStrideBytes) {
+  void _drawPlayIcon(
+    Uint8List bytes,
+    int width,
+    int height,
+    int rowStrideBytes,
+  ) {
     final int centerX = width ~/ 2;
     final int centerY = height ~/ 2;
     final int iconSize = math.min(width, height) ~/ 5;
-    
+
     // 绘制圆形背景
     for (int y = centerY - iconSize; y <= centerY + iconSize; y++) {
       if (y < 0 || y >= height) continue;
       for (int x = centerX - iconSize; x <= centerX + iconSize; x++) {
         if (x < 0 || x >= width) continue;
-        
+
         final int dx = x - centerX;
         final int dy = y - centerY;
         final double distance = math.sqrt(dx * dx + dy * dy);
-        
+
         if (distance <= iconSize) {
-          final int pixelOffset = (y * rowStrideBytes) + (x * 4); // 使用固定值4代替bytesPerPixel
+          final int pixelOffset =
+              (y * rowStrideBytes) + (x * 4); // 使用固定值4代替bytesPerPixel
 
           // 圆形半透明背景
           bytes[pixelOffset] = (bytes[pixelOffset] * 0.3).toInt();
           bytes[pixelOffset + 1] = (bytes[pixelOffset + 1] * 0.3).toInt();
           bytes[pixelOffset + 2] = (bytes[pixelOffset + 2] * 0.3).toInt();
-          
+
           // 播放三角形图标
           if (dx > -iconSize / 2 && distance < iconSize * 0.8) {
             const double slope = 1.2; // 控制三角形形状
@@ -2930,46 +3719,56 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       }
     }
   }
-  
+
   // 绘制文件名
-  void _drawFileName(Uint8List bytes, int width, int height, int rowStrideBytes, String fileName) {
+  void _drawFileName(
+    Uint8List bytes,
+    int width,
+    int height,
+    int rowStrideBytes,
+    String fileName,
+  ) {
     // 在底部创建一个半透明的条带
     final int startY = height - 20;
     final int endY = height;
-    
+
     // 截断过长的文件名
     String displayName = fileName;
     if (displayName.length > 15) {
       displayName = '${displayName.substring(0, 12)}...';
     }
-    
+
     // 创建半透明底部条带
     for (int y = startY; y < endY; y++) {
       if (y < 0 || y >= height) continue;
       for (int x = 0; x < width; x++) {
-        final int pixelOffset = (y * rowStrideBytes) + (x * 4); // 使用固定值4代替bytesPerPixel
+        final int pixelOffset =
+            (y * rowStrideBytes) + (x * 4); // 使用固定值4代替bytesPerPixel
         bytes[pixelOffset] = (bytes[pixelOffset] * 0.3).toInt();
         bytes[pixelOffset + 1] = (bytes[pixelOffset + 1] * 0.3).toInt();
         bytes[pixelOffset + 2] = (bytes[pixelOffset + 2] * 0.3).toInt();
       }
     }
-    
+
     // 由于无法直接在位图上绘制文本，我们只创建一个简单的标记
     // 实际应用中可以考虑使用第三方库处理文本绘制
   }
 
-  Future<bool> _extractVideoFrameWithFFmpeg(String videoPath, String outputPath) async {
+  Future<bool> _extractVideoFrameWithFFmpeg(
+    String videoPath,
+    String outputPath,
+  ) async {
     try {
       debugPrint('使用 FFmpeg 提取视频帧: $videoPath -> $outputPath');
       final escapedVideoPath = videoPath.replaceAll('\\', '/');
       final escapedOutputPath = outputPath.replaceAll('\\', '/');
-      
+
       // 创建临时目录，确保目标文件夹存在
       final outputDir = File(outputPath).parent;
       if (!await outputDir.exists()) {
         await outputDir.create(recursive: true);
       }
-      
+
       // 临时禁用FFmpeg代码，直接返回false以使用备选方法
       debugPrint('FFmpeg功能临时禁用，使用备选方法生成缩略图');
       return false;
@@ -2997,60 +3796,73 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
   void _previewMediaItem(MediaItem item) {
     // 仅预览媒体文件（图片/视频），不包含文件夹，避免切换下一项时出现文件夹
-    final mediaOnly = _mediaItems.where((i) => i.type == MediaType.image || i.type == MediaType.video).toList();
+    final mediaOnly =
+        _mediaItems
+            .where(
+              (i) => i.type == MediaType.image || i.type == MediaType.video,
+            )
+            .toList();
     final index = mediaOnly.indexOf(item);
     if (index == -1) {
       debugPrint('错误：无法在媒体列表中找到该项目');
       return;
     }
-    Navigator.of(context).push(MaterialPageRoute(
-      builder: (context) =>
-          MediaPreviewPage(mediaItems: mediaOnly, initialIndex: index),
-    )).then((_) {
-      // 预览页面关闭时刷新列表（删除/移动/收藏等操作后需同步显示）
-      _loadMediaItems();
-      if (item.type == MediaType.video) {
-        setState(() {
-          _lastViewedVideoId = item.id;
+    Navigator.of(context)
+        .push(
+          MaterialPageRoute(
+            builder:
+                (context) => MediaPreviewPage(
+                  mediaItems: mediaOnly,
+                  initialIndex: index,
+                ),
+          ),
+        )
+        .then((_) {
+          // 预览页面关闭时刷新列表（删除/移动/收藏等操作后需同步显示）
+          _loadMediaItems();
+          if (item.type == MediaType.video) {
+            setState(() {
+              _lastViewedVideoId = item.id;
+            });
+          }
         });
-      }
-    });
   }
 
   void _showMultiSelectOptions() {
     showModalBottomSheet(
       context: context,
-      builder: (context) => SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.select_all),
-              title: const Text('全选'),
-              onTap: () {
-                Navigator.pop(context);
-                _selectAll();
-              },
+      builder:
+          (context) => SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.select_all),
+                  title: const Text('全选'),
+                  onTap: () {
+                    Navigator.pop(context);
+                    _selectAll();
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.move_to_inbox),
+                  title: const Text('移动到'),
+                  onTap: () {
+                    Navigator.pop(context);
+                    _showMoveDialog();
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.delete, color: Colors.red),
+                  title: const Text('删除', style: TextStyle(color: Colors.red)),
+                  onTap: () {
+                    Navigator.pop(context);
+                    _deleteSelectedItems();
+                  },
+                ),
+              ],
             ),
-            ListTile(
-              leading: const Icon(Icons.move_to_inbox),
-              title: const Text('移动到'),
-              onTap: () {
-                Navigator.pop(context);
-                _showMoveDialog();
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.delete, color: Colors.red),
-              title: const Text('删除', style: TextStyle(color: Colors.red)),
-              onTap: () {
-                Navigator.pop(context);
-                _deleteSelectedItems();
-              },
-            ),
-          ],
-        ),
-      ),
+          ),
     );
   }
 
@@ -3059,7 +3871,8 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       context: context,
       backgroundColor: Colors.white.withOpacity(0.5),
       shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(12))),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(12)),
+      ),
       builder: (context) {
         final screenWidth = MediaQuery.of(context).size.width;
         final dialogWidth = screenWidth;
@@ -3194,7 +4007,10 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                             const Center(
                               child: Text(
                                 '媒体管理选项',
-                                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                                style: TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                ),
                               ),
                             ),
                             Positioned(
@@ -3222,54 +4038,60 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                       child: GridView.builder(
                         shrinkWrap: true,
                         physics: const NeverScrollableScrollPhysics(),
-                        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: 2,
-                          childAspectRatio: 3.5,
-                          crossAxisSpacing: 6,
-                          mainAxisSpacing: 4,
-                        ),
-                          itemCount: options.length,
-                          itemBuilder: (context, index) {
-                            final option = options[index];
-                            return GestureDetector(
-                              onTap: option['onTap'] as void Function(),
-                              child: Container(
-                                decoration: BoxDecoration(
-                                  color: Colors.grey[100],
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                child: Row(
-                                  children: [
-                                    Icon(
-                                      option['icon'] as IconData,
-                                      size: 20,
-                                      color: option['color'] as Color,
-                                    ),
-                                    const SizedBox(width: 8),
-                                    Expanded(
-                                      child: Text(
-                                        option['title'] as String,
-                                        style: TextStyle(
-                                            fontSize: 13,
-                                            color: option['color'] == Colors.red
-                                                ? Colors.red
-                                                : Colors.black),
-                                        overflow: TextOverflow.ellipsis,
-                                        maxLines: 1,
-                                      ),
-                                    ),
-                                  ],
-                                ),
+                        gridDelegate:
+                            const SliverGridDelegateWithFixedCrossAxisCount(
+                              crossAxisCount: 2,
+                              childAspectRatio: 3.5,
+                              crossAxisSpacing: 6,
+                              mainAxisSpacing: 4,
+                            ),
+                        itemCount: options.length,
+                        itemBuilder: (context, index) {
+                          final option = options[index];
+                          return GestureDetector(
+                            onTap: option['onTap'] as void Function(),
+                            child: Container(
+                              decoration: BoxDecoration(
+                                color: Colors.grey[100],
+                                borderRadius: BorderRadius.circular(8),
                               ),
-                            );
-                          },
-                        ),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 4,
+                              ),
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    option['icon'] as IconData,
+                                    size: 20,
+                                    color: option['color'] as Color,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Text(
+                                      option['title'] as String,
+                                      style: TextStyle(
+                                        fontSize: 13,
+                                        color:
+                                            option['color'] == Colors.red
+                                                ? Colors.red
+                                                : Colors.black,
+                                      ),
+                                      overflow: TextOverflow.ellipsis,
+                                      maxLines: 1,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
                       ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
-              );
+              ),
+            );
           },
         );
       },
@@ -3301,7 +4123,8 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   void _toggleItemSelection(String id) {
     if (id == 'recycle_bin' || id == 'favorites') return;
     if (_dragSelectFinishedAt != null &&
-        DateTime.now().difference(_dragSelectFinishedAt!) < const Duration(milliseconds: 300) &&
+        DateTime.now().difference(_dragSelectFinishedAt!) <
+            const Duration(milliseconds: 300) &&
         _selectedItems.contains(id)) {
       return;
     }
@@ -3313,29 +4136,26 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       }
     });
   }
-  
+
   Future<void> _exportMediaItem(MediaItem item) async {
     try {
       final file = File(item.path);
       if (!await file.exists()) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('文件不存在: ${item.path}')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('文件不存在: ${item.path}')));
         }
         return;
       }
 
       // 直接分享文件，移除了保存到相册选项
-      await Share.shareXFiles(
-        [XFile(item.path)],
-        subject: '分享: ${item.name}',
-      );
+      await Share.shareXFiles([XFile(item.path)], subject: '分享: ${item.name}');
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('分享文件时出错: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('分享文件时出错: $e')));
       }
     }
   }
@@ -3344,28 +4164,29 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   Future<void> _showScanDuplicatesOptionsDialog() async {
     final autoRemove = await showDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('扫描重复文件'),
-        content: const Text(
-          '请选择扫描模式：\n\n'
-          '• 仅扫描：更新哈希并报告重复数量，不自动删除\n'
-          '• 扫描并清理：将重复项移至回收站',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('仅扫描'),
+      builder:
+          (ctx) => AlertDialog(
+            title: const Text('扫描重复文件'),
+            content: const Text(
+              '请选择扫描模式：\n\n'
+              '• 仅扫描：更新哈希并报告重复数量，不自动删除\n'
+              '• 扫描并清理：将重复项移至回收站',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('仅扫描'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('扫描并清理'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('取消'),
+              ),
+            ],
           ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('扫描并清理'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('取消'),
-          ),
-        ],
-      ),
     );
     if (autoRemove != null && mounted) {
       await _scanAndUpdateFileHashes(autoRemove: autoRemove);
@@ -3378,29 +4199,30 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       showDialog(
         context: context,
         barrierDismissible: false,
-        builder: (context) => AlertDialog(
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const CircularProgressIndicator(),
-              const SizedBox(height: 16),
-              StreamBuilder<String>(
-                stream: _progressController.stream,
-                builder: (context, snapshot) {
-                  return Text(
-                    snapshot.data ?? '正在扫描媒体文件...',
-                    style: const TextStyle(fontSize: 14),
-                  );
-                },
+        builder:
+            (context) => AlertDialog(
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const CircularProgressIndicator(),
+                  const SizedBox(height: 16),
+                  StreamBuilder<String>(
+                    stream: _progressController.stream,
+                    builder: (context, snapshot) {
+                      return Text(
+                        snapshot.data ?? '正在扫描媒体文件...',
+                        style: const TextStyle(fontSize: 14),
+                      );
+                    },
+                  ),
+                ],
               ),
-            ],
-          ),
-        ),
+            ),
       );
 
       // 递归获取所有媒体项
       final allMediaItems = await _getAllMediaItemsRecursively('root');
-      
+
       int processedCount = 0;
       int updatedCount = 0;
       int duplicateCount = 0;
@@ -3412,7 +4234,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         try {
           // 更新进度
           _progressController.add('正在处理: ${item['name']}');
-          
+
           // 跳过文件夹
           if (item['type'] == MediaType.folder.index) {
             processedCount++;
@@ -3434,16 +4256,16 @@ class _MediaManagerPageState extends State<MediaManagerPage>
             processedCount++;
             continue;
           }
-          
+
           // 更新数据库中的哈希值
           await _databaseService.updateMediaItemHash(item['id'], fileHash);
-          
+
           // 将文件按哈希值分组
           if (!hashGroups.containsKey(fileHash)) {
             hashGroups[fileHash] = [];
           }
           hashGroups[fileHash]!.add(item);
-          
+
           updatedCount++;
           processedCount++;
         } catch (e) {
@@ -3457,13 +4279,18 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       for (var hash in hashGroups.keys) {
         var files = hashGroups[hash]!;
         if (files.length > 1) {
-          _progressController.add('发现重复文件: ${files.map((f) => f['name']).join(', ')}');
+          _progressController.add(
+            '发现重复文件: ${files.map((f) => f['name']).join(', ')}',
+          );
           duplicateCount += files.length - 1;
           if (autoRemove) {
             var duplicates = files.skip(1).toList();
             for (var duplicate in duplicates) {
               try {
-                await _databaseService.updateMediaItemDirectory(duplicate['id'], 'recycle_bin');
+                await _databaseService.updateMediaItemDirectory(
+                  duplicate['id'],
+                  'recycle_bin',
+                );
               } catch (e) {
                 Logger.log('移动重复文件到回收站时出错: ${duplicate['name']}, 错误: $e');
                 errorCount++;
@@ -3480,9 +4307,10 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
       // 显示结果
       if (mounted) {
-        final removedNote = autoRemove && duplicateCount > 0
-            ? '\n已移至回收站: $duplicateCount 个'
-            : (duplicateCount > 0 ? '\n(未删除，请手动处理)' : '');
+        final removedNote =
+            autoRemove && duplicateCount > 0
+                ? '\n已移至回收站: $duplicateCount 个'
+                : (duplicateCount > 0 ? '\n(未删除，请手动处理)' : '');
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
@@ -3490,7 +4318,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
               '处理文件: $processedCount\n'
               '更新哈希: $updatedCount\n'
               '发现重复: $duplicateCount 个$removedNote\n'
-              '错误: $errorCount'
+              '错误: $errorCount',
             ),
             duration: const Duration(seconds: 5),
           ),
@@ -3501,9 +4329,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       Logger.log('扫描文件哈希时出错: $e');
       if (mounted) {
         Navigator.of(context).pop(); // 关闭进度对话框
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('扫描失败: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('扫描失败: $e')));
       }
     }
   }
@@ -3512,12 +4340,15 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   Future<void> _deduplicateCurrentFolder() async {
     try {
       final items = await _databaseService.getMediaItems(_currentDirectory);
-      final mediaFiles = items.where((item) => item['type'] != MediaType.folder.index).toList();
+      final mediaFiles =
+          items
+              .where((item) => item['type'] != MediaType.folder.index)
+              .toList();
       if (mediaFiles.isEmpty) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('当前目录没有媒体文件')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('当前目录没有媒体文件')));
         }
         return;
       }
@@ -3525,16 +4356,20 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       showDialog(
         context: context,
         barrierDismissible: false,
-        builder: (context) => AlertDialog(
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const CircularProgressIndicator(),
-              const SizedBox(height: 16),
-              Text('正在扫描当前目录 (${_currentDirectory == 'root' ? '根目录' : _currentDirectory})...', style: const TextStyle(fontSize: 14)),
-            ],
-          ),
-        ),
+        builder:
+            (context) => AlertDialog(
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const CircularProgressIndicator(),
+                  const SizedBox(height: 16),
+                  Text(
+                    '正在扫描当前目录 (${_currentDirectory == 'root' ? '根目录' : _currentDirectory})...',
+                    style: const TextStyle(fontSize: 14),
+                  ),
+                ],
+              ),
+            ),
       );
 
       Map<String, List<Map<String, dynamic>>> hashGroups = {};
@@ -3565,7 +4400,10 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           duplicateCount += files.length - 1;
           for (var dup in files.skip(1)) {
             try {
-              await _databaseService.updateMediaItemDirectory(dup['id'], 'recycle_bin');
+              await _databaseService.updateMediaItemDirectory(
+                dup['id'],
+                'recycle_bin',
+              );
             } catch (e) {
               errorCount++;
             }
@@ -3591,21 +4429,23 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     } catch (e) {
       if (mounted) {
         Navigator.of(context).pop();
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('查重失败: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('查重失败: $e')));
       }
     }
   }
 
   // 递归获取所有媒体项的辅助方法
-  Future<List<Map<String, dynamic>>> _getAllMediaItemsRecursively(String directory) async {
+  Future<List<Map<String, dynamic>>> _getAllMediaItemsRecursively(
+    String directory,
+  ) async {
     List<Map<String, dynamic>> allItems = [];
-    
+
     try {
       // 获取当前目录下的所有项目
       final items = await _databaseService.getMediaItems(directory);
-      
+
       for (var item in items) {
         if (item['type'] == MediaType.folder.index) {
           // 如果是文件夹，递归获取其中的项目
@@ -3619,7 +4459,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     } catch (e) {
       Logger.log('递归获取媒体项时出错: $e');
     }
-    
+
     return allItems;
   }
 
@@ -3627,9 +4467,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   Future<void> _exportSelectedMediaItems() async {
     if (_selectedItems.isEmpty) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('请先选择要导出的媒体文件')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('请先选择要导出的媒体文件')));
       }
       return;
     }
@@ -3639,15 +4479,16 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       showDialog(
         context: context,
         barrierDismissible: false,
-        builder: (context) => const AlertDialog(
-          content: Row(
-            children: [
-              CircularProgressIndicator(),
-              SizedBox(width: 20),
-              Text('正在准备导出...')
-            ],
-          ),
-        ),
+        builder:
+            (context) => const AlertDialog(
+              content: Row(
+                children: [
+                  CircularProgressIndicator(),
+                  SizedBox(width: 20),
+                  Text('正在准备导出...'),
+                ],
+              ),
+            ),
       );
 
       // 收集所有选中的文件
@@ -3658,7 +4499,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         final item = _mediaItems.firstWhere((item) => item.id == id);
         // 跳过文件夹
         if (item.type == MediaType.folder) continue;
-        
+
         final file = File(item.path);
         if (await file.exists()) {
           filesToShare.add(XFile(item.path));
@@ -3674,9 +4515,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
       if (filesToShare.isEmpty) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('没有找到可导出的文件')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('没有找到可导出的文件')));
         }
         return;
       }
@@ -3699,9 +4540,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       // 确保关闭进度对话框
       if (mounted) {
         Navigator.of(context).pop();
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('导出文件时出错: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('导出文件时出错: $e')));
       }
     }
   }
@@ -3710,12 +4551,19 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   void _scheduleCleanup(String itemId) {
     // 导入后 30 秒内不触发清理，避免大量缩略图并发生成时的误判
     if (_lastImportCompletedAt != null &&
-        DateTime.now().difference(_lastImportCompletedAt!) < const Duration(seconds: 30)) {
+        DateTime.now().difference(_lastImportCompletedAt!) <
+            const Duration(seconds: 30)) {
+      return;
+    }
+    final retryCount = (_invalidMediaRetryCounts[itemId] ?? 0) + 1;
+    _invalidMediaRetryCounts[itemId] = retryCount;
+    if (retryCount < _invalidMediaRetryThreshold) {
       return;
     }
     _itemsToCleanup.add(itemId);
     _cleanupTimer?.cancel(); // Cancel any existing timer
-    _cleanupTimer = Timer(const Duration(seconds: 10), () { // 10秒防抖，给缩略图生成更多重试机会
+    _cleanupTimer = Timer(const Duration(seconds: 10), () {
+      // 10秒防抖，给缩略图生成更多重试机会
       _performCleanup();
     });
   }
@@ -3727,7 +4575,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     if (_itemsToCleanup.isEmpty) return;
 
     debugPrint('开始自动清理无效媒体文件: ${_itemsToCleanup.length} 个');
-    Set<String> cleanedItems = Set.from(_itemsToCleanup);
+    final cleanedItems = Set<String>.from(_itemsToCleanup);
     _itemsToCleanup.clear();
 
     for (var id in cleanedItems) {
@@ -3741,19 +4589,27 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         final mediaDirPath = path.join(appDir.path, 'media');
         final fileName = path.basename(item.path);
         final candidatePath = path.join(mediaDirPath, fileName);
-        if (!await File(item.path).exists() && await File(candidatePath).exists()) {
+        if (!await File(item.path).exists() &&
+            await File(candidatePath).exists()) {
           await _databaseService.updateMediaItemPath(item.id, candidatePath);
+          _invalidMediaRetryCounts.remove(item.id);
           debugPrint('清理前路径已修复，跳过: ${item.name}');
           continue;
         }
 
-        if (item.type == MediaType.video) {
+        if (item.directory != 'recycle_bin') {
           // 视频：移至回收站，不删除文件，让用户自行处理
-          await _databaseService.updateMediaItemDirectory(item.id, 'recycle_bin');
+          await _databaseService.updateMediaItemDirectory(
+            item.id,
+            'recycle_bin',
+          );
           debugPrint('视频缩略图生成失败，已移至回收站: ${item.name}');
         } else {
           // 图片等：直接删除（多为损坏文件）
-          await _deleteMediaItemSilently(item);
+          await _databaseService.updateMediaItemDirectory(
+            item.id,
+            'recycle_bin',
+          );
           debugPrint('已自动清理无效文件: ${item.name}');
         }
       } catch (e) {
@@ -3782,11 +4638,34 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     }
   }
 
+  Future<void> _warmCurrentDirectoryVideoThumbnailsInBackground() async {
+    try {
+      final total = await _databaseService.getMediaItemCount(_currentDirectory);
+      final allVideos = <MediaItem>[];
+      for (int offset = 0; offset < total; offset += _mediaLoadBatchSize) {
+        final items = await _databaseService.getMediaItems(
+          _currentDirectory,
+          limit: _mediaLoadBatchSize,
+          offset: offset,
+        );
+        allVideos.addAll(
+          items
+              .map((item) => MediaItem.fromMap(item))
+              .where((item) => item.type == MediaType.video),
+        );
+      }
+      _enqueueVideoThumbnailPrefetch(allVideos, prioritize: false);
+      unawaited(_drainThumbnailPrefetchQueue());
+    } catch (e) {
+      debugPrint('鍚庡彴棰勭儹褰撳墠鐩綍瑙嗛缂╃暐鍥惧け璐? $e');
+    }
+  }
+
   // 声明全量导出/导入方法（后续补充实现）
   Future<void> _exportAllMediaData() async {
     final progress = ValueNotifier<double>(0);
     final message = ValueNotifier<String>('准备中...');
-    
+
     ZipFileEncoder? encoder;
     String currentPhase = '准备';
     try {
@@ -3796,23 +4675,31 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       final allMediaItems = await _databaseService.getAllMediaItems();
       if (allMediaItems.isEmpty) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('没有可导出的媒体文件。')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('没有可导出的媒体文件。')));
         }
         return;
       }
-      
+
       // 2. 使用默认保存位置（优先公共下载目录，用户可在文件管理器中找到）
       currentPhase = '选择保存位置';
       final Directory saveDir = await getExportSaveDirectory();
       await saveDir.create(recursive: true);
       if (!mounted) return;
-      final String timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.').first;
-      final zipFilePath = path.join(saveDir.path, 'media_backup_$timestamp.zip');
+      final String timestamp =
+          DateTime.now()
+              .toIso8601String()
+              .replaceAll(':', '-')
+              .split('.')
+              .first;
+      final zipFilePath = path.join(
+        saveDir.path,
+        'media_backup_$timestamp.zip',
+      );
 
       showProgressDialog(context, progress, message);
-      
+
       // 3. 使用流式ZIP处理，避免内存溢出（7GB/15GB+ 大容量导出需严格控制内存）
       currentPhase = '压缩媒体文件';
       message.value = '正在创建压缩包...';
@@ -3859,15 +4746,20 @@ class _MediaManagerPageState extends State<MediaManagerPage>
               } else {
                 progress.value = (processedFiles / totalFiles) * 0.8;
               }
-              message.value = totalSize > 0
-                  ? '正在压缩: $processedFiles/$totalFiles (${_formatFileSize(processedSize)}/${_formatFileSize(totalSize)})'
-                  : '正在压缩: $processedFiles/$totalFiles';
+              message.value =
+                  totalSize > 0
+                      ? '正在压缩: $processedFiles/$totalFiles (${_formatFileSize(processedSize)}/${_formatFileSize(totalSize)})'
+                      : '正在压缩: $processedFiles/$totalFiles';
 
               // 按数据量调整暂停频率，避免 7GB/15GB 级导出 OOM
               if (processedFiles % 50 == 0) {
-                await Future.delayed(Duration(milliseconds: totalFiles > 2000 ? 400 : 300));
+                await Future.delayed(
+                  Duration(milliseconds: totalFiles > 2000 ? 400 : 300),
+                );
               } else if (processedFiles % 10 == 0) {
-                await Future.delayed(Duration(milliseconds: totalFiles > 2000 ? 120 : 80));
+                await Future.delayed(
+                  Duration(milliseconds: totalFiles > 2000 ? 120 : 80),
+                );
               }
             } else {
               debugPrint('警告: 文件不存在，跳过导出: ${item['path']}');
@@ -3881,22 +4773,30 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           await Future.delayed(const Duration(milliseconds: 150));
         }
       }
-      
+
       // 4. 导出数据库 - 分块写入避免单一大JSON (5000条/文件)
       currentPhase = '导出数据库';
       message.value = '正在导出数据库...';
-      for (int chunkIdx = 0; chunkIdx < allMediaItems.length; chunkIdx += kExportChunkSize) {
+      for (
+        int chunkIdx = 0;
+        chunkIdx < allMediaItems.length;
+        chunkIdx += kExportChunkSize
+      ) {
         final end = math.min(chunkIdx + kExportChunkSize, allMediaItems.length);
         final chunk = allMediaItems.sublist(chunkIdx, end);
         final fileName = 'media_items_${chunkIdx ~/ kExportChunkSize}.json';
         final bytes = utf8.encode(jsonEncode(chunk));
         encoder.addArchiveFile(ArchiveFile(fileName, bytes.length, bytes));
-        if ((chunkIdx + kExportChunkSize) % (kProgressUpdateInterval * 10) == 0 || end == allMediaItems.length) {
+        if ((chunkIdx + kExportChunkSize) % (kProgressUpdateInterval * 10) ==
+                0 ||
+            end == allMediaItems.length) {
           message.value = '正在导出数据库: $end/${allMediaItems.length}';
         }
       }
       if (allMediaItems.isEmpty) {
-        encoder.addArchiveFile(ArchiveFile('media_items.json', 2, utf8.encode('[]')));
+        encoder.addArchiveFile(
+          ArchiveFile('media_items.json', 2, utf8.encode('[]')),
+        );
       }
       progress.value = 0.85;
 
@@ -3904,9 +4804,16 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       final prefs = await SharedPreferences.getInstance();
       final mediaVisible = prefs.getBool('media_visible') ?? true;
       final autoImportSilent = prefs.getBool('auto_import_silent') ?? true;
-      final settingsJson = jsonEncode({'media_visible': mediaVisible, 'auto_import_silent': autoImportSilent});
+      final settingsJson = jsonEncode({
+        'media_visible': mediaVisible,
+        'auto_import_silent': autoImportSilent,
+      });
       final settingsBytes = utf8.encode(settingsJson);
-      final settingsFile = ArchiveFile('media_settings.json', settingsBytes.length, settingsBytes);
+      final settingsFile = ArchiveFile(
+        'media_settings.json',
+        settingsBytes.length,
+        settingsBytes,
+      );
       encoder.addArchiveFile(settingsFile);
       progress.value = 0.9;
 
@@ -3920,7 +4827,8 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       if (mounted) Navigator.of(context).pop();
       if (mounted) {
         final zipFile = File(zipFilePath);
-        final zipSizeBytes = await zipFile.exists() ? await zipFile.length() : 0;
+        final zipSizeBytes =
+            await zipFile.exists() ? await zipFile.length() : 0;
         final bool isTooLarge = zipSizeBytes > kShareSizeLimitBytes;
         if (!isTooLarge) {
           try {
@@ -3948,7 +4856,11 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       debugPrint('导出媒体数据时出错 [$currentPhase]: $e\n$stack');
       if (mounted) {
         final userMsg = formatExportImportError(e, '导出失败');
-        showExportImportErrorDialog(context, '媒体导出失败', '出错阶段：$currentPhase\n\n$userMsg');
+        showExportImportErrorDialog(
+          context,
+          '媒体导出失败',
+          '出错阶段：$currentPhase\n\n$userMsg',
+        );
       }
     }
   }
@@ -3957,14 +4869,17 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   String _formatFileSize(int bytes) {
     if (bytes < 1024) return '${bytes}B';
     if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)}KB';
-    if (bytes < 1024 * 1024 * 1024) return '${(bytes / (1024 * 1024)).toStringAsFixed(1)}MB';
+    if (bytes < 1024 * 1024 * 1024)
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)}MB';
     return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)}GB';
   }
 
   /// 导出当前文件夹（含子文件夹内所有媒体文件），格式与全量导出兼容，可被「导入文件夹数据」合并导入
   Future<void> _exportFolderData() async {
     if (_currentDirectory == 'root') return;
-    final folderItem = await _databaseService.getMediaItemById(_currentDirectory);
+    final folderItem = await _databaseService.getMediaItemById(
+      _currentDirectory,
+    );
     final folderName = folderItem?['name'] as String? ?? '未命名文件夹';
 
     final progress = ValueNotifier<double>(0);
@@ -3974,12 +4889,14 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     try {
       currentPhase = '查询文件夹内容';
       message.value = '正在收集媒体文件...';
-      final folderMediaItems = await _getAllMediaItemsRecursively(_currentDirectory);
+      final folderMediaItems = await _getAllMediaItemsRecursively(
+        _currentDirectory,
+      );
       if (folderMediaItems.isEmpty) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('当前文件夹内没有可导出的媒体文件。')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('当前文件夹内没有可导出的媒体文件。')));
         }
         return;
       }
@@ -3988,9 +4905,20 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       final Directory saveDir = await getExportSaveDirectory();
       await saveDir.create(recursive: true);
       if (!mounted) return;
-      final String safeName = folderName.replaceAll(RegExp(r'[^\w\s\u4e00-\u9fff-]'), '_');
-      final String timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.').first;
-      final zipFilePath = path.join(saveDir.path, 'media_folder_${safeName}_$timestamp.zip');
+      final String safeName = folderName.replaceAll(
+        RegExp(r'[^\w\s\u4e00-\u9fff-]'),
+        '_',
+      );
+      final String timestamp =
+          DateTime.now()
+              .toIso8601String()
+              .replaceAll(':', '-')
+              .split('.')
+              .first;
+      final zipFilePath = path.join(
+        saveDir.path,
+        'media_folder_${safeName}_$timestamp.zip',
+      );
 
       showProgressDialog(context, progress, message);
 
@@ -4029,13 +4957,18 @@ class _MediaManagerPageState extends State<MediaManagerPage>
               } else {
                 progress.value = (processedFiles / totalFiles) * 0.8;
               }
-              message.value = totalSize > 0
-                  ? '正在压缩: $processedFiles/$totalFiles (${_formatFileSize(processedSize)}/${_formatFileSize(totalSize)})'
-                  : '正在压缩: $processedFiles/$totalFiles';
+              message.value =
+                  totalSize > 0
+                      ? '正在压缩: $processedFiles/$totalFiles (${_formatFileSize(processedSize)}/${_formatFileSize(totalSize)})'
+                      : '正在压缩: $processedFiles/$totalFiles';
               if (processedFiles % 50 == 0) {
-                await Future.delayed(Duration(milliseconds: totalFiles > 2000 ? 400 : 300));
+                await Future.delayed(
+                  Duration(milliseconds: totalFiles > 2000 ? 400 : 300),
+                );
               } else if (processedFiles % 10 == 0) {
-                await Future.delayed(Duration(milliseconds: totalFiles > 2000 ? 120 : 80));
+                await Future.delayed(
+                  Duration(milliseconds: totalFiles > 2000 ? 120 : 80),
+                );
               }
             } else {
               debugPrint('警告: 文件不存在，跳过导出: ${item['path']}');
@@ -4052,10 +4985,23 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       currentPhase = '导出数据库';
       message.value = '正在导出元数据...';
       final manifest = {'type': 'folder', 'folder_name': folderName};
-      encoder.addArchiveFile(ArchiveFile('folder_manifest.json', utf8.encode(jsonEncode(manifest)).length, utf8.encode(jsonEncode(manifest))));
+      encoder.addArchiveFile(
+        ArchiveFile(
+          'folder_manifest.json',
+          utf8.encode(jsonEncode(manifest)).length,
+          utf8.encode(jsonEncode(manifest)),
+        ),
+      );
       if (folderMediaItems.length > kExportChunkSize) {
-        for (int chunkIdx = 0; chunkIdx < folderMediaItems.length; chunkIdx += kExportChunkSize) {
-          final end = math.min(chunkIdx + kExportChunkSize, folderMediaItems.length);
+        for (
+          int chunkIdx = 0;
+          chunkIdx < folderMediaItems.length;
+          chunkIdx += kExportChunkSize
+        ) {
+          final end = math.min(
+            chunkIdx + kExportChunkSize,
+            folderMediaItems.length,
+          );
           final chunk = folderMediaItems.sublist(chunkIdx, end);
           final fileName = 'media_items_${chunkIdx ~/ kExportChunkSize}.json';
           final bytes = utf8.encode(jsonEncode(chunk));
@@ -4063,7 +5009,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         }
       } else {
         final itemsJson = utf8.encode(jsonEncode(folderMediaItems));
-        encoder.addArchiveFile(ArchiveFile('media_items.json', itemsJson.length, itemsJson));
+        encoder.addArchiveFile(
+          ArchiveFile('media_items.json', itemsJson.length, itemsJson),
+        );
       }
       progress.value = 0.9;
 
@@ -4076,11 +5024,14 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       if (mounted) Navigator.of(context).pop();
       if (mounted) {
         final zipFile = File(zipFilePath);
-        final zipSizeBytes = await zipFile.exists() ? await zipFile.length() : 0;
+        final zipSizeBytes =
+            await zipFile.exists() ? await zipFile.length() : 0;
         final bool isTooLarge = zipSizeBytes > kShareSizeLimitBytes;
         if (!isTooLarge) {
           try {
-            await Share.shareXFiles([XFile(zipFilePath)], text: '文件夹导出: $folderName');
+            await Share.shareXFiles([
+              XFile(zipFilePath),
+            ], text: '文件夹导出: $folderName');
           } catch (shareErr) {
             debugPrint('分享失败: $shareErr');
           }
@@ -4103,7 +5054,11 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       debugPrint('导出文件夹时出错 [$currentPhase]: $e\n$stack');
       if (mounted) {
         final userMsg = formatExportImportError(e, '导出失败');
-        showExportImportErrorDialog(context, '文件夹导出失败', '出错阶段：$currentPhase\n\n$userMsg');
+        showExportImportErrorDialog(
+          context,
+          '文件夹导出失败',
+          '出错阶段：$currentPhase\n\n$userMsg',
+        );
       }
     }
   }
@@ -4113,13 +5068,19 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     final progress = ValueNotifier<double>(0.0);
     final message = ValueNotifier<String>('准备中...');
     final Directory appDir = await getApplicationDocumentsDirectory();
-    final String tempImportPath = path.join(appDir.path, 'temp_folder_import_${const Uuid().v4()}');
+    final String tempImportPath = path.join(
+      appDir.path,
+      'temp_folder_import_${const Uuid().v4()}',
+    );
     final Directory tempImportDir = Directory(tempImportPath);
     String currentPhase = '准备';
     try {
       await tempImportDir.create(recursive: true);
 
-      FilePickerResult? result = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['zip']);
+      FilePickerResult? result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['zip'],
+      );
       if (result == null || result.files.isEmpty) return;
       if (!mounted) return;
 
@@ -4135,42 +5096,44 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
       currentPhase = '解压压缩包';
       message.value = '正在解压数据...';
-      final inputStream = InputFileStream(zipFile.path);
-      Archive archive;
-      try {
-        archive = ZipDecoder().decodeStream(inputStream);
-      } catch (e) {
-        await inputStream.close();
-        rethrow;
-      }
-
-      int done = 0;
-      final total = archive.files.length;
       final tempMediaDir = Directory(path.join(tempImportDir.path, 'media'));
-      if (!await tempMediaDir.exists()) await tempMediaDir.create(recursive: true);
+      final inputStream = InputFileStream(zipFile.path);
+      try {
+        final archive = ZipDecoder().decodeStream(inputStream);
 
-      for (final file in archive.files) {
-        final outPath = resolveSafeExtractPath(tempImportDir.path, file.name);
-        if (file.isFile) {
-          final outFile = File(outPath);
-          await outFile.parent.create(recursive: true);
-          final outputStream = OutputFileStream(outFile.path);
-          file.writeContent(outputStream);
-          await outputStream.close();
-        } else {
-          await Directory(outPath).create(recursive: true);
+        int done = 0;
+        final total = archive.files.length;
+        if (!await tempMediaDir.exists())
+          await tempMediaDir.create(recursive: true);
+
+        for (final file in archive.files) {
+          final outPath = resolveSafeExtractPath(tempImportDir.path, file.name);
+          if (file.isFile) {
+            final outFile = File(outPath);
+            await outFile.parent.create(recursive: true);
+            final outputStream = OutputFileStream(outFile.path);
+            file.writeContent(outputStream);
+            await outputStream.close();
+          } else {
+            await Directory(outPath).create(recursive: true);
+          }
+          done++;
+          progress.value = (done / total) * 0.5;
+          message.value = '解压: $done/$total';
+          if (total > 500 && done % 100 == 0) {
+            await Future.delayed(const Duration(milliseconds: 50));
+          }
         }
-        done++;
-        progress.value = (done / total) * 0.5;
-        message.value = '解压: $done/$total';
-        if (total > 500 && done % 100 == 0) {
-          await Future.delayed(const Duration(milliseconds: 50));
-        }
+      } finally {
+        await inputStream.close();
       }
-      await inputStream.close();
 
-      final manifestFile = File(path.join(tempImportDir.path, 'folder_manifest.json'));
-      final chunk0File = File(path.join(tempImportDir.path, 'media_items_0.json'));
+      final manifestFile = File(
+        path.join(tempImportDir.path, 'folder_manifest.json'),
+      );
+      final chunk0File = File(
+        path.join(tempImportDir.path, 'media_items_0.json'),
+      );
       final jsonFile = File(path.join(tempImportDir.path, 'media_items.json'));
       if (!await manifestFile.exists()) {
         throw Exception('该压缩包不是有效的文件夹导出文件，请选择由「导出当前文件夹」生成的 ZIP 包。');
@@ -4179,7 +5142,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         throw Exception('该压缩包不是有效的文件夹导出文件，缺少媒体元数据。');
       }
 
-      final manifest = jsonDecode(await manifestFile.readAsString()) as Map<String, dynamic>?;
+      final manifest =
+          jsonDecode(await manifestFile.readAsString())
+              as Map<String, dynamic>?;
       if ((manifest?['type'] ?? '') != 'folder') {
         throw Exception('该压缩包不是有效的文件夹导出文件。');
       }
@@ -4189,13 +5154,18 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       if (await chunk0File.exists()) {
         int chunkIdx = 0;
         while (true) {
-          final f = File(path.join(tempImportDir.path, 'media_items_$chunkIdx.json'));
+          final f = File(
+            path.join(tempImportDir.path, 'media_items_$chunkIdx.json'),
+          );
           if (!await f.exists()) break;
-          mediaItemsToImport.addAll(jsonDecode(await f.readAsString()) as List<dynamic>? ?? []);
+          mediaItemsToImport.addAll(
+            jsonDecode(await f.readAsString()) as List<dynamic>? ?? [],
+          );
           chunkIdx++;
         }
       } else {
-        mediaItemsToImport = jsonDecode(await jsonFile.readAsString()) as List<dynamic>? ?? [];
+        mediaItemsToImport =
+            jsonDecode(await jsonFile.readAsString()) as List<dynamic>? ?? [];
       }
 
       currentPhase = '创建文件夹';
@@ -4234,7 +5204,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         if (oldPath == null || oldPath.isEmpty) continue;
 
         final fileName = path.basename(oldPath);
-        final sourceFile = File(path.join(tempImportDir.path, 'media', fileName));
+        final sourceFile = File(
+          path.join(tempImportDir.path, 'media', fileName),
+        );
         if (!await sourceFile.exists()) {
           debugPrint('跳过：文件不存在 $fileName');
           skippedCount++;
@@ -4247,10 +5219,16 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           continue;
         }
 
-        final duplicate = await _databaseService.findDuplicateMediaItem(fileHash, fileName);
+        final duplicate = await _databaseService.findDuplicateMediaItem(
+          fileHash,
+          fileName,
+        );
         if (duplicate != null) {
           // 原样导入：将重复项从其他位置移入本文件夹，保证导出多少导入多少
-          await _databaseService.updateMediaItemDirectory(duplicate['id'] as String, newFolderId);
+          await _databaseService.updateMediaItemDirectory(
+            duplicate['id'] as String,
+            newFolderId,
+          );
           importedCount++;
           continue;
         }
@@ -4286,20 +5264,27 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       message.value = '导入完成，正在刷新...';
       _lastImportCompletedAt = DateTime.now();
       await _loadMediaItems();
+      unawaited(_warmCurrentDirectoryVideoThumbnailsInBackground());
       progress.value = 1.0;
 
       if (mounted) Navigator.of(context).pop();
       if (mounted) {
         String msg = '已导入 $importedCount 个文件到「$targetFolderName」';
         if (skippedCount > 0) msg += '（$skippedCount 个因文件缺失或无法读取已跳过）';
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(msg)));
       }
     } catch (e, stack) {
       debugPrint('导入文件夹数据失败 [$currentPhase]: $e\n$stack');
       if (mounted) Navigator.of(context).pop();
       if (mounted) {
         final userMsg = formatExportImportError(e, '导入失败');
-        showExportImportErrorDialog(context, '文件夹导入失败', '出错阶段：$currentPhase\n\n$userMsg');
+        showExportImportErrorDialog(
+          context,
+          '文件夹导入失败',
+          '出错阶段：$currentPhase\n\n$userMsg',
+        );
       }
     } finally {
       if (await tempImportDir.exists()) {
@@ -4316,26 +5301,27 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     if (!mounted) return;
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('导入全部媒体数据'),
-        content: const Text(
-          '将仅替换「媒体库」目录（应用文档下的 media 文件夹）及媒体库数据库；'
-          '日记本专属目录 diary_media、日记录音目录 audio、拍照/相册的 images 与 videos 等不会被此操作删除。\n\n'
-          '若压缩包中缺少某些文件，仍会自动保留其它模块仍引用的 media 内文件；'
-          '若压缩包内存在同名文件，则以压缩包为准覆盖。\n\n'
-          '请确认已备份重要数据，或确定要执行此操作。',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('取消'),
+      builder:
+          (ctx) => AlertDialog(
+            title: const Text('导入全部媒体数据'),
+            content: const Text(
+              '将仅替换「媒体库」目录（应用文档下的 media 文件夹）及媒体库数据库；'
+              '日记本专属目录 diary_media、日记录音目录 audio、拍照/相册的 images 与 videos 等不会被此操作删除。\n\n'
+              '若压缩包中缺少某些文件，仍会自动保留其它模块仍引用的 media 内文件；'
+              '若压缩包内存在同名文件，则以压缩包为准覆盖。\n\n'
+              '请确认已备份重要数据，或确定要执行此操作。',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('取消'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('确认导入', style: TextStyle(color: Colors.red)),
+              ),
+            ],
           ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('确认导入', style: TextStyle(color: Colors.red)),
-          ),
-        ],
-      ),
     );
     if (confirmed != true || !mounted) return;
 
@@ -4344,7 +5330,10 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
     // 1. 创建一个唯一的临时目录用于解压
     final Directory appDir = await getApplicationDocumentsDirectory();
-    final String tempImportPath = path.join(appDir.path, 'temp_media_import_${const Uuid().v4()}');
+    final String tempImportPath = path.join(
+      appDir.path,
+      'temp_media_import_${const Uuid().v4()}',
+    );
     final Directory tempImportDir = Directory(tempImportPath);
 
     String currentPhase = '准备';
@@ -4353,7 +5342,10 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       await tempImportDir.create(recursive: true);
 
       // 2. 选择zip包
-      FilePickerResult? result = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['zip']);
+      FilePickerResult? result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['zip'],
+      );
       if (result == null || result.files.isEmpty) return;
       if (!mounted) return;
 
@@ -4371,52 +5363,53 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       // 3. 用流式InputFileStream解压zip到临时目录
       currentPhase = '解压压缩包';
       message.value = '正在解压数据...';
-      final inputStream = InputFileStream(zipFile.path);
-      Archive archive;
-      try {
-        archive = ZipDecoder().decodeStream(inputStream);
-      } catch (e) {
-        await inputStream.close();
-        rethrow;
-      }
-
-      int total = archive.files.length;
-      int done = 0;
-
       final tempMediaDir = Directory(path.join(tempImportDir.path, 'media'));
-      if (!await tempMediaDir.exists()) {
-        await tempMediaDir.create(recursive: true);
-      }
+      final inputStream = InputFileStream(zipFile.path);
+      try {
+        final archive = ZipDecoder().decodeStream(inputStream);
 
-      for (final file in archive.files) {
-        final outPath = resolveSafeExtractPath(tempImportDir.path, file.name);
-        if (file.isFile) {
-          final outFile = File(outPath);
-          await outFile.parent.create(recursive: true);
-          final outputStream = OutputFileStream(outFile.path);
-          file.writeContent(outputStream);
-          await outputStream.close();
-        } else {
-          await Directory(outPath).create(recursive: true);
+        int total = archive.files.length;
+        int done = 0;
+
+        if (!await tempMediaDir.exists()) {
+          await tempMediaDir.create(recursive: true);
         }
 
-        done++;
-        progress.value = (done / total) * 0.7;
-        message.value = '解压: $done/$total';
-        if (total > 500 && done % 100 == 0) {
-          await Future.delayed(const Duration(milliseconds: 50));
+        for (final file in archive.files) {
+          final outPath = resolveSafeExtractPath(tempImportDir.path, file.name);
+          if (file.isFile) {
+            final outFile = File(outPath);
+            await outFile.parent.create(recursive: true);
+            final outputStream = OutputFileStream(outFile.path);
+            file.writeContent(outputStream);
+            await outputStream.close();
+          } else {
+            await Directory(outPath).create(recursive: true);
+          }
+
+          done++;
+          progress.value = (done / total) * 0.7;
+          message.value = '解压: $done/$total';
+          if (total > 500 && done % 100 == 0) {
+            await Future.delayed(const Duration(milliseconds: 50));
+          }
         }
+      } finally {
+        await inputStream.close();
       }
-      await inputStream.close();
 
       // 4. 从临时目录中读取元数据 - 支持分块格式与旧版media_items.json
       currentPhase = '恢复数据库';
       Map<String, dynamic>? settingsToImport;
 
-      final chunk0File = File(path.join(tempImportDir.path, 'media_items_0.json'));
+      final chunk0File = File(
+        path.join(tempImportDir.path, 'media_items_0.json'),
+      );
       final jsonFile = File(path.join(tempImportDir.path, 'media_items.json'));
       if (!await chunk0File.exists() && !await jsonFile.exists()) {
-        throw Exception("关键错误: 压缩包中未找到 'media_items.json' 或 'media_items_0.json' 文件。");
+        throw Exception(
+          "关键错误: 压缩包中未找到 'media_items.json' 或 'media_items_0.json' 文件。",
+        );
       }
 
       // 路径重映射与数据规范化：跨设备导入时 path 需映射到当前设备，并补全必要字段
@@ -4435,7 +5428,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         item['updated_at'] ??= now;
       }
 
-      final settingsFile = File(path.join(tempImportDir.path, 'media_settings.json'));
+      final settingsFile = File(
+        path.join(tempImportDir.path, 'media_settings.json'),
+      );
       if (await settingsFile.exists()) {
         settingsToImport = jsonDecode(await settingsFile.readAsString());
       }
@@ -4443,15 +5438,24 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       // 5. 先复制媒体文件到新目录，再替换旧目录，最后才写 DB（避免数据丢失）
       progress.value = 0.75;
       currentPhase = '迁移媒体文件';
-      final Directory finalMediaDir = Directory(path.join(appDir.path, 'media'));
-      final Directory mediaNewDir = Directory(path.join(appDir.path, 'media_new_import'));
+      final Directory finalMediaDir = Directory(
+        path.join(appDir.path, 'media'),
+      );
+      final Directory mediaNewDir = Directory(
+        path.join(appDir.path, 'media_new_import'),
+      );
       try {
-        if (await mediaNewDir.exists()) await mediaNewDir.delete(recursive: true);
+        if (await mediaNewDir.exists())
+          await mediaNewDir.delete(recursive: true);
         await mediaNewDir.create(recursive: true);
-        await _copyDirectory(tempMediaDir, mediaNewDir, onProgress: (p, t, msg) {
-          message.value = msg;
-          progress.value = 0.75 + (t > 0 ? (p / t) * 0.15 : 0);
-        });
+        await _copyDirectory(
+          tempMediaDir,
+          mediaNewDir,
+          onProgress: (p, t, msg) {
+            message.value = msg;
+            progress.value = 0.75 + (t > 0 ? (p / t) * 0.15 : 0);
+          },
+        );
         final Set<String> importBasenames = {};
         if (await tempMediaDir.exists()) {
           await for (final entity in tempMediaDir.list(recursive: true)) {
@@ -4472,7 +5476,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         await mediaNewDir.rename(finalMediaDir.path);
       } finally {
         if (await mediaNewDir.exists()) {
-          try { await mediaNewDir.delete(recursive: true); } catch (_) {}
+          try {
+            await mediaNewDir.delete(recursive: true);
+          } catch (_) {}
         }
       }
       progress.value = 0.9;
@@ -4486,25 +5492,32 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       Future<List<dynamic>?> getNextChunk() async {
         if (useChunkFormat) {
           while (true) {
-            final f = File(path.join(tempImportDir.path, 'media_items_$chunkIdx.json'));
+            final f = File(
+              path.join(tempImportDir.path, 'media_items_$chunkIdx.json'),
+            );
             if (!await f.exists()) return null;
             message.value = '正在导入: media_items_$chunkIdx.json';
-            final chunk = (jsonDecode(await f.readAsString()) as List<dynamic>)
-                .whereType<Map<String, dynamic>>()
-                .map((item) {
-              remapMediaItemPath(item);
-              return item;
-            }).toList();
+            final chunk =
+                (jsonDecode(await f.readAsString()) as List<dynamic>)
+                    .whereType<Map<String, dynamic>>()
+                    .map((item) {
+                      remapMediaItemPath(item);
+                      return item;
+                    })
+                    .toList();
             chunkIdx++;
             if (chunk.isNotEmpty) return chunk;
           }
         } else {
           if (singleFormatData == null) {
-            final data = jsonDecode(await jsonFile.readAsString()) as List<dynamic>? ?? [];
-            singleFormatData = data.whereType<Map<String, dynamic>>().map((item) {
-              remapMediaItemPath(item);
-              return item;
-            }).toList();
+            final data =
+                jsonDecode(await jsonFile.readAsString()) as List<dynamic>? ??
+                [];
+            singleFormatData =
+                data.whereType<Map<String, dynamic>>().map((item) {
+                  remapMediaItemPath(item);
+                  return item;
+                }).toList();
           }
           const batchSize = 500;
           final start = chunkIdx * batchSize;
@@ -4514,6 +5527,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           return singleFormatData!.sublist(start, end);
         }
       }
+
       await _databaseService.replaceAllMediaItemsFromChunks(getNextChunk);
 
       // 7. 恢复设置
@@ -4521,10 +5535,16 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       if (settingsToImport != null) {
         final prefs = await SharedPreferences.getInstance();
         if (settingsToImport['media_visible'] != null) {
-          await prefs.setBool('media_visible', settingsToImport['media_visible']);
+          await prefs.setBool(
+            'media_visible',
+            settingsToImport['media_visible'],
+          );
         }
         if (settingsToImport['auto_import_silent'] != null) {
-          await prefs.setBool('auto_import_silent', settingsToImport['auto_import_silent']);
+          await prefs.setBool(
+            'auto_import_silent',
+            settingsToImport['auto_import_silent'],
+          );
         }
       }
       progress.value = 0.95;
@@ -4538,7 +5558,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       progress.value = 1.0;
 
       if (mounted) Navigator.of(context).pop(); // 关闭进度对话框
-      
+
       // 导入成功后自动清理大缓存文件
       try {
         final cacheService = CacheService();
@@ -4557,7 +5577,11 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       if (mounted) Navigator.of(context).pop();
       if (mounted) {
         final userMsg = formatExportImportError(e, '导入失败');
-        showExportImportErrorDialog(context, '媒体导入失败', '出错阶段：$currentPhase\n\n$userMsg');
+        showExportImportErrorDialog(
+          context,
+          '媒体导入失败',
+          '出错阶段：$currentPhase\n\n$userMsg',
+        );
       }
     } finally {
       // 关键：无论成功或失败，都强制彻底清理本次导入的临时目录
@@ -4568,9 +5592,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         } catch (e) {
           debugPrint('警告：清理媒体导入临时目录失败: $e');
           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('警告：部分临时导入文件未能清理: $e')),
-            );
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(SnackBar(content: Text('警告：部分临时导入文件未能清理: $e')));
           }
         }
       }
@@ -4580,22 +5604,25 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   Future<void> _showGenerateTestDataDialog() async {
     final scale = await showDialog<TestDataScale>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text('选择测试数据规模'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: TestDataScale.mediaScales
-                  .map((s) {
-                    final suffix = s.formulaMedia.substring(s.label.length) +
+      builder:
+          (ctx) => AlertDialog(
+            title: Text('选择测试数据规模'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children:
+                  TestDataScale.mediaScales.map((s) {
+                    final suffix =
+                        s.formulaMedia.substring(s.label.length) +
                         (s.isPeakTarget ? '（需数分钟）' : '');
                     return ListTile(
                       dense: true,
                       title: RichText(
                         text: TextSpan(
                           style: TextStyle(
-                            color: Theme.of(ctx).brightness == Brightness.dark
-                                ? Colors.white
-                                : Colors.black87,
+                            color:
+                                Theme.of(ctx).brightness == Brightness.dark
+                                    ? Colors.white
+                                    : Colors.black87,
                             fontSize: 14,
                           ),
                           children: [
@@ -4613,31 +5640,35 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                       ),
                       onTap: () => Navigator.pop(ctx, s),
                     );
-                  })
-              .toList(),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: Text('取消'),
+                  }).toList(),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: Text('取消'),
+              ),
+            ],
           ),
-        ],
-      ),
     );
     if (scale == null || !mounted) return;
     if (scale.isPeakTarget) {
       final confirm = await showDialog<bool>(
         context: context,
-        builder: (ctx) => AlertDialog(
-          title: Text('确认峰值测试'),
-          content: Text(
-            '将生成约 15GB 测试数据，预计耗时数分钟。\n请确保设备有足够存储空间。\n\n继续？',
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text('取消')),
-            TextButton(onPressed: () => Navigator.pop(ctx, true), child: Text('继续')),
-          ],
-        ),
+        builder:
+            (ctx) => AlertDialog(
+              title: Text('确认峰值测试'),
+              content: Text('将生成约 15GB 测试数据，预计耗时数分钟。\n请确保设备有足够存储空间。\n\n继续？'),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: Text('取消'),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  child: Text('继续'),
+                ),
+              ],
+            ),
       );
       if (confirm != true || !mounted) return;
     }
@@ -4645,22 +5676,26 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            CircularProgressIndicator(),
-            SizedBox(height: 16),
-            ValueListenableBuilder<String>(
-              valueListenable: progress,
-              builder: (_, v, __) => Text(v),
+      builder:
+          (ctx) => AlertDialog(
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(height: 16),
+                ValueListenableBuilder<String>(
+                  valueListenable: progress,
+                  builder: (_, v, __) => Text(v),
+                ),
+              ],
             ),
-          ],
-        ),
-      ),
+          ),
     );
     try {
-      final result = await TestDataGeneratorService().generateMediaTestData(scale, progress: progress);
+      final result = await TestDataGeneratorService().generateMediaTestData(
+        scale,
+        progress: progress,
+      );
       if (!mounted) return;
       Navigator.pop(context);
       ScaffoldMessenger.of(context).showSnackBar(
@@ -4675,7 +5710,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     } catch (e) {
       if (mounted) {
         Navigator.pop(context);
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('生成失败: $e')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('生成失败: $e')));
       }
     }
   }
@@ -4716,7 +5753,11 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
   // 优化后的递归拷贝目录方法 - 使用流式处理避免内存溢出，支持大文件
   /// [onProgress] 可选，用于导入时显示进度 (processed, total, message)
-  Future<void> _copyDirectory(Directory src, Directory dst, {void Function(int processed, int total, String msg)? onProgress}) async {
+  Future<void> _copyDirectory(
+    Directory src,
+    Directory dst, {
+    void Function(int processed, int total, String msg)? onProgress,
+  }) async {
     if (!await dst.exists()) await dst.create(recursive: true);
 
     int totalFiles = 0;
@@ -4755,15 +5796,19 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           }
 
           processedFiles++;
-          if (onProgress != null && (processedFiles % 25 == 0 || processedFiles == totalFiles)) {
-            onProgress(processedFiles, totalFiles, '迁移媒体: $processedFiles/$totalFiles');
+          if (onProgress != null &&
+              (processedFiles % 25 == 0 || processedFiles == totalFiles)) {
+            onProgress(
+              processedFiles,
+              totalFiles,
+              '迁移媒体: $processedFiles/$totalFiles',
+            );
           }
 
           // 每处理10个文件后稍作延迟，让系统有时间进行内存管理
           if (processedFiles % 10 == 0) {
             await Future.delayed(Duration(milliseconds: 50));
           }
-
         } catch (e) {
           Logger.log('复制文件失败: ${entity.path} -> $newPath, 错误: $e');
           // 继续处理其他文件
@@ -4777,11 +5822,11 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     const int chunkSize = 64 * 1024; // 64KB chunks
     final sourceStream = source.openRead();
     final targetStream = target.openWrite();
-    
+
     try {
       await for (final chunk in sourceStream) {
         targetStream.add(chunk);
-        
+
         // 每处理一定大小的数据后稍作延迟
         if (chunk.length > 0) {
           await Future.delayed(Duration(milliseconds: 1));
@@ -4795,7 +5840,8 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   /// 初始化自动导入监听。相册列表与批量导入一致（MediaStore bucket + 合并补全）。
   Future<void> _initPhotoAutoImport() async {
     try {
-      final List<AssetPathEntity> paths = await getMergedAlbumPathListForImport();
+      final List<AssetPathEntity> paths =
+          await getMergedAlbumPathListForImport();
       final List<AssetEntity> allAssets = [];
       for (final p in paths) {
         allAssets.addAll(await p.getAssetListRange(start: 0, end: 100000));
@@ -4818,7 +5864,8 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     if (_isAutoProcessing) return;
     _isAutoProcessing = true;
     try {
-      final List<AssetPathEntity> paths = await getMergedAlbumPathListForImport();
+      final List<AssetPathEntity> paths =
+          await getMergedAlbumPathListForImport();
       final List<AssetEntity> allAssets = [];
       for (final p in paths) {
         allAssets.addAll(await p.getAssetListRange(start: 0, end: 100000));
@@ -4855,7 +5902,8 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       final file = await asset.file;
       if (file == null) return;
       // 仅处理图片/视频
-      if (asset.type != AssetType.image && asset.type != AssetType.video) return;
+      if (asset.type != AssetType.image && asset.type != AssetType.video)
+        return;
       // 导入到应用媒体库（静默：无进度框、无成功提示，原件保留）
       await _saveMultipleMediaToAppDirectory(
         [file],
@@ -4878,9 +5926,12 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     if (hasSelection) {
       for (var item in _mediaItems) {
         if (!_selectedItems.contains(item.id)) continue;
-        if (item.type == MediaType.image) imageCount++;
-        else if (item.type == MediaType.video) videoCount++;
-        else if (item.type == MediaType.folder) folderCount++;
+        if (item.type == MediaType.image)
+          imageCount++;
+        else if (item.type == MediaType.video)
+          videoCount++;
+        else if (item.type == MediaType.folder)
+          folderCount++;
       }
     }
 
@@ -4905,7 +5956,8 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     if (imageCount > 0) parts.add('$imageCount张图片');
     if (videoCount > 0) parts.add('$videoCount个视频');
     if (folderCount > 0) parts.add('$folderCount个文件夹');
-    final countText = parts.isEmpty ? '${_selectedItems.length}项' : parts.join(' ');
+    final countText =
+        parts.isEmpty ? '${_selectedItems.length}项' : parts.join(' ');
 
     return Material(
       color: Theme.of(context).colorScheme.surface,
@@ -4925,10 +5977,14 @@ class _MediaManagerPageState extends State<MediaManagerPage>
               ),
             ),
             IconButton(
-              icon: Icon(_mediaItems.where((i) => i.type != MediaType.folder).every((i) => _selectedItems.contains(i)) &&
-                      _mediaItems.any((i) => i.type != MediaType.folder)
-                  ? Icons.deselect
-                  : Icons.select_all),
+              icon: Icon(
+                _mediaItems
+                            .where((i) => i.type != MediaType.folder)
+                            .every((i) => _selectedItems.contains(i)) &&
+                        _mediaItems.any((i) => i.type != MediaType.folder)
+                    ? Icons.deselect
+                    : Icons.select_all,
+              ),
               onPressed: _selectAll,
               tooltip: '全选/取消全选',
             ),
@@ -4957,9 +6013,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   void _showStorageManagement() {
     Navigator.push(
       context,
-      MaterialPageRoute(
-        builder: (context) => const StorageManagementPage(),
-      ),
+      MaterialPageRoute(builder: (context) => const StorageManagementPage()),
     );
   }
 
@@ -4993,15 +6047,22 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                 alignment: Alignment.centerLeft,
                 child: Text(
                   '媒体',
-                  style: Theme.of(context).appBarTheme.titleTextStyle ??
-                      const TextStyle(fontSize: 20, fontWeight: FontWeight.w500),
+                  style:
+                      Theme.of(context).appBarTheme.titleTextStyle ??
+                      const TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w500,
+                      ),
                 ),
               ),
             );
           },
         ),
         automaticallyImplyLeading: false,
-        title: _currentDirectory == 'root' ? null : Text('媒体 / $_currentDirectory'),
+        title:
+            _currentDirectory == 'root'
+                ? null
+                : Text('媒体 / $_currentDirectory'),
         actions: [
           IconButton(
             icon: const Icon(Icons.find_replace, size: 20),
@@ -5028,7 +6089,10 @@ class _MediaManagerPageState extends State<MediaManagerPage>
             ),
           ),
           IconButton(
-            icon: Icon(_mediaVisible ? Icons.visibility : Icons.visibility_off, size: 20),
+            icon: Icon(
+              _mediaVisible ? Icons.visibility : Icons.visibility_off,
+              size: 20,
+            ),
             onPressed: _toggleMediaVisibility,
             tooltip: '切换媒体可见性',
             style: IconButton.styleFrom(
@@ -5072,9 +6136,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
             left: 0,
             right: 0,
             bottom: 0,
-            child: SafeArea(
-              child: _buildBottomActionBar(),
-            ),
+            child: SafeArea(child: _buildBottomActionBar()),
           ),
         ],
       ),
@@ -5083,34 +6145,46 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 }
 
 // 进度弹窗组件
-Future<void> showProgressDialog(BuildContext context, ValueNotifier<double> progress, ValueNotifier<String> message) async {
+Future<void> showProgressDialog(
+  BuildContext context,
+  ValueNotifier<double> progress,
+  ValueNotifier<String> message,
+) async {
   await showDialog(
     context: context,
     barrierDismissible: false,
-    builder: (context) => AlertDialog(
-      content: SizedBox(
-        width: 260,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ValueListenableBuilder<double>(
-              valueListenable: progress,
-              builder: (context, value, _) => LinearProgressIndicator(value: value),
+    builder:
+        (context) => AlertDialog(
+          content: SizedBox(
+            width: 260,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ValueListenableBuilder<double>(
+                  valueListenable: progress,
+                  builder:
+                      (context, value, _) =>
+                          LinearProgressIndicator(value: value),
+                ),
+                const SizedBox(height: 16),
+                ValueListenableBuilder<double>(
+                  valueListenable: progress,
+                  builder:
+                      (context, value, _) => Text(
+                        '${(value * 100).toStringAsFixed(0)}%',
+                        style: const TextStyle(fontSize: 16),
+                      ),
+                ),
+                const SizedBox(height: 8),
+                ValueListenableBuilder<String>(
+                  valueListenable: message,
+                  builder:
+                      (context, value, _) =>
+                          Text(value, style: const TextStyle(fontSize: 13)),
+                ),
+              ],
             ),
-            const SizedBox(height: 16),
-            ValueListenableBuilder<double>(
-              valueListenable: progress,
-              builder: (context, value, _) => Text('${(value * 100).toStringAsFixed(0)}%', style: const TextStyle(fontSize: 16)),
-            ),
-            const SizedBox(height: 8),
-            ValueListenableBuilder<String>(
-              valueListenable: message,
-              builder: (context, value, _) => Text(value, style: const TextStyle(fontSize: 13)),
-            ),
-          ],
+          ),
         ),
-      ),
-    ),
   );
 }
-

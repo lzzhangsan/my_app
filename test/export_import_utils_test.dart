@@ -3,6 +3,7 @@
 
 import 'dart:io';
 
+import 'package:archive/archive.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:change_copy/services/export_import_utils.dart';
 
@@ -54,6 +55,32 @@ void main() {
       final targetFile = File(targetPath);
       expect(await targetFile.exists(), true);
       expect(await targetFile.length(), size);
+    });
+  });
+
+  group('extractArchiveFileToPath', () {
+    late Directory tempDir;
+
+    setUp(() async {
+      tempDir = await Directory.systemTemp.createTemp('archive_extract_test_');
+    });
+
+    tearDown(() async {
+      try {
+        await tempDir.delete(recursive: true);
+      } catch (_) {}
+    });
+
+    test('archive entry 应被流式写入目标路径', () async {
+      final bytes = 'archive payload'.codeUnits;
+      final file = ArchiveFile('payload.txt', bytes.length, bytes);
+      final outputPath = '${tempDir.path}/nested/payload.txt';
+
+      await extractArchiveFileToPath(file, outputPath);
+
+      final outputFile = File(outputPath);
+      expect(await outputFile.exists(), true);
+      expect(await outputFile.readAsString(), 'archive payload');
     });
   });
 

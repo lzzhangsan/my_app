@@ -102,9 +102,10 @@ class DatabaseService {
     try {
       // 注意：部分 Android 设备上 PRAGMA 需用 rawQuery，且 busy_timeout 可能不兼容，已移除
       await db.rawQuery('PRAGMA foreign_keys = ON');
-      await db.rawQuery('PRAGMA synchronous = NORMAL');
+      await db.rawQuery('PRAGMA journal_mode = WAL');
+      await db.rawQuery('PRAGMA synchronous = FULL');
       await db.rawQuery('PRAGMA cache_size = 10000');
-      await db.rawQuery('PRAGMA temp_store = MEMORY');
+      await db.rawQuery('PRAGMA temp_store = FILE');
       await db.rawQuery('PRAGMA page_size = 4096');
       await db.rawQuery('PRAGMA auto_vacuum = INCREMENTAL');
       
@@ -1622,8 +1623,12 @@ class DatabaseService {
               }
               try {
                 await txn.insert(tableName, clean, conflictAlgorithm: ConflictAlgorithm.replace);
-              } catch (rowErr) {
+              } catch (rowErr, rowStack) {
                 Logger.log('[导入] 行插入失败(表:$tableName): $rowErr');
+                Error.throwWithStackTrace(
+                  Exception('目录数据导入失败，表 $tableName 存在无法写入的记录，已回滚以保护现有数据。原始错误: $rowErr'),
+                  rowStack,
+                );
               }
               processedRows++;
               if (processedRows % kProgressUpdateInterval == 0) {
@@ -2247,15 +2252,16 @@ class DatabaseService {
       
       // 用流式InputFileStream解压ZIP文件
       final inputStream = InputFileStream(zipPath);
+      try {
       final archive = ZipDecoder().decodeStream(inputStream);
       for (final file in archive) {
         if (file.isFile) {
           final outPath = resolveSafeExtractPath(tempDirPath, file.name);
-          final data = file.content as List<int>;
-          File(outPath)
-            ..parent.createSync(recursive: true)
-            ..writeAsBytesSync(data);
+          await extractArchiveFileToPath(file, outPath);
         }
+      }
+      } finally {
+        await inputStream.close();
       }
       
       // 读取文档数据
@@ -3008,15 +3014,16 @@ class DatabaseService {
 
       // 用流式InputFileStream解压ZIP文件
       final inputStream = InputFileStream(zipPath);
-      final archive = ZipDecoder().decodeStream(inputStream);
-      for (var file in archive) {
-        if (file.isFile) {
-          final outPath = resolveSafeExtractPath(tempDirPath, file.name);
-          final data = file.content as List<int>;
-          File(outPath)
-            ..parent.createSync(recursive: true)
-            ..writeAsBytesSync(data);
+      try {
+        final archive = ZipDecoder().decodeStream(inputStream);
+        for (var file in archive) {
+          if (file.isFile) {
+            final outPath = resolveSafeExtractPath(tempDirPath, file.name);
+            await extractArchiveFileToPath(file, outPath);
+          }
         }
+      } finally {
+        await inputStream.close();
       }
 
       // 读取目录数据

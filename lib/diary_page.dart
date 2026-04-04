@@ -1223,26 +1223,31 @@ class _DiaryPageState extends State<DiaryPage> {
       }
 
       currentPhase = '解压压缩包';
-      final archive = ZipDecoder().decodeStream(InputFileStream(zipFile.path));
+      final inputStream = InputFileStream(zipFile.path);
+      try {
+        final archive = ZipDecoder().decodeStream(inputStream);
 
-      // 3. 解压到临时目录
-      int total = archive.files.length;
-      int done = 0;
-      for (final file in archive) {
-        final filename = file.name;
-        final outPath = resolveSafeExtractPath(tempImportDir.path, filename);
-        if (file.isFile) {
-          final outFile = File(outPath);
-          await outFile.parent.create(recursive: true);
-          final outputStream = OutputFileStream(outFile.path);
-          file.writeContent(outputStream);
-          await outputStream.close();
-        } else {
-          await Directory(outPath).create(recursive: true);
+        // 3. 解压到临时目录
+        int total = archive.files.length;
+        int done = 0;
+        for (final file in archive) {
+          final filename = file.name;
+          final outPath = resolveSafeExtractPath(tempImportDir.path, filename);
+          if (file.isFile) {
+            final outFile = File(outPath);
+            await outFile.parent.create(recursive: true);
+            final outputStream = OutputFileStream(outFile.path);
+            file.writeContent(outputStream);
+            await outputStream.close();
+          } else {
+            await Directory(outPath).create(recursive: true);
+          }
+          done++;
+          progress.value = (done / total) * 0.5; // 解压占50%
+          message.value = '正在解压: $done/$total';
         }
-        done++;
-        progress.value = (done / total) * 0.5; // 解压占50%
-        message.value = '正在解压: $done/$total';
+      } finally {
+        await inputStream.close();
       }
 
       // 4. 获取永久媒体目录（路径重映射需要）
