@@ -41,9 +41,8 @@ class _GlobalToolBarState extends State<GlobalToolBar> {
   int _tapCount = 0;
   Timer? _tapTimer;
   int _playTapCount = 0;
-  DateTime? _lastPlayTapTime;
-  Timer? _playResetTimer;
-  /// 两次点击间隔超过此时长则视为新的一次单击（单/双击即时，三击单独计数）
+  Timer? _playTapSettleTimer;
+  /// 播放键：最后一次点击后等待此时长再判定 1/2/3 击，避免三击过程中先触发单击、双击。
   static const Duration _playMultiTapWindow = Duration(milliseconds: 420);
   static const Duration _tapTimeout = Duration(milliseconds: 600); // 左侧新建键三连击检测时间窗口
 
@@ -82,43 +81,25 @@ class _GlobalToolBarState extends State<GlobalToolBar> {
   }
 
   void _handlePlayButtonTap() {
-    final now = DateTime.now();
-    if (_lastPlayTapTime != null &&
-        now.difference(_lastPlayTapTime!) > _playMultiTapWindow) {
-      _playTapCount = 0;
-    }
-    _lastPlayTapTime = now;
     _playTapCount++;
-
-    _playResetTimer?.cancel();
-    _playResetTimer = Timer(_playMultiTapWindow, () {
+    _playTapSettleTimer?.cancel();
+    _playTapSettleTimer = Timer(_playMultiTapWindow, () {
+      final c = _playTapCount;
       _playTapCount = 0;
+      if (c >= 3) {
+        widget.onMediaSettings?.call();
+      } else if (c == 2) {
+        widget.onContinuousMediaPlay?.call();
+      } else if (c == 1) {
+        widget.onMediaPlay?.call();
+      }
     });
-
-    if (_playTapCount == 1) {
-      if (widget.onMediaPlay != null) {
-        widget.onMediaPlay!();
-      }
-    } else if (_playTapCount == 2) {
-      if (widget.onContinuousMediaPlay != null) {
-        widget.onContinuousMediaPlay!();
-      }
-    } else if (_playTapCount >= 3) {
-      if (widget.onMediaSettings != null) {
-        widget.onMediaSettings!();
-      }
-      _playTapCount = 0;
-      _playResetTimer?.cancel();
-    }
   }
 
   void _handlePlayButtonLongPress() {
-    _playResetTimer?.cancel();
+    _playTapSettleTimer?.cancel();
     _playTapCount = 0;
-    _lastPlayTapTime = null;
-    if (widget.onMediaStop != null) {
-      widget.onMediaStop!();
-    }
+    widget.onMediaStop?.call();
   }
 
   void _handleAddButtonLongPress() {
@@ -134,7 +115,7 @@ class _GlobalToolBarState extends State<GlobalToolBar> {
   @override
   void dispose() {
     _tapTimer?.cancel();
-    _playResetTimer?.cancel();
+    _playTapSettleTimer?.cancel();
     super.dispose();
   }
   @override
