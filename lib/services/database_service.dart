@@ -23,7 +23,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// 数据库服务 - 统一管理所有数据库操作
 class DatabaseService {
   static const String _databaseName = 'change_app.db';
-  static const int _databaseVersion = 13; // 添加 imported_asset_ids 表防止静默导入重复
+  static const int _databaseVersion = 14; // media_items：渐进放大中心点 ken_burns_center_x/y
   
   Database? _database;
   final Completer<Database> _initCompleter = Completer<Database>();
@@ -72,6 +72,9 @@ class DatabaseService {
       
       // 检查document_settings表是否存在position_locked字段
       await _ensurePositionLockedColumn();
+
+      // 部分环境未走 onUpgrade 或旧表缺少列：补全渐进放大中心点字段
+      await _ensureMediaItemsKenBurnsColumns(_database!);
       
       _initCompleter.complete(_database!);
       _isInitialized = true;
@@ -246,6 +249,8 @@ class DatabaseService {
           file_hash TEXT,
           telegram_file_id TEXT,
           is_favorite INTEGER DEFAULT 0,
+          ken_burns_center_x REAL,
+          ken_burns_center_y REAL,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
         )
@@ -401,6 +406,22 @@ class DatabaseService {
           )
         ''');
         if (kDebugMode) Logger.log('已创建 imported_asset_ids 表');
+        break;
+      case 14:
+        // 渐进放大（Ken Burns）自定义缩放中心，归一化坐标 0～1（与导出 JSON 一并备份）
+        try {
+          await db.execute(
+            'ALTER TABLE media_items ADD COLUMN ken_burns_center_x REAL',
+          );
+        } catch (_) {}
+        try {
+          await db.execute(
+            'ALTER TABLE media_items ADD COLUMN ken_burns_center_y REAL',
+          );
+        } catch (_) {}
+        if (kDebugMode) {
+          Logger.log('已添加 ken_burns_center_x/y 列到 media_items');
+        }
         break;
       case 8:
         // 添加新的字段和索引
@@ -620,7 +641,40 @@ class DatabaseService {
     await batch.commit(noResult: true);
   }
 
-  /// 确保媒体��表存在
+  /// 若 `media_items` 缺少渐进放大中心列则补全（与版本迁移互补，避免旧库/旁路建表漏列）。
+  Future<void> _ensureMediaItemsKenBurnsColumns(Database db) async {
+    try {
+      final tables = await db.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='media_items';",
+      );
+      if (tables.isEmpty) return;
+
+      Future<void> addIfMissing(String columnName, String alterSql) async {
+        final columns = await db.rawQuery('PRAGMA table_info(media_items);');
+        final names = columns.map((c) => c['name'] as String).toSet();
+        if (!names.contains(columnName)) {
+          await db.execute(alterSql);
+          if (kDebugMode) {
+            Logger.log('已补全 media_items.$columnName');
+          }
+        }
+      }
+
+      await addIfMissing(
+        'ken_burns_center_x',
+        'ALTER TABLE media_items ADD COLUMN ken_burns_center_x REAL',
+      );
+      await addIfMissing(
+        'ken_burns_center_y',
+        'ALTER TABLE media_items ADD COLUMN ken_burns_center_y REAL',
+      );
+    } catch (e, stackTrace) {
+      _handleError('补全 ken_burns 列失败', e, stackTrace);
+      rethrow;
+    }
+  }
+
+  /// 确保媒体项表存在
   Future<void> ensureMediaItemsTableExists() async {
     try {
       final db = await database;
@@ -641,6 +695,7 @@ class DatabaseService {
             file_hash TEXT
           )
         ''');
+        await _ensureMediaItemsKenBurnsColumns(db);
         Logger.log('已创建media_items表');
       } else {
         // 检查file_hash列是否存在
@@ -652,6 +707,7 @@ class DatabaseService {
           await db.execute('ALTER TABLE media_items ADD COLUMN file_hash TEXT;');
           Logger.log('已添加file_hash列到media_items表');
         }
+        await _ensureMediaItemsKenBurnsColumns(db);
         Logger.log('media_items表已存在');
       }
     } catch (e, stackTrace) {
@@ -4525,6 +4581,8 @@ class DatabaseService {
           file_hash TEXT,
           telegram_file_id TEXT,
           is_favorite INTEGER DEFAULT 0,
+          ken_burns_center_x REAL,
+          ken_burns_center_y REAL,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
         )
@@ -4565,6 +4623,8 @@ class DatabaseService {
           file_hash TEXT,
           telegram_file_id TEXT,
           is_favorite INTEGER DEFAULT 0,
+          ken_burns_center_x REAL,
+          ken_burns_center_y REAL,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
         )

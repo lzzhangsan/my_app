@@ -11,7 +11,6 @@ import 'core/service_locator.dart';
 import 'services/database_service.dart';
 import 'media_selection_dialog.dart'; // 导入媒体选择对话框
 import 'models/media_item.dart'; // 添加MediaItem类的导入
-import 'models/media_type.dart'; // 导入MediaType枚举
 import 'services/logger.dart';
 import 'media_player_settings.dart';
 import 'widgets/ken_burns_image_display.dart';
@@ -46,6 +45,8 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
   bool _panClockwise = true;
   double _imagePanRoamCoverage = 0.28;
   ImageLetterboxFill _letterboxFill = ImageLetterboxFill.white;
+  /// 双击更新 Ken Burns 中心后递增，强制重建以立即重播动画。
+  int _kenBurnsReplayTick = 0;
   int _sequentialIndex = 0;
 
   String _sequentialIndexPrefsKey() {
@@ -298,24 +299,83 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
 
   Future<MediaItem?> getCurrentMedia() async {
     if (_currentPlayingMedia == null) return null;
-    
-    // 安全地获取type索引，确保不会超出范围
-    final typeIndex = _currentPlayingMedia!['type'] as int;
-    final safeTypeIndex = typeIndex < MediaType.values.length ? typeIndex : 0; // 如果索引越界，默认使用image类型
-    
-    return MediaItem(
-      id: _currentPlayingMedia!['id'],
-      name: _currentPlayingMedia!['name'],
-      path: _currentPlayingMedia!['path'],
-      type: MediaType.values[safeTypeIndex],
-      directory: _currentPlayingMedia!['directory'],
-      dateAdded: DateTime.parse(_currentPlayingMedia!['date_added']),
+    return MediaItem.fromMap(
+      Map<String, dynamic>.from(_currentPlayingMedia!),
     );
   }
 
   // 获取当前的VideoPlayerWidget实例
   VideoPlayerWidget? getCurrentVideoWidget() {
     return _currentVideoWidget;
+  }
+
+  String _kenBurnsWidgetKey(Map<String, dynamic> nextMedia) {
+    return '${nextMedia['path']}_ken_$_mediaMode'
+        '_${_letterboxFill.index}'
+        '_${(nextMedia['ken_burns_center_x'] as num?)?.toStringAsFixed(3) ?? 'c'}'
+        '_${(nextMedia['ken_burns_center_y'] as num?)?.toStringAsFixed(3) ?? 'c'}'
+        '_$_kenBurnsReplayTick';
+  }
+
+  Widget _buildKenBurnsForPlaying(
+    Map<String, dynamic> nextMedia,
+    File mediaFile,
+  ) {
+    return KenBurnsImageDisplay(
+      key: ValueKey(_kenBurnsWidgetKey(nextMedia)),
+      imageFile: mediaFile,
+      animationDuration: _imageDuration,
+      maxScale: _zoomMax,
+      letterboxFill: _letterboxFill,
+      zoomCenterX: (nextMedia['ken_burns_center_x'] as num?)?.toDouble(),
+      zoomCenterY: (nextMedia['ken_burns_center_y'] as num?)?.toDouble(),
+      enableDoubleTapToSetZoomCenter: true,
+      onZoomCenterSet: (nx, ny) =>
+          _persistKenBurnsCenterAndReplay(nextMedia, mediaFile, nx, ny),
+      loop: _mediaMode == MediaMode.manual,
+      onAnimationComplete: _mediaMode == MediaMode.auto
+          ? () {
+              if (_mediaMode == MediaMode.auto) {
+                _showNextMedia();
+              }
+            }
+          : null,
+    );
+  }
+
+  Future<void> _persistKenBurnsCenterAndReplay(
+    Map<String, dynamic> nextMedia,
+    File mediaFile,
+    double nx,
+    double ny,
+  ) async {
+    try {
+      await _databaseService.updateMediaItem({
+        'id': nextMedia['id'] as String,
+        'ken_burns_center_x': nx,
+        'ken_burns_center_y': ny,
+        'updated_at': DateTime.now().millisecondsSinceEpoch,
+      });
+      if (!mounted) return;
+      final messenger = ScaffoldMessenger.of(context);
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        SnackBar(
+          content: const Text('已保存放大中心，画面将重新播放'),
+          duration: const Duration(milliseconds: 2200),
+          behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+        ),
+      );
+      setState(() {
+        nextMedia['ken_burns_center_x'] = nx;
+        nextMedia['ken_burns_center_y'] = ny;
+        _kenBurnsReplayTick++;
+        _mediaWidget = _buildKenBurnsForPlaying(nextMedia, mediaFile);
+      });
+    } catch (e) {
+      Logger.e('保存 Ken Burns 中心失败', e);
+    }
   }
 
   void _showNextMedia() async {
@@ -388,24 +448,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
           // 图片
           if (_imageMode == MediaImageDisplayMode.kenBurns) {
             setState(() {
-              _mediaWidget = KenBurnsImageDisplay(
-                key: ValueKey(
-                  '${nextMedia['path']}_ken_$_mediaMode'
-                  '_${_letterboxFill.index}',
-                ),
-                imageFile: mediaFile,
-                animationDuration: _imageDuration,
-                maxScale: _zoomMax,
-                letterboxFill: _letterboxFill,
-                loop: _mediaMode == MediaMode.manual,
-                onAnimationComplete: _mediaMode == MediaMode.auto
-                    ? () {
-                        if (_mediaMode == MediaMode.auto) {
-                          _showNextMedia();
-                        }
-                      }
-                    : null,
-              );
+              _mediaWidget = _buildKenBurnsForPlaying(nextMedia, mediaFile);
             });
           } else if (_imageMode == MediaImageDisplayMode.zoomPanEdge) {
             setState(() {

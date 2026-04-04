@@ -51,6 +51,8 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
   bool _panClockwise = true;
   double _imagePanRoamCoverage = 0.28;
   ImageLetterboxFill _letterboxFill = ImageLetterboxFill.white;
+  /// 双击更新渐进放大中心后递增，强制 Ken Burns 立即重播。
+  int _kenBurnsReplayTick = 0;
   Timer? _mediaTimer;
   bool _skipNextPageChanged = false; // 删除/收藏/移动后忽略一次 onPageChanged，避免跳回第一项
 
@@ -96,6 +98,47 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     );
     
     super.dispose();
+  }
+
+  /// 双击设置渐进放大中心；归一化坐标写入数据库并更新当前列表项，并立即重播动画。
+  Future<void> _persistKenBurnsCenter(MediaItem item, double nx, double ny) async {
+    try {
+      await _dbService.updateMediaItem({
+        'id': item.id,
+        'ken_burns_center_x': nx,
+        'ken_burns_center_y': ny,
+        'updated_at': DateTime.now().millisecondsSinceEpoch,
+      });
+      if (!mounted) return;
+      final idx = widget.mediaItems.indexWhere((e) => e.id == item.id);
+      if (idx < 0) return;
+      final messenger = ScaffoldMessenger.of(context);
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        SnackBar(
+          content: const Text('已保存放大中心，画面将重新播放'),
+          duration: const Duration(milliseconds: 2200),
+          behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+        ),
+      );
+      setState(() {
+        _kenBurnsReplayTick++;
+        widget.mediaItems[idx] = widget.mediaItems[idx].copyWith(
+          kenBurnsCenterX: nx,
+          kenBurnsCenterY: ny,
+        );
+      });
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('保存中心点失败: $e'),
+          behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+        ),
+      );
+    }
   }
 
   Future<void> _loadMediaPreviewSettings() async {
@@ -569,15 +612,8 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     
     try {
       // 使用媒体管理页面中的移动方法
-      final updatedItem = MediaItem(
-        id: item.id,
-        name: item.name,
-        path: item.path,
-        type: item.type,
-        directory: targetFolder.id,
-        dateAdded: item.dateAdded,
-      );
-      
+      final updatedItem = item.copyWith(directory: targetFolder.id);
+
       final result = await _dbService.updateMediaItem(updatedItem.toMap());
       if (result <= 0) {
         throw Exception('媒体项更新失败');
@@ -636,12 +672,19 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
         inner = KenBurnsImageDisplay(
           key: ValueKey(
             '${item.path}_ken_${_mediaMode}_${_imageDuration.inMilliseconds}_'
-            '${_zoomMax.toStringAsFixed(1)}_${_letterboxFill.index}',
+            '${_zoomMax.toStringAsFixed(1)}_${_letterboxFill.index}_'
+            '${item.kenBurnsCenterX?.toStringAsFixed(3) ?? 'c'}_'
+            '${item.kenBurnsCenterY?.toStringAsFixed(3) ?? 'c'}_'
+            '$_kenBurnsReplayTick',
           ),
           imageFile: file,
           animationDuration: _imageDuration,
           maxScale: _zoomMax,
           letterboxFill: _letterboxFill,
+          zoomCenterX: item.kenBurnsCenterX,
+          zoomCenterY: item.kenBurnsCenterY,
+          enableDoubleTapToSetZoomCenter: true,
+          onZoomCenterSet: (nx, ny) => _persistKenBurnsCenter(item, nx, ny),
           loop: loopAnim,
           onAnimationComplete: loopAnim ? null : onAnimComplete,
         );
@@ -664,20 +707,36 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
         );
         break;
       case MediaImageDisplayMode.fitWidth:
-        inner = FitWidthBlurStaticImage(
-          key: ValueKey(
-            '${item.path}_fit_${_imageDuration.inMilliseconds}_${_letterboxFill.index}',
+        inner = GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onDoubleTapDown: (_) {
+            if (!mounted) return;
+            final messenger = ScaffoldMessenger.of(context);
+            messenger.hideCurrentSnackBar();
+            messenger.showSnackBar(
+              SnackBar(
+                content: const Text(
+                  '当前为静态展示。请打开「媒体播放设置」，将图片展现改为「渐进放大」后，再双击可设置放大中心。',
+                ),
+                duration: const Duration(milliseconds: 3000),
+                behavior: SnackBarBehavior.floating,
+                margin: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+              ),
+            );
+          },
+          child: FitWidthBlurStaticImage(
+            key: ValueKey(
+              '${item.path}_fit_${_imageDuration.inMilliseconds}_${_letterboxFill.index}',
+            ),
+            file: file,
+            letterboxFill: _letterboxFill,
           ),
-          file: file,
-          letterboxFill: _letterboxFill,
         );
         break;
     }
 
-    return GestureDetector(
-      onTap: () => _toggleControls(),
-      child: inner,
-    );
+    // 图片预览无需外层 onTap（_toggleControls 仅对视频有效）；外层会抢占手势导致渐进放大双击不触发。
+    return inner;
   }
 
   Widget _buildVideoPreview(MediaItem item, int index) {
@@ -897,15 +956,8 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     final item = widget.mediaItems[_currentIndex];
     try {
       // 更新媒体项到收藏夹目录
-      final updatedItem = MediaItem(
-        id: item.id,
-        name: item.name,
-        path: item.path,
-        type: item.type,
-        directory: 'favorites', // 假设'favorites'是收藏夹的目录ID
-        dateAdded: item.dateAdded,
-      );
-      
+      final updatedItem = item.copyWith(directory: 'favorites');
+
       final result = await _dbService.updateMediaItem(updatedItem.toMap());
       if (result <= 0) {
         throw Exception('添加到收藏夹失败');
@@ -958,15 +1010,8 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
       }
 
       // 更新媒体项到回收站目录
-      final updatedItem = MediaItem(
-        id: item.id,
-        name: item.name,
-        path: item.path,
-        type: item.type,
-        directory: trashFolder.id, // 使用实际的回收站文件夹ID
-        dateAdded: item.dateAdded,
-      );
-      
+      final updatedItem = item.copyWith(directory: trashFolder.id);
+
       final result = await _dbService.updateMediaItem(updatedItem.toMap());
       if (result <= 0) {
         throw Exception('移动到回收站失败');

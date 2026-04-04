@@ -393,6 +393,15 @@ class _MediaPlayerSettingsDialogBodyState
                 unawaited(_persistAndNotify());
               },
             ),
+            if (_mode == MediaImageDisplayMode.kenBurns) ...[
+              Padding(
+                padding: const EdgeInsets.only(left: 8, right: 8, bottom: 4),
+                child: Text(
+                  '渐进放大时双击画面可选缩放中心；写入该媒体项记录，媒体备份导出/导入会保留。',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ),
+            ],
             if (_mode == MediaImageDisplayMode.zoomPanEdge) ...[
               const SizedBox(height: 4),
               SwitchListTile(

@@ -1,6 +1,14 @@
 // lib/models/media_item.dart
 import 'media_type.dart'; // 导入MediaType枚举
 
+double? _readKenBurnsCoord(dynamic v) {
+  if (v == null) return null;
+  if (v is double) return v;
+  if (v is int) return v.toDouble();
+  if (v is num) return v.toDouble();
+  return null;
+}
+
 /// 媒体项类，用于表示一个媒体文件或文件夹
 class MediaItem {
   final String id; // 唯一标识符
@@ -9,6 +17,10 @@ class MediaItem {
   final MediaType type; // 媒体类型
   final String directory; // 所在目录
   final DateTime dateAdded; // 添加日期
+  /// 渐进放大（Ken Burns）缩放中心，相对图片左上角的归一化横坐标 0～1；null 表示几何中心。
+  final double? kenBurnsCenterX;
+  /// 渐进放大缩放中心纵坐标 0～1；null 表示几何中心。
+  final double? kenBurnsCenterY;
 
   MediaItem({
     required this.id,
@@ -17,12 +29,14 @@ class MediaItem {
     required this.type,
     required this.directory,
     required this.dateAdded,
+    this.kenBurnsCenterX,
+    this.kenBurnsCenterY,
   });
 
   /// 从 Map 构造 MediaItem，用于从数据库读取数据
   factory MediaItem.fromMap(Map<String, dynamic> map) {
     final id = map['id'] as String? ?? '';
-    
+
     // 对于特殊文件夹ID（回收站和收藏夹），始终使用文件夹类型
     if (id == 'recycle_bin' || id == 'favorites') {
       return MediaItem(
@@ -31,34 +45,64 @@ class MediaItem {
         path: map['path'] as String? ?? '',
         type: MediaType.folder, // 强制使用文件夹类型
         directory: map['directory'] as String? ?? '',
-        dateAdded: DateTime.parse(map['date_added'] as String? ?? DateTime.now().toIso8601String()),
+        dateAdded: DateTime.parse(
+          map['date_added'] as String? ?? DateTime.now().toIso8601String(),
+        ),
       );
     }
-    
+
     // 对于其他媒体项，安全地获取type索引
     final typeIndex = map['type'] as int? ?? 0;
-    final safeTypeIndex = typeIndex < MediaType.values.length ? typeIndex : 0; // 如果索引越界，默认使用image类型
-    
+    final safeTypeIndex =
+        typeIndex < MediaType.values.length ? typeIndex : 0; // 如果索引越界，默认使用image类型
+
     return MediaItem(
       id: id,
       name: map['name'] as String? ?? '',
       path: map['path'] as String? ?? '',
       type: MediaType.values[safeTypeIndex],
       directory: map['directory'] as String? ?? '',
-      dateAdded: DateTime.parse(map['date_added'] as String? ?? DateTime.now().toIso8601String()),
+      dateAdded: DateTime.parse(
+        map['date_added'] as String? ?? DateTime.now().toIso8601String(),
+      ),
+      kenBurnsCenterX: _readKenBurnsCoord(map['ken_burns_center_x']),
+      kenBurnsCenterY: _readKenBurnsCoord(map['ken_burns_center_y']),
     );
   }
 
   /// 将 MediaItem 转换为 Map，用于存储到数据库
   Map<String, dynamic> toMap() => {
-    'id': id,
-    'name': name,
-    'path': path,
-    'type': type.index,
-    'directory': directory,
-    'date_added': dateAdded.toIso8601String(),
-    'created_at': DateTime.now().millisecondsSinceEpoch,
-    'updated_at': DateTime.now().millisecondsSinceEpoch,
-  };
-}
+        'id': id,
+        'name': name,
+        'path': path,
+        'type': type.index,
+        'directory': directory,
+        'date_added': dateAdded.toIso8601String(),
+        'created_at': DateTime.now().millisecondsSinceEpoch,
+        'updated_at': DateTime.now().millisecondsSinceEpoch,
+        if (kenBurnsCenterX != null) 'ken_burns_center_x': kenBurnsCenterX,
+        if (kenBurnsCenterY != null) 'ken_burns_center_y': kenBurnsCenterY,
+      };
 
+  MediaItem copyWith({
+    String? id,
+    String? name,
+    String? path,
+    MediaType? type,
+    String? directory,
+    DateTime? dateAdded,
+    double? kenBurnsCenterX,
+    double? kenBurnsCenterY,
+  }) {
+    return MediaItem(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      path: path ?? this.path,
+      type: type ?? this.type,
+      directory: directory ?? this.directory,
+      dateAdded: dateAdded ?? this.dateAdded,
+      kenBurnsCenterX: kenBurnsCenterX ?? this.kenBurnsCenterX,
+      kenBurnsCenterY: kenBurnsCenterY ?? this.kenBurnsCenterY,
+    );
+  }
+}

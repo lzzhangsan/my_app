@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -8,6 +9,9 @@ import 'image_layout_utils.dart';
 /// 仅使用等比缩放（Transform.scale），图片用 BoxFit.fitWidth，不拉伸变形。
 /// 总时长内：前半放大至 [maxScale]，后半缩回 1×，各占 50%。
 /// [loop] 为 true 时（手动模式）动画结束自动从头循环。
+///
+/// [zoomCenterX]、[zoomCenterY] 为相对图片显示区域左上角的归一化坐标 0～1（默认 0.5 即几何中心）。
+/// 开启 [enableDoubleTapToSetZoomCenter] 且提供 [onZoomCenterSet] 时，双击图片可将该点存为新中心（由上层写入数据库）。
 class KenBurnsImageDisplay extends StatefulWidget {
   const KenBurnsImageDisplay({
     super.key,
@@ -17,6 +21,10 @@ class KenBurnsImageDisplay extends StatefulWidget {
     this.loop = false,
     this.onAnimationComplete,
     this.letterboxFill = ImageLetterboxFill.white,
+    this.zoomCenterX,
+    this.zoomCenterY,
+    this.enableDoubleTapToSetZoomCenter = false,
+    this.onZoomCenterSet,
   });
 
   final File imageFile;
@@ -25,6 +33,12 @@ class KenBurnsImageDisplay extends StatefulWidget {
   final bool loop;
   final VoidCallback? onAnimationComplete;
   final ImageLetterboxFill letterboxFill;
+  /// 缩放锚点横坐标 0～1，null 表示 0.5。
+  final double? zoomCenterX;
+  /// 缩放锚点纵坐标 0～1，null 表示 0.5。
+  final double? zoomCenterY;
+  final bool enableDoubleTapToSetZoomCenter;
+  final Future<void> Function(double nx, double ny)? onZoomCenterSet;
 
   @override
   State<KenBurnsImageDisplay> createState() => _KenBurnsImageDisplayState();
@@ -36,6 +50,13 @@ class _KenBurnsImageDisplayState extends State<KenBurnsImageDisplay>
   late AnimationController _controller;
 
   static const double _zoomInEnd = 0.5;
+
+  double get _nx => (widget.zoomCenterX ?? 0.5).clamp(0.0, 1.0);
+  double get _ny => (widget.zoomCenterY ?? 0.5).clamp(0.0, 1.0);
+
+  /// [Alignment] 与归一化 (0,0)～(1,1) 的对应关系：中心 (0.5,0.5) → Alignment(0,0)。
+  Alignment get _scaleAlignment =>
+      Alignment(2 * _nx - 1, 2 * _ny - 1);
 
   @override
   void initState() {
@@ -84,6 +105,17 @@ class _KenBurnsImageDisplayState extends State<KenBurnsImageDisplay>
     _controller.removeStatusListener(_onStatus);
     _controller.dispose();
     super.dispose();
+  }
+
+  void _handleDoubleTapDown(TapDownDetails details, double dw, double dh) {
+    if (!widget.enableDoubleTapToSetZoomCenter ||
+        widget.onZoomCenterSet == null) {
+      return;
+    }
+    final lp = details.localPosition;
+    final nx = (lp.dx / dw).clamp(0.0, 1.0);
+    final ny = (lp.dy / dh).clamp(0.0, 1.0);
+    unawaited(widget.onZoomCenterSet!(nx, ny));
   }
 
   @override
@@ -138,7 +170,7 @@ class _KenBurnsImageDisplayState extends State<KenBurnsImageDisplay>
                       final s = _scaleForT(_controller.value, widget.maxScale);
                       return Transform.scale(
                         scale: s,
-                        alignment: Alignment.center,
+                        alignment: _scaleAlignment,
                         child: child,
                       );
                     },
@@ -146,12 +178,18 @@ class _KenBurnsImageDisplayState extends State<KenBurnsImageDisplay>
                       child: SizedBox(
                         width: dw,
                         height: dh,
-                        child: Image.file(
-                          widget.imageFile,
-                          fit: BoxFit.fitWidth,
-                          alignment: Alignment.center,
-                          filterQuality: FilterQuality.none,
-                          cacheWidth: cacheW,
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onDoubleTapDown: (d) {
+                            _handleDoubleTapDown(d, dw, dh);
+                          },
+                          child: Image.file(
+                            widget.imageFile,
+                            fit: BoxFit.fitWidth,
+                            alignment: Alignment.center,
+                            filterQuality: FilterQuality.none,
+                            cacheWidth: cacheW,
+                          ),
                         ),
                       ),
                     ),
