@@ -2,8 +2,9 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 
-/// 先线性放大到 [maxScale]，再沿矩形区域「靠边」巡游（顺时针或逆时针），
-/// 在总时长 [totalDuration] 结束时调用 [onAnimationComplete]（用于自动连播）。
+import 'image_layout_utils.dart';
+
+/// 横向铺满、纵向等比例；留白为模糊底。巡游时平移在外、缩放在内，保证比例不变且不露出大片黑底。
 class ZoomPanEdgeImageDisplay extends StatefulWidget {
   const ZoomPanEdgeImageDisplay({
     super.key,
@@ -11,6 +12,7 @@ class ZoomPanEdgeImageDisplay extends StatefulWidget {
     required this.totalDuration,
     required this.maxScale,
     this.clockwise = true,
+    this.loop = false,
     this.onAnimationComplete,
   });
 
@@ -18,6 +20,7 @@ class ZoomPanEdgeImageDisplay extends StatefulWidget {
   final Duration totalDuration;
   final double maxScale;
   final bool clockwise;
+  final bool loop;
   final VoidCallback? onAnimationComplete;
 
   @override
@@ -27,42 +30,51 @@ class ZoomPanEdgeImageDisplay extends StatefulWidget {
 
 class _ZoomPanEdgeImageDisplayState extends State<ZoomPanEdgeImageDisplay>
     with SingleTickerProviderStateMixin {
+  late Future<Size> _sizeFuture;
   late final AnimationController _controller;
 
-  /// 总时长中用于缩放阶段的比例，其余为靠边平移巡游
   static const double _zoomPhaseEnd = 0.28;
 
   @override
   void initState() {
     super.initState();
+    _sizeFuture = measureImageFileSize(widget.imageFile);
     _controller = AnimationController(
       vsync: this,
       duration: widget.totalDuration,
     );
-    _controller.forward().then((_) {
-      if (!mounted) return;
+    _controller.addStatusListener(_onStatus);
+    _controller.forward();
+  }
+
+  void _onStatus(AnimationStatus status) {
+    if (status != AnimationStatus.completed || !mounted) return;
+    if (widget.loop) {
+      _controller.reset();
+      _controller.forward();
+    } else {
       widget.onAnimationComplete?.call();
-    });
+    }
+  }
+
+  @override
+  void didUpdateWidget(ZoomPanEdgeImageDisplay oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.imageFile.path != widget.imageFile.path) {
+      _sizeFuture = measureImageFileSize(widget.imageFile);
+    }
+    if (oldWidget.totalDuration != widget.totalDuration) {
+      _controller.duration = widget.totalDuration;
+    }
   }
 
   @override
   void dispose() {
+    _controller.removeStatusListener(_onStatus);
     _controller.dispose();
     super.dispose();
   }
 
-  /// 在给定缩放与视口下，相对中心的可平移半幅（与 Ken Burns 思路一致）
-  static double _maxPanX(double viewW, double scale) {
-    if (scale <= 1.001) return 0;
-    return (viewW * (scale - 1)) / (2 * scale);
-  }
-
-  static double _maxPanY(double viewH, double scale) {
-    if (scale <= 1.001) return 0;
-    return (viewH * (scale - 1)) / (2 * scale);
-  }
-
-  /// [panT] ∈ [0,1]，沿闭合路径插值；顺时针：中→右上→右下→左下→左上→中
   static Offset _panOffset(
     double panT,
     double mx,
@@ -95,47 +107,104 @@ class _ZoomPanEdgeImageDisplayState extends State<ZoomPanEdgeImageDisplay>
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final double w = constraints.maxWidth;
-        final double h = constraints.maxHeight;
-        return AnimatedBuilder(
-          animation: _controller,
-          builder: (context, child) {
-            final double t = _controller.value;
-            final double maxS = widget.maxScale.clamp(1.01, 8.0);
-            double scale;
-            double panT;
-            if (t < _zoomPhaseEnd) {
-              final double u = t / _zoomPhaseEnd;
-              scale = 1.0 + (maxS - 1.0) * u;
-              panT = 0;
-            } else {
-              scale = maxS;
-              panT = (t - _zoomPhaseEnd) / (1.0 - _zoomPhaseEnd);
-            }
-            final double mx = _maxPanX(w, scale);
-            final double my = _maxPanY(h, scale);
-            final Offset offset = panT > 0
-                ? _panOffset(panT, mx, my, widget.clockwise)
-                : Offset.zero;
-
+    return FutureBuilder<Size>(
+      future: _sizeFuture,
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return ColoredBox(
+            color: Colors.grey.shade900,
+            child: Center(
+              child: Text(
+                '无法读取图片',
+                style: TextStyle(color: Colors.grey.shade400),
+              ),
+            ),
+          );
+        }
+        if (!snapshot.hasData) {
+          return const ColoredBox(
+            color: Colors.black,
+            child: Center(
+              child: SizedBox(
+                width: 28,
+                height: 28,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            ),
+          );
+        }
+        final pixelSize = snapshot.data!;
+        return LayoutBuilder(
+          builder: (context, constraints) {
+            final vw = constraints.maxWidth;
+            final vh = constraints.maxHeight;
+            final disp = fitWidthDisplaySize(pixelSize, vw);
+            final double dw = disp.width;
+            final double dh = disp.height;
             return ClipRect(
-              child: Transform.scale(
-                scale: scale,
+              child: Stack(
+                fit: StackFit.expand,
                 alignment: Alignment.center,
-                child: Transform.translate(
-                  offset: offset,
-                  child: SizedBox(
-                    width: w,
-                    height: h,
-                    child: Image.file(
-                      widget.imageFile,
-                      fit: BoxFit.fitWidth,
-                      alignment: Alignment.center,
+                children: [
+                  blurredCoverBackground(widget.imageFile),
+                  AnimatedBuilder(
+                    animation: _controller,
+                    builder: (context, child) {
+                      final double t = _controller.value;
+                      final double maxS = widget.maxScale.clamp(1.01, 8.0);
+                      double scale;
+                      double panT;
+                      if (t < _zoomPhaseEnd) {
+                        final double u = t / _zoomPhaseEnd;
+                        scale = 1.0 + (maxS - 1.0) * u;
+                        panT = 0;
+                      } else {
+                        scale = maxS;
+                        panT = (t - _zoomPhaseEnd) / (1.0 - _zoomPhaseEnd);
+                      }
+                      final lim = panHalfExtentAfterScale(
+                        dw: dw,
+                        dh: dh,
+                        vw: vw,
+                        vh: vh,
+                        scale: scale,
+                      );
+                      final double mx = lim.maxX;
+                      final double my = lim.maxY;
+                      final Offset raw = panT > 0
+                          ? _panOffset(
+                              panT,
+                              mx,
+                              my,
+                              widget.clockwise,
+                            )
+                          : Offset.zero;
+                      final Offset offset = Offset(
+                        raw.dx.clamp(-mx, mx),
+                        raw.dy.clamp(-my, my),
+                      );
+
+                      // 先 scale 再 translate：平移量表示屏幕像素，不被 scale 再乘一遍
+                      return Transform.translate(
+                        offset: offset,
+                        child: Transform.scale(
+                          scale: scale,
+                          alignment: Alignment.center,
+                          child: child,
+                        ),
+                      );
+                    },
+                    child: SizedBox(
+                      width: dw,
+                      height: dh,
+                      child: Image.file(
+                        widget.imageFile,
+                        fit: BoxFit.fitWidth,
+                        alignment: Alignment.center,
+                      ),
                     ),
                   ),
-                ),
+                ],
               ),
             );
           },

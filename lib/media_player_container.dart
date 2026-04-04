@@ -16,6 +16,7 @@ import 'services/logger.dart';
 import 'media_player_settings.dart';
 import 'widgets/ken_burns_image_display.dart';
 import 'widgets/zoom_pan_edge_image_display.dart';
+import 'widgets/fit_width_blur_static_image.dart';
 
 enum MediaMode { none, manual, auto }
 
@@ -364,6 +365,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
                 imageFile: mediaFile,
                 animationDuration: _imageDuration,
                 maxScale: _zoomMax,
+                loop: _mediaMode == MediaMode.manual,
                 onAnimationComplete: _mediaMode == MediaMode.auto
                     ? () {
                         if (_mediaMode == MediaMode.auto) {
@@ -381,6 +383,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
                 totalDuration: _imageDuration,
                 maxScale: _zoomMax,
                 clockwise: _panClockwise,
+                loop: _mediaMode == MediaMode.manual,
                 onAnimationComplete: _mediaMode == MediaMode.auto
                     ? () {
                         if (_mediaMode == MediaMode.auto) {
@@ -392,17 +395,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
             });
           } else {
             setState(() {
-              _mediaWidget = Container(
-                width: double.infinity,
-                height: double.infinity,
-                decoration: BoxDecoration(
-                  image: DecorationImage(
-                    image: FileImage(mediaFile),
-                    fit: BoxFit.fitWidth,
-                    alignment: Alignment.center,
-                  ),
-                ),
-              );
+              _mediaWidget = FitWidthBlurStaticImage(file: mediaFile);
             });
 
             if (_mediaMode == MediaMode.auto) {
