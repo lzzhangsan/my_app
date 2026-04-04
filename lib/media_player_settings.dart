@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'widgets/image_layout_utils.dart' show ImageLetterboxFill;
+
 /// 媒体栏随机/顺序播放
 enum MediaPlaybackOrder {
   random,
@@ -28,6 +30,8 @@ class MediaPlayerPrefsKeys {
   /// 边沿巡游单段内沿路径前进比例 ×100（10～100 → 0.10～1.00），越小越舒缓。
   static const String imagePanRoamCoveragePct =
       'media_player_image_pan_roam_coverage_pct';
+  /// 图片未铺满屏幕时，上下（或左右）留白的填充方式。
+  static const String imageLetterboxFill = 'media_player_image_letterbox_fill';
 }
 
 Future<MediaPlayerSettingsSnapshot> loadMediaPlayerSettings(
@@ -46,6 +50,8 @@ Future<MediaPlayerSettingsSnapshot> loadMediaPlayerSettings(
       (prefs.getInt(MediaPlayerPrefsKeys.imagePanRoamCoveragePct) ?? 28)
           .clamp(10, 100);
   final roamCov = roamPct / 100.0;
+  final letterboxIndex =
+      (prefs.getInt(MediaPlayerPrefsKeys.imageLetterboxFill) ?? 0).clamp(0, 3);
 
   return MediaPlayerSettingsSnapshot(
     imageDuration: Duration(milliseconds: ms),
@@ -54,6 +60,7 @@ Future<MediaPlayerSettingsSnapshot> loadMediaPlayerSettings(
     playbackOrder: MediaPlaybackOrder.values[orderIndex],
     panClockwise: panCw,
     imagePanRoamCoverage: roamCov,
+    letterboxFill: ImageLetterboxFill.values[letterboxIndex],
   );
 }
 
@@ -82,6 +89,10 @@ Future<void> saveMediaPlayerSettings(
     MediaPlayerPrefsKeys.imagePanRoamCoveragePct,
     (s.imagePanRoamCoverage * 100).round().clamp(10, 100),
   );
+  await prefs.setInt(
+    MediaPlayerPrefsKeys.imageLetterboxFill,
+    s.letterboxFill.index,
+  );
 }
 
 class MediaPlayerSettingsSnapshot {
@@ -92,6 +103,7 @@ class MediaPlayerSettingsSnapshot {
     required this.playbackOrder,
     this.panClockwise = true,
     this.imagePanRoamCoverage = 0.28,
+    this.letterboxFill = ImageLetterboxFill.white,
   });
 
   final Duration imageDuration;
@@ -102,6 +114,8 @@ class MediaPlayerSettingsSnapshot {
   final bool panClockwise;
   /// 单段动画内沿巡游路径前进的比例 0.10～1.00；越小越舒缓，不必跑完整条路径。
   final double imagePanRoamCoverage;
+  /// 图片未铺满屏幕时，留白区域填充（与文档媒体栏、媒体预览共用）。
+  final ImageLetterboxFill letterboxFill;
 }
 
 /// 底部红键三连击打开：调整自动连播图片停留时间、展现方式、随机/顺序
@@ -145,6 +159,7 @@ class _MediaPlayerSettingsDialogBodyState
   late MediaPlaybackOrder _order;
   late bool _panClockwise;
   late double _panRoamCoverage;
+  late ImageLetterboxFill _letterboxFill;
 
   String? _secondsError;
   Timer? _secondsDebounce;
@@ -162,6 +177,7 @@ class _MediaPlayerSettingsDialogBodyState
     _order = widget.initial.playbackOrder;
     _panClockwise = widget.initial.panClockwise;
     _panRoamCoverage = widget.initial.imagePanRoamCoverage.clamp(0.10, 1.0);
+    _letterboxFill = widget.initial.letterboxFill;
   }
 
   @override
@@ -186,6 +202,7 @@ class _MediaPlayerSettingsDialogBodyState
       playbackOrder: _order,
       panClockwise: _panClockwise,
       imagePanRoamCoverage: _panRoamCoverage,
+      letterboxFill: _letterboxFill,
     );
   }
 
@@ -238,6 +255,7 @@ class _MediaPlayerSettingsDialogBodyState
       playbackOrder: _order,
       panClockwise: _panClockwise,
       imagePanRoamCoverage: _panRoamCoverage,
+      letterboxFill: _letterboxFill,
     );
     await saveMediaPlayerSettings(prefs, snap);
     if (!mounted) return;
@@ -284,6 +302,49 @@ class _MediaPlayerSettingsDialogBodyState
               },
             ),
             const SizedBox(height: 12),
+            Text('上下留白区域', style: Theme.of(context).textTheme.titleSmall),
+            Text(
+              '图片较矮或较窄未铺满屏幕时，周围区域的底纹。默认推荐「纯白」以免干扰主体。',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 6),
+            RadioListTile<ImageLetterboxFill>(
+              title: const Text('纯白'),
+              value: ImageLetterboxFill.white,
+              groupValue: _letterboxFill,
+              onChanged: (v) {
+                setState(() => _letterboxFill = v!);
+                unawaited(_persistAndNotify());
+              },
+            ),
+            RadioListTile<ImageLetterboxFill>(
+              title: const Text('透明（透出页面背景）'),
+              value: ImageLetterboxFill.transparent,
+              groupValue: _letterboxFill,
+              onChanged: (v) {
+                setState(() => _letterboxFill = v!);
+                unawaited(_persistAndNotify());
+              },
+            ),
+            RadioListTile<ImageLetterboxFill>(
+              title: const Text('同图铺满并暗化（旧版效果）'),
+              value: ImageLetterboxFill.softCover,
+              groupValue: _letterboxFill,
+              onChanged: (v) {
+                setState(() => _letterboxFill = v!);
+                unawaited(_persistAndNotify());
+              },
+            ),
+            RadioListTile<ImageLetterboxFill>(
+              title: const Text('同图强模糊'),
+              value: ImageLetterboxFill.blurHeavy,
+              groupValue: _letterboxFill,
+              onChanged: (v) {
+                setState(() => _letterboxFill = v!);
+                unawaited(_persistAndNotify());
+              },
+            ),
+            const SizedBox(height: 8),
             Text('播放顺序', style: Theme.of(context).textTheme.titleSmall),
             RadioListTile<MediaPlaybackOrder>(
               title: const Text('随机'),

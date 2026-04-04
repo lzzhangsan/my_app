@@ -12,7 +12,8 @@ import 'image_layout_utils.dart';
 /// 单程弧长约翻倍，同总时长下平均速度约减半，往返衔接更顺；比椭圆更易扫到四角。
 /// 巡游时间与弧长比例线性对应，全程匀速；总墙时等于 [totalDuration]（不设隐藏倍率）。
 /// [panPathCoverage]：巡游段内沿折线前进的比例（0.1～1），越小越舒缓，未走完亦可。
-/// 巡游结束缩放不低于 vh/dh（横图时），使清晰层竖向盖住整屏，巡游时可隐藏模糊底。
+/// 巡游结束缩放不低于 vh/dh（横图时），使清晰层竖向盖住整屏。
+/// 底层填充由 [letterboxFill] 控制（原固定黑底改为可配置）。
 class ZoomPanEdgeImageDisplay extends StatefulWidget {
   const ZoomPanEdgeImageDisplay({
     super.key,
@@ -23,6 +24,7 @@ class ZoomPanEdgeImageDisplay extends StatefulWidget {
     this.panPathCoverage = 0.28,
     this.loop = false,
     this.onAnimationComplete,
+    this.letterboxFill = ImageLetterboxFill.white,
   });
 
   final File imageFile;
@@ -33,6 +35,7 @@ class ZoomPanEdgeImageDisplay extends StatefulWidget {
   final double panPathCoverage;
   final bool loop;
   final VoidCallback? onAnimationComplete;
+  final ImageLetterboxFill letterboxFill;
 
   @override
   State<ZoomPanEdgeImageDisplay> createState() =>
@@ -184,12 +187,7 @@ class _ZoomPanEdgeImageDisplayState extends State<ZoomPanEdgeImageDisplay>
                 fit: StackFit.expand,
                 alignment: Alignment.center,
                 children: [
-                  // 避免留白处透出父级灰底；部分机型上 Opacity(0)+ImageFiltered 仍会发灰雾，故用纯黑底。
-                  const Positioned.fill(
-                    child: ColoredBox(color: Colors.black),
-                  ),
-                  // 为避免部分机型 release 渲染管线出现整屏发灰，巡游模式不叠加背景填充层。
-                  const SizedBox.shrink(),
+                  letterboxFillLayer(widget.imageFile, widget.letterboxFill),
                   AnimatedBuilder(
                     animation: _controller,
                     builder: (context, child) {

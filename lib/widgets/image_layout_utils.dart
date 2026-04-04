@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
 
@@ -237,32 +238,74 @@ Offset sampleOffsetAlongPath(
   return path.last;
 }
 
-/// 全屏填充层（同图 cover），用于填补 fitWidth 上下留白，避免纯色条。
+/// 竖向未铺满时，屏幕上下（或左右）留白区域的填充方式（媒体栏与预览共用设置）。
+enum ImageLetterboxFill {
+  /// 纯白，不抢视线（推荐默认）。
+  white,
+  /// 透出底层背景（如页面 Scaffold 底色）。
+  transparent,
+  /// 旧版：同图放大铺满 + 暗化叠层，层次较强。
+  softCover,
+  /// 同图强模糊；个别机型若出现发灰可改用「纯白」。
+  blurHeavy,
+}
+
+/// 作为 [Stack] 子组件使用的全屏底图层（已含 [Positioned.fill]）。
 ///
-/// 不使用 [ImageFilter]/[ImageFiltered] 的高斯模糊：在部分 Android 机型上，正式版
-///（AOT + 特定 GPU 驱动）里 `ImageFiltered` 与 [Transform]、[Stack] 叠加时会出现
-/// 整屏发灰、褪色、像蒙了一层半透明灰雾；调试版因渲染路径/优化级别不同往往不明显。
-/// 这里用「略放大 + 轻微压暗」模拟背景层次，避免触发有问题的 saveLayer 模糊管线。
-Widget blurredCoverBackground(File file) {
-  return Positioned.fill(
-    child: ClipRect(
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          Transform.scale(
-            scale: 1.06,
-            child: Image.file(
-              file,
-              fit: BoxFit.cover,
-              width: double.infinity,
-              height: double.infinity,
+/// [ImageLetterboxFill.softCover] 不使用 [ImageFilter] 高斯模糊，仅用 cover + 压暗，
+/// 以避免部分 Android 正式版上 `ImageFiltered` 与变换叠加时的发灰问题。
+/// [ImageLetterboxFill.blurHeavy] 则使用高斯模糊，供需要柔和底图的用户自选。
+Widget letterboxFillLayer(File file, ImageLetterboxFill fill) {
+  switch (fill) {
+    case ImageLetterboxFill.white:
+      return const Positioned.fill(
+        child: ColoredBox(color: Colors.white),
+      );
+    case ImageLetterboxFill.transparent:
+      return const Positioned.fill(
+        child: ColoredBox(color: Color(0x00000000)),
+      );
+    case ImageLetterboxFill.softCover:
+      return Positioned.fill(
+        child: ClipRect(
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              Transform.scale(
+                scale: 1.06,
+                child: Image.file(
+                  file,
+                  fit: BoxFit.cover,
+                  width: double.infinity,
+                  height: double.infinity,
+                  alignment: Alignment.center,
+                  filterQuality: FilterQuality.low,
+                ),
+              ),
+              const ColoredBox(color: Color.fromRGBO(0, 0, 0, 0.22)),
+            ],
+          ),
+        ),
+      );
+    case ImageLetterboxFill.blurHeavy:
+      return Positioned.fill(
+        child: ClipRect(
+          child: ImageFiltered(
+            imageFilter: ImageFilter.blur(sigmaX: 36, sigmaY: 36),
+            child: Transform.scale(
+              scale: 1.08,
               alignment: Alignment.center,
-              filterQuality: FilterQuality.low,
+              child: Image.file(
+                file,
+                fit: BoxFit.cover,
+                width: double.infinity,
+                height: double.infinity,
+                alignment: Alignment.center,
+                filterQuality: FilterQuality.low,
+              ),
             ),
           ),
-          ColoredBox(color: Color.fromRGBO(0, 0, 0, 0.22)),
-        ],
-      ),
-    ),
-  );
+        ),
+      );
+  }
 }

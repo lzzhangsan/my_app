@@ -17,6 +17,7 @@ import 'media_player_settings.dart';
 import 'widgets/ken_burns_image_display.dart';
 import 'widgets/zoom_pan_edge_image_display.dart';
 import 'widgets/fit_width_blur_static_image.dart';
+import 'widgets/image_layout_utils.dart' show ImageLetterboxFill;
 
 enum MediaMode { none, manual, auto }
 
@@ -44,6 +45,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
   MediaPlaybackOrder _playbackOrder = MediaPlaybackOrder.random;
   bool _panClockwise = true;
   double _imagePanRoamCoverage = 0.28;
+  ImageLetterboxFill _letterboxFill = ImageLetterboxFill.white;
   int _sequentialIndex = 0;
 
   String _sequentialIndexPrefsKey() {
@@ -78,6 +80,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
       _playbackOrder = settings.playbackOrder;
       _panClockwise = settings.panClockwise;
       _imagePanRoamCoverage = settings.imagePanRoamCoverage;
+      _letterboxFill = settings.letterboxFill;
       Logger.i('Loaded selected directory: $_selectedDirectory');
     });
     await _loadMediaList(); // 确保加载目录后立即加载媒体列表
@@ -93,6 +96,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
         playbackOrder: _playbackOrder,
         panClockwise: _panClockwise,
         imagePanRoamCoverage: _imagePanRoamCoverage,
+        letterboxFill: _letterboxFill,
       ),
       onSettingsChanged: (snap) async {
         final orderChanged = snap.playbackOrder != _playbackOrder;
@@ -103,6 +107,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
           _playbackOrder = snap.playbackOrder;
           _panClockwise = snap.panClockwise;
           _imagePanRoamCoverage = snap.imagePanRoamCoverage;
+          _letterboxFill = snap.letterboxFill;
         });
         if (orderChanged) {
           await _loadMediaList();
@@ -384,10 +389,14 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
           if (_imageMode == MediaImageDisplayMode.kenBurns) {
             setState(() {
               _mediaWidget = KenBurnsImageDisplay(
-                key: ValueKey('${nextMedia['path']}_ken_$_mediaMode'),
+                key: ValueKey(
+                  '${nextMedia['path']}_ken_$_mediaMode'
+                  '_${_letterboxFill.index}',
+                ),
                 imageFile: mediaFile,
                 animationDuration: _imageDuration,
                 maxScale: _zoomMax,
+                letterboxFill: _letterboxFill,
                 loop: _mediaMode == MediaMode.manual,
                 onAnimationComplete: _mediaMode == MediaMode.auto
                     ? () {
@@ -403,13 +412,15 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
               _mediaWidget = ZoomPanEdgeImageDisplay(
                 key: ValueKey(
                   '${nextMedia['path']}_zpan_$_mediaMode'
-                  '_${_imagePanRoamCoverage.toStringAsFixed(2)}',
+                  '_${_imagePanRoamCoverage.toStringAsFixed(2)}'
+                  '_${_letterboxFill.index}',
                 ),
                 imageFile: mediaFile,
                 totalDuration: _imageDuration,
                 maxScale: _zoomMax,
                 clockwise: _panClockwise,
                 panPathCoverage: _imagePanRoamCoverage,
+                letterboxFill: _letterboxFill,
                 loop: _mediaMode == MediaMode.manual,
                 onAnimationComplete: _mediaMode == MediaMode.auto
                     ? () {
@@ -422,7 +433,10 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
             });
           } else {
             setState(() {
-              _mediaWidget = FitWidthBlurStaticImage(file: mediaFile);
+              _mediaWidget = FitWidthBlurStaticImage(
+                file: mediaFile,
+                letterboxFill: _letterboxFill,
+              );
             });
 
             if (_mediaMode == MediaMode.auto) {

@@ -5,10 +5,17 @@ import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:video_player/video_player.dart';
 import 'package:chewie/chewie.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
 import 'core/service_locator.dart';
 import 'services/database_service.dart';
 import 'models/media_item.dart';
 import 'models/media_type.dart';
+import 'media_player_settings.dart';
+import 'widgets/fit_width_blur_static_image.dart';
+import 'widgets/image_layout_utils.dart' show ImageLetterboxFill;
+import 'widgets/ken_burns_image_display.dart';
+import 'widgets/zoom_pan_edge_image_display.dart';
 
 
 enum MediaMode { none, manual, auto }
@@ -35,6 +42,15 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
   final bool _isFullScreen = false;
   late final DatabaseService _dbService;
   MediaMode _mediaMode = MediaMode.none;
+
+  /// 与文档编辑页媒体栏共用 SharedPreferences，行为一致。
+  Duration _imageDuration = const Duration(seconds: 5);
+  MediaImageDisplayMode _imageMode = MediaImageDisplayMode.fitWidth;
+  double _zoomMax = 3.0;
+  MediaPlaybackOrder _playbackOrder = MediaPlaybackOrder.random;
+  bool _panClockwise = true;
+  double _imagePanRoamCoverage = 0.28;
+  ImageLetterboxFill _letterboxFill = ImageLetterboxFill.white;
   Timer? _mediaTimer;
   bool _skipNextPageChanged = false; // 删除/收藏/移动后忽略一次 onPageChanged，避免跳回第一项
 
@@ -44,6 +60,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     _dbService = getService<DatabaseService>();
     _currentIndex = widget.initialIndex;
     _pageController = PageController(initialPage: widget.initialIndex);
+    unawaited(_loadMediaPreviewSettings());
     
     // 预初始化当前页和相邻页的视频控制器
     _initializeVideoControllerAt(_currentIndex);
@@ -79,6 +96,61 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     );
     
     super.dispose();
+  }
+
+  Future<void> _loadMediaPreviewSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    final s = await loadMediaPlayerSettings(prefs);
+    if (!mounted) return;
+    setState(() {
+      _imageDuration = s.imageDuration;
+      _imageMode = s.imageMode;
+      _zoomMax = s.zoomMaxScale;
+      _playbackOrder = s.playbackOrder;
+      _panClockwise = s.panClockwise;
+      _imagePanRoamCoverage = s.imagePanRoamCoverage;
+      _letterboxFill = s.letterboxFill;
+    });
+  }
+
+  void _showMediaPlaybackSettings() {
+    showMediaPlayerSettingsDialog(
+      context: context,
+      initial: MediaPlayerSettingsSnapshot(
+        imageDuration: _imageDuration,
+        imageMode: _imageMode,
+        zoomMaxScale: _zoomMax,
+        playbackOrder: _playbackOrder,
+        panClockwise: _panClockwise,
+        imagePanRoamCoverage: _imagePanRoamCoverage,
+        letterboxFill: _letterboxFill,
+      ),
+      onSettingsChanged: (snap) async {
+        if (!mounted) return;
+        setState(() {
+          _imageDuration = snap.imageDuration;
+          _imageMode = snap.imageMode;
+          _zoomMax = snap.zoomMaxScale;
+          _playbackOrder = snap.playbackOrder;
+          _panClockwise = snap.panClockwise;
+          _imagePanRoamCoverage = snap.imagePanRoamCoverage;
+          _letterboxFill = snap.letterboxFill;
+        });
+        // 自动播放 + 当前为图片：静态模式用定时器；动画模式由组件 key 重建触发新动画
+        if (_mediaMode == MediaMode.auto &&
+            _currentIndex >= 0 &&
+            _currentIndex < widget.mediaItems.length) {
+          final cur = widget.mediaItems[_currentIndex];
+          if (cur.type == MediaType.image) {
+            _mediaTimer?.cancel();
+            _mediaTimer = null;
+            if (snap.imageMode == MediaImageDisplayMode.fitWidth) {
+              _mediaTimer = Timer(snap.imageDuration, _onMediaComplete);
+            }
+          }
+        }
+      },
+    );
   }
 
   Future<void> _initializeVideoControllerAt(int index) async {
@@ -549,34 +621,62 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
   }
 
   Widget _buildImagePreview(MediaItem item) {
+    final file = File(item.path);
+    final loopAnim = _mediaMode != MediaMode.auto;
+
+    void onAnimComplete() {
+      if (_mediaMode == MediaMode.auto && mounted) {
+        _onMediaComplete();
+      }
+    }
+
+    Widget inner;
+    switch (_imageMode) {
+      case MediaImageDisplayMode.kenBurns:
+        inner = KenBurnsImageDisplay(
+          key: ValueKey(
+            '${item.path}_ken_${_mediaMode}_${_imageDuration.inMilliseconds}_'
+            '${_zoomMax.toStringAsFixed(1)}_${_letterboxFill.index}',
+          ),
+          imageFile: file,
+          animationDuration: _imageDuration,
+          maxScale: _zoomMax,
+          letterboxFill: _letterboxFill,
+          loop: loopAnim,
+          onAnimationComplete: loopAnim ? null : onAnimComplete,
+        );
+        break;
+      case MediaImageDisplayMode.zoomPanEdge:
+        inner = ZoomPanEdgeImageDisplay(
+          key: ValueKey(
+            '${item.path}_zpan_${_mediaMode}_${_imageDuration.inMilliseconds}_'
+            '${_zoomMax.toStringAsFixed(1)}_${_imagePanRoamCoverage.toStringAsFixed(2)}_'
+            '${_panClockwise}_${_letterboxFill.index}',
+          ),
+          imageFile: file,
+          totalDuration: _imageDuration,
+          maxScale: _zoomMax,
+          clockwise: _panClockwise,
+          panPathCoverage: _imagePanRoamCoverage,
+          letterboxFill: _letterboxFill,
+          loop: loopAnim,
+          onAnimationComplete: loopAnim ? null : onAnimComplete,
+        );
+        break;
+      case MediaImageDisplayMode.fitWidth:
+        inner = FitWidthBlurStaticImage(
+          key: ValueKey(
+            '${item.path}_fit_${_imageDuration.inMilliseconds}_${_letterboxFill.index}',
+          ),
+          file: file,
+          letterboxFill: _letterboxFill,
+        );
+        break;
+    }
+
     return GestureDetector(
       onTap: () => _toggleControls(),
-      child: Center(
-        child: InteractiveViewer(
-          clipBehavior: Clip.none,
-          panEnabled: true,
-          minScale: 0.5,
-          maxScale: 4.0,
-          child: Image.file(
-            File(item.path),
-            fit: BoxFit.contain,
-            errorBuilder: (context, error, stackTrace) {
-              return Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Icon(Icons.broken_image, size: 64, color: Colors.grey),
-                  const SizedBox(height: 16),
-                  Text(
-                    '无法加载图片: $error',
-                    style: const TextStyle(color: Colors.grey),
-                    textAlign: TextAlign.center,
-                  )
-                ],
-              );
-            },
-          ),
-        ),
-      ),
+      child: inner,
     );
   }
 
@@ -735,6 +835,11 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
                     onPressed: _shareMediaItem,
                   ),
                   const Spacer(),
+                  IconButton(
+                    icon: const Icon(Icons.settings, color: Colors.white),
+                    tooltip: '媒体播放设置',
+                    onPressed: _showMediaPlaybackSettings,
+                  ),
                   IconButton(
                     icon: Icon(
                       _mediaMode == MediaMode.auto ? Icons.pause : Icons.play_arrow,
@@ -991,9 +1096,15 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
         _addVideoCompleteListenerFor(controller, _currentIndex);
       }
     } else if (currentItem.type == MediaType.image) {
-      // 图片显示5秒后自动切换
       _mediaTimer?.cancel();
-      _mediaTimer = Timer(const Duration(seconds: 5), _onMediaComplete);
+      _mediaTimer = null;
+      if (_mediaMode != MediaMode.auto) {
+        return;
+      }
+      // 静态横向填满：用定时器切换；渐进放大 / 边沿巡游由组件 onAnimationComplete 切换
+      if (_imageMode == MediaImageDisplayMode.fitWidth) {
+        _mediaTimer = Timer(_imageDuration, _onMediaComplete);
+      }
     }
   }
 

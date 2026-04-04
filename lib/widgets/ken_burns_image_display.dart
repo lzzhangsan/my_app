@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 
 import 'image_layout_utils.dart';
 
-/// 初次：横向铺满屏幕宽度、纵向等比例居中；上下留白为同图模糊（非纯色条）。
+/// 初次：横向铺满屏幕宽度、纵向等比例居中；上下留白由 [letterboxFill] 控制。
 /// 仅使用等比缩放（Transform.scale），图片用 BoxFit.fitWidth，不拉伸变形。
 /// 总时长内：前半放大至 [maxScale]，后半缩回 1×，各占 50%。
 /// [loop] 为 true 时（手动模式）动画结束自动从头循环。
@@ -16,6 +16,7 @@ class KenBurnsImageDisplay extends StatefulWidget {
     this.maxScale = 3.0,
     this.loop = false,
     this.onAnimationComplete,
+    this.letterboxFill = ImageLetterboxFill.white,
   });
 
   final File imageFile;
@@ -23,6 +24,7 @@ class KenBurnsImageDisplay extends StatefulWidget {
   final double maxScale;
   final bool loop;
   final VoidCallback? onAnimationComplete;
+  final ImageLetterboxFill letterboxFill;
 
   @override
   State<KenBurnsImageDisplay> createState() => _KenBurnsImageDisplayState();
@@ -129,7 +131,7 @@ class _KenBurnsImageDisplayState extends State<KenBurnsImageDisplay>
                 fit: StackFit.expand,
                 alignment: Alignment.center,
                 children: [
-                  blurredCoverBackground(widget.imageFile),
+                  letterboxFillLayer(widget.imageFile, widget.letterboxFill),
                   AnimatedBuilder(
                     animation: _controller,
                     builder: (context, child) {

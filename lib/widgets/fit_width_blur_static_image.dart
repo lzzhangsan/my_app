@@ -4,11 +4,16 @@ import 'package:flutter/material.dart';
 
 import 'image_layout_utils.dart';
 
-/// 横向填满、纵向等比例居中；留白处为同图模糊填充（与动画模式一致）。
+/// 横向填满、纵向等比例居中；留白处由 [letterboxFill] 控制（默认纯白）。
 class FitWidthBlurStaticImage extends StatefulWidget {
-  const FitWidthBlurStaticImage({super.key, required this.file});
+  const FitWidthBlurStaticImage({
+    super.key,
+    required this.file,
+    this.letterboxFill = ImageLetterboxFill.white,
+  });
 
   final File file;
+  final ImageLetterboxFill letterboxFill;
 
   @override
   State<FitWidthBlurStaticImage> createState() =>
@@ -66,7 +71,7 @@ class _FitWidthBlurStaticImageState extends State<FitWidthBlurStaticImage> {
               child: Stack(
                 fit: StackFit.expand,
                 children: [
-                  blurredCoverBackground(widget.file),
+                  letterboxFillLayer(widget.file, widget.letterboxFill),
                   Center(
                     child: RepaintBoundary(
                       child: SizedBox(
