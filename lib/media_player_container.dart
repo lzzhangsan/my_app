@@ -46,6 +46,20 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
   double _imagePanRoamCoverage = 0.28;
   int _sequentialIndex = 0;
 
+  String _sequentialIndexPrefsKey() {
+    final d = _selectedDirectory ?? 'root';
+    return 'media_player_seq_idx_${Uri.encodeComponent(d)}';
+  }
+
+  Future<void> _persistSequentialIndex() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt(_sequentialIndexPrefsKey(), _sequentialIndex);
+    } catch (e) {
+      Logger.e('保存顺序播放游标失败', e);
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -80,7 +94,8 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
         panClockwise: _panClockwise,
         imagePanRoamCoverage: _imagePanRoamCoverage,
       ),
-      onApply: (snap) async {
+      onSettingsChanged: (snap) async {
+        final orderChanged = snap.playbackOrder != _playbackOrder;
         setState(() {
           _imageDuration = snap.imageDuration;
           _imageMode = snap.imageMode;
@@ -89,7 +104,9 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
           _panClockwise = snap.panClockwise;
           _imagePanRoamCoverage = snap.imagePanRoamCoverage;
         });
-        await _loadMediaList();
+        if (orderChanged) {
+          await _loadMediaList();
+        }
       },
     );
   }
@@ -119,6 +136,14 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
     
     List<Map<String, dynamic>> mediaList = await _getMediaList();
     _sortMediaListInPlace(mediaList);
+
+    final prefs = await SharedPreferences.getInstance();
+    if (mediaList.isNotEmpty) {
+      final raw = prefs.getInt(_sequentialIndexPrefsKey()) ?? 0;
+      _sequentialIndex = raw % mediaList.length;
+    } else {
+      _sequentialIndex = 0;
+    }
 
     if (mounted) {
       setState(() {
@@ -242,10 +267,6 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
   }
 
   void playManual() {
-    final wasNone = _mediaMode == MediaMode.none;
-    if (wasNone && _playbackOrder == MediaPlaybackOrder.sequential) {
-      _sequentialIndex = 0;
-    }
     setState(() {
       _mediaMode = MediaMode.manual;
     });
@@ -253,10 +274,6 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
   }
 
   void playAuto() {
-    final wasNone = _mediaMode == MediaMode.none;
-    if (wasNone && _playbackOrder == MediaPlaybackOrder.sequential) {
-      _sequentialIndex = 0;
-    }
     setState(() {
       _mediaMode = MediaMode.auto;
     });
@@ -266,7 +283,6 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
   void stop() {
     setState(() {
       _mediaMode = MediaMode.none;
-      _sequentialIndex = 0;
       _mediaWidget = null;
       _currentVideoWidget = null;
       _currentPlayingMedia = null; // 清除当前播放媒体
@@ -353,8 +369,11 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
         }
 
         void advanceSequentialCursor() {
-          if (_playbackOrder == MediaPlaybackOrder.sequential) {
-            _sequentialIndex = (_sequentialIndex + 1) % _mediaList.length;
+          if (_playbackOrder == MediaPlaybackOrder.sequential &&
+              _mediaList.isNotEmpty) {
+            _sequentialIndex =
+                (_sequentialIndex + 1) % _mediaList.length;
+            unawaited(_persistSequentialIndex());
           }
         }
 

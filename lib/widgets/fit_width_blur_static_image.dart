@@ -58,6 +58,9 @@ class _FitWidthBlurStaticImageState extends State<FitWidthBlurStaticImage> {
         return LayoutBuilder(
           builder: (context, constraints) {
             final vw = constraints.maxWidth;
+            final cacheW = (vw * MediaQuery.devicePixelRatioOf(context))
+                .round()
+                .clamp(1, 8192);
             final disp = fitWidthDisplaySize(pixelSize, vw);
             return ClipRect(
               child: Stack(
@@ -65,12 +68,16 @@ class _FitWidthBlurStaticImageState extends State<FitWidthBlurStaticImage> {
                 children: [
                   blurredCoverBackground(widget.file),
                   Center(
-                    child: SizedBox(
-                      width: disp.width,
-                      height: disp.height,
-                      child: Image.file(
-                        widget.file,
-                        fit: BoxFit.fill,
+                    child: RepaintBoundary(
+                      child: SizedBox(
+                        width: disp.width,
+                        height: disp.height,
+                        child: Image.file(
+                          widget.file,
+                          fit: BoxFit.fill,
+                          filterQuality: FilterQuality.medium,
+                          cacheWidth: cacheW,
+                        ),
                       ),
                     ),
                   ),

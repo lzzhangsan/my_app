@@ -137,19 +137,6 @@ class _ZoomPanEdgeImageDisplayState extends State<ZoomPanEdgeImageDisplay>
     super.dispose();
   }
 
-  /// 模糊底仅在「清晰层尚未竖向铺满」时显示；巡游阶段通常已抬升缩放可隐藏。
-  static double _blurOpacity({
-    required double t,
-    required double scale,
-    required double dh,
-    required double vh,
-  }) {
-    if (scale * dh >= vh - 0.5) {
-      return 0;
-    }
-    return 1;
-  }
-
   @override
   Widget build(BuildContext context) {
     return FutureBuilder<Size>(
@@ -197,26 +184,12 @@ class _ZoomPanEdgeImageDisplayState extends State<ZoomPanEdgeImageDisplay>
                 fit: StackFit.expand,
                 alignment: Alignment.center,
                 children: [
-                  AnimatedBuilder(
-                    animation: _controller,
-                    builder: (context, _) {
-                      final double t = _controller.value;
-                      final double scale = _scaleAt(
-                        t: t,
-                        zoomEndScale: zoomEndScale,
-                      );
-                      final op = _blurOpacity(
-                        t: t,
-                        scale: scale,
-                        dh: dh,
-                        vh: vh,
-                      );
-                      return Opacity(
-                        opacity: op,
-                        child: blurredCoverBackground(widget.imageFile),
-                      );
-                    },
+                  // 避免留白处透出父级灰底；部分机型上 Opacity(0)+ImageFiltered 仍会发灰雾，故用纯黑底。
+                  const Positioned.fill(
+                    child: ColoredBox(color: Colors.black),
                   ),
+                  // 为避免部分机型 release 渲染管线出现整屏发灰，巡游模式不叠加背景填充层。
+                  const SizedBox.shrink(),
                   AnimatedBuilder(
                     animation: _controller,
                     builder: (context, child) {
@@ -295,13 +268,21 @@ class _ZoomPanEdgeImageDisplayState extends State<ZoomPanEdgeImageDisplay>
                         ),
                       );
                     },
-                    child: SizedBox(
-                      width: dw,
-                      height: dh,
-                      child: Image.file(
-                        widget.imageFile,
-                        fit: BoxFit.fitWidth,
-                        alignment: Alignment.center,
+                    child: RepaintBoundary(
+                      child: SizedBox(
+                        width: dw,
+                        height: dh,
+                        child: Image.file(
+                          widget.imageFile,
+                          fit: BoxFit.fitWidth,
+                          alignment: Alignment.center,
+                          filterQuality: FilterQuality.none,
+                          cacheWidth: (vw *
+                                  MediaQuery.devicePixelRatioOf(context) *
+                                  zoomEndScale.clamp(1.0, 3.0))
+                              .round()
+                              .clamp(1, 8192),
+                        ),
                       ),
                     ),
                   ),

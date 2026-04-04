@@ -1,19 +1,41 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
-import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
 /// 读取图片像素尺寸。
 Future<Size> measureImageFileSize(File file) async {
-  final bytes = await file.readAsBytes();
-  final codec = await ui.instantiateImageCodec(bytes);
-  final frame = await codec.getNextFrame();
-  final w = frame.image.width.toDouble();
-  final h = frame.image.height.toDouble();
-  frame.image.dispose();
-  codec.dispose();
-  return Size(w, h);
+  final completer = Completer<Size>();
+  final provider = FileImage(file);
+  final stream = provider.resolve(const ImageConfiguration());
+  late final ImageStreamListener listener;
+
+  listener = ImageStreamListener(
+    (ImageInfo info, bool _) {
+      if (!completer.isCompleted) {
+        completer.complete(
+          Size(info.image.width.toDouble(), info.image.height.toDouble()),
+        );
+      }
+      stream.removeListener(listener);
+    },
+    onError: (Object error, StackTrace? stackTrace) {
+      if (!completer.isCompleted) {
+        completer.completeError(error, stackTrace);
+      }
+      stream.removeListener(listener);
+    },
+  );
+
+  stream.addListener(listener);
+  return completer.future.timeout(
+    const Duration(seconds: 8),
+    onTimeout: () {
+      stream.removeListener(listener);
+      throw TimeoutException('measureImageFileSize timeout for ${file.path}');
+    },
+  );
 }
 
 /// 横向填满视口宽度、纵向按原图比例（与 BoxFit.fitWidth 一致）。
@@ -215,20 +237,31 @@ Offset sampleOffsetAlongPath(
   return path.last;
 }
 
-/// 全屏模糊填充层（同图 cover），用于填补 fitWidth 上下留白，避免纯色条。
+/// 全屏填充层（同图 cover），用于填补 fitWidth 上下留白，避免纯色条。
+///
+/// 不使用 [ImageFilter]/[ImageFiltered] 的高斯模糊：在部分 Android 机型上，正式版
+///（AOT + 特定 GPU 驱动）里 `ImageFiltered` 与 [Transform]、[Stack] 叠加时会出现
+/// 整屏发灰、褪色、像蒙了一层半透明灰雾；调试版因渲染路径/优化级别不同往往不明显。
+/// 这里用「略放大 + 轻微压暗」模拟背景层次，避免触发有问题的 saveLayer 模糊管线。
 Widget blurredCoverBackground(File file) {
   return Positioned.fill(
-    child: ImageFiltered(
-      imageFilter: ui.ImageFilter.blur(sigmaX: 22, sigmaY: 22),
-      child: Transform.scale(
-        scale: 1.05,
-        child: Image.file(
-          file,
-          fit: BoxFit.cover,
-          width: double.infinity,
-          height: double.infinity,
-          alignment: Alignment.center,
-        ),
+    child: ClipRect(
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          Transform.scale(
+            scale: 1.06,
+            child: Image.file(
+              file,
+              fit: BoxFit.cover,
+              width: double.infinity,
+              height: double.infinity,
+              alignment: Alignment.center,
+              filterQuality: FilterQuality.low,
+            ),
+          ),
+          ColoredBox(color: Color.fromRGBO(0, 0, 0, 0.22)),
+        ],
       ),
     ),
   );

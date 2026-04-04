@@ -116,6 +116,11 @@ class _KenBurnsImageDisplayState extends State<KenBurnsImageDisplay>
         return LayoutBuilder(
           builder: (context, constraints) {
             final vw = constraints.maxWidth;
+            final cacheW = (vw *
+                    MediaQuery.devicePixelRatioOf(context) *
+                    widget.maxScale.clamp(1.0, 3.0))
+                .round()
+                .clamp(1, 8192);
             final disp = fitWidthDisplaySize(pixelSize, vw);
             final dw = disp.width;
             final dh = disp.height;
@@ -135,13 +140,17 @@ class _KenBurnsImageDisplayState extends State<KenBurnsImageDisplay>
                         child: child,
                       );
                     },
-                    child: SizedBox(
-                      width: dw,
-                      height: dh,
-                      child: Image.file(
-                        widget.imageFile,
-                        fit: BoxFit.fitWidth,
-                        alignment: Alignment.center,
+                    child: RepaintBoundary(
+                      child: SizedBox(
+                        width: dw,
+                        height: dh,
+                        child: Image.file(
+                          widget.imageFile,
+                          fit: BoxFit.fitWidth,
+                          alignment: Alignment.center,
+                          filterQuality: FilterQuality.none,
+                          cacheWidth: cacheW,
+                        ),
                       ),
                     ),
                   ),

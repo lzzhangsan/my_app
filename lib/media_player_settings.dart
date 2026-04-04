@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -103,17 +105,19 @@ class MediaPlayerSettingsSnapshot {
 }
 
 /// 底部红键三连击打开：调整自动连播图片停留时间、展现方式、随机/顺序
+/// [onSettingsChanged]：任意项变更后自动写入 SharedPreferences 并回调（便于持久化与同步状态）。
 Future<void> showMediaPlayerSettingsDialog({
   required BuildContext context,
   required MediaPlayerSettingsSnapshot initial,
-  required void Function(MediaPlayerSettingsSnapshot saved) onApply,
+  required Future<void> Function(MediaPlayerSettingsSnapshot snap)
+      onSettingsChanged,
 }) {
   return showDialog<void>(
     context: context,
     builder: (ctx) {
       return _MediaPlayerSettingsDialogBody(
         initial: initial,
-        onApply: onApply,
+        onSettingsChanged: onSettingsChanged,
       );
     },
   );
@@ -122,11 +126,11 @@ Future<void> showMediaPlayerSettingsDialog({
 class _MediaPlayerSettingsDialogBody extends StatefulWidget {
   const _MediaPlayerSettingsDialogBody({
     required this.initial,
-    required this.onApply,
+    required this.onSettingsChanged,
   });
 
   final MediaPlayerSettingsSnapshot initial;
-  final void Function(MediaPlayerSettingsSnapshot saved) onApply;
+  final Future<void> Function(MediaPlayerSettingsSnapshot snap) onSettingsChanged;
 
   @override
   State<_MediaPlayerSettingsDialogBody> createState() =>
@@ -143,6 +147,7 @@ class _MediaPlayerSettingsDialogBodyState
   late double _panRoamCoverage;
 
   String? _secondsError;
+  Timer? _secondsDebounce;
 
   static const int _minSec = 1;
   static const int _maxSec = 600;
@@ -161,30 +166,67 @@ class _MediaPlayerSettingsDialogBodyState
 
   @override
   void dispose() {
+    _secondsDebounce?.cancel();
     _secondsController.dispose();
     super.dispose();
   }
 
-  int? _parseSeconds() {
+  MediaPlayerSettingsSnapshot _buildSnapshot() {
+    final raw = _secondsController.text.trim();
+    final parsed = int.tryParse(raw);
+    final duration = (parsed != null &&
+            parsed >= _minSec &&
+            parsed <= _maxSec)
+        ? Duration(seconds: parsed)
+        : widget.initial.imageDuration;
+    return MediaPlayerSettingsSnapshot(
+      imageDuration: duration,
+      imageMode: _mode,
+      zoomMaxScale: _zoomMax,
+      playbackOrder: _order,
+      panClockwise: _panClockwise,
+      imagePanRoamCoverage: _panRoamCoverage,
+    );
+  }
+
+  Future<void> _persistAndNotify() async {
+    final prefs = await SharedPreferences.getInstance();
+    final snap = _buildSnapshot();
+    await saveMediaPlayerSettings(prefs, snap);
+    if (!mounted) return;
+    await widget.onSettingsChanged(snap);
+  }
+
+  void _scheduleSecondsPersist() {
+    _secondsDebounce?.cancel();
+    _secondsDebounce = Timer(const Duration(milliseconds: 450), () {
+      if (!mounted) return;
+      final sec = _parseSeconds(silent: true);
+      if (sec == null) return;
+      unawaited(_persistAndNotify());
+    });
+  }
+
+  int? _parseSeconds({bool silent = false}) {
     final raw = _secondsController.text.trim();
     if (raw.isEmpty) {
-      setState(() => _secondsError = '请输入数字');
+      if (!silent) setState(() => _secondsError = '请输入数字');
       return null;
     }
     final v = int.tryParse(raw);
     if (v == null) {
-      setState(() => _secondsError = '请输入有效整数');
+      if (!silent) setState(() => _secondsError = '请输入有效整数');
       return null;
     }
     if (v < _minSec || v > _maxSec) {
-      setState(() => _secondsError = '须在 $_minSec～$_maxSec 秒之间');
+      if (!silent) setState(() => _secondsError = '须在 $_minSec～$_maxSec 秒之间');
       return null;
     }
-    setState(() => _secondsError = null);
+    if (!silent) setState(() => _secondsError = null);
     return v;
   }
 
-  Future<void> _save() async {
+  Future<void> _confirmClose() async {
     final sec = _parseSeconds();
     if (sec == null) return;
 
@@ -199,7 +241,8 @@ class _MediaPlayerSettingsDialogBodyState
     );
     await saveMediaPlayerSettings(prefs, snap);
     if (!mounted) return;
-    widget.onApply(snap);
+    await widget.onSettingsChanged(snap);
+    if (!mounted) return;
     Navigator.of(context).pop();
   }
 
@@ -216,6 +259,11 @@ class _MediaPlayerSettingsDialogBodyState
               '自动/连续模式下每张图片展示时长请用下方数字精确输入（1 秒～10 分钟）。',
               style: Theme.of(context).textTheme.bodySmall,
             ),
+            const SizedBox(height: 4),
+            Text(
+              '此处修改会立即自动保存，下次打开将沿用当前设置。',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
             const SizedBox(height: 6),
             TextField(
               controller: _secondsController,
@@ -230,7 +278,10 @@ class _MediaPlayerSettingsDialogBodyState
                 FilteringTextInputFormatter.digitsOnly,
                 LengthLimitingTextInputFormatter(3),
               ],
-              onChanged: (_) => setState(() => _secondsError = null),
+              onChanged: (_) {
+                setState(() => _secondsError = null);
+                _scheduleSecondsPersist();
+              },
             ),
             const SizedBox(height: 12),
             Text('播放顺序', style: Theme.of(context).textTheme.titleSmall),
@@ -238,13 +289,19 @@ class _MediaPlayerSettingsDialogBodyState
               title: const Text('随机'),
               value: MediaPlaybackOrder.random,
               groupValue: _order,
-              onChanged: (v) => setState(() => _order = v!),
+              onChanged: (v) {
+                setState(() => _order = v!);
+                unawaited(_persistAndNotify());
+              },
             ),
             RadioListTile<MediaPlaybackOrder>(
               title: const Text('按顺序（加入时间，相同则按路径）'),
               value: MediaPlaybackOrder.sequential,
               groupValue: _order,
-              onChanged: (v) => setState(() => _order = v!),
+              onChanged: (v) {
+                setState(() => _order = v!);
+                unawaited(_persistAndNotify());
+              },
             ),
             const SizedBox(height: 8),
             Text('图片展现', style: Theme.of(context).textTheme.titleSmall),
@@ -252,19 +309,28 @@ class _MediaPlayerSettingsDialogBodyState
               title: const Text('居中横向填满（静态）'),
               value: MediaImageDisplayMode.fitWidth,
               groupValue: _mode,
-              onChanged: (v) => setState(() => _mode = v!),
+              onChanged: (v) {
+                setState(() => _mode = v!);
+                unawaited(_persistAndNotify());
+              },
             ),
             RadioListTile<MediaImageDisplayMode>(
               title: const Text('渐进放大（从全屏放大到设定倍数）'),
               value: MediaImageDisplayMode.kenBurns,
               groupValue: _mode,
-              onChanged: (v) => setState(() => _mode = v!),
+              onChanged: (v) {
+                setState(() => _mode = v!);
+                unawaited(_persistAndNotify());
+              },
             ),
             RadioListTile<MediaImageDisplayMode>(
               title: const Text('放大后边沿巡游（放大后沿边平移浏览四周）'),
               value: MediaImageDisplayMode.zoomPanEdge,
               groupValue: _mode,
-              onChanged: (v) => setState(() => _mode = v!),
+              onChanged: (v) {
+                setState(() => _mode = v!);
+                unawaited(_persistAndNotify());
+              },
             ),
             if (_mode == MediaImageDisplayMode.zoomPanEdge) ...[
               const SizedBox(height: 4),
@@ -273,7 +339,10 @@ class _MediaPlayerSettingsDialogBodyState
                 title: const Text('巡游方向'),
                 subtitle: Text(_panClockwise ? '顺时针' : '逆时针'),
                 value: _panClockwise,
-                onChanged: (v) => setState(() => _panClockwise = v),
+                onChanged: (v) {
+                  setState(() => _panClockwise = v);
+                  unawaited(_persistAndNotify());
+                },
               ),
               const SizedBox(height: 4),
               Text('图片巡游速度', style: Theme.of(context).textTheme.titleSmall),
@@ -288,7 +357,10 @@ class _MediaPlayerSettingsDialogBodyState
                 divisions: 18,
                 label:
                     '${(_panRoamCoverage * 100).round()}% 路径',
-                onChanged: (v) => setState(() => _panRoamCoverage = v),
+                onChanged: (v) {
+                  setState(() => _panRoamCoverage = v);
+                  unawaited(_persistAndNotify());
+                },
               ),
             ],
             if (_mode == MediaImageDisplayMode.kenBurns ||
@@ -304,7 +376,10 @@ class _MediaPlayerSettingsDialogBodyState
                 max: 5,
                 divisions: 30,
                 label: '${_zoomMax.toStringAsFixed(1)}×',
-                onChanged: (v) => setState(() => _zoomMax = v),
+                onChanged: (v) {
+                  setState(() => _zoomMax = v);
+                  unawaited(_persistAndNotify());
+                },
               ),
             ],
           ],
@@ -316,7 +391,7 @@ class _MediaPlayerSettingsDialogBodyState
           child: const Text('取消'),
         ),
         FilledButton(
-          onPressed: _save,
+          onPressed: _confirmClose,
           child: const Text('确定'),
         ),
       ],
