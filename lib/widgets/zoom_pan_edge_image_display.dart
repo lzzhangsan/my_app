@@ -7,8 +7,8 @@ import 'image_layout_utils.dart';
 
 /// 横向铺满、纵向等比例。
 ///
-/// **逻辑**：先把图缩放到目标倍数（视窗大小不变，相当于「手持放大后的照片」）；
-/// 放大结束时画面居中；再在可平移范围内，让视窗中心沿 **矩形嵌套螺旋** 先 **由内向外** 再 **由外回中心**，
+/// **逻辑**：总时长内 **20%** 放大 → **60%** 边沿巡游 → **20%** 缩回 1× 且平移回中心（恢复横向铺满、纵向等比例居中）。
+/// 放大结束时画面居中；巡游段让视窗中心沿 **矩形嵌套螺旋** 先 **由内向外** 再 **由外回中心**，
 /// 单程弧长约翻倍，同总时长下平均速度约减半，往返衔接更顺；比椭圆更易扫到四角。
 /// 巡游时间与弧长比例线性对应，全程匀速；总墙时等于 [totalDuration]（不设隐藏倍率）。
 /// [panPathCoverage]：巡游段内沿折线前进的比例（0.1～1），越小越舒缓，未走完亦可。
@@ -52,8 +52,25 @@ class _ZoomPanEdgeImageDisplayState extends State<ZoomPanEdgeImageDisplay>
   double? _cacheMy;
   bool? _cacheCw;
 
-  /// 动画前段仅放大，占 [totalDuration] 的 30%；后段巡游占 70%。
-  static const double _zoomPhaseEnd = 0.30;
+  /// 放大起 / 巡游 / 缩回收尾 占归一化时间 [0,1] 的比例。
+  static const double _zoomInEnd = 0.20;
+  static const double _roamEnd = 0.80;
+
+  static double _scaleAt({
+    required double t,
+    required double zoomEndScale,
+  }) {
+    if (t < _zoomInEnd) {
+      final u = Curves.easeInOut.transform(t / _zoomInEnd);
+      return 1.0 + (zoomEndScale - 1.0) * u;
+    }
+    if (t < _roamEnd) {
+      return zoomEndScale;
+    }
+    final uOut =
+        Curves.easeInOut.transform((t - _roamEnd) / (1.0 - _roamEnd));
+    return zoomEndScale + (1.0 - zoomEndScale) * uOut;
+  }
 
   List<Offset> _rectPathFor(double mx, double my, bool cw) {
     if (_rectPathCache != null &&
@@ -184,14 +201,10 @@ class _ZoomPanEdgeImageDisplayState extends State<ZoomPanEdgeImageDisplay>
                     animation: _controller,
                     builder: (context, _) {
                       final double t = _controller.value;
-                      double scale;
-                      if (t < _zoomPhaseEnd) {
-                        final double u = Curves.easeInOut
-                            .transform(t / _zoomPhaseEnd);
-                        scale = 1.0 + (zoomEndScale - 1.0) * u;
-                      } else {
-                        scale = zoomEndScale;
-                      }
+                      final double scale = _scaleAt(
+                        t: t,
+                        zoomEndScale: zoomEndScale,
+                      );
                       final op = _blurOpacity(
                         t: t,
                         scale: scale,
@@ -208,44 +221,70 @@ class _ZoomPanEdgeImageDisplayState extends State<ZoomPanEdgeImageDisplay>
                     animation: _controller,
                     builder: (context, child) {
                       final double t = _controller.value;
-                      double scale;
-                      double panT;
-                      if (t < _zoomPhaseEnd) {
-                        final double u = Curves.easeInOut
-                            .transform(t / _zoomPhaseEnd);
-                        scale = 1.0 + (zoomEndScale - 1.0) * u;
-                        panT = 0;
-                      } else {
-                        scale = zoomEndScale;
-                        panT = (t - _zoomPhaseEnd) / (1.0 - _zoomPhaseEnd);
-                      }
-                      final lim = panHalfExtentAfterScale(
+                      final double scale = _scaleAt(
+                        t: t,
+                        zoomEndScale: zoomEndScale,
+                      );
+                      final limAtEnd = panHalfExtentAfterScale(
                         dw: dw,
                         dh: dh,
                         vw: vw,
                         vh: vh,
-                        scale: scale,
+                        scale: zoomEndScale,
                       );
-                      final double mx = lim.maxX;
-                      final double my = lim.maxY;
+                      final double mxE = limAtEnd.maxX;
+                      final double myE = limAtEnd.maxY;
                       final spiralPath =
-                          _rectPathFor(mx, my, widget.clockwise);
+                          _rectPathFor(mxE, myE, widget.clockwise);
                       final double cov =
                           widget.panPathCoverage.clamp(0.05, 1.0);
-                      final double pathU =
-                          (panT.clamp(0.0, 1.0) * cov).clamp(0.0, 1.0);
-                      // 巡游段：弧长比例匀速（缩放段仍用 easeInOut）
-                      final Offset raw = panT > 0
-                          ? sampleOffsetAlongPath(
-                              spiralPath,
-                              pathU,
-                              pathPhaseShift: (_spiralLoop % 4) / 4.0,
-                            )
-                          : Offset.zero;
-                      final Offset offset = Offset(
-                        raw.dx.clamp(-mx, mx),
-                        raw.dy.clamp(-my, my),
-                      );
+                      final double phase =
+                          (_spiralLoop % 4) / 4.0;
+
+                      Offset offset;
+                      if (t < _zoomInEnd) {
+                        offset = Offset.zero;
+                      } else if (t < _roamEnd) {
+                        final double panSegT =
+                            (t - _zoomInEnd) / (_roamEnd - _zoomInEnd);
+                        final double pathU = (panSegT.clamp(0.0, 1.0) * cov)
+                            .clamp(0.0, 1.0);
+                        final Offset raw = sampleOffsetAlongPath(
+                          spiralPath,
+                          pathU,
+                          pathPhaseShift: phase,
+                        );
+                        offset = Offset(
+                          raw.dx.clamp(-mxE, mxE),
+                          raw.dy.clamp(-myE, myE),
+                        );
+                      } else {
+                        final uOut = Curves.easeInOut.transform(
+                          (t - _roamEnd) / (1.0 - _roamEnd),
+                        );
+                        final pathUEnd = cov.clamp(0.0, 1.0);
+                        final Offset offsetEnd = sampleOffsetAlongPath(
+                          spiralPath,
+                          pathUEnd,
+                          pathPhaseShift: phase,
+                        );
+                        final Offset clampedEnd = Offset(
+                          offsetEnd.dx.clamp(-mxE, mxE),
+                          offsetEnd.dy.clamp(-myE, myE),
+                        );
+                        offset = Offset.lerp(clampedEnd, Offset.zero, uOut)!;
+                        final limNow = panHalfExtentAfterScale(
+                          dw: dw,
+                          dh: dh,
+                          vw: vw,
+                          vh: vh,
+                          scale: scale,
+                        );
+                        offset = Offset(
+                          offset.dx.clamp(-limNow.maxX, limNow.maxX),
+                          offset.dy.clamp(-limNow.maxY, limNow.maxY),
+                        );
+                      }
 
                       return Transform.translate(
                         offset: offset,

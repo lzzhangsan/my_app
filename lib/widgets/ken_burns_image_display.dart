@@ -6,6 +6,7 @@ import 'image_layout_utils.dart';
 
 /// 初次：横向铺满屏幕宽度、纵向等比例居中；上下留白为同图模糊（非纯色条）。
 /// 仅使用等比缩放（Transform.scale），图片用 BoxFit.fitWidth，不拉伸变形。
+/// 总时长内：前半放大至 [maxScale]，后半缩回 1×，各占 50%。
 /// [loop] 为 true 时（手动模式）动画结束自动从头循环。
 class KenBurnsImageDisplay extends StatefulWidget {
   const KenBurnsImageDisplay({
@@ -31,7 +32,8 @@ class _KenBurnsImageDisplayState extends State<KenBurnsImageDisplay>
     with SingleTickerProviderStateMixin {
   late Future<Size> _sizeFuture;
   late AnimationController _controller;
-  late Animation<double> _scaleAnim;
+
+  static const double _zoomInEnd = 0.5;
 
   @override
   void initState() {
@@ -41,11 +43,17 @@ class _KenBurnsImageDisplayState extends State<KenBurnsImageDisplay>
       vsync: this,
       duration: widget.animationDuration,
     );
-    _scaleAnim = Tween<double>(begin: 1.0, end: widget.maxScale).animate(
-      CurvedAnimation(parent: _controller, curve: Curves.linear),
-    );
     _controller.addStatusListener(_onStatus);
     _controller.forward();
+  }
+
+  double _scaleForT(double t, double maxScale) {
+    if (t < _zoomInEnd) {
+      final u = Curves.easeInOut.transform(t / _zoomInEnd);
+      return 1.0 + (maxScale - 1.0) * u;
+    }
+    final u = Curves.easeInOut.transform((t - _zoomInEnd) / (1.0 - _zoomInEnd));
+    return maxScale + (1.0 - maxScale) * u;
   }
 
   void _onStatus(AnimationStatus status) {
@@ -66,11 +74,6 @@ class _KenBurnsImageDisplayState extends State<KenBurnsImageDisplay>
     }
     if (oldWidget.animationDuration != widget.animationDuration) {
       _controller.duration = widget.animationDuration;
-    }
-    if (oldWidget.maxScale != widget.maxScale) {
-      _scaleAnim = Tween<double>(begin: 1.0, end: widget.maxScale).animate(
-        CurvedAnimation(parent: _controller, curve: Curves.linear),
-      );
     }
   }
 
@@ -123,10 +126,11 @@ class _KenBurnsImageDisplayState extends State<KenBurnsImageDisplay>
                 children: [
                   blurredCoverBackground(widget.imageFile),
                   AnimatedBuilder(
-                    animation: _scaleAnim,
+                    animation: _controller,
                     builder: (context, child) {
+                      final s = _scaleForT(_controller.value, widget.maxScale);
                       return Transform.scale(
-                        scale: _scaleAnim.value,
+                        scale: s,
                         alignment: Alignment.center,
                         child: child,
                       );
