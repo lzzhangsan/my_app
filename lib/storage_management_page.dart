@@ -257,13 +257,104 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
   /// 执行完整清理（临时+缓存+孤立文件）
   Future<void> _performFullCleanup() async {
     try {
-      try {
-        await PhotoManager.clearFileCache();
-      } catch (_) {}
-      await _fileCleanupService.performFullStorageCleanup();
       final validPaths = await _databaseService.getAllValidFilePaths();
+      final preview = await _fileCleanupService.previewFullStorageCleanup(
+        validPaths,
+      );
+      final int totalCount = preview['totalCount'] as int? ?? 0;
+      final int totalBytes = preview['totalBytes'] as int? ?? 0;
+      final List<Map<String, dynamic>> sections =
+          (preview['sections'] as List<dynamic>? ?? const [])
+              .whereType<Map<String, dynamic>>()
+              .toList();
+
+      if (!mounted) return;
+      if (totalCount == 0) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('未发现可清理的垃圾或孤立文件')));
+        return;
+      }
+
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) {
+          return AlertDialog(
+            title: const Text('完整清理预览'),
+            content: SizedBox(
+              width: double.maxFinite,
+              child: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '预计删除 $totalCount 个文件，释放 ${_formatFileSize(totalBytes)}。',
+                    ),
+                    const SizedBox(height: 10),
+                    ...sections.map((s) {
+                      final title = s['title']?.toString() ?? '未命名';
+                      final path = s['path']?.toString() ?? '';
+                      final count = s['count'] as int? ?? 0;
+                      final bytes = s['bytes'] as int? ?? 0;
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              '$title: $count 个 (${_formatFileSize(bytes)})',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            if (path.isNotEmpty)
+                              Text(
+                                path,
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.grey,
+                                ),
+                              ),
+                          ],
+                        ),
+                      );
+                    }),
+                    const SizedBox(height: 6),
+                    const Text(
+                      '仅删除临时/缓存/孤立文件，不会删除数据库仍在引用的文件。',
+                      style: TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('确认清理'),
+              ),
+            ],
+          );
+        },
+      );
+
+      if (confirmed != true) return;
+
+      await _fileCleanupService.performFullStorageCleanup();
       await _fileCleanupService.cleanOrphanedFiles(validPaths);
       await _loadStorageInfo();
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('完整清理完成：删除 $totalCount 个文件，释放 ${_formatFileSize(totalBytes)}'),
+          backgroundColor: Colors.green,
+        ),
+      );
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(
@@ -591,7 +682,7 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
               ),
             _buildCleanupButton(
               '完整清理',
-              '执行所有清理操作（含外部存储白名单清理）',
+              '仅清理临时/缓存/孤立文件，保留可用数据与导出文件',
               Icons.cleaning_services,
               _performFullCleanup,
               isPrimary: true,

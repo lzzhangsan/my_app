@@ -60,6 +60,15 @@ android {
     }
 
     buildTypes {
+        debug {
+            // 让 debug 与 release 保持同签名（若配置了 keystore），便于互相覆盖安装并保留数据。
+            // 本地未配置 key.properties 时回退为默认 debug 签名，保证开发环境可运行。
+            signingConfig keystoreProperties['keyAlias'] != null ? signingConfigs.release : signingConfigs.debug
+        }
+        profile {
+            // profile 与 debug/release 保持同签名策略，避免三种构建类型互装行为不一致。
+            signingConfig keystoreProperties['keyAlias'] != null ? signingConfigs.release : signingConfigs.debug
+        }
         release {
             // 优先使用稳定的 release keystore，保证后续正式包签名一致；
             // 若本地缺少 keystore，再回退到 debug 签名，避免开发环境无法构建。

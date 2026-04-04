@@ -173,10 +173,10 @@ class _ZoomPanEdgeImageDisplayState extends State<ZoomPanEdgeImageDisplay>
             final disp = fitWidthDisplaySize(pixelSize, vw);
             final double dw = disp.width;
             final double dh = disp.height;
-            final double maxS = widget.maxScale.clamp(1.01, 8.0);
+            final double maxS = widget.maxScale.clamp(1.01, 10.0);
             // 横图 dh<vh 时需至少放大到 vh/dh，竖向才能被清晰图完全盖住（巡游时不再露模糊）
             final double coverFloor =
-                dh < vh - 0.5 ? (vh / dh).clamp(1.0, 8.0) : 1.0;
+                dh < vh - 0.5 ? (vh / dh).clamp(1.0, 10.0) : 1.0;
             final double zoomEndScale = math.max(maxS, coverFloor);
 
             return ClipRect(

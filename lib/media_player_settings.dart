@@ -38,7 +38,7 @@ Future<MediaPlayerSettingsSnapshot> loadMediaPlayerSettings(
   final modeIndex =
       (prefs.getInt(MediaPlayerPrefsKeys.imageDisplayMode) ?? 0).clamp(0, 2);
   final zoom = (prefs.getInt(MediaPlayerPrefsKeys.zoomMaxScale) ?? 30) /
-      10.0; // 存 20–50 表示 2.0–5.0
+      10.0; // 存 20–100 表示 2.0–10.0
   final orderIndex =
       (prefs.getInt(MediaPlayerPrefsKeys.playbackOrder) ?? 0).clamp(0, 1);
   final panCw = prefs.getBool(MediaPlayerPrefsKeys.panClockwise) ?? true;
@@ -50,7 +50,7 @@ Future<MediaPlayerSettingsSnapshot> loadMediaPlayerSettings(
   return MediaPlayerSettingsSnapshot(
     imageDuration: Duration(milliseconds: ms),
     imageMode: MediaImageDisplayMode.values[modeIndex],
-    zoomMaxScale: zoom.clamp(2.0, 5.0),
+    zoomMaxScale: zoom.clamp(2.0, 10.0),
     playbackOrder: MediaPlaybackOrder.values[orderIndex],
     panClockwise: panCw,
     imagePanRoamCoverage: roamCov,
@@ -373,8 +373,8 @@ class _MediaPlayerSettingsDialogBodyState
               Slider(
                 value: _zoomMax,
                 min: 2,
-                max: 5,
-                divisions: 30,
+                max: 10,
+                divisions: 80,
                 label: '${_zoomMax.toStringAsFixed(1)}×',
                 onChanged: (v) {
                   setState(() => _zoomMax = v);

@@ -618,13 +618,14 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   static const int _thumbnailBackgroundBatchSize = 18;
   static const int _thumbnailQueueTrimSize = 1200;
   static const int _thumbnailWarmupLimit = 80;
-  static const int _thumbnailPrefetchChunkPerRun = 8;
+  static const int _thumbnailPrefetchChunkPerRun = 12;
   static const int _invalidMediaRetryThreshold = 3;
   static const Duration _thumbnailRetryCooldown = Duration(seconds: 20);
+  static const Duration _singleThumbnailAttemptTimeout = Duration(seconds: 3);
 
   /// 视频缩略图并发限制，避免同时生成过多导致内存飙升
   static int _activeThumbnailCount = 0;
-  static const int _maxConcurrentThumbnails = 1;
+  static const int _maxConcurrentThumbnails = 3;
   static final List<Completer<void>> _thumbnailWaitQueue = [];
 
   @override
@@ -709,6 +710,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       await _databaseService.ensureMediaItemsTableExists();
       await _loadMediaItems();
       unawaited(_warmCurrentDirectoryVideoThumbnailsInBackground());
+      unawaited(_warmAllVideoThumbnailsInBackground());
     } catch (e) {
       debugPrint('确保媒体表存在时出错: $e');
       setState(() {
@@ -1062,6 +1064,29 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     }
   }
 
+  void _enqueueVideoThumbnailPaths(
+    Iterable<String> videoPaths, {
+    required bool prioritize,
+  }) {
+    for (final videoPath in videoPaths) {
+      if (videoPath.isEmpty) continue;
+      if (_videoThumbnailFileCache.containsKey(videoPath)) continue;
+      if (_thumbnailGenerationFailed.contains(videoPath)) continue;
+      if (_thumbnailPrefetchQueued.contains(videoPath)) continue;
+      if (_videoThumbnailFutureCache.containsKey(videoPath)) continue;
+      if (prioritize) {
+        _thumbnailPrefetchQueue.addFirst(videoPath);
+      } else {
+        _thumbnailPrefetchQueue.addLast(videoPath);
+      }
+      _thumbnailPrefetchQueued.add(videoPath);
+    }
+    while (_thumbnailPrefetchQueue.length > _thumbnailQueueTrimSize) {
+      final removed = _thumbnailPrefetchQueue.removeLast();
+      _thumbnailPrefetchQueued.remove(removed);
+    }
+  }
+
   Future<void> _drainThumbnailPrefetchQueue() async {
     if (_isThumbnailPrefetchRunning) return;
     _isThumbnailPrefetchRunning = true;
@@ -1078,7 +1103,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         }
         await _getOrCreateVideoThumbnailFuture(videoPath);
         processed++;
-        await Future<void>.delayed(const Duration(milliseconds: 16));
+        await Future<void>.delayed(const Duration(milliseconds: 8));
       }
     } finally {
       _isThumbnailPrefetchRunning = false;
@@ -1997,6 +2022,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
       int importedCount = 0;
       int skippedCount = 0;
+      final importedVideoPaths = <String>[];
 
       for (var item in items) {
         final sourceFile = item.$1;
@@ -2053,11 +2079,18 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
         await _databaseService.insertMediaItem(mediaItemMap);
         importedCount++;
+        if (type == MediaType.video) {
+          importedVideoPaths.add(destinationPath);
+        }
       }
 
       if (mounted) {
         if (!silent) Navigator.of(context).pop();
         await _loadMediaItems();
+        if (importedVideoPaths.isNotEmpty) {
+          _enqueueVideoThumbnailPaths(importedVideoPaths, prioritize: true);
+          unawaited(_drainThumbnailPrefetchQueue());
+        }
         if (!silent) {
           final parts = <String>[];
           if (importedCount > 0) parts.add('成功导入 $importedCount 个');
@@ -3418,12 +3451,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         if (Platform.isAndroid || Platform.isIOS) {
           final fileAttempts = <({int timeMs, int? maxWidth, int? maxHeight})>[
             (timeMs: 0, maxWidth: 220, maxHeight: null),
-            (timeMs: 500, maxWidth: 220, maxHeight: null),
-            (timeMs: 1500, maxWidth: 220, maxHeight: null),
-            // 一些横屏/旋转元数据视频在 maxWidth 路径失败，补一组 maxHeight 回退。
             (timeMs: 0, maxWidth: null, maxHeight: 220),
-            (timeMs: 500, maxWidth: null, maxHeight: 220),
-            (timeMs: 1500, maxWidth: null, maxHeight: 220),
+            (timeMs: 1000, maxWidth: 220, maxHeight: null),
+            (timeMs: 1000, maxWidth: null, maxHeight: 220),
           ];
           for (final attempt in fileAttempts) {
             try {
@@ -3441,7 +3471,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                         maxHeight: attempt.maxHeight!,
                         quality: 70,
                         timeMs: attempt.timeMs,
-                      ).timeout(const Duration(seconds: 4))
+                      ).timeout(_singleThumbnailAttemptTimeout)
                       : await VideoThumbnail.thumbnailFile(
                         video: videoPath,
                         thumbnailPath: outPath,
@@ -3449,7 +3479,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                         maxWidth: attempt.maxWidth!,
                         quality: 70,
                         timeMs: attempt.timeMs,
-                      ).timeout(const Duration(seconds: 4));
+                      ).timeout(_singleThumbnailAttemptTimeout);
               if (resultPath != null) {
                 final f = File(resultPath);
                 if (await f.exists() && await f.length() > 100) {
@@ -3478,10 +3508,8 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         if (Platform.isAndroid || Platform.isIOS) {
           final dataAttempts = <({int timeMs, int? maxWidth, int? maxHeight})>[
             (timeMs: 0, maxWidth: 220, maxHeight: null),
-            (timeMs: 500, maxWidth: 220, maxHeight: null),
-            (timeMs: 1500, maxWidth: 220, maxHeight: null),
             (timeMs: 0, maxWidth: null, maxHeight: 220),
-            (timeMs: 500, maxWidth: null, maxHeight: 220),
+            (timeMs: 1000, maxWidth: 220, maxHeight: null),
           ];
           for (final attempt in dataAttempts) {
             try {
@@ -3493,14 +3521,14 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                         maxHeight: attempt.maxHeight!,
                         quality: 70,
                         timeMs: attempt.timeMs,
-                      ).timeout(const Duration(seconds: 4))
+                      ).timeout(_singleThumbnailAttemptTimeout)
                       : await VideoThumbnail.thumbnailData(
                         video: videoPath,
                         imageFormat: ImageFormat.JPEG,
                         maxWidth: attempt.maxWidth!,
                         quality: 70,
                         timeMs: attempt.timeMs,
-                      ).timeout(const Duration(seconds: 4));
+                      ).timeout(_singleThumbnailAttemptTimeout);
               if (thumbnailBytes != null && thumbnailBytes.isNotEmpty) {
                 await thumbnailFile.writeAsBytes(thumbnailBytes);
                 if (await thumbnailFile.exists()) {
@@ -3522,7 +3550,11 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         }
 
         debugPrint('标准方法失败，尝试彩色占位缩略图');
-        return _generateColoredThumbnail(videoPath);
+        final fallbackThumbnail = await _generateColoredThumbnail(videoPath);
+        if (fallbackThumbnail != null) {
+          unawaited(_persistThumbnailPath(videoPath, fallbackThumbnail.path));
+        }
+        return fallbackThumbnail;
       } finally {
         _activeThumbnailCount--;
         if (_thumbnailWaitQueue.isNotEmpty) {
@@ -3559,12 +3591,11 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       return Future<File?>.value(null);
     }
 
-    final future = _generateVideoThumbnail(
-      videoPath,
-    ).timeout(const Duration(seconds: 12), onTimeout: () => null).then((file) {
+    final future = _generateVideoThumbnail(videoPath).then((file) {
       if (file == null) {
         _markVideoThumbnailFailure(videoPath);
         _videoThumbnailFileCache.remove(videoPath);
+        _scheduleThumbnailUiRefresh();
       } else {
         _clearVideoThumbnailFailure(videoPath);
         _thumbnailGenerationFailed.remove(videoPath);
@@ -3597,6 +3628,14 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       () {
         _thumbnailGenerationFailed.remove(videoPath);
         _thumbnailRetryCooldownTimers.remove(videoPath);
+        _videoThumbnailFutureCache.remove(videoPath);
+        if (!mounted) return;
+        _scheduleThumbnailUiRefresh();
+        if (_findMediaItemIdByPath(videoPath) != null &&
+            !_videoThumbnailFileCache.containsKey(videoPath)) {
+          _enqueueVideoThumbnailPaths([videoPath], prioritize: true);
+          unawaited(_drainThumbnailPrefetchQueue());
+        }
       },
     );
   }
@@ -3611,6 +3650,8 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   }
 
   Future<void> _refreshMediaAndThumbnails() async {
+    final double? previousOffset =
+        _gridScrollController.hasClients ? _gridScrollController.offset : null;
     // 手动刷新时，允许立即重试之前失败的缩略图，无需退出目录。
     for (final timer in _thumbnailRetryCooldownTimers.values) {
       timer.cancel();
@@ -3622,6 +3663,14 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     _thumbnailPrefetchQueued.clear();
     await _loadMediaItems();
     if (!mounted) return;
+    if (previousOffset != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!_gridScrollController.hasClients) return;
+        final max = _gridScrollController.position.maxScrollExtent;
+        final target = previousOffset.clamp(0.0, max);
+        _gridScrollController.jumpTo(target);
+      });
+    }
     _scheduleThumbnailPrefetch(includeBackground: true);
     unawaited(_drainThumbnailPrefetchQueue());
   }
@@ -4771,6 +4820,27 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     }
   }
 
+  Future<void> _warmAllVideoThumbnailsInBackground({
+    int maxVideos = 2000,
+  }) async {
+    try {
+      final allItems = await _databaseService.getAllMediaItems();
+      final allVideoPaths = allItems
+          .where(
+            (item) => (item['type'] as int? ?? -1) == MediaType.video.index,
+          )
+          .map((item) => item['path']?.toString() ?? '')
+          .where((p) => p.isNotEmpty)
+          .take(maxVideos)
+          .toList(growable: false);
+      if (allVideoPaths.isEmpty) return;
+      _enqueueVideoThumbnailPaths(allVideoPaths, prioritize: false);
+      unawaited(_drainThumbnailPrefetchQueue());
+    } catch (e) {
+      debugPrint('后台预热全库视频缩略图失败: $e');
+    }
+  }
+
   // 声明全量导出/导入方法（后续补充实现）
   Future<void> _exportAllMediaData() async {
     final progress = ValueNotifier<double>(0);
@@ -5303,6 +5373,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       int importedCount = 0;
       int skippedCount = 0;
       final now = DateTime.now().millisecondsSinceEpoch;
+      final importedVideoPaths = <String>[];
 
       for (int i = 0; i < mediaItemsToImport.length; i++) {
         final item = mediaItemsToImport[i];
@@ -5359,6 +5430,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         newItem['file_hash'] = fileHash;
         await _databaseService.insertMediaItem(newItem);
         importedCount++;
+        if ((newItem['type'] as int? ?? -1) == MediaType.video.index) {
+          importedVideoPaths.add(destinationPath);
+        }
 
         progress.value = 0.5 + (i + 1) / mediaItemsToImport.length * 0.45;
         message.value = '正在导入: ${i + 1}/${mediaItemsToImport.length}';
@@ -5374,7 +5448,11 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       message.value = '导入完成，正在刷新...';
       _lastImportCompletedAt = DateTime.now();
       await _loadMediaItems();
+      if (importedVideoPaths.isNotEmpty) {
+        _enqueueVideoThumbnailPaths(importedVideoPaths, prioritize: true);
+      }
       unawaited(_warmCurrentDirectoryVideoThumbnailsInBackground());
+      unawaited(_drainThumbnailPrefetchQueue());
       progress.value = 1.0;
 
       if (mounted) Navigator.of(context).pop();
@@ -5665,6 +5743,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       _itemsToCleanup.clear();
       _lastImportCompletedAt = DateTime.now(); // 30 秒内不触发自动清理
       await _loadMediaItems();
+      unawaited(_warmAllVideoThumbnailsInBackground());
       progress.value = 1.0;
 
       if (mounted) Navigator.of(context).pop(); // 关闭进度对话框

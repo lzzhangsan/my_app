@@ -322,10 +322,14 @@ class FileCleanupService {
     final expected = <String>{};
     for (final filePath in validFilePaths) {
       if (!_looksLikeVideoFile(filePath)) continue;
-      final key = _buildVideoThumbnailCacheKey(
-        path.normalize(path.absolute(filePath)),
-      );
-      expected.add('${key}_color_thumbnail.jpg');
+      final normalized = path.normalize(path.absolute(filePath));
+      final candidates = <String>{filePath, normalized};
+      for (final candidate in candidates) {
+        final key = _buildVideoThumbnailCacheKey(candidate);
+        // 媒体页当前可能生成两类可用缩略图，完整清理时都必须保留。
+        expected.add('${key}_thumbnail.jpg');
+        expected.add('${key}_color_thumbnail.jpg');
+      }
     }
     return expected;
   }
@@ -418,7 +422,11 @@ class FileCleanupService {
     return lower.endsWith('_thumbnail.jpg') ||
         lower.endsWith('_color_thumbnail.jpg') ||
         lower.startsWith('video_thumb_') ||
-        lower.startsWith('img_thumb_');
+        lower.startsWith('img_thumb_') ||
+        lower.contains('thumbnail') ||
+        lower.contains('thumb') ||
+        lower.contains('waveform') ||
+        lower.contains('ocr');
   }
 
   /// 清理所有临时文件（递归清理子目录，导入等操作会在 temp 下创建子目录）
@@ -860,7 +868,8 @@ class FileCleanupService {
     return {'count': deletedCount, 'bytes': totalBytes};
   }
 
-  /// 执行完整的存储清理
+  /// 执行完整的存储清理（安全模式）
+  /// 仅清理可重建的临时/缓存与孤立文件，不触碰用户导出/备份等可用资产。
   Future<void> performFullStorageCleanup() async {
     if (!_isInitialized) return;
 
@@ -875,9 +884,6 @@ class FileCleanupService {
       // 清理缓存文件
       await cleanAllCacheFiles();
 
-      // 清理应用外部存储
-      await cleanExternalStorage();
-
       if (kDebugMode) {
         Logger.log('完整存储清理完成');
       }
@@ -886,6 +892,119 @@ class FileCleanupService {
         Logger.log('完整存储清理失败: $e');
       }
     }
+  }
+
+  Future<({int count, int bytes})> _scanDeletableFilesInDirectory(
+    Directory dir,
+    bool Function(File file) shouldDelete,
+  ) async {
+    int deletedCount = 0;
+    int totalSize = 0;
+    if (!await dir.exists()) {
+      return (count: 0, bytes: 0);
+    }
+    await for (final entity in dir.list(recursive: true)) {
+      if (entity is! File) continue;
+      if (!shouldDelete(entity)) continue;
+      try {
+        final len = await entity.length();
+        deletedCount++;
+        totalSize += len;
+      } catch (_) {}
+    }
+    return (count: deletedCount, bytes: totalSize);
+  }
+
+  /// 完整清理预览（仅统计，不执行删除）
+  Future<Map<String, dynamic>> previewFullStorageCleanup(
+    Iterable<String> validFilePaths,
+  ) async {
+    final sections = <Map<String, dynamic>>[];
+    int totalCount = 0;
+    int totalBytes = 0;
+
+    if (!_isInitialized) {
+      return {
+        'totalCount': 0,
+        'totalBytes': 0,
+        'sections': sections,
+      };
+    }
+
+    String toKey(String p) {
+      final n = path.normalize(path.absolute(p));
+      return n.isEmpty
+          ? n
+          : (Platform.isWindows || Platform.isAndroid ? n.toLowerCase() : n);
+    }
+
+    void addSection(String title, String pathLabel, int count, int bytes) {
+      if (count <= 0 || bytes < 0) return;
+      sections.add({
+        'title': title,
+        'path': pathLabel,
+        'count': count,
+        'bytes': bytes,
+      });
+      totalCount += count;
+      totalBytes += bytes;
+    }
+
+    if (_tempDirectory != null) {
+      final result = await _scanDeletableFilesInDirectory(
+        _tempDirectory!,
+        (file) => !_isProtectedThumbnailOrCache(path.basename(file.path)),
+      );
+      addSection('临时文件', _tempDirectory!.path, result.count, result.bytes);
+    }
+
+    if (_appCacheDirectory != null) {
+      final result = await _scanDeletableFilesInDirectory(
+        _appCacheDirectory!,
+        (file) => !_isProtectedThumbnailOrCache(path.basename(file.path)),
+      );
+      addSection('缓存文件', _appCacheDirectory!.path, result.count, result.bytes);
+    }
+
+    final validSet =
+        validFilePaths.map((p) => toKey(p)).where((p) => p.isNotEmpty).toSet();
+    if (validSet.isNotEmpty && _appDocumentsDirectory != null) {
+      final base = _appDocumentsDirectory!.path;
+      final orphanRoots = <(String title, Directory dir)>[
+        ('孤立媒体文件', Directory('$base/media')),
+        ('孤立图片文件', Directory('$base/images')),
+        ('孤立音频文件', Directory('$base/audio')),
+        ('孤立音频文件', Directory('$base/audios')),
+        ('孤立背景文件', Directory('$base/background_images')),
+        ('孤立日记媒体', Directory('$base/diary_media')),
+        ('孤立文档附件', Directory('$base/documents')),
+      ];
+      for (final root in orphanRoots) {
+        final result = await _scanDeletableFilesInDirectory(
+          root.$2,
+          (file) => !validSet.contains(toKey(file.path)),
+        );
+        addSection(root.$1, root.$2.path, result.count, result.bytes);
+      }
+
+      final thumbDir = await _getExistingVideoThumbnailCacheDirectory();
+      if (thumbDir != null) {
+        final expectedNames = _buildExpectedVideoThumbnailCacheNames(
+          validFilePaths,
+        );
+        final result = await _scanDeletableFilesInDirectory(
+          thumbDir,
+          (file) => !expectedNames.contains(path.basename(file.path)),
+        );
+        addSection('孤立视频缩略图缓存', thumbDir.path, result.count, result.bytes);
+      }
+    }
+
+    return {
+      'totalCount': totalCount,
+      'totalBytes': totalBytes,
+      'sections': sections,
+    };
   }
 
   /// 释放资源
