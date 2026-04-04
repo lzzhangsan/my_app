@@ -43,6 +43,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
   double _zoomMax = 3.0;
   MediaPlaybackOrder _playbackOrder = MediaPlaybackOrder.random;
   bool _panClockwise = true;
+  double _imagePanRoamCoverage = 0.28;
   int _sequentialIndex = 0;
 
   @override
@@ -62,6 +63,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
       _zoomMax = settings.zoomMaxScale;
       _playbackOrder = settings.playbackOrder;
       _panClockwise = settings.panClockwise;
+      _imagePanRoamCoverage = settings.imagePanRoamCoverage;
       Logger.i('Loaded selected directory: $_selectedDirectory');
     });
     await _loadMediaList(); // 确保加载目录后立即加载媒体列表
@@ -76,6 +78,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
         zoomMaxScale: _zoomMax,
         playbackOrder: _playbackOrder,
         panClockwise: _panClockwise,
+        imagePanRoamCoverage: _imagePanRoamCoverage,
       ),
       onApply: (snap) async {
         setState(() {
@@ -84,6 +87,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
           _zoomMax = snap.zoomMaxScale;
           _playbackOrder = snap.playbackOrder;
           _panClockwise = snap.panClockwise;
+          _imagePanRoamCoverage = snap.imagePanRoamCoverage;
         });
         await _loadMediaList();
       },
@@ -378,11 +382,15 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
           } else if (_imageMode == MediaImageDisplayMode.zoomPanEdge) {
             setState(() {
               _mediaWidget = ZoomPanEdgeImageDisplay(
-                key: ValueKey('${nextMedia['path']}_zpan_$_mediaMode'),
+                key: ValueKey(
+                  '${nextMedia['path']}_zpan_$_mediaMode'
+                  '_${_imagePanRoamCoverage.toStringAsFixed(2)}',
+                ),
                 imageFile: mediaFile,
                 totalDuration: _imageDuration,
                 maxScale: _zoomMax,
                 clockwise: _panClockwise,
+                panPathCoverage: _imagePanRoamCoverage,
                 loop: _mediaMode == MediaMode.manual,
                 onAnimationComplete: _mediaMode == MediaMode.auto
                     ? () {

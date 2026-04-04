@@ -23,6 +23,9 @@ class MediaPlayerPrefsKeys {
   static const String zoomMaxScale = 'media_player_zoom_max_scale';
   static const String playbackOrder = 'media_player_playback_order';
   static const String panClockwise = 'media_player_pan_clockwise';
+  /// 边沿巡游单段内沿路径前进比例 ×100（10～100 → 0.10～1.00），越小越舒缓。
+  static const String imagePanRoamCoveragePct =
+      'media_player_image_pan_roam_coverage_pct';
 }
 
 Future<MediaPlayerSettingsSnapshot> loadMediaPlayerSettings(
@@ -37,6 +40,10 @@ Future<MediaPlayerSettingsSnapshot> loadMediaPlayerSettings(
   final orderIndex =
       (prefs.getInt(MediaPlayerPrefsKeys.playbackOrder) ?? 0).clamp(0, 1);
   final panCw = prefs.getBool(MediaPlayerPrefsKeys.panClockwise) ?? true;
+  final roamPct =
+      (prefs.getInt(MediaPlayerPrefsKeys.imagePanRoamCoveragePct) ?? 28)
+          .clamp(10, 100);
+  final roamCov = roamPct / 100.0;
 
   return MediaPlayerSettingsSnapshot(
     imageDuration: Duration(milliseconds: ms),
@@ -44,6 +51,7 @@ Future<MediaPlayerSettingsSnapshot> loadMediaPlayerSettings(
     zoomMaxScale: zoom.clamp(2.0, 5.0),
     playbackOrder: MediaPlaybackOrder.values[orderIndex],
     panClockwise: panCw,
+    imagePanRoamCoverage: roamCov,
   );
 }
 
@@ -68,6 +76,10 @@ Future<void> saveMediaPlayerSettings(
     s.playbackOrder.index,
   );
   await prefs.setBool(MediaPlayerPrefsKeys.panClockwise, s.panClockwise);
+  await prefs.setInt(
+    MediaPlayerPrefsKeys.imagePanRoamCoveragePct,
+    (s.imagePanRoamCoverage * 100).round().clamp(10, 100),
+  );
 }
 
 class MediaPlayerSettingsSnapshot {
@@ -77,6 +89,7 @@ class MediaPlayerSettingsSnapshot {
     required this.zoomMaxScale,
     required this.playbackOrder,
     this.panClockwise = true,
+    this.imagePanRoamCoverage = 0.28,
   });
 
   final Duration imageDuration;
@@ -85,6 +98,8 @@ class MediaPlayerSettingsSnapshot {
   final MediaPlaybackOrder playbackOrder;
   /// 边沿巡游方向：true 顺时针，false 逆时针
   final bool panClockwise;
+  /// 单段动画内沿巡游路径前进的比例 0.10～1.00；越小越舒缓，不必跑完整条路径。
+  final double imagePanRoamCoverage;
 }
 
 /// 底部红键三连击打开：调整自动连播图片停留时间、展现方式、随机/顺序
@@ -125,6 +140,7 @@ class _MediaPlayerSettingsDialogBodyState
   late double _zoomMax;
   late MediaPlaybackOrder _order;
   late bool _panClockwise;
+  late double _panRoamCoverage;
 
   String? _secondsError;
 
@@ -140,6 +156,7 @@ class _MediaPlayerSettingsDialogBodyState
     _zoomMax = widget.initial.zoomMaxScale;
     _order = widget.initial.playbackOrder;
     _panClockwise = widget.initial.panClockwise;
+    _panRoamCoverage = widget.initial.imagePanRoamCoverage.clamp(0.10, 1.0);
   }
 
   @override
@@ -178,6 +195,7 @@ class _MediaPlayerSettingsDialogBodyState
       zoomMaxScale: _zoomMax,
       playbackOrder: _order,
       panClockwise: _panClockwise,
+      imagePanRoamCoverage: _panRoamCoverage,
     );
     await saveMediaPlayerSettings(prefs, snap);
     if (!mounted) return;
@@ -256,6 +274,21 @@ class _MediaPlayerSettingsDialogBodyState
                 subtitle: Text(_panClockwise ? '顺时针' : '逆时针'),
                 value: _panClockwise,
                 onChanged: (v) => setState(() => _panClockwise = v),
+              ),
+              const SizedBox(height: 4),
+              Text('图片巡游速度', style: Theme.of(context).textTheme.titleSmall),
+              Text(
+                '舒缓 ← → 较快。数值越小画面移动越平缓；设定时间内未走完整段路径也可以。',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              Slider(
+                value: _panRoamCoverage,
+                min: 0.10,
+                max: 1.0,
+                divisions: 18,
+                label:
+                    '${(_panRoamCoverage * 100).round()}% 路径',
+                onChanged: (v) => setState(() => _panRoamCoverage = v),
               ),
             ],
             if (_mode == MediaImageDisplayMode.kenBurns ||
