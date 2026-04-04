@@ -2169,6 +2169,8 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
           onMediaMove: _handleMediaMove,
           onMediaDelete: _handleMediaDelete,
           onMediaFavorite: _handleMediaFavorite,
+          onMediaSettings: () =>
+              _mediaPlayerKey.currentState?.showMediaPlayerSettings(),
         ),
           ),
           Positioned(

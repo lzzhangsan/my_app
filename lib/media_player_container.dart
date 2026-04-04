@@ -13,6 +13,9 @@ import 'media_selection_dialog.dart'; // 导入媒体选择对话框
 import 'models/media_item.dart'; // 添加MediaItem类的导入
 import 'models/media_type.dart'; // 导入MediaType枚举
 import 'services/logger.dart';
+import 'media_player_settings.dart';
+import 'widgets/ken_burns_image_display.dart';
+import 'widgets/zoom_pan_edge_image_display.dart';
 
 enum MediaMode { none, manual, auto }
 
@@ -34,6 +37,13 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
   late final DatabaseService _databaseService;
   Map<String, dynamic>? _currentPlayingMedia; // 添加当前正在播放的媒体项
 
+  Duration _imageDuration = const Duration(seconds: 5);
+  MediaImageDisplayMode _imageMode = MediaImageDisplayMode.fitWidth;
+  double _zoomMax = 3.0;
+  MediaPlaybackOrder _playbackOrder = MediaPlaybackOrder.random;
+  bool _panClockwise = true;
+  int _sequentialIndex = 0;
+
   @override
   void initState() {
     super.initState();
@@ -43,12 +53,53 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
 
   Future<void> _loadSelectedDirectory() async {
     final prefs = await SharedPreferences.getInstance();
+    final settings = await loadMediaPlayerSettings(prefs);
     setState(() {
       _selectedDirectory = prefs.getString('selected_media_directory') ?? 'root';
+      _imageDuration = settings.imageDuration;
+      _imageMode = settings.imageMode;
+      _zoomMax = settings.zoomMaxScale;
+      _playbackOrder = settings.playbackOrder;
+      _panClockwise = settings.panClockwise;
       Logger.i('Loaded selected directory: $_selectedDirectory');
     });
     await _loadMediaList(); // 确保加载目录后立即加载媒体列表
   }
+
+  void showMediaPlayerSettings() {
+    showMediaPlayerSettingsDialog(
+      context: context,
+      initial: MediaPlayerSettingsSnapshot(
+        imageDuration: _imageDuration,
+        imageMode: _imageMode,
+        zoomMaxScale: _zoomMax,
+        playbackOrder: _playbackOrder,
+        panClockwise: _panClockwise,
+      ),
+      onApply: (snap) async {
+        setState(() {
+          _imageDuration = snap.imageDuration;
+          _imageMode = snap.imageMode;
+          _zoomMax = snap.zoomMaxScale;
+          _playbackOrder = snap.playbackOrder;
+          _panClockwise = snap.panClockwise;
+        });
+        await _loadMediaList();
+      },
+    );
+  }
+
+  void _sortMediaListInPlace(List<Map<String, dynamic>> list) {
+    if (_playbackOrder != MediaPlaybackOrder.sequential) return;
+    list.sort((a, b) {
+      final da = '${a['date_added'] ?? ''}';
+      final db = '${b['date_added'] ?? ''}';
+      final c = da.compareTo(db);
+      if (c != 0) return c;
+      return '${a['path']}'.compareTo('${b['path']}');
+    });
+  }
+
 
   Future<void> _saveSelectedDirectory(String directory) async {
     final prefs = await SharedPreferences.getInstance();
@@ -62,7 +113,8 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
     });
     
     List<Map<String, dynamic>> mediaList = await _getMediaList();
-    
+    _sortMediaListInPlace(mediaList);
+
     if (mounted) {
       setState(() {
         _mediaList = mediaList;
@@ -81,7 +133,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
         });
       } else if (_mediaMode != MediaMode.none) {
         // 如果之前在播放，重新开始播放
-        _showRandomMedia();
+        _showNextMedia();
       }
     }
   }
@@ -185,22 +237,31 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
   }
 
   void playManual() {
+    final wasNone = _mediaMode == MediaMode.none;
+    if (wasNone && _playbackOrder == MediaPlaybackOrder.sequential) {
+      _sequentialIndex = 0;
+    }
     setState(() {
       _mediaMode = MediaMode.manual;
-      _showRandomMedia();
     });
+    _showNextMedia();
   }
 
   void playAuto() {
+    final wasNone = _mediaMode == MediaMode.none;
+    if (wasNone && _playbackOrder == MediaPlaybackOrder.sequential) {
+      _sequentialIndex = 0;
+    }
     setState(() {
       _mediaMode = MediaMode.auto;
-      _showRandomMedia();
     });
+    _showNextMedia();
   }
 
   void stop() {
     setState(() {
       _mediaMode = MediaMode.none;
+      _sequentialIndex = 0;
       _mediaWidget = null;
       _currentVideoWidget = null;
       _currentPlayingMedia = null; // 清除当前播放媒体
@@ -231,7 +292,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
     return _currentVideoWidget;
   }
 
-  void _showRandomMedia() async {
+  void _showNextMedia() async {
     if (_mediaList.isEmpty) {
       setState(() {
         _mediaWidget = Center(child: Text('没有可用的媒体文件'));
@@ -250,98 +311,143 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
           });
           return;
         }
-        
-        int randomIndex = _random.nextInt(_mediaList.length);
-        Map<String, dynamic> randomMedia = _mediaList[randomIndex];
-        
-        // 先验证文件是否存在
-        final String path = randomMedia['path'];
-        final File file = File(path);
-        
-        if (!await file.exists()) {
-          Logger.w('随机选择的文件不存在，从列表中移除: $path');
 
-          // 从数据库和列表中移除不存在的文件
-          await _databaseService.deleteMediaItem(randomMedia['id']);
-          
+        final int mediaIndex = _playbackOrder == MediaPlaybackOrder.random
+            ? _random.nextInt(_mediaList.length)
+            : _sequentialIndex % _mediaList.length;
+        final Map<String, dynamic> nextMedia = _mediaList[mediaIndex];
+
+        // 先验证文件是否存在
+        final String path = nextMedia['path'];
+        final File file = File(path);
+
+        if (!await file.exists()) {
+          Logger.w('选择的文件不存在，从列表中移除: $path');
+
+          await _databaseService.deleteMediaItem(nextMedia['id']);
+
           setState(() {
-            _mediaList.removeAt(randomIndex);
+            _mediaList.removeAt(mediaIndex);
           });
-          
-          // 继续尝试下一个随机文件
+
           continue;
         }
-        
+
         // 文件存在，设置为当前播放媒体
-        _currentPlayingMedia = randomMedia;
-        File? mediaFile = await _getFileFromMediaItem(randomMedia);
+        _currentPlayingMedia = nextMedia;
+        File? mediaFile = await _getFileFromMediaItem(nextMedia);
 
         if (mediaFile == null) {
           Logger.w('无法访问媒体文件: $path');
 
-          // 从列表中移除无法访问的文件
           setState(() {
-            _mediaList.removeAt(randomIndex);
+            _mediaList.removeAt(mediaIndex);
           });
-          
-          // 继续尝试下一个
+
           continue;
         }
 
-        // 成功获取到文件，显示相应媒体
-        if (randomMedia['type'] == 0) { // 图片
-          setState(() {
-            _mediaWidget = Container(
-              width: double.infinity,
-              height: double.infinity,
-              decoration: BoxDecoration(
-                image: DecorationImage(
-                  image: FileImage(mediaFile),
-                  fit: BoxFit.fitWidth, // 改为横向填满
-                  alignment: Alignment.center, // 高度不足时居中
-                ),
-              ),
-            );
-          });
-          
-          if (_mediaMode == MediaMode.auto) {
-            _mediaTimer?.cancel();
-            _mediaTimer = Timer(Duration(seconds: 5), () {
-              if (_mediaMode == MediaMode.auto) _showRandomMedia();
-            });
+        void advanceSequentialCursor() {
+          if (_playbackOrder == MediaPlaybackOrder.sequential) {
+            _sequentialIndex = (_sequentialIndex + 1) % _mediaList.length;
           }
-          
-          // 成功显示，退出尝试循环
+        }
+
+        // 成功获取到文件，显示相应媒体
+        if (nextMedia['type'] == 0) {
+          advanceSequentialCursor();
+          // 图片
+          if (_imageMode == MediaImageDisplayMode.kenBurns) {
+            setState(() {
+              _mediaWidget = KenBurnsImageDisplay(
+                key: ValueKey('${nextMedia['path']}_ken_$_mediaMode'),
+                imageFile: mediaFile,
+                animationDuration: _imageDuration,
+                maxScale: _zoomMax,
+                onAnimationComplete: _mediaMode == MediaMode.auto
+                    ? () {
+                        if (_mediaMode == MediaMode.auto) {
+                          _showNextMedia();
+                        }
+                      }
+                    : null,
+              );
+            });
+          } else if (_imageMode == MediaImageDisplayMode.zoomPanEdge) {
+            setState(() {
+              _mediaWidget = ZoomPanEdgeImageDisplay(
+                key: ValueKey('${nextMedia['path']}_zpan_$_mediaMode'),
+                imageFile: mediaFile,
+                totalDuration: _imageDuration,
+                maxScale: _zoomMax,
+                clockwise: _panClockwise,
+                onAnimationComplete: _mediaMode == MediaMode.auto
+                    ? () {
+                        if (_mediaMode == MediaMode.auto) {
+                          _showNextMedia();
+                        }
+                      }
+                    : null,
+              );
+            });
+          } else {
+            setState(() {
+              _mediaWidget = Container(
+                width: double.infinity,
+                height: double.infinity,
+                decoration: BoxDecoration(
+                  image: DecorationImage(
+                    image: FileImage(mediaFile),
+                    fit: BoxFit.fitWidth,
+                    alignment: Alignment.center,
+                  ),
+                ),
+              );
+            });
+
+            if (_mediaMode == MediaMode.auto) {
+              _mediaTimer?.cancel();
+              _mediaTimer = Timer(_imageDuration, () {
+                if (_mediaMode == MediaMode.auto) {
+                  _showNextMedia();
+                }
+              });
+            }
+          }
+
           return;
-        } else if (randomMedia['type'] == 1) { // 视频
+        } else if (nextMedia['type'] == 1) {
+          advanceSequentialCursor();
+          // 视频
           setState(() {
             _currentVideoWidget = VideoPlayerWidget(
-              key: ValueKey(randomMedia['path']),
-              file: File(randomMedia['path']!),
+              key: ValueKey(nextMedia['path']),
+              file: File(nextMedia['path']!),
               onVideoEnd: () {
-                // 视频播放完成后，如果是自动播放模式，则切换到下一个媒体
                 if (_mediaMode == MediaMode.auto) {
-                  _showRandomMedia();
+                  _showNextMedia();
                 }
               },
-              looping: false, // 始终为false，onVideoEnd才能被触发
-              forceManualLoop: _mediaMode == MediaMode.manual, // 仅手动模式下无限循环
+              looping: false,
+              forceManualLoop: _mediaMode == MediaMode.manual,
             );
             _mediaWidget = _currentVideoWidget;
           });
-          
-          // 成功显示，退出尝试循环
+
           return;
         }
+
+        Logger.w('不支持的媒体类型: ${nextMedia['type']}');
+        continue;
       }
-      
+
       // 如果尝试多次后仍未成功，显示错误信息
       setState(() {
         _mediaWidget = Center(child: Text('无法加载媒体文件，请检查媒体库'));
         _currentPlayingMedia = null;
       });
     } catch (e) {
-      Logger.e('显示随机媒体时出错', e);
+      Logger.e('显示媒体时出错', e);
       setState(() {
         _mediaWidget = Center(child: Text('加载媒体时出错'));
         _mediaTimer?.cancel();
@@ -547,7 +653,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
       
       // 如果删除的是当前播放的媒体，立即播放下一个
       if (_currentPlayingMedia != null && _currentPlayingMedia!['id'] == currentMedia['id']) {
-        _showRandomMedia();
+        _showNextMedia();
       }
       
       return true;
@@ -724,7 +830,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
 
        // 如果删除的是当前播放的媒体，立即播放下一个
        if (_currentPlayingMedia != null && _currentPlayingMedia!['id'] == mediaId) {
-         _showRandomMedia();
+         _showNextMedia();
        }
 
        return true;
@@ -755,7 +861,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
        return;
      }
 
-     _showRandomMedia();
+     _showNextMedia();
    }
 
    // 辅助方法：显示消息
