@@ -64,6 +64,76 @@ Future<MediaPlayerSettingsSnapshot> loadMediaPlayerSettings(
   );
 }
 
+/// 写入 zip 内 `media_settings.json`：媒体页可见性、自动导入及媒体栏/预览播放偏好。
+/// 导入时由 [applyMediaSettingsImportMap] 写回，便于新机恢复效果。
+Future<Map<String, dynamic>> buildMediaSettingsExportMap(
+  SharedPreferences prefs,
+) async {
+  final m = <String, dynamic>{
+    'media_visible': prefs.getBool('media_visible') ?? true,
+    'auto_import_silent': prefs.getBool('auto_import_silent') ?? true,
+  };
+  final sd = prefs.getString('selected_media_directory');
+  if (sd != null) m['selected_media_directory'] = sd;
+  final dur = prefs.getInt(MediaPlayerPrefsKeys.imageDurationMs);
+  if (dur != null) m[MediaPlayerPrefsKeys.imageDurationMs] = dur;
+  final mode = prefs.getInt(MediaPlayerPrefsKeys.imageDisplayMode);
+  if (mode != null) m[MediaPlayerPrefsKeys.imageDisplayMode] = mode;
+  final zm = prefs.getInt(MediaPlayerPrefsKeys.zoomMaxScale);
+  if (zm != null) m[MediaPlayerPrefsKeys.zoomMaxScale] = zm;
+  final ord = prefs.getInt(MediaPlayerPrefsKeys.playbackOrder);
+  if (ord != null) m[MediaPlayerPrefsKeys.playbackOrder] = ord;
+  final pan = prefs.getBool(MediaPlayerPrefsKeys.panClockwise);
+  if (pan != null) m[MediaPlayerPrefsKeys.panClockwise] = pan;
+  final roam = prefs.getInt(MediaPlayerPrefsKeys.imagePanRoamCoveragePct);
+  if (roam != null) {
+    m[MediaPlayerPrefsKeys.imagePanRoamCoveragePct] = roam;
+  }
+  final lb = prefs.getInt(MediaPlayerPrefsKeys.imageLetterboxFill);
+  if (lb != null) m[MediaPlayerPrefsKeys.imageLetterboxFill] = lb;
+  return m;
+}
+
+/// 从导入的 `media_settings.json` 恢复 [buildMediaSettingsExportMap] 写入的项。
+Future<void> applyMediaSettingsImportMap(
+  SharedPreferences prefs,
+  Map<String, dynamic> json,
+) async {
+  final mv = json['media_visible'];
+  if (mv is bool) await prefs.setBool('media_visible', mv);
+  final ai = json['auto_import_silent'];
+  if (ai is bool) await prefs.setBool('auto_import_silent', ai);
+  final sel = json['selected_media_directory'];
+  if (sel is String && sel.isNotEmpty) {
+    await prefs.setString('selected_media_directory', sel);
+  }
+  int? asInt(dynamic v) => v is num ? v.toInt() : null;
+  final dur = asInt(json[MediaPlayerPrefsKeys.imageDurationMs]);
+  if (dur != null) {
+    await prefs.setInt(MediaPlayerPrefsKeys.imageDurationMs, dur);
+  }
+  final mode = asInt(json[MediaPlayerPrefsKeys.imageDisplayMode]);
+  if (mode != null) {
+    await prefs.setInt(MediaPlayerPrefsKeys.imageDisplayMode, mode);
+  }
+  final zm = asInt(json[MediaPlayerPrefsKeys.zoomMaxScale]);
+  if (zm != null) await prefs.setInt(MediaPlayerPrefsKeys.zoomMaxScale, zm);
+  final ord = asInt(json[MediaPlayerPrefsKeys.playbackOrder]);
+  if (ord != null) await prefs.setInt(MediaPlayerPrefsKeys.playbackOrder, ord);
+  final pan = json[MediaPlayerPrefsKeys.panClockwise];
+  if (pan is bool) {
+    await prefs.setBool(MediaPlayerPrefsKeys.panClockwise, pan);
+  }
+  final roam = asInt(json[MediaPlayerPrefsKeys.imagePanRoamCoveragePct]);
+  if (roam != null) {
+    await prefs.setInt(MediaPlayerPrefsKeys.imagePanRoamCoveragePct, roam);
+  }
+  final lb = asInt(json[MediaPlayerPrefsKeys.imageLetterboxFill]);
+  if (lb != null) {
+    await prefs.setInt(MediaPlayerPrefsKeys.imageLetterboxFill, lb);
+  }
+}
+
 Future<void> saveMediaPlayerSettings(
   SharedPreferences prefs,
   MediaPlayerSettingsSnapshot s,

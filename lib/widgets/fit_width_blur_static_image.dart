@@ -10,10 +10,16 @@ class FitWidthBlurStaticImage extends StatefulWidget {
     super.key,
     required this.file,
     this.letterboxFill = ImageLetterboxFill.transparent,
+    this.zoomCenterX,
+    this.zoomCenterY,
   });
 
   final File file;
   final ImageLetterboxFill letterboxFill;
+  /// 已保存的渐进放大中心横坐标（与 [zoomCenterY] 同时非 null 时在图上显示标记）。
+  final double? zoomCenterX;
+  /// 已保存的渐进放大中心纵坐标。
+  final double? zoomCenterY;
 
   @override
   State<FitWidthBlurStaticImage> createState() =>
@@ -67,9 +73,13 @@ class _FitWidthBlurStaticImageState extends State<FitWidthBlurStaticImage> {
                 .round()
                 .clamp(1, 8192);
             final disp = fitWidthDisplaySize(pixelSize, vw);
+            final showCenterMarker = widget.zoomCenterX != null &&
+                widget.zoomCenterY != null;
             return ClipRect(
               child: Stack(
                 fit: StackFit.expand,
+                // 默认 topStart 会把「仅包住图片」的 Center 贴到左上角，横图会纵向顶格。
+                alignment: Alignment.center,
                 children: [
                   letterboxFillLayer(widget.file, widget.letterboxFill),
                   Center(
@@ -77,12 +87,30 @@ class _FitWidthBlurStaticImageState extends State<FitWidthBlurStaticImage> {
                       child: SizedBox(
                         width: disp.width,
                         height: disp.height,
-                        child: Image.file(
-                          widget.file,
-                          fit: BoxFit.fill,
-                          filterQuality: FilterQuality.medium,
-                          cacheWidth: cacheW,
-                        ),
+                        child: showCenterMarker
+                            ? Stack(
+                                clipBehavior: Clip.none,
+                                children: [
+                                  Image.file(
+                                    widget.file,
+                                    fit: BoxFit.fill,
+                                    filterQuality: FilterQuality.medium,
+                                    cacheWidth: cacheW,
+                                  ),
+                                  ZoomCenterMarker(
+                                    nx: widget.zoomCenterX!.clamp(0.0, 1.0),
+                                    ny: widget.zoomCenterY!.clamp(0.0, 1.0),
+                                    width: disp.width,
+                                    height: disp.height,
+                                  ),
+                                ],
+                              )
+                            : Image.file(
+                                widget.file,
+                                fit: BoxFit.fill,
+                                filterQuality: FilterQuality.medium,
+                                cacheWidth: cacheW,
+                              ),
                       ),
                     ),
                   ),

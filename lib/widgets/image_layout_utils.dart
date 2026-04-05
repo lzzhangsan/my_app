@@ -312,3 +312,135 @@ Widget letterboxFillLayer(File file, ImageLetterboxFill fill) {
       );
   }
 }
+
+/// 已保存的渐进放大中心点：小黄点半透明（全屏预览/渐进放大用，较小不抢眼）。
+BoxDecoration zoomCenterMarkerDotDecoration() {
+  return BoxDecoration(
+    shape: BoxShape.circle,
+    color: const Color(0xFFFFD54F).withOpacity(0.52),
+    boxShadow: [
+      BoxShadow(
+        color: Colors.black.withOpacity(0.22),
+        blurRadius: 2,
+      ),
+    ],
+  );
+}
+
+/// 网格缩略图用：约为 [zoomCenterMarkerDotDecoration] 圆点直径的两倍，略提高不透明度并加白边，便于一眼区分。
+BoxDecoration zoomCenterMarkerThumbnailDotDecoration() {
+  return BoxDecoration(
+    shape: BoxShape.circle,
+    color: const Color(0xFFFFC107).withOpacity(0.82),
+    border: Border.all(color: Colors.white.withOpacity(0.95), width: 1.0),
+    boxShadow: [
+      BoxShadow(
+        color: Colors.black.withOpacity(0.35),
+        blurRadius: 3,
+      ),
+    ],
+  );
+}
+
+/// 已保存的渐进放大中心点在图片显示矩形内的标记（与 [SizedBox] 内 `Image` 同坐标系，叠在图上）。
+///
+/// 仅当数据库中 [ken_burns_center_x/y] 均非 null 时由调用方决定是否构建；默认未设中心则不显示。
+/// [visible]：渐进放大模式下在 scale>1 时应为 false，以免遮挡画面。
+class ZoomCenterMarker extends StatelessWidget {
+  const ZoomCenterMarker({
+    super.key,
+    required this.nx,
+    required this.ny,
+    required this.width,
+    required this.height,
+    this.visible = true,
+    this.radius = 2.5,
+  });
+
+  /// 归一化横坐标 0～1。
+  final double nx;
+  /// 归一化纵坐标 0～1。
+  final double ny;
+  final double width;
+  final double height;
+  /// 为 false 时不绘制（仍占位无：返回 [SizedBox.shrink]）。
+  final bool visible;
+  /// 圆点半径（逻辑像素），默认约为初版一半大小。
+  final double radius;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!visible) return const SizedBox.shrink();
+    return Positioned(
+      left: width * nx - radius,
+      top: height * ny - radius,
+      child: IgnorePointer(
+        child: Container(
+          width: radius * 2,
+          height: radius * 2,
+          decoration: zoomCenterMarkerDotDecoration(),
+        ),
+      ),
+    );
+  }
+}
+
+/// 缩略图 [BoxFit.cover] 且居中裁切时，将归一化中心点映射到格子内的位置后叠放小黄点。
+class ZoomCenterMarkerCoverOverlay extends StatelessWidget {
+  const ZoomCenterMarkerCoverOverlay({
+    super.key,
+    required this.file,
+    required this.nx,
+    required this.ny,
+    /// 略缩图格子内约为全屏标记的两倍半径，更易辨认。
+    this.radius = 5.0,
+  });
+
+  final File file;
+  final double nx;
+  final double ny;
+  final double radius;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final tw = constraints.maxWidth;
+        final th = constraints.maxHeight;
+        if (tw <= 0 || th <= 0) return const SizedBox.shrink();
+        return FutureBuilder<Size>(
+          future: measureImageFileSize(file),
+          builder: (context, snapshot) {
+            if (!snapshot.hasData) return const SizedBox.shrink();
+            final iw = snapshot.data!.width;
+            final ih = snapshot.data!.height;
+            if (iw <= 0 || ih <= 0) return const SizedBox.shrink();
+            final scale = math.max(tw / iw, th / ih);
+            final sw = iw * scale;
+            final sh = ih * scale;
+            final ox = (tw - sw) / 2;
+            final oy = (th - sh) / 2;
+            final cx = nx.clamp(0.0, 1.0);
+            final cy = ny.clamp(0.0, 1.0);
+            return Stack(
+              clipBehavior: Clip.none,
+              children: [
+                Positioned(
+                  left: ox + cx * sw - radius,
+                  top: oy + cy * sh - radius,
+                  child: IgnorePointer(
+                    child: Container(
+                      width: radius * 2,
+                      height: radius * 2,
+                      decoration: zoomCenterMarkerThumbnailDotDecoration(),
+                    ),
+                  ),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+}

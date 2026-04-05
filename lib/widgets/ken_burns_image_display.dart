@@ -11,7 +11,8 @@ import 'image_layout_utils.dart';
 /// [loop] 为 true 时（手动模式）动画结束自动从头循环。
 ///
 /// [zoomCenterX]、[zoomCenterY] 为相对图片显示区域左上角的归一化坐标 0～1（默认 0.5 即几何中心）。
-/// 实现上先将该点平移到视口中心，再绕中心缩放，使最大倍率时该点始终在屏幕正中，便于细看。
+/// 最小倍率（1×）时不额外平移，保持横向铺满、纵向等比居中；倍率越高，越将该点移向视口中心，
+/// 最大倍率时该点落在屏幕正中。平移量与 `(scale-1)/(maxScale-1)` 成比例，缩回 1× 时不留单侧空白。
 /// 开启 [enableDoubleTapToSetZoomCenter] 且提供 [onZoomCenterSet] 时，双击图片可将该点存为新中心（由上层写入数据库）。
 class KenBurnsImageDisplay extends StatefulWidget {
   const KenBurnsImageDisplay({
@@ -51,13 +52,38 @@ class _KenBurnsImageDisplayState extends State<KenBurnsImageDisplay>
   late AnimationController _controller;
 
   static const double _zoomInEnd = 0.5;
+  /// 「从原图放大到最大」阶段为 [0, _zoomInEnd]；其时间前 10% 内显示中心点标记。
+  static const double _zoomInMarkerShowFraction = 0.1;
 
   double get _nx => (widget.zoomCenterX ?? 0.5).clamp(0.0, 1.0);
   double get _ny => (widget.zoomCenterY ?? 0.5).clamp(0.0, 1.0);
 
-  /// 将归一化点 (nx,ny) 平移到 [SizedBox] 中心后再绕中心缩放，避免「锚点固定在一侧」导致角点跑出视野。
-  Offset _centerPointOffset(double dw, double dh) {
-    return Offset(dw * (0.5 - _nx), dh * (0.5 - _ny));
+  /// 数据库中已保存过中心点（与默认几何中心区分）。
+  bool get _hasCustomZoomCenter =>
+      widget.zoomCenterX != null && widget.zoomCenterY != null;
+
+  /// 渐进放大：最小倍率时显示；从原图→最大倍率过程的前 10% 时间内也显示，其余放大过程隐藏。
+  bool _zoomCenterMarkerVisible(double tAnim, double s) {
+    if (!_hasCustomZoomCenter) return false;
+    final inZoomInLead =
+        tAnim < _zoomInEnd * _zoomInMarkerShowFraction;
+    final atMinScale = s <= 1.001;
+    return inZoomInLead || atMinScale;
+  }
+
+  /// 将 (nx,ny) 移到 [SizedBox] 中心所需的平移；[blend] 为 0～1，与缩放进度同步，0 表示不平移。
+  Offset _centerPointOffset(double dw, double dh, double blend) {
+    final b = blend.clamp(0.0, 1.0);
+    return Offset(
+      dw * (0.5 - _nx) * b,
+      dh * (0.5 - _ny) * b,
+    );
+  }
+
+  /// 与当前 scale 同步：1× 时为 0，[maxScale] 时为 1，缩小时与放大对称回退。
+  static double _translateBlendForScale(double s, double maxScale) {
+    if (maxScale <= 1.0 + 1e-9) return 0.0;
+    return ((s - 1.0) / (maxScale - 1.0)).clamp(0.0, 1.0);
   }
 
   @override
@@ -163,39 +189,63 @@ class _KenBurnsImageDisplayState extends State<KenBurnsImageDisplay>
             return Stack(
               fit: StackFit.expand,
               clipBehavior: Clip.none,
-              alignment: Alignment.center,
               children: [
                 letterboxFillLayer(widget.imageFile, widget.letterboxFill),
-                AnimatedBuilder(
-                  animation: _controller,
-                  builder: (context, child) {
-                    final s = _scaleForT(_controller.value, widget.maxScale);
-                    return Transform.scale(
-                      scale: s,
-                      alignment: Alignment.center,
-                      child: Transform.translate(
-                        offset: _centerPointOffset(dw, dh),
-                        child: child,
-                      ),
-                    );
-                  },
-                  child: RepaintBoundary(
-                    child: SizedBox(
-                      width: dw,
-                      height: dh,
-                      child: GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onDoubleTapDown: (d) {
-                          _handleDoubleTapDown(d, dw, dh);
-                        },
-                        child: Image.file(
-                          widget.imageFile,
-                          fit: BoxFit.fitWidth,
+                // 与 FitWidth 一致：用 Align 在整页内居中 dw×dh 内容。仅依赖 Stack.alignment
+                // 在「Positioned.fill 底 + 非定位子」组合下可能不可靠，导致渐进放大时整块图贴顶。
+                Positioned.fill(
+                  child: Align(
+                    alignment: Alignment.center,
+                    child: AnimatedBuilder(
+                      animation: _controller,
+                      builder: (context, _) {
+                        final s =
+                            _scaleForT(_controller.value, widget.maxScale);
+                        final blend =
+                            _translateBlendForScale(s, widget.maxScale);
+                        return Transform.scale(
+                          scale: s,
                           alignment: Alignment.center,
-                          filterQuality: FilterQuality.none,
-                          cacheWidth: cacheW,
-                        ),
-                      ),
+                          child: Transform.translate(
+                            offset: _centerPointOffset(dw, dh, blend),
+                            child: RepaintBoundary(
+                              child: SizedBox(
+                                width: dw,
+                                height: dh,
+                                child: Stack(
+                                  clipBehavior: Clip.none,
+                                  children: [
+                                    GestureDetector(
+                                      behavior: HitTestBehavior.opaque,
+                                      onDoubleTapDown: (d) {
+                                        _handleDoubleTapDown(d, dw, dh);
+                                      },
+                                      child: Image.file(
+                                        widget.imageFile,
+                                        fit: BoxFit.fitWidth,
+                                        alignment: Alignment.center,
+                                        filterQuality: FilterQuality.none,
+                                        cacheWidth: cacheW,
+                                      ),
+                                    ),
+                                    if (_hasCustomZoomCenter)
+                                      ZoomCenterMarker(
+                                        nx: _nx,
+                                        ny: _ny,
+                                        width: dw,
+                                        height: dh,
+                                        visible: _zoomCenterMarkerVisible(
+                                          _controller.value,
+                                          s,
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        );
+                      },
                     ),
                   ),
                 ),

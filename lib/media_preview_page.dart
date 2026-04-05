@@ -740,6 +740,8 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
             key: ValueKey('${item.path}_fit_loading'),
             file: file,
             letterboxFill: _letterboxFill,
+            zoomCenterX: item.kenBurnsCenterX,
+            zoomCenterY: item.kenBurnsCenterY,
           );
         }
         final pixelSize = snapshot.data!;
@@ -765,6 +767,8 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
                 ),
                 file: file,
                 letterboxFill: _letterboxFill,
+                zoomCenterX: item.kenBurnsCenterX,
+                zoomCenterY: item.kenBurnsCenterY,
               ),
             );
           },

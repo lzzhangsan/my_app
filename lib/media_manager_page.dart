@@ -29,6 +29,9 @@ import 'models/media_item.dart';
 import 'media_preview_page.dart';
 import 'create_folder_dialog.dart';
 import 'models/media_type.dart';
+import 'media_player_settings.dart' show
+    applyMediaSettingsImportMap, buildMediaSettingsExportMap;
+import 'widgets/image_layout_utils.dart' show ZoomCenterMarkerCoverOverlay;
 import 'browser_page.dart';
 import 'services/cache_service.dart';
 import 'services/export_import_utils.dart'
@@ -3222,20 +3225,38 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   Widget _buildMediaThumbnail(MediaItem item) {
     switch (item.type) {
       case MediaType.image:
-        return Image(
-          image: _buildImageThumbnailProvider(item.path),
-          filterQuality: FilterQuality.low,
-          fit: BoxFit.cover,
-          frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
-            if (frame != null || wasSynchronouslyLoaded) {
-              _invalidMediaRetryCounts.remove(item.id);
-            }
-            return child;
-          },
-          errorBuilder: (context, error, stackTrace) {
-            _scheduleCleanup(item.id); // 加载失败时安排清理（文件缺失或损坏）
-            return const Icon(Icons.image, size: 32);
-          },
+        final hasKbCenter =
+            item.kenBurnsCenterX != null && item.kenBurnsCenterY != null;
+        return Stack(
+          fit: StackFit.expand,
+          clipBehavior: Clip.hardEdge,
+          children: [
+            Image(
+              image: _buildImageThumbnailProvider(item.path),
+              filterQuality: FilterQuality.low,
+              fit: BoxFit.cover,
+              width: double.infinity,
+              height: double.infinity,
+              frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
+                if (frame != null || wasSynchronouslyLoaded) {
+                  _invalidMediaRetryCounts.remove(item.id);
+                }
+                return child;
+              },
+              errorBuilder: (context, error, stackTrace) {
+                _scheduleCleanup(item.id); // 加载失败时安排清理（文件缺失或损坏）
+                return const Icon(Icons.image, size: 32);
+              },
+            ),
+            if (hasKbCenter)
+              Positioned.fill(
+                child: ZoomCenterMarkerCoverOverlay(
+                  file: File(item.path),
+                  nx: item.kenBurnsCenterX!,
+                  ny: item.kenBurnsCenterY!,
+                ),
+              ),
+          ],
         );
       case MediaType.video:
         return FutureBuilder<File?>(
@@ -4982,12 +5003,8 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
       message.value = '正在导出设置...';
       final prefs = await SharedPreferences.getInstance();
-      final mediaVisible = prefs.getBool('media_visible') ?? true;
-      final autoImportSilent = prefs.getBool('auto_import_silent') ?? true;
-      final settingsJson = jsonEncode({
-        'media_visible': mediaVisible,
-        'auto_import_silent': autoImportSilent,
-      });
+      final settingsJson =
+          jsonEncode(await buildMediaSettingsExportMap(prefs));
       final settingsBytes = utf8.encode(settingsJson);
       final settingsFile = ArchiveFile(
         'media_settings.json',
@@ -5193,6 +5210,18 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           ArchiveFile('media_items.json', itemsJson.length, itemsJson),
         );
       }
+      message.value = '正在导出设置...';
+      final folderExportPrefs = await SharedPreferences.getInstance();
+      final folderSettingsBytes = utf8.encode(
+        jsonEncode(await buildMediaSettingsExportMap(folderExportPrefs)),
+      );
+      encoder.addArchiveFile(
+        ArchiveFile(
+          'media_settings.json',
+          folderSettingsBytes.length,
+          folderSettingsBytes,
+        ),
+      );
       progress.value = 0.9;
 
       currentPhase = '完成打包';
@@ -5441,6 +5470,21 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           await Future.delayed(const Duration(milliseconds: 50));
         } else if ((i + 1) % 10 == 0) {
           await Future.delayed(const Duration(milliseconds: 30));
+        }
+      }
+
+      final folderSettingsImport = File(
+        path.join(tempImportDir.path, 'media_settings.json'),
+      );
+      if (await folderSettingsImport.exists()) {
+        try {
+          final raw = jsonDecode(await folderSettingsImport.readAsString());
+          if (raw is Map<String, dynamic>) {
+            final fprefs = await SharedPreferences.getInstance();
+            await applyMediaSettingsImportMap(fprefs, raw);
+          }
+        } catch (e) {
+          debugPrint('导入文件夹：恢复 media_settings.json 失败（已跳过）: $e');
         }
       }
 
@@ -5718,22 +5762,11 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
       await _databaseService.replaceAllMediaItemsFromChunks(getNextChunk);
 
-      // 7. 恢复设置
+      // 7. 恢复设置（含媒体栏/预览播放偏好，与导出 zip 一致）
       message.value = '正在恢复设置...';
       if (settingsToImport != null) {
         final prefs = await SharedPreferences.getInstance();
-        if (settingsToImport['media_visible'] != null) {
-          await prefs.setBool(
-            'media_visible',
-            settingsToImport['media_visible'],
-          );
-        }
-        if (settingsToImport['auto_import_silent'] != null) {
-          await prefs.setBool(
-            'auto_import_silent',
-            settingsToImport['auto_import_silent'],
-          );
-        }
+        await applyMediaSettingsImportMap(prefs, settingsToImport);
       }
       progress.value = 0.95;
 

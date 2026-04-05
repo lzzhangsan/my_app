@@ -440,6 +440,10 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
               _mediaWidget = FitWidthBlurStaticImage(
                 file: mediaFile,
                 letterboxFill: _letterboxFill,
+                zoomCenterX:
+                    (nextMedia['ken_burns_center_x'] as num?)?.toDouble(),
+                zoomCenterY:
+                    (nextMedia['ken_burns_center_y'] as num?)?.toDouble(),
               );
             });
 
