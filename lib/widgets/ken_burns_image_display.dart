@@ -52,8 +52,8 @@ class _KenBurnsImageDisplayState extends State<KenBurnsImageDisplay>
   late AnimationController _controller;
 
   static const double _zoomInEnd = 0.5;
-  /// 在 [1×, maxScale] 倍率区间里，处于**下端 30%**（从 1× 起、尚未放得很大）时显示中心点。
-  static const double _maxScaleMarkerBottomFraction = 0.3;
+  /// 在 [1×, maxScale] 倍率区间里，处于**下端 5%**（从 1× 起、尚未放得很大）时显示中心点。
+  static const double _maxScaleMarkerBottomFraction = 0.05;
 
   double get _nx => (widget.zoomCenterX ?? 0.5).clamp(0.0, 1.0);
   double get _ny => (widget.zoomCenterY ?? 0.5).clamp(0.0, 1.0);
@@ -62,12 +62,12 @@ class _KenBurnsImageDisplayState extends State<KenBurnsImageDisplay>
   bool get _hasCustomZoomCenter =>
       widget.zoomCenterX != null && widget.zoomCenterY != null;
 
-  /// 渐进放大：倍率在「从 1× 到 max」区间的**下端 30%** 内时显示（含约 1× 静止）。
+  /// 渐进放大：倍率在「从 1× 到 max」区间的**下端 5%** 内时显示（含约 1× 静止）。
   bool _zoomCenterMarkerVisible(double s) {
     if (!_hasCustomZoomCenter) return false;
     final maxS = widget.maxScale;
     if (maxS <= 1.001) return s <= 1.001;
-    // 下端 30%：s ∈ [1, 1 + 0.3*(maxS - 1)]
+    // 下端 5%：s ∈ [1, 1 + 0.05*(maxS - 1)]
     final hi =
         1.0 + _maxScaleMarkerBottomFraction * (maxS - 1.0);
     return s <= hi + 1e-6;
