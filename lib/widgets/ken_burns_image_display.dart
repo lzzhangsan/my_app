@@ -52,8 +52,8 @@ class _KenBurnsImageDisplayState extends State<KenBurnsImageDisplay>
   late AnimationController _controller;
 
   static const double _zoomInEnd = 0.5;
-  /// 「从原图放大到最大」阶段为 [0, _zoomInEnd]；其时间前 10% 内显示中心点标记。
-  static const double _zoomInMarkerShowFraction = 0.1;
+  /// 在 [1×, maxScale] 倍率区间里，处于**下端 30%**（从 1× 起、尚未放得很大）时显示中心点。
+  static const double _maxScaleMarkerBottomFraction = 0.3;
 
   double get _nx => (widget.zoomCenterX ?? 0.5).clamp(0.0, 1.0);
   double get _ny => (widget.zoomCenterY ?? 0.5).clamp(0.0, 1.0);
@@ -62,13 +62,15 @@ class _KenBurnsImageDisplayState extends State<KenBurnsImageDisplay>
   bool get _hasCustomZoomCenter =>
       widget.zoomCenterX != null && widget.zoomCenterY != null;
 
-  /// 渐进放大：最小倍率时显示；从原图→最大倍率过程的前 10% 时间内也显示，其余放大过程隐藏。
-  bool _zoomCenterMarkerVisible(double tAnim, double s) {
+  /// 渐进放大：倍率在「从 1× 到 max」区间的**下端 30%** 内时显示（含约 1× 静止）。
+  bool _zoomCenterMarkerVisible(double s) {
     if (!_hasCustomZoomCenter) return false;
-    final inZoomInLead =
-        tAnim < _zoomInEnd * _zoomInMarkerShowFraction;
-    final atMinScale = s <= 1.001;
-    return inZoomInLead || atMinScale;
+    final maxS = widget.maxScale;
+    if (maxS <= 1.001) return s <= 1.001;
+    // 下端 30%：s ∈ [1, 1 + 0.3*(maxS - 1)]
+    final hi =
+        1.0 + _maxScaleMarkerBottomFraction * (maxS - 1.0);
+    return s <= hi + 1e-6;
   }
 
   /// 将 (nx,ny) 移到 [SizedBox] 中心所需的平移；[blend] 为 0～1，与缩放进度同步，0 表示不平移。
@@ -234,10 +236,7 @@ class _KenBurnsImageDisplayState extends State<KenBurnsImageDisplay>
                                         ny: _ny,
                                         width: dw,
                                         height: dh,
-                                        visible: _zoomCenterMarkerVisible(
-                                          _controller.value,
-                                          s,
-                                        ),
+                                        visible: _zoomCenterMarkerVisible(s),
                                       ),
                                   ],
                                 ),
