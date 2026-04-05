@@ -85,8 +85,9 @@ android {
             // 优先使用稳定的 release keystore，保证后续正式包签名一致；
             // 若本地缺少 keystore，再回退到 debug 签名，避免开发环境无法构建。
             signingConfig keystoreProperties['keyAlias'] != null ? signingConfigs.release : signingConfigs.debug
-            minifyEnabled false
-            shrinkResources false
+            // R8：压缩与混淆 Java/Kotlin，移除未使用的 Android 资源（不影响 Flutter assets）
+            minifyEnabled true
+            shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }

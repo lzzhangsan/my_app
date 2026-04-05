@@ -11,8 +11,8 @@ import 'image_layout_utils.dart';
 /// [loop] 为 true 时（手动模式）动画结束自动从头循环。
 ///
 /// [zoomCenterX]、[zoomCenterY] 为相对图片显示区域左上角的归一化坐标 0～1（默认 0.5 即几何中心）。
-/// 最小倍率（1×）时不额外平移，保持横向铺满、纵向等比居中；倍率越高，越将该点移向视口中心，
-/// 最大倍率时该点落在屏幕正中。平移量与 `(scale-1)/(maxScale-1)` 成比例，缩回 1× 时不留单侧空白。
+/// 实现为：绕**视口中心**（即 1× 时图片块中心）缩放，并叠加与缩放进度同步的平移，使 **最大倍率时**
+/// 该锚点落在屏幕正中；1× 时不额外平移。平移量与 `(scale-1)/(maxScale-1)` 成比例。
 /// 开启 [enableDoubleTapToSetZoomCenter] 且提供 [onZoomCenterSet] 时，双击图片可将该点存为新中心（由上层写入数据库）。
 class KenBurnsImageDisplay extends StatefulWidget {
   const KenBurnsImageDisplay({
@@ -73,7 +73,7 @@ class _KenBurnsImageDisplayState extends State<KenBurnsImageDisplay>
     return s <= hi + 1e-6;
   }
 
-  /// 将 (nx,ny) 移到 [SizedBox] 中心所需的平移；[blend] 为 0～1，与缩放进度同步，0 表示不平移。
+  /// 将 (nx,ny) 在最大倍率时移到视口中心所需的平移；[blend] 与缩放进度同步，0 表示不平移。
   Offset _centerPointOffset(double dw, double dh, double blend) {
     final b = blend.clamp(0.0, 1.0);
     return Offset(
@@ -203,8 +203,10 @@ class _KenBurnsImageDisplayState extends State<KenBurnsImageDisplay>
                       builder: (context, _) {
                         final s =
                             _scaleForT(_controller.value, widget.maxScale);
-                        final blend =
-                            _translateBlendForScale(s, widget.maxScale);
+                        final blend = _translateBlendForScale(
+                          s,
+                          widget.maxScale,
+                        );
                         return Transform.scale(
                           scale: s,
                           alignment: Alignment.center,

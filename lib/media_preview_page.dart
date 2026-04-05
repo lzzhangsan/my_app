@@ -748,15 +748,19 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
         return LayoutBuilder(
           builder: (context, constraints) {
             final vw = constraints.maxWidth;
+            final vh = constraints.maxHeight;
             final disp = fitWidthDisplaySize(pixelSize, vw);
             final dw = disp.width;
             final dh = disp.height;
+            // 与 Ken Burns 一致：归一化坐标相对「图片矩形」左上角。静态图在 Stack 内垂直居中，
+            // localPosition 相对整页，须减去图片顶边偏移，否则 ny 会系统性偏大（小黄点落在手指下方）。
+            final imageTopY = (vh - dh) / 2;
             return GestureDetector(
               behavior: HitTestBehavior.opaque,
               onDoubleTapDown: (TapDownDetails d) {
                 final lp = d.localPosition;
                 final nx = (lp.dx / dw).clamp(0.0, 1.0);
-                final ny = (lp.dy / dh).clamp(0.0, 1.0);
+                final ny = ((lp.dy - imageTopY) / dh).clamp(0.0, 1.0);
                 unawaited(
                   _persistKenBurnsCenterAndStartStaticDemo(item, nx, ny),
                 );
