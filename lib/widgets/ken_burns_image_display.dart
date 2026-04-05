@@ -11,6 +11,7 @@ import 'image_layout_utils.dart';
 /// [loop] 为 true 时（手动模式）动画结束自动从头循环。
 ///
 /// [zoomCenterX]、[zoomCenterY] 为相对图片显示区域左上角的归一化坐标 0～1（默认 0.5 即几何中心）。
+/// 实现上先将该点平移到视口中心，再绕中心缩放，使最大倍率时该点始终在屏幕正中，便于细看。
 /// 开启 [enableDoubleTapToSetZoomCenter] 且提供 [onZoomCenterSet] 时，双击图片可将该点存为新中心（由上层写入数据库）。
 class KenBurnsImageDisplay extends StatefulWidget {
   const KenBurnsImageDisplay({
@@ -20,7 +21,7 @@ class KenBurnsImageDisplay extends StatefulWidget {
     this.maxScale = 3.0,
     this.loop = false,
     this.onAnimationComplete,
-    this.letterboxFill = ImageLetterboxFill.white,
+    this.letterboxFill = ImageLetterboxFill.transparent,
     this.zoomCenterX,
     this.zoomCenterY,
     this.enableDoubleTapToSetZoomCenter = false,
@@ -54,9 +55,10 @@ class _KenBurnsImageDisplayState extends State<KenBurnsImageDisplay>
   double get _nx => (widget.zoomCenterX ?? 0.5).clamp(0.0, 1.0);
   double get _ny => (widget.zoomCenterY ?? 0.5).clamp(0.0, 1.0);
 
-  /// [Alignment] 与归一化 (0,0)～(1,1) 的对应关系：中心 (0.5,0.5) → Alignment(0,0)。
-  Alignment get _scaleAlignment =>
-      Alignment(2 * _nx - 1, 2 * _ny - 1);
+  /// 将归一化点 (nx,ny) 平移到 [SizedBox] 中心后再绕中心缩放，避免「锚点固定在一侧」导致角点跑出视野。
+  Offset _centerPointOffset(double dw, double dh) {
+    return Offset(dw * (0.5 - _nx), dh * (0.5 - _ny));
+  }
 
   @override
   void initState() {
@@ -158,44 +160,46 @@ class _KenBurnsImageDisplayState extends State<KenBurnsImageDisplay>
             final disp = fitWidthDisplaySize(pixelSize, vw);
             final dw = disp.width;
             final dh = disp.height;
-            return ClipRect(
-              child: Stack(
-                fit: StackFit.expand,
-                alignment: Alignment.center,
-                children: [
-                  letterboxFillLayer(widget.imageFile, widget.letterboxFill),
-                  AnimatedBuilder(
-                    animation: _controller,
-                    builder: (context, child) {
-                      final s = _scaleForT(_controller.value, widget.maxScale);
-                      return Transform.scale(
-                        scale: s,
-                        alignment: _scaleAlignment,
+            return Stack(
+              fit: StackFit.expand,
+              clipBehavior: Clip.none,
+              alignment: Alignment.center,
+              children: [
+                letterboxFillLayer(widget.imageFile, widget.letterboxFill),
+                AnimatedBuilder(
+                  animation: _controller,
+                  builder: (context, child) {
+                    final s = _scaleForT(_controller.value, widget.maxScale);
+                    return Transform.scale(
+                      scale: s,
+                      alignment: Alignment.center,
+                      child: Transform.translate(
+                        offset: _centerPointOffset(dw, dh),
                         child: child,
-                      );
-                    },
-                    child: RepaintBoundary(
-                      child: SizedBox(
-                        width: dw,
-                        height: dh,
-                        child: GestureDetector(
-                          behavior: HitTestBehavior.opaque,
-                          onDoubleTapDown: (d) {
-                            _handleDoubleTapDown(d, dw, dh);
-                          },
-                          child: Image.file(
-                            widget.imageFile,
-                            fit: BoxFit.fitWidth,
-                            alignment: Alignment.center,
-                            filterQuality: FilterQuality.none,
-                            cacheWidth: cacheW,
-                          ),
+                      ),
+                    );
+                  },
+                  child: RepaintBoundary(
+                    child: SizedBox(
+                      width: dw,
+                      height: dh,
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onDoubleTapDown: (d) {
+                          _handleDoubleTapDown(d, dw, dh);
+                        },
+                        child: Image.file(
+                          widget.imageFile,
+                          fit: BoxFit.fitWidth,
+                          alignment: Alignment.center,
+                          filterQuality: FilterQuality.none,
+                          cacheWidth: cacheW,
                         ),
                       ),
                     ),
                   ),
-                ],
-              ),
+                ),
+              ],
             );
           },
         );

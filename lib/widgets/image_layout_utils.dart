@@ -240,7 +240,7 @@ Offset sampleOffsetAlongPath(
 
 /// 竖向未铺满时，屏幕上下（或左右）留白区域的填充方式（媒体栏与预览共用设置）。
 enum ImageLetterboxFill {
-  /// 纯白，不抢视线（推荐默认）。
+  /// 浅灰纯色底（非纯白，避免与白色图标对比度不足）；色值见 [kLetterboxSolidNeutral]。
   white,
   /// 透出底层背景（如页面 Scaffold 底色）。
   transparent,
@@ -249,6 +249,9 @@ enum ImageLetterboxFill {
   /// 同图强模糊；个别机型若出现发灰可改用「纯白」。
   blurHeavy,
 }
+
+/// [ImageLetterboxFill.white] 使用的浅灰纯色（与纯白色图标区分更明显）。
+const Color kLetterboxSolidNeutral = Color(0xFFE0E0E0);
 
 /// 作为 [Stack] 子组件使用的全屏底图层（已含 [Positioned.fill]）。
 ///
@@ -259,7 +262,7 @@ Widget letterboxFillLayer(File file, ImageLetterboxFill fill) {
   switch (fill) {
     case ImageLetterboxFill.white:
       return const Positioned.fill(
-        child: ColoredBox(color: Colors.white),
+        child: ColoredBox(color: kLetterboxSolidNeutral),
       );
     case ImageLetterboxFill.transparent:
       return const Positioned.fill(

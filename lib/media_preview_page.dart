@@ -51,7 +51,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
   MediaPlaybackOrder _playbackOrder = MediaPlaybackOrder.random;
   bool _panClockwise = true;
   double _imagePanRoamCoverage = 0.28;
-  ImageLetterboxFill _letterboxFill = ImageLetterboxFill.white;
+  ImageLetterboxFill _letterboxFill = ImageLetterboxFill.transparent;
   /// 双击更新渐进放大中心后递增，强制 Ken Burns 立即重播。
   int _kenBurnsReplayTick = 0;
   /// 静态模式下双击保存中心后，临时用 Ken Burns 播完一轮再恢复静态。
@@ -950,7 +950,8 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.transparent, // 将黑色背景改为透明
+      // 与「透明留白」配合：上下未铺满处透出黑底，白色顶栏图标可见；图片区仍由内容层绘制。
+      backgroundColor: Colors.black,
       body: Stack(
         fit: StackFit.expand,
         children: [
@@ -998,7 +999,18 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
             left: 0,
             right: 0,
             child: Container(
+              width: double.infinity,
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Colors.black.withOpacity(0.5),
+                    Colors.black.withOpacity(0.0),
+                  ],
+                ),
+              ),
               child: Row(
                 children: [
                   IconButton(

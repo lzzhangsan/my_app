@@ -44,7 +44,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
   MediaPlaybackOrder _playbackOrder = MediaPlaybackOrder.random;
   bool _panClockwise = true;
   double _imagePanRoamCoverage = 0.28;
-  ImageLetterboxFill _letterboxFill = ImageLetterboxFill.white;
+  ImageLetterboxFill _letterboxFill = ImageLetterboxFill.transparent;
   int _sequentialIndex = 0;
 
   String _sequentialIndexPrefsKey() {

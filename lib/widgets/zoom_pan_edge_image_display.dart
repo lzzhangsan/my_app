@@ -24,7 +24,7 @@ class ZoomPanEdgeImageDisplay extends StatefulWidget {
     this.panPathCoverage = 0.28,
     this.loop = false,
     this.onAnimationComplete,
-    this.letterboxFill = ImageLetterboxFill.white,
+    this.letterboxFill = ImageLetterboxFill.transparent,
   });
 
   final File imageFile;

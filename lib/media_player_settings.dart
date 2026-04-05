@@ -51,7 +51,7 @@ Future<MediaPlayerSettingsSnapshot> loadMediaPlayerSettings(
           .clamp(10, 100);
   final roamCov = roamPct / 100.0;
   final letterboxIndex =
-      (prefs.getInt(MediaPlayerPrefsKeys.imageLetterboxFill) ?? 0).clamp(0, 3);
+      (prefs.getInt(MediaPlayerPrefsKeys.imageLetterboxFill) ?? 1).clamp(0, 3);
 
   return MediaPlayerSettingsSnapshot(
     imageDuration: Duration(milliseconds: ms),
@@ -103,7 +103,7 @@ class MediaPlayerSettingsSnapshot {
     required this.playbackOrder,
     this.panClockwise = true,
     this.imagePanRoamCoverage = 0.28,
-    this.letterboxFill = ImageLetterboxFill.white,
+    this.letterboxFill = ImageLetterboxFill.transparent,
   });
 
   final Duration imageDuration;
@@ -304,12 +304,12 @@ class _MediaPlayerSettingsDialogBodyState
             const SizedBox(height: 12),
             Text('上下留白区域', style: Theme.of(context).textTheme.titleSmall),
             Text(
-              '图片较矮或较窄未铺满屏幕时，周围区域的底纹。默认推荐「纯白」以免干扰主体。',
+              '图片较矮或较窄未铺满屏幕时，周围区域的底纹。默认「透明」时透出页面底色（媒体全屏预览为黑底）；「浅灰」为中性纯色底。',
               style: Theme.of(context).textTheme.bodySmall,
             ),
             const SizedBox(height: 6),
             RadioListTile<ImageLetterboxFill>(
-              title: const Text('纯白'),
+              title: const Text('浅灰纯色底'),
               value: ImageLetterboxFill.white,
               groupValue: _letterboxFill,
               onChanged: (v) {

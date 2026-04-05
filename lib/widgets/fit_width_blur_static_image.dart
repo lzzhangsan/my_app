@@ -4,12 +4,12 @@ import 'package:flutter/material.dart';
 
 import 'image_layout_utils.dart';
 
-/// 横向填满、纵向等比例居中；留白处由 [letterboxFill] 控制（默认纯白）。
+/// 横向填满、纵向等比例居中；留白处由 [letterboxFill] 控制（默认透明）。
 class FitWidthBlurStaticImage extends StatefulWidget {
   const FitWidthBlurStaticImage({
     super.key,
     required this.file,
-    this.letterboxFill = ImageLetterboxFill.white,
+    this.letterboxFill = ImageLetterboxFill.transparent,
   });
 
   final File file;
