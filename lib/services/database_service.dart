@@ -23,7 +23,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// 数据库服务 - 统一管理所有数据库操作
 class DatabaseService {
   static const String _databaseName = 'change_app.db';
-  static const int _databaseVersion = 14; // media_items：渐进放大中心点 ken_burns_center_x/y
+  static const int _databaseVersion = 15; // media_items：视频缩放/平移/旋转 video_view_*
   
   Database? _database;
   final Completer<Database> _initCompleter = Completer<Database>();
@@ -37,8 +37,15 @@ class DatabaseService {
 
   /// 初始化数据库服务
   Future<void> initialize() async {
-    if (_isInitialized) return;
-    
+    if (_isInitialized) {
+      // 热重载等场景下已初始化但磁盘库可能未补全新列：再跑一遍补全。
+      if (_database != null) {
+        await _ensureMediaItemsKenBurnsColumns(_database!);
+        await _ensureMediaItemsVideoViewColumns(_database!);
+      }
+      return;
+    }
+
     try {
       final documentsDirectory = await getApplicationDocumentsDirectory();
       final dbPath = p.join(documentsDirectory.path, _databaseName);
@@ -75,6 +82,7 @@ class DatabaseService {
 
       // 部分环境未走 onUpgrade 或旧表缺少列：补全渐进放大中心点字段
       await _ensureMediaItemsKenBurnsColumns(_database!);
+      await _ensureMediaItemsVideoViewColumns(_database!);
       
       _initCompleter.complete(_database!);
       _isInitialized = true;
@@ -251,6 +259,10 @@ class DatabaseService {
           is_favorite INTEGER DEFAULT 0,
           ken_burns_center_x REAL,
           ken_burns_center_y REAL,
+          video_view_scale REAL DEFAULT 1,
+          video_view_tx REAL DEFAULT 0,
+          video_view_ty REAL DEFAULT 0,
+          video_view_rot INTEGER DEFAULT 0,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
         )
@@ -421,6 +433,32 @@ class DatabaseService {
         } catch (_) {}
         if (kDebugMode) {
           Logger.log('已添加 ken_burns_center_x/y 列到 media_items');
+        }
+        break;
+      case 15:
+        // 视频播放：缩放/平移（归一化）、顺时针四分之一圈数 0～3
+        try {
+          await db.execute(
+            'ALTER TABLE media_items ADD COLUMN video_view_scale REAL DEFAULT 1',
+          );
+        } catch (_) {}
+        try {
+          await db.execute(
+            'ALTER TABLE media_items ADD COLUMN video_view_tx REAL DEFAULT 0',
+          );
+        } catch (_) {}
+        try {
+          await db.execute(
+            'ALTER TABLE media_items ADD COLUMN video_view_ty REAL DEFAULT 0',
+          );
+        } catch (_) {}
+        try {
+          await db.execute(
+            'ALTER TABLE media_items ADD COLUMN video_view_rot INTEGER DEFAULT 0',
+          );
+        } catch (_) {}
+        if (kDebugMode) {
+          Logger.log('已添加 video_view_scale/tx/ty/rot 列到 media_items');
         }
         break;
       case 8:
@@ -674,6 +712,47 @@ class DatabaseService {
     }
   }
 
+  /// 若 `media_items` 缺少视频视窗变换列则补全。
+  Future<void> _ensureMediaItemsVideoViewColumns(Database db) async {
+    try {
+      final tables = await db.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='media_items';",
+      );
+      if (tables.isEmpty) return;
+
+      Future<void> addIfMissing(String columnName, String alterSql) async {
+        final columns = await db.rawQuery('PRAGMA table_info(media_items);');
+        final names = columns.map((c) => c['name'] as String).toSet();
+        if (!names.contains(columnName)) {
+          await db.execute(alterSql);
+          if (kDebugMode) {
+            Logger.log('已补全 media_items.$columnName');
+          }
+        }
+      }
+
+      await addIfMissing(
+        'video_view_scale',
+        'ALTER TABLE media_items ADD COLUMN video_view_scale REAL DEFAULT 1',
+      );
+      await addIfMissing(
+        'video_view_tx',
+        'ALTER TABLE media_items ADD COLUMN video_view_tx REAL DEFAULT 0',
+      );
+      await addIfMissing(
+        'video_view_ty',
+        'ALTER TABLE media_items ADD COLUMN video_view_ty REAL DEFAULT 0',
+      );
+      await addIfMissing(
+        'video_view_rot',
+        'ALTER TABLE media_items ADD COLUMN video_view_rot INTEGER DEFAULT 0',
+      );
+    } catch (e, stackTrace) {
+      _handleError('补全 video_view 列失败', e, stackTrace);
+      rethrow;
+    }
+  }
+
   /// 确保媒体项表存在
   Future<void> ensureMediaItemsTableExists() async {
     try {
@@ -696,6 +775,7 @@ class DatabaseService {
           )
         ''');
         await _ensureMediaItemsKenBurnsColumns(db);
+        await _ensureMediaItemsVideoViewColumns(db);
         Logger.log('已创建media_items表');
       } else {
         // 检查file_hash列是否存在
@@ -708,6 +788,7 @@ class DatabaseService {
           Logger.log('已添加file_hash列到media_items表');
         }
         await _ensureMediaItemsKenBurnsColumns(db);
+        await _ensureMediaItemsVideoViewColumns(db);
         Logger.log('media_items表已存在');
       }
     } catch (e, stackTrace) {
@@ -917,6 +998,12 @@ class DatabaseService {
   Future<int> updateMediaItem(Map<String, dynamic> item) async {
     try {
       final db = await database;
+      if (item.containsKey('video_view_scale') ||
+          item.containsKey('video_view_tx') ||
+          item.containsKey('video_view_ty') ||
+          item.containsKey('video_view_rot')) {
+        await _ensureMediaItemsVideoViewColumns(db);
+      }
       return await db.update(
         'media_items',
         item,
@@ -4583,6 +4670,10 @@ class DatabaseService {
           is_favorite INTEGER DEFAULT 0,
           ken_burns_center_x REAL,
           ken_burns_center_y REAL,
+          video_view_scale REAL DEFAULT 1,
+          video_view_tx REAL DEFAULT 0,
+          video_view_ty REAL DEFAULT 0,
+          video_view_rot INTEGER DEFAULT 0,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
         )
@@ -4625,6 +4716,10 @@ class DatabaseService {
           is_favorite INTEGER DEFAULT 0,
           ken_burns_center_x REAL,
           ken_burns_center_y REAL,
+          video_view_scale REAL DEFAULT 1,
+          video_view_tx REAL DEFAULT 0,
+          video_view_ty REAL DEFAULT 0,
+          video_view_rot INTEGER DEFAULT 0,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
         )

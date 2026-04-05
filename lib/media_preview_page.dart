@@ -17,6 +17,8 @@ import 'widgets/image_layout_utils.dart'
     show ImageLetterboxFill, fitWidthDisplaySize, measureImageFileSize;
 import 'widgets/ken_burns_image_display.dart';
 import 'widgets/zoom_pan_edge_image_display.dart';
+import 'models/video_view_params.dart';
+import 'widgets/video_interactive_surface.dart';
 
 
 enum MediaMode { none, manual, auto }
@@ -138,6 +140,33 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('保存中心点失败: $e'),
+          behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+        ),
+      );
+    }
+  }
+
+  /// 保存视频视窗（缩放/平移/旋转），导出与文档栏会套用。
+  Future<void> _persistVideoView(MediaItem item, VideoViewParams p) async {
+    try {
+      await _dbService.updateMediaItem({
+        'id': item.id,
+        ...p.toDbUpdateMap(),
+        'updated_at': DateTime.now().millisecondsSinceEpoch,
+      });
+      if (!mounted) return;
+      final idx = widget.mediaItems.indexWhere((e) => e.id == item.id);
+      if (idx < 0) return;
+      setState(() {
+        widget.mediaItems[idx] =
+            widget.mediaItems[idx].copyWith(videoViewParams: p);
+      });
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('保存视频显示方式失败: $e'),
           behavior: SnackBarBehavior.floating,
           margin: const EdgeInsets.fromLTRB(16, 0, 16, 20),
         ),
@@ -901,50 +930,29 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
       );
     }
 
-    // 添加详细调试信息
-    final screenSize = MediaQuery.of(context).size;
-    final videoSize = videoController.value.size;
-    final videoPath = item.path;
-    final aspectRatio = videoController.value.aspectRatio;
-    
-    return Stack(
-      children: [
-        // 视频播放器
-        Container(
-          color: Colors.transparent,
-          child: Center(
-            child: GestureDetector(
-              onDoubleTap: () {
-                if (videoController.value.isPlaying) {
-                  videoController.pause();
-                } else {
-                  videoController.play();
-                  _addVideoCompleteListenerFor(videoController, index);
-                }
-              },
-              child: Container(
-                color: Colors.transparent,
-                child: SizedBox.expand(
-                  child: FittedBox(
-                    fit: BoxFit.contain, // 使用contain而不是cover，确保视频完整显示
-                    alignment: Alignment.center,
-                    child: SizedBox(
-                      width: videoController.value.size.width,
-                      height: videoController.value.size.height,
-                      child: Theme(
-                        data: Theme.of(context).copyWith(
-                          platform: TargetPlatform.iOS,
-                        ),
-                        child: Chewie(controller: chewieController),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
+    final chewieChild = Theme(
+      data: Theme.of(context).copyWith(
+        platform: TargetPlatform.iOS,
+      ),
+      child: Chewie(controller: chewieController),
+    );
+
+    return Center(
+      child: ColoredBox(
+        color: Colors.transparent,
+        child: SizedBox.expand(
+          child: VideoInteractiveSurface(
+            key: ValueKey(
+              '${item.id}_${item.videoViewParams.hashCode}',
             ),
+            videoController: videoController,
+            videoChild: chewieChild,
+            initial: item.videoViewParams,
+            editable: true,
+            onChanged: (p) => _persistVideoView(item, p),
           ),
         ),
-      ],
+      ),
     );
   }
 

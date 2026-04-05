@@ -3259,60 +3259,20 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           ],
         );
       case MediaType.video:
+        // 已缓存的缩略图走同步展示，避免 FutureBuilder 在父级 setState 后拿到新 Future 而短暂回到 waiting 造成闪屏。
+        final readyThumb = _syncVideoThumbnailFileIfReady(item.path);
+        if (readyThumb != null) {
+          return _buildVideoThumbnailLoadedStack(readyThumb, item.path);
+        }
         return FutureBuilder<File?>(
           future: _getOrCreateVideoThumbnailFuture(item.path),
           builder: (context, snapshot) {
             if (snapshot.connectionState == ConnectionState.done &&
                 snapshot.hasData &&
                 snapshot.data != null) {
-              // 缩略图已成功生成，仅展示失败时不触发清理（避免误杀）
-              return Stack(
-                fit: StackFit.expand,
-                children: [
-                  Image.file(
-                    snapshot.data!,
-                    fit: BoxFit.cover,
-                    errorBuilder: (context, error, stackTrace) {
-                      debugPrint('加载视频缩略图显示失败（缩略图文件已存在）: ${item.path}');
-                      return _buildVideoPlaceholder();
-                    },
-                  ),
-                  Positioned(
-                    right: 8,
-                    bottom: 8,
-                    child: Container(
-                      padding: const EdgeInsets.all(2),
-                      decoration: BoxDecoration(
-                        color: Colors.black45,
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: const Icon(
-                        Icons.play_arrow,
-                        size: 16,
-                        color: Colors.white,
-                      ),
-                    ),
-                  ),
-                ],
-              );
+              return _buildVideoThumbnailLoadedStack(snapshot.data!, item.path);
             } else if (snapshot.connectionState == ConnectionState.waiting) {
-              return Stack(
-                children: [
-                  _buildVideoPlaceholder(),
-                  const Center(
-                    child: SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        valueColor: AlwaysStoppedAnimation<Color>(
-                          Colors.white70,
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              );
+              return _buildVideoThumbnailGeneratingStack();
             } else {
               // 缩略图失败不代表视频文件无效；仅显示占位，避免误清理造成“导入后文件消失”。
               return _buildVideoPlaceholder();
@@ -3390,6 +3350,72 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
   ImageProvider _buildImageThumbnailProvider(String imagePath) {
     return ResizeImage(FileImage(File(imagePath)), width: 360);
+  }
+
+  /// 内存缓存中已有有效缩略图文件时同步返回，供网格重建时直接 [Image.file]，避免 FutureBuilder 闪屏。
+  File? _syncVideoThumbnailFileIfReady(String videoPath) {
+    final f = _videoThumbnailFileCache[videoPath];
+    if (f == null) return null;
+    try {
+      if (f.existsSync()) {
+        final len = f.lengthSync();
+        if (len > 100) return f;
+      }
+    } catch (_) {}
+    _videoThumbnailFileCache.remove(videoPath);
+    return null;
+  }
+
+  Widget _buildVideoThumbnailLoadedStack(File file, String videoPathForErrorLog) {
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        Image.file(
+          file,
+          fit: BoxFit.cover,
+          errorBuilder: (context, error, stackTrace) {
+            debugPrint('加载视频缩略图显示失败（缩略图文件已存在）: $videoPathForErrorLog');
+            return _buildVideoPlaceholder();
+          },
+        ),
+        Positioned(
+          right: 8,
+          bottom: 8,
+          child: Container(
+            padding: const EdgeInsets.all(2),
+            decoration: BoxDecoration(
+              color: Colors.black45,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: const Icon(
+              Icons.play_arrow,
+              size: 16,
+              color: Colors.white,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildVideoThumbnailGeneratingStack() {
+    return Stack(
+      children: [
+        _buildVideoPlaceholder(),
+        const Center(
+          child: SizedBox(
+            width: 20,
+            height: 20,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              valueColor: AlwaysStoppedAnimation<Color>(
+                Colors.white70,
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
   }
 
   Widget _buildVideoPlaceholder() {
@@ -3591,18 +3617,20 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   Future<File?> _getOrCreateVideoThumbnailFuture(String videoPath) {
     final cachedFile = _videoThumbnailFileCache[videoPath];
     if (cachedFile != null) {
-      return cachedFile.exists().then((exists) async {
-        if (exists && await cachedFile.length() > 100) {
-          _clearVideoThumbnailFailure(videoPath);
-          final itemId = _findMediaItemIdByPath(videoPath);
-          if (itemId != null) {
-            _invalidMediaRetryCounts.remove(itemId);
+      try {
+        if (cachedFile.existsSync()) {
+          final len = cachedFile.lengthSync();
+          if (len > 100) {
+            _clearVideoThumbnailFailure(videoPath);
+            final itemId = _findMediaItemIdByPath(videoPath);
+            if (itemId != null) {
+              _invalidMediaRetryCounts.remove(itemId);
+            }
+            return Future<File?>.value(cachedFile);
           }
-          return cachedFile;
         }
-        _videoThumbnailFileCache.remove(videoPath);
-        return _getOrCreateVideoThumbnailFuture(videoPath);
-      });
+      } catch (_) {}
+      _videoThumbnailFileCache.remove(videoPath);
     }
     final cachedFuture = _videoThumbnailFutureCache[videoPath];
     if (cachedFuture != null) {
@@ -3617,6 +3645,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         _markVideoThumbnailFailure(videoPath);
         _videoThumbnailFileCache.remove(videoPath);
         _scheduleThumbnailUiRefresh();
+        _videoThumbnailFutureCache.remove(videoPath);
       } else {
         _clearVideoThumbnailFailure(videoPath);
         _thumbnailGenerationFailed.remove(videoPath);
@@ -3626,8 +3655,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           _invalidMediaRetryCounts.remove(itemId);
         }
         _scheduleThumbnailUiRefresh();
+        // 保留已完成的 Future，避免 FutureBuilder 在 setState 后拿到「新 Future」而 connectionState 回到 waiting 闪屏。
+        _videoThumbnailFutureCache[videoPath] = Future<File?>.value(file);
       }
-      _videoThumbnailFutureCache.remove(videoPath);
       return file;
     });
 
@@ -3635,7 +3665,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     if (_videoThumbnailFutureCache.length > 1200) {
       final staleKeys = _videoThumbnailFutureCache.keys.take(300).toList();
       for (final key in staleKeys) {
-        _videoThumbnailFutureCache.remove(key);
+        if (!_videoThumbnailFileCache.containsKey(key)) {
+          _videoThumbnailFutureCache.remove(key);
+        }
       }
     }
     return future;
@@ -3670,6 +3702,16 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     });
   }
 
+  /// 在 [_loadMediaItems] 等重建网格后，将列表滚回关闭预览/刷新前的位置。
+  void _scheduleGridScrollRestore(double? previousOffset) {
+    if (previousOffset == null) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_gridScrollController.hasClients) return;
+      final max = _gridScrollController.position.maxScrollExtent;
+      _gridScrollController.jumpTo(previousOffset.clamp(0.0, max));
+    });
+  }
+
   Future<void> _refreshMediaAndThumbnails() async {
     final double? previousOffset =
         _gridScrollController.hasClients ? _gridScrollController.offset : null;
@@ -3684,14 +3726,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     _thumbnailPrefetchQueued.clear();
     await _loadMediaItems();
     if (!mounted) return;
-    if (previousOffset != null) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!_gridScrollController.hasClients) return;
-        final max = _gridScrollController.position.maxScrollExtent;
-        final target = previousOffset.clamp(0.0, max);
-        _gridScrollController.jumpTo(target);
-      });
-    }
+    _scheduleGridScrollRestore(previousOffset);
     _scheduleThumbnailPrefetch(includeBackground: true);
     unawaited(_drainThumbnailPrefetchQueue());
   }
@@ -4006,14 +4041,21 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                 ),
           ),
         )
-        .then((_) {
+        .then((_) async {
+          // 预览关闭后全量刷新会重建网格，需先记下滚动位置以免回到列表顶部。
+          final double? scrollBeforeReload =
+              _gridScrollController.hasClients
+                  ? _gridScrollController.offset
+                  : null;
+          await _loadMediaItems();
+          if (!mounted) return;
           // 预览页面关闭时刷新列表（删除/移动/收藏等操作后需同步显示）
-          _loadMediaItems();
           if (item.type == MediaType.video) {
             setState(() {
               _lastViewedVideoId = item.id;
             });
           }
+          _scheduleGridScrollRestore(scrollBeforeReload);
         });
   }
 

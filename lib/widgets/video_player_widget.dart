@@ -4,7 +4,9 @@ import 'dart:io';
 import 'dart:async';
 import 'package:chewie/chewie.dart';
 import 'package:flutter/services.dart';
+import '../models/video_view_params.dart';
 import '../services/logger.dart';
+import 'video_interactive_surface.dart';
 
 // Use an Expando to associate the StatefulWidget instance with its State safely
 // without adding mutable fields to the immutable widget class.
@@ -18,6 +20,9 @@ class VideoPlayerWidget extends StatefulWidget {
   final VoidCallback? onVideoError;
   final BoxFit fit;
 
+  /// 非 null 时在文档栏套用媒体页已保存的缩放/平移/旋转（只读）。
+  final VideoViewParams? viewParams;
+
   VideoPlayerWidget({
     required this.file,
     this.looping = false,
@@ -25,6 +30,7 @@ class VideoPlayerWidget extends StatefulWidget {
     this.onVideoEnd,
     this.onVideoError,
     this.fit = BoxFit.contain,
+    this.viewParams,
     super.key,
   });
 
@@ -170,9 +176,10 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   @override
   void didUpdateWidget(covariant VideoPlayerWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.file.path != widget.file.path ||
+    final fileOrLoopChanged = oldWidget.file.path != widget.file.path ||
         oldWidget.looping != widget.looping ||
-        oldWidget.forceManualLoop != widget.forceManualLoop) {
+        oldWidget.forceManualLoop != widget.forceManualLoop;
+    if (fileOrLoopChanged) {
       Logger.d('视频播放器更新: ${oldWidget.file.path} -> ${widget.file.path}');
       _progressTimer?.cancel();
       _chewieController?.dispose();
@@ -181,6 +188,8 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
       _isEnded = false;
       _hasError = false;
       _initializeController();
+    } else if (oldWidget.viewParams != widget.viewParams) {
+      setState(() {});
     }
   }
 
@@ -224,6 +233,24 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     if (!_controller.value.isInitialized || _chewieController == null) {
       return const Center(
         child: CircularProgressIndicator(),
+      );
+    }
+
+    final vp = widget.viewParams;
+    if (vp != null) {
+      return Center(
+        child: Container(
+          color: Colors.transparent,
+          child: SizedBox.expand(
+            child: VideoInteractiveSurface(
+              key: ValueKey('${widget.file.path}_${vp.hashCode}'),
+              videoController: _controller,
+              videoChild: Chewie(controller: _chewieController!),
+              initial: vp,
+              editable: false,
+            ),
+          ),
+        ),
       );
     }
 

@@ -1,5 +1,6 @@
 // lib/models/media_item.dart
 import 'media_type.dart'; // 导入MediaType枚举
+import 'video_view_params.dart';
 
 double? _readKenBurnsCoord(dynamic v) {
   if (v == null) return null;
@@ -22,6 +23,9 @@ class MediaItem {
   /// 渐进放大缩放中心纵坐标 0～1；null 表示几何中心。
   final double? kenBurnsCenterY;
 
+  /// 视频视窗变换（仅 type 为视频时有效）。
+  final VideoViewParams videoViewParams;
+
   MediaItem({
     required this.id,
     required this.name,
@@ -31,6 +35,7 @@ class MediaItem {
     required this.dateAdded,
     this.kenBurnsCenterX,
     this.kenBurnsCenterY,
+    this.videoViewParams = const VideoViewParams(),
   });
 
   /// 从 Map 构造 MediaItem，用于从数据库读取数据
@@ -48,6 +53,7 @@ class MediaItem {
         dateAdded: DateTime.parse(
           map['date_added'] as String? ?? DateTime.now().toIso8601String(),
         ),
+        videoViewParams: const VideoViewParams(),
       );
     }
 
@@ -67,6 +73,7 @@ class MediaItem {
       ),
       kenBurnsCenterX: _readKenBurnsCoord(map['ken_burns_center_x']),
       kenBurnsCenterY: _readKenBurnsCoord(map['ken_burns_center_y']),
+      videoViewParams: VideoViewParams.fromMediaMap(map),
     );
   }
 
@@ -82,6 +89,7 @@ class MediaItem {
         'updated_at': DateTime.now().millisecondsSinceEpoch,
         if (kenBurnsCenterX != null) 'ken_burns_center_x': kenBurnsCenterX,
         if (kenBurnsCenterY != null) 'ken_burns_center_y': kenBurnsCenterY,
+        if (!videoViewParams.isDefault) ...videoViewParams.toDbUpdateMap(),
       };
 
   MediaItem copyWith({
@@ -93,6 +101,7 @@ class MediaItem {
     DateTime? dateAdded,
     double? kenBurnsCenterX,
     double? kenBurnsCenterY,
+    VideoViewParams? videoViewParams,
   }) {
     return MediaItem(
       id: id ?? this.id,
@@ -103,6 +112,7 @@ class MediaItem {
       dateAdded: dateAdded ?? this.dateAdded,
       kenBurnsCenterX: kenBurnsCenterX ?? this.kenBurnsCenterX,
       kenBurnsCenterY: kenBurnsCenterY ?? this.kenBurnsCenterY,
+      videoViewParams: videoViewParams ?? this.videoViewParams,
     );
   }
 }
