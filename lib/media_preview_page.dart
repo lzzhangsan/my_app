@@ -13,7 +13,8 @@ import 'models/media_item.dart';
 import 'models/media_type.dart';
 import 'media_player_settings.dart';
 import 'widgets/fit_width_blur_static_image.dart';
-import 'widgets/image_layout_utils.dart' show ImageLetterboxFill;
+import 'widgets/image_layout_utils.dart'
+    show ImageLetterboxFill, fitWidthDisplaySize, measureImageFileSize;
 import 'widgets/ken_burns_image_display.dart';
 import 'widgets/zoom_pan_edge_image_display.dart';
 
@@ -53,6 +54,9 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
   ImageLetterboxFill _letterboxFill = ImageLetterboxFill.white;
   /// 双击更新渐进放大中心后递增，强制 Ken Burns 立即重播。
   int _kenBurnsReplayTick = 0;
+  /// 静态模式下双击保存中心后，临时用 Ken Burns 播完一轮再恢复静态。
+  bool _staticKenBurnsDemo = false;
+  String? _staticDemoItemId;
   Timer? _mediaTimer;
   bool _skipNextPageChanged = false; // 删除/收藏/移动后忽略一次 onPageChanged，避免跳回第一项
 
@@ -141,6 +145,71 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     }
   }
 
+  /// 静态预览：双击后保存中心并进入一轮 Ken Burns 演示（与渐进放大模式参数一致）。
+  Future<void> _persistKenBurnsCenterAndStartStaticDemo(
+    MediaItem item,
+    double nx,
+    double ny,
+  ) async {
+    try {
+      await _dbService.updateMediaItem({
+        'id': item.id,
+        'ken_burns_center_x': nx,
+        'ken_burns_center_y': ny,
+        'updated_at': DateTime.now().millisecondsSinceEpoch,
+      });
+      if (!mounted) return;
+      final idx = widget.mediaItems.indexWhere((e) => e.id == item.id);
+      if (idx < 0) return;
+      _mediaTimer?.cancel();
+      _mediaTimer = null;
+      final messenger = ScaffoldMessenger.of(context);
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        SnackBar(
+          content: const Text('已保存放大中心，正在演示渐进放大效果'),
+          duration: const Duration(milliseconds: 2200),
+          behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+        ),
+      );
+      setState(() {
+        _kenBurnsReplayTick++;
+        _staticKenBurnsDemo = true;
+        _staticDemoItemId = item.id;
+        widget.mediaItems[idx] = widget.mediaItems[idx].copyWith(
+          kenBurnsCenterX: nx,
+          kenBurnsCenterY: ny,
+        );
+      });
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('保存中心点失败: $e'),
+          behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+        ),
+      );
+    }
+  }
+
+  void _finishStaticKenBurnsDemo() {
+    if (!mounted) return;
+    setState(() {
+      _staticKenBurnsDemo = false;
+      _staticDemoItemId = null;
+    });
+    if (_mediaMode == MediaMode.auto &&
+        _currentIndex >= 0 &&
+        _currentIndex < widget.mediaItems.length &&
+        widget.mediaItems[_currentIndex].type == MediaType.image &&
+        _imageMode == MediaImageDisplayMode.fitWidth) {
+      _mediaTimer?.cancel();
+      _mediaTimer = Timer(_imageDuration, _onMediaComplete);
+    }
+  }
+
   Future<void> _loadMediaPreviewSettings() async {
     final prefs = await SharedPreferences.getInstance();
     final s = await loadMediaPlayerSettings(prefs);
@@ -178,6 +247,10 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
           _panClockwise = snap.panClockwise;
           _imagePanRoamCoverage = snap.imagePanRoamCoverage;
           _letterboxFill = snap.letterboxFill;
+          if (snap.imageMode != MediaImageDisplayMode.fitWidth) {
+            _staticKenBurnsDemo = false;
+            _staticDemoItemId = null;
+          }
         });
         // 自动播放 + 当前为图片：静态模式用定时器；动画模式由组件 key 重建触发新动画
         if (_mediaMode == MediaMode.auto &&
@@ -656,6 +729,50 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     }
   }
 
+  /// 静态横向填满：双击根据触点写入中心点并触发一轮渐进放大演示。
+  Widget _buildStaticFitWidthWithDoubleTap(MediaItem item) {
+    final file = File(item.path);
+    return FutureBuilder<Size>(
+      future: measureImageFileSize(file),
+      builder: (context, snapshot) {
+        if (snapshot.hasError || !snapshot.hasData) {
+          return FitWidthBlurStaticImage(
+            key: ValueKey('${item.path}_fit_loading'),
+            file: file,
+            letterboxFill: _letterboxFill,
+          );
+        }
+        final pixelSize = snapshot.data!;
+        return LayoutBuilder(
+          builder: (context, constraints) {
+            final vw = constraints.maxWidth;
+            final disp = fitWidthDisplaySize(pixelSize, vw);
+            final dw = disp.width;
+            final dh = disp.height;
+            return GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onDoubleTapDown: (TapDownDetails d) {
+                final lp = d.localPosition;
+                final nx = (lp.dx / dw).clamp(0.0, 1.0);
+                final ny = (lp.dy / dh).clamp(0.0, 1.0);
+                unawaited(
+                  _persistKenBurnsCenterAndStartStaticDemo(item, nx, ny),
+                );
+              },
+              child: FitWidthBlurStaticImage(
+                key: ValueKey(
+                  '${item.path}_fit_${_imageDuration.inMilliseconds}_${_letterboxFill.index}',
+                ),
+                file: file,
+                letterboxFill: _letterboxFill,
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
   Widget _buildImagePreview(MediaItem item) {
     final file = File(item.path);
     final loopAnim = _mediaMode != MediaMode.auto;
@@ -694,7 +811,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
           key: ValueKey(
             '${item.path}_zpan_${_mediaMode}_${_imageDuration.inMilliseconds}_'
             '${_zoomMax.toStringAsFixed(1)}_${_imagePanRoamCoverage.toStringAsFixed(2)}_'
-            '${_panClockwise}_${_letterboxFill.index}',
+            '${_panClockwise}_${_letterboxFill.index}_$_kenBurnsReplayTick',
           ),
           imageFile: file,
           totalDuration: _imageDuration,
@@ -707,31 +824,29 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
         );
         break;
       case MediaImageDisplayMode.fitWidth:
-        inner = GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onDoubleTapDown: (_) {
-            if (!mounted) return;
-            final messenger = ScaffoldMessenger.of(context);
-            messenger.hideCurrentSnackBar();
-            messenger.showSnackBar(
-              SnackBar(
-                content: const Text(
-                  '当前为静态展示。请打开「媒体播放设置」，将图片展现改为「渐进放大」后，再双击可设置放大中心。',
-                ),
-                duration: const Duration(milliseconds: 3000),
-                behavior: SnackBarBehavior.floating,
-                margin: const EdgeInsets.fromLTRB(16, 0, 16, 20),
-              ),
-            );
-          },
-          child: FitWidthBlurStaticImage(
+        if (_staticKenBurnsDemo && _staticDemoItemId == item.id) {
+          inner = KenBurnsImageDisplay(
             key: ValueKey(
-              '${item.path}_fit_${_imageDuration.inMilliseconds}_${_letterboxFill.index}',
+              'static_demo_${item.path}_${_imageDuration.inMilliseconds}_'
+              '${_zoomMax.toStringAsFixed(1)}_${_letterboxFill.index}_'
+              '${item.kenBurnsCenterX?.toStringAsFixed(3) ?? 'c'}_'
+              '${item.kenBurnsCenterY?.toStringAsFixed(3) ?? 'c'}_'
+              '$_kenBurnsReplayTick',
             ),
-            file: file,
+            imageFile: file,
+            animationDuration: _imageDuration,
+            maxScale: _zoomMax,
             letterboxFill: _letterboxFill,
-          ),
-        );
+            zoomCenterX: item.kenBurnsCenterX,
+            zoomCenterY: item.kenBurnsCenterY,
+            enableDoubleTapToSetZoomCenter: true,
+            onZoomCenterSet: (nx, ny) => _persistKenBurnsCenter(item, nx, ny),
+            loop: false,
+            onAnimationComplete: _finishStaticKenBurnsDemo,
+          );
+        } else {
+          inner = _buildStaticFitWidthWithDoubleTap(item);
+        }
         break;
     }
 
@@ -851,6 +966,8 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
               }
               setState(() {
                 _currentIndex = index;
+                _staticKenBurnsDemo = false;
+                _staticDemoItemId = null;
               });
               
               // 确保当前页面的视频控制器已初始化，然后立即播放（手动/自动模式一致）
@@ -1164,20 +1281,56 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     }
   }
 
-  void _onMediaComplete() {
-    if (_mediaMode == MediaMode.auto && _currentIndex < widget.mediaItems.length - 1) {
-      _pageController.nextPage(
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.easeInOut,
-      );
-    } else if (_mediaMode != MediaMode.auto) {
-      // 手动/非自动模式：循环播放，从头开始
+  /// 自动播放且仅一条时：当前项再播一轮（避免停在最后无下一页）。
+  void _restartCurrentAutoPlayback() {
+    if (_currentIndex < 0 || _currentIndex >= widget.mediaItems.length) return;
+    final item = widget.mediaItems[_currentIndex];
+    if (item.type == MediaType.video) {
       final controller = _videoControllers[_currentIndex];
       if (controller != null && controller.value.isInitialized) {
+        _removeVideoCompleteListener();
         controller.seekTo(Duration.zero);
         controller.play();
         _addVideoCompleteListenerFor(controller, _currentIndex);
       }
+    } else if (item.type == MediaType.image) {
+      if (_imageMode == MediaImageDisplayMode.fitWidth &&
+          !(_staticKenBurnsDemo && _staticDemoItemId == item.id)) {
+        _mediaTimer?.cancel();
+        _mediaTimer = Timer(_imageDuration, _onMediaComplete);
+      } else {
+        setState(() => _kenBurnsReplayTick++);
+      }
+    }
+  }
+
+  void _onMediaComplete() {
+    if (_mediaMode == MediaMode.auto) {
+      if (widget.mediaItems.isEmpty) return;
+      if (widget.mediaItems.length == 1) {
+        _restartCurrentAutoPlayback();
+        return;
+      }
+      if (_currentIndex < widget.mediaItems.length - 1) {
+        _pageController.nextPage(
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeInOut,
+        );
+      } else {
+        _pageController.animateToPage(
+          0,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeInOut,
+        );
+      }
+      return;
+    }
+    // 手动/非自动模式：仅视频循环当前条
+    final controller = _videoControllers[_currentIndex];
+    if (controller != null && controller.value.isInitialized) {
+      controller.seekTo(Duration.zero);
+      controller.play();
+      _addVideoCompleteListenerFor(controller, _currentIndex);
     }
   }
 }

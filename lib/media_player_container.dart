@@ -45,8 +45,6 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
   bool _panClockwise = true;
   double _imagePanRoamCoverage = 0.28;
   ImageLetterboxFill _letterboxFill = ImageLetterboxFill.white;
-  /// 双击更新 Ken Burns 中心后递增，强制重建以立即重播动画。
-  int _kenBurnsReplayTick = 0;
   int _sequentialIndex = 0;
 
   String _sequentialIndexPrefsKey() {
@@ -313,8 +311,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
     return '${nextMedia['path']}_ken_$_mediaMode'
         '_${_letterboxFill.index}'
         '_${(nextMedia['ken_burns_center_x'] as num?)?.toStringAsFixed(3) ?? 'c'}'
-        '_${(nextMedia['ken_burns_center_y'] as num?)?.toStringAsFixed(3) ?? 'c'}'
-        '_$_kenBurnsReplayTick';
+        '_${(nextMedia['ken_burns_center_y'] as num?)?.toStringAsFixed(3) ?? 'c'}';
   }
 
   Widget _buildKenBurnsForPlaying(
@@ -329,9 +326,8 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
       letterboxFill: _letterboxFill,
       zoomCenterX: (nextMedia['ken_burns_center_x'] as num?)?.toDouble(),
       zoomCenterY: (nextMedia['ken_burns_center_y'] as num?)?.toDouble(),
-      enableDoubleTapToSetZoomCenter: true,
-      onZoomCenterSet: (nx, ny) =>
-          _persistKenBurnsCenterAndReplay(nextMedia, mediaFile, nx, ny),
+      enableDoubleTapToSetZoomCenter: false,
+      onZoomCenterSet: null,
       loop: _mediaMode == MediaMode.manual,
       onAnimationComplete: _mediaMode == MediaMode.auto
           ? () {
@@ -341,41 +337,6 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
             }
           : null,
     );
-  }
-
-  Future<void> _persistKenBurnsCenterAndReplay(
-    Map<String, dynamic> nextMedia,
-    File mediaFile,
-    double nx,
-    double ny,
-  ) async {
-    try {
-      await _databaseService.updateMediaItem({
-        'id': nextMedia['id'] as String,
-        'ken_burns_center_x': nx,
-        'ken_burns_center_y': ny,
-        'updated_at': DateTime.now().millisecondsSinceEpoch,
-      });
-      if (!mounted) return;
-      final messenger = ScaffoldMessenger.of(context);
-      messenger.hideCurrentSnackBar();
-      messenger.showSnackBar(
-        SnackBar(
-          content: const Text('已保存放大中心，画面将重新播放'),
-          duration: const Duration(milliseconds: 2200),
-          behavior: SnackBarBehavior.floating,
-          margin: const EdgeInsets.fromLTRB(16, 0, 16, 20),
-        ),
-      );
-      setState(() {
-        nextMedia['ken_burns_center_x'] = nx;
-        nextMedia['ken_burns_center_y'] = ny;
-        _kenBurnsReplayTick++;
-        _mediaWidget = _buildKenBurnsForPlaying(nextMedia, mediaFile);
-      });
-    } catch (e) {
-      Logger.e('保存 Ken Burns 中心失败', e);
-    }
   }
 
   void _showNextMedia() async {

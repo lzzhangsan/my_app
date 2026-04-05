@@ -397,7 +397,7 @@ class _MediaPlayerSettingsDialogBodyState
               Padding(
                 padding: const EdgeInsets.only(left: 8, right: 8, bottom: 4),
                 child: Text(
-                  '渐进放大时双击画面可选缩放中心；写入该媒体项记录，媒体备份导出/导入会保留。',
+                  '在媒体库全屏预览中：「静态」或「渐进放大」下双击可设缩放中心（静态会先演示一轮放大）；数据写入媒体项，备份可带走。文档编辑页内嵌媒体栏不启用双击，以免干扰排版。',
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
               ),
