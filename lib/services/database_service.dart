@@ -855,6 +855,77 @@ class DatabaseService {
     }
   }
 
+  /// 与 [getMediaItems] 返回行中的 [type] 解析一致（SQLite 可能为 int / num）。
+  static int mediaTypeIndex(Map<String, dynamic> row) {
+    final t = row['type'];
+    if (t is int) return t;
+    if (t is num) return t.toInt();
+    return int.tryParse('$t') ?? -1;
+  }
+
+  /// 若记录路径在磁盘上不存在，尝试在应用 `media/` 目录下按文件名查找（与 [media_manager_page] 一致），
+  /// 找到则 [updateMediaItemPath] 并写回 [item]['path']。
+  Future<String?> tryRepairMediaItemPath(Map<String, dynamic> item) async {
+    try {
+      final String pathStr = item['path']?.toString() ?? '';
+      if (pathStr.isEmpty) return null;
+      if (await File(pathStr).exists()) return pathStr;
+      final id = item['id']?.toString();
+      if (id == null || id == 'recycle_bin' || id == 'favorites') {
+        return null;
+      }
+      final appDir = await getApplicationDocumentsDirectory();
+      final mediaDirPath = p.join(appDir.path, 'media');
+      final fileName = p.basename(pathStr);
+      final candidatePath = p.join(mediaDirPath, fileName);
+      if (await File(candidatePath).exists()) {
+        await updateMediaItemPath(id, candidatePath);
+        item['path'] = candidatePath;
+        return candidatePath;
+      }
+      return null;
+    } catch (e, stackTrace) {
+      _handleError('尝试修复媒体路径失败', e, stackTrace);
+      return null;
+    }
+  }
+
+  /// 仅图片/视频，顺序与 [getMediaItems] 在媒体管理页网格中一致（从左到右、从上到下即列表下标顺序）。
+  /// - 单目录：该目录下直接子项中跳过文件夹，保留图片/视频的出现顺序。
+  /// - [directoryId] 为 `root`：自根目录起深度优先，每一层子项顺序与 [getMediaItems] 一致。
+  Future<List<Map<String, dynamic>>> getMediaFilesInGridOrder(
+    String directoryId,
+  ) async {
+    if (directoryId == 'root') {
+      return _collectMediaFilesInGridOrderRecursive('root');
+    }
+    final items = await getMediaItems(directoryId);
+    return items
+        .where((row) {
+          final t = mediaTypeIndex(row);
+          return t == 0 || t == 1;
+        })
+        .toList();
+  }
+
+  Future<List<Map<String, dynamic>>> _collectMediaFilesInGridOrderRecursive(
+    String dirId,
+  ) async {
+    final items = await getMediaItems(dirId);
+    final List<Map<String, dynamic>> out = [];
+    for (final row in items) {
+      final t = mediaTypeIndex(row);
+      if (t == 3) {
+        final fid = row['id']?.toString();
+        if (fid == null) continue;
+        out.addAll(await _collectMediaFilesInGridOrderRecursive(fid));
+      } else if (t == 0 || t == 1) {
+        out.add(row);
+      }
+    }
+    return out;
+  }
+
   /// 获取指定目录下的媒体项总数（不含 limit/offset）
   Future<int> getMediaItemCount(String directory) async {
     try {

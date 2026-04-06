@@ -426,7 +426,7 @@ class _MediaPlayerSettingsDialogBodyState
               },
             ),
             RadioListTile<MediaPlaybackOrder>(
-              title: const Text('按顺序（加入时间，相同则按路径）'),
+              title: const Text('按顺序（与当前媒体库缩略图网格一致：从左到右、从上到下）'),
               value: MediaPlaybackOrder.sequential,
               groupValue: _order,
               onChanged: (v) {

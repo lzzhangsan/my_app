@@ -50,6 +50,12 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
   /// 每次成功切到下一条媒体递增，避免同一视频再次播放时 ValueKey 不变导致 onVideoEnd 永不触发。
   int _playbackNonce = 0;
 
+  /// 防止自动模式下定时器/动画结束/视频结束在 [await] 间隙重入 [_showNextMedia]，导致顺序游标连跳两次、漏播。
+  bool _showNextMediaInProgress = false;
+
+  /// 每条成功展示的媒体递增；自动切换回调仅当 [sessionForAutoAdvance] 仍等于当前值时才执行，避免过期定时器/重复动画结束误切下一条。
+  int _mediaSessionId = 0;
+
   String _sequentialIndexPrefsKey() {
     final d = _selectedDirectory ?? 'root';
     return 'media_player_seq_idx_${Uri.encodeComponent(d)}';
@@ -118,18 +124,6 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
     );
   }
 
-  void _sortMediaListInPlace(List<Map<String, dynamic>> list) {
-    if (_playbackOrder != MediaPlaybackOrder.sequential) return;
-    list.sort((a, b) {
-      final da = '${a['date_added'] ?? ''}';
-      final db = '${b['date_added'] ?? ''}';
-      final c = da.compareTo(db);
-      if (c != 0) return c;
-      return '${a['path']}'.compareTo('${b['path']}');
-    });
-  }
-
-
   Future<void> _saveSelectedDirectory(String directory) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('selected_media_directory', directory);
@@ -142,7 +136,6 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
     });
     
     List<Map<String, dynamic>> mediaList = await _getMediaList();
-    _sortMediaListInPlace(mediaList);
 
     final prefs = await SharedPreferences.getInstance();
     if (mediaList.isNotEmpty) {
@@ -178,32 +171,33 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
   Future<List<Map<String, dynamic>>> _getMediaList() async {
     try {
       await _databaseService.ensureMediaItemsTableExists();
-      List<Map<String, dynamic>> mediaFiles = [];
+      final List<Map<String, dynamic>> mediaFiles = [];
 
-      if (_selectedDirectory == 'root') {
-        // 如果选择的是"整个媒体库"，递归加载所有媒体文件
-        Logger.i('加载整个媒体库的文件');
-        mediaFiles = await _getAllMediaFiles('root');
-      } else {
-        // 如果选择的是具体目录，只加载该目录下的媒体文件
-        Logger.i('加载目录 $_selectedDirectory 下的文件');
-        final db = await _databaseService.database;
-        List<Map<String, dynamic>> dbItems = await db.query(
-          'media_items',
-          where: 'type IN (?, ?) AND directory = ?',
-          whereArgs: [0, 1, _selectedDirectory],
-        );
-        
-        // 验证文件是否存在
-        for (var item in dbItems) {
-          final String path = item['path'];
-          final File file = File(path);
-          
-          if (await file.exists()) {
-            mediaFiles.add(item);
-          } else {
-            Logger.w('文件不存在，从数据库中移除: $path');
-            await _databaseService.deleteMediaItem(item['id']);
+      Logger.i(
+        _selectedDirectory == 'root'
+            ? '加载整个媒体库（与媒体库网格顺序一致）'
+            : '加载目录 $_selectedDirectory 下的文件（与媒体库网格顺序一致）',
+      );
+
+      final raw = await _databaseService.getMediaFilesInGridOrder(
+        _selectedDirectory ?? 'root',
+      );
+
+      for (final item in raw) {
+        final mutable = Map<String, dynamic>.from(item);
+        await _databaseService.tryRepairMediaItemPath(mutable);
+        final String pathStr = mutable['path']?.toString() ?? '';
+        if (pathStr.isEmpty) continue;
+        final File file = File(pathStr);
+
+        if (await file.exists()) {
+          mediaFiles.add(mutable);
+        } else {
+          Logger.w('路径修复后仍不存在，从数据库移除: $pathStr');
+          try {
+            await _databaseService.deleteMediaItem(mutable['id']);
+          } catch (e) {
+            Logger.w('清理数据库记录失败: $e');
           }
         }
       }
@@ -214,48 +208,6 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
       Logger.e('获取媒体列表时出错', e);
       return [];
     }
-  }
-
-  Future<List<Map<String, dynamic>>> _getAllMediaFiles(String directoryId) async {
-    List<Map<String, dynamic>> allMediaFiles = [];
-    final db = await _databaseService.database;
-
-    // 获取当前目录下的所有项
-    final List<Map<String, dynamic>> items = await db.query(
-      'media_items',
-      where: 'directory = ?',
-      whereArgs: [directoryId],
-    );
-    Logger.d('目录 $directoryId 下的项: ${items.length} 个');
-
-    for (var item in items) {
-      if (item['type'] == 3) {
-        // 如果是文件夹，递归加载其下的文件
-        Logger.d('发现文件夹: ${item['name']}, ID: ${item['id']}');
-        final subFiles = await _getAllMediaFiles(item['id']);
-        allMediaFiles.addAll(subFiles);
-      } else if (item['type'] == 0 || item['type'] == 1) {
-        // 如果是图片或视频文件，检查文件是否存在
-        final String path = item['path'];
-        final File file = File(path);
-        
-        if (await file.exists()) {
-          Logger.d('发现媒体文件: ${item['name']}, 路径: $path, 类型: ${item['type']}');
-          allMediaFiles.add(item);
-        } else {
-          Logger.w('文件不存在，跳过: $path');
-          // 考虑清理数据库中不存在的文件记录
-          try {
-            await _databaseService.deleteMediaItem(item['id']);
-            Logger.i('已从数据库删除不存在的文件记录: ${item['id']}');
-          } catch (e) {
-            Logger.w('清理数据库记录失败: $e');
-          }
-        }
-      }
-    }
-
-    return allMediaFiles;
   }
 
   void playCurrentMedia() {
@@ -322,6 +274,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
   Widget _buildKenBurnsForPlaying(
     Map<String, dynamic> nextMedia,
     File mediaFile,
+    int sessionForAutoAdvance,
   ) {
     return KenBurnsImageDisplay(
       key: ValueKey(_kenBurnsWidgetKey(nextMedia)),
@@ -336,15 +289,49 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
       loop: _mediaMode == MediaMode.manual,
       onAnimationComplete: _mediaMode == MediaMode.auto
           ? () {
-              if (_mediaMode == MediaMode.auto) {
-                _showNextMedia();
-              }
+              if (_mediaMode != MediaMode.auto) return;
+              if (sessionForAutoAdvance != _mediaSessionId) return;
+              unawaited(_showNextMedia());
             }
           : null,
     );
   }
 
-  void _showNextMedia() async {
+  Future<void> _removeMediaAtIndexAsync(
+    int mediaIndex, {
+    required bool deleteFromDb,
+  }) async {
+    if (mediaIndex < 0 || mediaIndex >= _mediaList.length) return;
+    final id = _mediaList[mediaIndex]['id'];
+    if (deleteFromDb && id != null) {
+      try {
+        await _databaseService.deleteMediaItem(id);
+      } catch (e) {
+        Logger.w('删除媒体库记录失败: $e');
+      }
+    }
+    if (!mounted) return;
+    setState(() {
+      _mediaList.removeAt(mediaIndex);
+    });
+    _adjustSequentialAfterRemove(removedIndex: mediaIndex);
+  }
+
+  void _adjustSequentialAfterRemove({required int removedIndex}) {
+    if (_playbackOrder != MediaPlaybackOrder.sequential) return;
+    if (_mediaList.isEmpty) {
+      _sequentialIndex = 0;
+      unawaited(_persistSequentialIndex());
+      return;
+    }
+    if (removedIndex < _sequentialIndex) {
+      _sequentialIndex--;
+    }
+    _sequentialIndex %= _mediaList.length;
+    unawaited(_persistSequentialIndex());
+  }
+
+  Future<void> _showNextMedia() async {
     if (_mediaList.isEmpty) {
       setState(() {
         _mediaWidget = Center(child: Text('没有可用的媒体文件'));
@@ -353,9 +340,16 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
       return;
     }
 
+    if (_showNextMediaInProgress) {
+      return;
+    }
+    _showNextMediaInProgress = true;
+
     try {
-      // 尝试最多3次，避免无限循环
-      for (int attempt = 0; attempt < 3; attempt++) {
+      int attempt = 0;
+      const int maxAttempts = 48;
+      while (_mediaList.isNotEmpty && attempt < maxAttempts) {
+        attempt++;
         if (_mediaList.isEmpty) {
           setState(() {
             _mediaWidget = Center(child: Text('没有可用的媒体文件'));
@@ -369,19 +363,15 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
             : _sequentialIndex % _mediaList.length;
         final Map<String, dynamic> nextMedia = _mediaList[mediaIndex];
 
-        // 先验证文件是否存在
-        final String path = nextMedia['path'];
+        await _databaseService.tryRepairMediaItemPath(nextMedia);
+
+        // 先验证文件是否存在（与媒体管理页相同的路径修复已尝试）
+        final String path = nextMedia['path']?.toString() ?? '';
         final File file = File(path);
 
         if (!await file.exists()) {
           Logger.w('选择的文件不存在，从列表中移除: $path');
-
-          await _databaseService.deleteMediaItem(nextMedia['id']);
-
-          setState(() {
-            _mediaList.removeAt(mediaIndex);
-          });
-
+          await _removeMediaAtIndexAsync(mediaIndex, deleteFromDb: true);
           continue;
         }
 
@@ -391,16 +381,14 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
 
         if (mediaFile == null) {
           Logger.w('无法访问媒体文件: $path');
-
-          setState(() {
-            _mediaList.removeAt(mediaIndex);
-          });
-
+          await _removeMediaAtIndexAsync(mediaIndex, deleteFromDb: false);
           continue;
         }
 
         // 每条成功展示的媒体都递增，使图片/视频 Key 在每一轮循环中唯一，避免同一路径复用组件导致无法无限轮播。
         _playbackNonce++;
+        _mediaSessionId++;
+        final int sessionThisMedia = _mediaSessionId;
 
         void advanceSequentialCursor() {
           if (_playbackOrder == MediaPlaybackOrder.sequential &&
@@ -412,12 +400,17 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
         }
 
         // 成功获取到文件，显示相应媒体
-        if (nextMedia['type'] == 0) {
+        final int typeIdx = DatabaseService.mediaTypeIndex(nextMedia);
+        if (typeIdx == 0) {
           advanceSequentialCursor();
           // 图片
           if (_imageMode == MediaImageDisplayMode.kenBurns) {
             setState(() {
-              _mediaWidget = _buildKenBurnsForPlaying(nextMedia, mediaFile);
+              _mediaWidget = _buildKenBurnsForPlaying(
+                nextMedia,
+                mediaFile,
+                sessionThisMedia,
+              );
             });
           } else if (_imageMode == MediaImageDisplayMode.zoomPanEdge) {
             setState(() {
@@ -437,9 +430,9 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
                 loop: _mediaMode == MediaMode.manual,
                 onAnimationComplete: _mediaMode == MediaMode.auto
                     ? () {
-                        if (_mediaMode == MediaMode.auto) {
-                          _showNextMedia();
-                        }
+                        if (_mediaMode != MediaMode.auto) return;
+                        if (sessionThisMedia != _mediaSessionId) return;
+                        unawaited(_showNextMedia());
                       }
                     : null,
               );
@@ -459,16 +452,17 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
 
             if (_mediaMode == MediaMode.auto) {
               _mediaTimer?.cancel();
+              final int scheduleSession = sessionThisMedia;
               _mediaTimer = Timer(_imageDuration, () {
-                if (_mediaMode == MediaMode.auto) {
-                  _showNextMedia();
-                }
+                if (_mediaMode != MediaMode.auto) return;
+                if (scheduleSession != _mediaSessionId) return;
+                unawaited(_showNextMedia());
               });
             }
           }
 
           return;
-        } else if (nextMedia['type'] == 1) {
+        } else if (typeIdx == 1) {
           advanceSequentialCursor();
           // 视频（_playbackNonce 已在上方递增）
           setState(() {
@@ -477,10 +471,18 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
               file: File(nextMedia['path']!),
               viewParams: VideoViewParams.fromMediaMap(nextMedia),
               onVideoEnd: () {
-                if (_mediaMode == MediaMode.auto) {
-                  _showNextMedia();
-                }
+                if (_mediaMode != MediaMode.auto) return;
+                if (sessionThisMedia != _mediaSessionId) return;
+                unawaited(_showNextMedia());
               },
+              onVideoError: _mediaMode == MediaMode.auto
+                  ? () {
+                      Logger.w('视频解码/播放失败，自动尝试下一条');
+                      if (_mediaMode != MediaMode.auto) return;
+                      if (sessionThisMedia != _mediaSessionId) return;
+                      unawaited(_showNextMedia());
+                    }
+                  : null,
               looping: false,
               forceManualLoop: _mediaMode == MediaMode.manual,
             );
@@ -506,12 +508,16 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
         _mediaTimer?.cancel();
         _currentPlayingMedia = null; // 出错时重置当前媒体
       });
+    } finally {
+      _showNextMediaInProgress = false;
     }
   }
 
   Future<File?> _getFileFromMediaItem(Map<String, dynamic> mediaItem) async {
     try {
-      String path = mediaItem['path'];
+      await _databaseService.tryRepairMediaItemPath(mediaItem);
+      String path = mediaItem['path']?.toString() ?? '';
+      if (path.isEmpty) return null;
       File file = File(path);
       
       if (await file.exists()) {
@@ -694,6 +700,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
         setState(() {
           _mediaList.removeAt(currentIndex);
         });
+        _adjustSequentialAfterRemove(removedIndex: currentIndex);
       }
       
       if (!context.mounted) return false;
@@ -871,6 +878,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
          setState(() {
            _mediaList.removeAt(currentIndex);
          });
+         _adjustSequentialAfterRemove(removedIndex: currentIndex);
        }
 
        if (!context.mounted) return false;
@@ -908,6 +916,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
      setState(() {
        _mediaList.removeAt(currentIndex);
      });
+     _adjustSequentialAfterRemove(removedIndex: currentIndex);
 
      if (_mediaList.isEmpty) {
        stop();
