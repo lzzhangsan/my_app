@@ -392,6 +392,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
             useRootNavigator: false,
             customControls: const MaterialControls(
               showPlayButton: false,
+              hideBottomBar: true,
             ),
           );
           
@@ -930,27 +931,44 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
       );
     }
 
-    final chewieChild = Theme(
+    final themedStack = Theme(
       data: Theme.of(context).copyWith(
         platform: TargetPlatform.iOS,
       ),
-      child: Chewie(controller: chewieController),
+      child: ChewieFullscreenHost(
+        controller: chewieController,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            VideoInteractiveSurface(
+              key: ValueKey(
+                '${item.id}_${item.videoViewParams.hashCode}',
+              ),
+              videoController: videoController,
+              videoChild: const PlayerWithControls(),
+              initial: item.videoViewParams,
+              editable: true,
+              onChanged: (p) => _persistVideoView(item, p),
+            ),
+            const Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: MaterialControls(
+                showPlayButton: false,
+                bottomBarOnly: true,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
 
     return Center(
       child: ColoredBox(
         color: Colors.transparent,
         child: SizedBox.expand(
-          child: VideoInteractiveSurface(
-            key: ValueKey(
-              '${item.id}_${item.videoViewParams.hashCode}',
-            ),
-            videoController: videoController,
-            videoChild: chewieChild,
-            initial: item.videoViewParams,
-            editable: true,
-            onChanged: (p) => _persistVideoView(item, p),
-          ),
+          child: themedStack,
         ),
       ),
     );

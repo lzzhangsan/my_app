@@ -16,9 +16,18 @@ import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
 
 class MaterialControls extends StatefulWidget {
-  const MaterialControls({this.showPlayButton = true, super.key});
+  const MaterialControls({
+    this.showPlayButton = true,
+    /// 为 true 时不绘制底栏（时间/音量/进度/全屏），用于与 [bottomBarOnly] 搭配分屏。
+    this.hideBottomBar = false,
+    /// 为 true 时仅绘制底栏，无全屏点击层；叠在 [InteractiveViewer] 之上时勿用全屏 [Positioned.fill]。
+    this.bottomBarOnly = false,
+    super.key,
+  });
 
   final bool showPlayButton;
+  final bool hideBottomBar;
+  final bool bottomBarOnly;
 
   @override
   State<StatefulWidget> createState() {
@@ -44,6 +53,10 @@ class _MaterialControlsState extends State<MaterialControls>
   final barHeight = 48.0 * 1.5;
   final marginSize = 5.0;
 
+  /// 底部栏第一行（时间/音量/全屏）高度。非全屏时若仍用 [barHeight]（72）会与固定总高内的进度条抢空间，导致进度条被挤成 0 高。
+  double get _bottomBarControlRowHeight =>
+      chewieController.isFullScreen ? barHeight : 48.0;
+
   late VideoPlayerController controller;
   ChewieController? _chewieController;
 
@@ -58,6 +71,13 @@ class _MaterialControlsState extends State<MaterialControls>
 
   @override
   Widget build(BuildContext context) {
+    if (widget.bottomBarOnly) {
+      if (_latestValue.hasError) {
+        return const SizedBox.shrink();
+      }
+      return _buildBottomBar(context);
+    }
+
     if (_latestValue.hasError) {
       return chewieController.errorBuilder?.call(
             context,
@@ -96,7 +116,7 @@ class _MaterialControlsState extends State<MaterialControls>
                         chewieController.subtitle!,
                       ),
                     ),
-                  _buildBottomBar(context),
+                  if (!widget.hideBottomBar) _buildBottomBar(context),
                 ],
               ),
             ],
@@ -243,12 +263,12 @@ class _MaterialControlsState extends State<MaterialControls>
 
   AnimatedOpacity _buildBottomBar(BuildContext context) {
     final iconColor = Theme.of(context).textTheme.labelLarge!.color;
+    final double controlRowH = _bottomBarControlRowHeight;
 
     return AnimatedOpacity(
       opacity: notifier.hideStuff ? 0.0 : 1.0,
       duration: const Duration(milliseconds: 300),
-      child: Container(
-        height: barHeight + (chewieController.isFullScreen ? 10.0 : 0),
+      child: Padding(
         padding: EdgeInsets.only(
           left: 20,
           right: 20,
@@ -256,36 +276,31 @@ class _MaterialControlsState extends State<MaterialControls>
         ),
         child: SafeArea(
           top: false,
-          bottom: chewieController.isFullScreen,
+          // 嵌入（非全屏）时必须避开系统导航栏，否则底栏会画在导航条下方，只能看到进度条手柄边缘。
+          bottom: true,
           minimum: chewieController.controlsSafeAreaMinimum,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Flexible(
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: <Widget>[
-                    if (chewieController.isLive)
-                      const Expanded(child: Text('LIVE'))
-                    else
-                      _buildPosition(iconColor),
-                    if (chewieController.allowMuting)
-                      _buildMuteButton(controller),
-                    const Spacer(),
-                    if (chewieController.allowFullScreen) _buildExpandButton(),
-                  ],
-                ),
-              ),
-              SizedBox(height: chewieController.isFullScreen ? 15.0 : 0),
-              if (!chewieController.isLive)
-                Expanded(
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 20),
-                    child: Row(children: [_buildProgressBar()]),
-                  ),
-                ),
-            ],
+          child: SizedBox(
+            height: controlRowH,
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: <Widget>[
+                if (chewieController.isLive)
+                  const Expanded(child: Text('LIVE'))
+                else
+                  _buildPosition(iconColor),
+                if (chewieController.allowMuting) _buildMuteButton(controller),
+                if (!chewieController.isLive)
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 8.0),
+                      child: _buildProgressBar(),
+                    ),
+                  )
+                else
+                  const Spacer(),
+                if (chewieController.allowFullScreen) _buildExpandButton(),
+              ],
+            ),
           ),
         ),
       ),
@@ -309,7 +324,7 @@ class _MaterialControlsState extends State<MaterialControls>
         duration: const Duration(milliseconds: 300),
         child: ClipRect(
           child: Container(
-            height: barHeight,
+            height: _bottomBarControlRowHeight,
             padding: const EdgeInsets.only(left: 6.0),
             child: Icon(
               _latestValue.volume > 0 ? Icons.volume_up : Icons.volume_off,
@@ -327,11 +342,12 @@ class _MaterialControlsState extends State<MaterialControls>
       child: AnimatedOpacity(
         opacity: notifier.hideStuff ? 0.0 : 1.0,
         duration: const Duration(milliseconds: 300),
-        child: Container(
-          height: barHeight + (chewieController.isFullScreen ? 15.0 : 0),
-          margin: const EdgeInsets.only(right: 12.0),
-          padding: const EdgeInsets.only(left: 8.0, right: 8.0),
-          child: Center(
+        child: SizedBox(
+          height: _bottomBarControlRowHeight,
+          child: Container(
+            margin: const EdgeInsets.only(right: 12.0),
+            padding: const EdgeInsets.only(left: 8.0, right: 8.0),
+            alignment: Alignment.center,
             child: Icon(
               chewieController.isFullScreen
                   ? Icons.fullscreen_exit
@@ -635,42 +651,40 @@ class _MaterialControlsState extends State<MaterialControls>
   }
 
   Widget _buildProgressBar() {
-    return Expanded(
-      child: MaterialVideoProgressBar(
-        controller,
-        barHeight: 14,
-        handleHeight: 18,
-        onDragStart: () {
-          setState(() {
-            _dragging = true;
-          });
+    return MaterialVideoProgressBar(
+      controller,
+      barHeight: 14,
+      handleHeight: 18,
+      onDragStart: () {
+        setState(() {
+          _dragging = true;
+        });
 
-          _hideTimer?.cancel();
-        },
-        onDragUpdate: () {
-          _hideTimer?.cancel();
-        },
-        onDragEnd: () {
-          setState(() {
-            _dragging = false;
-          });
+        _hideTimer?.cancel();
+      },
+      onDragUpdate: () {
+        _hideTimer?.cancel();
+      },
+      onDragEnd: () {
+        setState(() {
+          _dragging = false;
+        });
 
-          _startHideTimer();
-        },
-        colors:
-            chewieController.materialProgressColors ??
-            ChewieProgressColors(
-              playedColor: Theme.of(context).colorScheme.secondary,
-              handleColor: Theme.of(context).colorScheme.secondary,
-              bufferedColor: Theme.of(
-                context,
-              ).colorScheme.surface.withValues(alpha: 0.5),
-              backgroundColor: Theme.of(
-                context,
-              ).disabledColor.withValues(alpha: .5),
-            ),
-        draggableProgressBar: chewieController.draggableProgressBar,
-      ),
+        _startHideTimer();
+      },
+      colors:
+          chewieController.materialProgressColors ??
+          ChewieProgressColors(
+            playedColor: Theme.of(context).colorScheme.secondary,
+            handleColor: Theme.of(context).colorScheme.secondary,
+            bufferedColor: Theme.of(
+              context,
+            ).colorScheme.surface.withValues(alpha: 0.5),
+            backgroundColor: Theme.of(
+              context,
+            ).disabledColor.withValues(alpha: .5),
+          ),
+      draggableProgressBar: chewieController.draggableProgressBar,
     );
   }
 }

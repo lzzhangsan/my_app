@@ -34,6 +34,9 @@ class PlayerWithControls extends StatelessWidget {
       BuildContext context,
     ) {
       final playerNotifier = context.read<PlayerNotifier>();
+      final bool deferControls =
+          chewieController.deferControlsToOverlay &&
+          !chewieController.isFullScreen;
       final child = Stack(
         children: [
           if (chewieController.placeholder != null)
@@ -66,13 +69,14 @@ class PlayerWithControls extends StatelessWidget {
                     ),
                   ),
             ),
-          if (!chewieController.isFullScreen)
-            buildControls(context, chewieController)
-          else
-            SafeArea(
-              bottom: false,
-              child: buildControls(context, chewieController),
-            ),
+          if (!deferControls)
+            if (!chewieController.isFullScreen)
+              buildControls(context, chewieController)
+            else
+              SafeArea(
+                bottom: false,
+                child: buildControls(context, chewieController),
+              ),
         ],
       );
 

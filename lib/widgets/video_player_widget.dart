@@ -79,6 +79,9 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
         allowMuting: true,
         showControls: true,
         showControlsOnInitialize: true,
+        customControls: const MaterialControls(
+          hideBottomBar: true,
+        ),
         deviceOrientationsAfterFullScreen: [DeviceOrientation.portraitUp],
         materialProgressColors: ChewieProgressColors(
           playedColor: Colors.red,
@@ -242,12 +245,26 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
         child: Container(
           color: Colors.transparent,
           child: SizedBox.expand(
-            child: VideoInteractiveSurface(
-              key: ValueKey('${widget.file.path}_${vp.hashCode}'),
-              videoController: _controller,
-              videoChild: Chewie(controller: _chewieController!),
-              initial: vp,
-              editable: false,
+            child: ChewieFullscreenHost(
+              controller: _chewieController!,
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  VideoInteractiveSurface(
+                    key: ValueKey('${widget.file.path}_${vp.hashCode}'),
+                    videoController: _controller,
+                    videoChild: const PlayerWithControls(),
+                    initial: vp,
+                    editable: false,
+                  ),
+                  const Positioned(
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    child: MaterialControls(bottomBarOnly: true),
+                  ),
+                ],
+              ),
             ),
           ),
         ),

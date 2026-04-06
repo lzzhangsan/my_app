@@ -278,6 +278,241 @@ class ChewieState extends State<Chewie> {
   }
 }
 
+/// 仅负责全屏路由与 [ChewieControllerProvider] / [PlayerNotifier]，不绘制默认 [PlayerWithControls]。
+/// 用于将 [MaterialControls] 放在 [InteractiveViewer] 外、固定在视口底部。
+class ChewieFullscreenHost extends StatefulWidget {
+  const ChewieFullscreenHost({
+    super.key,
+    required this.controller,
+    required this.child,
+  });
+
+  final ChewieController controller;
+  final Widget child;
+
+  @override
+  State<ChewieFullscreenHost> createState() => _ChewieFullscreenHostState();
+}
+
+class _ChewieFullscreenHostState extends State<ChewieFullscreenHost> {
+  bool _isFullScreen = false;
+  bool _wasPlayingBeforeFullScreen = false;
+  bool _resumeAppliedInFullScreen = false;
+
+  bool get isControllerFullScreen => widget.controller.isFullScreen;
+  late PlayerNotifier notifier;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(listener);
+    notifier = PlayerNotifier.init();
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(listener);
+    notifier.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(ChewieFullscreenHost oldWidget) {
+    if (oldWidget.controller != widget.controller) {
+      widget.controller.addListener(listener);
+    }
+    super.didUpdateWidget(oldWidget);
+    if (_isFullScreen != isControllerFullScreen) {
+      widget.controller._isFullScreen = _isFullScreen;
+    }
+  }
+
+  Future<void> listener() async {
+    if (isControllerFullScreen && !_isFullScreen) {
+      _wasPlayingBeforeFullScreen =
+          widget.controller.videoPlayerController.value.isPlaying;
+      _resumeAppliedInFullScreen = false;
+      _isFullScreen = isControllerFullScreen;
+      await _pushFullScreenWidget(context);
+    } else if (_isFullScreen) {
+      Navigator.of(
+        context,
+        rootNavigator: widget.controller.useRootNavigator,
+      ).pop();
+      _isFullScreen = false;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ChewieControllerProvider(
+      controller: widget.controller,
+      child: ChangeNotifierProvider<PlayerNotifier>.value(
+        value: notifier,
+        child: widget.child,
+      ),
+    );
+  }
+
+  Widget _buildFullScreenVideo(
+    BuildContext context,
+    Animation<double> animation,
+    ChewieControllerProvider controllerProvider,
+  ) {
+    return Scaffold(
+      resizeToAvoidBottomInset: false,
+      body: Container(
+        alignment: Alignment.center,
+        color: Colors.black,
+        child: controllerProvider,
+      ),
+    );
+  }
+
+  AnimatedWidget _defaultRoutePageBuilder(
+    BuildContext context,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
+    ChewieControllerProvider controllerProvider,
+  ) {
+    return AnimatedBuilder(
+      animation: animation,
+      builder: (BuildContext context, Widget? child) {
+        return _buildFullScreenVideo(context, animation, controllerProvider);
+      },
+    );
+  }
+
+  Widget _fullScreenRoutePageBuilder(
+    BuildContext context,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
+  ) {
+    final controllerProvider = ChewieControllerProvider(
+      controller: widget.controller,
+      child: ChangeNotifierProvider<PlayerNotifier>.value(
+        value: notifier,
+        builder: (context, w) => const PlayerWithControls(),
+      ),
+    );
+
+    if (kIsWeb && !_resumeAppliedInFullScreen) {
+      _resumeAppliedInFullScreen = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        if (!mounted) return;
+        final vpc = widget.controller.videoPlayerController;
+        await vpc.pause();
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        if (_wasPlayingBeforeFullScreen) {
+          await vpc.play();
+        } else {
+          await vpc.play();
+          await vpc.pause();
+        }
+      });
+    }
+
+    if (widget.controller.routePageBuilder == null) {
+      return _defaultRoutePageBuilder(
+        context,
+        animation,
+        secondaryAnimation,
+        controllerProvider,
+      );
+    }
+    return widget.controller.routePageBuilder!(
+      context,
+      animation,
+      secondaryAnimation,
+      controllerProvider,
+    );
+  }
+
+  Future<dynamic> _pushFullScreenWidget(BuildContext context) async {
+    final TransitionRoute<void> route = PageRouteBuilder<void>(
+      pageBuilder: _fullScreenRoutePageBuilder,
+    );
+
+    onEnterFullScreen();
+
+    if (!widget.controller.allowedScreenSleep) {
+      WakelockPlus.enable();
+    }
+
+    await Navigator.of(
+      context,
+      rootNavigator: widget.controller.useRootNavigator,
+    ).push(route);
+
+    final wasPlaying = widget.controller.videoPlayerController.value.isPlaying;
+
+    if (kIsWeb) {
+      await _reInitializeControllers(wasPlaying);
+    }
+
+    _isFullScreen = false;
+    widget.controller.exitFullScreen();
+
+    if (!widget.controller.allowedScreenSleep) {
+      WakelockPlus.disable();
+    }
+
+    SystemChrome.setEnabledSystemUIMode(
+      SystemUiMode.manual,
+      overlays: widget.controller.systemOverlaysAfterFullScreen,
+    );
+    SystemChrome.setPreferredOrientations(
+      widget.controller.deviceOrientationsAfterFullScreen,
+    );
+  }
+
+  void onEnterFullScreen() {
+    final videoWidth = widget.controller.videoPlayerController.value.size.width;
+    final videoHeight =
+        widget.controller.videoPlayerController.value.size.height;
+
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual, overlays: []);
+
+    if (widget.controller.deviceOrientationsOnEnterFullScreen != null) {
+      SystemChrome.setPreferredOrientations(
+        widget.controller.deviceOrientationsOnEnterFullScreen!,
+      );
+    } else {
+      final isLandscapeVideo = videoWidth > videoHeight;
+      final isPortraitVideo = videoWidth < videoHeight;
+
+      if (isLandscapeVideo) {
+        SystemChrome.setPreferredOrientations([
+          DeviceOrientation.landscapeLeft,
+          DeviceOrientation.landscapeRight,
+        ]);
+      } else if (isPortraitVideo) {
+        SystemChrome.setPreferredOrientations([
+          DeviceOrientation.portraitUp,
+          DeviceOrientation.portraitDown,
+        ]);
+      } else {
+        SystemChrome.setPreferredOrientations(DeviceOrientation.values);
+      }
+    }
+  }
+
+  Future<void> _reInitializeControllers(bool wasPlaying) async {
+    final prevPosition = widget.controller.videoPlayerController.value.position;
+
+    await widget.controller.videoPlayerController.initialize();
+    widget.controller._initialize();
+    await widget.controller.videoPlayerController.seekTo(prevPosition);
+
+    if (wasPlaying) {
+      await widget.controller.videoPlayerController.play();
+    } else {
+      await widget.controller.videoPlayerController.play();
+      await widget.controller.videoPlayerController.pause();
+    }
+  }
+}
+
 /// The ChewieController is used to configure and drive the Chewie Player
 /// Widgets. It provides methods to control playback, such as [pause] and
 /// [play], as well as methods that control the visual appearance of the player,
@@ -310,6 +545,7 @@ class ChewieController extends ChangeNotifier {
     this.optionsBuilder,
     this.additionalOptions,
     this.showControls = true,
+    this.deferControlsToOverlay = false,
     this.transformationController,
     this.zoomAndPan = false,
     this.maxScale = 2.5,
@@ -363,6 +599,7 @@ class ChewieController extends ChangeNotifier {
     Future<void> Function(BuildContext, List<OptionItem>)? optionsBuilder,
     List<OptionItem> Function(BuildContext)? additionalOptions,
     bool? showControls,
+    bool? deferControlsToOverlay,
     TransformationController? transformationController,
     bool? zoomAndPan,
     double? maxScale,
@@ -428,6 +665,8 @@ class ChewieController extends ChangeNotifier {
       optionsBuilder: optionsBuilder ?? this.optionsBuilder,
       additionalOptions: additionalOptions ?? this.additionalOptions,
       showControls: showControls ?? this.showControls,
+      deferControlsToOverlay:
+          deferControlsToOverlay ?? this.deferControlsToOverlay,
       showSubtitles: showSubtitles ?? this.showSubtitles,
       subtitle: subtitle ?? this.subtitle,
       subtitleBuilder: subtitleBuilder ?? this.subtitleBuilder,
@@ -525,6 +764,11 @@ class ChewieController extends ChangeNotifier {
 
   /// Whether or not to show the controls at all
   final bool showControls;
+
+  /// When true, [PlayerWithControls] omits the control layer while **not** in
+  /// fullscreen so the host can paint controls outside [InteractiveViewer],
+  /// fixed to the viewport bottom.
+  final bool deferControlsToOverlay;
 
   /// Controller to pass into the [InteractiveViewer] component.
   /// If it is required to control the transformation only via the controller,
