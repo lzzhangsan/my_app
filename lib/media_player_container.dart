@@ -47,6 +47,8 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
   double _imagePanRoamCoverage = 0.28;
   ImageLetterboxFill _letterboxFill = ImageLetterboxFill.transparent;
   int _sequentialIndex = 0;
+  /// 每次成功切到下一条媒体递增，避免同一视频再次播放时 ValueKey 不变导致 onVideoEnd 永不触发。
+  int _playbackNonce = 0;
 
   String _sequentialIndexPrefsKey() {
     final d = _selectedDirectory ?? 'root';
@@ -309,10 +311,12 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
   }
 
   String _kenBurnsWidgetKey(Map<String, dynamic> nextMedia) {
+    // 含 _playbackNonce：再次轮到同一张图时 Key 必须变化，否则会复用 State、动画不重启，自动模式无法切下一条。
     return '${nextMedia['path']}_ken_$_mediaMode'
         '_${_letterboxFill.index}'
         '_${(nextMedia['ken_burns_center_x'] as num?)?.toStringAsFixed(3) ?? 'c'}'
-        '_${(nextMedia['ken_burns_center_y'] as num?)?.toStringAsFixed(3) ?? 'c'}';
+        '_${(nextMedia['ken_burns_center_y'] as num?)?.toStringAsFixed(3) ?? 'c'}'
+        '_n$_playbackNonce';
   }
 
   Widget _buildKenBurnsForPlaying(
@@ -395,6 +399,9 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
           continue;
         }
 
+        // 每条成功展示的媒体都递增，使图片/视频 Key 在每一轮循环中唯一，避免同一路径复用组件导致无法无限轮播。
+        _playbackNonce++;
+
         void advanceSequentialCursor() {
           if (_playbackOrder == MediaPlaybackOrder.sequential &&
               _mediaList.isNotEmpty) {
@@ -418,7 +425,8 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
                 key: ValueKey(
                   '${nextMedia['path']}_zpan_$_mediaMode'
                   '_${_imagePanRoamCoverage.toStringAsFixed(2)}'
-                  '_${_letterboxFill.index}',
+                  '_${_letterboxFill.index}'
+                  '_n$_playbackNonce',
                 ),
                 imageFile: mediaFile,
                 totalDuration: _imageDuration,
@@ -439,6 +447,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
           } else {
             setState(() {
               _mediaWidget = FitWidthBlurStaticImage(
+                key: ValueKey('fw_${nextMedia['path']}_n$_playbackNonce'),
                 file: mediaFile,
                 letterboxFill: _letterboxFill,
                 zoomCenterX:
@@ -461,10 +470,10 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
           return;
         } else if (nextMedia['type'] == 1) {
           advanceSequentialCursor();
-          // 视频
+          // 视频（_playbackNonce 已在上方递增）
           setState(() {
             _currentVideoWidget = VideoPlayerWidget(
-              key: ValueKey(nextMedia['path']),
+              key: ValueKey('vp_${nextMedia['path']}_$_playbackNonce'),
               file: File(nextMedia['path']!),
               viewParams: VideoViewParams.fromMediaMap(nextMedia),
               onVideoEnd: () {

@@ -140,18 +140,39 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
 
   void _videoListener() {
     if (!mounted) return;
-    
-    Logger.d('[播放器] 状态监听 isInitialized: ${_controller.value.isInitialized}, isPlaying: ${_controller.value.isPlaying}, position: ${_controller.value.position}');
 
-    if (_controller.value.hasError && !_hasError) {
-      _handleError(_controller.value.errorDescription ?? '未知错误');
+    final v = _controller.value;
+    final Duration dur = v.duration;
+    final Duration pos = v.position;
+
+    // 同一文件再次进入播放（顺序/随机循环一轮）时 position 会回到开头，必须允许再次触发 onVideoEnd
+    if (v.isInitialized && dur > Duration.zero) {
+      // 未进入片尾区则视为新一轮播放，可再次触发结束回调
+      if (pos < dur - const Duration(milliseconds: 200)) {
+        _isEnded = false;
+      }
+    }
+
+    if (v.hasError && !_hasError) {
+      _handleError(v.errorDescription ?? '未知错误');
       return;
     }
-    
-    if (_controller.value.isInitialized && 
-        _controller.value.position >= _controller.value.duration &&
-        !_isEnded &&
-        !widget.looping) {
+
+    // 必须在 duration 已加载且 >0 后才判定结束；否则 duration==0 时 0>=0 会误触发 onVideoEnd，打乱自动切下一条。
+    // 部分机型片尾 position 永远略小于 duration，故用片尾容差。
+    if (!v.isInitialized || widget.looping || _isEnded || dur <= Duration.zero) {
+      return;
+    }
+
+    // 片尾容差：略大于 position 抖动；短片段用比例下限，长视频用时长约 6%（封顶）避免永远判不到「已结束」
+    final int durMs = dur.inMilliseconds;
+    final int slackMs = durMs < 500
+        ? (durMs / 5).round().clamp(50, 120)
+        : (durMs * 0.06).round().clamp(120, 450);
+    final Duration slack = Duration(milliseconds: slackMs);
+    final bool reachedEnd = pos >= dur - slack;
+
+    if (reachedEnd) {
       _isEnded = true;
       widget.onVideoEnd?.call();
       if (widget.forceManualLoop) {

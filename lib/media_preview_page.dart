@@ -1300,6 +1300,15 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
       final controller = _videoControllers[_currentIndex];
       if (controller != null && controller.value.isInitialized) {
         _removeVideoCompleteListener();
+        // 自动模式从最后一页回到第一页等：控制器可能仍停在片尾，需先 seek 才能再次触发「播放完成」
+        if (_mediaMode == MediaMode.auto) {
+          final dur = controller.value.duration;
+          final pos = controller.value.position;
+          if (dur > Duration.zero &&
+              pos >= dur - const Duration(milliseconds: 200)) {
+            await controller.seekTo(Duration.zero);
+          }
+        }
         await controller.play();
         _addVideoCompleteListenerFor(controller, _currentIndex);
       }
