@@ -103,6 +103,30 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
     }
   }
 
+  /// 光标底边到输入法顶沿的距离 ≥ 约 2cm 时不滚动；小于 2cm 时自动滚动，使该距离约为 2cm。
+  void _ensureCaretRectAboveKeyboard(Rect caretGlobal) {
+    if (!mounted || !_scrollController.hasClients) return;
+    final mq = MediaQuery.of(context);
+    final keyboard = mq.viewInsets.bottom;
+    if (keyboard <= 0) return;
+    // 约 2cm（逻辑像素：按 160dpi 下 1in=160px 换算，与设备无关）
+    const double margin2cm = 2.0 * 160.0 / 2.54;
+    final screenH = mq.size.height;
+    final keyboardTopY = screenH - keyboard;
+    final targetCaretBottom = keyboardTopY - margin2cm;
+    final bottom = caretGlobal.bottom;
+    if (bottom <= targetCaretBottom) return;
+    final overlap = bottom - targetCaretBottom;
+    final pos = _scrollController.position;
+    final newOffset = (pos.pixels + overlap).clamp(0.0, pos.maxScrollExtent);
+    if (newOffset == pos.pixels) return;
+    _scrollController.animateTo(
+      newOffset,
+      duration: const Duration(milliseconds: 280),
+      curve: Curves.easeOut,
+    );
+  }
+
   void _updateScrollPercentage() {
     double maxScroll = _scrollController.position.maxScrollExtent;
     if (maxScroll > 0) {
@@ -2360,6 +2384,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
           : null,
       // 传入当前位置锁定状态，用于在锁定时禁用缩放手柄
       isPositionLocked: _isPositionLocked,
+      onCaretRectForDocumentScroll: _ensureCaretRectAboveKeyboard,
     );
   }
 

@@ -492,6 +492,10 @@ class ResizableAndConfigurableTextBox extends StatefulWidget {
   // 是否锁定位置和尺寸（锁定时禁用右下角缩放手柄）
   final bool isPositionLocked;
 
+  /// 需要文档层滚动时回调：参数为光标/选区在屏幕上的包围盒（全局坐标）。
+  /// 由内部根据 Quill 渲染层计算，高文本框时以光标为准而非整个文本框。
+  final void Function(Rect caretGlobal)? onCaretRectForDocumentScroll;
+
   const ResizableAndConfigurableTextBox({
     super.key,
     required this.initialSize,
@@ -505,6 +509,7 @@ class ResizableAndConfigurableTextBox extends StatefulWidget {
     this.onMoveToOtherSide,
     this.onCopyToOtherSide,
     this.isPositionLocked = false,
+    this.onCaretRectForDocumentScroll,
   });
 
   @override
@@ -513,7 +518,7 @@ class ResizableAndConfigurableTextBox extends StatefulWidget {
 }
 
 class _ResizableAndConfigurableTextBoxState
-    extends State<ResizableAndConfigurableTextBox> {
+    extends State<ResizableAndConfigurableTextBox> with WidgetsBindingObserver {
   late Size _size;
   late CustomTextStyle _textStyle;
   late quill.QuillController _quillController;
@@ -537,6 +542,7 @@ class _ResizableAndConfigurableTextBoxState
   bool _isPastingRichDelta = false;
   final GlobalKey<quill.EditorState> _editorKey = GlobalKey<quill.EditorState>();
   final GlobalKey _cursorHandleStackKey = GlobalKey();
+  bool _caretReportScheduled = false;
 
   void _armImePasteGuard(int start, int insertedLength) {
     _imePasteGuardStart = start;
@@ -555,6 +561,75 @@ class _ResizableAndConfigurableTextBoxState
     if (until == null || DateTime.now().isAfter(until)) return false;
     if (index < _imePasteGuardStart || index > _imePasteGuardEnd) return false;
     return len > 0 || data.isNotEmpty;
+  }
+
+  /// 光标/选区在屏幕上的包围盒（全局坐标），供文档页按「键盘上沿以上约 2cm」规则滚动。
+  Rect? _computeCaretGlobalRect() {
+    final state = _editorKey.currentState;
+    if (state == null) return null;
+    try {
+      final renderEditor = state.renderEditor;
+      final selection = _quillController.selection;
+      final renderBox = renderEditor as RenderBox;
+      late Rect caretRect;
+      if (selection.isCollapsed) {
+        caretRect = renderEditor.getLocalRectForCaret(
+          TextPosition(offset: selection.extentOffset),
+        );
+      } else {
+        final rStart = renderEditor.getLocalRectForCaret(
+          TextPosition(offset: selection.start),
+        );
+        final rEnd = renderEditor.getLocalRectForCaret(
+          TextPosition(offset: selection.end),
+        );
+        caretRect = rStart.expandToInclude(rEnd);
+      }
+      final topLeft = renderBox.localToGlobal(caretRect.topLeft);
+      final bottomRight = renderBox.localToGlobal(caretRect.bottomRight);
+      return Rect.fromPoints(topLeft, bottomRight);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  void _scheduleCaretReportForDocumentScroll() {
+    if (!mounted || !_focusNode.hasFocus) return;
+    if (widget.onCaretRectForDocumentScroll == null) return;
+    if (_caretReportScheduled) return;
+    _caretReportScheduled = true;
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_focusNode.hasFocus) {
+        _caretReportScheduled = false;
+        return;
+      }
+      final editorState = _editorKey.currentState;
+      if (editorState != null) {
+        try {
+          editorState.bringIntoView(
+            TextPosition(offset: _quillController.selection.extentOffset),
+          );
+        } catch (_) {}
+      }
+      SchedulerBinding.instance.addPostFrameCallback((_) {
+        _caretReportScheduled = false;
+        if (!mounted || !_focusNode.hasFocus) return;
+        final rect = _computeCaretGlobalRect();
+        if (rect != null) {
+          widget.onCaretRectForDocumentScroll?.call(rect);
+        }
+      });
+    });
+  }
+
+  @override
+  void didChangeMetrics() {
+    super.didChangeMetrics();
+    if (widget.onCaretRectForDocumentScroll == null) return;
+    if (!_focusNode.hasFocus) return;
+    // 键盘高度变化后允许再次测量（避免与上一帧的合并标记冲突）
+    _caretReportScheduled = false;
+    _scheduleCaretReportForDocumentScroll();
   }
 
   @override
@@ -674,10 +749,14 @@ class _ResizableAndConfigurableTextBoxState
 
     _focusNode = FocusNode();
     _focusNode.addListener(() {
+      if (_focusNode.hasFocus) {
+        _scheduleCaretReportForDocumentScroll();
+      }
       setState(() {});
       if (!_focusNode.hasFocus) _flushSaveDebounce(); // 失焦时立即保存，确保连续操作为一步
     });
     _textScrollController = ScrollController();
+    WidgetsBinding.instance.addObserver(this);
   }
 
   void _flushSaveDebounce() {
@@ -749,10 +828,14 @@ class _ResizableAndConfigurableTextBoxState
     _lastSelectionForHaptic = sel;
     setState(() {});
     _debouncedSaveChanges();
+    if (_focusNode.hasFocus) {
+      _scheduleCaretReportForDocumentScroll();
+    }
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _saveDebounceTimer?.cancel();
     _keyboardSuppressTimer?.cancel();
     _docChangeSub?.cancel();
