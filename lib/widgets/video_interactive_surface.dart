@@ -117,7 +117,8 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
 
   void _onPointerMove(PointerMoveEvent e) {
     if (!widget.editable) return;
-    if (_activePointers.length == 1 && _scaleNow() <= 1.02) {
+    // 单指轨迹用于「7」形旋转识别；放大后仍需有效，故不再限制 scale。
+    if (_activePointers.length == 1) {
       _strokePoints.add(e.localPosition);
     }
   }
@@ -129,17 +130,15 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
       _strokePoints.clear();
       return;
     }
-    if (soloStroke &&
-        _scaleNow() <= 1.02 &&
-        _strokePoints.length >= 8) {
+    if (soloStroke && _strokePoints.length >= 8) {
       final rot = detectSevenStrokeRotation(List.from(_strokePoints));
       if (rot != null) {
+        // 只更新 quarterTurns；[InteractiveViewer] 的缩放/平移保留在 [_tc] 中。
         setState(() {
           _quarterTurns = rot
               ? (_quarterTurns + 1) % 4
               : (_quarterTurns - 1) % 4;
           if (_quarterTurns < 0) _quarterTurns += 4;
-          _tc.value = Matrix4.identity();
         });
         _emitChanged();
       }

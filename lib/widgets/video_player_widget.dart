@@ -70,18 +70,23 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
 
     _controller.initialize().then((_) {
       if (!mounted) return;
-      
+
+      // 文档编辑区嵌入：有 VideoControlsOverlay 外部底栏，不显示 Chewie 自带控制层。
+      final bool embedInDocumentEditor = widget.viewParams != null;
+
       _chewieController = ChewieController(
         videoPlayerController: _controller,
         autoPlay: true,
         looping: widget.looping,
         allowFullScreen: true,
         allowMuting: true,
-        showControls: true,
-        showControlsOnInitialize: true,
-        customControls: const MaterialControls(
-          hideBottomBar: true,
-        ),
+        showControls: !embedInDocumentEditor,
+        showControlsOnInitialize: !embedInDocumentEditor,
+        customControls: embedInDocumentEditor
+            ? null
+            : const MaterialControls(
+                hideBottomBar: true,
+              ),
         deviceOrientationsAfterFullScreen: [DeviceOrientation.portraitUp],
         materialProgressColors: ChewieProgressColors(
           playedColor: Colors.red,
@@ -247,23 +252,12 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
           child: SizedBox.expand(
             child: ChewieFullscreenHost(
               controller: _chewieController!,
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  VideoInteractiveSurface(
-                    key: ValueKey('${widget.file.path}_${vp.hashCode}'),
-                    videoController: _controller,
-                    videoChild: const PlayerWithControls(),
-                    initial: vp,
-                    editable: false,
-                  ),
-                  const Positioned(
-                    left: 0,
-                    right: 0,
-                    bottom: 0,
-                    child: MaterialControls(bottomBarOnly: true),
-                  ),
-                ],
+              child: VideoInteractiveSurface(
+                key: ValueKey('${widget.file.path}_${vp.hashCode}'),
+                videoController: _controller,
+                videoChild: const PlayerWithControls(),
+                initial: vp,
+                editable: false,
               ),
             ),
           ),
