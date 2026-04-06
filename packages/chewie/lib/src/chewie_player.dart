@@ -538,6 +538,8 @@ class ChewieController extends ChangeNotifier {
     this.materialProgressColors,
     this.materialSeekButtonFadeDuration = const Duration(milliseconds: 300),
     this.materialSeekButtonSize = 26,
+    this.materialProgressBarHeight = 14,
+    this.materialProgressHandleHeight = 18,
     this.placeholder,
     this.overlay,
     this.showControlsOnInitialize = true,
@@ -592,6 +594,8 @@ class ChewieController extends ChangeNotifier {
     ChewieProgressColors? materialProgressColors,
     Duration? materialSeekButtonFadeDuration,
     double? materialSeekButtonSize,
+    double? materialProgressBarHeight,
+    double? materialProgressHandleHeight,
     Widget? placeholder,
     Widget? overlay,
     bool? showControlsOnInitialize,
@@ -814,6 +818,12 @@ class ChewieController extends ChangeNotifier {
 
   // The size of the seek button for the Material Player only
   final double materialSeekButtonSize;
+
+  /// Material 进度条轨道高度（细条部分），默认 14。
+  final double materialProgressBarHeight;
+
+  /// Material 进度条拖拽圆点直径，默认 18。
+  final double materialProgressHandleHeight;
 
   /// The placeholder is displayed underneath the Video before it is initialized
   /// or played.

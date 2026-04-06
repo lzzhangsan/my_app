@@ -24,6 +24,8 @@ class MaterialControls extends StatefulWidget {
     this.bottomBarOnly = false,
     /// 为 true 时用右下角播放/暂停替代全屏按钮（媒体页等场景）。
     this.replaceFullscreenWithPlayPause = false,
+    /// 为 true 时不绘制右上角字幕/更多菜单条，避免与页面自定义顶栏重叠（媒体预览页）。
+    this.hideTopActionBar = false,
     super.key,
   });
 
@@ -31,6 +33,7 @@ class MaterialControls extends StatefulWidget {
   final bool hideBottomBar;
   final bool bottomBarOnly;
   final bool replaceFullscreenWithPlayPause;
+  final bool hideTopActionBar;
 
   @override
   State<StatefulWidget> createState() {
@@ -104,7 +107,7 @@ class _MaterialControlsState extends State<MaterialControls>
                     const Center(child: CircularProgressIndicator())
               else
                 _buildHitArea(),
-              _buildActionBar(),
+              if (!widget.hideTopActionBar) _buildActionBar(),
               Column(
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: <Widget>[
@@ -685,8 +688,8 @@ class _MaterialControlsState extends State<MaterialControls>
   Widget _buildProgressBar() {
     return MaterialVideoProgressBar(
       controller,
-      barHeight: 14,
-      handleHeight: 18,
+      barHeight: chewieController.materialProgressBarHeight,
+      handleHeight: chewieController.materialProgressHandleHeight,
       onDragStart: () {
         setState(() {
           _dragging = true;

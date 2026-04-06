@@ -389,10 +389,14 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
             isLive: false,
             allowPlaybackSpeedChanging: true,
             draggableProgressBar: true,
+            // 媒体页底栏进度条：约为默认一半粗细，更精致
+            materialProgressBarHeight: 7,
+            materialProgressHandleHeight: 9,
             useRootNavigator: false,
             customControls: const MaterialControls(
               showPlayButton: false,
               hideBottomBar: true,
+              hideTopActionBar: true,
             ),
           );
           
@@ -524,6 +528,29 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
           SnackBar(content: Text('分享文件时出错: $e')),
         );
       }
+    }
+  }
+
+  /// 与 Chewie 原「三点」菜单一致：播放速度（顶栏内操作，避免与缩放层重叠或被挤出屏外）。
+  Future<void> _showPlaybackSpeedMenu() async {
+    if (_currentIndex < 0 || _currentIndex >= widget.mediaItems.length) return;
+    if (widget.mediaItems[_currentIndex].type != MediaType.video) return;
+    final vc = _videoControllers[_currentIndex];
+    final cc = _chewieControllers[_currentIndex];
+    if (vc == null || cc == null || !vc.value.isInitialized) return;
+    if (!cc.allowPlaybackSpeedChanging) return;
+    final chosen = await showModalBottomSheet<double>(
+      context: context,
+      isScrollControlled: true,
+      useRootNavigator: cc.useRootNavigator,
+      builder: (context) => PlaybackSpeedDialog(
+        speeds: cc.playbackSpeeds,
+        selected: vc.value.playbackSpeed,
+      ),
+    );
+    if (chosen != null && mounted) {
+      await vc.setPlaybackSpeed(chosen);
+      setState(() {});
     }
   }
   
@@ -1058,24 +1085,57 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
                     onPressed: _shareMediaItem,
                   ),
                   const Spacer(),
-                  IconButton(
-                    icon: const Icon(Icons.settings, color: Colors.white),
-                    tooltip: '媒体播放设置',
-                    onPressed: _showMediaPlaybackSettings,
-                  ),
-                  IconButton(
-                    icon: Icon(
-                      _mediaMode == MediaMode.auto ? Icons.pause : Icons.play_arrow,
-                      color: Colors.white,
-                    ),
-                    onPressed: () {
-                      if (_mediaMode == MediaMode.auto) {
-                        stop();
-                      } else {
-                        playAuto();
-                      }
-                    },
-                    tooltip: _mediaMode == MediaMode.auto ? '暂停自动播放' : '开始自动播放',
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        padding: const EdgeInsets.all(8),
+                        constraints: const BoxConstraints(
+                          minWidth: 40,
+                          minHeight: 40,
+                        ),
+                        icon: const Icon(Icons.settings, color: Colors.white),
+                        tooltip: '媒体播放设置',
+                        onPressed: _showMediaPlaybackSettings,
+                      ),
+                      IconButton(
+                        padding: const EdgeInsets.all(8),
+                        constraints: const BoxConstraints(
+                          minWidth: 40,
+                          minHeight: 40,
+                        ),
+                        icon: Icon(
+                          _mediaMode == MediaMode.auto
+                              ? Icons.pause
+                              : Icons.play_arrow,
+                          color: Colors.white,
+                        ),
+                        onPressed: () {
+                          if (_mediaMode == MediaMode.auto) {
+                            stop();
+                          } else {
+                            playAuto();
+                          }
+                        },
+                        tooltip: _mediaMode == MediaMode.auto
+                            ? '暂停自动播放'
+                            : '开始自动播放',
+                      ),
+                      if (widget.mediaItems.isNotEmpty &&
+                          _currentIndex < widget.mediaItems.length &&
+                          widget.mediaItems[_currentIndex].type ==
+                              MediaType.video)
+                        IconButton(
+                          padding: const EdgeInsets.all(8),
+                          constraints: const BoxConstraints(
+                            minWidth: 40,
+                            minHeight: 40,
+                          ),
+                          icon: const Icon(Icons.more_vert, color: Colors.white),
+                          tooltip: '播放速度',
+                          onPressed: _showPlaybackSpeedMenu,
+                        ),
+                    ],
                   ),
                 ],
               ),
