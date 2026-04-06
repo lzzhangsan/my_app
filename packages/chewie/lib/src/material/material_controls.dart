@@ -22,12 +22,15 @@ class MaterialControls extends StatefulWidget {
     this.hideBottomBar = false,
     /// 为 true 时仅绘制底栏，无全屏点击层；叠在 [InteractiveViewer] 之上时勿用全屏 [Positioned.fill]。
     this.bottomBarOnly = false,
+    /// 为 true 时用右下角播放/暂停替代全屏按钮（媒体页等场景）。
+    this.replaceFullscreenWithPlayPause = false,
     super.key,
   });
 
   final bool showPlayButton;
   final bool hideBottomBar;
   final bool bottomBarOnly;
+  final bool replaceFullscreenWithPlayPause;
 
   @override
   State<StatefulWidget> createState() {
@@ -298,8 +301,37 @@ class _MaterialControlsState extends State<MaterialControls>
                   )
                 else
                   const Spacer(),
-                if (chewieController.allowFullScreen) _buildExpandButton(),
+                if (widget.replaceFullscreenWithPlayPause)
+                  _buildPlayPauseBarButton()
+                else if (chewieController.allowFullScreen)
+                  _buildExpandButton(),
               ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 底栏右侧：播放/暂停（与 [_buildExpandButton] 同尺寸区域，便于替换全屏键）。
+  GestureDetector _buildPlayPauseBarButton() {
+    return GestureDetector(
+      onTap: () {
+        _cancelAndRestartTimer();
+        _playPause();
+      },
+      child: AnimatedOpacity(
+        opacity: notifier.hideStuff ? 0.0 : 1.0,
+        duration: const Duration(milliseconds: 300),
+        child: SizedBox(
+          height: _bottomBarControlRowHeight,
+          child: Container(
+            margin: const EdgeInsets.only(right: 12.0),
+            padding: const EdgeInsets.only(left: 8.0, right: 8.0),
+            alignment: Alignment.center,
+            child: Icon(
+              _latestValue.isPlaying ? Icons.pause : Icons.play_arrow,
+              color: Colors.white,
             ),
           ),
         ),

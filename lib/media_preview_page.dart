@@ -351,7 +351,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
             videoPlayerController: controller,
             autoPlay: shouldAutoPlay,
             looping: false,
-            allowFullScreen: true,
+            allowFullScreen: false,
             allowMuting: true,
             showControls: true,
             showControlsOnInitialize: true,
@@ -957,6 +957,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
               child: MaterialControls(
                 showPlayButton: false,
                 bottomBarOnly: true,
+                replaceFullscreenWithPlayPause: true,
               ),
             ),
           ],
