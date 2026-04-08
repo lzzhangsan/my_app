@@ -2,7 +2,7 @@ import 'dart:io';
 import 'dart:async';
 import 'dart:collection';
 import 'dart:isolate';
-import 'dart:math' show min;
+import 'dart:math' show min, max;
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
@@ -60,6 +60,12 @@ const int _kHlsMaxConnectionsPerHost = 24;
 
 /// 超过此大小的文件在独立 Isolate 中计算 MD5，减轻下载完成后主线程长时间卡顿。
 const int _kMd5IsolateThresholdBytes = 4 * 1024 * 1024;
+
+/// 单文件视频（mp4/webm 等）启用 HTTP Range 多连接并行下载的最小体积。
+const int _kParallelRangeVideoMinBytes = 3 * 1024 * 1024;
+
+/// 并行分片数（与 [ _kHlsMaxConnectionsPerHost ] 类似，过大易被 CDN 限流）。
+const int _kParallelRangeVideoConnections = 6;
 
 /// 下载进度：`fraction` 为 0~1；`detail` 为可选说明（如 HLS 分片、已下字节）。
 typedef DownloadProgressCallback = void Function(double fraction, {String? detail});
@@ -163,6 +169,22 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   // 1. 新增历史记录变量
   List<Map<String, dynamic>> _history = [];
 
+  /// 常见「拉活 / 应用商店 / 站内 App」协议：拦截即可，不尝试唤起、也不弹「无法打开」。
+  bool _isNoisyExternalAppScheme(String lowerUrl) {
+    return lowerUrl.startsWith('baiduboxapp://') ||
+        lowerUrl.startsWith('bdapp://') ||
+        lowerUrl.startsWith('baiduhaokan://') ||
+        lowerUrl.startsWith('tbopen://') ||
+        lowerUrl.startsWith('snssdk://') ||
+        lowerUrl.startsWith('sinaweibo://') ||
+        lowerUrl.startsWith('weixin://') ||
+        lowerUrl.startsWith('alipays://') ||
+        lowerUrl.startsWith('intent://') ||
+        lowerUrl.startsWith('samsungapps://') ||
+        lowerUrl.startsWith('market://') ||
+        lowerUrl.startsWith('hap://');
+  }
+
   Future<void> _launchExternalApp(String url) async {
     debugPrint('尝试启动外部应用: $url');
     try {
@@ -173,10 +195,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       } else {
         debugPrint('无法启动外部应用: $url');
         final lower = url.toLowerCase();
-        final isAppScheme = lower.startsWith('baiduboxapp://') || lower.startsWith('bdapp://') ||
-            lower.startsWith('tbopen://') || lower.startsWith('snssdk://') ||
-            lower.startsWith('sinaweibo://') || lower.startsWith('weixin://') ||
-            lower.startsWith('alipays://') || lower.startsWith('intent://');
+        final isAppScheme = _isNoisyExternalAppScheme(lower);
         if (!isAppScheme && mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('无法打开: $url')),
@@ -186,10 +205,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     } catch (e) {
       debugPrint('启动外部应用时出错: $e');
       final lower = url.toLowerCase();
-      final isAppScheme = lower.startsWith('baiduboxapp://') || lower.startsWith('bdapp://') ||
-          lower.startsWith('tbopen://') || lower.startsWith('snssdk://') ||
-          lower.startsWith('sinaweibo://') || lower.startsWith('weixin://') ||
-          lower.startsWith('alipays://') || lower.startsWith('intent://');
+      final isAppScheme = _isNoisyExternalAppScheme(lower);
       if (!isAppScheme && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('打开链接时出错: $e')),
@@ -2151,6 +2167,230 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     return dio;
   }
 
+  bool _videoExtensionSupportsParallelRange(String ext) {
+    switch (ext.toLowerCase()) {
+      case '.mp4':
+      case '.webm':
+      case '.mov':
+      case '.mkv':
+      case '.m4v':
+      case '.avi':
+      case '.flv':
+      case '.wmv':
+      case '.ts':
+      case '.mpeg':
+      case '.mpg':
+      case '.3gp':
+      case '.ogv':
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  /// 探测是否可按字节范围分段下载；返回资源总字节数，否则 null。
+  Future<int?> _probeVideoTotalBytesForRangeDownload(
+    Dio dio,
+    String url,
+    Map<String, String> headers,
+  ) async {
+    try {
+      final headResp = await dio.head<dynamic>(
+        url,
+        options: Options(
+          followRedirects: true,
+          maxRedirects: 5,
+          validateStatus: (c) => c != null && c >= 200 && c < 400,
+          headers: headers,
+        ),
+      );
+      final code = headResp.statusCode ?? 0;
+      if (code >= 200 && code < 300) {
+        final cl = headResp.headers.value('content-length');
+        final ar = headResp.headers.value('accept-ranges')?.toLowerCase();
+        if (cl != null) {
+          final len = int.tryParse(cl.trim());
+          if (len != null &&
+              len >= _kParallelRangeVideoMinBytes &&
+              (ar == null || ar.contains('bytes'))) {
+            return len;
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('Range 探测 HEAD 失败（可忽略）: $e');
+    }
+    try {
+      final r = await dio.get<dynamic>(
+        url,
+        options: Options(
+          followRedirects: true,
+          maxRedirects: 5,
+          validateStatus: (c) => c == 206,
+          headers: {...headers, 'Range': 'bytes=0-0'},
+          responseType: ResponseType.bytes,
+        ),
+      );
+      if (r.statusCode != 206) return null;
+      final cr = r.headers.value('content-range');
+      if (cr == null) return null;
+      final m = RegExp(r'bytes \d+-\d+/(\d+)').firstMatch(cr);
+      if (m != null) {
+        final total = int.tryParse(m.group(1)!);
+        if (total != null && total >= _kParallelRangeVideoMinBytes) return total;
+      }
+    } catch (e) {
+      debugPrint('Range 探测 GET 失败（可忽略）: $e');
+    }
+    return null;
+  }
+
+  int _parallelRangePartsForTotalSize(int totalBytes) {
+    if (totalBytes < _kParallelRangeVideoMinBytes) return 1;
+    if (totalBytes < 32 * 1024 * 1024) return min(4, _kParallelRangeVideoConnections);
+    if (totalBytes < 128 * 1024 * 1024) return min(6, _kParallelRangeVideoConnections);
+    return _kParallelRangeVideoConnections;
+  }
+
+  List<(int start, int end)> _splitByteRanges(int totalBytes, int parts) {
+    final n = max(1, parts);
+    if (totalBytes <= 0) return [];
+    final chunk = (totalBytes / n).ceil();
+    final out = <(int, int)>[];
+    for (var i = 0; i < n; i++) {
+      final start = i * chunk;
+      if (start >= totalBytes) break;
+      final end = min(start + chunk - 1, totalBytes - 1);
+      out.add((start, end));
+    }
+    return out;
+  }
+
+  /// 使用 Range 多连接并行下载单文件视频；失败返回 null，由调用方回退单连接 [dio.download]。
+  Future<File?> _tryParallelRangeVideoDownload({
+    required Dio downloadDio,
+    required String url,
+    required String filePath,
+    required String referer,
+    required String browserUA,
+    CancelToken? cancelToken,
+    DownloadProgressCallback? onProgress,
+  }) async {
+    final headers = <String, String>{
+      'User-Agent': browserUA,
+      'Referer': referer,
+      'Accept': '*/*',
+      if (referer.startsWith('http')) 'Origin': Uri.tryParse(referer)?.origin ?? referer,
+    };
+
+    int? totalBytes;
+    try {
+      totalBytes = await _probeVideoTotalBytesForRangeDownload(downloadDio, url, headers);
+    } catch (_) {
+      return null;
+    }
+    if (totalBytes == null) return null;
+    final byteTotal = totalBytes;
+
+    final parts = _parallelRangePartsForTotalSize(byteTotal);
+    if (parts < 2) return null;
+
+    final ranges = _splitByteRanges(byteTotal, parts);
+    if (ranges.length < 2) return null;
+
+    if (kDebugMode) {
+      debugPrint(
+        '视频下载：已启用 Range 多连接（${_formatBytes(byteTotal)}，${ranges.length} 路并行；非 NetworkService 的 HEAD 日志）',
+      );
+    }
+
+    final partPaths = List<String>.generate(ranges.length, (i) => '$filePath.part$i');
+    final perPart = List<int>.filled(ranges.length, 0);
+
+    Future<void> downloadOneRange(int ri) async {
+      final (start, end) = ranges[ri];
+      final expectLen = end - start + 1;
+      final partPath = partPaths[ri];
+      final r = await downloadDio.get<ResponseBody>(
+        url,
+        cancelToken: cancelToken,
+        options: Options(
+          followRedirects: true,
+          maxRedirects: 5,
+          validateStatus: (code) => code == 206,
+          headers: {...headers, 'Range': 'bytes=$start-$end'},
+          responseType: ResponseType.stream,
+        ),
+      );
+      if (r.statusCode != 206 || r.data == null) {
+        throw DioException(
+          requestOptions: r.requestOptions,
+          message: 'Range 分片 HTTP ${r.statusCode}',
+        );
+      }
+      final sink = File(partPath).openWrite();
+      try {
+        await for (final chunk in r.data!.stream) {
+          perPart[ri] += chunk.length;
+          final sum = perPart.fold<int>(0, (a, b) => a + b);
+          onProgress?.call(
+            sum / byteTotal,
+            detail: '多连接 ${_formatBytes(sum)} / ${_formatBytes(byteTotal)}',
+          );
+          sink.add(chunk);
+        }
+      } finally {
+        await sink.close();
+      }
+      final got = await File(partPath).length();
+      if (got != expectLen) {
+        throw StateError('分片 $ri 大小不符: 期望 $expectLen 实际 $got');
+      }
+    }
+
+    try {
+      onProgress?.call(0, detail: '多连接并行 (${ranges.length} 路)…');
+      await Future.wait(List.generate(ranges.length, downloadOneRange));
+
+      final outSink = File(filePath).openWrite();
+      try {
+        for (final pp in partPaths) {
+          await outSink.addStream(File(pp).openRead());
+        }
+      } finally {
+        await outSink.close();
+      }
+
+      for (final pp in partPaths) {
+        try {
+          final f = File(pp);
+          if (await f.exists()) await f.delete();
+        } catch (_) {}
+      }
+
+      final len = await File(filePath).length();
+      if (len != byteTotal) {
+        try {
+          await File(filePath).delete();
+        } catch (_) {}
+        return null;
+      }
+      return File(filePath);
+    } catch (e, st) {
+      debugPrint('Range 多连接下载失败，将回退单连接: $e\n$st');
+      for (final pp in partPaths) {
+        try {
+          final f = File(pp);
+          if (await f.exists()) await f.delete();
+        } catch (_) {}
+      }
+      try {
+        if (await File(filePath).exists()) await File(filePath).delete();
+      } catch (_) {}
+      return null;
+    }
+  }
+
   Future<File?> _downloadFile(String url, MediaType mediaType, {CancelToken? cancelToken, DownloadProgressCallback? onProgress}) async {
     try {
       final absoluteUrl = _toAbsoluteUrl(url);
@@ -2198,7 +2438,26 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         try {
           final referer = refererIdx < refererCandidates.length ? refererCandidates[refererIdx] : refererCandidates.last;
           debugPrint('下载尝试 ${retryCount + 1}/$maxRetries, Referer: $referer');
-          final response = await downloadDio.download(
+
+          if (mediaType == MediaType.video &&
+              _videoExtensionSupportsParallelRange(extension) &&
+              extension != '.m3u8' &&
+              extension != '.m3u') {
+            final parallelOk = await _tryParallelRangeVideoDownload(
+              downloadDio: downloadDio,
+              url: urlToTry,
+              filePath: filePath,
+              referer: referer,
+              browserUA: browserUA,
+              cancelToken: cancelToken,
+              onProgress: onProgress,
+            );
+            if (parallelOk != null) {
+              break;
+            }
+          }
+
+          await downloadDio.download(
             urlToTry,
             filePath,
             deleteOnError: true,
@@ -3387,10 +3646,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                                     return NavigationActionPolicy.ALLOW;
                                   }
                                   final lower = url.toLowerCase();
-                                  if (lower.startsWith('baiduboxapp://') || lower.startsWith('bdapp://') ||
-                                      lower.startsWith('tbopen://') || lower.startsWith('snssdk://') ||
-                                      lower.startsWith('sinaweibo://') || lower.startsWith('weixin://') ||
-                                      lower.startsWith('alipays://') || lower.startsWith('intent://')) {
+                                  if (_isNoisyExternalAppScheme(lower)) {
                                     return NavigationActionPolicy.CANCEL;
                                   }
                                   debugPrint('检测到自定义URL协议: $url');
