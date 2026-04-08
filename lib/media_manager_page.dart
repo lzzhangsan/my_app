@@ -574,8 +574,6 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   Timer? _thumbnailUiRefreshDebounce;
   bool _isThumbnailPrefetchRunning = false;
   String? _lastViewedVideoId;
-  final StreamController<String> _progressController =
-      StreamController<String>.broadcast();
   final List<String> _availableDirectories = ['root'];
   final ScrollController _gridScrollController = ScrollController();
   bool _isDragSelecting = false;
@@ -673,7 +671,6 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     _thumbnailPrefetchQueued.clear();
     _thumbnailPrefetchDebounce?.cancel();
     _thumbnailUiRefreshDebounce?.cancel();
-    _progressController.close();
     _gridScrollController.removeListener(_handleGridScroll);
     _gridScrollController.dispose();
     _cleanupTimer?.cancel(); // Cancel the cleanup timer
@@ -2002,20 +1999,20 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   }) async {
     if (items.isEmpty) return;
 
-    if (!silent) {
-      showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder:
-            (context) => const AlertDialog(
-              content: Row(
-                children: [
-                  CircularProgressIndicator(),
-                  SizedBox(width: 20),
-                  Text('正在导入媒体...'),
-                ],
-              ),
-            ),
+    final showUi = !silent;
+    ValueNotifier<bool>? cancelRef;
+    ValueNotifier<double>? progRef;
+    ValueNotifier<String>? msgRef;
+    if (showUi) {
+      cancelRef = ValueNotifier(false);
+      progRef = ValueNotifier(0.0);
+      msgRef = ValueNotifier('准备导入…');
+      showCancellableProgressDialog(
+        context,
+        progress: progRef,
+        message: msgRef,
+        cancelRequested: cancelRef,
+        title: '导入媒体',
       );
     }
 
@@ -2028,15 +2025,26 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       int skippedCount = 0;
       final importedVideoPaths = <String>[];
 
-      for (var item in items) {
+      final total = items.length;
+      for (var index = 0; index < items.length; index++) {
+        if (showUi && cancelRef!.value) {
+          msgRef!.value = '正在停止…';
+          break;
+        }
+        final item = items[index];
         final sourceFile = item.$1;
         final type = item.$2;
         final fileName = path.basename(sourceFile.path);
+        if (showUi) {
+          msgRef!.value = '(${index + 1}/$total) $fileName\n正在计算哈希…';
+          progRef!.value = index / math.max(total, 1);
+        }
         final fileHash = await _calculateFileHash(sourceFile);
         // 无法计算哈希时跳过，避免无法查重导致重复导入
         if (fileHash.isEmpty) {
           debugPrint('无法计算文件哈希，跳过导入: $fileName');
           skippedCount++;
+          if (showUi) progRef!.value = (index + 1) / math.max(total, 1);
           continue;
         }
 
@@ -2048,12 +2056,16 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         if (duplicate != null) {
           debugPrint('发现重复文件: ${duplicate['name']}');
           skippedCount++;
+          if (showUi) progRef!.value = (index + 1) / math.max(total, 1);
           continue;
         }
 
         final uuid = const Uuid().v4();
         final extension = path.extension(sourceFile.path);
         final destinationPath = '${mediaDir.path}/$uuid$extension';
+        if (showUi) {
+          msgRef!.value = '(${index + 1}/$total) $fileName\n正在复制到应用目录…';
+        }
         await sourceFile.copy(destinationPath);
 
         // 插入前再次查重，防止并发导入时的竞态
@@ -2065,6 +2077,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           } catch (_) {}
           debugPrint('插入前发现重复，已跳过: $fileName');
           skippedCount++;
+          if (showUi) progRef!.value = (index + 1) / math.max(total, 1);
           continue;
         }
 
@@ -2086,6 +2099,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         if (type == MediaType.video) {
           importedVideoPaths.add(destinationPath);
         }
+        if (showUi) progRef!.value = (index + 1) / math.max(total, 1);
       }
 
       if (mounted) {
@@ -2096,13 +2110,25 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           unawaited(_drainThumbnailPrefetchQueue());
         }
         if (!silent) {
+          final cancelled = showUi && (cancelRef?.value ?? false);
           final parts = <String>[];
           if (importedCount > 0) parts.add('成功导入 $importedCount 个');
-          if (skippedCount > 0) parts.add('因重复跳过 $skippedCount 个');
-          final msg = parts.isEmpty ? '无新文件导入（全部为重复）' : parts.join('，');
+          if (skippedCount > 0) {
+            parts.add(
+              cancelled ? '已跳过 $skippedCount 个' : '因重复跳过 $skippedCount 个',
+            );
+          }
+          final msg =
+              cancelled
+                  ? (parts.isEmpty
+                      ? '导入已取消'
+                      : '导入已取消：${parts.join('，')}')
+                  : (parts.isEmpty
+                      ? '无新文件导入（全部为重复）'
+                      : '导入完成：${parts.join('，')}');
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('导入完成：$msg'),
+              content: Text(msg),
               duration: const Duration(seconds: 4),
             ),
           );
@@ -4574,62 +4600,58 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   }
 
   Future<void> _scanAndUpdateFileHashes({bool autoRemove = true}) async {
-    try {
-      // 显示进度对话框
-      showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder:
-            (context) => AlertDialog(
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const CircularProgressIndicator(),
-                  const SizedBox(height: 16),
-                  StreamBuilder<String>(
-                    stream: _progressController.stream,
-                    builder: (context, snapshot) {
-                      return Text(
-                        snapshot.data ?? '正在扫描媒体文件...',
-                        style: const TextStyle(fontSize: 14),
-                      );
-                    },
-                  ),
-                ],
-              ),
-            ),
-      );
+    if (!mounted) return;
+    final cancelRef = ValueNotifier(false);
+    final progRef = ValueNotifier(0.0);
+    final msgRef = ValueNotifier('正在准备…');
 
-      // 递归获取所有媒体项
+    showCancellableProgressDialog(
+      context,
+      progress: progRef,
+      message: msgRef,
+      cancelRequested: cancelRef,
+      title: '扫描重复文件',
+    );
+
+    try {
+      msgRef.value = '正在枚举媒体库…';
+      progRef.value = 0;
+
       final allMediaItems = await _getAllMediaItemsRecursively('root');
+      if (!mounted) return;
+
+      final totalPass1 = math.max(allMediaItems.length, 1);
 
       int processedCount = 0;
       int updatedCount = 0;
       int duplicateCount = 0;
       int errorCount = 0;
-      Map<String, List<Map<String, dynamic>>> hashGroups = {};
+      final Map<String, List<Map<String, dynamic>>> hashGroups = {};
 
-      // 第一遍扫描：计算所有文件的哈希值
-      for (var item in allMediaItems) {
+      for (var pass1Index = 0; pass1Index < allMediaItems.length; pass1Index++) {
+        if (cancelRef.value) {
+          msgRef.value = '正在停止…';
+          break;
+        }
+        final item = allMediaItems[pass1Index];
+        final name = item['name']?.toString() ?? '';
+        msgRef.value =
+            '阶段 1/2 计算哈希 (${pass1Index + 1}/$totalPass1)\n$name';
+        progRef.value = (pass1Index / totalPass1) * 0.88;
+
         try {
-          // 更新进度
-          _progressController.add('正在处理: ${item['name']}');
-
-          // 跳过文件夹
           if (item['type'] == MediaType.folder.index) {
             processedCount++;
             continue;
           }
 
-          // 检查文件是否存在
-          final file = File(item['path']);
+          final file = File(item['path'] as String? ?? '');
           if (!await file.exists()) {
             errorCount++;
             processedCount++;
             continue;
           }
 
-          // 计算文件哈希
           final fileHash = await _calculateFileHash(file);
           if (fileHash.isEmpty) {
             errorCount++;
@@ -4637,14 +4659,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
             continue;
           }
 
-          // 更新数据库中的哈希值
           await _databaseService.updateMediaItemHash(item['id'], fileHash);
 
-          // 将文件按哈希值分组
-          if (!hashGroups.containsKey(fileHash)) {
-            hashGroups[fileHash] = [];
-          }
-          hashGroups[fileHash]!.add(item);
+          hashGroups.putIfAbsent(fileHash, () => []).add(item);
 
           updatedCount++;
           processedCount++;
@@ -4655,60 +4672,89 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         }
       }
 
-      // 第二遍扫描：处理重复文件（仅当 autoRemove 时移至回收站）
-      for (var hash in hashGroups.keys) {
-        var files = hashGroups[hash]!;
-        if (files.length > 1) {
-          _progressController.add(
-            '发现重复文件: ${files.map((f) => f['name']).join(', ')}',
-          );
-          duplicateCount += files.length - 1;
-          if (autoRemove) {
-            var duplicates = files.skip(1).toList();
-            for (var duplicate in duplicates) {
-              try {
-                await _databaseService.updateMediaItemDirectory(
-                  duplicate['id'],
-                  'recycle_bin',
-                );
-              } catch (e) {
-                Logger.log('移动重复文件到回收站时出错: ${duplicate['name']}, 错误: $e');
-                errorCount++;
+      if (!cancelRef.value) {
+        final keys = hashGroups.keys.toList();
+        final totalPass2 = math.max(keys.length, 1);
+        outerScanDup:
+        for (var k = 0; k < keys.length; k++) {
+          if (cancelRef.value) {
+            msgRef.value = '正在停止…';
+            break;
+          }
+          final hash = keys[k];
+          final files = hashGroups[hash]!;
+          progRef.value = 0.88 + ((k + 1) / totalPass2) * 0.12;
+          msgRef.value = '阶段 2/2 检查重复 (${k + 1}/$totalPass2)';
+
+          if (files.length > 1) {
+            final label = files.map((f) => f['name']).join(', ');
+            msgRef.value = '阶段 2/2 处理重复\n$label';
+            duplicateCount += files.length - 1;
+            if (autoRemove) {
+              final duplicates = files.skip(1).toList();
+              for (final duplicate in duplicates) {
+                if (cancelRef.value) {
+                  msgRef.value = '正在停止…';
+                  break outerScanDup;
+                }
+                try {
+                  await _databaseService.updateMediaItemDirectory(
+                    duplicate['id'],
+                    'recycle_bin',
+                  );
+                } catch (e) {
+                  Logger.log('移动重复文件到回收站时出错: ${duplicate['name']}, 错误: $e');
+                  errorCount++;
+                }
               }
             }
           }
         }
       }
 
-      // 关闭进度对话框
-      if (mounted) {
-        Navigator.of(context).pop();
+      if (!cancelRef.value) {
+        progRef.value = 1.0;
       }
 
-      // 显示结果
+      if (mounted) Navigator.of(context).pop();
+
       if (mounted) {
-        final removedNote =
-            autoRemove && duplicateCount > 0
-                ? '\n已移至回收站: $duplicateCount 个'
-                : (duplicateCount > 0 ? '\n(未删除，请手动处理)' : '');
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              '扫描完成\n'
-              '处理文件: $processedCount\n'
-              '更新哈希: $updatedCount\n'
-              '发现重复: $duplicateCount 个$removedNote\n'
-              '错误: $errorCount',
+        if (cancelRef.value) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                '扫描已取消\n'
+                '已处理条目: $processedCount\n'
+                '更新哈希: $updatedCount\n'
+                '错误: $errorCount',
+              ),
+              duration: const Duration(seconds: 5),
             ),
-            duration: const Duration(seconds: 5),
-          ),
-        );
+          );
+        } else {
+          final removedNote =
+              autoRemove && duplicateCount > 0
+                  ? '\n已移至回收站: $duplicateCount 个'
+                  : (duplicateCount > 0 ? '\n(未删除，请手动处理)' : '');
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                '扫描完成\n'
+                '处理文件: $processedCount\n'
+                '更新哈希: $updatedCount\n'
+                '发现重复: $duplicateCount 个$removedNote\n'
+                '错误: $errorCount',
+              ),
+              duration: const Duration(seconds: 5),
+            ),
+          );
+        }
         await _loadMediaItems();
       }
     } catch (e) {
       Logger.log('扫描文件哈希时出错: $e');
       if (mounted) {
-        Navigator.of(context).pop(); // 关闭进度对话框
+        Navigator.of(context).pop();
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text('扫描失败: $e')));
@@ -4733,29 +4779,36 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         return;
       }
 
-      showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder:
-            (context) => AlertDialog(
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const CircularProgressIndicator(),
-                  const SizedBox(height: 16),
-                  Text(
-                    '正在扫描当前目录 (${_currentDirectory == 'root' ? '根目录' : _currentDirectory})...',
-                    style: const TextStyle(fontSize: 14),
-                  ),
-                ],
-              ),
-            ),
+      if (!mounted) return;
+      final cancelRef = ValueNotifier(false);
+      final progRef = ValueNotifier(0.0);
+      final msgRef = ValueNotifier('准备查重…');
+      final locLabel =
+          _currentDirectory == 'root' ? '根目录' : _currentDirectory;
+
+      showCancellableProgressDialog(
+        context,
+        progress: progRef,
+        message: msgRef,
+        cancelRequested: cancelRef,
+        title: '当前目录查重',
       );
 
-      Map<String, List<Map<String, dynamic>>> hashGroups = {};
+      final Map<String, List<Map<String, dynamic>>> hashGroups = {};
       int errorCount = 0;
 
-      for (var item in mediaFiles) {
+      final totalPass1 = math.max(mediaFiles.length, 1);
+      for (var i = 0; i < mediaFiles.length; i++) {
+        if (cancelRef.value) {
+          msgRef.value = '正在停止…';
+          break;
+        }
+        final item = mediaFiles[i];
+        final n = item['name']?.toString() ?? '';
+        msgRef.value =
+            '阶段 1/2 计算哈希 ($locLabel)\n(${i + 1}/$totalPass1) $n';
+        progRef.value = ((i + 1) / totalPass1) * 0.85;
+
         try {
           final file = File(item['path']?.toString() ?? '');
           if (!await file.exists()) {
@@ -4775,10 +4828,27 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       }
 
       int duplicateCount = 0;
-      for (var files in hashGroups.values) {
-        if (files.length > 1) {
+      int dupStep = 0;
+      int dupTotal = 0;
+      for (final files in hashGroups.values) {
+        if (files.length > 1) dupTotal += files.length - 1;
+      }
+      dupTotal = math.max(dupTotal, 1);
+
+      if (!cancelRef.value) {
+        outerDedup:
+        for (final files in hashGroups.values) {
+          if (files.length <= 1) continue;
           duplicateCount += files.length - 1;
-          for (var dup in files.skip(1)) {
+          for (final dup in files.skip(1)) {
+            if (cancelRef.value) {
+              msgRef.value = '正在停止…';
+              break outerDedup;
+            }
+            dupStep++;
+            progRef.value = 0.85 + (dupStep / dupTotal) * 0.15;
+            msgRef.value =
+                '阶段 2/2 移至回收站 ($dupStep/$dupTotal)\n${dup['name']}';
             try {
               await _databaseService.updateMediaItemDirectory(
                 dup['id'],
@@ -4791,20 +4861,35 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         }
       }
 
+      if (!cancelRef.value) {
+        progRef.value = 1.0;
+      }
+
       if (mounted) Navigator.of(context).pop();
 
       if (mounted) {
         await _loadMediaItems();
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              duplicateCount > 0
-                  ? '查重完成：发现 $duplicateCount 个重复文件，已移至回收站'
-                  : '查重完成：当前目录无重复文件',
+        if (cancelRef.value) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                '查重已取消（错误: $errorCount）',
+              ),
+              duration: const Duration(seconds: 3),
             ),
-            duration: const Duration(seconds: 3),
-          ),
-        );
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                duplicateCount > 0
+                    ? '查重完成：发现 $duplicateCount 个重复文件，已移至回收站'
+                    : '查重完成：当前目录无重复文件',
+              ),
+              duration: const Duration(seconds: 3),
+            ),
+          );
+        }
       }
     } catch (e) {
       if (mounted) {
@@ -6599,5 +6684,72 @@ Future<void> showProgressDialog(
             ),
           ),
         ),
+  );
+}
+
+/// 带百分比进度与「取消」的阻塞式进度框。业务在循环中检查 [cancelRequested]，
+/// 结束时由调用方 [Navigator.pop] 关闭。
+void showCancellableProgressDialog(
+  BuildContext context, {
+  required ValueNotifier<double> progress,
+  required ValueNotifier<String> message,
+  required ValueNotifier<bool> cancelRequested,
+  String title = '请稍候',
+}) {
+  showDialog<void>(
+    context: context,
+    barrierDismissible: false,
+    builder: (ctx) {
+      return PopScope(
+        canPop: false,
+        child: AlertDialog(
+          title: Text(title),
+          content: SizedBox(
+            width: 280,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                ValueListenableBuilder<double>(
+                  valueListenable: progress,
+                  builder:
+                      (_, v, __) => LinearProgressIndicator(
+                        value: v.clamp(0.0, 1.0),
+                      ),
+                ),
+                const SizedBox(height: 8),
+                ValueListenableBuilder<double>(
+                  valueListenable: progress,
+                  builder:
+                      (_, v, __) => Text(
+                        '${(v.clamp(0.0, 1.0) * 100).toStringAsFixed(0)}%',
+                        style: const TextStyle(fontSize: 14),
+                        textAlign: TextAlign.center,
+                      ),
+                ),
+                const SizedBox(height: 8),
+                ValueListenableBuilder<String>(
+                  valueListenable: message,
+                  builder:
+                      (_, msg, __) => Text(
+                        msg,
+                        style: const TextStyle(fontSize: 13),
+                      ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                cancelRequested.value = true;
+                message.value = '正在停止…';
+              },
+              child: const Text('取消'),
+            ),
+          ],
+        ),
+      );
+    },
   );
 }
