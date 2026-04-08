@@ -52,8 +52,11 @@ class _HlsSegTask {
   final Uint8List? explicitIv;
 }
 
-/// 同时发起的 HLS 分片 HTTP 请求数（过大易被 CDN 限流，过小则偏慢）。
-const int _kHlsParallelSegmentFetches = 6;
+/// 同时发起的 HLS 分片 HTTP 请求数（需 ≤ [ _kHlsMaxConnectionsPerHost ]，过大易被 CDN 限流）。
+const int _kHlsParallelSegmentFetches = 10;
+
+/// 单主机最大并行连接数，应 ≥ 分片并行数，否则多余请求会在客户端排队。
+const int _kHlsMaxConnectionsPerHost = 24;
 
 /// 超过此大小的文件在独立 Isolate 中计算 MD5，减轻下载完成后主线程长时间卡顿。
 const int _kMd5IsolateThresholdBytes = 4 * 1024 * 1024;
@@ -2123,10 +2126,14 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     return false;
   }
 
-  Dio _createDownloadDio({Duration? connectTimeout, Duration? receiveTimeout}) {
+  Dio _createDownloadDio({
+    Duration? connectTimeout,
+    Duration? receiveTimeout,
+    bool forVideoDownload = false,
+  }) {
     final dio = Dio(BaseOptions(
       connectTimeout: connectTimeout ?? const Duration(seconds: 15),
-      receiveTimeout: receiveTimeout ?? const Duration(seconds: 30),
+      receiveTimeout: receiveTimeout ?? (forVideoDownload ? const Duration(seconds: 60) : const Duration(seconds: 30)),
       sendTimeout: const Duration(seconds: 15),
       followRedirects: true,
       maxRedirects: 5,
@@ -2134,6 +2141,11 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     (dio.httpClientAdapter as IOHttpClientAdapter).createHttpClient = () {
       final client = HttpClient();
       client.badCertificateCallback = (_, __, ___) => true;
+      if (forVideoDownload) {
+        // 与 HLS 多路并行拉分片配合，避免同一 CDN 主机上连接数不足导致请求在本地排队
+        client.maxConnectionsPerHost = _kHlsMaxConnectionsPerHost;
+        client.idleTimeout = const Duration(seconds: 90);
+      }
       return client;
     };
     return dio;
@@ -2146,7 +2158,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       debugPrint('开始下载文件，URL: $downloadUrl');
       final downloadDio = mediaType == MediaType.image
           ? _createDownloadDio(connectTimeout: const Duration(seconds: 5), receiveTimeout: const Duration(seconds: 10))
-          : _createDownloadDio();
+          : _createDownloadDio(forVideoDownload: true);
 
       final appDir = await getApplicationDocumentsDirectory();
       final mediaDir = Directory('${appDir.path}/media');

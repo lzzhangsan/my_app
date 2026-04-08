@@ -18,6 +18,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:collection/collection.dart';
 import 'package:uuid/uuid.dart';
+import 'package:intl/intl.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:video_thumbnail/video_thumbnail.dart';
@@ -2261,6 +2262,148 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     }
   }
 
+  String _formatPropertyBytes(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    if (bytes < 1024 * 1024 * 1024) {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(2)} MB';
+    }
+    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
+  }
+
+  /// 略缩图菜单「属性」：导入时间、大小、格式等。
+  Future<void> _showMediaItemProperties(MediaItem item) async {
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('属性'),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: FutureBuilder<Map<String, String>>(
+              future: _collectMediaItemProperties(item),
+              builder: (context, snapshot) {
+                if (snapshot.connectionState != ConnectionState.done) {
+                  return const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 24),
+                    child: Center(child: CircularProgressIndicator()),
+                  );
+                }
+                final rows = snapshot.data ?? {};
+                return SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      for (final e in rows.entries)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 10),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              SizedBox(
+                                width: 88,
+                                child: Text(
+                                  e.key,
+                                  style: TextStyle(
+                                    color: Colors.grey[700],
+                                    fontSize: 13,
+                                  ),
+                                ),
+                              ),
+                              Expanded(
+                                child: e.key == '存储路径'
+                                    ? SelectableText(
+                                        e.value,
+                                        style: const TextStyle(fontSize: 13),
+                                      )
+                                    : Text(
+                                        e.value,
+                                        style: const TextStyle(fontSize: 14),
+                                      ),
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('关闭'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<Map<String, String>> _collectMediaItemProperties(MediaItem item) async {
+    final df = DateFormat('yyyy-MM-dd HH:mm:ss');
+
+    Future<String> locationLabel() async {
+      if (item.directory == 'root') return '根目录';
+      final parentRow = await _databaseService.getMediaItemById(item.directory);
+      if (parentRow != null) {
+        final n = parentRow['name'] as String?;
+        if (n != null && n.isNotEmpty) return n;
+      }
+      return item.directory;
+    }
+
+    if (item.type == MediaType.folder) {
+      final loc = await locationLabel();
+      final ordered = <String, String>{
+        '名称': item.name,
+        '类型': '文件夹',
+      };
+      try {
+        final n = await _databaseService.getMediaItemCount(item.id);
+        ordered['包含项数'] = '$n';
+      } catch (_) {
+        ordered['包含项数'] = '—';
+      }
+      ordered['导入时间'] = df.format(item.dateAdded);
+      ordered['所在位置'] = loc;
+      if (item.path.isNotEmpty) {
+        ordered['存储路径'] = item.path;
+      }
+      return ordered;
+    }
+
+    final ext = path.extension(item.name).toLowerCase();
+    final fmt = ext.isEmpty ? '无扩展名' : ext.replaceFirst('.', '').toUpperCase();
+    String sizeText = '—';
+    String? modifiedText;
+    try {
+      final f = File(item.path);
+      if (await f.exists()) {
+        sizeText = _formatPropertyBytes(await f.length());
+        modifiedText = df.format((await f.stat()).modified);
+      } else {
+        sizeText = '文件不存在或已被移动';
+      }
+    } catch (_) {
+      sizeText = '无法读取';
+    }
+
+    final loc = await locationLabel();
+    return <String, String>{
+      '名称': item.name,
+      '类型': item.type == MediaType.image ? '图片' : '视频',
+      '格式': fmt,
+      '大小': sizeText,
+      '导入时间': df.format(item.dateAdded),
+      if (modifiedText != null) '修改时间': modifiedText,
+      '所在位置': loc,
+      if (item.path.isNotEmpty) '存储路径': item.path,
+    };
+  }
+
   Future<void> _moveMediaItem(MediaItem item, String targetDirectory) async {
     if (item.id == 'recycle_bin' || item.id == 'favorites') {
       if (mounted) {
@@ -3138,6 +3281,8 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                           _selectAll();
                         } else if (value == 'export') {
                           _exportMediaItem(item);
+                        } else if (value == 'properties') {
+                          _showMediaItemProperties(item);
                         }
                       },
                       itemBuilder:
@@ -3145,6 +3290,10 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                             const PopupMenuItem(
                               value: 'rename',
                               child: Text('重命名'),
+                            ),
+                            const PopupMenuItem(
+                              value: 'properties',
+                              child: Text('属性'),
                             ),
                             const PopupMenuItem(
                               value: 'move',
