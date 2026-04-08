@@ -45,6 +45,18 @@ Size fitWidthDisplaySize(Size imageSize, double viewportW) {
   return Size(viewportW, h);
 }
 
+/// 整图纳入视口、等比缩放（与 BoxFit.contain 一致）；用于 90°/270° 外层再旋转时避免先被纵向裁切。
+Size containDisplaySize(Size imageSize, double viewportW, double viewportH) {
+  if (imageSize.width <= 0 || imageSize.height <= 0) {
+    return Size(viewportW, viewportH);
+  }
+  final s = math.min(
+    viewportW / imageSize.width,
+    viewportH / imageSize.height,
+  );
+  return Size(imageSize.width * s, imageSize.height * s);
+}
+
 /// BoxFit.cover：整屏均被图片盖住，宽与高均 ≥ 视口对应边（一边贴齐、一边超出可裁切）。
 Size coverDisplaySize(Size imageSize, double viewportW, double viewportH) {
   final s = math.max(

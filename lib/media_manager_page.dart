@@ -3402,36 +3402,42 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       case MediaType.image:
         final hasKbCenter =
             item.kenBurnsCenterX != null && item.kenBurnsCenterY != null;
-        return Stack(
-          fit: StackFit.expand,
-          clipBehavior: Clip.hardEdge,
-          children: [
-            Image(
-              image: _buildImageThumbnailProvider(item.path),
-              filterQuality: FilterQuality.low,
-              fit: BoxFit.cover,
-              width: double.infinity,
-              height: double.infinity,
-              frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
-                if (frame != null || wasSynchronouslyLoaded) {
-                  _invalidMediaRetryCounts.remove(item.id);
-                }
-                return child;
-              },
-              errorBuilder: (context, error, stackTrace) {
-                _scheduleCleanup(item.id); // 加载失败时安排清理（文件缺失或损坏）
-                return const Icon(Icons.image, size: 32);
-              },
-            ),
-            if (hasKbCenter)
-              Positioned.fill(
-                child: ZoomCenterMarkerCoverOverlay(
-                  file: File(item.path),
-                  nx: item.kenBurnsCenterX!,
-                  ny: item.kenBurnsCenterY!,
-                ),
+        final imgRot = item.videoViewParams.quarterTurns % 4;
+        return Transform.rotate(
+          angle: imgRot * math.pi / 2,
+          alignment: Alignment.center,
+          filterQuality: FilterQuality.low,
+          child: Stack(
+            fit: StackFit.expand,
+            clipBehavior: Clip.hardEdge,
+            children: [
+              Image(
+                image: _buildImageThumbnailProvider(item.path),
+                filterQuality: FilterQuality.low,
+                fit: BoxFit.cover,
+                width: double.infinity,
+                height: double.infinity,
+                frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
+                  if (frame != null || wasSynchronouslyLoaded) {
+                    _invalidMediaRetryCounts.remove(item.id);
+                  }
+                  return child;
+                },
+                errorBuilder: (context, error, stackTrace) {
+                  _scheduleCleanup(item.id); // 加载失败时安排清理（文件缺失或损坏）
+                  return const Icon(Icons.image, size: 32);
+                },
               ),
-          ],
+              if (hasKbCenter)
+                Positioned.fill(
+                  child: ZoomCenterMarkerCoverOverlay(
+                    file: File(item.path),
+                    nx: item.kenBurnsCenterX!,
+                    ny: item.kenBurnsCenterY!,
+                  ),
+                ),
+            ],
+          ),
         );
       case MediaType.video:
         // 已缓存的缩略图走同步展示，避免 FutureBuilder 在父级 setState 后拿到新 Future 而短暂回到 waiting 造成闪屏。

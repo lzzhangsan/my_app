@@ -1,6 +1,10 @@
 // resizable_image_box.dart
 import 'package:flutter/material.dart';
 import 'dart:io';
+import 'dart:math' show pi;
+
+import 'core/service_locator.dart';
+import 'services/database_service.dart';
 
 class ResizableImageBox extends StatefulWidget {
   final Size initialSize;
@@ -33,28 +37,49 @@ class _ResizableImageBoxState extends State<ResizableImageBox> {
 
   @override
   Widget build(BuildContext context) {
-    return Stack(
-      children: [
-        Container(
-          width: _size.width,
-          height: _size.height,
-          decoration: BoxDecoration(
-            border: Border.all(color: Colors.black),
-            borderRadius: BorderRadius.circular(10), // 添加圆角
-          ),
-          child: widget.imagePath.isNotEmpty
-              ? ClipRRect(
-            borderRadius: BorderRadius.circular(10),
-            child: FittedBox(
-              fit: BoxFit.fitWidth,
-              alignment: Alignment.center,
-              child: Image.file(
-                File(widget.imagePath),
+    final db = getService<DatabaseService>();
+    return FutureBuilder<int>(
+      key: ValueKey(widget.imagePath),
+      future: widget.imagePath.isEmpty
+          ? Future.value(0)
+          : db.getImageQuarterTurnsForMediaPath(widget.imagePath),
+      builder: (context, snap) {
+        final quarterTurns = (snap.data ?? 0) % 4;
+        return Stack(
+          children: [
+            Container(
+              width: _size.width,
+              height: _size.height,
+              decoration: BoxDecoration(
+                border: Border.all(color: Colors.black),
+                borderRadius: BorderRadius.circular(10), // 添加圆角
               ),
+              child: widget.imagePath.isNotEmpty
+                  ? ClipRRect(
+                      borderRadius: BorderRadius.circular(10),
+                      child: quarterTurns == 0
+                          ? FittedBox(
+                              fit: BoxFit.fitWidth,
+                              alignment: Alignment.center,
+                              child: Image.file(
+                                File(widget.imagePath),
+                              ),
+                            )
+                          : Transform.rotate(
+                              angle: quarterTurns * pi / 2,
+                              alignment: Alignment.center,
+                              filterQuality: FilterQuality.low,
+                              child: FittedBox(
+                                fit: BoxFit.fitWidth,
+                                alignment: Alignment.center,
+                                child: Image.file(
+                                  File(widget.imagePath),
+                                ),
+                              ),
+                            ),
+                    )
+                  : Center(child: Text('点击左上角设置按钮更改图片')),
             ),
-          )
-              : Center(child: Text('点击左上角设置按钮更改图片')),
-        ),
         Positioned(
           left: -10,
           top: -12,
@@ -70,31 +95,33 @@ class _ResizableImageBoxState extends State<ResizableImageBox> {
             ),
           ),
         ),
-        Positioned(
-          right: 0,
-          bottom: 0,
-          child: GestureDetector(
-            onPanUpdate: (details) {
-              double newWidth = _size.width + details.delta.dx;
-              double newHeight = _size.height + details.delta.dy;
-              if (newWidth >= 50 && newHeight >= 50) {
-                setState(() {
-                  _size = Size(newWidth, newHeight);
-                });
-                widget.onResize(_size);
-              }
-            },
-            onPanEnd: (_) => widget.onResizeEnd?.call(),
-            child: Opacity(
-              opacity: 0.25,
-              child: Icon(
-                Icons.zoom_out_map,
-                size: 20,
+            Positioned(
+              right: 0,
+              bottom: 0,
+              child: GestureDetector(
+                onPanUpdate: (details) {
+                  double newWidth = _size.width + details.delta.dx;
+                  double newHeight = _size.height + details.delta.dy;
+                  if (newWidth >= 50 && newHeight >= 50) {
+                    setState(() {
+                      _size = Size(newWidth, newHeight);
+                    });
+                    widget.onResize(_size);
+                  }
+                },
+                onPanEnd: (_) => widget.onResizeEnd?.call(),
+                child: Opacity(
+                  opacity: 0.25,
+                  child: Icon(
+                    Icons.zoom_out_map,
+                    size: 20,
+                  ),
+                ),
               ),
             ),
-          ),
-        ),
-      ],
+          ],
+        );
+      },
     );
   }
 }

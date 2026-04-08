@@ -14,11 +14,16 @@ import 'models/media_type.dart';
 import 'media_player_settings.dart';
 import 'widgets/fit_width_blur_static_image.dart';
 import 'widgets/image_layout_utils.dart'
-    show ImageLetterboxFill, fitWidthDisplaySize, measureImageFileSize;
+    show
+        ImageLetterboxFill,
+        containDisplaySize,
+        fitWidthDisplaySize,
+        measureImageFileSize;
 import 'widgets/ken_burns_image_display.dart';
 import 'widgets/zoom_pan_edge_image_display.dart';
 import 'models/video_view_params.dart';
 import 'widgets/video_interactive_surface.dart';
+import 'widgets/image_interactive_surface.dart';
 
 
 enum MediaMode { none, manual, auto }
@@ -147,26 +152,26 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     }
   }
 
-  /// 保存视频视窗（缩放/平移/旋转），导出与文档栏会套用。
-  Future<void> _persistVideoView(MediaItem item, VideoViewParams p) async {
+  /// 保存视频/图片视窗（缩放/平移/旋转），持久化到 `media_items`，文档栏与预览会套用。
+  Future<void> _persistMediaViewParams(MediaItem item, VideoViewParams p) async {
+    final idx = widget.mediaItems.indexWhere((e) => e.id == item.id);
+    if (idx >= 0) {
+      setState(() {
+        widget.mediaItems[idx] =
+            widget.mediaItems[idx].copyWith(videoViewParams: p);
+      });
+    }
     try {
       await _dbService.updateMediaItem({
         'id': item.id,
         ...p.toDbUpdateMap(),
         'updated_at': DateTime.now().millisecondsSinceEpoch,
       });
-      if (!mounted) return;
-      final idx = widget.mediaItems.indexWhere((e) => e.id == item.id);
-      if (idx < 0) return;
-      setState(() {
-        widget.mediaItems[idx] =
-            widget.mediaItems[idx].copyWith(videoViewParams: p);
-      });
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('保存视频显示方式失败: $e'),
+          content: Text('保存显示方式失败: $e'),
           behavior: SnackBarBehavior.floating,
           margin: const EdgeInsets.fromLTRB(16, 0, 16, 20),
         ),
@@ -789,6 +794,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
   /// 静态横向填满：双击根据触点写入中心点并触发一轮渐进放大演示。
   Widget _buildStaticFitWidthWithDoubleTap(MediaItem item) {
     final file = File(item.path);
+    final sideways = item.videoViewParams.quarterTurns % 2 == 1;
     return FutureBuilder<Size>(
       future: measureImageFileSize(file),
       builder: (context, snapshot) {
@@ -797,6 +803,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
             key: ValueKey('${item.path}_fit_loading'),
             file: file,
             letterboxFill: _letterboxFill,
+            fitContainInViewport: sideways,
             zoomCenterX: item.kenBurnsCenterX,
             zoomCenterY: item.kenBurnsCenterY,
           );
@@ -806,7 +813,9 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
           builder: (context, constraints) {
             final vw = constraints.maxWidth;
             final vh = constraints.maxHeight;
-            final disp = fitWidthDisplaySize(pixelSize, vw);
+            final disp = sideways
+                ? containDisplaySize(pixelSize, vw, vh)
+                : fitWidthDisplaySize(pixelSize, vw);
             final dw = disp.width;
             final dh = disp.height;
             // 与 Ken Burns 一致：归一化坐标相对「图片矩形」左上角。静态图在 Stack 内垂直居中，
@@ -824,10 +833,12 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
               },
               child: FitWidthBlurStaticImage(
                 key: ValueKey(
-                  '${item.path}_fit_${_imageDuration.inMilliseconds}_${_letterboxFill.index}',
+                  '${item.path}_fit_${_imageDuration.inMilliseconds}_${_letterboxFill.index}_'
+                  'r${item.videoViewParams.quarterTurns % 4}',
                 ),
                 file: file,
                 letterboxFill: _letterboxFill,
+                fitContainInViewport: sideways,
                 zoomCenterX: item.kenBurnsCenterX,
                 zoomCenterY: item.kenBurnsCenterY,
               ),
@@ -841,6 +852,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
   Widget _buildImagePreview(MediaItem item) {
     final file = File(item.path);
     final loopAnim = _mediaMode != MediaMode.auto;
+    final sideways = item.videoViewParams.quarterTurns % 2 == 1;
 
     void onAnimComplete() {
       if (_mediaMode == MediaMode.auto && mounted) {
@@ -857,12 +869,14 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
             '${_zoomMax.toStringAsFixed(1)}_${_letterboxFill.index}_'
             '${item.kenBurnsCenterX?.toStringAsFixed(3) ?? 'c'}_'
             '${item.kenBurnsCenterY?.toStringAsFixed(3) ?? 'c'}_'
+            'r${item.videoViewParams.quarterTurns % 4}_'
             '$_kenBurnsReplayTick',
           ),
           imageFile: file,
           animationDuration: _imageDuration,
           maxScale: _zoomMax,
           letterboxFill: _letterboxFill,
+          fitContainInViewport: sideways,
           zoomCenterX: item.kenBurnsCenterX,
           zoomCenterY: item.kenBurnsCenterY,
           enableDoubleTapToSetZoomCenter: true,
@@ -876,7 +890,9 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
           key: ValueKey(
             '${item.path}_zpan_${_mediaMode}_${_imageDuration.inMilliseconds}_'
             '${_zoomMax.toStringAsFixed(1)}_${_imagePanRoamCoverage.toStringAsFixed(2)}_'
-            '${_panClockwise}_${_letterboxFill.index}_$_kenBurnsReplayTick',
+            '${_panClockwise}_${_letterboxFill.index}_'
+            'r${item.videoViewParams.quarterTurns % 4}_'
+            '$_kenBurnsReplayTick',
           ),
           imageFile: file,
           totalDuration: _imageDuration,
@@ -884,6 +900,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
           clockwise: _panClockwise,
           panPathCoverage: _imagePanRoamCoverage,
           letterboxFill: _letterboxFill,
+          fitContainInViewport: sideways,
           loop: loopAnim,
           onAnimationComplete: loopAnim ? null : onAnimComplete,
         );
@@ -896,12 +913,14 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
               '${_zoomMax.toStringAsFixed(1)}_${_letterboxFill.index}_'
               '${item.kenBurnsCenterX?.toStringAsFixed(3) ?? 'c'}_'
               '${item.kenBurnsCenterY?.toStringAsFixed(3) ?? 'c'}_'
+              'r${item.videoViewParams.quarterTurns % 4}_'
               '$_kenBurnsReplayTick',
             ),
             imageFile: file,
             animationDuration: _imageDuration,
             maxScale: _zoomMax,
             letterboxFill: _letterboxFill,
+            fitContainInViewport: sideways,
             zoomCenterX: item.kenBurnsCenterX,
             zoomCenterY: item.kenBurnsCenterY,
             enableDoubleTapToSetZoomCenter: true,
@@ -915,8 +934,14 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
         break;
     }
 
-    // 图片预览无需外层 onTap（_toggleControls 仅对视频有效）；外层会抢占手势导致渐进放大双击不触发。
-    return inner;
+    // 与视频一致：双指缩放、单指平移、「7」字旋转；持久化到 media_items.video_view_*。
+    return ImageInteractiveSurface(
+      key: ValueKey('img_isurf_${item.id}_${item.videoViewParams.hashCode}'),
+      initial: item.videoViewParams,
+      editable: true,
+      onChanged: (p) => _persistMediaViewParams(item, p),
+      child: inner,
+    );
   }
 
   Widget _buildVideoPreview(MediaItem item, int index) {
@@ -975,7 +1000,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
               videoChild: const PlayerWithControls(),
               initial: item.videoViewParams,
               editable: true,
-              onChanged: (p) => _persistVideoView(item, p),
+              onChanged: (p) => _persistMediaViewParams(item, p),
             ),
             const Positioned(
               left: 0,

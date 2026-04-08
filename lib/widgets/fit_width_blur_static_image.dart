@@ -10,12 +10,14 @@ class FitWidthBlurStaticImage extends StatefulWidget {
     super.key,
     required this.file,
     this.letterboxFill = ImageLetterboxFill.transparent,
+    this.fitContainInViewport = false,
     this.zoomCenterX,
     this.zoomCenterY,
   });
 
   final File file;
   final ImageLetterboxFill letterboxFill;
+  final bool fitContainInViewport;
   /// 已保存的渐进放大中心横坐标（与 [zoomCenterY] 同时非 null 时在图上显示标记）。
   final double? zoomCenterX;
   /// 已保存的渐进放大中心纵坐标。
@@ -69,10 +71,13 @@ class _FitWidthBlurStaticImageState extends State<FitWidthBlurStaticImage> {
         return LayoutBuilder(
           builder: (context, constraints) {
             final vw = constraints.maxWidth;
+            final vh = constraints.maxHeight;
             final cacheW = (vw * MediaQuery.devicePixelRatioOf(context))
                 .round()
                 .clamp(1, 8192);
-            final disp = fitWidthDisplaySize(pixelSize, vw);
+            final disp = widget.fitContainInViewport
+                ? containDisplaySize(pixelSize, vw, vh)
+                : fitWidthDisplaySize(pixelSize, vw);
             final showCenterMarker = widget.zoomCenterX != null &&
                 widget.zoomCenterY != null;
             return ClipRect(
@@ -93,7 +98,9 @@ class _FitWidthBlurStaticImageState extends State<FitWidthBlurStaticImage> {
                                 children: [
                                   Image.file(
                                     widget.file,
-                                    fit: BoxFit.fill,
+                                    fit: widget.fitContainInViewport
+                                        ? BoxFit.contain
+                                        : BoxFit.fill,
                                     filterQuality: FilterQuality.medium,
                                     cacheWidth: cacheW,
                                   ),
@@ -107,7 +114,9 @@ class _FitWidthBlurStaticImageState extends State<FitWidthBlurStaticImage> {
                               )
                             : Image.file(
                                 widget.file,
-                                fit: BoxFit.fill,
+                                fit: widget.fitContainInViewport
+                                    ? BoxFit.contain
+                                    : BoxFit.fill,
                                 filterQuality: FilterQuality.medium,
                                 cacheWidth: cacheW,
                               ),

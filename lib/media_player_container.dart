@@ -17,6 +17,7 @@ import 'media_player_settings.dart';
 import 'widgets/ken_burns_image_display.dart';
 import 'widgets/zoom_pan_edge_image_display.dart';
 import 'widgets/fit_width_blur_static_image.dart';
+import 'widgets/image_interactive_surface.dart';
 import 'widgets/image_layout_utils.dart' show ImageLetterboxFill;
 
 enum MediaMode { none, manual, auto }
@@ -264,11 +265,25 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
 
   String _kenBurnsWidgetKey(Map<String, dynamic> nextMedia) {
     // 含 _playbackNonce：再次轮到同一张图时 Key 必须变化，否则会复用 State、动画不重启，自动模式无法切下一条。
+    final rot = VideoViewParams.fromMediaMap(nextMedia).quarterTurns % 4;
     return '${nextMedia['path']}_ken_$_mediaMode'
         '_${_letterboxFill.index}'
         '_${(nextMedia['ken_burns_center_x'] as num?)?.toStringAsFixed(3) ?? 'c'}'
         '_${(nextMedia['ken_burns_center_y'] as num?)?.toStringAsFixed(3) ?? 'c'}'
+        '_rot$rot'
         '_n$_playbackNonce';
+  }
+
+  /// 与 [VideoPlayerWidget] 一致：套用媒体页已保存的缩放/平移/旋转（只读）。
+  Widget _wrapImageWithStoredView(Widget child, Map<String, dynamic> mediaMap) {
+    final p = VideoViewParams.fromMediaMap(mediaMap);
+    final id = mediaMap['id'];
+    return ImageInteractiveSurface(
+      key: ValueKey('img_doc_${id}_${p.hashCode}'),
+      initial: p,
+      editable: false,
+      child: child,
+    );
   }
 
   Widget _buildKenBurnsForPlaying(
@@ -276,12 +291,15 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
     File mediaFile,
     int sessionForAutoAdvance,
   ) {
+    final sideways =
+        VideoViewParams.fromMediaMap(nextMedia).quarterTurns % 2 == 1;
     return KenBurnsImageDisplay(
       key: ValueKey(_kenBurnsWidgetKey(nextMedia)),
       imageFile: mediaFile,
       animationDuration: _imageDuration,
       maxScale: _zoomMax,
       letterboxFill: _letterboxFill,
+      fitContainInViewport: sideways,
       zoomCenterX: (nextMedia['ken_burns_center_x'] as num?)?.toDouble(),
       zoomCenterY: (nextMedia['ken_burns_center_y'] as num?)?.toDouble(),
       enableDoubleTapToSetZoomCenter: false,
@@ -406,47 +424,65 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
           // 图片
           if (_imageMode == MediaImageDisplayMode.kenBurns) {
             setState(() {
-              _mediaWidget = _buildKenBurnsForPlaying(
+              _mediaWidget = _wrapImageWithStoredView(
+                _buildKenBurnsForPlaying(
+                  nextMedia,
+                  mediaFile,
+                  sessionThisMedia,
+                ),
                 nextMedia,
-                mediaFile,
-                sessionThisMedia,
               );
             });
           } else if (_imageMode == MediaImageDisplayMode.zoomPanEdge) {
+            final sideways =
+                VideoViewParams.fromMediaMap(nextMedia).quarterTurns % 2 == 1;
             setState(() {
-              _mediaWidget = ZoomPanEdgeImageDisplay(
-                key: ValueKey(
-                  '${nextMedia['path']}_zpan_$_mediaMode'
-                  '_${_imagePanRoamCoverage.toStringAsFixed(2)}'
-                  '_${_letterboxFill.index}'
-                  '_n$_playbackNonce',
+              _mediaWidget = _wrapImageWithStoredView(
+                ZoomPanEdgeImageDisplay(
+                  key: ValueKey(
+                    '${nextMedia['path']}_zpan_$_mediaMode'
+                    '_${_imagePanRoamCoverage.toStringAsFixed(2)}'
+                    '_${_letterboxFill.index}'
+                    '_rot${VideoViewParams.fromMediaMap(nextMedia).quarterTurns % 4}'
+                    '_n$_playbackNonce',
+                  ),
+                  imageFile: mediaFile,
+                  totalDuration: _imageDuration,
+                  maxScale: _zoomMax,
+                  clockwise: _panClockwise,
+                  panPathCoverage: _imagePanRoamCoverage,
+                  letterboxFill: _letterboxFill,
+                  fitContainInViewport: sideways,
+                  loop: _mediaMode == MediaMode.manual,
+                  onAnimationComplete: _mediaMode == MediaMode.auto
+                      ? () {
+                          if (_mediaMode != MediaMode.auto) return;
+                          if (sessionThisMedia != _mediaSessionId) return;
+                          unawaited(_showNextMedia());
+                        }
+                      : null,
                 ),
-                imageFile: mediaFile,
-                totalDuration: _imageDuration,
-                maxScale: _zoomMax,
-                clockwise: _panClockwise,
-                panPathCoverage: _imagePanRoamCoverage,
-                letterboxFill: _letterboxFill,
-                loop: _mediaMode == MediaMode.manual,
-                onAnimationComplete: _mediaMode == MediaMode.auto
-                    ? () {
-                        if (_mediaMode != MediaMode.auto) return;
-                        if (sessionThisMedia != _mediaSessionId) return;
-                        unawaited(_showNextMedia());
-                      }
-                    : null,
+                nextMedia,
               );
             });
           } else {
+            final sideways =
+                VideoViewParams.fromMediaMap(nextMedia).quarterTurns % 2 == 1;
             setState(() {
-              _mediaWidget = FitWidthBlurStaticImage(
-                key: ValueKey('fw_${nextMedia['path']}_n$_playbackNonce'),
-                file: mediaFile,
-                letterboxFill: _letterboxFill,
-                zoomCenterX:
-                    (nextMedia['ken_burns_center_x'] as num?)?.toDouble(),
-                zoomCenterY:
-                    (nextMedia['ken_burns_center_y'] as num?)?.toDouble(),
+              _mediaWidget = _wrapImageWithStoredView(
+                FitWidthBlurStaticImage(
+                  key: ValueKey(
+                    'fw_${nextMedia['path']}_rot${VideoViewParams.fromMediaMap(nextMedia).quarterTurns % 4}_n$_playbackNonce',
+                  ),
+                  file: mediaFile,
+                  letterboxFill: _letterboxFill,
+                  fitContainInViewport: sideways,
+                  zoomCenterX:
+                      (nextMedia['ken_burns_center_x'] as num?)?.toDouble(),
+                  zoomCenterY:
+                      (nextMedia['ken_burns_center_y'] as num?)?.toDouble(),
+                ),
+                nextMedia,
               );
             });
 

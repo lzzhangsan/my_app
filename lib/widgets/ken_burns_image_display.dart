@@ -23,6 +23,8 @@ class KenBurnsImageDisplay extends StatefulWidget {
     this.loop = false,
     this.onAnimationComplete,
     this.letterboxFill = ImageLetterboxFill.transparent,
+    /// 为 true 时在 vw×vh 内按 contain 排整图（与外层 90°/270° 旋转配合，避免竖图先被裁成中间一条）。
+    this.fitContainInViewport = false,
     this.zoomCenterX,
     this.zoomCenterY,
     this.enableDoubleTapToSetZoomCenter = false,
@@ -35,6 +37,7 @@ class KenBurnsImageDisplay extends StatefulWidget {
   final bool loop;
   final VoidCallback? onAnimationComplete;
   final ImageLetterboxFill letterboxFill;
+  final bool fitContainInViewport;
   /// 缩放锚点横坐标 0～1，null 表示 0.5。
   final double? zoomCenterX;
   /// 缩放锚点纵坐标 0～1，null 表示 0.5。
@@ -180,12 +183,15 @@ class _KenBurnsImageDisplayState extends State<KenBurnsImageDisplay>
         return LayoutBuilder(
           builder: (context, constraints) {
             final vw = constraints.maxWidth;
+            final vh = constraints.maxHeight;
             final cacheW = (vw *
                     MediaQuery.devicePixelRatioOf(context) *
                     widget.maxScale.clamp(1.0, 3.0))
                 .round()
                 .clamp(1, 8192);
-            final disp = fitWidthDisplaySize(pixelSize, vw);
+            final disp = widget.fitContainInViewport
+                ? containDisplaySize(pixelSize, vw, vh)
+                : fitWidthDisplaySize(pixelSize, vw);
             final dw = disp.width;
             final dh = disp.height;
             return Stack(
@@ -226,7 +232,9 @@ class _KenBurnsImageDisplayState extends State<KenBurnsImageDisplay>
                                       },
                                       child: Image.file(
                                         widget.imageFile,
-                                        fit: BoxFit.fitWidth,
+                                        fit: widget.fitContainInViewport
+                                            ? BoxFit.contain
+                                            : BoxFit.fitWidth,
                                         alignment: Alignment.center,
                                         filterQuality: FilterQuality.none,
                                         cacheWidth: cacheW,

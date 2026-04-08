@@ -25,6 +25,8 @@ class ZoomPanEdgeImageDisplay extends StatefulWidget {
     this.loop = false,
     this.onAnimationComplete,
     this.letterboxFill = ImageLetterboxFill.transparent,
+    /// 为 true 时在 vw×vh 内整图 contain（与外层 90°/270° 旋转配合）。
+    this.fitContainInViewport = false,
   });
 
   final File imageFile;
@@ -36,6 +38,7 @@ class ZoomPanEdgeImageDisplay extends StatefulWidget {
   final bool loop;
   final VoidCallback? onAnimationComplete;
   final ImageLetterboxFill letterboxFill;
+  final bool fitContainInViewport;
 
   @override
   State<ZoomPanEdgeImageDisplay> createState() =>
@@ -173,13 +176,16 @@ class _ZoomPanEdgeImageDisplayState extends State<ZoomPanEdgeImageDisplay>
           builder: (context, constraints) {
             final vw = constraints.maxWidth;
             final vh = constraints.maxHeight;
-            final disp = fitWidthDisplaySize(pixelSize, vw);
+            final disp = widget.fitContainInViewport
+                ? containDisplaySize(pixelSize, vw, vh)
+                : fitWidthDisplaySize(pixelSize, vw);
             final double dw = disp.width;
             final double dh = disp.height;
             final double maxS = widget.maxScale.clamp(1.01, 10.0);
             // 横图 dh<vh 时需至少放大到 vh/dh，竖向才能被清晰图完全盖住（巡游时不再露模糊）
-            final double coverFloor =
-                dh < vh - 0.5 ? (vh / dh).clamp(1.0, 10.0) : 1.0;
+            final double coverFloor = widget.fitContainInViewport
+                ? 1.0
+                : (dh < vh - 0.5 ? (vh / dh).clamp(1.0, 10.0) : 1.0);
             final double zoomEndScale = math.max(maxS, coverFloor);
 
             return ClipRect(
@@ -272,7 +278,9 @@ class _ZoomPanEdgeImageDisplayState extends State<ZoomPanEdgeImageDisplay>
                         height: dh,
                         child: Image.file(
                           widget.imageFile,
-                          fit: BoxFit.fitWidth,
+                          fit: widget.fitContainInViewport
+                              ? BoxFit.contain
+                              : BoxFit.fitWidth,
                           alignment: Alignment.center,
                           filterQuality: FilterQuality.none,
                           cacheWidth: (vw *

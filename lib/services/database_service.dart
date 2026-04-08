@@ -1057,6 +1057,39 @@ class DatabaseService {
     }
   }
   
+  /// 按文件路径查询图片/视频在媒体库中保存的顺时针四分之一圈数（`video_view_rot`），用于文档内图片框等展示。
+  Future<int> getImageQuarterTurnsForMediaPath(String path) async {
+    if (path.isEmpty) return 0;
+    try {
+      final db = await database;
+      final rows = await db.query(
+        'media_items',
+        columns: ['video_view_rot'],
+        where: 'path = ?',
+        whereArgs: [path],
+        limit: 1,
+      );
+      if (rows.isEmpty) return 0;
+      final r = rows.first['video_view_rot'];
+      if (r is int) {
+        var v = r % 4;
+        if (v < 0) v += 4;
+        return v;
+      }
+      if (r is num) {
+        var v = r.toInt() % 4;
+        if (v < 0) v += 4;
+        return v;
+      }
+      return 0;
+    } catch (e) {
+      if (kDebugMode) {
+        Logger.log('getImageQuarterTurnsForMediaPath: $e');
+      }
+      return 0;
+    }
+  }
+
   /// 根据ID获取媒体项目
   Future<Map<String, dynamic>?> getMediaItemById(String id) async {
     try {

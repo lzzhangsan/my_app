@@ -1,4 +1,4 @@
-/// 视频在媒体预览/文档栏中的视窗变换（持久化到 `media_items`）。
+/// 视频与图片在媒体预览/文档栏中的视窗变换（持久化到 `media_items` 的 `video_view_*` 列；图片主要使用 `video_view_rot`）。
 /// 平移为相对当前视口宽高的归一化量，换机后仍可按比例还原。
 class VideoViewParams {
   const VideoViewParams({
