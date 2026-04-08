@@ -971,34 +971,56 @@ class DatabaseService {
     }
   }
 
-  /// 查找重复的媒体项目
+  /// 查找重复的媒体项目（仅视为「当前有效库」中的重复：不含回收站；文件已丢失的孤儿记录会删除并视为未占用）
   Future<Map<String, dynamic>?> findDuplicateMediaItem(String fileHash, String fileName) async {
     try {
       final db = await database;
-      
-      // 通过文件哈希查找
+      const String notInRecycle = 'directory != ?';
+      const List<Object> recycleArg = ['recycle_bin'];
+
+      Future<Map<String, dynamic>?> firstDuplicateWithExistingFile(
+        List<Map<String, dynamic>> rows,
+      ) async {
+        for (final row in rows) {
+          final path = row['path'] as String?;
+          final id = row['id'] as String?;
+          if (path != null && path.isNotEmpty) {
+            try {
+              if (await File(path).exists()) {
+                return row;
+              }
+            } catch (_) {}
+          }
+          if (id != null) {
+            try {
+              await db.delete('media_items', where: 'id = ?', whereArgs: [id]);
+              if (kDebugMode) {
+                Logger.log('已移除孤儿媒体记录（文件已不存在）: $id');
+              }
+            } catch (_) {}
+          }
+        }
+        return null;
+      }
+
+      // 通过文件哈希查找（回收站内条目不参与「已入库」判定，删到回收站后可再次下载）
       if (fileHash.isNotEmpty) {
         final List<Map<String, dynamic>> hashMatches = await db.query(
           'media_items',
-          where: 'file_hash = ?',
-          whereArgs: [fileHash],
+          where: 'file_hash = ? AND $notInRecycle',
+          whereArgs: [fileHash, ...recycleArg],
         );
-        if (hashMatches.isNotEmpty) {
-          return hashMatches.first;
-        }
+        final hit = await firstDuplicateWithExistingFile(hashMatches);
+        if (hit != null) return hit;
       }
-      
-      // 如果没有找到哈希匹配，则通过文件名查找
+
+      // 如果没有找到有效哈希匹配，则通过文件名查找（同样排除回收站）
       final List<Map<String, dynamic>> nameMatches = await db.query(
         'media_items',
-        where: 'name = ?',
-        whereArgs: [fileName],
+        where: 'name = ? AND $notInRecycle',
+        whereArgs: [fileName, ...recycleArg],
       );
-      if (nameMatches.isNotEmpty) {
-        return nameMatches.first;
-      }
-      
-      return null;
+      return await firstDuplicateWithExistingFile(nameMatches);
     } catch (e, stackTrace) {
       _handleError('查找重复媒体项失败', e, stackTrace);
       rethrow;

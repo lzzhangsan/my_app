@@ -70,6 +70,12 @@ const int _kParallelRangeVideoConnections = 6;
 /// 下载进度：`fraction` 为 0~1；`detail` 为可选说明（如 HLS 分片、已下字节）。
 typedef DownloadProgressCallback = void Function(double fraction, {String? detail});
 
+/// 保存到媒体库的 SnackBar 时长（缩短展示时间，减少遮挡）
+const Duration _kMediaSaveSnackDuration = Duration(seconds: 2);
+
+/// 同一 HTTP(S) 媒体 URL 在内存中的「占用」超时：超过后允许再次进入下载（防止 finally 未跑导致永久无法重下）
+const Duration _kMediaUrlInFlightTtl = Duration(seconds: 45);
+
 // Top-level function for ZIP encoding to avoid blocking UI
 List<int>? encodeArchive(Archive archive) {
   return ZipEncoder().encode(archive);
@@ -168,6 +174,44 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
   // 1. 新增历史记录变量
   List<Map<String, dynamic>> _history = [];
+
+  /// 长按下载：直链失败后 canvas/base64 可能晚到，用定时器合并为「仅一条」失败提示。
+  Timer? _mediaDownloadFailHintTimer;
+  bool _mediaDownloadSaveResolved = false;
+
+  void _notifyMediaDownloadSaved() {
+    _mediaDownloadSaveResolved = true;
+    _mediaDownloadFailHintTimer?.cancel();
+    _mediaDownloadFailHintTimer = null;
+  }
+
+  /// 与网页端 [markMediaUrlProcessing] 配对：一次下载流程结束后允许同一 URL 再次长按保存。
+  void _releaseJsProcessedUrl(String url) {
+    final c = _controller;
+    if (c == null || url.isEmpty) return;
+    final encoded = jsonEncode(url);
+    unawaited(
+      c.evaluateJavascript(
+        source:
+            'try{window.processedMediaUrls&&window.processedMediaUrls.delete($encoded);}catch(e){}',
+      ),
+    );
+  }
+
+  /// 登记本次将要处理的 HTTP(S) 媒体 URL。若短期内重复则返回 false（需提示用户）；超时自动视为可重试。
+  bool _tryRegisterMediaUrlForProcessing(String url) {
+    final now = DateTime.now();
+    final prev = _processedMediaUrlsSince[url];
+    if (prev != null) {
+      if (now.difference(prev) > _kMediaUrlInFlightTtl) {
+        _processedMediaUrlsSince.remove(url);
+      } else {
+        return false;
+      }
+    }
+    _processedMediaUrlsSince[url] = now;
+    return true;
+  }
 
   /// 常见「拉活 / 应用商店 / 站内 App」协议：拦截即可，不尝试唤起、也不弹「无法打开」。
   bool _isNoisyExternalAppScheme(String lowerUrl) {
@@ -312,7 +356,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   }
 
   final Set<String> _downloadingUrls = {};
-  final Set<String> _processedUrls = {};
+  /// 记录非 Base64 媒体 URL 最近一次开始处理的时间；与 [markMediaUrlProcessing] 配合，避免永久占用。
+  final Map<String, DateTime> _processedMediaUrlsSince = {};
   bool _awaitingCanvasFallbackResult = false;
   bool _canvasFallbackSucceeded = false;
   Completer<bool>? _canvasFallbackCompleter;
@@ -651,6 +696,16 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
       window.processedMediaUrls = window.MediaInterceptor.processedUrls;
 
+      function markMediaUrlProcessing(url) {
+        if (!url) return false;
+        if (window.processedMediaUrls.has(url)) return false;
+        window.processedMediaUrls.add(url);
+        setTimeout(function() {
+          try { window.processedMediaUrls.delete(url); } catch (e) {}
+        }, 45000);
+        return true;
+      }
+
       let pressTimer;
       let pressedElement = null;
       let feedbackElement = null;
@@ -701,7 +756,13 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       function updateFeedbackStatus(status, success) {
         if (feedbackElement) {
           feedbackElement.innerText = status;
-          feedbackElement.style.backgroundColor = success ? 'rgba(0, 128, 0, 0.5)' : 'rgba(255, 0, 0, 0.5)';
+          var bg;
+          if (success === null) {
+            bg = 'rgba(30, 120, 200, 0.55)';
+          } else {
+            bg = success ? 'rgba(0, 128, 0, 0.5)' : 'rgba(255, 0, 0, 0.5)';
+          }
+          feedbackElement.style.backgroundColor = bg;
           setTimeout(removeFeedbackElement, 1000);
         }
       }
@@ -1095,7 +1156,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
             updateFeedbackStatus('正在处理blob...', true);
             resolveBlobUrl(url, mediaType).then(resolved => {
               if (resolved) {
-                window.processedMediaUrls.add(url);
                 Flutter.postMessage(JSON.stringify({
                   type: 'media',
                   mediaType: resolved.mediaType || mediaType,
@@ -1103,7 +1163,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                   isBase64: resolved.isBase64,
                   action: 'download'
                 }));
-                updateFeedbackStatus('已发送下载请求', true);
+                updateFeedbackStatus('正在保存…', null);
               } else {
                 const tag = (target.tagName || '').toLowerCase();
                 const v = tag === 'video' ? target : (target.querySelector && target.querySelector('video'));
@@ -1166,27 +1226,26 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         const urlLower = url.toLowerCase();
         const className = target.className ? target.className.toLowerCase() : '';
         const id = target.id ? target.id.toLowerCase() : '';
-        
-        if (!window.processedMediaUrls.has(url)) {
-          if (tryBlobOrDataUrl(url, mediaType)) {
-            window.processedMediaUrls.add(url);
-            e.preventDefault();
-            return;
-          }
-          window.processedMediaUrls.add(url);
-          window._lastMediaTargetForFallback = target;
-          Flutter.postMessage(JSON.stringify({
-            type: 'media',
-            mediaType: mediaType,
-            url: url,
-            isBase64: false,
-            action: 'download'
-          }));
-          updateFeedbackStatus('已发送下载请求', true);
-          e.preventDefault();
-        } else {
+
+        if (!markMediaUrlProcessing(url)) {
           updateFeedbackStatus('该媒体已在处理中', false);
+          e.preventDefault();
+          return;
         }
+        if (tryBlobOrDataUrl(url, mediaType)) {
+          e.preventDefault();
+          return;
+        }
+        window._lastMediaTargetForFallback = target;
+        Flutter.postMessage(JSON.stringify({
+          type: 'media',
+          mediaType: mediaType,
+          url: url,
+          isBase64: false,
+          action: 'download'
+        }));
+        updateFeedbackStatus('正在保存…', null);
+        e.preventDefault();
       }
 
       function tryCanvasCaptureFallback() {
@@ -1202,58 +1261,88 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         canvas.height = h;
         const ctx = canvas.getContext('2d');
         if (!ctx) return;
-        function postCanvas() {
+        function postBase64(base64) {
+          if (base64) Flutter.postMessage(JSON.stringify({ type: 'media', mediaType: 'image', url: base64, isBase64: true, action: 'download' }));
+        }
+        function tryFetchImageAsBase64(src, onFail) {
+          if (!src) { if (onFail) onFail(); return; }
+          fetch(src, { mode: 'cors', credentials: 'omit', cache: 'no-store' })
+            .then(function(r) {
+              if (!r || !r.ok) throw new Error('fetch not ok');
+              return r.blob();
+            })
+            .then(function(blob) {
+              const fr = new FileReader();
+              fr.onload = function() {
+                const b64 = extractBase64FromDataUrl(fr.result);
+                if (b64) postBase64(b64);
+                else if (onFail) onFail();
+              };
+              fr.onerror = function() { if (onFail) onFail(); };
+              fr.readAsDataURL(blob);
+            })
+            .catch(function() {
+              fetch(src, { mode: 'cors', credentials: 'include', cache: 'no-store' })
+                .then(function(r) { if (!r || !r.ok) throw new Error('fetch2 not ok'); return r.blob(); })
+                .then(function(blob) {
+                  const fr = new FileReader();
+                  fr.onload = function() {
+                    const b64 = extractBase64FromDataUrl(fr.result);
+                    if (b64) postBase64(b64);
+                    else if (onFail) onFail();
+                  };
+                  fr.onerror = function() { if (onFail) onFail(); };
+                  fr.readAsDataURL(blob);
+                })
+                .catch(function() { if (onFail) onFail(); });
+            });
+        }
+        function postCanvas(srcForFetch) {
           try {
             const dataUrl = canvas.toDataURL('image/png');
             if (dataUrl && dataUrl.startsWith('data:image/')) {
               Flutter.postMessage(JSON.stringify({ type: 'media', mediaType: 'image', url: extractBase64FromDataUrl(dataUrl), isBase64: true, action: 'download' }));
+              return;
             }
           } catch (e) { console.log('toDataURL failed:', e); }
-        }
-        function postBase64(base64) {
-          if (base64) Flutter.postMessage(JSON.stringify({ type: 'media', mediaType: 'image', url: base64, isBase64: true, action: 'download' }));
+          if (srcForFetch) tryFetchImageAsBase64(srcForFetch, null);
         }
         function tryDrawImg(src) {
           const img = new Image();
           img.crossOrigin = 'anonymous';
           img.onload = function() {
-            try { ctx.drawImage(img, 0, 0, w, h); postCanvas(); } catch (e) {
-              try { ctx.drawImage(target, 0, 0, w, h); postCanvas(); } catch (e2) { tryFetchFallback(src); }
+            try { ctx.drawImage(img, 0, 0, w, h); postCanvas(src); } catch (e) {
+              try { ctx.drawImage(target, 0, 0, w, h); postCanvas(src); } catch (e2) { tryFetchImageAsBase64(src, null); }
             }
           };
           img.onerror = function() {
-            try { ctx.drawImage(target, 0, 0, w, h); postCanvas(); } catch (e) { tryFetchFallback(src); }
+            try { ctx.drawImage(target, 0, 0, w, h); postCanvas(src); } catch (e) { tryFetchImageAsBase64(src, null); }
           };
           img.src = src;
         }
-        function tryFetchFallback(src) {
-          fetch(src, { mode: 'cors', credentials: 'omit' })
-            .then(r => r.blob())
-            .then(blob => {
-              const fr = new FileReader();
-              fr.onload = () => { const b64 = extractBase64FromDataUrl(fr.result); if (b64) postBase64(b64); };
-              fr.readAsDataURL(blob);
-            })
-            .catch(() => {});
-        }
         if (tag === 'img') {
           const src = target.currentSrc || target.src;
-          if (src) tryDrawImg(src);
+          if (src) {
+            tryFetchImageAsBase64(src, function() { tryDrawImg(src); });
+          }
         } else if (tag === 'video') {
           try {
             ctx.drawImage(target, 0, 0, w, h);
-            postCanvas();
+            postCanvas(null);
           } catch (e) {
             console.log('video canvas fallback failed:', e);
           }
         } else if (tag === 'canvas') {
           try {
             ctx.drawImage(target, 0, 0, w, h);
-            postCanvas();
+            postCanvas(null);
           } catch (e) { console.log('canvas fallback failed:', e); }
         } else if (target.style && target.style.backgroundImage) {
           const m = target.style.backgroundImage.match(/url\(['"]?([^'")]+)['"]?\)/);
-          if (m && m[1]) tryDrawImg(m[1]);
+          if (m && m[1]) {
+            const u = m[1];
+            tryFetchImageAsBase64(u, function() { tryDrawImg(u); });
+          }
         }
       }
 
@@ -1285,11 +1374,26 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
               : (_guessMimeType(urlValue is String ? urlValue : '').startsWith('video/') ? 'video' : 'audio'));
 
       if (urlValue is! String) return;
-      if (_processedUrls.contains(urlValue)) return;
-      _processedUrls.add(urlValue);
-
       if (action != 'download') return;
 
+      // Base64 不参与去重；HTTP(S) URL 带 TTL，避免 finally 未执行时永久无法重下同一链接。
+      var didRegisterMediaUrl = false;
+      if (!isBase64) {
+        if (!_tryRegisterMediaUrlForProcessing(urlValue)) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('该链接正在保存中，请稍候再试'),
+                duration: _kMediaSaveSnackDuration,
+              ),
+            );
+          }
+          return;
+        }
+        didRegisterMediaUrl = true;
+      }
+
+      try {
       debugPrint('Received URL from JavaScript with download action: $urlValue, type: $mediaType, isBase64: $isBase64');
 
       if (isBase64) {
@@ -1300,6 +1404,9 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         await _handleBlobUrl(urlValue, mediaType);
         return;
       }
+
+      _mediaDownloadFailHintTimer?.cancel();
+      _mediaDownloadSaveResolved = false;
 
       final absoluteUrl = _toAbsoluteUrl(urlValue);
       final referer = _getMediaReferer(absoluteUrl);
@@ -1316,30 +1423,90 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       if (selectedType == MediaType.image && _urlLooksLikeVideoStream(resolvedUrl)) {
         selectedType = MediaType.video;
       }
-      final success = await _performBackgroundDownload(resolvedUrl, selectedType, skipFailurePrompt: false);
-      if (!success && (selectedType == MediaType.image || selectedType == MediaType.video) && mounted) {
+      final mayFallback =
+          selectedType == MediaType.image || selectedType == MediaType.video;
+      final success = await _performBackgroundDownload(
+        resolvedUrl,
+        selectedType,
+        skipFailurePrompt: mayFallback,
+      );
+      if (success) {
+        _notifyMediaDownloadSaved();
+      } else if (!success &&
+          (selectedType == MediaType.image || selectedType == MediaType.video) &&
+          mounted) {
         try {
           final ctrl = _controller;
           if (ctrl != null) {
             _awaitingCanvasFallbackResult = true;
             _canvasFallbackSucceeded = false;
             _canvasFallbackCompleter = Completer<bool>();
-            await ctrl.evaluateJavascript(source: 'typeof tryCanvasCaptureFallback === "function" && tryCanvasCaptureFallback();');
+            await ctrl.evaluateJavascript(
+              source:
+                  'typeof tryCanvasCaptureFallback === "function" && tryCanvasCaptureFallback();',
+            );
             final canvasSucceeded = await _canvasFallbackCompleter!.future.timeout(
               const Duration(seconds: 5),
               onTimeout: () {
-                if (!_canvasFallbackCompleter!.isCompleted) _canvasFallbackCompleter!.complete(false);
+                if (!_canvasFallbackCompleter!.isCompleted) {
+                  _canvasFallbackCompleter!.complete(false);
+                }
                 return false;
               },
             );
-            // 视频/HLS 下载失败时不要整页截屏：易误存「全屏截图」且与「下载视频」预期不符；仅图片失败时保留截屏兜底
-            if (!canvasSucceeded && selectedType == MediaType.image) await _tryScreenshotFallback(ctrl);
+            var recovered = canvasSucceeded;
+            if (!canvasSucceeded && selectedType == MediaType.image) {
+              recovered = await _tryScreenshotFallback(ctrl) || recovered;
+            }
             _awaitingCanvasFallbackResult = false;
             _canvasFallbackCompleter = null;
+            // canvas 成功仅表示已取得像素/base64，真正落盘在 _handleBlobUrl；此处不 _notify，避免与失败提示打架
+            // 极晚到的 base64 仍可能随后触发 _handleBlobUrl 并成功，故用短延迟再提示失败，避免与成功条打架。
+            if (!recovered &&
+                mayFallback &&
+                !_mediaDownloadSaveResolved &&
+                mounted) {
+              _mediaDownloadFailHintTimer?.cancel();
+              _mediaDownloadFailHintTimer = Timer(const Duration(seconds: 2), () {
+                if (!mounted || _mediaDownloadSaveResolved) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      _downloadErrorForUser(
+                        Exception('[下载失败] 无法保存该媒体，请稍后重试或长按图片本身'),
+                      ),
+                    ),
+                    duration: _kMediaSaveSnackDuration,
+                  ),
+                );
+              });
+            }
           }
         } catch (_) {
           _awaitingCanvasFallbackResult = false;
           _canvasFallbackCompleter = null;
+          if (mayFallback && !_mediaDownloadSaveResolved && mounted) {
+            _mediaDownloadFailHintTimer?.cancel();
+            _mediaDownloadFailHintTimer = Timer(const Duration(seconds: 2), () {
+              if (!mounted || _mediaDownloadSaveResolved) return;
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    _downloadErrorForUser(
+                      Exception('[下载失败] 无法保存该媒体'),
+                    ),
+                  ),
+                  duration: _kMediaSaveSnackDuration,
+                ),
+              );
+            });
+          }
+        }
+      }
+      } finally {
+        if (didRegisterMediaUrl) {
+          _processedMediaUrlsSince.remove(urlValue);
+          _releaseJsProcessedUrl(urlValue);
         }
       }
     } catch (e, stackTrace) {
@@ -1391,11 +1558,12 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       await file.writeAsBytes(bytes);
       debugPrint('已从Base64保存文件: $filePath');
       await _saveToMediaLibrary(file, mediaType == 'image' ? MediaType.image : (mediaType == 'audio' ? MediaType.audio : MediaType.video));
+      _notifyMediaDownloadSaved();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('媒体已成功保存到媒体库: ${file.path.split('/').last}'),
-            duration: const Duration(seconds: 5),
+            content: Text('已保存到媒体库：${file.path.split('/').last}'),
+            duration: _kMediaSaveSnackDuration,
             action: SnackBarAction(label: '查看', onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (context) => const MediaManagerPage()))),
           ),
         );
@@ -1403,7 +1571,11 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     } catch (e, stackTrace) {
       debugPrint('处理Base64数据时出错: $e');
       debugPrint('错误堆栈: $stackTrace');
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('下载失败: $e')));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('下载失败: $e'), duration: _kMediaSaveSnackDuration),
+        );
+      }
     }
   }
 
@@ -3040,11 +3212,11 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     }
   }
 
-  Future<void> _tryScreenshotFallback(InAppWebViewController ctrl) async {
+  Future<bool> _tryScreenshotFallback(InAppWebViewController ctrl) async {
     try {
       await Future.delayed(const Duration(milliseconds: 80));
       final screenshot = await ctrl.takeScreenshot();
-      if (screenshot == null || screenshot.isEmpty || !mounted) return;
+      if (screenshot == null || screenshot.isEmpty || !mounted) return false;
       final appDir = await getApplicationDocumentsDirectory();
       final mediaDir = Directory('${appDir.path}/media');
       if (!await mediaDir.exists()) await mediaDir.create(recursive: true);
@@ -3052,17 +3224,20 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       final file = File('${mediaDir.path}/$uuid.png');
       await file.writeAsBytes(screenshot);
       await _saveToMediaLibrary(file, MediaType.image);
+      _notifyMediaDownloadSaved();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: const Text('已截屏保存'),
-            duration: const Duration(seconds: 2),
+            duration: _kMediaSaveSnackDuration,
             action: SnackBarAction(label: '查看', onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (context) => const MediaManagerPage()))),
           ),
         );
       }
+      return true;
     } catch (e) {
       debugPrint('截屏兜底失败: $e');
+      return false;
     }
   }
 
@@ -3841,6 +4016,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       }
     });
     widget.onBrowserHomePageChanged?.call(true);
+    _mediaDownloadFailHintTimer?.cancel();
     super.dispose();
   }
 
@@ -3891,8 +4067,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           _updateDownloadTask(taskId, status: 'completed', progressDetail: '');
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('${mediaType == MediaType.video ? "视频" : mediaType == MediaType.image ? "图片" : "音频"}已保存到媒体库：${file.path.split('/').last}'),
-              duration: const Duration(seconds: 5),
+              content: Text('${mediaType == MediaType.video ? "视频" : mediaType == MediaType.image ? "图片" : "音频"}已保存：${file.path.split('/').last}'),
+              duration: _kMediaSaveSnackDuration,
               action: SnackBarAction(label: '查看', onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (context) => const MediaManagerPage()))),
             ),
           );
@@ -3902,7 +4078,10 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         if (mounted && !skipFailurePrompt) {
           _updateDownloadTask(taskId, status: 'failed', progressDetail: '');
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(_downloadErrorForUser(Exception('未能生成有效文件，链接可能失效或内容不是可保存的媒体格式'))), duration: const Duration(seconds: 5)),
+            SnackBar(
+              content: Text(_downloadErrorForUser(Exception('未能生成有效文件，链接可能失效或内容不是可保存的媒体格式'))),
+              duration: _kMediaSaveSnackDuration,
+            ),
           );
         } else if (mounted && skipFailurePrompt) {
           _removeDownloadTask(taskId);
@@ -3918,7 +4097,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       if (mounted && !skipFailurePrompt) {
         _updateDownloadTask(taskId, status: 'failed', progressDetail: '');
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(_downloadErrorForUser(e)), duration: const Duration(seconds: 6)),
+          SnackBar(content: Text(_downloadErrorForUser(e)), duration: _kMediaSaveSnackDuration),
         );
       } else if (mounted && skipFailurePrompt) {
         _removeDownloadTask(taskId);
@@ -3926,13 +4105,29 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       return false;
     } catch (e, st) {
       debugPrint('后台下载出错: $absoluteUrl, 错误: $e\n$st');
-      if (mounted && !skipFailurePrompt) {
-        _updateDownloadTask(taskId, status: 'failed', progressDetail: '');
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(_downloadErrorForUser(e)), duration: const Duration(seconds: 6)),
-        );
-      } else if (mounted && skipFailurePrompt) {
-        _removeDownloadTask(taskId);
+      final isLibraryDuplicate = e.toString().contains('已存在于媒体库') ||
+          e.toString().contains('文件已存在');
+      if (mounted) {
+        if (isLibraryDuplicate) {
+          _removeDownloadTask(taskId);
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                skipFailurePrompt
+                    ? '媒体库中已有相同内容。若已删除仍出现，请稍候再试或刷新页面后长按保存'
+                    : _downloadErrorForUser(e),
+              ),
+              duration: _kMediaSaveSnackDuration,
+            ),
+          );
+        } else if (!skipFailurePrompt) {
+          _updateDownloadTask(taskId, status: 'failed', progressDetail: '');
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(_downloadErrorForUser(e)), duration: _kMediaSaveSnackDuration),
+          );
+        } else {
+          _removeDownloadTask(taskId);
+        }
       }
       return false;
     } finally {
