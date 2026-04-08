@@ -4219,6 +4219,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                 (context) => MediaPreviewPage(
                   mediaItems: mediaOnly,
                   initialIndex: index,
+                  openedFromRecycleBin: _currentDirectory == 'recycle_bin',
                 ),
           ),
         )
@@ -4276,6 +4277,73 @@ class _MediaManagerPageState extends State<MediaManagerPage>
             ),
           ),
     );
+  }
+
+  Future<void> _clearRecycleBin() async {
+    if (_currentDirectory != 'recycle_bin') return;
+    final confirmed =
+        await showDialog<bool>(
+          context: context,
+          builder:
+              (context) => AlertDialog(
+                title: const Text('清空回收站'),
+                content: const Text('将彻底删除回收站中的所有媒体文件，此操作不可撤销。'),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(false),
+                    child: const Text('取消'),
+                  ),
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(true),
+                    child: const Text('清空', style: TextStyle(color: Colors.red)),
+                  ),
+                ],
+              ),
+        ) ??
+        false;
+    if (!confirmed) return;
+
+    try {
+      final itemsMap = await _databaseService.getMediaItems('recycle_bin');
+      final items =
+          itemsMap
+              .map((m) => MediaItem.fromMap(m))
+              .where((i) => i.type != MediaType.folder)
+              .toList();
+      final fileCleanupService = getService<FileCleanupService>();
+      int deletedCount = 0;
+
+      for (final item in items) {
+        try {
+          if (fileCleanupService.isInitialized) {
+            await fileCleanupService.deleteMediaFileCompletely(item.path);
+          } else {
+            final file = File(item.path);
+            if (await file.exists()) await file.delete();
+          }
+        } catch (_) {}
+        try {
+          await _databaseService.deleteMediaItem(item.id);
+          deletedCount++;
+          _invalidMediaRetryCounts.remove(item.id);
+        } catch (_) {}
+      }
+
+      await _loadMediaItems();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            deletedCount > 0 ? '已清空回收站，彻底删除 $deletedCount 项' : '回收站已是空的',
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('清空回收站失败: $e')),
+      );
+    }
   }
 
   void _showSettingsMenu() {
@@ -6526,20 +6594,19 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     const Color fg = Color(0xE6000000);
     final pad = MediaQuery.paddingOf(context);
     const ts = TextStyle(
-      fontSize: 18,
+      fontSize: 20,
       fontWeight: FontWeight.w500,
       color: fg,
     );
     const countStyle = TextStyle(fontSize: 11, color: fg);
 
-    final titleText =
-        _currentDirectory == 'root'
-            ? '媒体'
-            : '媒体 / $_currentDirectory';
+    final bool showRootTitle =
+        !Navigator.of(context).canPop() && _currentDirectory == 'root';
+    const titleText = '媒体';
 
     final iconBtnStyle = IconButton.styleFrom(
-      padding: const EdgeInsets.symmetric(horizontal: 2),
-      minimumSize: const Size(40, 44),
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      minimumSize: const Size(36, 36),
       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
       visualDensity: VisualDensity.standard,
     );
@@ -6560,26 +6627,27 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         style: iconBtnStyle,
       );
     } else {
-      leadingSlot = const SizedBox(width: 8);
+      leadingSlot = const SizedBox(width: 2);
     }
-
-    /// 操作区：等分槽位，图标居中；顺序从左到右，查重在最右槽。
-    Widget actionSlot(Widget child) => Expanded(
-      child: Center(
-        child: child,
-      ),
-    );
 
     final countsChip = FittedBox(
       fit: BoxFit.scaleDown,
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(Icons.image, size: 14, color: fg),
-          Text('$_imageCount', style: countStyle),
-          const SizedBox(width: 6),
-          const Icon(Icons.videocam, size: 14, color: fg),
-          Text('$_videoCount', style: countStyle),
+          const Icon(Icons.image, size: 18, color: fg),
+          const SizedBox(width: 2),
+          Text(
+            '$_imageCount',
+            style: countStyle.copyWith(fontSize: 14, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(width: 8),
+          const Icon(Icons.videocam, size: 18, color: fg),
+          const SizedBox(width: 2),
+          Text(
+            '$_videoCount',
+            style: countStyle.copyWith(fontSize: 14, fontWeight: FontWeight.w600),
+          ),
         ],
       ),
     );
@@ -6598,69 +6666,67 @@ class _MediaManagerPageState extends State<MediaManagerPage>
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
               leadingSlot,
-              Expanded(
-                flex: 5,
-                child: Align(
-                  alignment: Alignment.centerLeft,
+              const SizedBox(width: 2),
+              if (_currentDirectory == 'recycle_bin')
+                IconButton(
+                  icon: const Icon(
+                    Icons.delete_forever,
+                    size: 24,
+                    color: Colors.redAccent,
+                  ),
+                  onPressed: _clearRecycleBin,
+                  tooltip: '清空回收站',
+                  style: iconBtnStyle,
+                )
+              else if (showRootTitle)
+                Padding(
+                  padding: const EdgeInsets.only(right: 6),
                   child: Text(
                     titleText,
                     style: ts,
-                    overflow: TextOverflow.ellipsis,
                     maxLines: 1,
+                    textAlign: TextAlign.left,
                   ),
                 ),
-              ),
+              const SizedBox(width: 2),
               Expanded(
-                flex: 11,
                 child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                   children: [
-                    actionSlot(countsChip),
-                    actionSlot(
-                      IconButton(
-                        icon: Icon(
-                          _mediaVisible
-                              ? Icons.visibility
-                              : Icons.visibility_off,
-                          size: 20,
-                          color: fg,
-                        ),
-                        onPressed: _toggleMediaVisibility,
-                        tooltip: '切换媒体可见性',
-                        style: iconBtnStyle,
+                    countsChip,
+                    IconButton(
+                      icon: Icon(
+                        _mediaVisible ? Icons.visibility : Icons.visibility_off,
+                        size: 18,
+                        color: fg,
                       ),
+                      onPressed: _toggleMediaVisibility,
+                      tooltip: '切换媒体可见性',
+                      style: iconBtnStyle,
                     ),
-                    actionSlot(
-                      IconButton(
-                        icon: const Icon(Icons.storage, size: 20, color: fg),
-                        onPressed: _showStorageManagement,
-                        tooltip: '存储管理',
-                        style: iconBtnStyle,
-                      ),
+                    IconButton(
+                      icon: const Icon(Icons.storage, size: 18, color: fg),
+                      onPressed: _showStorageManagement,
+                      tooltip: '存储管理',
+                      style: iconBtnStyle,
                     ),
-                    actionSlot(
-                      IconButton(
-                        icon: const Icon(Icons.settings, size: 20, color: fg),
-                        onPressed: _showSettingsMenu,
-                        tooltip: '设置',
-                        style: iconBtnStyle,
-                      ),
+                    IconButton(
+                      icon: const Icon(Icons.settings, size: 18, color: fg),
+                      onPressed: _showSettingsMenu,
+                      tooltip: '设置',
+                      style: iconBtnStyle,
                     ),
-                    actionSlot(
-                      IconButton(
-                        icon: const Icon(Icons.refresh, size: 20, color: fg),
-                        onPressed: () =>
-                            unawaited(_refreshMediaAndThumbnails()),
-                        tooltip: '刷新',
-                        style: iconBtnStyle,
-                      ),
+                    IconButton(
+                      icon: const Icon(Icons.refresh, size: 18, color: fg),
+                      onPressed: () => unawaited(_refreshMediaAndThumbnails()),
+                      tooltip: '刷新',
+                      style: iconBtnStyle,
                     ),
-                    actionSlot(
-                      IconButton(
-                        icon: const Icon(Icons.find_replace, size: 20, color: fg),
-                        onPressed: _deduplicateCurrentFolder,
-                        tooltip: '当前目录查重',
-                        style: iconBtnStyle,
-                      ),
+                    IconButton(
+                      icon: const Icon(Icons.find_replace, size: 18, color: fg),
+                      onPressed: _deduplicateCurrentFolder,
+                      tooltip: '当前目录查重',
+                      style: iconBtnStyle,
                     ),
                   ],
                 ),
@@ -6678,7 +6744,8 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: SystemUiOverlayStyle.dark,
       child: Scaffold(
-        backgroundColor: Colors.transparent,
+        // 媒体主页面固定浅色底，避免从浏览器/预览返回时透出下层黑色路由
+        backgroundColor: Colors.white,
         body: Stack(
           children: [
             Positioned.fill(

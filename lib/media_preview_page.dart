@@ -31,10 +31,12 @@ enum MediaMode { none, manual, auto }
 class MediaPreviewPage extends StatefulWidget {
   final List<MediaItem> mediaItems;
   final int initialIndex;
+  final bool openedFromRecycleBin;
 
   const MediaPreviewPage({
     required this.mediaItems, 
     required this.initialIndex, 
+    this.openedFromRecycleBin = false,
     super.key
   });
 
@@ -66,6 +68,14 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
   String? _staticDemoItemId;
   Timer? _mediaTimer;
   bool _skipNextPageChanged = false; // 删除/收藏/移动后忽略一次 onPageChanged，避免跳回第一项
+
+  bool get _isCurrentInRecycleBin {
+    if (_currentIndex < 0 || _currentIndex >= widget.mediaItems.length) {
+      return widget.openedFromRecycleBin;
+    }
+    return widget.openedFromRecycleBin ||
+        widget.mediaItems[_currentIndex].directory == 'recycle_bin';
+  }
 
   @override
   void initState() {
@@ -1191,8 +1201,11 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
                 const SizedBox(height: 8),
                 _buildActionButton(
                   icon: Icons.delete_outline,
-                  tooltip: '删除',
-                  onPressed: _moveToTrash,
+                  tooltip: _isCurrentInRecycleBin ? '彻底删除' : '删除',
+                  onPressed:
+                      _isCurrentInRecycleBin
+                          ? _deleteCurrentMediaItem
+                          : _moveToTrash,
                 ),
                 const SizedBox(height: 8),
                 _buildActionButton(
@@ -1251,6 +1264,10 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
 
   // 移动到回收站
   Future<void> _moveToTrash() async {
+    if (_isCurrentInRecycleBin) {
+      await _deleteCurrentMediaItem();
+      return;
+    }
     final item = widget.mediaItems[_currentIndex];
     try {
       // 获取所有文件夹以找到回收站文件夹
