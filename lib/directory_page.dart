@@ -19,6 +19,7 @@ import 'package:archive/archive_io.dart';
 import 'services/export_import_utils.dart';
 import 'utils/export_import_error_utils.dart';
 import 'widgets/stored_view_image_layer.dart';
+import 'widgets/floating_ui_shadows.dart';
 
 class DirectoryPage extends StatefulWidget {
   final Function(String) onDocumentOpen;
@@ -2405,6 +2406,82 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     }
   }
 
+  /// 无边透明顶栏（与文档/媒体预览一致）
+  Widget _buildDirectoryFloatingTopBar(bool lightFg) {
+    final pad = MediaQuery.paddingOf(context);
+    final ic = FloatingUiBarStyle.iconColor(lightFg);
+    final sh = FloatingUiBarStyle.iconShadow(lightFg);
+    final ts = FloatingUiBarStyle.titleStyle(lightFg, fontSize: 18);
+    return Positioned(
+      top: 0,
+      left: 0,
+      right: 0,
+      child: Padding(
+        padding: EdgeInsets.only(top: pad.top),
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+          color: Colors.transparent,
+          child: Row(
+            children: [
+              if (_currentParentFolder != null)
+                IconButton(
+                  icon: Icon(Icons.arrow_back, color: ic, shadows: sh),
+                  onPressed: _goBack,
+                )
+              else
+                const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  _currentParentFolder ?? '目录',
+                  style: ts,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              if (_isMultiSelectMode) ...[
+                IconButton(
+                  icon: Icon(
+                    _items.every((item) => item.isSelected)
+                        ? Icons.check_box
+                        : Icons.check_box_outline_blank,
+                    color: ic,
+                    shadows: sh,
+                  ),
+                  onPressed: _selectAllItems,
+                  tooltip: '全选/取消全选',
+                ),
+                IconButton(
+                  icon: Icon(Icons.cancel, color: ic, shadows: sh),
+                  onPressed: _toggleMultiSelectMode,
+                  tooltip: '取消多选',
+                ),
+              ] else ...[
+                IconButton(
+                  icon: Icon(Icons.select_all, color: ic, shadows: sh),
+                  onPressed: _toggleMultiSelectMode,
+                  tooltip: '多选',
+                ),
+                IconButton(
+                  icon: Icon(Icons.settings, color: ic, shadows: sh),
+                  onPressed: _showDirectorySettings,
+                  tooltip: '设置',
+                ),
+                GestureDetector(
+                  onTap: () => _showAddOptions(),
+                  onDoubleTap: () => _showTemplateSelectionDialog(),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 12.0),
+                    child: Icon(Icons.add_circle, color: ic, shadows: sh),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -2415,50 +2492,18 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       });
     });
 
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(_currentParentFolder ?? '目录'),
-        leading: _currentParentFolder != null
-            ? IconButton(
-          icon: Icon(Icons.arrow_back),
-          onPressed: _goBack,
-        )
-            : null,
-        actions: [
-          if (_isMultiSelectMode) ...[
-            IconButton(
-              icon: Icon(_items.every((item) => item.isSelected) ? Icons.check_box : Icons.check_box_outline_blank),
-              onPressed: _selectAllItems,
-              tooltip: '全选/取消全选',
-            ),
-            IconButton(
-              icon: Icon(Icons.cancel),
-              onPressed: _toggleMultiSelectMode,
-              tooltip: '取消多选',
-            ),
-          ] else ...[
-            IconButton(
-              icon: Icon(Icons.select_all),
-              onPressed: _toggleMultiSelectMode,
-              tooltip: '多选',
-            ),
-            IconButton(
-              icon: Icon(Icons.settings),
-              onPressed: _showDirectorySettings,
-              tooltip: '设置',
-            ),
-            GestureDetector(
-              onTap: () => _showAddOptions(),
-              onDoubleTap: () => _showTemplateSelectionDialog(),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16.0),
-                child: Icon(Icons.add_circle),
-              ),
-            ),
-          ],
-        ],
-      ),
-      body: Stack(
+    final lightFg = FloatingUiBarStyle.preferLightForeground(
+      hasBackgroundImage: _backgroundImage != null,
+      backgroundSolidColor: _backgroundColor,
+    );
+    final contentTop =
+        MediaQuery.paddingOf(context).top + kToolbarHeight;
+
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: lightFg ? SystemUiOverlayStyle.light : SystemUiOverlayStyle.dark,
+      child: Scaffold(
+        backgroundColor: Colors.transparent,
+        body: Stack(
         children: [
           // 第一层：背景图片层（最底层），复用媒体页视窗参数
           if (_backgroundImage != null)
@@ -2472,18 +2517,22 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
           ),
           
           // 第三层：内容层
-          Container(
-            child: _items.isEmpty
-                ? Center(
-              child: Text(
-                '没有文件夹或文档\n点击右上角的 + 按钮添加',
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 18, color: Colors.grey),
-              ),
-            )
+          Positioned.fill(
+            child: Container(
+              child: _items.isEmpty
+                ? Padding(
+                    padding: EdgeInsets.only(top: contentTop),
+                    child: Center(
+                      child: Text(
+                        '没有文件夹或文档\n点击右上角的 + 按钮添加',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(fontSize: 18, color: Colors.grey),
+                      ),
+                    ),
+                  )
                 : ReorderableListView.builder(
               onReorder: _isMultiSelectMode ? (oldIndex, newIndex) {} : _onReorder,
-              padding: EdgeInsets.symmetric(vertical: 4.0),
+              padding: EdgeInsets.fromLTRB(0, contentTop + 4.0, 0, 4.0),
               itemCount: _items.length,
               buildDefaultDragHandles: false,
               itemBuilder: (context, index) {
@@ -2704,6 +2753,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
                 );
               },
             ),
+            ),
           ),
           if (_isMultiSelectMode && _selectedItems.isNotEmpty)
             Positioned(
@@ -2731,7 +2781,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
                 ),
               ),
             ),
+          _buildDirectoryFloatingTopBar(lightFg),
         ],
+      ),
       ),
     );
   }

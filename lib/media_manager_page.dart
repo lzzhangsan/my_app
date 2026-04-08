@@ -6521,128 +6521,181 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        leadingWidth: 80,
-        titleSpacing: 0,
-        centerTitle: false,
-        leading: Builder(
-          builder: (context) {
-            // 从浏览器等 push 进入时显示返回箭头，可返回上一页
-            if (Navigator.of(context).canPop()) {
-              return IconButton(
-                icon: const Icon(Icons.arrow_back),
-                onPressed: () => Navigator.of(context).pop(),
-                tooltip: '返回',
-              );
-            }
-            if (_currentDirectory != 'root') {
-              return IconButton(
-                icon: const Icon(Icons.arrow_upward),
-                onPressed: _navigateUp,
-                tooltip: '返回上级',
-              );
-            }
-            return Padding(
-              padding: const EdgeInsets.only(left: 16),
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  '媒体',
-                  style:
-                      Theme.of(context).appBarTheme.titleTextStyle ??
-                      const TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.w500,
-                      ),
-                ),
-              ),
-            );
-          },
-        ),
-        automaticallyImplyLeading: false,
-        title:
-            _currentDirectory == 'root'
-                ? null
-                : Text('媒体 / $_currentDirectory'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.find_replace, size: 20),
-            onPressed: _deduplicateCurrentFolder,
-            tooltip: '当前目录查重',
-            style: IconButton.styleFrom(
-              padding: const EdgeInsets.symmetric(horizontal: 6),
-              minimumSize: const Size(36, 36),
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 2),
-            child: Center(
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(Icons.image, size: 14),
-                  Text('$_imageCount', style: const TextStyle(fontSize: 11)),
-                  const SizedBox(width: 4),
-                  const Icon(Icons.videocam, size: 14),
-                  Text('$_videoCount', style: const TextStyle(fontSize: 11)),
-                ],
-              ),
-            ),
-          ),
-          IconButton(
-            icon: Icon(
-              _mediaVisible ? Icons.visibility : Icons.visibility_off,
-              size: 20,
-            ),
-            onPressed: _toggleMediaVisibility,
-            tooltip: '切换媒体可见性',
-            style: IconButton.styleFrom(
-              padding: const EdgeInsets.symmetric(horizontal: 6),
-              minimumSize: const Size(36, 36),
-            ),
-          ),
-          IconButton(
-            icon: const Icon(Icons.storage, size: 20),
-            onPressed: _showStorageManagement,
-            tooltip: '存储管理',
-            style: IconButton.styleFrom(
-              padding: const EdgeInsets.symmetric(horizontal: 6),
-              minimumSize: const Size(36, 36),
-            ),
-          ),
-          IconButton(
-            icon: const Icon(Icons.settings, size: 20),
-            onPressed: _showSettingsMenu,
-            tooltip: '设置',
-            style: IconButton.styleFrom(
-              padding: const EdgeInsets.symmetric(horizontal: 6),
-              minimumSize: const Size(36, 36),
-            ),
-          ),
-          IconButton(
-            icon: const Icon(Icons.refresh, size: 20),
-            onPressed: () => unawaited(_refreshMediaAndThumbnails()),
-            tooltip: '刷新',
-            style: IconButton.styleFrom(
-              padding: const EdgeInsets.symmetric(horizontal: 6),
-              minimumSize: const Size(36, 36),
-            ),
-          ),
+  /// 无边透明顶栏：清爽深灰/黑字与图标，无阴影；窄屏右侧可横滑避免溢出
+  Widget _buildMediaFloatingTopBar() {
+    const Color fg = Color(0xE6000000);
+    final pad = MediaQuery.paddingOf(context);
+    const ts = TextStyle(
+      fontSize: 18,
+      fontWeight: FontWeight.w500,
+      color: fg,
+    );
+    const countStyle = TextStyle(fontSize: 11, color: fg);
+
+    final titleText =
+        _currentDirectory == 'root'
+            ? '媒体'
+            : '媒体 / $_currentDirectory';
+
+    final iconBtnStyle = IconButton.styleFrom(
+      padding: const EdgeInsets.symmetric(horizontal: 2),
+      minimumSize: const Size(40, 44),
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      visualDensity: VisualDensity.standard,
+    );
+
+    Widget leadingSlot;
+    if (Navigator.of(context).canPop()) {
+      leadingSlot = IconButton(
+        icon: const Icon(Icons.arrow_back, color: fg),
+        onPressed: () => Navigator.of(context).pop(),
+        tooltip: '返回',
+        style: iconBtnStyle,
+      );
+    } else if (_currentDirectory != 'root') {
+      leadingSlot = IconButton(
+        icon: const Icon(Icons.arrow_upward, color: fg),
+        onPressed: _navigateUp,
+        tooltip: '返回上级',
+        style: iconBtnStyle,
+      );
+    } else {
+      leadingSlot = const SizedBox(width: 8);
+    }
+
+    /// 操作区：等分槽位，图标居中；顺序从左到右，查重在最右槽。
+    Widget actionSlot(Widget child) => Expanded(
+      child: Center(
+        child: child,
+      ),
+    );
+
+    final countsChip = FittedBox(
+      fit: BoxFit.scaleDown,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.image, size: 14, color: fg),
+          Text('$_imageCount', style: countStyle),
+          const SizedBox(width: 6),
+          const Icon(Icons.videocam, size: 14, color: fg),
+          Text('$_videoCount', style: countStyle),
         ],
       ),
-      body: Stack(
-        children: [
-          _buildMediaGrid(),
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: 0,
-            child: SafeArea(child: _buildBottomActionBar()),
+    );
+
+    return Positioned(
+      top: 0,
+      left: 0,
+      right: 0,
+      child: Padding(
+        padding: EdgeInsets.only(top: pad.top),
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+          color: Colors.transparent,
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              leadingSlot,
+              Expanded(
+                flex: 5,
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    titleText,
+                    style: ts,
+                    overflow: TextOverflow.ellipsis,
+                    maxLines: 1,
+                  ),
+                ),
+              ),
+              Expanded(
+                flex: 11,
+                child: Row(
+                  children: [
+                    actionSlot(countsChip),
+                    actionSlot(
+                      IconButton(
+                        icon: Icon(
+                          _mediaVisible
+                              ? Icons.visibility
+                              : Icons.visibility_off,
+                          size: 20,
+                          color: fg,
+                        ),
+                        onPressed: _toggleMediaVisibility,
+                        tooltip: '切换媒体可见性',
+                        style: iconBtnStyle,
+                      ),
+                    ),
+                    actionSlot(
+                      IconButton(
+                        icon: const Icon(Icons.storage, size: 20, color: fg),
+                        onPressed: _showStorageManagement,
+                        tooltip: '存储管理',
+                        style: iconBtnStyle,
+                      ),
+                    ),
+                    actionSlot(
+                      IconButton(
+                        icon: const Icon(Icons.settings, size: 20, color: fg),
+                        onPressed: _showSettingsMenu,
+                        tooltip: '设置',
+                        style: iconBtnStyle,
+                      ),
+                    ),
+                    actionSlot(
+                      IconButton(
+                        icon: const Icon(Icons.refresh, size: 20, color: fg),
+                        onPressed: () =>
+                            unawaited(_refreshMediaAndThumbnails()),
+                        tooltip: '刷新',
+                        style: iconBtnStyle,
+                      ),
+                    ),
+                    actionSlot(
+                      IconButton(
+                        icon: const Icon(Icons.find_replace, size: 20, color: fg),
+                        onPressed: _deduplicateCurrentFolder,
+                        tooltip: '当前目录查重',
+                        style: iconBtnStyle,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ),
-        ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final topInset = MediaQuery.paddingOf(context).top + kToolbarHeight;
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: SystemUiOverlayStyle.dark,
+      child: Scaffold(
+        backgroundColor: Colors.transparent,
+        body: Stack(
+          children: [
+            Positioned.fill(
+              child: Padding(
+                padding: EdgeInsets.only(top: topInset),
+                child: _buildMediaGrid(),
+              ),
+            ),
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: SafeArea(child: _buildBottomActionBar()),
+            ),
+            _buildMediaFloatingTopBar(),
+          ],
+        ),
       ),
     );
   }

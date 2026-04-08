@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:uuid/uuid.dart';
 import 'core/service_locator.dart';
 import 'services/logger.dart';
@@ -23,6 +24,7 @@ import 'services/image_picker_service.dart';
 import 'models/media_type.dart'; // 导入MediaType枚举
 import 'performance_monitor_page.dart';
 import 'widgets/stored_view_image_layer.dart';
+import 'widgets/floating_ui_shadows.dart';
 
 class DocumentEditorPage extends StatefulWidget {
   final String documentName;
@@ -1832,6 +1834,116 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
     return maxBottom;
   }
 
+  /// 与 [MediaPreviewPage] 一致：透明悬浮顶栏，无渐变衬底，媒体/背景可铺满屏幕。
+  Widget _buildDocumentFloatingTopBar(BuildContext context) {
+    final pad = MediaQuery.paddingOf(context);
+    return Positioned(
+      top: 0,
+      left: 0,
+      right: 0,
+      child: Padding(
+        padding: EdgeInsets.only(top: pad.top),
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+          color: Colors.transparent,
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              IconButton(
+                icon: Icon(
+                  Icons.arrow_back,
+                  size: 20,
+                  color: Colors.white,
+                  shadows: FloatingUiShadows.whiteIcon,
+                ),
+                onPressed: () => Navigator.pop(context),
+              ),
+              Expanded(
+                child: Text(
+                  widget.documentName,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    color: Colors.white,
+                    shadows: FloatingUiShadows.whiteLabel,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              IconButton(
+                icon: Icon(
+                  Icons.save,
+                  size: 20,
+                  color: Colors.white,
+                  shadows: FloatingUiShadows.whiteIcon,
+                ),
+                onPressed: () => _saveContent(),
+              ),
+              if (_isSaving)
+                Container(
+                  width: 16,
+                  height: 16,
+                  margin: const EdgeInsets.only(right: 6),
+                  child: const CircularProgressIndicator(
+                    strokeWidth: 2,
+                    valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                  ),
+                )
+              else if (_contentChanged)
+                Container(
+                  width: 8,
+                  height: 8,
+                  margin: const EdgeInsets.only(right: 8),
+                  decoration: const BoxDecoration(
+                    color: Colors.orangeAccent,
+                    shape: BoxShape.circle,
+                  ),
+                )
+              else
+                Container(
+                  width: 8,
+                  height: 8,
+                  margin: const EdgeInsets.only(right: 8),
+                  decoration: const BoxDecoration(
+                    color: Colors.lightGreenAccent,
+                    shape: BoxShape.circle,
+                  ),
+                ),
+              IconButton(
+                icon: Icon(
+                  _isPositionLocked ? Icons.lock : Icons.lock_open,
+                  size: 20,
+                  color: Colors.white,
+                  shadows: FloatingUiShadows.whiteIcon,
+                ),
+                onPressed: _togglePositionLock,
+                tooltip: _isPositionLocked ? '解锁位置' : '锁定位置',
+              ),
+              IconButton(
+                icon: Icon(
+                  Icons.settings,
+                  size: 20,
+                  color: Colors.white,
+                  shadows: FloatingUiShadows.whiteIcon,
+                ),
+                onPressed: _showSettingsMenu,
+              ),
+              const SizedBox(width: 2),
+              Text(
+                '${_scrollPercentage.toStringAsFixed(1)}%',
+                style: const TextStyle(
+                  fontSize: 13,
+                  color: Colors.white,
+                  shadows: FloatingUiShadows.whiteLabel,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     // 计算最下方内容的位置
@@ -1861,126 +1973,31 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
       child: Stack(
         fit: StackFit.expand,
         children: [
-          Scaffold(
-        extendBody: true,
-        appBar: PreferredSize(
-          preferredSize: Size.fromHeight(28.0),
-          child: AppBar(
-            automaticallyImplyLeading: false,
-            backgroundColor: Colors.white,
-            elevation: 0,
-            flexibleSpace: SafeArea(
-              child: Container(
-                padding: EdgeInsets.symmetric(horizontal: 8.0),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    IconButton(
-                      icon: Icon(Icons.arrow_back,
-                          size: 20, color: Colors.black),
-                      onPressed: () => Navigator.pop(context),
+          AnnotatedRegion<SystemUiOverlayStyle>(
+            value: SystemUiOverlayStyle.light,
+            child: Scaffold(
+              extendBody: true,
+              backgroundColor: Colors.transparent,
+              body: Stack(
+                key: ValueKey('main_stack'),
+                children: [
+                  // 背景图片层（底层）：复用媒体页为该文件保存的缩放/平移/旋转
+                  if (_backgroundImage != null)
+                    Positioned.fill(
+                      key: ValueKey('background_image_container'),
+                      child: StoredViewImageLayer(file: _backgroundImage!),
                     ),
-                    Expanded(
-                      child: Text(
-                        widget.documentName,
-                        style: TextStyle(
-                          fontSize: 14,
-                          color: Colors.black,
-                        ),
-                        overflow: TextOverflow.ellipsis,
-                      ),
+                  // 背景颜色层（上层）
+                  Container(
+                    key: ValueKey('background_color_container'),
+                    decoration: BoxDecoration(
+                      color: _backgroundColor ?? Colors.white,
                     ),
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        IconButton(
-                          icon: Icon(Icons.save, size: 20, color: Colors.blue),
-                          onPressed: () {
-                            _saveContent();
-                          },
-                        ),
-                        // 保存状态指示器
-                        if (_isSaving)
-                          Container(
-                            width: 16,
-                            height: 16,
-                            margin: EdgeInsets.only(right: 8),
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
-                            ),
-                          )
-                        else if (_contentChanged)
-                          Container(
-                            width: 8,
-                            height: 8,
-                            margin: EdgeInsets.only(right: 8),
-                            decoration: BoxDecoration(
-                              color: Colors.orange,
-                              shape: BoxShape.circle,
-                            ),
-                          )
-                        else
-                          Container(
-                            width: 8,
-                            height: 8,
-                            margin: EdgeInsets.only(right: 8),
-                            decoration: BoxDecoration(
-                              color: Colors.green,
-                              shape: BoxShape.circle,
-                            ),
-                          ),
-                      ],
-                    ),
-
-                    IconButton(
-                      icon: Icon(
-                        _isPositionLocked ? Icons.lock : Icons.lock_open,
-                        size: 20,
-                        color: _isPositionLocked ? Colors.blue : Colors.black,
-                      ),
-                      onPressed: _togglePositionLock,
-                      tooltip: _isPositionLocked ? '解锁位置' : '锁定位置',
-                    ),
-                    IconButton(
-                      icon: Icon(Icons.settings,
-                          size: 20, color: Colors.black),
-                      onPressed: _showSettingsMenu,
-                    ),
-                    SizedBox(width: 4),
-                    Text(
-                      '${_scrollPercentage.toStringAsFixed(1)}%',
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: Colors.black,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ),
-        body: Stack(
-          key: ValueKey('main_stack'),
-          children: [
-            // 背景图片层（底层）：复用媒体页为该文件保存的缩放/平移/旋转
-            if (_backgroundImage != null)
-              Positioned.fill(
-                key: ValueKey('background_image_container'),
-                child: StoredViewImageLayer(file: _backgroundImage!),
-              ),
-            // 背景颜色层（上层）
-            Container(
-              key: ValueKey('background_color_container'),
-              decoration: BoxDecoration(
-                color: _backgroundColor ?? Colors.white,
-              ),
-            ),
-            Positioned.fill(
-              child: MediaPlayerContainer(key: _mediaPlayerKey),
-            ),
-            SingleChildScrollView(
+                  ),
+                  Positioned.fill(
+                    child: MediaPlayerContainer(key: _mediaPlayerKey),
+                  ),
+                  SingleChildScrollView(
               key: ValueKey('content_scroll_view'),
               controller: _scrollController,
               child: SizedBox(
@@ -2173,6 +2190,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
                 ),
               ),
             ),
+            _buildDocumentFloatingTopBar(context),
           ],
         ),
         bottomNavigationBar: toolBar.GlobalToolBar(
@@ -2192,6 +2210,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
           onMediaSettings: () =>
               _mediaPlayerKey.currentState?.showMediaPlayerSettings(),
         ),
+            ),
           ),
           Positioned(
             bottom: 0,

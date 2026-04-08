@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 import 'widgets/video_player_widget.dart';
+import 'widgets/floating_ui_shadows.dart';
 
 class VideoControlsOverlay extends StatefulWidget {
   final VideoPlayerWidget? videoPlayerWidget;
@@ -94,22 +95,13 @@ class _VideoControlsOverlayState extends State<VideoControlsOverlay> {
       child: Container(
         height: 28,
         padding: EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [
-              Colors.transparent,
-              Colors.black.withOpacity(0.3),
-            ],
-          ),
-        ),
+        color: Colors.transparent,
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Container(
-              decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.4),
+              decoration: const BoxDecoration(
+                color: Colors.transparent,
                 shape: BoxShape.circle,
               ),
               child: IconButton(
@@ -117,6 +109,7 @@ class _VideoControlsOverlayState extends State<VideoControlsOverlay> {
                   (controller.value.isInitialized && controller.value.isPlaying) ? Icons.pause : Icons.play_arrow,
                   color: Colors.white,
                   size: 12,
+                  shadows: FloatingUiShadows.whiteIcon,
                 ),
                 padding: EdgeInsets.all(2),
                 constraints: BoxConstraints(minWidth: 22, minHeight: 22),
@@ -132,15 +125,16 @@ class _VideoControlsOverlayState extends State<VideoControlsOverlay> {
               ),
             ),
             SizedBox(width: 4),
-            Container(
+            Padding(
               padding: EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-              decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.4),
-                borderRadius: BorderRadius.circular(3),
-              ),
               child: Text(
                 _formatDuration(position),
-                style: TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.w500),
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 9,
+                  fontWeight: FontWeight.w500,
+                  shadows: FloatingUiShadows.whiteLabel,
+                ),
               ),
             ),
             Expanded(
@@ -165,15 +159,16 @@ class _VideoControlsOverlayState extends State<VideoControlsOverlay> {
                 ),
               ),
             ),
-            Container(
+            Padding(
               padding: EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-              decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.4),
-                borderRadius: BorderRadius.circular(3),
-              ),
               child: Text(
                 _formatDuration(duration),
-                style: TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.w500),
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 9,
+                  fontWeight: FontWeight.w500,
+                  shadows: FloatingUiShadows.whiteLabel,
+                ),
               ),
             ),
           ],

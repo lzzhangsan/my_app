@@ -24,7 +24,7 @@ import 'widgets/zoom_pan_edge_image_display.dart';
 import 'models/video_view_params.dart';
 import 'widgets/video_interactive_surface.dart';
 import 'widgets/image_interactive_surface.dart';
-
+import 'widgets/floating_ui_shadows.dart';
 
 enum MediaMode { none, manual, auto }
 
@@ -1088,25 +1088,24 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
             child: Container(
               width: double.infinity,
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [
-                    Colors.black.withOpacity(0.5),
-                    Colors.black.withOpacity(0.0),
-                  ],
-                ),
-              ),
+              color: Colors.transparent,
               child: Row(
                 children: [
                   IconButton(
-                    icon: const Icon(Icons.arrow_back, color: Colors.white),
+                    icon: Icon(
+                      Icons.arrow_back,
+                      color: Colors.white,
+                      shadows: FloatingUiShadows.whiteIcon,
+                    ),
                     onPressed: () => Navigator.of(context).pop(true),
                   ),
                   const SizedBox(width: 16),
                   IconButton(
-                    icon: const Icon(Icons.share, color: Colors.white),
+                    icon: Icon(
+                      Icons.share,
+                      color: Colors.white,
+                      shadows: FloatingUiShadows.whiteIcon,
+                    ),
                     onPressed: _shareMediaItem,
                   ),
                   const Spacer(),
@@ -1119,7 +1118,11 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
                           minWidth: 40,
                           minHeight: 40,
                         ),
-                        icon: const Icon(Icons.settings, color: Colors.white),
+                        icon: Icon(
+                          Icons.settings,
+                          color: Colors.white,
+                          shadows: FloatingUiShadows.whiteIcon,
+                        ),
                         tooltip: '媒体播放设置',
                         onPressed: _showMediaPlaybackSettings,
                       ),
@@ -1134,6 +1137,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
                               ? Icons.pause
                               : Icons.play_arrow,
                           color: Colors.white,
+                          shadows: FloatingUiShadows.whiteIcon,
                         ),
                         onPressed: () {
                           if (_mediaMode == MediaMode.auto) {
@@ -1156,7 +1160,11 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
                             minWidth: 40,
                             minHeight: 40,
                           ),
-                          icon: const Icon(Icons.more_vert, color: Colors.white),
+                          icon: Icon(
+                            Icons.more_vert,
+                            color: Colors.white,
+                            shadows: FloatingUiShadows.whiteIcon,
+                          ),
                           tooltip: '播放速度',
                           onPressed: _showPlaybackSpeedMenu,
                         ),
@@ -1310,11 +1318,16 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
           child: Container(
             width: 45,
             height: 45,
-            decoration: BoxDecoration(
-              color: Colors.black.withOpacity(0.5),
+            decoration: const BoxDecoration(
+              color: Colors.transparent,
               shape: BoxShape.circle,
             ),
-            child: Icon(icon, color: Colors.white, size: 24),
+            child: Icon(
+              icon,
+              color: Colors.white,
+              size: 24,
+              shadows: FloatingUiShadows.whiteIcon,
+            ),
           ),
         ),
       ),

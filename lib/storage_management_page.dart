@@ -3,6 +3,8 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
+import 'widgets/floating_ui_shadows.dart';
 import 'package:path_provider/path_provider.dart';
 import '../core/service_locator.dart';
 import '../services/logger.dart';
@@ -473,54 +475,92 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
     }
   }
 
+  Widget _buildStorageFloatingTopBar() {
+    const lightFg = false;
+    final pad = MediaQuery.paddingOf(context);
+    final ic = FloatingUiBarStyle.iconColor(lightFg);
+    final sh = FloatingUiBarStyle.iconShadow(lightFg);
+    final ts = FloatingUiBarStyle.titleStyle(lightFg, fontSize: 18);
+    return Positioned(
+      top: 0,
+      left: 0,
+      right: 0,
+      child: Padding(
+        padding: EdgeInsets.only(top: pad.top),
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+          color: Colors.transparent,
+          child: Row(
+            children: [
+              if (Navigator.of(context).canPop())
+                IconButton(
+                  icon: Icon(Icons.arrow_back, color: ic, shadows: sh),
+                  onPressed: () => Navigator.of(context).pop(),
+                  tooltip: '返回',
+                ),
+              Expanded(
+                child: Text('存储管理', style: ts),
+              ),
+              IconButton(
+                icon: Icon(Icons.refresh, color: ic, shadows: sh),
+                onPressed: _loadStorageInfo,
+                tooltip: '刷新',
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('存储管理'),
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: _loadStorageInfo,
-            tooltip: '刷新',
-          ),
-        ],
+    final topInset = MediaQuery.paddingOf(context).top + kToolbarHeight;
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: SystemUiOverlayStyle.dark,
+      child: Scaffold(
+        body: Stack(
+          children: [
+            Positioned.fill(
+              child:
+                  _isLoading
+                      ? const Center(child: CircularProgressIndicator())
+                      : SingleChildScrollView(
+                        padding: EdgeInsets.fromLTRB(16, topInset + 16, 16, 16),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            // 总存储使用量
+                            _buildStorageCard(
+                              title: '总存储使用量',
+                              size: _totalStorageUsage,
+                              color: Colors.blue,
+                              icon: Icons.storage,
+                            ),
+
+                            const SizedBox(height: 16),
+
+                            // 详细存储信息
+                            _buildDetailedStorageInfo(),
+
+                            const SizedBox(height: 24),
+
+                            // 清理操作
+                            _buildCleanupActions(),
+
+                            const SizedBox(height: 24),
+
+                            // 存储建议
+                            _buildStorageTips(),
+                          ],
+                        ),
+                      ),
+            ),
+            _buildStorageFloatingTopBar(),
+          ],
+        ),
       ),
-      body:
-          _isLoading
-              ? const Center(child: CircularProgressIndicator())
-              : SingleChildScrollView(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // 总存储使用量
-                    _buildStorageCard(
-                      title: '总存储使用量',
-                      size: _totalStorageUsage,
-                      color: Colors.blue,
-                      icon: Icons.storage,
-                    ),
-
-                    const SizedBox(height: 16),
-
-                    // 详细存储信息
-                    _buildDetailedStorageInfo(),
-
-                    const SizedBox(height: 24),
-
-                    // 清理操作
-                    _buildCleanupActions(),
-
-                    const SizedBox(height: 24),
-
-                    // 存储建议
-                    _buildStorageTips(),
-                  ],
-                ),
-              ),
     );
   }
 

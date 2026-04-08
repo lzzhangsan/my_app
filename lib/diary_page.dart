@@ -17,7 +17,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:archive/archive_io.dart';
 import 'dart:convert';
-import 'package:flutter/services.dart';
+import 'package:flutter/services.dart' show SystemUiOverlayStyle;
 import 'package:path/path.dart' as path;
 import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 import 'services/database_service.dart';
@@ -29,6 +29,7 @@ import 'utils/export_import_error_utils.dart';
 import 'utils/safe_path_utils.dart';
 import 'utils/app_storage_paths.dart';
 import 'services/test_data_generator_service.dart';
+import 'widgets/floating_ui_shadows.dart';
 
 // 全局函数：显示进度条弹窗，支持取消操作
 void showProgressDialog(BuildContext context, ValueNotifier<double> progress, ValueNotifier<String> message, {bool barrierDismissible = false}) {
@@ -514,33 +515,34 @@ class _DiaryPageState extends State<DiaryPage> {
     }
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Stack(
-      children: [
-        // 第一层：背景图片层（最底层）
-        if (_diaryBgImage != null)
-          Positioned.fill(
-            child: StoredViewImageLayer(file: _diaryBgImage!),
-          ),
-        // 第二层：背景颜色层（在背景图片之上）
-        if (_diaryBgColor != null)
-          Container(color: _diaryBgColor),
-        // 主内容层
-        Scaffold(
-          backgroundColor: Colors.transparent,
-          appBar: AppBar(
-            leading: IconButton(
-              icon: Icon(Icons.settings),
-              tooltip: '设置',
-              onPressed: _showDiarySettings,
-            ),
-            title: const Text('日记本'),
-            centerTitle: true,
-            actions: [
+  Widget _buildDiaryFloatingTopBar(bool lightFg) {
+    final pad = MediaQuery.paddingOf(context);
+    final ic = FloatingUiBarStyle.iconColor(lightFg);
+    final sh = FloatingUiBarStyle.iconShadow(lightFg);
+    final ts = FloatingUiBarStyle.titleStyle(lightFg, fontSize: 18);
+    return Positioned(
+      top: 0,
+      left: 0,
+      right: 0,
+      child: Padding(
+        padding: EdgeInsets.only(top: pad.top),
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+          color: Colors.transparent,
+          child: Row(
+            children: [
+              IconButton(
+                icon: Icon(Icons.settings, color: ic, shadows: sh),
+                tooltip: '设置',
+                onPressed: _showDiarySettings,
+              ),
+              Expanded(
+                child: Text('日记本', style: ts, textAlign: TextAlign.center),
+              ),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                margin: const EdgeInsets.only(right: 8),
+                margin: const EdgeInsets.only(right: 4),
                 decoration: BoxDecoration(
                   color: Colors.blue.withOpacity(0.1),
                   borderRadius: BorderRadius.circular(12),
@@ -556,7 +558,11 @@ class _DiaryPageState extends State<DiaryPage> {
                 ),
               ),
               IconButton(
-                icon: Icon(_showFavoritesOnly ? Icons.favorite : Icons.favorite_border, color: _showFavoritesOnly ? Colors.red : null),
+                icon: Icon(
+                  _showFavoritesOnly ? Icons.favorite : Icons.favorite_border,
+                  color: _showFavoritesOnly ? Colors.red : ic,
+                  shadows: _showFavoritesOnly ? null : sh,
+                ),
                 tooltip: _showFavoritesOnly ? '显示全部' : '只看收藏',
                 onPressed: () {
                   setState(() => _showFavoritesOnly = !_showFavoritesOnly);
@@ -564,15 +570,44 @@ class _DiaryPageState extends State<DiaryPage> {
                 },
               ),
               IconButton(
-                icon: _TodayCircleIcon(),
+                icon: _TodayCircleIcon(color: ic, shadows: sh),
                 tooltip: '回到今天',
                 onPressed: () => setState(() => _selectedDate = DateTime.now()),
               ),
-            ]
+            ],
           ),
-          body: Column(
-            children: [
-              GestureDetector(
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final lightFg = FloatingUiBarStyle.preferLightForeground(
+      hasBackgroundImage: _diaryBgImage != null,
+      backgroundSolidColor: _diaryBgColor,
+    );
+    final contentTop = MediaQuery.paddingOf(context).top + kToolbarHeight;
+
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: lightFg ? SystemUiOverlayStyle.light : SystemUiOverlayStyle.dark,
+      child: Stack(
+        children: [
+          // 第一层：背景图片层（最底层）
+          if (_diaryBgImage != null)
+            Positioned.fill(
+              child: StoredViewImageLayer(file: _diaryBgImage!),
+            ),
+          // 第二层：背景颜色层（在背景图片之上）
+          if (_diaryBgColor != null)
+            Container(color: _diaryBgColor),
+          // 主内容层
+          Scaffold(
+            backgroundColor: Colors.transparent,
+            body: Column(
+              children: [
+                SizedBox(height: contentTop),
+                GestureDetector(
                 onVerticalDragUpdate: (details) {
                   if (details.delta.dy > 8) {
                     _toggleCalendar(true);
@@ -643,7 +678,9 @@ class _DiaryPageState extends State<DiaryPage> {
             ),
           ),
         ),
+          _buildDiaryFloatingTopBar(lightFg),
       ],
+    ),
     );
   }
 
@@ -1624,45 +1661,101 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
     super.dispose();
   }
 
+  Widget _buildDiaryEditFloatingTopBar() {
+    const Color fg = Color(0xE6000000);
+    final pad = MediaQuery.paddingOf(context);
+    const ts = TextStyle(
+      fontSize: 18,
+      fontWeight: FontWeight.bold,
+      color: fg,
+    );
+    return Positioned(
+      top: 0,
+      left: 0,
+      right: 0,
+      child: Padding(
+        padding: EdgeInsets.only(top: pad.top),
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+          color: Colors.transparent,
+          child: Row(
+            children: [
+              IconButton(
+                icon: const Icon(Icons.close, color: fg),
+                onPressed: () async {
+                  await _autoSave();
+                  Navigator.of(context).pop(_buildEntry());
+                },
+              ),
+              Expanded(
+                child: Text(
+                  _isLoading
+                      ? '加载中...'
+                      : '${_date.month}月${_date.day}日  ${_date.hour.toString().padLeft(2, '0')}:${_date.minute.toString().padLeft(2, '0')}  ${_weekdayStr(_date.weekday)}',
+                  style: ts,
+                  textAlign: TextAlign.center,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              IconButton(
+                icon: Icon(
+                  _isFavorite ? Icons.favorite : Icons.favorite_border,
+                  color: _isFavorite ? Colors.red : fg,
+                ),
+                tooltip: _isFavorite ? '取消收藏' : '收藏',
+                onPressed: () async {
+                  setState(() {
+                    _isFavorite = !_isFavorite;
+                  });
+                  await _autoSave();
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final topInset = MediaQuery.paddingOf(context).top + kToolbarHeight;
+    final seed = Theme.of(context).colorScheme.primary;
     return WillPopScope(
       onWillPop: () async {
         await _autoSave();
         Navigator.of(context).pop(_buildEntry());
         return false;
       },
-      child: Scaffold(
-        appBar: AppBar(
-          backgroundColor: Colors.transparent,
-          elevation: 0,
-          leading: IconButton(icon: Icon(Icons.close), onPressed: () async {
-            await _autoSave();
-            Navigator.of(context).pop(_buildEntry());
-          }),
-          title: _isLoading 
-            ? Text('加载中...', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 22))
-            : Text('${_date.month}月${_date.day}日  ${_date.hour.toString().padLeft(2, '0')}:${_date.minute.toString().padLeft(2, '0')}  ${_weekdayStr(_date.weekday)}', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 22)),
-          centerTitle: true,
-          actions: [
-            IconButton(
-              icon: Icon(_isFavorite ? Icons.favorite : Icons.favorite_border, color: _isFavorite ? Colors.red : Colors.grey),
-              tooltip: _isFavorite ? '取消收藏' : '收藏',
-              onPressed: () async {
-                setState(() {
-                  _isFavorite = !_isFavorite;
-                });
-                await _autoSave();
-              },
-            ),
-          ],
+      child: Theme(
+        data: Theme.of(context).copyWith(
+          brightness: Brightness.light,
+          scaffoldBackgroundColor: Colors.white,
+          canvasColor: Colors.white,
+          colorScheme: ColorScheme.fromSeed(
+            seedColor: seed,
+            brightness: Brightness.light,
+          ),
+          textTheme: Theme.of(context).textTheme.apply(
+            bodyColor: const Color(0xFF212121),
+            displayColor: const Color(0xFF212121),
+          ),
         ),
-        body: _isLoading
-          ? Center(child: CircularProgressIndicator())
-          : SafeArea(
-              child: SingleChildScrollView(
-            padding: EdgeInsets.symmetric(horizontal: 18, vertical: 8),
-            child: Column(
+        child: AnnotatedRegion<SystemUiOverlayStyle>(
+          value: SystemUiOverlayStyle.dark,
+          child: Scaffold(
+            backgroundColor: Colors.white,
+            body: Stack(
+            children: [
+              Positioned.fill(
+                child:
+                    _isLoading
+                        ? const Center(child: CircularProgressIndicator())
+                        : SingleChildScrollView(
+                          padding: EdgeInsets.fromLTRB(18, topInset + 8, 18, 8),
+                          child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 TextField(
@@ -1996,11 +2089,16 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
                 ),
                 SizedBox(height: 24),
               ],
+                          ),
+                        ),
+              ),
+              _buildDiaryEditFloatingTopBar(),
+            ],
           ),
         ),
+        ),
       ),
-      ),
-  );
+    );
   }
 
   DiaryEntry _buildEntry() {
@@ -2345,17 +2443,31 @@ class _ImageGalleryViewerState extends State<_ImageGalleryViewer> {
 
 // 自定义"今"字圆圈icon
 class _TodayCircleIcon extends StatelessWidget {
+  const _TodayCircleIcon({this.color, this.shadows});
+
+  final Color? color;
+  final List<Shadow>? shadows;
+
   @override
   Widget build(BuildContext context) {
+    final c = color ?? Colors.black;
     return Container(
       width: 32,
       height: 32,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        border: Border.all(color: Colors.black, width: 2),
+        border: Border.all(color: c, width: 2),
       ),
       child: Center(
-        child: Text('今', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 16)),
+        child: Text(
+          '今',
+          style: TextStyle(
+            color: c,
+            fontWeight: FontWeight.bold,
+            fontSize: 16,
+            shadows: shadows,
+          ),
+        ),
       ),
     );
   }
