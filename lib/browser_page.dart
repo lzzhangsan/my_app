@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:async';
 import 'dart:collection';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
@@ -20,6 +21,8 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:archive/archive.dart';
+import 'package:path/path.dart' as p;
+import 'package:encrypt/encrypt.dart' as enc;
 
 import 'core/service_locator.dart';
 import 'services/database_service.dart';
@@ -892,6 +895,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         
         // 超全面的URL提取逻辑 - 优先用拦截到的直链(比blob更可靠)，其次 currentSrc
         let url = null;
+        let interceptedStreamUrl = null;
         const parentLink = target.closest ? target.closest('a') : null;
         const tagName = (target.tagName || '').toLowerCase();
         const videoEl = tagName === 'video' ? target : (target.querySelector && target.querySelector('video'));
@@ -905,7 +909,13 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
               bestTime = info.timestamp; best = u;
             }
           }
-          if (best) url = best;
+          if (best) interceptedStreamUrl = best;
+        }
+        function domUrlLooksLikePosterOrThumb(u) {
+          if (!u || typeof u !== 'string') return true;
+          const s = u.toLowerCase();
+          if (s.startsWith('blob:') || s.startsWith('data:')) return false;
+          return /\\.(jpg|jpeg|png|gif|webp)(\\?|#|\$)/.test(s) && !/\\.(m3u8|m3u|mp4|webm|ts)(\\?|#|\$)/.test(s);
         }
         const urlSources = [
           () => target.currentSrc || target.src,
@@ -990,6 +1000,17 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
             const imgUrl = u.searchParams.get('imgurl') || u.searchParams.get('mediaurl') || u.searchParams.get('surl') || u.searchParams.get('imgrefurl');
             if (imgUrl && isMediaUrl(imgUrl)) { url = imgUrl; }
           } catch (e) { console.log('解析图片搜索URL失败:', e); }
+        }
+        // 拦截到的 m3u8/mp4 不要被 DOM 里的海报图、缩略图或占位 src 覆盖（否则原生侧会当图片下载或失败后退化为截屏）
+        if (interceptedStreamUrl && videoEl) {
+          const dom = (url || '').toLowerCase();
+          const domHasStream = /\\.(m3u8|m3u|mp4|webm|ts)(\\?|#|\$)/.test(dom) || dom.includes('mpegurl');
+          if (!domHasStream || domUrlLooksLikePosterOrThumb(url) || url === videoEl.poster) {
+            const i = interceptedStreamUrl.toLowerCase();
+            if (i.includes('.m3u8') || i.includes('.m3u') || i.includes('mpegurl') || /\\.(mp4|webm|ts)(\\?|#|\$)/.test(i)) {
+              url = interceptedStreamUrl;
+            }
+          }
         }
         if (!url) {
           if (videoEl && videoEl.srcObject) {
@@ -1244,9 +1265,12 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         },
       );
       final mimeType = _guessMimeType(resolvedUrl);
-      final MediaType selectedType = _determineMediaType(mimeType);
+      MediaType selectedType = _determineMediaType(mimeType);
+      if (selectedType == MediaType.image && _urlLooksLikeVideoStream(resolvedUrl)) {
+        selectedType = MediaType.video;
+      }
       final success = await _performBackgroundDownload(resolvedUrl, selectedType, skipFailurePrompt: selectedType == MediaType.image || selectedType == MediaType.video);
-        if (!success && (selectedType == MediaType.image || selectedType == MediaType.video) && mounted) {
+      if (!success && (selectedType == MediaType.image || selectedType == MediaType.video) && mounted) {
         try {
           final ctrl = _controller;
           if (ctrl != null) {
@@ -1261,7 +1285,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                 return false;
               },
             );
-            if (!canvasSucceeded) await _tryScreenshotFallback(ctrl);
+            // 视频/HLS 下载失败时不要整页截屏：易误存「全屏截图」且与「下载视频」预期不符；仅图片失败时保留截屏兜底
+            if (!canvasSucceeded && selectedType == MediaType.image) await _tryScreenshotFallback(ctrl);
             _awaitingCanvasFallbackResult = false;
             _canvasFallbackCompleter = null;
           }
@@ -1901,7 +1926,19 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     if (mimeType.startsWith('image/')) return MediaType.image;
     if (mimeType.startsWith('video/')) return MediaType.video;
     if (mimeType.startsWith('audio/')) return MediaType.audio;
+    // HLS 在 _guessMimeType 中为 application/x-mpegURL，必须走视频下载逻辑（超时、重试、M3U8 合并）
+    if (mimeType == 'application/x-mpegURL' ||
+        mimeType == 'application/vnd.apple.mpegurl' ||
+        mimeType.contains('mpegurl')) {
+      return MediaType.video;
+    }
     return MediaType.image;
+  }
+
+  bool _urlLooksLikeVideoStream(String url) {
+    final u = url.toLowerCase();
+    if (u.contains('.m3u8') || u.contains('.m3u')) return true;
+    return RegExp(r'\.(mp4|webm|mov|ts)(\?|#|$)', caseSensitive: false).hasMatch(u);
   }
 
   bool _isDownloadableLink(String url) {
@@ -2026,6 +2063,23 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     return bytes[4] == 0x66 && bytes[5] == 0x74 && bytes[6] == 0x79 && bytes[7] == 0x70;
   }
 
+  /// HLS 分片拼接后为 MPEG-TS，与 MP4 头不同；Android ExoPlayer 可播放 `.ts`。
+  bool _isLikelyMpegTs(List<int> bytes) {
+    if (bytes.isEmpty) return false;
+    if (bytes[0] == 0x47) return true;
+    final n = bytes.length;
+    for (var i = 0; i < n && i < 564; i += 188) {
+      if (bytes[i] == 0x47) return true;
+    }
+    return false;
+  }
+
+  bool _bytesLookLikeHlsPlaylistText(List<int> bytes) {
+    if (bytes.length < 7) return false;
+    final s = String.fromCharCodes(bytes.take(16));
+    return s.startsWith('#EXTM3U') || s.startsWith('#EXTINF') || s.startsWith('#EXT-X-VERSION');
+  }
+
   /// 验证图片字节是否有效（检查文件头 magic numbers）
   bool _isValidImageBytes(List<int> bytes) {
     if (bytes.length < 12) return false;
@@ -2127,7 +2181,32 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
               }
             },
           );
-          if (extension == '.m3u8') await _handleM3u8Download(filePath, downloadUrl, downloadDio);
+          if (extension == '.m3u8' || extension == '.m3u') {
+            final merged = await _handleM3u8Download(filePath, downloadUrl, downloadDio);
+            try {
+              final pl = File(filePath);
+              if (await pl.exists()) await pl.delete();
+            } catch (_) {}
+            if (merged == null || !await merged.exists()) {
+              throw Exception('[下载失败] M3U8 无法解析或分片下载失败');
+            }
+            if (await merged.length() == 0) {
+              try {
+                await merged.delete();
+              } catch (_) {}
+              throw Exception('[下载失败] 合并后的视频为空');
+            }
+            final head = await merged
+                .openRead(0, 512)
+                .fold<List<int>>([], (prev, chunk) => [...prev, ...chunk]);
+            if (!_isValidVideoBytes(head) && !_isLikelyMpegTs(head)) {
+              try {
+                await merged.delete();
+              } catch (_) {}
+              throw Exception('[下载失败] 合并结果不是可播放的视频数据');
+            }
+            return merged;
+          }
           break;
         } catch (e, stackTrace) {
           retryCount++;
@@ -2171,14 +2250,33 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         }
       }
 
-      final file = File(filePath);
+      var file = File(filePath);
       if (!await file.exists()) {
         throw Exception('[下载失败] 文件未创建，可能被服务器拒绝访问');
       }
-      final size = await file.length();
+      var size = await file.length();
       if (size == 0) {
         await file.delete();
         throw Exception('[下载失败] 文件大小为0，服务器可能返回了空内容或需要特殊鉴权');
+      }
+      // 部分站点把 m3u8 标成 video/mp4，扩展名成了 .mp4，实为 playlist 文本
+      if (mediaType == MediaType.video &&
+          extension != '.m3u8' &&
+          extension != '.m3u' &&
+          size < 2 * 1024 * 1024) {
+        final peek = await file
+            .openRead(0, 32)
+            .fold<List<int>>([], (prev, chunk) => [...prev, ...chunk]);
+        if (_bytesLookLikeHlsPlaylistText(peek)) {
+          final merged = await _handleM3u8Download(file.path, downloadUrl, downloadDio);
+          try {
+            if (await file.exists()) await file.delete();
+          } catch (_) {}
+          if (merged == null || !await merged.exists() || await merged.length() == 0) {
+            throw Exception('[下载失败] M3U8 解析或合并失败');
+          }
+          return merged;
+        }
       }
       if (mediaType == MediaType.image) {
         final bytes = await file.openRead(0, 32).fold<List<int>>([], (prev, chunk) => [...prev, ...chunk]);
@@ -2192,6 +2290,14 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         if (!_isValidVideoBytes(bytes)) {
           await file.delete();
           throw Exception('[下载失败] 下载内容不是有效MP4格式，可能是HTML错误页(403/404)或需登录，请长按视频获取');
+        }
+      }
+      if (mediaType == MediaType.video &&
+          (extension == '.ts' || extension == '.mts')) {
+        final bytes = await file.openRead(0, 512).fold<List<int>>([], (prev, chunk) => [...prev, ...chunk]);
+        if (!_isLikelyMpegTs(bytes)) {
+          await file.delete();
+          throw Exception('[下载失败] 不是有效的 TS 视频流');
         }
       }
       return file;
@@ -2215,56 +2321,229 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     }
   }
 
-  Future<void> _handleM3u8Download(String m3u8Path, String url, [Dio? dio]) async {
-    Dio http;
+  /// 下载 HLS 分片并合并为 MPEG-TS（`.ts`）。支持 AES-128-CBC + PKCS7（[#EXT-X-KEY]）。
+  /// SAMPLE-AES / FairPlay 等仍不支持。
+  Future<File?> _handleM3u8Download(String m3u8Path, String pageUrl, [Dio? dio]) async {
+    final Dio client;
     if (dio != null) {
-      http = dio;
+      client = dio;
     } else {
       final ns = NetworkService();
       await ns.initialize();
-      http = ns.dio;
+      client = ns.dio;
     }
-    String content = (await http.get(url)).data.toString();
-    Uri baseUri = Uri.parse(url);
-    final lines = content.split('\n').map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
-    if (lines.any((l) => l.contains('EXT-X-STREAM-INF')) && !lines.any((l) => l.contains('EXTINF'))) {
-      for (int i = 0; i < lines.length; i++) {
-        if (lines[i].contains('EXT-X-STREAM-INF') && i + 1 < lines.length && !lines[i + 1].startsWith('#')) {
-          final mediaUrl = lines[i + 1].startsWith('http') ? lines[i + 1] : baseUri.resolve(lines[i + 1]).toString();
-          content = (await http.get(mediaUrl)).data.toString();
+    String content = '';
+    try {
+      content = await File(m3u8Path).readAsString();
+    } catch (_) {}
+    if (!content.contains('#EXTM3U')) {
+      content = (await client.get(pageUrl)).data.toString();
+    }
+    Uri baseUri = Uri.parse(pageUrl);
+    var effectivePageUrl = pageUrl;
+    final lines0 = content.split('\n').map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
+    if (lines0.any((l) => l.contains('EXT-X-STREAM-INF')) && !lines0.any((l) => l.contains('EXTINF'))) {
+      for (var i = 0; i < lines0.length; i++) {
+        if (lines0[i].contains('EXT-X-STREAM-INF') && i + 1 < lines0.length && !lines0[i + 1].startsWith('#')) {
+          final mediaUrl = lines0[i + 1].startsWith('http')
+              ? lines0[i + 1]
+              : baseUri.resolve(lines0[i + 1]).toString();
+          content = (await client.get(mediaUrl)).data.toString();
           baseUri = Uri.parse(mediaUrl);
+          effectivePageUrl = mediaUrl;
           break;
         }
       }
     }
-    final segLines = content.split('\n').map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
-    final segments = <String>[];
-    for (final line in segLines) {
-      if (line.startsWith('#')) continue;
-      if (line.startsWith('http://') || line.startsWith('https://')) {
-        segments.add(line);
-      } else if (line.isNotEmpty) {
-        segments.add(baseUri.resolve(line).toString());
-      }
+
+    final outputPath = p.setExtension(m3u8Path, '.ts');
+    final outFile = File(outputPath);
+    if (await outFile.exists()) {
+      try {
+        await outFile.delete();
+      } catch (_) {}
     }
-    if (segments.isNotEmpty) {
-      final outputPath = m3u8Path.replaceAll('.m3u8', '.mp4');
-      final file = File(outputPath)..createSync();
-      final sink = file.openWrite();
-      final referer = _getMediaReferer(url);
-      for (final segmentUrl in segments) {
-        final segmentResponse = await http.get(
+    await outFile.create(recursive: true);
+    final sink = outFile.openWrite();
+    final referer = _getMediaReferer(effectivePageUrl);
+    const ua =
+        'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36';
+    final headers = <String, String>{
+      'Referer': referer,
+      'User-Agent': ua,
+      if (referer.startsWith('http')) 'Origin': Uri.tryParse(referer)?.origin ?? referer,
+    };
+
+    final segLines = content.split('\n').map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
+    final keyCache = <String, Uint8List>{};
+    Uint8List? aesKey;
+    Uint8List? explicitIvFromKey;
+    var useAes128 = false;
+    var sequenceForNextSegment = 0;
+
+    var lineIdx = 0;
+    while (lineIdx < segLines.length) {
+      final line = segLines[lineIdx];
+      if (line.startsWith('#EXT-X-MEDIA-SEQUENCE:')) {
+        final v = line.substring('#EXT-X-MEDIA-SEQUENCE:'.length).trim();
+        sequenceForNextSegment = int.tryParse(v) ?? 0;
+        lineIdx++;
+        continue;
+      }
+      if (line.startsWith('#EXT-X-KEY')) {
+        if (line.contains('METHOD=NONE')) {
+          useAes128 = false;
+          aesKey = null;
+          explicitIvFromKey = null;
+          lineIdx++;
+          continue;
+        }
+        if (line.contains('SAMPLE-AES')) {
+          debugPrint('M3U8: SAMPLE-AES 暂不支持');
+          await sink.close();
+          try {
+            await outFile.delete();
+          } catch (_) {}
+          return null;
+        }
+        if (line.contains('METHOD=AES-128')) {
+          final uriStr = _parseHlsKeyUri(line);
+          if (uriStr == null || uriStr.isEmpty) {
+            debugPrint('M3U8: EXT-X-KEY 缺少 URI');
+            await sink.close();
+            try {
+              await outFile.delete();
+            } catch (_) {}
+            return null;
+          }
+          final keyAbs = uriStr.startsWith('http') ? uriStr : baseUri.resolve(uriStr).toString();
+          aesKey = keyCache[keyAbs];
+          aesKey ??= await _fetchHlsKeyBytes(client, keyAbs, headers);
+          if (aesKey == null || aesKey.length != 16) {
+            debugPrint('M3U8: 密钥无效 (len=${aesKey?.length})');
+            await sink.close();
+            try {
+              await outFile.delete();
+            } catch (_) {}
+            return null;
+          }
+          keyCache[keyAbs] = aesKey;
+          explicitIvFromKey = _parseHlsIvFromKeyLine(line);
+          useAes128 = true;
+          lineIdx++;
+          continue;
+        }
+        lineIdx++;
+        continue;
+      }
+      if (line.startsWith('#EXTINF')) {
+        if (lineIdx + 1 >= segLines.length) {
+          lineIdx++;
+          continue;
+        }
+        final nextLine = segLines[lineIdx + 1];
+        if (nextLine.startsWith('#')) {
+          lineIdx++;
+          continue;
+        }
+        final segmentUrl =
+            nextLine.startsWith('http://') || nextLine.startsWith('https://') ? nextLine : baseUri.resolve(nextLine).toString();
+        final segmentResponse = await client.get(
           segmentUrl,
           options: Options(
             responseType: ResponseType.bytes,
-            headers: {'Referer': referer, 'User-Agent': 'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36'},
+            headers: headers,
           ),
         );
-        if (segmentResponse.data != null) sink.add(segmentResponse.data as List<int>);
+        final raw = segmentResponse.data;
+        if (raw is! List<int>) {
+          lineIdx += 2;
+          continue;
+        }
+        final cipher = Uint8List.fromList(raw);
+        List<int> toWrite = cipher;
+        if (useAes128 && aesKey != null) {
+          final seq = sequenceForNextSegment;
+          sequenceForNextSegment++;
+          final iv = explicitIvFromKey ?? _hlsIvFromMediaSequence(seq);
+          try {
+            toWrite = _decryptHlsAes128Cbc(aesKey, iv, cipher);
+          } catch (e, st) {
+            debugPrint('M3U8 AES 解密失败 seq=$seq: $e\n$st');
+            await sink.close();
+            try {
+              await outFile.delete();
+            } catch (_) {}
+            return null;
+          }
+        } else {
+          sequenceForNextSegment++;
+        }
+        sink.add(toWrite);
+        lineIdx += 2;
+        continue;
       }
-      await sink.close();
-      await _saveToMediaLibrary(file, MediaType.video);
+      lineIdx++;
     }
+
+    await sink.close();
+    return outFile;
+  }
+
+  String? _parseHlsKeyUri(String line) {
+    final m = RegExp(r'URI="([^"]+)"').firstMatch(line);
+    if (m != null) return m.group(1);
+    final m2 = RegExp(r"URI='([^']+)'").firstMatch(line);
+    if (m2 != null) return m2.group(1);
+    final m3 = RegExp(r'URI=([^,\s]+)').firstMatch(line);
+    return m3?.group(1);
+  }
+
+  Uint8List? _parseHlsIvFromKeyLine(String line) {
+    final m = RegExp(r'IV=0x([0-9a-fA-F]+)').firstMatch(line);
+    if (m == null) return null;
+    final hex = m.group(1)!;
+    if (hex.length != 32) return null;
+    final out = Uint8List(16);
+    for (var i = 0; i < 16; i++) {
+      out[i] = int.parse(hex.substring(i * 2, i * 2 + 2), radix: 16);
+    }
+    return out;
+  }
+
+  /// RFC 8216：无 IV 属性时，使用该 Media Segment 的序号（128 位大端）作为 IV。
+  Uint8List _hlsIvFromMediaSequence(int sequence) {
+    final out = Uint8List(16);
+    var s = sequence;
+    for (var i = 0; i < 16; i++) {
+      out[15 - i] = s & 0xff;
+      s >>= 8;
+    }
+    return out;
+  }
+
+  Future<Uint8List?> _fetchHlsKeyBytes(Dio client, String url, Map<String, String> headers) async {
+    try {
+      final r = await client.get<List<int>>(
+        url,
+        options: Options(
+          responseType: ResponseType.bytes,
+          headers: headers,
+        ),
+      );
+      final data = r.data;
+      if (data == null) return null;
+      return Uint8List.fromList(data);
+    } catch (e) {
+      debugPrint('M3U8 拉取密钥失败: $e');
+      return null;
+    }
+  }
+
+  Uint8List _decryptHlsAes128Cbc(Uint8List key, Uint8List iv, Uint8List ciphertext) {
+    final encrypter = enc.Encrypter(enc.AES(enc.Key(key), mode: enc.AESMode.cbc));
+    final decrypted = encrypter.decryptBytes(enc.Encrypted(ciphertext), iv: enc.IV(iv));
+    return Uint8List.fromList(decrypted);
   }
 
   String _getFileExtension(String path) {
