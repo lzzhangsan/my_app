@@ -1,12 +1,12 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'widgets/stored_view_image_layer.dart';
 import 'package:intl/intl.dart';
 import 'models/diary_entry.dart';
 import 'services/diary_service.dart';
 import 'package:uuid/uuid.dart';
 import 'resizable_audio_box.dart';
 import 'services/image_picker_service.dart';
-import 'resizable_image_box.dart';
 import 'dart:io';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'widgets/video_player_widget.dart';
@@ -521,7 +521,7 @@ class _DiaryPageState extends State<DiaryPage> {
         // 第一层：背景图片层（最底层）
         if (_diaryBgImage != null)
           Positioned.fill(
-            child: Image.file(_diaryBgImage!, fit: BoxFit.cover),
+            child: StoredViewImageLayer(file: _diaryBgImage!),
           ),
         // 第二层：背景颜色层（在背景图片之上）
         if (_diaryBgColor != null)

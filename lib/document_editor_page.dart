@@ -22,6 +22,7 @@ import 'package:path_provider/path_provider.dart';
 import 'services/image_picker_service.dart';
 import 'models/media_type.dart'; // 导入MediaType枚举
 import 'performance_monitor_page.dart';
+import 'widgets/stored_view_image_layer.dart';
 
 class DocumentEditorPage extends StatefulWidget {
   final String documentName;
@@ -1963,16 +1964,11 @@ class _DocumentEditorPageState extends State<DocumentEditorPage> {
         body: Stack(
           key: ValueKey('main_stack'),
           children: [
-            // 背景图片层（底层）
+            // 背景图片层（底层）：复用媒体页为该文件保存的缩放/平移/旋转
             if (_backgroundImage != null)
-              Container(
+              Positioned.fill(
                 key: ValueKey('background_image_container'),
-                decoration: BoxDecoration(
-                  image: DecorationImage(
-                    image: FileImage(_backgroundImage!),
-                    fit: BoxFit.cover,
-                  ),
-                ),
+                child: StoredViewImageLayer(file: _backgroundImage!),
               ),
             // 背景颜色层（上层）
             Container(

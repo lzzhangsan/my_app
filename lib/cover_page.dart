@@ -25,6 +25,7 @@ import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:path/path.dart' as p;
 import 'services/cache_service.dart';
+import 'widgets/stored_view_image_layer.dart';
 
 class CoverPage extends StatefulWidget {
   const CoverPage({super.key});
@@ -594,15 +595,10 @@ class _CoverPageState extends State<CoverPage> {
       extendBodyBehindAppBar: true, // 让body延伸到顶部
       body: Stack(
         children: [
-          // 第一层：背景图片层（最底层）
+          // 第一层：背景图片层（最底层），复用媒体页视窗参数
           if (_backgroundImage != null)
-            Container(
-              decoration: BoxDecoration(
-                image: DecorationImage(
-                  image: FileImage(_backgroundImage!),
-                  fit: BoxFit.cover,
-                ),
-              ),
+            Positioned.fill(
+              child: StoredViewImageLayer(file: _backgroundImage!),
             ),
           
           // 第二层：背景颜色层（在背景图片之上）

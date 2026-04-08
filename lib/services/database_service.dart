@@ -18,7 +18,9 @@ import 'export_import_utils.dart';
 import '../models/diary_entry.dart';
 import '../utils/safe_path_utils.dart';
 import '../utils/app_storage_paths.dart';
+import '../models/video_view_params.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:crypto/crypto.dart';
 
 /// 数据库服务 - 统一管理所有数据库操作
 class DatabaseService {
@@ -1088,6 +1090,57 @@ class DatabaseService {
       }
       return 0;
     }
+  }
+
+  /// 按路径或文件内容（MD5 与导入媒体库时一致）查询 [media_items] 中保存的视窗参数，
+  /// 用于文档/目录/日记等背景图与图片框复用媒体页中的缩放、平移、旋转。
+  Future<VideoViewParams> getVideoViewParamsForMediaFilePath(
+    String pathStr,
+  ) async {
+    if (pathStr.isEmpty) return const VideoViewParams();
+    try {
+      final db = await database;
+      final byPath = await db.query(
+        'media_items',
+        columns: [
+          'video_view_scale',
+          'video_view_tx',
+          'video_view_ty',
+          'video_view_rot',
+        ],
+        where: 'path = ?',
+        whereArgs: [pathStr],
+        limit: 1,
+      );
+      if (byPath.isNotEmpty) {
+        return VideoViewParams.fromMediaMap(byPath.first);
+      }
+      final file = File(pathStr);
+      if (!await file.exists()) return const VideoViewParams();
+      final digest = await md5.bind(file.openRead()).first;
+      final hash = digest.toString();
+      if (hash.isEmpty) return const VideoViewParams();
+      final byHash = await db.query(
+        'media_items',
+        columns: [
+          'video_view_scale',
+          'video_view_tx',
+          'video_view_ty',
+          'video_view_rot',
+        ],
+        where: 'file_hash = ?',
+        whereArgs: [hash],
+        limit: 1,
+      );
+      if (byHash.isNotEmpty) {
+        return VideoViewParams.fromMediaMap(byHash.first);
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        Logger.log('getVideoViewParamsForMediaFilePath: $e');
+      }
+    }
+    return const VideoViewParams();
   }
 
   /// 根据ID获取媒体项目

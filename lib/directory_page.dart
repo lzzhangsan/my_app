@@ -18,6 +18,7 @@ import 'services/test_data_generator_service.dart';
 import 'package:archive/archive_io.dart';
 import 'services/export_import_utils.dart';
 import 'utils/export_import_error_utils.dart';
+import 'widgets/stored_view_image_layer.dart';
 
 class DirectoryPage extends StatefulWidget {
   final Function(String) onDocumentOpen;
@@ -2459,15 +2460,10 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       ),
       body: Stack(
         children: [
-          // 第一层：背景图片层（最底层）
+          // 第一层：背景图片层（最底层），复用媒体页视窗参数
           if (_backgroundImage != null)
-            Container(
-              decoration: BoxDecoration(
-                image: DecorationImage(
-                  image: FileImage(_backgroundImage!),
-                  fit: BoxFit.cover,
-                ),
-              ),
+            Positioned.fill(
+              child: StoredViewImageLayer(file: _backgroundImage!),
             ),
           
           // 第二层：背景颜色层（在背景图片之上）

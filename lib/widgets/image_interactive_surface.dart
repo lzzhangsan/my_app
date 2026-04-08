@@ -129,13 +129,15 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
     if (soloStroke && _strokePoints.length >= 8) {
       final rot = detectSevenStrokeRotation(List.from(_strokePoints));
       if (rot != null) {
+        // 与 [VideoInteractiveSurface] 一致：旋转保留当前缩放；平移在旋转后视口坐标系中不再可靠，重置以免卡在边界外。
+        final preservedScale =
+            _tc.value.getMaxScaleOnAxis().clamp(1.0, 6.0);
         setState(() {
           _quarterTurns = rot
               ? (_quarterTurns + 1) % 4
               : (_quarterTurns - 1) % 4;
           if (_quarterTurns < 0) _quarterTurns += 4;
-          // 旋转后缩放/平移语义随坐标系变化，重置以免平移范围错误
-          _tc.value = Matrix4.identity();
+          _tc.value = Matrix4.identity()..scale(preservedScale);
         });
         _emitChanged();
       }
