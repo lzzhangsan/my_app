@@ -1,6 +1,8 @@
 import 'dart:io';
 import 'dart:async';
 import 'dart:collection';
+import 'dart:isolate';
+import 'dart:math' show min;
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
@@ -32,6 +34,32 @@ import 'models/media_type.dart';
 import 'media_manager_page.dart';
 import 'services/logger.dart';
 import 'services/network_service.dart';
+
+/// HLS 单分片任务（解析 playlist 后用于并行拉取）。
+class _HlsSegTask {
+  _HlsSegTask({
+    required this.url,
+    required this.mediaSeq,
+    required this.useAes128,
+    this.aesKey,
+    this.explicitIv,
+  });
+  final String url;
+  final int mediaSeq;
+  final bool useAes128;
+  final Uint8List? aesKey;
+  /// 来自 #EXT-X-KEY；为 null 时用 [mediaSeq] 生成 IV。
+  final Uint8List? explicitIv;
+}
+
+/// 同时发起的 HLS 分片 HTTP 请求数（过大易被 CDN 限流，过小则偏慢）。
+const int _kHlsParallelSegmentFetches = 6;
+
+/// 超过此大小的文件在独立 Isolate 中计算 MD5，减轻下载完成后主线程长时间卡顿。
+const int _kMd5IsolateThresholdBytes = 4 * 1024 * 1024;
+
+/// 下载进度：`fraction` 为 0~1；`detail` 为可选说明（如 HLS 分片、已下字节）。
+typedef DownloadProgressCallback = void Function(double fraction, {String? detail});
 
 // Top-level function for ZIP encoding to avoid blocking UI
 List<int>? encodeArchive(Archive archive) {
@@ -1269,7 +1297,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       if (selectedType == MediaType.image && _urlLooksLikeVideoStream(resolvedUrl)) {
         selectedType = MediaType.video;
       }
-      final success = await _performBackgroundDownload(resolvedUrl, selectedType, skipFailurePrompt: selectedType == MediaType.image || selectedType == MediaType.video);
+      final success = await _performBackgroundDownload(resolvedUrl, selectedType, skipFailurePrompt: false);
       if (!success && (selectedType == MediaType.image || selectedType == MediaType.video) && mounted) {
         try {
           final ctrl = _controller;
@@ -2111,7 +2139,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     return dio;
   }
 
-  Future<File?> _downloadFile(String url, MediaType mediaType, {CancelToken? cancelToken, void Function(double)? onProgress}) async {
+  Future<File?> _downloadFile(String url, MediaType mediaType, {CancelToken? cancelToken, DownloadProgressCallback? onProgress}) async {
     try {
       final absoluteUrl = _toAbsoluteUrl(url);
       final downloadUrl = _getCleanMediaUrl(absoluteUrl);
@@ -2176,13 +2204,34 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
               },
             ),
             onReceiveProgress: (received, total) {
-              if (total != -1 && onProgress != null) {
-                onProgress(received / total);
+              if (onProgress == null) return;
+              final isPlaylist = extension == '.m3u8' || extension == '.m3u';
+              if (isPlaylist) {
+                if (total > 0) {
+                  onProgress((received / total) * 0.02, detail: '播放列表 ${_formatBytes(received)} / ${_formatBytes(total)}');
+                } else {
+                  onProgress(0.01, detail: '正在获取播放列表 ${_formatBytes(received)}…');
+                }
+              } else if (total > 0) {
+                onProgress(received / total, detail: '${_formatBytes(received)} / ${_formatBytes(total)}');
+              } else {
+                onProgress(0.0, detail: '已下载 ${_formatBytes(received)}（总大小未知）');
               }
             },
           );
           if (extension == '.m3u8' || extension == '.m3u') {
-            final merged = await _handleM3u8Download(filePath, downloadUrl, downloadDio);
+            final merged = await _handleM3u8Download(
+              filePath,
+              downloadUrl,
+              downloadDio,
+              onMergeProgress: (completed, totalSegs, mergedBytes) {
+                final frac = totalSegs > 0 ? 0.02 + (completed / totalSegs) * 0.98 : 0.5;
+                onProgress?.call(
+                  frac.clamp(0.0, 1.0),
+                  detail: 'HLS 分片 $completed/$totalSegs · 已合并 ${_formatBytes(mergedBytes)}',
+                );
+              },
+            );
             try {
               final pl = File(filePath);
               if (await pl.exists()) await pl.delete();
@@ -2323,7 +2372,13 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
   /// 下载 HLS 分片并合并为 MPEG-TS（`.ts`）。支持 AES-128-CBC + PKCS7（[#EXT-X-KEY]）。
   /// SAMPLE-AES / FairPlay 等仍不支持。
-  Future<File?> _handleM3u8Download(String m3u8Path, String pageUrl, [Dio? dio]) async {
+  /// [onMergeProgress]：`completed` 已写入分片数，`totalSegments` 总分片数，`mergedBytes` 已合并字节数。
+  Future<File?> _handleM3u8Download(
+    String m3u8Path,
+    String pageUrl,
+    Dio? dio, {
+    void Function(int completed, int totalSegments, int mergedBytes)? onMergeProgress,
+  }) async {
     final Dio client;
     if (dio != null) {
       client = dio;
@@ -2375,11 +2430,86 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     };
 
     final segLines = content.split('\n').map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
+    final tasks = await _parseHlsSegmentTasks(segLines, baseUri, client, headers);
+    if (tasks == null) {
+      await sink.close();
+      try {
+        await outFile.delete();
+      } catch (_) {}
+      return null;
+    }
+
+    var segmentsWritten = 0;
+    if (tasks.isNotEmpty) {
+      final ok = await _writeHlsSegmentTasksParallel(
+        tasks,
+        client,
+        headers,
+        sink,
+        onProgress: onMergeProgress,
+      );
+      if (!ok) {
+        await sink.close();
+        try {
+          await outFile.delete();
+        } catch (_) {}
+        return null;
+      }
+      segmentsWritten = tasks.length;
+    }
+
+    if (segmentsWritten == 0 && !content.contains('METHOD=AES-128')) {
+      final plain = _collectHlsPlaintextSegmentUrls(segLines, baseUri);
+      final plainCount = await _downloadPlainHlsUrlsParallel(
+        client,
+        headers,
+        sink,
+        plain,
+        onProgress: onMergeProgress,
+      );
+      if (plainCount == null) {
+        await sink.close();
+        try {
+          await outFile.delete();
+        } catch (_) {}
+        return null;
+      }
+      segmentsWritten = plainCount;
+    }
+
+    await sink.close();
+
+    if (segmentsWritten == 0) {
+      try {
+        await outFile.delete();
+      } catch (_) {}
+      return null;
+    }
+    try {
+      if (await outFile.length() == 0) {
+        try {
+          await outFile.delete();
+        } catch (_) {}
+        return null;
+      }
+    } catch (_) {}
+
+    return outFile;
+  }
+
+  /// 解析媒体 playlist 得到分片列表；`null` 表示 SAMPLE-AES / 密钥错误等致命问题。
+  Future<List<_HlsSegTask>?> _parseHlsSegmentTasks(
+    List<String> segLines,
+    Uri baseUri,
+    Dio client,
+    Map<String, String> headers,
+  ) async {
     final keyCache = <String, Uint8List>{};
     Uint8List? aesKey;
     Uint8List? explicitIvFromKey;
     var useAes128 = false;
     var sequenceForNextSegment = 0;
+    final tasks = <_HlsSegTask>[];
 
     var lineIdx = 0;
     while (lineIdx < segLines.length) {
@@ -2400,20 +2530,12 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         }
         if (line.contains('SAMPLE-AES')) {
           debugPrint('M3U8: SAMPLE-AES 暂不支持');
-          await sink.close();
-          try {
-            await outFile.delete();
-          } catch (_) {}
           return null;
         }
         if (line.contains('METHOD=AES-128')) {
           final uriStr = _parseHlsKeyUri(line);
           if (uriStr == null || uriStr.isEmpty) {
             debugPrint('M3U8: EXT-X-KEY 缺少 URI');
-            await sink.close();
-            try {
-              await outFile.delete();
-            } catch (_) {}
             return null;
           }
           final keyAbs = uriStr.startsWith('http') ? uriStr : baseUri.resolve(uriStr).toString();
@@ -2421,10 +2543,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           aesKey ??= await _fetchHlsKeyBytes(client, keyAbs, headers);
           if (aesKey == null || aesKey.length != 16) {
             debugPrint('M3U8: 密钥无效 (len=${aesKey?.length})');
-            await sink.close();
-            try {
-              await outFile.delete();
-            } catch (_) {}
             return null;
           }
           keyCache[keyAbs] = aesKey;
@@ -2446,48 +2564,124 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           lineIdx++;
           continue;
         }
-        final segmentUrl =
-            nextLine.startsWith('http://') || nextLine.startsWith('https://') ? nextLine : baseUri.resolve(nextLine).toString();
-        final segmentResponse = await client.get(
-          segmentUrl,
-          options: Options(
-            responseType: ResponseType.bytes,
-            headers: headers,
-          ),
-        );
-        final raw = segmentResponse.data;
-        if (raw is! List<int>) {
-          lineIdx += 2;
-          continue;
-        }
-        final cipher = Uint8List.fromList(raw);
-        List<int> toWrite = cipher;
-        if (useAes128 && aesKey != null) {
-          final seq = sequenceForNextSegment;
-          sequenceForNextSegment++;
-          final iv = explicitIvFromKey ?? _hlsIvFromMediaSequence(seq);
-          try {
-            toWrite = _decryptHlsAes128Cbc(aesKey, iv, cipher);
-          } catch (e, st) {
-            debugPrint('M3U8 AES 解密失败 seq=$seq: $e\n$st');
-            await sink.close();
-            try {
-              await outFile.delete();
-            } catch (_) {}
-            return null;
-          }
-        } else {
-          sequenceForNextSegment++;
-        }
-        sink.add(toWrite);
+        final segmentUrl = nextLine.startsWith('http://') || nextLine.startsWith('https://')
+            ? nextLine
+            : baseUri.resolve(nextLine).toString();
+        final seq = sequenceForNextSegment;
+        sequenceForNextSegment++;
+        tasks.add(_HlsSegTask(
+          url: segmentUrl,
+          mediaSeq: seq,
+          useAes128: useAes128,
+          aesKey: useAes128 ? aesKey : null,
+          explicitIv: useAes128 ? explicitIvFromKey : null,
+        ));
         lineIdx += 2;
         continue;
       }
       lineIdx++;
     }
+    return tasks;
+  }
 
-    await sink.close();
-    return outFile;
+  Future<Uint8List?> _downloadHlsSegmentRaw(Dio client, String url, Map<String, String> headers) async {
+    try {
+      final r = await client.get<List<int>>(
+        url,
+        options: Options(
+          responseType: ResponseType.bytes,
+          headers: headers,
+        ),
+      );
+      final d = r.data;
+      if (d == null) return null;
+      if (d is Uint8List) return d;
+      return Uint8List.fromList(d);
+    } catch (e) {
+      debugPrint('HLS 分片下载失败: $url → $e');
+      return null;
+    }
+  }
+
+  Future<bool> _writeHlsSegmentTasksParallel(
+    List<_HlsSegTask> tasks,
+    Dio client,
+    Map<String, String> headers,
+    IOSink sink, {
+    void Function(int completed, int totalSegments, int mergedBytes)? onProgress,
+  }) async {
+    final total = tasks.length;
+    var mergedBytes = 0;
+    var completed = 0;
+    onProgress?.call(0, total, 0);
+    for (var i = 0; i < tasks.length; i += _kHlsParallelSegmentFetches) {
+      final end = min(i + _kHlsParallelSegmentFetches, tasks.length);
+      final batch = tasks.sublist(i, end);
+      final raws = await Future.wait(batch.map((t) => _downloadHlsSegmentRaw(client, t.url, headers)));
+      for (var j = 0; j < batch.length; j++) {
+        final raw = raws[j];
+        if (raw == null || raw.isEmpty) return false;
+        final t = batch[j];
+        List<int> toWrite = raw;
+        if (t.useAes128 && t.aesKey != null) {
+          final iv = t.explicitIv ?? _hlsIvFromMediaSequence(t.mediaSeq);
+          try {
+            toWrite = _decryptHlsAes128Cbc(t.aesKey!, iv, raw);
+          } catch (e, st) {
+            debugPrint('M3U8 AES 解密失败 seq=${t.mediaSeq}: $e\n$st');
+            return false;
+          }
+        }
+        sink.add(toWrite);
+        completed++;
+        mergedBytes += toWrite.length;
+        onProgress?.call(completed, total, mergedBytes);
+      }
+    }
+    return true;
+  }
+
+  /// 成功返回写入的分片数；任一分片失败返回 `null`（不写入残缺合并文件）。
+  Future<int?> _downloadPlainHlsUrlsParallel(
+    Dio client,
+    Map<String, String> headers,
+    IOSink sink,
+    List<String> urls, {
+    void Function(int completed, int totalSegments, int mergedBytes)? onProgress,
+  }) async {
+    final total = urls.length;
+    var mergedBytes = 0;
+    var n = 0;
+    onProgress?.call(0, total, 0);
+    for (var i = 0; i < urls.length; i += _kHlsParallelSegmentFetches) {
+      final end = min(i + _kHlsParallelSegmentFetches, urls.length);
+      final batch = urls.sublist(i, end);
+      final raws = await Future.wait(batch.map((u) => _downloadHlsSegmentRaw(client, u, headers)));
+      for (final raw in raws) {
+        if (raw == null || raw.isEmpty) return null;
+        sink.add(raw);
+        n++;
+        mergedBytes += raw.length;
+        onProgress?.call(n, total, mergedBytes);
+      }
+    }
+    return n;
+  }
+
+  /// 无 #EXTINF 时的兜底：收集非 # 行中的分片 URL（仅用于未加密的媒体 playlist）。
+  List<String> _collectHlsPlaintextSegmentUrls(List<String> lines, Uri baseUri) {
+    final out = <String>[];
+    for (final line in lines) {
+      if (line.startsWith('#')) continue;
+      if (line.startsWith('http://') || line.startsWith('https://')) {
+        out.add(line);
+      } else if (line.isNotEmpty) {
+        try {
+          out.add(baseUri.resolve(line).toString());
+        } catch (_) {}
+      }
+    }
+    return out;
   }
 
   String? _parseHlsKeyUri(String line) {
@@ -2603,6 +2797,14 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
   Future<String> _calculateFileHash(File file) async {
     try {
+      final path = file.path;
+      final len = await file.length();
+      if (len >= _kMd5IsolateThresholdBytes) {
+        return await Isolate.run(() async {
+          final digest = await md5.bind(File(path).openRead()).first;
+          return digest.toString();
+        });
+      }
       final digest = await md5.bind(file.openRead()).first;
       return digest.toString();
     } catch (e) {
@@ -3274,6 +3476,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                               final status = t['status'] as String? ?? '';
                               final progress = (t['progress'] as num?)?.toDouble() ?? 0.0;
                               final name = t['displayName'] as String? ?? '未知';
+                              final progressDetail = (t['progressDetail'] as String?)?.trim() ?? '';
                               final isDownloading = status == 'downloading';
                               final isPaused = status == 'paused';
                               final canRetry = status == 'cancelled' || status == 'failed';
@@ -3287,9 +3490,19 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                                         crossAxisAlignment: CrossAxisAlignment.start,
                                         children: [
                                           Text(name, style: const TextStyle(color: Colors.white, fontSize: 12), maxLines: 1, overflow: TextOverflow.ellipsis),
-                                          if (isDownloading)
-                                            LinearProgressIndicator(value: progress, backgroundColor: Colors.grey, valueColor: const AlwaysStoppedAnimation<Color>(Colors.green))
-                                          else
+                                          if (isDownloading) ...[
+                                            LinearProgressIndicator(value: progress, backgroundColor: Colors.grey, valueColor: const AlwaysStoppedAnimation<Color>(Colors.green)),
+                                            if (progressDetail.isNotEmpty)
+                                              Padding(
+                                                padding: const EdgeInsets.only(top: 4),
+                                                child: Text(
+                                                  progressDetail,
+                                                  style: const TextStyle(color: Colors.white70, fontSize: 10, height: 1.2),
+                                                  maxLines: 2,
+                                                  overflow: TextOverflow.ellipsis,
+                                                ),
+                                              ),
+                                          ] else
                                             Text(
                                               status == 'completed' ? '已完成' : status == 'paused' ? '已暂停' : status == 'cancelled' ? '已取消' : '失败',
                                               style: TextStyle(color: status == 'completed' ? Colors.green : Colors.grey, fontSize: 10),
@@ -3398,8 +3611,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         absoluteUrl,
         mediaType,
         cancelToken: cancelToken,
-        onProgress: (p) {
-          if (mounted) _updateDownloadTask(taskId, progress: p);
+        onProgress: (p, {detail}) {
+          if (mounted) _updateDownloadTask(taskId, progress: p, progressDetail: detail ?? '');
         },
       );
 
@@ -3407,10 +3620,10 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         debugPrint('文件下载成功: ${file.path}');
         await _saveToMediaLibrary(file, mediaType);
         if (mounted) {
-          _updateDownloadTask(taskId, status: 'completed');
+          _updateDownloadTask(taskId, status: 'completed', progressDetail: '');
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('${mediaType == MediaType.video ? "视频" : mediaType == MediaType.image ? "图片" : "音频"}已成功保存到媒体库: ${file.path.split('/').last}'),
+              content: Text('${mediaType == MediaType.video ? "视频" : mediaType == MediaType.image ? "图片" : "音频"}已保存到媒体库：${file.path.split('/').last}'),
               duration: const Duration(seconds: 5),
               action: SnackBarAction(label: '查看', onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (context) => const MediaManagerPage()))),
             ),
@@ -3419,9 +3632,9 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         return true;
       } else {
         if (mounted && !skipFailurePrompt) {
-          _updateDownloadTask(taskId, status: 'failed');
+          _updateDownloadTask(taskId, status: 'failed', progressDetail: '');
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('下载失败: 文件未生成或格式无效'), duration: const Duration(seconds: 4)),
+            SnackBar(content: Text(_downloadErrorForUser(Exception('未能生成有效文件，链接可能失效或内容不是可保存的媒体格式'))), duration: const Duration(seconds: 5)),
           );
         } else if (mounted && skipFailurePrompt) {
           _removeDownloadTask(taskId);
@@ -3435,9 +3648,9 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       }
       debugPrint('后台下载出错: $absoluteUrl, 错误: $e');
       if (mounted && !skipFailurePrompt) {
-        _updateDownloadTask(taskId, status: 'failed');
+        _updateDownloadTask(taskId, status: 'failed', progressDetail: '');
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('下载失败: ${_getDioErrorReason(e)}'), duration: const Duration(seconds: 5)),
+          SnackBar(content: Text(_downloadErrorForUser(e)), duration: const Duration(seconds: 6)),
         );
       } else if (mounted && skipFailurePrompt) {
         _removeDownloadTask(taskId);
@@ -3446,9 +3659,9 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     } catch (e, st) {
       debugPrint('后台下载出错: $absoluteUrl, 错误: $e\n$st');
       if (mounted && !skipFailurePrompt) {
-        _updateDownloadTask(taskId, status: 'failed');
+        _updateDownloadTask(taskId, status: 'failed', progressDetail: '');
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('下载失败: ${e.toString().replaceFirst('Exception: ', '')}'), duration: const Duration(seconds: 5)),
+          SnackBar(content: Text(_downloadErrorForUser(e)), duration: const Duration(seconds: 6)),
         );
       } else if (mounted && skipFailurePrompt) {
         _removeDownloadTask(taskId);
@@ -3466,6 +3679,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       'url': url,
       'displayName': displayName,
       'progress': 0.0,
+      'progressDetail': '',
       'status': 'downloading',
       'cancelToken': cancelToken,
       'mediaType': mediaType,
@@ -3474,11 +3688,12 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     _downloadTasksNotifier.value = List.from(_downloadTasks);
   }
 
-  void _updateDownloadTask(String id, {double? progress, String? status}) {
+  void _updateDownloadTask(String id, {double? progress, String? status, String? progressDetail}) {
     final idx = _downloadTasks.indexWhere((t) => t['id'] == id);
     if (idx < 0) return;
     if (progress != null) _downloadTasks[idx]['progress'] = progress;
     if (status != null) _downloadTasks[idx]['status'] = status;
+    if (progressDetail != null) _downloadTasks[idx]['progressDetail'] = progressDetail;
     _downloadTasksNotifier.value = List.from(_downloadTasks);
   }
 
@@ -3491,6 +3706,55 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     } catch (_) {
       return url.length > 25 ? '${url.substring(0, 22)}...' : url;
     }
+  }
+
+  String _formatBytes(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    if (bytes < 1024 * 1024 * 1024) return '${(bytes / (1024 * 1024)).toStringAsFixed(2)} MB';
+    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
+  }
+
+  /// 将异常与内部文案转换为用户可读的下载失败说明。
+  String _downloadErrorForUser(Object e) {
+    if (e is DioException) return '下载失败：${_getDioErrorReason(e)}';
+    var s = e.toString().replaceFirst(RegExp(r'^Exception:\s*'), '').trim();
+    s = s.replaceAll('[下载失败]', '').trim();
+    if (s.contains('SAMPLE-AES') || (s.contains('加密') && s.contains('不支持'))) {
+      return '下载失败：该视频为不支持的加密格式（如 SAMPLE-AES），无法合并保存';
+    }
+    if (s.contains('解密失败') || (s.contains('AES') && s.contains('失败'))) {
+      return '下载失败：视频分片解密失败，请稍后重试或更换播放源';
+    }
+    if (s.contains('密钥') && (s.contains('无效') || s.contains('缺少'))) {
+      return '下载失败：无法获取解密密钥，可能被服务器限制或需要登录';
+    }
+    if (s.contains('M3U8') && (s.contains('解析') || s.contains('分片'))) {
+      return '下载失败：流媒体列表解析或分片拉取失败，请检查网络后重试';
+    }
+    if (s.contains('合并') && s.contains('空')) {
+      return '下载失败：合并后的文件为空，链接可能已失效';
+    }
+    if (s.contains('不是可播放') || s.contains('不是有效')) {
+      return '下载失败：保存的内容不是有效视频/图片，可能被拦截或需登录后重试';
+    }
+    if (s.contains('超时')) {
+      return '下载失败：$s';
+    }
+    if (s.contains('403') || s.contains('禁止访问')) {
+      return '下载失败：服务器拒绝访问，可尝试登录站点或更换网络';
+    }
+    if (s.contains('404') || s.contains('不存在')) {
+      return '下载失败：文件不存在或链接已失效';
+    }
+    if (s.contains('未能生成有效文件')) {
+      return s;
+    }
+    if (s.contains('已存在') && s.contains('媒体库')) {
+      return '该文件已在媒体库中，未重复保存';
+    }
+    if (s.length > 160) return '下载失败：${s.substring(0, 157)}…';
+    return '下载失败：$s';
   }
 
   String _getDioErrorReason(DioException e) {
