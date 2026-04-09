@@ -32,6 +32,7 @@ import 'utils/export_import_error_utils.dart';
 import 'models/media_item.dart';
 import 'models/media_type.dart';
 import 'media_manager_page.dart';
+import 'media_preview_page.dart';
 import 'services/logger.dart';
 import 'services/network_service.dart';
 
@@ -312,6 +313,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     _loadBookmarks();
     _loadCommonWebsites();
     _loadHistory();
+    _loadVideoSourceUrlMap();
   }
 
   @override
@@ -328,6 +330,143 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   Future<void> _initializeDownloader() async {
     await FlutterDownloader.initialize();
     await _requestPermissions();
+  }
+
+  Future<void> _loadVideoSourceUrlMap() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_kVideoSourceUrlMapPrefsKey);
+      if (raw == null || raw.trim().isEmpty) return;
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return;
+      _videoSourceUrlToMediaId
+        ..clear()
+        ..addAll(decoded.map((k, v) => MapEntry(k.toString(), v.toString())));
+    } catch (e) {
+      debugPrint('加载视频来源映射失败: $e');
+    }
+  }
+
+  Future<void> _saveVideoSourceUrlMap() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+        _kVideoSourceUrlMapPrefsKey,
+        jsonEncode(_videoSourceUrlToMediaId),
+      );
+    } catch (e) {
+      debugPrint('保存视频来源映射失败: $e');
+    }
+  }
+
+  String _normalizeVideoSourceUrl(String url) {
+    final uri = Uri.tryParse(_toAbsoluteUrl(url));
+    if (uri == null) return url;
+    const ignoredParams = <String>{
+      'token',
+      'sig',
+      'signature',
+      'expires',
+      'expire',
+      'exp',
+      'auth',
+      'auth_key',
+      'x-amz-signature',
+      'x-amz-date',
+      'x-amz-credential',
+      'x-amz-security-token',
+      'x-amz-algorithm',
+      'x-amz-expires',
+      'x-signature',
+      't',
+      'ts',
+      'timestamp',
+    };
+    final keptEntries = <MapEntry<String, String>>[];
+    for (final e in uri.queryParametersAll.entries) {
+      final key = e.key.toLowerCase();
+      if (ignoredParams.contains(key)) continue;
+      for (final value in e.value) {
+        keptEntries.add(MapEntry(e.key, value));
+      }
+    }
+    keptEntries.sort((a, b) {
+      final c = a.key.compareTo(b.key);
+      if (c != 0) return c;
+      return a.value.compareTo(b.value);
+    });
+    final query = keptEntries
+        .map(
+          (e) =>
+              '${Uri.encodeQueryComponent(e.key)}=${Uri.encodeQueryComponent(e.value)}',
+        )
+        .join('&');
+    return uri.replace(query: query, fragment: '').toString();
+  }
+
+  Future<String> _resolveMediaLocationLabel(Map<String, dynamic> mediaRow) async {
+    final dir = mediaRow['directory']?.toString() ?? '';
+    if (dir.isEmpty || dir == 'root') return '根目录';
+    if (dir == 'favorites') return '收藏夹';
+    if (dir == 'recycle_bin') return '回收站';
+    final parent = await _databaseService.getMediaItemById(dir);
+    final name = parent?['name']?.toString();
+    if (name != null && name.isNotEmpty) return name;
+    return dir;
+  }
+
+  Future<Map<String, dynamic>?> _findExistingVideoBySourceUrl(String url) async {
+    final normalized = _normalizeVideoSourceUrl(url);
+    final mediaId = _videoSourceUrlToMediaId[normalized];
+    if (mediaId == null || mediaId.isEmpty) return null;
+    final row = await _databaseService.getMediaItemById(mediaId);
+    if (row == null) {
+      _videoSourceUrlToMediaId.remove(normalized);
+      await _saveVideoSourceUrlMap();
+      return null;
+    }
+    final type = DatabaseService.mediaTypeIndex(row);
+    if (type != MediaType.video.index) return null;
+    final directory = row['directory']?.toString() ?? '';
+    // 仅将「当前媒体库可见/可用」的视频视为已存在；回收站中的旧记录不阻止再次下载。
+    if (directory == 'recycle_bin') {
+      _videoSourceUrlToMediaId.remove(normalized);
+      await _saveVideoSourceUrlMap();
+      return null;
+    }
+    final path = row['path']?.toString() ?? '';
+    if (path.isEmpty || !await File(path).exists()) {
+      _videoSourceUrlToMediaId.remove(normalized);
+      await _saveVideoSourceUrlMap();
+      return null;
+    }
+    return row;
+  }
+
+  Future<void> _showVideoDuplicateSnackBar(Map<String, dynamic> existingRow) async {
+    if (!mounted) return;
+    final location = await _resolveMediaLocationLabel(existingRow);
+    final title = existingRow['name']?.toString() ?? '该视频';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('媒体库已存在：$title（位置：$location）'),
+        duration: _kMediaSaveSnackDuration,
+        action: SnackBarAction(
+          label: '查看',
+          onPressed: () {
+            final mediaItem = MediaItem.fromMap(
+              Map<String, dynamic>.from(existingRow),
+            );
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (context) =>
+                    MediaPreviewPage(mediaItems: [mediaItem], initialIndex: 0),
+              ),
+            );
+          },
+        ),
+      ),
+    );
   }
 
   Future<void> _requestPermissions() async {
@@ -356,6 +495,9 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   }
 
   final Set<String> _downloadingUrls = {};
+  final Map<String, String> _videoSourceUrlToMediaId = {};
+  static const String _kVideoSourceUrlMapPrefsKey =
+      'browser_video_source_url_map_v1';
   /// 记录非 Base64 媒体 URL 最近一次开始处理的时间；与 [markMediaUrlProcessing] 配合，避免永久占用。
   final Map<String, DateTime> _processedMediaUrlsSince = {};
   bool _awaitingCanvasFallbackResult = false;
@@ -1423,6 +1565,13 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       if (selectedType == MediaType.image && _urlLooksLikeVideoStream(resolvedUrl)) {
         selectedType = MediaType.video;
       }
+      if (selectedType == MediaType.video) {
+        final existing = await _findExistingVideoBySourceUrl(resolvedUrl);
+        if (existing != null) {
+          await _showVideoDuplicateSnackBar(existing);
+          return;
+        }
+      }
       final mayFallback =
           selectedType == MediaType.image || selectedType == MediaType.video;
       final success = await _performBackgroundDownload(
@@ -2079,6 +2228,13 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           final bool shouldDownload = result['download'];
           final MediaType mediaType = result['mediaType'];
           if (shouldDownload && mediaType != MediaType.audio) {
+            if (mediaType == MediaType.video) {
+              final existing = await _findExistingVideoBySourceUrl(processedUrl);
+              if (existing != null) {
+                await _showVideoDuplicateSnackBar(existing);
+                return;
+              }
+            }
             ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('开始下载，将在后台进行...'), duration: Duration(seconds: 2)));
             _performBackgroundDownload(processedUrl, mediaType);
           } else if (mediaType == MediaType.audio) {
@@ -2086,8 +2242,15 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           }
         }
       } else {
+        if (selectedType == MediaType.video) {
+          final existing = await _findExistingVideoBySourceUrl(processedUrl);
+          if (existing != null) {
+            await _showVideoDuplicateSnackBar(existing);
+            return;
+          }
+        }
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('开始下载，将在后台进行...'), duration: Duration(seconds: 2)));
-  _performBackgroundDownload(processedUrl, selectedType);
+        _performBackgroundDownload(processedUrl, selectedType);
       }
     } catch (e, stackTrace) {
       debugPrint('处理下载时出错: $e');
@@ -3188,7 +3351,10 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     return lastDot != -1 ? path.substring(lastDot) : '';
   }
 
-  Future<void> _saveToMediaLibrary(File file, MediaType mediaType) async {
+  Future<Map<String, dynamic>> _saveToMediaLibrary(
+    File file,
+    MediaType mediaType,
+  ) async {
     try {
       final fileName = file.path.split('/').last;
       final fileHash = await _calculateFileHash(file);
@@ -3206,6 +3372,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       final mediaItemMap = mediaItem.toMap();
       mediaItemMap['file_hash'] = fileHash;
       await _databaseService.insertMediaItem(mediaItemMap);
+      return mediaItemMap;
     } catch (e) {
       debugPrint('保存到媒体库时出错: $e');
       rethrow;
@@ -4062,7 +4229,15 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
       if (file != null) {
         debugPrint('文件下载成功: ${file.path}');
-        await _saveToMediaLibrary(file, mediaType);
+        final mediaMap = await _saveToMediaLibrary(file, mediaType);
+        if (mediaType == MediaType.video) {
+          final norm = _normalizeVideoSourceUrl(absoluteUrl);
+          final mediaId = mediaMap['id']?.toString();
+          if (mediaId != null && mediaId.isNotEmpty) {
+            _videoSourceUrlToMediaId[norm] = mediaId;
+            await _saveVideoSourceUrlMap();
+          }
+        }
         if (mounted) {
           _updateDownloadTask(taskId, status: 'completed', progressDetail: '');
           ScaffoldMessenger.of(context).showSnackBar(
