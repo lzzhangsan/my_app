@@ -239,10 +239,8 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
           maxScale: 6.0,
           panEnabled: panOk,
           scaleEnabled: widget.editable,
-          boundaryMargin: widget.editable
-              ? const EdgeInsets.all(double.infinity)
-              : EdgeInsets.zero,
-          constrained: widget.editable ? false : true,
+          boundaryMargin: EdgeInsets.zero,
+          constrained: true,
           clipBehavior: Clip.hardEdge,
           onInteractionStart: (_) {
             if (widget.editable) _hasUserInteracted = true;

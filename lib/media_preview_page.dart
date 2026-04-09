@@ -68,6 +68,8 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
   String? _staticDemoItemId;
   Timer? _mediaTimer;
   bool _skipNextPageChanged = false; // 删除/收藏/移动后忽略一次 onPageChanged，避免跳回第一项
+  int _activePreviewPointers = 0;
+  bool _transformOnlyMode = false;
 
   bool get _isCurrentInRecycleBin {
     if (_currentIndex < 0 || _currentIndex >= widget.mediaItems.length) {
@@ -1048,6 +1050,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
 
   @override
   Widget build(BuildContext context) {
+    final bool pageSwipeLocked = _transformOnlyMode || _activePreviewPointers >= 2;
     return Scaffold(
       // 与「透明留白」配合：上下未铺满处透出黑底，白色顶栏图标可见；图片区仍由内容层绘制。
       backgroundColor: Colors.black,
@@ -1055,41 +1058,62 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
         fit: StackFit.expand,
         children: [
           // 主内容 - 媒体预览
-          PageView.builder(
-            key: ValueKey(widget.mediaItems.length), // 列表变更时强制重建，确保视频正确切换
-            controller: _pageController,
-            itemCount: widget.mediaItems.length,
-            onPageChanged: (index) {
-              if (_skipNextPageChanged) {
-                _skipNextPageChanged = false;
-                return;
-              }
+          Listener(
+            behavior: HitTestBehavior.translucent,
+            onPointerDown: (_) {
               setState(() {
-                _currentIndex = index;
-                _staticKenBurnsDemo = false;
-                _staticDemoItemId = null;
+                _activePreviewPointers += 1;
               });
-              
-              // 确保当前页面的视频控制器已初始化，然后立即播放（手动/自动模式一致）
-              _initializeVideoControllerAt(index).then((_) {
-                if (!mounted) return;
-                _cleanupUnusedControllers();
-                _playCurrentMedia();
+            },
+            onPointerUp: (_) {
+              setState(() {
+                _activePreviewPointers = (_activePreviewPointers - 1).clamp(0, 10);
               });
-              // 预加载相邻页面的视频
-              if (index > 0) {
-                _initializeVideoControllerAt(index - 1);
-              }
-              if (index < widget.mediaItems.length - 1) {
-                _initializeVideoControllerAt(index + 1);
-              }
             },
-            itemBuilder: (context, index) {
-              final item = widget.mediaItems[index];
-              return item.type == MediaType.video
-                  ? _buildVideoPreview(item, index)
-                  : _buildImagePreview(item);
+            onPointerCancel: (_) {
+              setState(() {
+                _activePreviewPointers = (_activePreviewPointers - 1).clamp(0, 10);
+              });
             },
+            child: PageView.builder(
+              key: ValueKey(widget.mediaItems.length), // 列表变更时强制重建，确保视频正确切换
+              controller: _pageController,
+              physics: pageSwipeLocked
+                  ? const NeverScrollableScrollPhysics()
+                  : const PageScrollPhysics(),
+              itemCount: widget.mediaItems.length,
+              onPageChanged: (index) {
+                if (_skipNextPageChanged) {
+                  _skipNextPageChanged = false;
+                  return;
+                }
+                setState(() {
+                  _currentIndex = index;
+                  _staticKenBurnsDemo = false;
+                  _staticDemoItemId = null;
+                });
+
+                // 确保当前页面的视频控制器已初始化，然后立即播放（手动/自动模式一致）
+                _initializeVideoControllerAt(index).then((_) {
+                  if (!mounted) return;
+                  _cleanupUnusedControllers();
+                  _playCurrentMedia();
+                });
+                // 预加载相邻页面的视频
+                if (index > 0) {
+                  _initializeVideoControllerAt(index - 1);
+                }
+                if (index < widget.mediaItems.length - 1) {
+                  _initializeVideoControllerAt(index + 1);
+                }
+              },
+              itemBuilder: (context, index) {
+                final item = widget.mediaItems[index];
+                return item.type == MediaType.video
+                    ? _buildVideoPreview(item, index)
+                    : _buildImagePreview(item);
+              },
+            ),
           ),
 
           // 顶部工具栏 - 始终显示
@@ -1214,6 +1238,28 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
                   icon: Icons.drive_file_move_outline,
                   tooltip: '移动',
                   onPressed: _moveCurrentMediaItem,
+                ),
+                const SizedBox(height: 8),
+                _buildActionButton(
+                  icon: _transformOnlyMode ? Icons.pan_tool : Icons.zoom_out_map,
+                  tooltip: _transformOnlyMode ? '关闭缩放/移动模式' : '开启缩放/移动模式',
+                  onPressed: () {
+                    setState(() {
+                      _transformOnlyMode = !_transformOnlyMode;
+                    });
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          _transformOnlyMode
+                              ? '已开启缩放/移动模式（禁用左右翻页）'
+                              : '已关闭缩放/移动模式（恢复左右翻页）',
+                        ),
+                        duration: const Duration(milliseconds: 1500),
+                        behavior: SnackBarBehavior.floating,
+                        margin: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+                      ),
+                    );
+                  },
                 ),
               ],
             ),
