@@ -6,7 +6,6 @@ import 'package:video_player/video_player.dart';
 import '../models/video_view_params.dart';
 import 'video_seven_stroke.dart';
 
-/// 媒体页：双指缩放、单指平移（放大后）、「7」形旋转；文档栏：只读套用 [initial]。
 class VideoInteractiveSurface extends StatefulWidget {
   const VideoInteractiveSurface({
     super.key,
@@ -14,19 +13,19 @@ class VideoInteractiveSurface extends StatefulWidget {
     required this.videoChild,
     required this.initial,
     this.editable = true,
+    this.singleFingerPanEnabled = false,
     this.onChanged,
     this.onTripleTapReset,
     this.useScreenSizeForNormalization = false,
   });
 
   final VideoPlayerController videoController;
-  /// 通常为 [Chewie]（可外包 [Theme]）。
   final Widget videoChild;
   final VideoViewParams initial;
   final bool editable;
+  final bool singleFingerPanEnabled;
   final ValueChanged<VideoViewParams>? onChanged;
   final VoidCallback? onTripleTapReset;
-  /// 为 true 时，平移归一化按整屏尺寸计算，减少不同页面容器高度差导致的复现偏移。
   final bool useScreenSizeForNormalization;
 
   @override
@@ -35,6 +34,7 @@ class VideoInteractiveSurface extends StatefulWidget {
 }
 
 class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
+  static const EdgeInsets _editableBoundaryMargin = EdgeInsets.all(100000);
   final TransformationController _tc = TransformationController();
   Timer? _debounce;
   int _quarterTurns = 0;
@@ -96,10 +96,16 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
     final m = _tc.value;
     final t = m.getTranslation();
     final s = m.getMaxScaleOnAxis().clamp(1.0, 6.0);
-    final bw = _lastNormBasisW;
-    final bh = _lastNormBasisH;
-    final tx = bw > 1e-6 ? t.x / bw : 0.0;
-    final ty = bh > 1e-6 ? t.y / bh : 0.0;
+    final extents = _panHalfExtents(
+      basisW: _lastNormBasisW,
+      basisH: _lastNormBasisH,
+      scale: s,
+      quarterTurns: _quarterTurns,
+    );
+    final tx =
+        extents.maxX > 1e-6 ? (t.x / extents.maxX).clamp(-1.0, 1.0) : 0.0;
+    final ty =
+        extents.maxY > 1e-6 ? (t.y / extents.maxY).clamp(-1.0, 1.0) : 0.0;
     final current = VideoViewParams(
       scale: s,
       txNorm: tx,
@@ -112,13 +118,39 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
 
   void _applyInitial(double vw, double vh) {
     final p = widget.initial;
-    final bw = _lastNormBasisW;
-    final bh = _lastNormBasisH;
-    _lastAppliedBasisW = bw;
-    _lastAppliedBasisH = bh;
-    _tc.value = Matrix4.identity()
-      ..translate(p.txNorm * bw, p.tyNorm * bh)
-      ..scale(p.scale.clamp(1.0, 6.0));
+    final scale = p.scale.clamp(1.0, 6.0).toDouble();
+    final extents = _panHalfExtents(
+      basisW: _lastNormBasisW,
+      basisH: _lastNormBasisH,
+      scale: scale,
+      quarterTurns: _quarterTurns,
+    );
+    _lastAppliedBasisW = _lastNormBasisW;
+    _lastAppliedBasisH = _lastNormBasisH;
+    _tc.value =
+        Matrix4.identity()
+          ..translate(
+            p.txNorm.clamp(-1.0, 1.0) * extents.maxX,
+            p.tyNorm.clamp(-1.0, 1.0) * extents.maxY,
+          )
+          ..scale(scale);
+  }
+
+  ({double maxX, double maxY}) _panHalfExtents({
+    required double basisW,
+    required double basisH,
+    required double scale,
+    required int quarterTurns,
+  }) {
+    final sideways = quarterTurns % 2 == 1;
+    final childW = sideways ? basisH : basisW;
+    final childH = sideways ? basisW : basisH;
+    final scaledW = childW * scale;
+    final scaledH = childH * scale;
+    return (
+      maxX: ((scaledW - basisW) / 2).clamp(0.0, double.infinity),
+      maxY: ((scaledH - basisH) / 2).clamp(0.0, double.infinity),
+    );
   }
 
   void _resetToDefaultView() {
@@ -177,7 +209,6 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
     if (downPos != null && (e.localPosition - downPos).distance > 24.0) {
       _singlePointerMovedTooFar = true;
     }
-    // 单指轨迹用于「7」形旋转识别；放大后仍需有效，故不再限制 scale。
     if (_activePointers.length == 1) {
       _strokePoints.add(e.localPosition);
     }
@@ -190,16 +221,15 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
       _strokePoints.clear();
       return;
     }
-    if (soloStroke && _strokePoints.length >= 8) {
+    if (!widget.singleFingerPanEnabled &&
+        soloStroke &&
+        _strokePoints.length >= 8) {
       final rot = detectSevenStrokeRotation(List.from(_strokePoints));
       if (rot != null) {
-        // 只更新 quarterTurns；[InteractiveViewer] 的缩放/平移保留在 [_tc] 中。
         setState(() {
-          _quarterTurns = rot
-              ? (_quarterTurns + 1) % 4
-              : (_quarterTurns - 1) % 4;
+          _quarterTurns =
+              rot ? (_quarterTurns + 1) % 4 : (_quarterTurns - 1) % 4;
           if (_quarterTurns < 0) _quarterTurns += 4;
-          // 旋转后保持当前缩放并重新居中，避免画面偏到可视区外。
           _tc.value = _centeredScaleMatrix(_tc.value.getMaxScaleOnAxis());
         });
         _emitChanged(force: true);
@@ -262,12 +292,10 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
           view.physicalSize.width / view.devicePixelRatio,
           view.physicalSize.height / view.devicePixelRatio,
         );
-        _lastNormBasisW = widget.useScreenSizeForNormalization
-            ? screenSize.width
-            : vw;
-        _lastNormBasisH = widget.useScreenSizeForNormalization
-            ? screenSize.height
-            : vh;
+        _lastNormBasisW =
+            widget.useScreenSizeForNormalization ? screenSize.width : vw;
+        _lastNormBasisH =
+            widget.useScreenSizeForNormalization ? screenSize.height : vh;
 
         if (!_appliedInitial && vw > 1 && vh > 1) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -292,19 +320,21 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
         }
 
         final scale = _scaleNow();
-        // 防误触：单指只用于页面左右切换；仅双指接触时允许平移当前画面。
+        final requiredPointerCount = widget.singleFingerPanEnabled ? 1 : 2;
         final panOk =
             widget.editable &&
-            _activePointers.length >= 2 &&
+            _activePointers.length >= requiredPointerCount &&
             scale > 1.01;
 
         final iv = InteractiveViewer(
           transformationController: _tc,
+          alignment: Alignment.center,
           minScale: 1.0,
           maxScale: 6.0,
           panEnabled: panOk,
           scaleEnabled: widget.editable,
-          boundaryMargin: EdgeInsets.zero,
+          boundaryMargin:
+              widget.editable ? _editableBoundaryMargin : EdgeInsets.zero,
           constrained: true,
           clipBehavior: Clip.hardEdge,
           onInteractionStart: (_) {
@@ -315,11 +345,7 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
           },
           child: RotatedBox(
             quarterTurns: _quarterTurns,
-            child: SizedBox(
-              width: w,
-              height: h,
-              child: widget.videoChild,
-            ),
+            child: SizedBox(width: w, height: h, child: widget.videoChild),
           ),
         );
 

@@ -34,10 +34,10 @@ class MediaPreviewPage extends StatefulWidget {
   final bool openedFromRecycleBin;
 
   const MediaPreviewPage({
-    required this.mediaItems, 
-    required this.initialIndex, 
+    required this.mediaItems,
+    required this.initialIndex,
     this.openedFromRecycleBin = false,
-    super.key
+    super.key,
   });
 
   @override
@@ -61,8 +61,10 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
   bool _panClockwise = true;
   double _imagePanRoamCoverage = 0.28;
   ImageLetterboxFill _letterboxFill = ImageLetterboxFill.transparent;
+
   /// 双击更新渐进放大中心后递增，强制 Ken Burns 立即重播。
   int _kenBurnsReplayTick = 0;
+
   /// 静态模式下双击保存中心后，临时用 Ken Burns 播完一轮再恢复静态。
   bool _staticKenBurnsDemo = false;
   String? _staticDemoItemId;
@@ -88,7 +90,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     _currentIndex = widget.initialIndex;
     _pageController = PageController(initialPage: widget.initialIndex);
     unawaited(_loadMediaPreviewSettings());
-    
+
     // 预初始化当前页和相邻页的视频控制器
     _initializeVideoControllerAt(_currentIndex);
     if (_currentIndex > 0) {
@@ -97,7 +99,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     if (_currentIndex < widget.mediaItems.length - 1) {
       _initializeVideoControllerAt(_currentIndex + 1);
     }
-    
+
     // 设置状态栏为透明
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
   }
@@ -111,7 +113,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
       t.cancel();
     }
     _pendingCenterCommitTimers.clear();
-    
+
     // 释放所有视频控制器
     for (final controller in _videoControllers.values) {
       controller.dispose();
@@ -119,20 +121,64 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     for (final controller in _chewieControllers.values) {
       controller.dispose();
     }
-    
+
     // 恢复状态栏
-    SystemChrome.setEnabledSystemUIMode(
-      SystemUiMode.manual,
-      overlays: SystemUiOverlay.values
-    );
-    
     super.dispose();
   }
 
   void _onTripleTapResetGesture(MediaItem item) {
-    _ignoreCenterTapUntil = DateTime.now().add(const Duration(milliseconds: 900));
+    _ignoreCenterTapUntil = DateTime.now().add(
+      const Duration(milliseconds: 900),
+    );
     final timer = _pendingCenterCommitTimers.remove(item.id);
     timer?.cancel();
+    unawaited(_resetMediaPresentationToPristine(item));
+  }
+
+  Future<void> _resetMediaPresentationToPristine(MediaItem item) async {
+    try {
+      await _dbService.updateMediaItem({
+        'id': item.id,
+        'ken_burns_center_x': null,
+        'ken_burns_center_y': null,
+        'video_view_scale': 1.0,
+        'video_view_tx': 0.0,
+        'video_view_ty': 0.0,
+        'video_view_rot': 0,
+        'updated_at': DateTime.now().millisecondsSinceEpoch,
+      });
+      if (!mounted) return;
+      final idx = widget.mediaItems.indexWhere((e) => e.id == item.id);
+      if (idx < 0) return;
+      setState(() {
+        _staticKenBurnsDemo = false;
+        _staticDemoItemId = null;
+        _kenBurnsReplayTick++;
+        widget.mediaItems[idx] = widget.mediaItems[idx].copyWith(
+          clearKenBurnsCenter: true,
+          clearVideoViewParams: true,
+        );
+      });
+      final messenger = ScaffoldMessenger.of(context);
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('已恢复媒体初始状态，所有展示设置已清空'),
+          duration: Duration(milliseconds: 2200),
+          behavior: SnackBarBehavior.floating,
+          margin: EdgeInsets.fromLTRB(16, 0, 16, 20),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('恢复媒体初始状态失败: $e'),
+          behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+        ),
+      );
+    }
   }
 
   bool _shouldIgnoreCenterTap(MediaItem item) {
@@ -181,7 +227,11 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
   }
 
   /// 双击设置渐进放大中心；归一化坐标写入数据库并更新当前列表项，并立即重播动画。
-  Future<void> _persistKenBurnsCenter(MediaItem item, double nx, double ny) async {
+  Future<void> _persistKenBurnsCenter(
+    MediaItem item,
+    double nx,
+    double ny,
+  ) async {
     try {
       await _dbService.updateMediaItem({
         'id': item.id,
@@ -222,12 +272,16 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
   }
 
   /// 保存视频/图片视窗（缩放/平移/旋转），持久化到 `media_items`，文档栏与预览会套用。
-  Future<void> _persistMediaViewParams(MediaItem item, VideoViewParams p) async {
+  Future<void> _persistMediaViewParams(
+    MediaItem item,
+    VideoViewParams p,
+  ) async {
     final idx = widget.mediaItems.indexWhere((e) => e.id == item.id);
     if (idx >= 0 && widget.mediaItems[idx].videoViewParams != p && mounted) {
       setState(() {
-        widget.mediaItems[idx] =
-            widget.mediaItems[idx].copyWith(videoViewParams: p);
+        widget.mediaItems[idx] = widget.mediaItems[idx].copyWith(
+          videoViewParams: p,
+        );
       });
     }
     try {
@@ -374,10 +428,10 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
 
   Future<void> _initializeVideoControllerAt(int index) async {
     if (index < 0 || index >= widget.mediaItems.length) return;
-    
+
     final item = widget.mediaItems[index];
     if (item.type != MediaType.video) return;
-    
+
     try {
       if (!_videoControllers.containsKey(index)) {
         // 检查文件是否存在
@@ -394,21 +448,19 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
 
         final controller = VideoPlayerController.file(videoFile);
         _videoControllers[index] = controller;
-        
+
         // 添加错误监听器
         controller.addListener(() {
-          if (controller.value.hasError) {
-          }
+          if (controller.value.hasError) {}
         });
-        
+
         // 初始化带有超时处理
         bool initializeSuccessful = false;
         try {
           await controller.initialize().timeout(const Duration(seconds: 10));
           initializeSuccessful = controller.value.isInitialized;
-        } catch (timeoutError) {
-        }
-        
+        } catch (timeoutError) {}
+
         if (!initializeSuccessful) {
           if (_videoControllers.containsKey(index)) {
             _videoControllers[index]?.dispose();
@@ -416,10 +468,10 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
           }
           return;
         }
-        
+
         // 自动播放当前视频
         final bool shouldAutoPlay = index == _currentIndex;
-        
+
         try {
           final chewieController = ChewieController(
             videoPlayerController: controller,
@@ -432,9 +484,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
             deviceOrientationsAfterFullScreen: [DeviceOrientation.portraitUp],
             placeholder: Container(
               color: Colors.transparent, // 将黑色背景改为透明
-              child: const Center(
-                child: CircularProgressIndicator(),
-              ),
+              child: const Center(child: CircularProgressIndicator()),
             ),
             errorBuilder: (context, errorMessage) {
               return Center(
@@ -473,9 +523,9 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
               hideTopActionBar: true,
             ),
           );
-          
+
           _chewieControllers[index] = chewieController;
-          
+
           // 如果是当前页面，立即开始播放，并添加完成监听（手动/非自动模式下用于循环）
           if (shouldAutoPlay && controller.value.isInitialized) {
             await controller.play();
@@ -489,7 +539,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
           }
           return;
         }
-        
+
         if (mounted) setState(() {});
       }
     } catch (e) {
@@ -508,27 +558,29 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     if (_videoControllers.containsKey(index)) {
       _videoControllers[index]?.pause();
     }
-    
+
     if (_chewieControllers.containsKey(index)) {
       _chewieControllers[index]?.dispose();
       _chewieControllers.remove(index);
     }
-    
+
     if (_videoControllers.containsKey(index)) {
       _videoControllers[index]?.dispose();
       _videoControllers.remove(index);
     }
   }
-  
+
   void _cleanupUnusedControllers() {
     final List<int> indicesToKeep = [_currentIndex];
     if (_currentIndex > 0) indicesToKeep.add(_currentIndex - 1);
-    if (_currentIndex < widget.mediaItems.length - 1) indicesToKeep.add(_currentIndex + 1);
-    
-    final List<int> indicesToRemove = _videoControllers.keys
-        .where((index) => !indicesToKeep.contains(index))
-        .toList();
-    
+    if (_currentIndex < widget.mediaItems.length - 1)
+      indicesToKeep.add(_currentIndex + 1);
+
+    final List<int> indicesToRemove =
+        _videoControllers.keys
+            .where((index) => !indicesToKeep.contains(index))
+            .toList();
+
     for (final index in indicesToRemove) {
       _disposeVideoControllerAt(index);
     }
@@ -546,17 +598,17 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     setState(() {
       _currentIndex = index;
     });
-    
+
     // 暂停上一页的视频
     if (_videoControllers.containsKey(_currentIndex - 1)) {
       _videoControllers[_currentIndex - 1]?.pause();
     }
-    
+
     // 暂停下一页的视频
     if (_videoControllers.containsKey(_currentIndex + 1)) {
       _videoControllers[_currentIndex + 1]?.pause();
     }
-    
+
     // 初始化相邻页面的视频控制器
     _initializeVideoControllerAt(index);
     if (index > 0) {
@@ -565,10 +617,10 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     if (index < widget.mediaItems.length - 1) {
       _initializeVideoControllerAt(index + 1);
     }
-    
+
     // 清理不需要的视频控制器
     _cleanupUnusedControllers();
-    
+
     // 添加自动播放当前视频的逻辑
     _autoPlayCurrentVideo();
   }
@@ -576,12 +628,12 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
   // 自动播放当前视频
   void _autoPlayCurrentVideo() {
     if (_currentIndex < 0 || _currentIndex >= widget.mediaItems.length) return;
-    
+
     final currentItem = widget.mediaItems[_currentIndex];
     if (currentItem.type == MediaType.video) {
       // 确保视频控制器已初始化
       _initializeVideoControllerAt(_currentIndex).then((_) {
-        if (_videoControllers.containsKey(_currentIndex) && 
+        if (_videoControllers.containsKey(_currentIndex) &&
             _videoControllers[_currentIndex]?.value.isInitialized == true) {
           _videoControllers[_currentIndex]?.play();
         }
@@ -592,15 +644,12 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
   void _shareMediaItem() async {
     final item = widget.mediaItems[_currentIndex];
     try {
-      await Share.shareXFiles(
-        [XFile(item.path)],
-        subject: '分享: ${item.name}',
-      );
+      await Share.shareXFiles([XFile(item.path)], subject: '分享: ${item.name}');
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('分享文件时出错: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('分享文件时出错: $e')));
       }
     }
   }
@@ -617,47 +666,46 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
       context: context,
       isScrollControlled: true,
       useRootNavigator: cc.useRootNavigator,
-      builder: (context) => PlaybackSpeedDialog(
-        speeds: cc.playbackSpeeds,
-        selected: vc.value.playbackSpeed,
-      ),
+      builder:
+          (context) => PlaybackSpeedDialog(
+            speeds: cc.playbackSpeeds,
+            selected: vc.value.playbackSpeed,
+          ),
     );
     if (chosen != null && mounted) {
       await vc.setPlaybackSpeed(chosen);
       setState(() {});
     }
   }
-  
+
   // 删除当前媒体项 - 无需确认
   Future<void> _deleteCurrentMediaItem() async {
     final item = widget.mediaItems[_currentIndex];
-    
+
     try {
       // 1. 从数据库中删除
       try {
         await _dbService.deleteMediaItem(item.id);
-      } catch (e) {
-      }
-      
+      } catch (e) {}
+
       // 2. 尝试删除实际文件
       try {
         final file = File(item.path);
         if (await file.exists()) {
           await file.delete();
         }
-      } catch (e) {
-      }
-      
+      } catch (e) {}
+
       // 3. 从当前列表中移除
       if (!mounted) return;
-      
+
       // 判断是否还有媒体项
       if (widget.mediaItems.length <= 1) {
         // 如果当前是最后一个媒体项，则关闭预览页面
         Navigator.of(context).pop(true); // 返回true表示有更改发生
         return;
       }
-      
+
       // 保存当前索引，确定是移动到下一个还是前一个
       int nextIndex = _currentIndex;
       if (_currentIndex >= widget.mediaItems.length - 1) {
@@ -665,7 +713,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
         nextIndex = _currentIndex - 1;
       }
       // 否则保持当前索引，因为删除后当前索引会对应下一项
-      
+
       _disposeAllVideoControllers(); // 索引变化，清空控制器以便重新初始化
       _skipNextPageChanged = true; // 防止新 PageView 触发 onPageChanged(0) 覆盖索引
       setState(() {
@@ -680,12 +728,12 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
         }
       });
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('删除失败: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('删除失败: $e')));
     }
   }
-  
+
   // 移动当前媒体项 - 完全使用媒体管理页面中的移动功能实现
   Future<void> _moveCurrentMediaItem() async {
     final item = widget.mediaItems[_currentIndex];
@@ -694,30 +742,30 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     try {
       // 获取根目录下的文件夹
       final rootItems = await _dbService.getMediaItems('root');
-      final rootFolders = rootItems
-          .where((item) => item['type'] == MediaType.folder.index)
-          .map((item) => MediaItem.fromMap(item))
-          .toList();
-          
+      final rootFolders =
+          rootItems
+              .where((item) => item['type'] == MediaType.folder.index)
+              .map((item) => MediaItem.fromMap(item))
+              .toList();
+
       folders = rootFolders;
-      
+
       // 递归获取子文件夹（如果需要）
       for (var folder in rootFolders) {
         try {
           final subItems = await _dbService.getMediaItems(folder.id);
-          final subFolders = subItems
-              .where((item) => item['type'] == MediaType.folder.index)
-              .map((item) => MediaItem.fromMap(item))
-              .toList();
+          final subFolders =
+              subItems
+                  .where((item) => item['type'] == MediaType.folder.index)
+                  .map((item) => MediaItem.fromMap(item))
+                  .toList();
           if (subFolders.isNotEmpty) {
             folders.addAll(subFolders);
           }
-        } catch (e) {
-        }
+        } catch (e) {}
       }
-    } catch (e) {
-    }
-    
+    } catch (e) {}
+
     // 在底部面板显示文件夹列表：50%透明，高度随目录数量自适应，最多占屏幕一半可滚动
     final screenHeight = MediaQuery.of(context).size.height;
     const itemHeight = 48.0;
@@ -726,94 +774,130 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     final itemCount = folders.length + 1; // +1 根目录
     final contentHeight = itemCount * itemHeight + headerHeight;
     final maxPanelHeight = screenHeight * 0.5;
-    final panelHeight = (contentHeight < maxPanelHeight ? contentHeight : maxPanelHeight).clamp(minPanelHeight, maxPanelHeight);
+    final panelHeight = (contentHeight < maxPanelHeight
+            ? contentHeight
+            : maxPanelHeight)
+        .clamp(minPanelHeight, maxPanelHeight);
 
     final MediaItem? targetFolder = await showModalBottomSheet<MediaItem?>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (context) => Container(
-        height: panelHeight,
-        decoration: BoxDecoration(
-          color: Colors.white.withOpacity(0.5),
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  const Text('移动到', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
-                  TextButton(
-                    onPressed: () => Navigator.pop(context),
-                    child: const Text('取消', style: TextStyle(fontSize: 13)),
+      builder:
+          (context) => Container(
+            height: panelHeight,
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.5),
+              borderRadius: const BorderRadius.vertical(
+                top: Radius.circular(12),
+              ),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.symmetric(
+                    vertical: 12,
+                    horizontal: 16,
                   ),
-                ],
-              ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        '移动到',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: () => Navigator.pop(context),
+                        child: const Text('取消', style: TextStyle(fontSize: 13)),
+                      ),
+                    ],
+                  ),
+                ),
+                Flexible(
+                  child: ListView.builder(
+                    itemCount: folders.length + 1,
+                    itemBuilder: (context, index) {
+                      if (index == 0) {
+                        return ListTile(
+                          dense: true,
+                          visualDensity: const VisualDensity(
+                            horizontal: 0,
+                            vertical: -4,
+                          ),
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                          ),
+                          leading: const Icon(Icons.folder_open, size: 20),
+                          title: const Text(
+                            '根目录',
+                            style: TextStyle(fontSize: 13),
+                          ),
+                          onTap:
+                              () => Navigator.pop(
+                                context,
+                                MediaItem(
+                                  id: 'root',
+                                  name: '根目录',
+                                  path: '',
+                                  type: MediaType.folder,
+                                  directory: '',
+                                  dateAdded: DateTime.now(),
+                                ),
+                              ),
+                        );
+                      }
+                      final folder = folders[index - 1];
+                      return ListTile(
+                        dense: true,
+                        visualDensity: const VisualDensity(
+                          horizontal: 0,
+                          vertical: -4,
+                        ),
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                        ),
+                        leading: const Icon(Icons.folder, size: 20),
+                        title: Text(
+                          folder.name,
+                          style: const TextStyle(fontSize: 13),
+                        ),
+                        onTap: () => Navigator.pop(context, folder),
+                      );
+                    },
+                  ),
+                ),
+              ],
             ),
-            Flexible(
-              child: ListView.builder(
-                itemCount: folders.length + 1,
-                itemBuilder: (context, index) {
-                  if (index == 0) {
-                    return ListTile(
-                      dense: true,
-                      visualDensity: const VisualDensity(horizontal: 0, vertical: -4),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 16),
-                      leading: const Icon(Icons.folder_open, size: 20),
-                      title: const Text('根目录', style: TextStyle(fontSize: 13)),
-                      onTap: () => Navigator.pop(context, MediaItem(
-                        id: 'root',
-                        name: '根目录',
-                        path: '',
-                        type: MediaType.folder,
-                        directory: '',
-                        dateAdded: DateTime.now(),
-                      )),
-                    );
-                  }
-                  final folder = folders[index - 1];
-                  return ListTile(
-                    dense: true,
-                    visualDensity: const VisualDensity(horizontal: 0, vertical: -4),
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 16),
-                    leading: const Icon(Icons.folder, size: 20),
-                    title: Text(folder.name, style: const TextStyle(fontSize: 13)),
-                    onTap: () => Navigator.pop(context, folder),
-                  );
-                },
-              ),
-            ),
-          ],
-        ),
-      ),
+          ),
     );
-    
+
     // 如果用户取消，则不执行任何操作
     if (targetFolder == null) return;
-    
+
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        backgroundColor: Colors.white.withOpacity(0.8),
-        content: Row(
-          children: [
-            SizedBox(
-              width: 24,
-              height: 24,
-              child: CircularProgressIndicator(strokeWidth: 2),
+      builder:
+          (context) => AlertDialog(
+            backgroundColor: Colors.white.withOpacity(0.8),
+            content: Row(
+              children: [
+                SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                SizedBox(width: 20),
+                Text('正在移动媒体...', style: TextStyle(fontSize: 13)),
+              ],
             ),
-            SizedBox(width: 20),
-            Text('正在移动媒体...', style: TextStyle(fontSize: 13))
-          ],
-        ),
-      ),
+          ),
     );
-    
+
     try {
       // 使用媒体管理页面中的移动方法
       final updatedItem = item.copyWith(directory: targetFolder.id);
@@ -822,11 +906,11 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
       if (result <= 0) {
         throw Exception('媒体项更新失败');
       }
-      
+
       if (mounted) {
         Navigator.of(context).pop();
       }
-      
+
       // 从当前列表中移除
       if (!mounted) return;
       int nextIndex = _currentIndex;
@@ -853,9 +937,9 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     } catch (e) {
       if (mounted) {
         Navigator.of(context).pop(); // 关闭进度对话框
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('移动失败: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('移动失败: $e')));
       }
     }
   }
@@ -882,9 +966,10 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
           builder: (context, constraints) {
             final vw = constraints.maxWidth;
             final vh = constraints.maxHeight;
-            final disp = sideways
-                ? containDisplaySize(pixelSize, vw, vh)
-                : fitWidthDisplaySize(pixelSize, vw);
+            final disp =
+                sideways
+                    ? containDisplaySize(pixelSize, vw, vh)
+                    : fitWidthDisplaySize(pixelSize, vw);
             final dw = disp.width;
             final dh = disp.height;
             // 与 Ken Burns 一致：归一化坐标相对「图片矩形」左上角。静态图在 Stack 内垂直居中，
@@ -947,8 +1032,8 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
           zoomCenterX: item.kenBurnsCenterX,
           zoomCenterY: item.kenBurnsCenterY,
           enableDoubleTapToSetZoomCenter: true,
-          onZoomCenterSet: (nx, ny) =>
-              _schedulePersistKenBurnsCenter(item, nx, ny),
+          onZoomCenterSet:
+              (nx, ny) => _schedulePersistKenBurnsCenter(item, nx, ny),
           loop: loopAnim,
           onAnimationComplete: loopAnim ? null : onAnimComplete,
         );
@@ -992,8 +1077,8 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
             zoomCenterX: item.kenBurnsCenterX,
             zoomCenterY: item.kenBurnsCenterY,
             enableDoubleTapToSetZoomCenter: true,
-            onZoomCenterSet: (nx, ny) =>
-                _schedulePersistKenBurnsCenter(item, nx, ny),
+            onZoomCenterSet:
+                (nx, ny) => _schedulePersistKenBurnsCenter(item, nx, ny),
             loop: false,
             onAnimationComplete: _finishStaticKenBurnsDemo,
           );
@@ -1008,6 +1093,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
       key: ValueKey('img_isurf_${item.id}_${item.videoViewParams.hashCode}'),
       initial: item.videoViewParams,
       editable: true,
+      singleFingerPanEnabled: _transformOnlyMode,
       useScreenSizeForNormalization: true,
       onTripleTapReset: () => _onTripleTapResetGesture(item),
       onChanged: (p) => _persistMediaViewParams(item, p),
@@ -1016,7 +1102,8 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
   }
 
   Widget _buildVideoPreview(MediaItem item, int index) {
-    if (!_videoControllers.containsKey(index) || !_chewieControllers.containsKey(index)) {
+    if (!_videoControllers.containsKey(index) ||
+        !_chewieControllers.containsKey(index)) {
       // 视频控制器尚未初始化，显示加载中
       return Center(
         child: Column(
@@ -1024,10 +1111,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
           children: [
             const CircularProgressIndicator(),
             const SizedBox(height: 8),
-            Text(
-              '正在加载视频...',
-              style: TextStyle(color: Colors.white),
-            ),
+            Text('正在加载视频...', style: TextStyle(color: Colors.white)),
           ],
         ),
       );
@@ -1035,7 +1119,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
 
     final videoController = _videoControllers[index]!;
     final chewieController = _chewieControllers[index]!;
-    
+
     if (videoController.value.hasError) {
       // 视频加载出错
       return Center(
@@ -1055,22 +1139,19 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     }
 
     final themedStack = Theme(
-      data: Theme.of(context).copyWith(
-        platform: TargetPlatform.iOS,
-      ),
+      data: Theme.of(context).copyWith(platform: TargetPlatform.iOS),
       child: ChewieFullscreenHost(
         controller: chewieController,
         child: Stack(
           fit: StackFit.expand,
           children: [
             VideoInteractiveSurface(
-              key: ValueKey(
-                '${item.id}_${item.videoViewParams.hashCode}',
-              ),
+              key: ValueKey('${item.id}_${item.videoViewParams.hashCode}'),
               videoController: videoController,
               videoChild: const PlayerWithControls(),
               initial: item.videoViewParams,
               editable: true,
+              singleFingerPanEnabled: _transformOnlyMode,
               useScreenSizeForNormalization: true,
               onTripleTapReset: () => _onTripleTapResetGesture(item),
               onChanged: (p) => _persistMediaViewParams(item, p),
@@ -1093,9 +1174,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     return Center(
       child: ColoredBox(
         color: Colors.transparent,
-        child: SizedBox.expand(
-          child: themedStack,
-        ),
+        child: SizedBox.expand(child: themedStack),
       ),
     );
   }
@@ -1109,146 +1188,114 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
 
   @override
   Widget build(BuildContext context) {
-    final bool pageSwipeLocked = _transformOnlyMode || _activePreviewPointers >= 2;
-    return Scaffold(
-      // 与「透明留白」配合：上下未铺满处透出黑底，白色顶栏图标可见；图片区仍由内容层绘制。
-      backgroundColor: Colors.black,
-      body: Stack(
-        fit: StackFit.expand,
-        children: [
-          // 主内容 - 媒体预览
-          Listener(
-            behavior: HitTestBehavior.translucent,
-            onPointerDown: (_) {
-              setState(() {
-                _activePreviewPointers += 1;
-              });
-            },
-            onPointerUp: (_) {
-              setState(() {
-                _activePreviewPointers = (_activePreviewPointers - 1).clamp(0, 10);
-              });
-            },
-            onPointerCancel: (_) {
-              setState(() {
-                _activePreviewPointers = (_activePreviewPointers - 1).clamp(0, 10);
-              });
-            },
-            child: PageView.builder(
-              key: ValueKey(widget.mediaItems.length), // 列表变更时强制重建，确保视频正确切换
-              controller: _pageController,
-              physics: pageSwipeLocked
-                  ? const NeverScrollableScrollPhysics()
-                  : const PageScrollPhysics(),
-              itemCount: widget.mediaItems.length,
-              onPageChanged: (index) {
-                if (_skipNextPageChanged) {
-                  _skipNextPageChanged = false;
-                  return;
-                }
+    final bool pageSwipeLocked =
+        _transformOnlyMode || _activePreviewPointers >= 2;
+    return PopScope(
+      canPop: _activePreviewPointers == 0,
+      child: Scaffold(
+        // 与「透明留白」配合：上下未铺满处透出黑底，白色顶栏图标可见；图片区仍由内容层绘制。
+        backgroundColor: Colors.black,
+        body: Stack(
+          fit: StackFit.expand,
+          children: [
+            // 主内容 - 媒体预览
+            Listener(
+              behavior: HitTestBehavior.translucent,
+              onPointerDown: (_) {
                 setState(() {
-                  _currentIndex = index;
-                  _staticKenBurnsDemo = false;
-                  _staticDemoItemId = null;
+                  _activePreviewPointers += 1;
                 });
+              },
+              onPointerUp: (_) {
+                setState(() {
+                  _activePreviewPointers = (_activePreviewPointers - 1).clamp(
+                    0,
+                    10,
+                  );
+                });
+              },
+              onPointerCancel: (_) {
+                setState(() {
+                  _activePreviewPointers = (_activePreviewPointers - 1).clamp(
+                    0,
+                    10,
+                  );
+                });
+              },
+              child: PageView.builder(
+                key: ValueKey(widget.mediaItems.length), // 列表变更时强制重建，确保视频正确切换
+                controller: _pageController,
+                physics:
+                    pageSwipeLocked
+                        ? const NeverScrollableScrollPhysics()
+                        : const PageScrollPhysics(),
+                itemCount: widget.mediaItems.length,
+                onPageChanged: (index) {
+                  if (_skipNextPageChanged) {
+                    _skipNextPageChanged = false;
+                    return;
+                  }
+                  setState(() {
+                    _currentIndex = index;
+                    _staticKenBurnsDemo = false;
+                    _staticDemoItemId = null;
+                  });
 
-                // 确保当前页面的视频控制器已初始化，然后立即播放（手动/自动模式一致）
-                _initializeVideoControllerAt(index).then((_) {
-                  if (!mounted) return;
-                  _cleanupUnusedControllers();
-                  _playCurrentMedia();
-                });
-                // 预加载相邻页面的视频
-                if (index > 0) {
-                  _initializeVideoControllerAt(index - 1);
-                }
-                if (index < widget.mediaItems.length - 1) {
-                  _initializeVideoControllerAt(index + 1);
-                }
-              },
-              itemBuilder: (context, index) {
-                final item = widget.mediaItems[index];
-                return item.type == MediaType.video
-                    ? _buildVideoPreview(item, index)
-                    : _buildImagePreview(item);
-              },
+                  // 确保当前页面的视频控制器已初始化，然后立即播放（手动/自动模式一致）
+                  _initializeVideoControllerAt(index).then((_) {
+                    if (!mounted) return;
+                    _cleanupUnusedControllers();
+                    _playCurrentMedia();
+                  });
+                  // 预加载相邻页面的视频
+                  if (index > 0) {
+                    _initializeVideoControllerAt(index - 1);
+                  }
+                  if (index < widget.mediaItems.length - 1) {
+                    _initializeVideoControllerAt(index + 1);
+                  }
+                },
+                itemBuilder: (context, index) {
+                  final item = widget.mediaItems[index];
+                  return item.type == MediaType.video
+                      ? _buildVideoPreview(item, index)
+                      : _buildImagePreview(item);
+                },
+              ),
             ),
-          ),
 
-          // 顶部工具栏 - 始终显示
-          Positioned(
-            top: MediaQuery.of(context).padding.top,
-            left: 0,
-            right: 0,
-            child: Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-              color: Colors.transparent,
-              child: Row(
-                children: [
-                  IconButton(
-                    icon: Icon(
-                      Icons.arrow_back,
-                      color: Colors.white,
-                      shadows: FloatingUiShadows.whiteIcon,
-                    ),
-                    onPressed: () => Navigator.of(context).pop(true),
-                  ),
-                  const SizedBox(width: 16),
-                  IconButton(
-                    icon: Icon(
-                      Icons.share,
-                      color: Colors.white,
-                      shadows: FloatingUiShadows.whiteIcon,
-                    ),
-                    onPressed: _shareMediaItem,
-                  ),
-                  const Spacer(),
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      IconButton(
-                        padding: const EdgeInsets.all(8),
-                        constraints: const BoxConstraints(
-                          minWidth: 40,
-                          minHeight: 40,
-                        ),
-                        icon: Icon(
-                          Icons.settings,
-                          color: Colors.white,
-                          shadows: FloatingUiShadows.whiteIcon,
-                        ),
-                        tooltip: '媒体播放设置',
-                        onPressed: _showMediaPlaybackSettings,
+            // 顶部工具栏 - 始终显示
+            Positioned(
+              top: MediaQuery.of(context).padding.top,
+              left: 0,
+              right: 0,
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                color: Colors.transparent,
+                child: Row(
+                  children: [
+                    IconButton(
+                      icon: Icon(
+                        Icons.arrow_back,
+                        color: Colors.white,
+                        shadows: FloatingUiShadows.whiteIcon,
                       ),
-                      IconButton(
-                        padding: const EdgeInsets.all(8),
-                        constraints: const BoxConstraints(
-                          minWidth: 40,
-                          minHeight: 40,
-                        ),
-                        icon: Icon(
-                          _mediaMode == MediaMode.auto
-                              ? Icons.pause
-                              : Icons.play_arrow,
-                          color: Colors.white,
-                          shadows: FloatingUiShadows.whiteIcon,
-                        ),
-                        onPressed: () {
-                          if (_mediaMode == MediaMode.auto) {
-                            stop();
-                          } else {
-                            playAuto();
-                          }
-                        },
-                        tooltip: _mediaMode == MediaMode.auto
-                            ? '暂停自动播放'
-                            : '开始自动播放',
+                      onPressed: () => Navigator.of(context).pop(true),
+                    ),
+                    const SizedBox(width: 16),
+                    IconButton(
+                      icon: Icon(
+                        Icons.share,
+                        color: Colors.white,
+                        shadows: FloatingUiShadows.whiteIcon,
                       ),
-                      if (widget.mediaItems.isNotEmpty &&
-                          _currentIndex < widget.mediaItems.length &&
-                          widget.mediaItems[_currentIndex].type ==
-                              MediaType.video)
+                      onPressed: _shareMediaItem,
+                    ),
+                    const Spacer(),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
                         IconButton(
                           padding: const EdgeInsets.all(8),
                           constraints: const BoxConstraints(
@@ -1256,74 +1303,121 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
                             minHeight: 40,
                           ),
                           icon: Icon(
-                            Icons.more_vert,
+                            Icons.settings,
                             color: Colors.white,
                             shadows: FloatingUiShadows.whiteIcon,
                           ),
-                          tooltip: '播放速度',
-                          onPressed: _showPlaybackSpeedMenu,
+                          tooltip: '媒体播放设置',
+                          onPressed: _showMediaPlaybackSettings,
                         ),
-                    ],
+                        IconButton(
+                          padding: const EdgeInsets.all(8),
+                          constraints: const BoxConstraints(
+                            minWidth: 40,
+                            minHeight: 40,
+                          ),
+                          icon: Icon(
+                            _mediaMode == MediaMode.auto
+                                ? Icons.pause
+                                : Icons.play_arrow,
+                            color: Colors.white,
+                            shadows: FloatingUiShadows.whiteIcon,
+                          ),
+                          onPressed: () {
+                            if (_mediaMode == MediaMode.auto) {
+                              stop();
+                            } else {
+                              playAuto();
+                            }
+                          },
+                          tooltip:
+                              _mediaMode == MediaMode.auto
+                                  ? '暂停自动播放'
+                                  : '开始自动播放',
+                        ),
+                        if (widget.mediaItems.isNotEmpty &&
+                            _currentIndex < widget.mediaItems.length &&
+                            widget.mediaItems[_currentIndex].type ==
+                                MediaType.video)
+                          IconButton(
+                            padding: const EdgeInsets.all(8),
+                            constraints: const BoxConstraints(
+                              minWidth: 40,
+                              minHeight: 40,
+                            ),
+                            icon: Icon(
+                              Icons.more_vert,
+                              color: Colors.white,
+                              shadows: FloatingUiShadows.whiteIcon,
+                            ),
+                            tooltip: '播放速度',
+                            onPressed: _showPlaybackSpeedMenu,
+                          ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+            // 收藏、删除、移动按钮 - 始终显示
+            Positioned(
+              right: 16,
+              bottom: 160,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  _buildActionButton(
+                    icon: Icons.favorite_border,
+                    tooltip: '收藏',
+                    onPressed: _addToFavorites,
+                  ),
+                  const SizedBox(height: 8),
+                  _buildActionButton(
+                    icon: Icons.delete_outline,
+                    tooltip: _isCurrentInRecycleBin ? '彻底删除' : '删除',
+                    onPressed:
+                        _isCurrentInRecycleBin
+                            ? _deleteCurrentMediaItem
+                            : _moveToTrash,
+                  ),
+                  const SizedBox(height: 8),
+                  _buildActionButton(
+                    icon: Icons.drive_file_move_outline,
+                    tooltip: '移动',
+                    onPressed: _moveCurrentMediaItem,
+                  ),
+                  const SizedBox(height: 8),
+                  _buildActionButton(
+                    icon:
+                        _transformOnlyMode
+                            ? Icons.pan_tool
+                            : Icons.zoom_out_map,
+                    tooltip: _transformOnlyMode ? '关闭缩放/移动模式' : '开启缩放/移动模式',
+                    onPressed: () {
+                      setState(() {
+                        _transformOnlyMode = !_transformOnlyMode;
+                      });
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            _transformOnlyMode
+                                ? '已开启缩放/移动模式（禁用左右翻页）'
+                                : '已关闭缩放/移动模式（恢复左右翻页）',
+                          ),
+                          duration: const Duration(milliseconds: 1500),
+                          behavior: SnackBarBehavior.floating,
+                          margin: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+                        ),
+                      );
+                    },
                   ),
                 ],
               ),
             ),
-          ),
-
-          // 收藏、删除、移动按钮 - 始终显示
-          Positioned(
-            right: 16,
-            bottom: 160,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                _buildActionButton(
-                  icon: Icons.favorite_border,
-                  tooltip: '收藏',
-                  onPressed: _addToFavorites,
-                ),
-                const SizedBox(height: 8),
-                _buildActionButton(
-                  icon: Icons.delete_outline,
-                  tooltip: _isCurrentInRecycleBin ? '彻底删除' : '删除',
-                  onPressed:
-                      _isCurrentInRecycleBin
-                          ? _deleteCurrentMediaItem
-                          : _moveToTrash,
-                ),
-                const SizedBox(height: 8),
-                _buildActionButton(
-                  icon: Icons.drive_file_move_outline,
-                  tooltip: '移动',
-                  onPressed: _moveCurrentMediaItem,
-                ),
-                const SizedBox(height: 8),
-                _buildActionButton(
-                  icon: _transformOnlyMode ? Icons.pan_tool : Icons.zoom_out_map,
-                  tooltip: _transformOnlyMode ? '关闭缩放/移动模式' : '开启缩放/移动模式',
-                  onPressed: () {
-                    setState(() {
-                      _transformOnlyMode = !_transformOnlyMode;
-                    });
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text(
-                          _transformOnlyMode
-                              ? '已开启缩放/移动模式（禁用左右翻页）'
-                              : '已关闭缩放/移动模式（恢复左右翻页）',
-                        ),
-                        duration: const Duration(milliseconds: 1500),
-                        behavior: SnackBarBehavior.floating,
-                        margin: const EdgeInsets.fromLTRB(16, 0, 16, 20),
-                      ),
-                    );
-                  },
-                ),
-              ],
-            ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -1339,12 +1433,13 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
       if (result <= 0) {
         throw Exception('添加到收藏夹失败');
       }
-      
+
       if (!mounted) return;
       _disposeAllVideoControllers();
-      final nextIndex = _currentIndex >= widget.mediaItems.length - 1
-          ? widget.mediaItems.length - 2
-          : _currentIndex;
+      final nextIndex =
+          _currentIndex >= widget.mediaItems.length - 1
+              ? widget.mediaItems.length - 2
+              : _currentIndex;
       _skipNextPageChanged = true;
       setState(() {
         widget.mediaItems.removeAt(_currentIndex);
@@ -1363,9 +1458,9 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
       });
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('添加到收藏夹失败: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('添加到收藏夹失败: $e')));
     }
   }
 
@@ -1379,13 +1474,16 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     try {
       // 获取所有文件夹以找到回收站文件夹
       final rootItems = await _dbService.getMediaItems('root');
-      final trashFolder = rootItems
-          .where((item) => 
-              item['type'] == MediaType.folder.index && 
-              item['name'] == '回收站')
-          .map((item) => MediaItem.fromMap(item))
-          .firstOrNull;
-      
+      final trashFolder =
+          rootItems
+              .where(
+                (item) =>
+                    item['type'] == MediaType.folder.index &&
+                    item['name'] == '回收站',
+              )
+              .map((item) => MediaItem.fromMap(item))
+              .firstOrNull;
+
       if (trashFolder == null) {
         throw Exception('找不到回收站文件夹');
       }
@@ -1397,12 +1495,13 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
       if (result <= 0) {
         throw Exception('移动到回收站失败');
       }
-      
+
       if (!mounted) return;
       _disposeAllVideoControllers();
-      final nextIndex = _currentIndex >= widget.mediaItems.length - 1
-          ? widget.mediaItems.length - 2
-          : _currentIndex;
+      final nextIndex =
+          _currentIndex >= widget.mediaItems.length - 1
+              ? widget.mediaItems.length - 2
+              : _currentIndex;
       _skipNextPageChanged = true;
       setState(() {
         widget.mediaItems.removeAt(_currentIndex);
@@ -1421,9 +1520,9 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
       });
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('移动到回收站失败: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('移动到回收站失败: $e')));
     }
   }
 
@@ -1460,7 +1559,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
 
   void _toggleControls() {
     // 如果当前项是视频且控制器存在，则切换视频播放状态
-    if (_currentIndex >= 0 && 
+    if (_currentIndex >= 0 &&
         _currentIndex < widget.mediaItems.length &&
         widget.mediaItems[_currentIndex].type == MediaType.video &&
         _videoControllers.containsKey(_currentIndex)) {
@@ -1501,16 +1600,21 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
   int? _videoCompleteListenerIndex;
 
   /// 为视频添加播放完成监听（手动/非自动模式下用于循环；自动模式下用于切换下一项）
-  void _addVideoCompleteListenerFor(VideoPlayerController controller, int index) {
+  void _addVideoCompleteListenerFor(
+    VideoPlayerController controller,
+    int index,
+  ) {
     _removeVideoCompleteListener();
     void listener() {
       final pos = controller.value.position;
       final dur = controller.value.duration;
-      if (dur > Duration.zero && pos >= dur - const Duration(milliseconds: 200)) {
+      if (dur > Duration.zero &&
+          pos >= dur - const Duration(milliseconds: 200)) {
         _removeVideoCompleteListener();
         _onMediaComplete();
       }
     }
+
     _videoCompleteListener = listener;
     _videoCompleteListenerIndex = index;
     controller.addListener(listener);
@@ -1518,7 +1622,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
 
   Future<void> _playCurrentMedia() async {
     final currentItem = widget.mediaItems[_currentIndex];
-    
+
     if (currentItem.type == MediaType.video) {
       final controller = _videoControllers[_currentIndex];
       if (controller != null && controller.value.isInitialized) {

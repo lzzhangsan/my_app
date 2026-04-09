@@ -6,13 +6,13 @@ import 'package:flutter/material.dart';
 import '../models/video_view_params.dart';
 import 'video_seven_stroke.dart';
 
-/// 媒体页图片：双指缩放、单指平移（放大后）、「7」形旋转；与 [VideoInteractiveSurface] 一致写入 `video_view_*`。
 class ImageInteractiveSurface extends StatefulWidget {
   const ImageInteractiveSurface({
     super.key,
     required this.child,
     required this.initial,
     this.editable = true,
+    this.singleFingerPanEnabled = false,
     this.onChanged,
     this.onTripleTapReset,
     this.useScreenSizeForNormalization = false,
@@ -22,11 +22,10 @@ class ImageInteractiveSurface extends StatefulWidget {
   final Widget child;
   final VideoViewParams initial;
   final bool editable;
+  final bool singleFingerPanEnabled;
   final ValueChanged<VideoViewParams>? onChanged;
   final VoidCallback? onTripleTapReset;
-  /// 为 true 时，平移归一化按整屏尺寸计算，减少不同页面容器高度差导致的复现偏移。
   final bool useScreenSizeForNormalization;
-  /// 仅用于只读展示时的额外纵向像素补偿（>0 向下）。
   final double readonlyTranslateYOffset;
 
   @override
@@ -35,6 +34,7 @@ class ImageInteractiveSurface extends StatefulWidget {
 }
 
 class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
+  static const EdgeInsets _editableBoundaryMargin = EdgeInsets.all(100000);
   final TransformationController _tc = TransformationController();
   Timer? _debounce;
   int _quarterTurns = 0;
@@ -96,10 +96,16 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
     final m = _tc.value;
     final t = m.getTranslation();
     final s = m.getMaxScaleOnAxis().clamp(1.0, 6.0);
-    final bw = _lastNormBasisW;
-    final bh = _lastNormBasisH;
-    final tx = bw > 1e-6 ? t.x / bw : 0.0;
-    final ty = bh > 1e-6 ? t.y / bh : 0.0;
+    final extents = _panHalfExtents(
+      basisW: _lastNormBasisW,
+      basisH: _lastNormBasisH,
+      scale: s,
+      quarterTurns: _quarterTurns,
+    );
+    final tx =
+        extents.maxX > 1e-6 ? (t.x / extents.maxX).clamp(-1.0, 1.0) : 0.0;
+    final ty =
+        extents.maxY > 1e-6 ? (t.y / extents.maxY).clamp(-1.0, 1.0) : 0.0;
     final current = VideoViewParams(
       scale: s,
       txNorm: tx,
@@ -112,18 +118,39 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
 
   void _applyInitial(double vw, double vh) {
     final p = widget.initial;
-    final bw = _lastNormBasisW;
-    final bh = _lastNormBasisH;
-    // 背景只读态保留纵向补偿，但按缩放衰减，避免高倍缩放时补偿被视觉放大。
-    final yOffset = !widget.editable && widget.readonlyTranslateYOffset != 0
-        ? widget.readonlyTranslateYOffset /
-            p.scale.clamp(1.0, 6.0).toDouble()
-        : 0.0;
-    _lastAppliedBasisW = bw;
-    _lastAppliedBasisH = bh;
-    _tc.value = Matrix4.identity()
-      ..translate(p.txNorm * bw, p.tyNorm * bh + yOffset)
-      ..scale(p.scale.clamp(1.0, 6.0));
+    final scale = p.scale.clamp(1.0, 6.0).toDouble();
+    final extents = _panHalfExtents(
+      basisW: _lastNormBasisW,
+      basisH: _lastNormBasisH,
+      scale: scale,
+      quarterTurns: _quarterTurns,
+    );
+    _lastAppliedBasisW = _lastNormBasisW;
+    _lastAppliedBasisH = _lastNormBasisH;
+    _tc.value =
+        Matrix4.identity()
+          ..translate(
+            p.txNorm.clamp(-1.0, 1.0) * extents.maxX,
+            p.tyNorm.clamp(-1.0, 1.0) * extents.maxY,
+          )
+          ..scale(scale);
+  }
+
+  ({double maxX, double maxY}) _panHalfExtents({
+    required double basisW,
+    required double basisH,
+    required double scale,
+    required int quarterTurns,
+  }) {
+    final sideways = quarterTurns % 2 == 1;
+    final childW = sideways ? basisH : basisW;
+    final childH = sideways ? basisW : basisH;
+    final scaledW = childW * scale;
+    final scaledH = childH * scale;
+    return (
+      maxX: ((scaledW - basisW) / 2).clamp(0.0, double.infinity),
+      maxY: ((scaledH - basisH) / 2).clamp(0.0, double.infinity),
+    );
   }
 
   void _resetToDefaultView() {
@@ -194,18 +221,16 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
       _strokePoints.clear();
       return;
     }
-    if (soloStroke && _strokePoints.length >= 8) {
+    if (!widget.singleFingerPanEnabled &&
+        soloStroke &&
+        _strokePoints.length >= 8) {
       final rot = detectSevenStrokeRotation(List.from(_strokePoints));
       if (rot != null) {
-        // 与 [VideoInteractiveSurface] 一致：旋转保留当前缩放；平移在旋转后视口坐标系中不再可靠，重置以免卡在边界外。
-        final preservedScale =
-            _tc.value.getMaxScaleOnAxis().clamp(1.0, 6.0);
+        final preservedScale = _tc.value.getMaxScaleOnAxis().clamp(1.0, 6.0);
         setState(() {
-          _quarterTurns = rot
-              ? (_quarterTurns + 1) % 4
-              : (_quarterTurns - 1) % 4;
+          _quarterTurns =
+              rot ? (_quarterTurns + 1) % 4 : (_quarterTurns - 1) % 4;
           if (_quarterTurns < 0) _quarterTurns += 4;
-          // 旋转后重建为「当前缩放 + 居中」，避免高倍缩放下画面跑出可视区。
           _tc.value = _centeredScaleMatrix(preservedScale);
         });
         _emitChanged(force: true);
@@ -245,14 +270,8 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
     super.dispose();
   }
 
-  /// 内层始终以「竖屏视口」vw×vh 排版；90°/270° 时用 vh×vw 的外框作为 [InteractiveViewer] 子尺寸，
-  /// 使其可平移范围与旋转后的画幅一致（避免只能看到中间一条）。
   Widget _buildRotatedContent(double vw, double vh, int q) {
-    final inner = SizedBox(
-      width: vw,
-      height: vh,
-      child: widget.child,
-    );
+    final inner = SizedBox(width: vw, height: vh, child: widget.child);
     Widget rotated;
     if (q == 0) {
       rotated = inner;
@@ -291,12 +310,10 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
           view.physicalSize.width / view.devicePixelRatio,
           view.physicalSize.height / view.devicePixelRatio,
         );
-        _lastNormBasisW = widget.useScreenSizeForNormalization
-            ? screenSize.width
-            : vw;
-        _lastNormBasisH = widget.useScreenSizeForNormalization
-            ? screenSize.height
-            : vh;
+        _lastNormBasisW =
+            widget.useScreenSizeForNormalization ? screenSize.width : vw;
+        _lastNormBasisH =
+            widget.useScreenSizeForNormalization ? screenSize.height : vh;
 
         if (!_appliedInitial && vw > 1 && vh > 1) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -322,23 +339,22 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
 
         final scale = _scaleNow();
         final q = _quarterTurns % 4;
-        // 90°/270° 时轴对齐包围盒为 vh×vw，大于竖屏视口宽度，必须在未缩放时也允许平移才能看到左右裁切区。
         final sideways = q == 1 || q == 3;
-        // 防误触：单指只用于页面左右切换；仅双指接触时允许平移当前画面。
+        final requiredPointerCount = widget.singleFingerPanEnabled ? 1 : 2;
         final panOk =
             widget.editable &&
-            _activePointers.length >= 2 &&
+            _activePointers.length >= requiredPointerCount &&
             (scale > 1.01 || sideways);
 
         final iv = InteractiveViewer(
           transformationController: _tc,
+          alignment: Alignment.center,
           minScale: 1.0,
           maxScale: 6.0,
           panEnabled: panOk,
           scaleEnabled: widget.editable,
-          boundaryMargin: widget.editable
-              ? const EdgeInsets.all(double.infinity)
-              : EdgeInsets.zero,
+          boundaryMargin:
+              widget.editable ? _editableBoundaryMargin : EdgeInsets.zero,
           constrained: widget.editable ? false : true,
           clipBehavior: sideways ? Clip.none : Clip.hardEdge,
           onInteractionStart: (_) {

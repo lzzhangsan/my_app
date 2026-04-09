@@ -30,12 +30,23 @@ class DirectoryPage extends StatefulWidget {
   _DirectoryPageState createState() => _DirectoryPageState();
 }
 
-class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserver {
+class _DirectoryPageState extends State<DirectoryPage>
+    with WidgetsBindingObserver {
   // 判断folderName是否是targetFolderName的子文件夹
-  bool _isChildFolder(String folderName, String targetFolderName, List<DirectoryItem> folders) {
+  bool _isChildFolder(
+    String folderName,
+    String targetFolderName,
+    List<DirectoryItem> folders,
+  ) {
     DirectoryItem? current = folders.firstWhere(
       (f) => f.name == targetFolderName,
-      orElse: () => DirectoryItem(name: '', type: ItemType.folder, order: 0, isTemplate: false),
+      orElse:
+          () => DirectoryItem(
+            name: '',
+            type: ItemType.folder,
+            order: 0,
+            isTemplate: false,
+          ),
     );
     while (current != null && current.name != '') {
       if (current.name == folderName) return true;
@@ -43,7 +54,13 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       if (parentName == '') break;
       current = folders.firstWhere(
         (f) => f.name == parentName,
-        orElse: () => DirectoryItem(name: '', type: ItemType.folder, order: 0, isTemplate: false),
+        orElse:
+            () => DirectoryItem(
+              name: '',
+              type: ItemType.folder,
+              order: 0,
+              isTemplate: false,
+            ),
       );
     }
     return false;
@@ -53,16 +70,17 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     if (!mounted || !kIsWeb) return; // Also check kIsWeb to be sure
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text('功能提示'),
-        content: Text('此功能在Web版本中当前不可用或受限。'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: Text('确定'),
+      builder:
+          (context) => AlertDialog(
+            title: Text('功能提示'),
+            content: Text('此功能在Web版本中当前不可用或受限。'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: Text('确定'),
+              ),
+            ],
           ),
-        ],
-      ),
     );
   }
 
@@ -90,7 +108,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       // 启动时检查数据完整性
       _checkDataIntegrityOnStartup();
     } else {
-      Logger.log("Web environment detected: Database-dependent features in initState are skipped.");
+      Logger.log(
+        "Web environment detected: Database-dependent features in initState are skipped.",
+      );
       // Initialize with empty or default states for web
       if (mounted) {
         setState(() {
@@ -111,7 +131,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         // 自动修复数据完整性问题
         await getService<DatabaseService>().repairDataIntegrity();
         Logger.log('已自动修复数据完整性问题');
-        
+
         // 重新加载数据
         if (mounted) {
           await _loadData();
@@ -204,9 +224,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
   void _deleteSelectedItems() async {
     if (_selectedItems.isEmpty) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('请先选择要删除的项目')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('请先选择要删除的项目')));
       }
       return;
     }
@@ -216,9 +236,15 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       try {
         for (var item in _selectedItems) {
           if (item.type == ItemType.document) {
-            await getService<DatabaseService>().deleteDocument(item.name, parentFolder: _currentParentFolder);
+            await getService<DatabaseService>().deleteDocument(
+              item.name,
+              parentFolder: _currentParentFolder,
+            );
           } else if (item.type == ItemType.folder) {
-            await getService<DatabaseService>().deleteFolder(item.name, parentFolder: _currentParentFolder);
+            await getService<DatabaseService>().deleteFolder(
+              item.name,
+              parentFolder: _currentParentFolder,
+            );
           }
         }
         _selectedItems.clear();
@@ -229,9 +255,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       } catch (e) {
         Logger.log('批量删除出错: $e');
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('批量删除出错，请重试')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('批量删除出错，请重试')));
         }
       }
     }
@@ -240,9 +266,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
   void _moveSelectedItemsToFolder() async {
     if (_selectedItems.isEmpty) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('请先选择要移动的项目')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('请先选择要移动的项目')));
       }
       return;
     }
@@ -251,10 +277,20 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     final folders = await dbService.getAllDirectoryFolders();
     for (var item in _selectedItems) {
       if (item.type == ItemType.folder) {
-        final folder = folders.firstWhere((f) => f['name'] == item.name, orElse: () => <String, dynamic>{'id': '', 'parent_folder': null, 'name': ''});
+        final folder = folders.firstWhere(
+          (f) => f['name'] == item.name,
+          orElse:
+              () => <String, dynamic>{
+                'id': '',
+                'parent_folder': null,
+                'name': '',
+              },
+        );
         if (folder['id'] != '') {
           excludeIds.add(folder['id'] as String);
-          excludeIds.addAll(_getAllSubFolderIds(folder['id'] as String, folders));
+          excludeIds.addAll(
+            _getAllSubFolderIds(folder['id'] as String, folders),
+          );
         }
       } else if (item.type == ItemType.document) {
         final doc = await dbService.getDocumentByName(item.name);
@@ -272,14 +308,23 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       }
     }
     bool showRoot = _currentParentFolder != null;
-    final targetFolderName = await _selectFolder(excludeFolderIds: excludeIds.toList(), showRoot: showRoot);
+    final targetFolderName = await _selectFolder(
+      excludeFolderIds: excludeIds.toList(),
+      showRoot: showRoot,
+    );
     if (targetFolderName == null) return;
     try {
       for (var item in _selectedItems) {
         if (item.type == ItemType.document) {
-          await dbService.updateDocumentParentFolder(item.name, targetFolderName.isEmpty ? null : targetFolderName);
+          await dbService.updateDocumentParentFolder(
+            item.name,
+            targetFolderName.isEmpty ? null : targetFolderName,
+          );
         } else if (item.type == ItemType.folder) {
-          await dbService.updateFolderParentFolder(item.name, targetFolderName.isEmpty ? null : targetFolderName);
+          await dbService.updateFolderParentFolder(
+            item.name,
+            targetFolderName.isEmpty ? null : targetFolderName,
+          );
         }
       }
       _selectedItems.clear();
@@ -290,9 +335,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     } catch (e) {
       Logger.log('批量移动出错: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('批量移动出错，请重试')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('批量移动出错，请重试')));
       }
     }
   }
@@ -300,9 +345,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
   void _moveSelectedItemsToDirectory() async {
     if (_selectedItems.isEmpty) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('请先选择要移动的项目')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('请先选择要移动的项目')));
       }
       return;
     }
@@ -311,7 +356,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     if (confirmMove) {
       try {
         final dbService = getService<DatabaseService>();
-        
+
         for (var item in _selectedItems) {
           if (item.type == ItemType.document) {
             Logger.log('移动文档 ${item.name} 到根目录');
@@ -330,9 +375,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       } catch (e) {
         Logger.log('批量移动到目录出错: $e');
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('批量移动到目录出错，请重试')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('批量移动到目录出错，请重试')));
         }
       }
     }
@@ -340,7 +385,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
 
   Future<void> _loadBackgroundSettings() async {
     if (kIsWeb) {
-      Logger.log("Web environment: Skipping background settings load from database.");
+      Logger.log(
+        "Web environment: Skipping background settings load from database.",
+      );
       if (mounted) {
         setState(() {
           _backgroundImage = null;
@@ -351,13 +398,16 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     }
     try {
       Logger.log('开始加载背景设置 for folder: $_currentParentFolder');
-      Map<String, dynamic>? settings = await getService<DatabaseService>().getDirectorySettings(_currentParentFolder);
+      Map<String, dynamic>? settings = await getService<DatabaseService>()
+          .getDirectorySettings(_currentParentFolder);
 
       if (settings != null) {
         String? imagePath = settings['background_image_path'];
         int? colorValue = settings['background_color'];
 
-        Logger.log('从数据库加载设置 - 图片路径: ${imagePath ?? "空"}, 颜色值: ${colorValue ?? "空"}');
+        Logger.log(
+          '从数据库加载设置 - 图片路径: ${imagePath ?? "空"}, 颜色值: ${colorValue ?? "空"}',
+        );
 
         if (mounted) {
           setState(() {
@@ -388,7 +438,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
                 _backgroundImage = null;
               });
             }
-            await getService<DatabaseService>().deleteDirectoryBackgroundImage(_currentParentFolder);
+            await getService<DatabaseService>().deleteDirectoryBackgroundImage(
+              _currentParentFolder,
+            );
           }
         } else if (mounted) {
           setState(() {
@@ -426,14 +478,16 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
 
       if (imagePath != null) {
         final Directory appDocDir = await getApplicationDocumentsDirectory();
-        final String backgroundImagesPath = '${appDocDir.path}/background_images';
+        final String backgroundImagesPath =
+            '${appDocDir.path}/background_images';
 
         final Directory backgroundDir = Directory(backgroundImagesPath);
         if (!await backgroundDir.exists()) {
           await backgroundDir.create(recursive: true);
         }
 
-        final String fileName = 'background_${DateTime.now().millisecondsSinceEpoch}.jpg';
+        final String fileName =
+            'background_${DateTime.now().millisecondsSinceEpoch}.jpg';
         final String permanentPath = '$backgroundImagesPath/$fileName';
 
         final File newImage = await File(imagePath).copy(permanentPath);
@@ -454,9 +508,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     } catch (e) {
       Logger.log('选择背景图片出错: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('选择背景图像出错。请重试。')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('选择背景图像出错。请重试。')));
       }
     }
   }
@@ -469,7 +523,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     final shouldDelete = await _showDeleteConfirmationDialog("背景图像", "目录的背景图像");
     if (shouldDelete) {
       try {
-        await getService<DatabaseService>().deleteDirectoryBackgroundImage(_currentParentFolder);
+        await getService<DatabaseService>().deleteDirectoryBackgroundImage(
+          _currentParentFolder,
+        );
 
         if (mounted) {
           setState(() {
@@ -481,9 +537,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       } catch (e) {
         Logger.log('移除背景图片出错: $e');
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('移除背景图像出错。请重试。')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('移除背景图像出错。请重试。')));
         }
       }
     }
@@ -512,9 +568,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       } catch (e) {
         Logger.log('设置背景颜色时出错: $e');
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('设置背景颜色出错。请重试。')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('设置背景颜色出错。请重试。')));
         }
       }
     }
@@ -523,7 +579,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
   Future<Color?> _showColorPickerDialog() async {
     // 保存原始颜色，用于取消时恢复
     final originalColor = _backgroundColor;
-    
+
     Color? pickedColor = await showDialog<Color>(
       context: context,
       builder: (context) {
@@ -585,12 +641,12 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         );
       },
     );
-    
+
     // 如果用户选择了颜色，保存到数据库
     if (pickedColor != null) {
       await _saveBackgroundColor(pickedColor);
     }
-    
+
     return pickedColor;
   }
 
@@ -601,25 +657,27 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         folderName: _currentParentFolder,
         colorValue: color.value,
       );
-      
+
       setState(() {
         _backgroundColor = color;
       });
-      
+
       Logger.log('目录背景颜色已保存: ${color.value}');
     } catch (e) {
       Logger.log('保存背景颜色时出错: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('保存背景颜色失败: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('保存背景颜色失败: $e')));
       }
     }
   }
 
   Future<void> _loadTemplateDocuments() async {
     if (kIsWeb) {
-      Logger.log("Web environment: Skipping template documents load from database.");
+      Logger.log(
+        "Web environment: Skipping template documents load from database.",
+      );
       if (mounted) {
         setState(() {
           _templateDocuments = [];
@@ -628,7 +686,8 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       return;
     }
     try {
-      _templateDocuments = await getService<DatabaseService>().getTemplateDocuments();
+      _templateDocuments =
+          await getService<DatabaseService>().getTemplateDocuments();
     } catch (e) {
       Logger.log('加载模板文档出错: $e');
     }
@@ -646,13 +705,15 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     }
     try {
       Logger.log('开始加载数据 for folder: $_currentParentFolder');
-      
+
       // 加载文件夹数据
-      List<Map<String, dynamic>> folders = await getService<DatabaseService>().getFolders(parentFolder: _currentParentFolder);
+      List<Map<String, dynamic>> folders = await getService<DatabaseService>()
+          .getFolders(parentFolder: _currentParentFolder);
       Logger.log('从数据库加载了 ${folders.length} 个文件夹');
 
       // 加载文档数据
-      List<Map<String, dynamic>> documents = await getService<DatabaseService>().getDocuments(parentFolder: _currentParentFolder);
+      List<Map<String, dynamic>> documents = await getService<DatabaseService>()
+          .getDocuments(parentFolder: _currentParentFolder);
       Logger.log('从数据库加载了 ${documents.length} 个文档');
 
       List<DirectoryItem> directoryItems = [];
@@ -661,13 +722,15 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       for (var folder in folders) {
         if (folder['name'] != null && folder['name'].toString().isNotEmpty) {
           Logger.log('加载文件夹: ${folder['name']}, 顺序: ${folder['order_index']}');
-          directoryItems.add(DirectoryItem(
-            name: folder['name'],
-            type: ItemType.folder,
-            order: folder['order_index'] ?? 0,
-            isTemplate: false,
-            parentFolder: folder['parent_folder'],
-          ));
+          directoryItems.add(
+            DirectoryItem(
+              name: folder['name'],
+              type: ItemType.folder,
+              order: folder['order_index'] ?? 0,
+              isTemplate: false,
+              parentFolder: folder['parent_folder'],
+            ),
+          );
         } else {
           Logger.log('警告：发现无效文件夹数据: $folder');
         }
@@ -680,16 +743,21 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
           Logger.log('跳过封面页文档，不在目录页显示');
           continue;
         }
-        
-        if (document['name'] != null && document['name'].toString().isNotEmpty) {
-          Logger.log('加载文档: ${document['name']}, 顺序: ${document['order_index']}');
-          directoryItems.add(DirectoryItem(
-            name: document['name'],
-            type: ItemType.document,
-            order: document['order_index'] ?? 0,
-            isTemplate: document['is_template'] == 1,
-            parentFolder: document['parent_folder'],
-          ));
+
+        if (document['name'] != null &&
+            document['name'].toString().isNotEmpty) {
+          Logger.log(
+            '加载文档: ${document['name']}, 顺序: ${document['order_index']}',
+          );
+          directoryItems.add(
+            DirectoryItem(
+              name: document['name'],
+              type: ItemType.document,
+              order: document['order_index'] ?? 0,
+              isTemplate: document['is_template'] == 1,
+              parentFolder: document['parent_folder'],
+            ),
+          );
         } else {
           Logger.log('警告：发现无效文档数据: $document');
         }
@@ -703,13 +771,13 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
           _items = directoryItems;
         });
       }
-      
+
       // 在数据加载完成后，重新加载背景设置
       await _loadBackgroundSettings();
-      
+
       // 加载模板文档
       await _loadTemplateDocuments();
-      
+
       Logger.log('数据加载完成，共 ${_items.length} 个项目');
     } catch (e) {
       Logger.log('加载数据时出错: $e');
@@ -771,7 +839,8 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
   Future<String?> _getParentFolder(String folderName) async {
     try {
       // getFolderByName returns Map<String, dynamic>? not List<Map<String, dynamic>>
-      Map<String, dynamic>? folderData = await getService<DatabaseService>().getFolderByName(folderName);
+      Map<String, dynamic>? folderData = await getService<DatabaseService>()
+          .getFolderByName(folderName);
       if (folderData != null && folderData.containsKey('parentFolder')) {
         return folderData['parentFolder'] as String?;
       }
@@ -784,19 +853,21 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
 
   void _exportDocument(String documentName) async {
     try {
-      String exportPath = await getService<DatabaseService>().exportDocument(documentName);
+      String exportPath = await getService<DatabaseService>().exportDocument(
+        documentName,
+      );
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('文档已导出到 $exportPath')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('文档已导出到 $exportPath')));
       }
       await Share.shareXFiles([XFile(exportPath)], text: '文档备份文件');
     } catch (e) {
       Logger.log('Error exporting document: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('导出文档出错：$e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('导出文档出错：$e')));
       }
     }
   }
@@ -827,7 +898,10 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     try {
       String? folderName = '';
       while (true) {
-        folderName = await _showFolderNameDialog(hintText: "文件夹名称", initialValue: folderName);
+        folderName = await _showFolderNameDialog(
+          hintText: "文件夹名称",
+          initialValue: folderName,
+        );
         if (folderName == null || folderName.isEmpty) return; // 用户取消或未输入
         if (!await getService<DatabaseService>().doesNameExist(folderName)) {
           String? parentFolder = _currentParentFolder;
@@ -849,9 +923,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     } catch (e) {
       Logger.log('Error adding folder: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('添加文件夹出错。请重试。')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('添加文件夹出错。请重试。')));
       }
     }
   }
@@ -860,7 +934,10 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     try {
       String? documentName = '';
       while (true) {
-        documentName = await _showFolderNameDialog(hintText: "文档名称", initialValue: documentName);
+        documentName = await _showFolderNameDialog(
+          hintText: "文档名称",
+          initialValue: documentName,
+        );
         if (documentName == null || documentName.isEmpty) return; // 用户取消或未输入
         if (!await getService<DatabaseService>().doesNameExist(documentName)) {
           String? parentFolder = _currentParentFolder;
@@ -881,9 +958,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     } catch (e) {
       Logger.log('Error adding document: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('添加文档出错。请重试。')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('添加文档出错。请重试。')));
       }
     }
   }
@@ -901,15 +978,16 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         showDialog(
           context: context,
           barrierDismissible: false,
-          builder: (context) => const AlertDialog(
-            content: Row(
-              children: [
-                CircularProgressIndicator(),
-                SizedBox(width: 20),
-                Text('正在导入文档...')
-              ],
-            ),
-          ),
+          builder:
+              (context) => const AlertDialog(
+                content: Row(
+                  children: [
+                    CircularProgressIndicator(),
+                    SizedBox(width: 20),
+                    Text('正在导入文档...'),
+                  ],
+                ),
+              ),
         );
 
         List<String> successFiles = [];
@@ -920,7 +998,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
           if (fp != null && fp.isNotEmpty) {
             String zipPath = fp;
             String fileName = path.basenameWithoutExtension(zipPath);
-            
+
             // 自动去掉时间戳，保持原名
             // 匹配格式：文档名-YYYYMMDD-HHMM
             String originalName = fileName;
@@ -933,7 +1011,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
               // importDocument expects named parameters targetDocumentName and targetParentFolder
               await getService<DatabaseService>().importDocument(
                 zipPath,
-                targetDocumentName: originalName, 
+                targetDocumentName: originalName,
                 targetParentFolder: _currentParentFolder,
               );
               successFiles.add(originalName);
@@ -952,7 +1030,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         // 刷新数据
         if (mounted) {
           await _loadData();
-          
+
           // 高亮显示最后一个成功导入的文档
           if (successFiles.isNotEmpty) {
             _highlightNewItem(successFiles.last, ItemType.document);
@@ -964,40 +1042,41 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
             message += '成功导入 ${successFiles.length} 个文档\n';
           }
           if (failedFiles.isNotEmpty) {
-            message += '导入失败 ${failedFiles.length} 个文档：${failedFiles.join(", ")}';
+            message +=
+                '导入失败 ${failedFiles.length} 个文档：${failedFiles.join(", ")}';
           }
 
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(message),
-              duration: Duration(seconds: 3),
-            ),
+            SnackBar(content: Text(message), duration: Duration(seconds: 3)),
           );
         }
       } else {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('未选择备份文件')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('未选择备份文件')));
         }
       }
     } catch (e) {
       Logger.log('批量导入文档时出错: $e');
       if (mounted) {
         Navigator.of(context).pop(); // 确保关闭进度对话框
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('导入文档时出错：$e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('导入文档时出错：$e')));
       }
     }
   }
 
   void _deleteDocument(String documentName) async {
-    bool confirmDelete = await _showDeleteConfirmationDialog("文档", documentName);
+    bool confirmDelete = await _showDeleteConfirmationDialog(
+      "文档",
+      documentName,
+    );
     if (confirmDelete) {
       try {
         String? parentFolder = _currentParentFolder;
-        
+
         // 使用文件清理服务彻底删除文档文件
         try {
           final fileCleanupService = getService<FileCleanupService>();
@@ -1007,21 +1086,27 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         } catch (e) {
           Logger.log('文件清理服务删除文档失败: $e');
         }
-        
+
         // 从数据库中删除
-        await getService<DatabaseService>().deleteDocument(documentName, parentFolder: parentFolder);
-        
+        await getService<DatabaseService>().deleteDocument(
+          documentName,
+          parentFolder: parentFolder,
+        );
+
         if (mounted) {
           setState(() {
-            _items.removeWhere((item) => item.type == ItemType.document && item.name == documentName);
+            _items.removeWhere(
+              (item) =>
+                  item.type == ItemType.document && item.name == documentName,
+            );
           });
         }
       } catch (e) {
         Logger.log('Error deleting document: $e');
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('删除文档出错。请重试。')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('删除文档出错。请重试。')));
         }
       }
     }
@@ -1032,7 +1117,7 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     if (confirmDelete) {
       try {
         String? parentFolder = _currentParentFolder;
-        
+
         // 使用文件清理服务彻底删除文件夹
         try {
           final fileCleanupService = getService<FileCleanupService>();
@@ -1042,19 +1127,22 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         } catch (e) {
           Logger.log('文件清理服务删除文件夹失败: $e');
         }
-        
+
         // 从数据库中删除
-        await getService<DatabaseService>().deleteFolder(folderName, parentFolder: parentFolder);
-        
+        await getService<DatabaseService>().deleteFolder(
+          folderName,
+          parentFolder: parentFolder,
+        );
+
         if (mounted) {
           await _loadData();
         }
       } catch (e) {
         Logger.log('Error deleting folder: $e');
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('删除文件夹出错。请重试。')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('删除文件夹出错。请重试。')));
         }
       }
     }
@@ -1062,31 +1150,36 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
 
   Future<bool> _showDeleteConfirmationDialog(String type, String name) async {
     return await showDialog<bool>(
-      context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          title: Text('确认删除'),
-          content: Text('您确定要删除$type "$name" 吗？这将删除其所有内容。'),
-          actions: [
-            TextButton(
-              child: Text('取消'),
-              onPressed: () => Navigator.of(context).pop(false),
-            ),
-            TextButton(
-              child: Text('删除', style: TextStyle(color: Colors.red)),
-              onPressed: () => Navigator.of(context).pop(true),
-            ),
-          ],
-        );
-      },
-    ) ?? false;
+          context: context,
+          builder: (BuildContext context) {
+            return AlertDialog(
+              title: Text('确认删除'),
+              content: Text('您确定要删除$type "$name" 吗？这将删除其所有内容。'),
+              actions: [
+                TextButton(
+                  child: Text('取消'),
+                  onPressed: () => Navigator.of(context).pop(false),
+                ),
+                TextButton(
+                  child: Text('删除', style: TextStyle(color: Colors.red)),
+                  onPressed: () => Navigator.of(context).pop(true),
+                ),
+              ],
+            );
+          },
+        ) ??
+        false;
   }
 
   void _renameDocument(String oldName) async {
-    String? newName = await _showFolderNameDialog(hintText: "新文档名称", initialValue: oldName);
+    String? newName = await _showFolderNameDialog(
+      hintText: "新文档名称",
+      initialValue: oldName,
+    );
     if (newName != null && newName.isNotEmpty) {
       final now = DateTime.now();
-      final dateStr = "${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}";
+      final dateStr =
+          "${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}";
       newName = "$newName-$dateStr";
 
       if (!await getService<DatabaseService>().doesNameExist(newName)) {
@@ -1098,9 +1191,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         } catch (e) {
           Logger.log('Error renaming document: $e');
           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('重命名文档出错。请重试。')),
-            );
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(SnackBar(content: Text('重命名文档出错。请重试。')));
           }
         }
       } else {
@@ -1110,10 +1203,14 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
   }
 
   void _renameFolder(String oldName) async {
-    String? newName = await _showFolderNameDialog(hintText: "新文件夹名称", initialValue: oldName);
+    String? newName = await _showFolderNameDialog(
+      hintText: "新文件夹名称",
+      initialValue: oldName,
+    );
     if (newName != null && newName.isNotEmpty) {
       final now = DateTime.now();
-      final dateStr = "${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}";
+      final dateStr =
+          "${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}";
       newName = "$newName-$dateStr";
 
       if (!await getService<DatabaseService>().doesNameExist(newName)) {
@@ -1125,9 +1222,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         } catch (e) {
           Logger.log('Error renaming folder: $e');
           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('重命名文件夹出错。请重试。')),
-            );
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(SnackBar(content: Text('重命名文件夹出错。请重试。')));
           }
         }
       } else {
@@ -1138,63 +1235,86 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
 
   void _moveDocumentToDirectory(String documentName) async {
     try {
-      await getService<DatabaseService>().updateDocumentParentFolder(documentName, null);
+      await getService<DatabaseService>().updateDocumentParentFolder(
+        documentName,
+        null,
+      );
       if (mounted) {
         await _loadData();
       }
     } catch (e) {
       Logger.log('Error moving document to directory: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('移动文档到目录出错。请重试。')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('移动文档到目录出错。请重试。')));
       }
     }
   }
 
   void _moveFolderToDirectory(String folderName) async {
     try {
-      await getService<DatabaseService>().updateFolderParentFolder(folderName, null);
+      await getService<DatabaseService>().updateFolderParentFolder(
+        folderName,
+        null,
+      );
       if (mounted) {
         await _loadData();
       }
     } catch (e) {
       Logger.log('Error moving folder to directory: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('移动文件夹到目录出错。请重试。')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('移动文件夹到目录出错。请重试。')));
       }
     }
   }
 
   void _moveDocumentToDirectoryOption(String documentName) async {
-    bool confirmMove = await _showMoveConfirmationDialog("文档", documentName, "目录");
+    bool confirmMove = await _showMoveConfirmationDialog(
+      "文档",
+      documentName,
+      "目录",
+    );
     if (confirmMove) {
       _moveDocumentToDirectory(documentName);
     }
   }
 
   void _moveFolderToDirectoryOption(String folderName) async {
-    bool confirmMove = await _showMoveConfirmationDialog("文件夹", folderName, "目录");
+    bool confirmMove = await _showMoveConfirmationDialog(
+      "文件夹",
+      folderName,
+      "目录",
+    );
     if (confirmMove) {
       _moveFolderToDirectory(folderName);
     }
   }
 
   /// 获取文件夹完整路径
-  String _getFolderFullPath(Map<String, dynamic> folder, List<Map<String, dynamic>> allFolders) {
+  String _getFolderFullPath(
+    Map<String, dynamic> folder,
+    List<Map<String, dynamic>> allFolders,
+  ) {
     if (folder['parent_folder'] == null) return folder['name'] as String;
     final parent = allFolders.firstWhere(
       (f) => f['id'] == folder['parent_folder'],
-      orElse: () => <String, dynamic>{'name': '', 'parent_folder': null, 'id': ''},
+      orElse:
+          () => <String, dynamic>{'name': '', 'parent_folder': null, 'id': ''},
     );
     if (parent['name'] == '') return folder['name'] as String;
-    return _getFolderFullPath(parent, allFolders) + '/' + (folder['name'] as String);
+    return _getFolderFullPath(parent, allFolders) +
+        '/' +
+        (folder['name'] as String);
   }
 
   /// 递归获取所有子文件夹id
-  List<String> _getAllSubFolderIds(String folderId, List<Map<String, dynamic>> allFolders) {
+  List<String> _getAllSubFolderIds(
+    String folderId,
+    List<Map<String, dynamic>> allFolders,
+  ) {
     List<String> result = [];
     void collect(String id) {
       for (var f in allFolders) {
@@ -1204,26 +1324,41 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         }
       }
     }
+
     collect(folderId);
     return result;
   }
 
   /// 选择目标文件夹，excludeFolderIds为需要排除的文件夹id列表，showRoot控制是否显示根目录
-  Future<String?> _selectFolder({List<String>? excludeFolderIds, bool showRoot = true}) async {
+  Future<String?> _selectFolder({
+    List<String>? excludeFolderIds,
+    bool showRoot = true,
+  }) async {
     try {
-      final folders = await getService<DatabaseService>().getAllDirectoryFolders();
+      final folders =
+          await getService<DatabaseService>().getAllDirectoryFolders();
       // 排除指定id的文件夹
-      final availableFolders = folders.where((folder) => excludeFolderIds == null || !excludeFolderIds.contains(folder['id'])).toList();
+      final availableFolders =
+          folders
+              .where(
+                (folder) =>
+                    excludeFolderIds == null ||
+                    !excludeFolderIds.contains(folder['id']),
+              )
+              .toList();
       if (availableFolders.isEmpty && !showRoot) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('没有可用的目标文件夹')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('没有可用的目标文件夹')));
         }
         return null;
       }
       // 生成路径映射
-      final folderPaths = availableFolders.map((folder) => _getFolderFullPath(folder, folders)).toList();
+      final folderPaths =
+          availableFolders
+              .map((folder) => _getFolderFullPath(folder, folders))
+              .toList();
       String? selectedFolder;
       await showDialog<void>(
         context: context,
@@ -1242,13 +1377,16 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
                         Navigator.of(context).pop();
                       },
                     ),
-                  ...List.generate(availableFolders.length, (i) => ListTile(
-                    title: Text(folderPaths[i]),
-                    onTap: () {
-                      selectedFolder = availableFolders[i]['name'] as String;
-                      Navigator.of(context).pop();
-                    },
-                  )),
+                  ...List.generate(
+                    availableFolders.length,
+                    (i) => ListTile(
+                      title: Text(folderPaths[i]),
+                      onTap: () {
+                        selectedFolder = availableFolders[i]['name'] as String;
+                        Navigator.of(context).pop();
+                      },
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -1268,9 +1406,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     } catch (e) {
       Logger.log('Error selecting folder: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('选择文件夹时出错')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('选择文件夹时出错')));
       }
       return null;
     }
@@ -1280,18 +1418,31 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     try {
       final dbService = getService<DatabaseService>();
       final folders = await dbService.getAllDirectoryFolders();
-      final currentFolder = folders.firstWhere((f) => f['name'] == folderName, orElse: () => <String, dynamic>{'id': '', 'parent_folder': null, 'name': ''});
+      final currentFolder = folders.firstWhere(
+        (f) => f['name'] == folderName,
+        orElse:
+            () => <String, dynamic>{
+              'id': '',
+              'parent_folder': null,
+              'name': '',
+            },
+      );
       if (currentFolder['id'] == '') return;
       // 递归排除自身和所有子文件夹
       final excludeIds = <String>[currentFolder['id'] as String];
-      excludeIds.addAll(_getAllSubFolderIds(currentFolder['id'] as String, folders));
+      excludeIds.addAll(
+        _getAllSubFolderIds(currentFolder['id'] as String, folders),
+      );
       // 排除当前父文件夹
       if (currentFolder['parent_folder'] != null) {
         excludeIds.add(currentFolder['parent_folder'] as String);
       }
       // 根目录选项仅在当前文件夹不在根目录时显示
       final showRoot = currentFolder['parent_folder'] != null;
-      final targetFolderName = await _selectFolder(excludeFolderIds: excludeIds, showRoot: showRoot);
+      final targetFolderName = await _selectFolder(
+        excludeFolderIds: excludeIds,
+        showRoot: showRoot,
+      );
       if (targetFolderName == null) return; // 取消时不做任何操作
       if (targetFolderName.isEmpty) {
         await dbService.updateFolderParentFolder(folderName, null);
@@ -1304,9 +1455,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     } catch (e) {
       Logger.log('Error moving folder: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(e.toString())),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(e.toString())));
       }
     }
   }
@@ -1324,13 +1475,19 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         // 文档在根目录，不显示根目录选项
         showRoot = false;
       }
-      final targetFolderName = await _selectFolder(excludeFolderIds: currentFolderId != null ? [currentFolderId] : null, showRoot: showRoot);
+      final targetFolderName = await _selectFolder(
+        excludeFolderIds: currentFolderId != null ? [currentFolderId] : null,
+        showRoot: showRoot,
+      );
       if (targetFolderName == null) return; // 取消时不做任何操作
       if (targetFolderName.isEmpty) {
         // 移动到根目录
         await dbService.updateDocumentParentFolder(documentName, null);
       } else {
-        await dbService.updateDocumentParentFolder(documentName, targetFolderName);
+        await dbService.updateDocumentParentFolder(
+          documentName,
+          targetFolderName,
+        );
       }
       if (mounted) {
         await _loadData();
@@ -1338,54 +1495,65 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     } catch (e) {
       Logger.log('Error moving document: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(e.toString())),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(e.toString())));
       }
     }
   }
 
-  Future<bool> _showMoveConfirmationDialog(String type, String name, String target) async {
+  Future<bool> _showMoveConfirmationDialog(
+    String type,
+    String name,
+    String target,
+  ) async {
     return await showDialog<bool>(
-      context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          title: Text('确认移动'),
-          content: Text('您确定要将$type "$name" 移动到$target 吗？'),
-          actions: [
-            TextButton(
-              child: Text('取消'),
-              onPressed: () => Navigator.of(context).pop(false),
-            ),
-            TextButton(
-              child: Text('移动', style: TextStyle(color: Colors.blue)),
-              onPressed: () => Navigator.of(context).pop(true),
-            ),
-          ],
-        );
-      },
-    ) ?? false;
+          context: context,
+          builder: (BuildContext context) {
+            return AlertDialog(
+              title: Text('确认移动'),
+              content: Text('您确定要将$type "$name" 移动到$target 吗？'),
+              actions: [
+                TextButton(
+                  child: Text('取消'),
+                  onPressed: () => Navigator.of(context).pop(false),
+                ),
+                TextButton(
+                  child: Text('移动', style: TextStyle(color: Colors.blue)),
+                  onPressed: () => Navigator.of(context).pop(true),
+                ),
+              ],
+            );
+          },
+        ) ??
+        false;
   }
 
   Future<String> _getDirectoryFolderPath(String folderName) async {
     final dbService = getService<DatabaseService>();
     String currentPath = folderName;
-    
+
     try {
       // getFolderByName returns Map<String, dynamic>? not List<Map<String, dynamic>>
-      Map<String, dynamic>? currentFolderData = await dbService.getFolderByName(folderName);
-      String? parentFolderName = (currentFolderData != null && currentFolderData.containsKey('parent_folder')) 
-          ? currentFolderData['parent_folder'] as String? 
-          : null;
-      
+      Map<String, dynamic>? currentFolderData = await dbService.getFolderByName(
+        folderName,
+      );
+      String? parentFolderName =
+          (currentFolderData != null &&
+                  currentFolderData.containsKey('parent_folder'))
+              ? currentFolderData['parent_folder'] as String?
+              : null;
+
       while (parentFolderName != null) {
         currentPath = '$parentFolderName/$currentPath';
         currentFolderData = await dbService.getFolderByName(parentFolderName);
-        parentFolderName = (currentFolderData != null && currentFolderData.containsKey('parent_folder')) 
-            ? currentFolderData['parent_folder'] as String? 
-            : null;
+        parentFolderName =
+            (currentFolderData != null &&
+                    currentFolderData.containsKey('parent_folder'))
+                ? currentFolderData['parent_folder'] as String?
+                : null;
       }
-      
+
       return currentPath;
     } catch (e) {
       Logger.log('获取文件夹路径出错: $e');
@@ -1393,7 +1561,10 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     }
   }
 
-  Future<String?> _showFolderNameDialog({String? hintText, String? initialValue}) async {
+  Future<String?> _showFolderNameDialog({
+    String? hintText,
+    String? initialValue,
+  }) async {
     TextEditingController controller = TextEditingController();
     if (initialValue != null) {
       controller.text = initialValue;
@@ -1481,9 +1652,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     } catch (e) {
       Logger.log('Error updating order: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('更新顺序出错。请重试。')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('更新顺序出错。请重试。')));
       }
     }
   }
@@ -1492,10 +1663,11 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => DocumentEditorPage(
-          documentName: documentName,
-          onSave: (updatedTextBoxes) {},
-        ),
+        builder:
+            (context) => DocumentEditorPage(
+              documentName: documentName,
+              onSave: (updatedTextBoxes) {},
+            ),
       ),
     ).then((_) {
       Logger.log('从文档编辑页面返回');
@@ -1526,8 +1698,8 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       // copyDocument expects sourceDocumentName as positional and parentFolder as named
       // and returns Future<String>
       String newDocName = await getService<DatabaseService>().copyDocument(
-        documentName, 
-        parentFolder: _currentParentFolder
+        documentName,
+        parentFolder: _currentParentFolder,
       );
       if (mounted) {
         await _loadData();
@@ -1536,9 +1708,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     } catch (e) {
       Logger.log('复制文档出错: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('复制文档出错，请重试。')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('复制文档出错，请重试。')));
       }
     }
   }
@@ -1550,14 +1722,19 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       context: context,
       builder: (context) {
         return ConstrainedBox(
-          constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.6),
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.of(context).size.height * 0.6,
+          ),
           child: SingleChildScrollView(
             child: Wrap(
               children: [
                 ListTile(
                   leading: Icon(Icons.delete),
                   title: Text('删除'),
-                  contentPadding: EdgeInsets.symmetric(horizontal: 16.0, vertical: 2.0),
+                  contentPadding: EdgeInsets.symmetric(
+                    horizontal: 16.0,
+                    vertical: 2.0,
+                  ),
                   dense: true,
                   onTap: () {
                     Navigator.pop(context);
@@ -1568,7 +1745,10 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
                 ListTile(
                   leading: Icon(Icons.copy),
                   title: Text('复制'),
-                  contentPadding: EdgeInsets.symmetric(horizontal: 16.0, vertical: 2.0),
+                  contentPadding: EdgeInsets.symmetric(
+                    horizontal: 16.0,
+                    vertical: 2.0,
+                  ),
                   dense: true,
                   onTap: () {
                     Navigator.pop(context);
@@ -1579,7 +1759,10 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
                 ListTile(
                   leading: Icon(Icons.drive_file_rename_outline),
                   title: Text('重命名'),
-                  contentPadding: EdgeInsets.symmetric(horizontal: 16.0, vertical: 2.0),
+                  contentPadding: EdgeInsets.symmetric(
+                    horizontal: 16.0,
+                    vertical: 2.0,
+                  ),
                   dense: true,
                   onTap: () {
                     Navigator.pop(context);
@@ -1590,11 +1773,17 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
                 ListTile(
                   leading: Icon(isTemplate ? Icons.star : Icons.star_border),
                   title: Text(isTemplate ? '取消设为模板' : '设为模板'),
-                  contentPadding: EdgeInsets.symmetric(horizontal: 16.0, vertical: 2.0),
+                  contentPadding: EdgeInsets.symmetric(
+                    horizontal: 16.0,
+                    vertical: 2.0,
+                  ),
                   dense: true,
                   onTap: () async {
                     Navigator.pop(context);
-                    await getService<DatabaseService>().setDocumentAsTemplate(documentName, !isTemplate);
+                    await getService<DatabaseService>().setDocumentAsTemplate(
+                      documentName,
+                      !isTemplate,
+                    );
                     if (mounted) {
                       _loadData();
                     }
@@ -1604,7 +1793,10 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
                 ListTile(
                   leading: Icon(Icons.folder),
                   title: Text('移动到文件夹'),
-                  contentPadding: EdgeInsets.symmetric(horizontal: 16.0, vertical: 2.0),
+                  contentPadding: EdgeInsets.symmetric(
+                    horizontal: 16.0,
+                    vertical: 2.0,
+                  ),
                   dense: true,
                   onTap: () {
                     Navigator.pop(context);
@@ -1615,7 +1807,10 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
                 ListTile(
                   leading: Icon(Icons.drive_file_move),
                   title: Text('移动到目录'),
-                  contentPadding: EdgeInsets.symmetric(horizontal: 16.0, vertical: 2.0),
+                  contentPadding: EdgeInsets.symmetric(
+                    horizontal: 16.0,
+                    vertical: 2.0,
+                  ),
                   dense: true,
                   onTap: () {
                     Navigator.pop(context);
@@ -1626,7 +1821,10 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
                 ListTile(
                   leading: Icon(Icons.share),
                   title: Text('导出'),
-                  contentPadding: EdgeInsets.symmetric(horizontal: 16.0, vertical: 2.0),
+                  contentPadding: EdgeInsets.symmetric(
+                    horizontal: 16.0,
+                    vertical: 2.0,
+                  ),
                   dense: true,
                   onTap: () {
                     Navigator.pop(context);
@@ -1708,77 +1906,77 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
               controller: scrollController,
               child: Wrap(
                 children: [
-            ListTile(
-              leading: Icon(Icons.image),
-              title: Text('设置背景图片'),
-              onTap: () {
-                Navigator.pop(context);
-                _pickBackgroundImage();
-              },
-            ),
-            ListTile(
-              leading: Icon(Icons.color_lens),
-              title: Text('设置背景颜色'),
-              onTap: () {
-                Navigator.pop(context);
-                _pickBackgroundColor();
-              },
-            ),
-            if (_backgroundImage != null)
-              ListTile(
-                leading: Icon(Icons.delete),
-                title: Text('删除背景图片'),
-                onTap: () {
-                  Navigator.pop(context);
-                  _removeBackgroundImage();
-                },
+                  ListTile(
+                    leading: Icon(Icons.image),
+                    title: Text('设置背景图片'),
+                    onTap: () {
+                      Navigator.pop(context);
+                      _pickBackgroundImage();
+                    },
+                  ),
+                  ListTile(
+                    leading: Icon(Icons.color_lens),
+                    title: Text('设置背景颜色'),
+                    onTap: () {
+                      Navigator.pop(context);
+                      _pickBackgroundColor();
+                    },
+                  ),
+                  if (_backgroundImage != null)
+                    ListTile(
+                      leading: Icon(Icons.delete),
+                      title: Text('删除背景图片'),
+                      onTap: () {
+                        Navigator.pop(context);
+                        _removeBackgroundImage();
+                      },
+                    ),
+                  Divider(),
+                  ListTile(
+                    leading: Icon(Icons.backup),
+                    title: Text('导出目录数据'),
+                    onTap: () {
+                      Navigator.pop(context);
+                      _exportDirectoryData();
+                    },
+                  ),
+                  ListTile(
+                    leading: Icon(Icons.restore),
+                    title: Text('导入目录数据'),
+                    onTap: () {
+                      Navigator.pop(context);
+                      _importDirectoryData();
+                    },
+                  ),
+                  Divider(),
+                  ListTile(
+                    leading: Icon(Icons.health_and_safety),
+                    title: Text('检查数据完整性'),
+                    onTap: () {
+                      Navigator.pop(context);
+                      _checkDataIntegrity();
+                    },
+                  ),
+                  ListTile(
+                    leading: Icon(Icons.build),
+                    title: Text('修复数据问题'),
+                    onTap: () {
+                      Navigator.pop(context);
+                      _repairDataIntegrity();
+                    },
+                  ),
+                  ListTile(
+                    leading: Icon(Icons.science, color: Colors.orange),
+                    title: Text('生成测试数据'),
+                    subtitle: Text('用于验证导出/导入性能'),
+                    onTap: () {
+                      Navigator.pop(context);
+                      _showGenerateTestDataDialog();
+                    },
+                  ),
+                ],
               ),
-            Divider(),
-            ListTile(
-              leading: Icon(Icons.backup),
-              title: Text('导出目录数据'),
-              onTap: () {
-                Navigator.pop(context);
-                _exportDirectoryData();
-              },
-            ),
-            ListTile(
-              leading: Icon(Icons.restore),
-              title: Text('导入目录数据'),
-              onTap: () {
-                Navigator.pop(context);
-                _importDirectoryData();
-              },
-            ),
-            Divider(),
-            ListTile(
-              leading: Icon(Icons.health_and_safety),
-              title: Text('检查数据完整性'),
-              onTap: () {
-                Navigator.pop(context);
-                _checkDataIntegrity();
-              },
-            ),
-            ListTile(
-              leading: Icon(Icons.build),
-              title: Text('修复数据问题'),
-              onTap: () {
-                Navigator.pop(context);
-                _repairDataIntegrity();
-              },
-            ),
-            ListTile(
-              leading: Icon(Icons.science, color: Colors.orange),
-              title: Text('生成测试数据'),
-              subtitle: Text('用于验证导出/导入性能'),
-              onTap: () {
-                Navigator.pop(context);
-                _showGenerateTestDataDialog();
-              },
-            ),
-          ],
-        ),
-      );
+            );
           },
         );
       },
@@ -1788,22 +1986,25 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
   Future<void> _showGenerateTestDataDialog() async {
     final scale = await showDialog<TestDataScale>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text('选择测试数据规模'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: TestDataScale.directoryScales
-                  .map((s) {
-                    final suffix = s.formulaDir.substring(s.label.length) +
+      builder:
+          (ctx) => AlertDialog(
+            title: Text('选择测试数据规模'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children:
+                  TestDataScale.directoryScales.map((s) {
+                    final suffix =
+                        s.formulaDir.substring(s.label.length) +
                         (s.isPeakTarget ? '（需数分钟）' : '');
                     return ListTile(
                       dense: true,
                       title: RichText(
                         text: TextSpan(
                           style: TextStyle(
-                            color: Theme.of(ctx).brightness == Brightness.dark
-                                ? Colors.white
-                                : Colors.black87,
+                            color:
+                                Theme.of(ctx).brightness == Brightness.dark
+                                    ? Colors.white
+                                    : Colors.black87,
                             fontSize: 14,
                           ),
                           children: [
@@ -1821,31 +2022,35 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
                       ),
                       onTap: () => Navigator.pop(ctx, s),
                     );
-                  })
-              .toList(),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: Text('取消'),
+                  }).toList(),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: Text('取消'),
+              ),
+            ],
           ),
-        ],
-      ),
     );
     if (scale == null || !mounted) return;
     if (scale.isPeakTarget) {
       final confirm = await showDialog<bool>(
         context: context,
-        builder: (ctx) => AlertDialog(
-          title: Text('确认峰值测试'),
-          content: Text(
-            '将生成约 10GB 测试数据，预计耗时数分钟。\n请确保设备有足够存储空间。\n\n继续？',
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text('取消')),
-            TextButton(onPressed: () => Navigator.pop(ctx, true), child: Text('继续')),
-          ],
-        ),
+        builder:
+            (ctx) => AlertDialog(
+              title: Text('确认峰值测试'),
+              content: Text('将生成约 10GB 测试数据，预计耗时数分钟。\n请确保设备有足够存储空间。\n\n继续？'),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: Text('取消'),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  child: Text('继续'),
+                ),
+              ],
+            ),
       );
       if (confirm != true || !mounted) return;
     }
@@ -1853,22 +2058,26 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            CircularProgressIndicator(),
-            SizedBox(height: 16),
-            ValueListenableBuilder<String>(
-              valueListenable: progress,
-              builder: (_, v, __) => Text(v),
+      builder:
+          (ctx) => AlertDialog(
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(height: 16),
+                ValueListenableBuilder<String>(
+                  valueListenable: progress,
+                  builder: (_, v, __) => Text(v),
+                ),
+              ],
             ),
-          ],
-        ),
-      ),
+          ),
     );
     try {
-      final result = await TestDataGeneratorService().generateDirectoryTestData(scale, progress: progress);
+      final result = await TestDataGeneratorService().generateDirectoryTestData(
+        scale,
+        progress: progress,
+      );
       if (!mounted) return;
       Navigator.pop(context);
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1885,7 +2094,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     } catch (e) {
       if (mounted) {
         Navigator.pop(context);
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('生成失败: $e')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('生成失败: $e')));
       }
     }
   }
@@ -1893,9 +2104,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
   Future<void> _showTemplateSelectionDialog() async {
     if (_templateDocuments.isEmpty) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('没有可用的模板文档。请先将文档设置为模板。')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('没有可用的模板文档。请先将文档设置为模板。')));
       }
       return;
     }
@@ -1907,31 +2118,32 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
 
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text('选择模板'),
-        content: SizedBox(
-          width: double.maxFinite,
-          child: ListView.builder(
-            shrinkWrap: true,
-            itemCount: _templateDocuments.length,
-            itemBuilder: (context, index) {
-              return ListTile(
-                title: Text(_templateDocuments[index]['name']),
-                leading: Icon(Icons.star, color: Colors.amber),
-                onTap: () {
-                  Navigator.pop(context, _templateDocuments[index]['name']);
+      builder:
+          (context) => AlertDialog(
+            title: Text('选择模板'),
+            content: SizedBox(
+              width: double.maxFinite,
+              child: ListView.builder(
+                shrinkWrap: true,
+                itemCount: _templateDocuments.length,
+                itemBuilder: (context, index) {
+                  return ListTile(
+                    title: Text(_templateDocuments[index]['name']),
+                    leading: Icon(Icons.star, color: Colors.amber),
+                    onTap: () {
+                      Navigator.pop(context, _templateDocuments[index]['name']);
+                    },
+                  );
                 },
-              );
-            },
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: Text('取消'),
+              ),
+            ],
           ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text('取消'),
-          ),
-        ],
-      ),
     ).then((templateName) async {
       if (templateName != null && mounted) {
         await _createDocumentFromTemplate(templateName);
@@ -1947,11 +2159,12 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       // For now, we assume the service might further refine the name if there's a conflict.
 
       // createDocumentFromTemplate now returns Future<String> and expects parentFolder as a named argument.
-      String newDocName = await getService<DatabaseService>().createDocumentFromTemplate(
-        templateName, 
-        newName, 
-        parentFolder: _currentParentFolder
-      );
+      String newDocName = await getService<DatabaseService>()
+          .createDocumentFromTemplate(
+            templateName,
+            newName,
+            parentFolder: _currentParentFolder,
+          );
 
       if (mounted) {
         await _loadData();
@@ -1960,9 +2173,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     } catch (e) {
       Logger.log('从模板创建文档时出错: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('创建文档时出错，请重试。')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('创建文档时出错，请重试。')));
       }
     }
   }
@@ -2030,11 +2243,14 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
 
   Future<void> _checkAndRestoreBackgroundImage() async {
     if (kIsWeb) {
-      Logger.log("Web environment: Skipping background image check/restore from database.");
+      Logger.log(
+        "Web environment: Skipping background image check/restore from database.",
+      );
       return;
     }
     try {
-      Map<String, dynamic>? settings = await getService<DatabaseService>().getDirectorySettings(_currentParentFolder);
+      Map<String, dynamic>? settings = await getService<DatabaseService>()
+          .getDirectorySettings(_currentParentFolder);
       if (settings != null) {
         String? imagePath = settings['background_image_path'];
         if (imagePath != null && imagePath.isNotEmpty) {
@@ -2064,9 +2280,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
   void _exportSelectedItems() async {
     if (_selectedItems.isEmpty) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('请先选择要导出的项目')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('请先选择要导出的项目')));
       }
       return;
     }
@@ -2075,22 +2291,24 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       showDialog(
         context: context,
         barrierDismissible: false,
-        builder: (context) => const AlertDialog(
-          content: Row(
-            children: [
-              CircularProgressIndicator(),
-              SizedBox(width: 20),
-              Text('正在准备导出...')
-            ],
-          ),
-        ),
+        builder:
+            (context) => const AlertDialog(
+              content: Row(
+                children: [
+                  CircularProgressIndicator(),
+                  SizedBox(width: 20),
+                  Text('正在准备导出...'),
+                ],
+              ),
+            ),
       );
       // 1. 收集所有选中文档的导出路径
       List<String> exportPaths = [];
       for (var item in _selectedItems) {
         if (item.type == ItemType.document) {
           try {
-            String exportPath = await getService<DatabaseService>().exportDocument(item.name);
+            String exportPath = await getService<DatabaseService>()
+                .exportDocument(item.name);
             if (await File(exportPath).exists()) {
               exportPaths.add(exportPath);
             }
@@ -2103,14 +2321,15 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       if (exportPaths.isEmpty) {
         if (mounted) {
           Navigator.pop(context);
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('没有找到可导出的文件')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('没有找到可导出的文件')));
         }
         return;
       }
       final tempDir = await getTemporaryDirectory();
-      final zipPath = '${tempDir.path}/exported_docs_${DateTime.now().millisecondsSinceEpoch}.zip';
+      final zipPath =
+          '${tempDir.path}/exported_docs_${DateTime.now().millisecondsSinceEpoch}.zip';
       final encoder = ZipFileEncoder();
       encoder.create(zipPath);
       for (final path in exportPaths) {
@@ -2120,15 +2339,13 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       if (mounted) {
         Navigator.pop(context);
       }
-      await Share.shareXFiles([
-        XFile(zipPath)
-      ], subject: '批量导出文档');
+      await Share.shareXFiles([XFile(zipPath)], subject: '批量导出文档');
     } catch (e) {
       if (mounted) {
         Navigator.of(context).pop();
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('导出文件时出错: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('导出文件时出错: $e')));
       }
     }
   }
@@ -2137,31 +2354,34 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     try {
       // 使用默认位置（Downloads/外部存储），便于一键分享
       // 创建进度通知器
-      final ValueNotifier<String> progressNotifier = ValueNotifier<String>('准备导出...');
-      
+      final ValueNotifier<String> progressNotifier = ValueNotifier<String>(
+        '准备导出...',
+      );
+
       // 显示进度对话框
       showDialog(
         context: context,
         barrierDismissible: false,
-        builder: (context) => AlertDialog(
-          content: ValueListenableBuilder<String>(
-            valueListenable: progressNotifier,
-            builder: (context, progress, child) {
-              return Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const CircularProgressIndicator(),
-                  const SizedBox(height: 20),
-                  Text(
-                    progress,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(fontSize: 14),
-                  ),
-                ],
-              );
-            },
-          ),
-        ),
+        builder:
+            (context) => AlertDialog(
+              content: ValueListenableBuilder<String>(
+                valueListenable: progressNotifier,
+                builder: (context, progress, child) {
+                  return Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const CircularProgressIndicator(),
+                      const SizedBox(height: 20),
+                      Text(
+                        progress,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(fontSize: 14),
+                      ),
+                    ],
+                  );
+                },
+              ),
+            ),
       );
 
       // 导出到默认目录（Downloads/外部存储），不写入 backups
@@ -2210,20 +2430,21 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       // 显示警告对话框
       bool? confirm = await showDialog<bool>(
         context: context,
-        builder: (context) => AlertDialog(
-          title: Text('警告'),
-          content: Text('导入新目录数据将会清空当前所有数据，确定要继续吗？'),
-          actions: [
-            TextButton(
-              child: Text('取消'),
-              onPressed: () => Navigator.of(context).pop(false),
+        builder:
+            (context) => AlertDialog(
+              title: Text('警告'),
+              content: Text('导入新目录数据将会清空当前所有数据，确定要继续吗？'),
+              actions: [
+                TextButton(
+                  child: Text('取消'),
+                  onPressed: () => Navigator.of(context).pop(false),
+                ),
+                TextButton(
+                  child: Text('确定'),
+                  onPressed: () => Navigator.of(context).pop(true),
+                ),
+              ],
             ),
-            TextButton(
-              child: Text('确定'),
-              onPressed: () => Navigator.of(context).pop(true),
-            ),
-          ],
-        ),
       );
 
       if (confirm != true) return;
@@ -2236,31 +2457,34 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       final zipPath = result?.files.single.path;
       if (result != null && zipPath != null && zipPath.isNotEmpty) {
         // 创建进度通知器
-        final ValueNotifier<String> progressNotifier = ValueNotifier<String>('准备导入...');
-        
+        final ValueNotifier<String> progressNotifier = ValueNotifier<String>(
+          '准备导入...',
+        );
+
         // 显示进度对话框
         showDialog(
           context: context,
           barrierDismissible: false,
-          builder: (context) => AlertDialog(
-            content: ValueListenableBuilder<String>(
-              valueListenable: progressNotifier,
-              builder: (context, progress, child) {
-                return Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const CircularProgressIndicator(),
-                    const SizedBox(height: 20),
-                    Text(
-                      progress,
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(fontSize: 14),
-                    ),
-                  ],
-                );
-              },
-            ),
-          ),
+          builder:
+              (context) => AlertDialog(
+                content: ValueListenableBuilder<String>(
+                  valueListenable: progressNotifier,
+                  builder: (context, progress, child) {
+                    return Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const CircularProgressIndicator(),
+                        const SizedBox(height: 20),
+                        Text(
+                          progress,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(fontSize: 14),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+              ),
         );
 
         await getService<DatabaseService>().importDirectoryData(
@@ -2294,9 +2518,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
   Future<void> _checkDataIntegrity() async {
     try {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('正在检查数据完整性...')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('正在检查数据完整性...')));
       }
 
       final report = await getService<DatabaseService>().checkDataIntegrity();
@@ -2309,69 +2533,78 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
         final diaryEntryCount = report['diaryEntryCount'] as int? ?? 0;
         showDialog(
           context: context,
-          builder: (ctx) => AlertDialog(
-            title: const Row(
-              children: [
-                Icon(Icons.check_circle, color: Colors.green, size: 28),
-                SizedBox(width: 8),
-                Text('检查完成'),
-              ],
-            ),
-            content: Text(
-              '数据完整性检查通过，未发现问题。\n\n'
-              '目录：$folderCount 个文件夹，$documentCount 个文档\n'
-              '媒体：$mediaItemCount 项\n'
-              '日记：$diaryEntryCount 条',
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('确定'),
+          builder:
+              (ctx) => AlertDialog(
+                title: const Row(
+                  children: [
+                    Icon(Icons.check_circle, color: Colors.green, size: 28),
+                    SizedBox(width: 8),
+                    Text('检查完成'),
+                  ],
+                ),
+                content: Text(
+                  '数据完整性检查通过，未发现问题。\n\n'
+                  '目录：$folderCount 个文件夹，$documentCount 个文档\n'
+                  '媒体：$mediaItemCount 项\n'
+                  '日记：$diaryEntryCount 条',
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    child: const Text('确定'),
+                  ),
+                ],
               ),
-            ],
-          ),
         );
       } else {
         showDialog(
           context: context,
-          builder: (ctx) => AlertDialog(
-            title: const Text('发现数据完整性问题'),
-            content: SingleChildScrollView(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text('发现 ${report['issues'].length} 个问题:'),
-                  const SizedBox(height: 8),
-                  ...(report['issues'] as List).map((issue) => Padding(
-                    padding: const EdgeInsets.only(bottom: 4),
-                    child: Text('• $issue', style: const TextStyle(fontSize: 12)),
-                  )).toList(),
+          builder:
+              (ctx) => AlertDialog(
+                title: const Text('发现数据完整性问题'),
+                content: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text('发现 ${report['issues'].length} 个问题:'),
+                      const SizedBox(height: 8),
+                      ...(report['issues'] as List)
+                          .map(
+                            (issue) => Padding(
+                              padding: const EdgeInsets.only(bottom: 4),
+                              child: Text(
+                                '• $issue',
+                                style: const TextStyle(fontSize: 12),
+                              ),
+                            ),
+                          )
+                          .toList(),
+                    ],
+                  ),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    child: const Text('关闭'),
+                  ),
+                  TextButton(
+                    onPressed: () {
+                      Navigator.pop(ctx);
+                      _repairDataIntegrity();
+                    },
+                    child: const Text('修复问题'),
+                  ),
                 ],
               ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('关闭'),
-              ),
-              TextButton(
-                onPressed: () {
-                  Navigator.pop(ctx);
-                  _repairDataIntegrity();
-                },
-                child: const Text('修复问题'),
-              ),
-            ],
-          ),
         );
       }
     } catch (e) {
       Logger.log('检查数据完整性时出错: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('检查数据完整性时出错: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('检查数据完整性时出错: $e')));
       }
     }
   }
@@ -2380,9 +2613,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
   Future<void> _repairDataIntegrity() async {
     try {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('正在修复数据问题...')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('正在修复数据问题...')));
       }
 
       await getService<DatabaseService>().repairDataIntegrity();
@@ -2399,9 +2632,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     } catch (e) {
       Logger.log('修复数据完整性问题时出错: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('修复数据问题时出错: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('修复数据问题时出错: $e')));
       }
     }
   }
@@ -2496,294 +2729,378 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
       hasBackgroundImage: _backgroundImage != null,
       backgroundSolidColor: _backgroundColor,
     );
-    final contentTop =
-        MediaQuery.paddingOf(context).top + kToolbarHeight;
+    final contentTop = MediaQuery.paddingOf(context).top + kToolbarHeight;
 
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: lightFg ? SystemUiOverlayStyle.light : SystemUiOverlayStyle.dark,
       child: Scaffold(
         backgroundColor: Colors.transparent,
         body: Stack(
-        children: [
-          // 第一层：背景图片层（最底层），复用媒体页视窗参数
-          if (_backgroundImage != null)
+          children: [
+            // 第一层：背景图片层（最底层），复用媒体页视窗参数
+            if (_backgroundImage != null)
+              Positioned.fill(
+                child: StoredViewImageLayer(file: _backgroundImage!),
+              ),
+
+            // 第二层：背景颜色层（在背景图片之上）
+            Container(color: _backgroundColor ?? Colors.white),
+
+            // 第三层：内容层
             Positioned.fill(
-              child: StoredViewImageLayer(file: _backgroundImage!),
-            ),
-          
-          // 第二层：背景颜色层（在背景图片之上）
-          Container(
-            color: _backgroundColor ?? Colors.white,
-          ),
-          
-          // 第三层：内容层
-          Positioned.fill(
-            child: Container(
-              child: _items.isEmpty
-                ? Padding(
-                    padding: EdgeInsets.only(top: contentTop),
-                    child: Center(
-                      child: Text(
-                        '没有文件夹或文档\n点击右上角的 + 按钮添加',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(fontSize: 18, color: Colors.grey),
-                      ),
-                    ),
-                  )
-                : ReorderableListView.builder(
-              onReorder: _isMultiSelectMode ? (oldIndex, newIndex) {} : _onReorder,
-              padding: EdgeInsets.fromLTRB(0, contentTop + 4.0, 0, 4.0),
-              itemCount: _items.length,
-              buildDefaultDragHandles: false,
-              itemBuilder: (context, index) {
-                final item = _items[index];
-                bool isHighlighted = _lastCreatedItemName == item.name &&
-                    _lastCreatedItemType == item.type &&
-                    _isHighlightingNewItem;
-
-                Widget buildListItem(DirectoryItem item, int index, bool isHighlighted) {
-                  final itemFeedback = Material(
-                    elevation: 4.0,
-                    child: Container(
-                      padding: EdgeInsets.all(8.0),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(4.0),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          if (_isMultiSelectMode)
-                            Padding(
-                              padding: EdgeInsets.only(right: 8.0),
-                              child: Icon(
-                                item.isSelected ? Icons.check_box : Icons.check_box_outline_blank,
-                                color: Colors.blue,
-                                size: 24,
-                              ),
-                            ),
-                          Icon(
-                            item.type == ItemType.folder
-                                ? Icons.folder
-                                : Icons.description,
-                            size: 40,
-                            color: item.type == ItemType.folder
-                                ? Color(0xFFFFCA28)
-                                : Color(0xFF4CAF50),
-                          ),
-                          SizedBox(width: 8.0),
-                          Text(
-                            item.name,
-                            style: TextStyle(
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  );
-
-                  Widget buildIcon() {
-                    if (item.type == ItemType.folder) {
-                      return DragTarget<DirectoryItem>(
-                        onWillAccept: (draggedItem) {
-                          if (draggedItem == null) return false;
-                          if (draggedItem.type == ItemType.folder && draggedItem.name == item.name) return false;
-                          if (draggedItem.type == ItemType.folder) {
-                            final folders = _items.where((i) => i.type == ItemType.folder).toList();
-                            bool isChild = _isChildFolder(draggedItem.name, item.name, folders);
-                            if (isChild) return false;
-                          }
-                          return true;
-                        },
-                        onAccept: (DirectoryItem draggedItem) async {
-                          if (draggedItem.type == ItemType.document) {
-                            await getService<DatabaseService>().updateDocumentParentFolder(draggedItem.name, item.name);
-                          } else if (draggedItem.type == ItemType.folder) {
-                            await getService<DatabaseService>().updateFolderParentFolder(draggedItem.name, item.name);
-                          }
-                          if (mounted) {
-                            await _loadData();
-                          }
-                        },
-                        builder: (context, candidateItems, rejectedItems) {
-                          return Draggable<DirectoryItem>(
-                            data: item,
-                            feedback: Material(
-                              elevation: 8.0,
-                              color: Colors.transparent,
-                              child: Icon(
-                                Icons.folder,
-                                size: 56,
-                                color: Colors.blueAccent,
-                                shadows: [Shadow(color: Colors.black26, blurRadius: 8)],
-                              ),
-                            ),
-                            childWhenDragging: Opacity(
-                              opacity: 0.3,
-                              child: Icon(
-                                Icons.folder,
-                                size: 40,
-                                color: Colors.amber,
-                              ),
-                            ),
-                            child: AnimatedContainer(
-                              duration: Duration(milliseconds: 150),
-                              decoration: BoxDecoration(
-                                color: candidateItems.isNotEmpty ? Colors.blue.withOpacity(0.2) : null,
-                                border: candidateItems.isNotEmpty ? Border.all(color: Colors.blue, width: 2) : null,
-                                borderRadius: BorderRadius.circular(4.0),
-                              ),
-                              child: Icon(
-                                Icons.folder,
-                                size: 40,
-                                color: Colors.amber,
-                              ),
-                            ),
-                          );
-                        },
-                      );
-                    } else {
-                      return Draggable<DirectoryItem>(
-                        data: item,
-                        feedback: Material(
-                          elevation: 8.0,
-                          color: Colors.transparent,
-                          child: Icon(
-                            Icons.description,
-                            size: 56,
-                            color: Colors.green,
-                            shadows: [Shadow(color: Colors.black26, blurRadius: 8)],
-                          ),
-                        ),
-                        childWhenDragging: Opacity(
-                          opacity: 0.3,
-                          child: Icon(
-                            Icons.description,
-                            size: 40,
-                            color: Color(0xFF4CAF50),
-                          ),
-                        ),
-                        child: Icon(
-                          Icons.description,
-                          size: 40,
-                          color: Color(0xFF4CAF50),
-                        ),
-                      );
-                    }
-                  }
-
-                  return Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      ListTile(
-                        contentPadding: EdgeInsets.symmetric(horizontal: 16.0, vertical: 0.0),
-                        dense: false,
-                        leading: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            if (_isMultiSelectMode)
-                              Padding(
-                                padding: EdgeInsets.only(right: 8.0),
-                                child: Icon(
-                                  item.isSelected ? Icons.check_box : Icons.check_box_outline_blank,
-                                  color: Colors.blue,
-                                  size: 24,
-                                ),
-                              ),
-                            buildIcon(),
-                            if (item.isTemplate)
-                              Padding(
-                                padding: EdgeInsets.only(left: 4.0),
-                                child: Icon(
-                                  Icons.star,
-                                  color: Colors.amber,
-                                  size: 16,
-                                ),
-                              ),
-                          ],
-                        ),
-                        title: Text(
-                          item.name,
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            color: item.type == ItemType.folder
-                                ? Colors.blueAccent
-                                : Colors.green,
-                          ),
-                        ),
-                        trailing: ReorderableDragStartListener(
-                          index: index,
-                          child: Icon(Icons.drag_handle, color: Colors.grey),
-                        ),
-                        onTap: () {
-                          if (_isMultiSelectMode) {
-                            _toggleItemSelection(item);
-                          } else {
-                            if (item.type == ItemType.folder) {
-                              _openFolder(item.name);
-                            } else {
-                              _openDocument(item.name);
-                            }
-                          }
-                        },
-                        onLongPress: () {
-                          if (item.type == ItemType.folder) {
-                            _showFolderOptions(item.name);
-                          } else {
-                            _showDocumentOptions(item.name);
-                          }
-                        },
-                        tileColor: isHighlighted
-                            ? Colors.blue.withOpacity(0.2)
-                            : item.isSelected && _isMultiSelectMode
-                            ? Colors.blue.withOpacity(0.1)
-                            : null,
-                        selectedTileColor: Colors.blue.withOpacity(0.15),
-                        selected: item.isSelected,
-                      ),
-                      Divider(height: 5.0),
-                    ],
-                  );
-                }
-
-                return Container(
-                  key: ValueKey('${item.type}_${item.name}'),
-                  child: buildListItem(item, index, isHighlighted),
-                );
-              },
-            ),
-            ),
-          ),
-          if (_isMultiSelectMode && _selectedItems.isNotEmpty)
-            Positioned(
-              bottom: 0,
-              left: 0,
-              right: 0,
               child: Container(
-                color: Colors.white,
-                child: SafeArea(
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                    children: [
-                      IconButton(
-                        icon: const Icon(Icons.delete, color: Colors.red),
-                        onPressed: _deleteSelectedItems,
-                        tooltip: '删除',
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.folder),
-                        onPressed: _moveSelectedItemsToFolder,
-                        tooltip: '移动到文件夹',
-                      ),
-                    ],
+                child:
+                    _items.isEmpty
+                        ? Padding(
+                          padding: EdgeInsets.only(top: contentTop),
+                          child: Center(
+                            child: Text(
+                              '没有文件夹或文档\n点击右上角的 + 按钮添加',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                fontSize: 18,
+                                color: Colors.grey,
+                              ),
+                            ),
+                          ),
+                        )
+                        : ReorderableListView.builder(
+                          onReorder:
+                              _isMultiSelectMode
+                                  ? (oldIndex, newIndex) {}
+                                  : _onReorder,
+                          padding: EdgeInsets.fromLTRB(
+                            0,
+                            contentTop + 4.0,
+                            0,
+                            4.0,
+                          ),
+                          itemCount: _items.length,
+                          buildDefaultDragHandles: false,
+                          itemBuilder: (context, index) {
+                            final item = _items[index];
+                            bool isHighlighted =
+                                _lastCreatedItemName == item.name &&
+                                _lastCreatedItemType == item.type &&
+                                _isHighlightingNewItem;
+
+                            Widget buildListItem(
+                              DirectoryItem item,
+                              int index,
+                              bool isHighlighted,
+                            ) {
+                              final itemFeedback = Material(
+                                elevation: 4.0,
+                                child: Container(
+                                  padding: EdgeInsets.all(8.0),
+                                  decoration: BoxDecoration(
+                                    color: Colors.white,
+                                    borderRadius: BorderRadius.circular(4.0),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      if (_isMultiSelectMode)
+                                        Padding(
+                                          padding: EdgeInsets.only(right: 8.0),
+                                          child: Icon(
+                                            item.isSelected
+                                                ? Icons.check_box
+                                                : Icons.check_box_outline_blank,
+                                            color: Colors.blue,
+                                            size: 24,
+                                          ),
+                                        ),
+                                      Icon(
+                                        item.type == ItemType.folder
+                                            ? Icons.folder
+                                            : Icons.description,
+                                        size: 40,
+                                        color:
+                                            item.type == ItemType.folder
+                                                ? Color(0xFFFFCA28)
+                                                : Color(0xFF4CAF50),
+                                      ),
+                                      SizedBox(width: 8.0),
+                                      Text(
+                                        item.name,
+                                        style: TextStyle(
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              );
+
+                              Widget buildIcon() {
+                                if (item.type == ItemType.folder) {
+                                  return DragTarget<DirectoryItem>(
+                                    onWillAccept: (draggedItem) {
+                                      if (draggedItem == null) return false;
+                                      if (draggedItem.type == ItemType.folder &&
+                                          draggedItem.name == item.name)
+                                        return false;
+                                      if (draggedItem.type == ItemType.folder) {
+                                        final folders =
+                                            _items
+                                                .where(
+                                                  (i) =>
+                                                      i.type == ItemType.folder,
+                                                )
+                                                .toList();
+                                        bool isChild = _isChildFolder(
+                                          draggedItem.name,
+                                          item.name,
+                                          folders,
+                                        );
+                                        if (isChild) return false;
+                                      }
+                                      return true;
+                                    },
+                                    onAccept: (
+                                      DirectoryItem draggedItem,
+                                    ) async {
+                                      if (draggedItem.type ==
+                                          ItemType.document) {
+                                        await getService<DatabaseService>()
+                                            .updateDocumentParentFolder(
+                                              draggedItem.name,
+                                              item.name,
+                                            );
+                                      } else if (draggedItem.type ==
+                                          ItemType.folder) {
+                                        await getService<DatabaseService>()
+                                            .updateFolderParentFolder(
+                                              draggedItem.name,
+                                              item.name,
+                                            );
+                                      }
+                                      if (mounted) {
+                                        await _loadData();
+                                      }
+                                    },
+                                    builder: (
+                                      context,
+                                      candidateItems,
+                                      rejectedItems,
+                                    ) {
+                                      return Draggable<DirectoryItem>(
+                                        data: item,
+                                        feedback: Material(
+                                          elevation: 8.0,
+                                          color: Colors.transparent,
+                                          child: Icon(
+                                            Icons.folder,
+                                            size: 56,
+                                            color: Colors.blueAccent,
+                                            shadows: [
+                                              Shadow(
+                                                color: Colors.black26,
+                                                blurRadius: 8,
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                        childWhenDragging: Opacity(
+                                          opacity: 0.3,
+                                          child: Icon(
+                                            Icons.folder,
+                                            size: 40,
+                                            color: Colors.amber,
+                                          ),
+                                        ),
+                                        child: AnimatedContainer(
+                                          duration: Duration(milliseconds: 150),
+                                          decoration: BoxDecoration(
+                                            color:
+                                                candidateItems.isNotEmpty
+                                                    ? Colors.blue.withOpacity(
+                                                      0.2,
+                                                    )
+                                                    : null,
+                                            border:
+                                                candidateItems.isNotEmpty
+                                                    ? Border.all(
+                                                      color: Colors.blue,
+                                                      width: 2,
+                                                    )
+                                                    : null,
+                                            borderRadius: BorderRadius.circular(
+                                              4.0,
+                                            ),
+                                          ),
+                                          child: Icon(
+                                            Icons.folder,
+                                            size: 40,
+                                            color: Colors.amber,
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                  );
+                                } else {
+                                  return Draggable<DirectoryItem>(
+                                    data: item,
+                                    feedback: Material(
+                                      elevation: 8.0,
+                                      color: Colors.transparent,
+                                      child: Icon(
+                                        Icons.description,
+                                        size: 56,
+                                        color: Colors.green,
+                                        shadows: [
+                                          Shadow(
+                                            color: Colors.black26,
+                                            blurRadius: 8,
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    childWhenDragging: Opacity(
+                                      opacity: 0.3,
+                                      child: Icon(
+                                        Icons.description,
+                                        size: 40,
+                                        color: Color(0xFF4CAF50),
+                                      ),
+                                    ),
+                                    child: Icon(
+                                      Icons.description,
+                                      size: 40,
+                                      color: Color(0xFF4CAF50),
+                                    ),
+                                  );
+                                }
+                              }
+
+                              return Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  ListTile(
+                                    contentPadding: EdgeInsets.symmetric(
+                                      horizontal: 16.0,
+                                      vertical: 0.0,
+                                    ),
+                                    dense: false,
+                                    leading: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        if (_isMultiSelectMode)
+                                          Padding(
+                                            padding: EdgeInsets.only(
+                                              right: 8.0,
+                                            ),
+                                            child: Icon(
+                                              item.isSelected
+                                                  ? Icons.check_box
+                                                  : Icons
+                                                      .check_box_outline_blank,
+                                              color: Colors.blue,
+                                              size: 24,
+                                            ),
+                                          ),
+                                        buildIcon(),
+                                        if (item.isTemplate)
+                                          Padding(
+                                            padding: EdgeInsets.only(left: 4.0),
+                                            child: Icon(
+                                              Icons.star,
+                                              color: Colors.amber,
+                                              size: 16,
+                                            ),
+                                          ),
+                                      ],
+                                    ),
+                                    title: Text(
+                                      item.name,
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        color:
+                                            item.type == ItemType.folder
+                                                ? Colors.blueAccent
+                                                : Colors.green,
+                                      ),
+                                    ),
+                                    trailing: ReorderableDragStartListener(
+                                      index: index,
+                                      child: Icon(
+                                        Icons.drag_handle,
+                                        color: Colors.grey,
+                                      ),
+                                    ),
+                                    onTap: () {
+                                      if (_isMultiSelectMode) {
+                                        _toggleItemSelection(item);
+                                      } else {
+                                        if (item.type == ItemType.folder) {
+                                          _openFolder(item.name);
+                                        } else {
+                                          _openDocument(item.name);
+                                        }
+                                      }
+                                    },
+                                    onLongPress: () {
+                                      if (item.type == ItemType.folder) {
+                                        _showFolderOptions(item.name);
+                                      } else {
+                                        _showDocumentOptions(item.name);
+                                      }
+                                    },
+                                    tileColor:
+                                        isHighlighted
+                                            ? Colors.blue.withOpacity(0.2)
+                                            : item.isSelected &&
+                                                _isMultiSelectMode
+                                            ? Colors.blue.withOpacity(0.1)
+                                            : null,
+                                    selectedTileColor: Colors.blue.withOpacity(
+                                      0.15,
+                                    ),
+                                    selected: item.isSelected,
+                                  ),
+                                  Divider(height: 5.0),
+                                ],
+                              );
+                            }
+
+                            return Container(
+                              key: ValueKey('${item.type}_${item.name}'),
+                              child: buildListItem(item, index, isHighlighted),
+                            );
+                          },
+                        ),
+              ),
+            ),
+            if (_isMultiSelectMode && _selectedItems.isNotEmpty)
+              Positioned(
+                bottom: 0,
+                left: 0,
+                right: 0,
+                child: Container(
+                  color: Colors.white,
+                  child: SafeArea(
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        IconButton(
+                          icon: const Icon(Icons.delete, color: Colors.red),
+                          onPressed: _deleteSelectedItems,
+                          tooltip: '删除',
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.folder),
+                          onPressed: _moveSelectedItemsToFolder,
+                          tooltip: '移动到文件夹',
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
-            ),
-          _buildDirectoryFloatingTopBar(lightFg),
-        ],
-      ),
+            _buildDirectoryFloatingTopBar(lightFg),
+          ],
+        ),
       ),
     );
   }
@@ -2791,7 +3108,8 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
   Future<void> _copyFolder(String folderName) async {
     try {
       // 调用数据层复制，并保持在当前父级下创建副本
-      final String newFolderName = await getService<DatabaseService>().copyFolder(folderName);
+      final String newFolderName = await getService<DatabaseService>()
+          .copyFolder(folderName);
       if (mounted) {
         await _loadData();
         _highlightNewItem(newFolderName, ItemType.folder);
@@ -2799,9 +3117,9 @@ class _DirectoryPageState extends State<DirectoryPage> with WidgetsBindingObserv
     } catch (e) {
       Logger.log('复制文件夹出错: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('复制文件夹出错，请重试。')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('复制文件夹出错，请重试。')));
       }
     }
   }
@@ -2830,4 +3148,3 @@ class DirectoryItem {
 }
 
 enum ItemType { folder, document }
-

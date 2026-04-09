@@ -16,7 +16,7 @@ class StoredViewImageLayer extends StatefulWidget {
     super.key,
     required this.file,
     this.useScreenSizeForNormalization = true,
-    this.readonlyTranslateYOffset = 27,
+    this.readonlyTranslateYOffset = 0,
   });
 
   final File file;
@@ -45,8 +45,9 @@ class _StoredViewImageLayerState extends State<StoredViewImageLayer> {
   }
 
   Future<VideoViewParams> _loadParams() {
-    return getService<DatabaseService>()
-        .getVideoViewParamsForMediaFilePath(widget.file.path);
+    return getService<DatabaseService>().getVideoViewParamsForMediaFilePath(
+      widget.file.path,
+    );
   }
 
   @override

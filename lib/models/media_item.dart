@@ -20,6 +20,7 @@ class MediaItem {
   final DateTime dateAdded; // 添加日期
   /// 渐进放大（Ken Burns）缩放中心，相对图片左上角的归一化横坐标 0～1；null 表示几何中心。
   final double? kenBurnsCenterX;
+
   /// 渐进放大缩放中心纵坐标 0～1；null 表示几何中心。
   final double? kenBurnsCenterY;
 
@@ -60,7 +61,9 @@ class MediaItem {
     // 对于其他媒体项，安全地获取type索引
     final typeIndex = map['type'] as int? ?? 0;
     final safeTypeIndex =
-        typeIndex < MediaType.values.length ? typeIndex : 0; // 如果索引越界，默认使用image类型
+        typeIndex < MediaType.values.length
+            ? typeIndex
+            : 0; // 如果索引越界，默认使用image类型
 
     return MediaItem(
       id: id,
@@ -79,18 +82,18 @@ class MediaItem {
 
   /// 将 MediaItem 转换为 Map，用于存储到数据库
   Map<String, dynamic> toMap() => {
-        'id': id,
-        'name': name,
-        'path': path,
-        'type': type.index,
-        'directory': directory,
-        'date_added': dateAdded.toIso8601String(),
-        'created_at': DateTime.now().millisecondsSinceEpoch,
-        'updated_at': DateTime.now().millisecondsSinceEpoch,
-        if (kenBurnsCenterX != null) 'ken_burns_center_x': kenBurnsCenterX,
-        if (kenBurnsCenterY != null) 'ken_burns_center_y': kenBurnsCenterY,
-        if (!videoViewParams.isDefault) ...videoViewParams.toDbUpdateMap(),
-      };
+    'id': id,
+    'name': name,
+    'path': path,
+    'type': type.index,
+    'directory': directory,
+    'date_added': dateAdded.toIso8601String(),
+    'created_at': DateTime.now().millisecondsSinceEpoch,
+    'updated_at': DateTime.now().millisecondsSinceEpoch,
+    if (kenBurnsCenterX != null) 'ken_burns_center_x': kenBurnsCenterX,
+    if (kenBurnsCenterY != null) 'ken_burns_center_y': kenBurnsCenterY,
+    if (!videoViewParams.isDefault) ...videoViewParams.toDbUpdateMap(),
+  };
 
   MediaItem copyWith({
     String? id,
@@ -102,6 +105,8 @@ class MediaItem {
     double? kenBurnsCenterX,
     double? kenBurnsCenterY,
     VideoViewParams? videoViewParams,
+    bool clearKenBurnsCenter = false,
+    bool clearVideoViewParams = false,
   }) {
     return MediaItem(
       id: id ?? this.id,
@@ -110,9 +115,18 @@ class MediaItem {
       type: type ?? this.type,
       directory: directory ?? this.directory,
       dateAdded: dateAdded ?? this.dateAdded,
-      kenBurnsCenterX: kenBurnsCenterX ?? this.kenBurnsCenterX,
-      kenBurnsCenterY: kenBurnsCenterY ?? this.kenBurnsCenterY,
-      videoViewParams: videoViewParams ?? this.videoViewParams,
+      kenBurnsCenterX:
+          clearKenBurnsCenter
+              ? null
+              : (kenBurnsCenterX ?? this.kenBurnsCenterX),
+      kenBurnsCenterY:
+          clearKenBurnsCenter
+              ? null
+              : (kenBurnsCenterY ?? this.kenBurnsCenterY),
+      videoViewParams:
+          clearVideoViewParams
+              ? const VideoViewParams()
+              : (videoViewParams ?? this.videoViewParams),
     );
   }
 }

@@ -2,6 +2,7 @@
 // 重构后的数据库服务 - 提供更好的性能和错误处理
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart' show Size;
 import 'logger.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart' as p;
@@ -26,14 +27,14 @@ import 'package:crypto/crypto.dart';
 class DatabaseService {
   static const String _databaseName = 'change_app.db';
   static const int _databaseVersion = 15; // media_items：视频缩放/平移/旋转 video_view_*
-  
+
   Database? _database;
   final Completer<Database> _initCompleter = Completer<Database>();
   bool _isInitialized = false;
-  
+
   /// 数据库连接池
   final Map<String, Database> _connectionPool = {};
-  
+
   /// 性能监控Timer
   Timer? _performanceMonitoringTimer;
 
@@ -51,7 +52,7 @@ class DatabaseService {
     try {
       final documentsDirectory = await getApplicationDocumentsDirectory();
       final dbPath = p.join(documentsDirectory.path, _databaseName);
-      
+
       _database = await openDatabase(
         dbPath,
         version: _databaseVersion,
@@ -59,9 +60,11 @@ class DatabaseService {
         onUpgrade: _onUpgrade,
         onConfigure: _onConfigure,
       );
-      
+
       // 主动检查diary_entries表
-      final tables = await _database!.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name='diary_entries'");
+      final tables = await _database!.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='diary_entries'",
+      );
       if (tables.isEmpty) {
         await _database!.execute('''
           CREATE TABLE IF NOT EXISTS diary_entries(
@@ -78,20 +81,20 @@ class DatabaseService {
           )
         ''');
       }
-      
+
       // 检查document_settings表是否存在position_locked字段
       await _ensurePositionLockedColumn();
 
       // 部分环境未走 onUpgrade 或旧表缺少列：补全渐进放大中心点字段
       await _ensureMediaItemsKenBurnsColumns(_database!);
       await _ensureMediaItemsVideoViewColumns(_database!);
-      
+
       _initCompleter.complete(_database!);
       _isInitialized = true;
-      
+
       // 启动性能监控
       _startPerformanceMonitoring();
-      
+
       if (kDebugMode) {
         Logger.log('DatabaseService: 数据库初始化完成');
       }
@@ -121,7 +124,7 @@ class DatabaseService {
       await db.rawQuery('PRAGMA temp_store = FILE');
       await db.rawQuery('PRAGMA page_size = 4096');
       await db.rawQuery('PRAGMA auto_vacuum = INCREMENTAL');
-      
+
       if (kDebugMode) {
         Logger.log('数据库配置成功应用');
       }
@@ -350,16 +353,34 @@ class DatabaseService {
 
   /// 创建数据库索引
   Future<void> _createIndexes(DatabaseExecutor db) async {
-    await db.execute('CREATE INDEX idx_folders_parent ON folders(parent_folder)');
-    await db.execute('CREATE INDEX idx_documents_parent ON documents(parent_folder)');
-    await db.execute('CREATE INDEX idx_text_boxes_document ON text_boxes(document_id)');
-    await db.execute('CREATE INDEX idx_image_boxes_document ON image_boxes(document_id)');
-    await db.execute('CREATE INDEX idx_audio_boxes_document ON audio_boxes(document_id)');
-  await db.execute('CREATE INDEX IF NOT EXISTS idx_canvases_document ON canvases(document_id)');
-    await db.execute('CREATE INDEX idx_media_items_directory ON media_items(directory)');
+    await db.execute(
+      'CREATE INDEX idx_folders_parent ON folders(parent_folder)',
+    );
+    await db.execute(
+      'CREATE INDEX idx_documents_parent ON documents(parent_folder)',
+    );
+    await db.execute(
+      'CREATE INDEX idx_text_boxes_document ON text_boxes(document_id)',
+    );
+    await db.execute(
+      'CREATE INDEX idx_image_boxes_document ON image_boxes(document_id)',
+    );
+    await db.execute(
+      'CREATE INDEX idx_audio_boxes_document ON audio_boxes(document_id)',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_canvases_document ON canvases(document_id)',
+    );
+    await db.execute(
+      'CREATE INDEX idx_media_items_directory ON media_items(directory)',
+    );
     await db.execute('CREATE INDEX idx_media_items_type ON media_items(type)');
-    await db.execute('CREATE INDEX idx_media_items_hash ON media_items(file_hash)');
-    await db.execute('CREATE INDEX idx_media_items_telegram_file_id ON media_items(telegram_file_id)');
+    await db.execute(
+      'CREATE INDEX idx_media_items_hash ON media_items(file_hash)',
+    );
+    await db.execute(
+      'CREATE INDEX idx_media_items_telegram_file_id ON media_items(telegram_file_id)',
+    );
     await db.execute('''
       CREATE TABLE IF NOT EXISTS imported_asset_ids(
         asset_id TEXT PRIMARY KEY
@@ -396,7 +417,7 @@ class DatabaseService {
     if (kDebugMode) {
       Logger.log('DatabaseService: 升级数据库从版本 $oldVersion 到 $newVersion');
     }
-    
+
     await db.transaction((txn) async {
       // 根据版本进行增量升级
       for (int version = oldVersion + 1; version <= newVersion; version++) {
@@ -465,18 +486,30 @@ class DatabaseService {
         break;
       case 8:
         // 添加新的字段和索引
-        await db.execute('ALTER TABLE media_items ADD COLUMN file_size INTEGER DEFAULT 0');
-        await db.execute('ALTER TABLE media_items ADD COLUMN duration INTEGER DEFAULT 0');
-        await db.execute('ALTER TABLE media_items ADD COLUMN thumbnail_path TEXT');
+        await db.execute(
+          'ALTER TABLE media_items ADD COLUMN file_size INTEGER DEFAULT 0',
+        );
+        await db.execute(
+          'ALTER TABLE media_items ADD COLUMN duration INTEGER DEFAULT 0',
+        );
+        await db.execute(
+          'ALTER TABLE media_items ADD COLUMN thumbnail_path TEXT',
+        );
         await db.execute('ALTER TABLE media_items ADD COLUMN file_hash TEXT');
-        await db.execute('ALTER TABLE media_items ADD COLUMN is_favorite INTEGER DEFAULT 0');
+        await db.execute(
+          'ALTER TABLE media_items ADD COLUMN is_favorite INTEGER DEFAULT 0',
+        );
         await _createIndexes(db);
         break;
       case 9:
         // 历史迁移：telegram_file_id 列（已废弃，保留以兼容旧数据）
         try {
-          await db.execute('ALTER TABLE media_items ADD COLUMN telegram_file_id TEXT');
-          await db.execute('CREATE INDEX idx_media_items_telegram_file_id ON media_items(telegram_file_id)');
+          await db.execute(
+            'ALTER TABLE media_items ADD COLUMN telegram_file_id TEXT',
+          );
+          await db.execute(
+            'CREATE INDEX idx_media_items_telegram_file_id ON media_items(telegram_file_id)',
+          );
           if (kDebugMode) {
             Logger.log('已添加telegram_file_id列到media_items表');
           }
@@ -489,7 +522,9 @@ class DatabaseService {
       case 10:
         // 为document_settings表添加position_locked字段
         try {
-          await db.execute('ALTER TABLE document_settings ADD COLUMN position_locked INTEGER DEFAULT 1');
+          await db.execute(
+            'ALTER TABLE document_settings ADD COLUMN position_locked INTEGER DEFAULT 1',
+          );
           if (kDebugMode) {
             Logger.log('已添加position_locked列到document_settings表');
           }
@@ -506,21 +541,25 @@ class DatabaseService {
   Future<void> _ensurePositionLockedColumn() async {
     try {
       // 检查position_locked字段是否存在
-      final columns = await _database!.rawQuery("PRAGMA table_info(document_settings)");
+      final columns = await _database!.rawQuery(
+        "PRAGMA table_info(document_settings)",
+      );
       bool hasPositionLocked = false;
-      
+
       for (final column in columns) {
         if (column['name'] == 'position_locked') {
           hasPositionLocked = true;
           break;
         }
       }
-      
+
       if (!hasPositionLocked) {
         if (kDebugMode) {
           Logger.log('🔧 [DB] document_settings表缺少position_locked字段，正在添加...');
         }
-        await _database!.execute('ALTER TABLE document_settings ADD COLUMN position_locked INTEGER DEFAULT 1');
+        await _database!.execute(
+          'ALTER TABLE document_settings ADD COLUMN position_locked INTEGER DEFAULT 1',
+        );
         if (kDebugMode) {
           Logger.log('✅ [DB] 已成功添加position_locked字段到document_settings表');
         }
@@ -540,7 +579,9 @@ class DatabaseService {
   /// 确保canvases表存在（兼容旧版本数据库）
   Future<void> _ensureCanvasesTableExists() async {
     try {
-      final tables = await _database!.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name='canvases'");
+      final tables = await _database!.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='canvases'",
+      );
       if (tables.isEmpty) {
         if (kDebugMode) {
           Logger.log('🔧 [DB] canvases表不存在，正在创建...');
@@ -570,7 +611,9 @@ class DatabaseService {
         }
         // 创建索引（如果未创建）
         try {
-          await _database!.execute('CREATE INDEX IF NOT EXISTS idx_canvases_document ON canvases(document_id)');
+          await _database!.execute(
+            'CREATE INDEX IF NOT EXISTS idx_canvases_document ON canvases(document_id)',
+          );
         } catch (_) {}
       } else {
         if (kDebugMode) {
@@ -587,7 +630,9 @@ class DatabaseService {
   /// 启动性能监控
   void _startPerformanceMonitoring() {
     if (kDebugMode) {
-      _performanceMonitoringTimer = Timer.periodic(const Duration(minutes: 5), (timer) {
+      _performanceMonitoringTimer = Timer.periodic(const Duration(minutes: 5), (
+        timer,
+      ) {
         _analyzePerformance();
       });
     }
@@ -598,18 +643,26 @@ class DatabaseService {
     try {
       final db = await database;
       final result = await db.rawQuery('PRAGMA quick_check');
-      
+
       if (result.isNotEmpty && result.first['quick_check'] != 'ok') {
-        _handleError('数据库完整性检查失败', Exception('Database integrity check failed'), null);
+        _handleError(
+          '数据库完整性检查失败',
+          Exception('Database integrity check failed'),
+          null,
+        );
       }
-      
+
       // 检查数据库大小
       final sizeResult = await db.rawQuery('PRAGMA page_count');
       final pageSize = await db.rawQuery('PRAGMA page_size');
-      
+
       if (sizeResult.isNotEmpty && pageSize.isNotEmpty) {
-        final dbSize = (sizeResult.first['page_count'] as int) * (pageSize.first['page_size'] as int);
-        getService<AppPerformanceState>().addPerformanceLog('数据库大小: ${(dbSize / 1024 / 1024).toStringAsFixed(2)} MB');
+        final dbSize =
+            (sizeResult.first['page_count'] as int) *
+            (pageSize.first['page_size'] as int);
+        getService<AppPerformanceState>().addPerformanceLog(
+          '数据库大小: ${(dbSize / 1024 / 1024).toStringAsFixed(2)} MB',
+        );
       }
     } catch (e) {
       if (kDebugMode) {
@@ -628,11 +681,11 @@ class DatabaseService {
       severity: ErrorSeverity.high,
       stackTrace: stackTrace,
     );
-    
+
     if (serviceLocator.isRegistered<AppErrorState>()) {
       getService<AppErrorState>().addError(appError);
     }
-    
+
     // 生产环境不输出调试日志
     // 可集成到远程错误报告系统
   }
@@ -643,20 +696,20 @@ class DatabaseService {
       // 取消性能监控Timer
       _performanceMonitoringTimer?.cancel();
       _performanceMonitoringTimer = null;
-      
+
       if (_database != null) {
         await _database!.close();
         _database = null;
       }
-      
+
       // 清理连接池
       for (final db in _connectionPool.values) {
         await db.close();
       }
       _connectionPool.clear();
-      
+
       _isInitialized = false;
-      
+
       if (kDebugMode) {
         Logger.log('DatabaseService: 资源清理完成');
       }
@@ -759,11 +812,11 @@ class DatabaseService {
   Future<void> ensureMediaItemsTableExists() async {
     try {
       final db = await database;
-  
+
       final tables = await db.rawQuery(
-          "SELECT name FROM sqlite_master WHERE type='table' AND name='media_items';"
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='media_items';",
       );
-  
+
       if (tables.isEmpty) {
         await db.execute('''
           CREATE TABLE media_items (
@@ -782,11 +835,15 @@ class DatabaseService {
       } else {
         // 检查file_hash列是否存在
         final columns = await db.rawQuery("PRAGMA table_info(media_items);");
-        bool hasFileHash = columns.any((column) => column['name'] == 'file_hash');
-        
+        bool hasFileHash = columns.any(
+          (column) => column['name'] == 'file_hash',
+        );
+
         if (!hasFileHash) {
           // 添加file_hash列
-          await db.execute('ALTER TABLE media_items ADD COLUMN file_hash TEXT;');
+          await db.execute(
+            'ALTER TABLE media_items ADD COLUMN file_hash TEXT;',
+          );
           Logger.log('已添加file_hash列到media_items表');
         }
         await _ensureMediaItemsKenBurnsColumns(db);
@@ -821,7 +878,11 @@ class DatabaseService {
 
   /// 获取媒体项
   /// [limit] 和 [offset] 用于分页，避免大目录一次性加载导致内存压力
-  Future<List<Map<String, dynamic>>> getMediaItems(String directory, {int? limit, int? offset}) async {
+  Future<List<Map<String, dynamic>>> getMediaItems(
+    String directory, {
+    int? limit,
+    int? offset,
+  }) async {
     try {
       final db = await database;
       final folderTypeIndex = 3;
@@ -842,15 +903,19 @@ class DatabaseService {
             ELSE datetime(date_added) 
           END DESC
       ''';
-      final limitClause = (limit != null && offset != null)
-          ? ' LIMIT $limit OFFSET $offset'
-          : '';
-      return await db.rawQuery('''
+      final limitClause =
+          (limit != null && offset != null)
+              ? ' LIMIT $limit OFFSET $offset'
+              : '';
+      return await db.rawQuery(
+        '''
         SELECT * FROM media_items 
         WHERE directory = ? 
         $orderBy
         $limitClause
-      ''', [directory]);
+      ''',
+        [directory],
+      );
     } catch (e, stackTrace) {
       _handleError('获取媒体项失败', e, stackTrace);
       rethrow;
@@ -902,12 +967,10 @@ class DatabaseService {
       return _collectMediaFilesInGridOrderRecursive('root');
     }
     final items = await getMediaItems(directoryId);
-    return items
-        .where((row) {
-          final t = mediaTypeIndex(row);
-          return t == 0 || t == 1;
-        })
-        .toList();
+    return items.where((row) {
+      final t = mediaTypeIndex(row);
+      return t == 0 || t == 1;
+    }).toList();
   }
 
   Future<List<Map<String, dynamic>>> _collectMediaFilesInGridOrderRecursive(
@@ -950,19 +1013,19 @@ class DatabaseService {
       if (kDebugMode) {
         Logger.log('正在插入媒体项: ${item['name']}');
       }
-      
+
       // Ensure required fields are present
       final data = Map<String, dynamic>.from(item);
       final now = DateTime.now().millisecondsSinceEpoch;
       data['created_at'] ??= now;
       data['updated_at'] ??= now;
-      
+
       final result = await db.insert(
         'media_items',
         data,
         conflictAlgorithm: ConflictAlgorithm.replace,
       );
-      
+
       if (kDebugMode) {
         Logger.log('插入结果: $result');
       }
@@ -974,7 +1037,10 @@ class DatabaseService {
   }
 
   /// 查找重复的媒体项目（仅视为「当前有效库」中的重复：不含回收站；文件已丢失的孤儿记录会删除并视为未占用）
-  Future<Map<String, dynamic>?> findDuplicateMediaItem(String fileHash, String fileName) async {
+  Future<Map<String, dynamic>?> findDuplicateMediaItem(
+    String fileHash,
+    String fileName,
+  ) async {
     try {
       final db = await database;
       const String notInRecycle = 'directory != ?';
@@ -1049,16 +1115,14 @@ class DatabaseService {
   Future<void> markAssetImported(String assetId) async {
     try {
       final db = await database;
-      await db.insert(
-        'imported_asset_ids',
-        {'asset_id': assetId},
-        conflictAlgorithm: ConflictAlgorithm.ignore,
-      );
+      await db.insert('imported_asset_ids', {
+        'asset_id': assetId,
+      }, conflictAlgorithm: ConflictAlgorithm.ignore);
     } catch (e, stackTrace) {
       _handleError('标记asset已导入失败', e, stackTrace);
     }
   }
-  
+
   /// 按文件路径查询图片/视频在媒体库中保存的顺时针四分之一圈数（`video_view_rot`），用于文档内图片框等展示。
   Future<int> getImageQuarterTurnsForMediaPath(String path) async {
     if (path.isEmpty) return 0;
@@ -1158,6 +1222,87 @@ class DatabaseService {
     return const VideoViewParams();
   }
 
+  Future<void> migrateLegacyVideoViewParamsIfNeeded(Size legacyViewport) async {
+    if (legacyViewport.width <= 1 || legacyViewport.height <= 1) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      const migrationKey = 'media_view_params_pan_relative_v1_done';
+      if (prefs.getBool(migrationKey) == true) return;
+
+      final db = await database;
+      final rows = await db.rawQuery('''
+        SELECT id, video_view_scale, video_view_tx, video_view_ty, video_view_rot
+        FROM media_items
+        WHERE ABS(COALESCE(video_view_scale, 1) - 1.0) > 0.0001
+           OR ABS(COALESCE(video_view_tx, 0)) > 0.0001
+           OR ABS(COALESCE(video_view_ty, 0)) > 0.0001
+           OR COALESCE(video_view_rot, 0) != 0
+        ''');
+      if (rows.isEmpty) {
+        await prefs.setBool(migrationKey, true);
+        return;
+      }
+
+      double clampUnit(num? value) {
+        final v = (value ?? 0).toDouble();
+        if (v.isNaN || v.isInfinite) return 0.0;
+        return v.clamp(-1.0, 1.0);
+      }
+
+      ({double maxX, double maxY}) extentsFor({
+        required double scale,
+        required int quarterTurns,
+      }) {
+        final sideways = quarterTurns % 2 == 1;
+        final childW = sideways ? legacyViewport.height : legacyViewport.width;
+        final childH = sideways ? legacyViewport.width : legacyViewport.height;
+        return (
+          maxX: (((childW * scale) - legacyViewport.width) / 2).clamp(
+            0.0,
+            double.infinity,
+          ),
+          maxY: (((childH * scale) - legacyViewport.height) / 2).clamp(
+            0.0,
+            double.infinity,
+          ),
+        );
+      }
+
+      await db.transaction((txn) async {
+        for (final row in rows) {
+          final id = row['id']?.toString();
+          if (id == null || id.isEmpty) continue;
+          final scale = ((row['video_view_scale'] as num?) ?? 1.0)
+              .toDouble()
+              .clamp(1.0, 6.0);
+          int rot = ((row['video_view_rot'] as num?) ?? 0).toInt() % 4;
+          if (rot < 0) rot += 4;
+          final oldTx = ((row['video_view_tx'] as num?) ?? 0.0).toDouble();
+          final oldTy = ((row['video_view_ty'] as num?) ?? 0.0).toDouble();
+          final extents = extentsFor(scale: scale, quarterTurns: rot);
+          final legacyTxPx = oldTx * legacyViewport.width;
+          final legacyTyPx = oldTy * legacyViewport.height;
+          final newTx =
+              extents.maxX > 1e-6 ? clampUnit(legacyTxPx / extents.maxX) : 0.0;
+          final newTy =
+              extents.maxY > 1e-6 ? clampUnit(legacyTyPx / extents.maxY) : 0.0;
+          await txn.update(
+            'media_items',
+            {'video_view_tx': newTx, 'video_view_ty': newTy},
+            where: 'id = ?',
+            whereArgs: [id],
+          );
+        }
+      });
+
+      await prefs.setBool(migrationKey, true);
+    } catch (e) {
+      if (kDebugMode) {
+        Logger.log('migrateLegacyVideoViewParamsIfNeeded failed: $e');
+      }
+    }
+  }
+
   /// 根据ID获取媒体项目
   Future<Map<String, dynamic>?> getMediaItemById(String id) async {
     try {
@@ -1231,10 +1376,10 @@ class DatabaseService {
     try {
       final db = await database;
       return await db.update(
-        'media_items', 
+        'media_items',
         {'directory': directory},
         where: 'id = ?',
-        whereArgs: [id]
+        whereArgs: [id],
       );
     } catch (e, stackTrace) {
       _handleError('更新媒体项目录失败', e, stackTrace);
@@ -1298,7 +1443,10 @@ class DatabaseService {
   }
 
   /// 更新文件夹的父文件夹
-  Future<void> updateFolderParentFolder(String folderName, String? newParentFolderName) async {
+  Future<void> updateFolderParentFolder(
+    String folderName,
+    String? newParentFolderName,
+  ) async {
     try {
       final db = await database;
       final currentFolder = await getFolderByName(folderName);
@@ -1312,7 +1460,10 @@ class DatabaseService {
           throw Exception('目标文件夹不存在');
         }
         newParentFolderId = newParentFolder['id'];
-        if (await _wouldCreateCircularReference(currentFolder['id'], newParentFolderId)) {
+        if (await _wouldCreateCircularReference(
+          currentFolder['id'],
+          newParentFolderId,
+        )) {
           throw Exception('不能将文件夹移动到其子文件夹中');
         }
       }
@@ -1339,13 +1490,16 @@ class DatabaseService {
   }
 
   /// 检查是否会导致循环引用
-  Future<bool> _wouldCreateCircularReference(String folderId, String? newParentId) async {
+  Future<bool> _wouldCreateCircularReference(
+    String folderId,
+    String? newParentId,
+  ) async {
     if (newParentId == null) return false;
     if (folderId == newParentId) return true;
-    
+
     final db = await database;
     String? currentParentId = newParentId;
-    
+
     while (currentParentId != null) {
       final result = await db.query(
         'folders',
@@ -1353,18 +1507,21 @@ class DatabaseService {
         where: 'id = ?',
         whereArgs: [currentParentId],
       );
-      
+
       if (result.isEmpty) break;
-      
+
       currentParentId = result.first['parent_folder'] as String?;
       if (currentParentId == folderId) return true;
     }
-    
+
     return false;
   }
 
   /// 更新文档的父文件夹
-  Future<void> updateDocumentParentFolder(String documentName, String? newParentFolderName) async {
+  Future<void> updateDocumentParentFolder(
+    String documentName,
+    String? newParentFolderName,
+  ) async {
     try {
       final db = await database;
       final currentDocument = await getDocumentByName(documentName);
@@ -1426,14 +1583,18 @@ class DatabaseService {
   /// 导出目录数据 - 优化版，支持超大数据处理
   /// [outputDirectory] 可选，指定 ZIP 输出目录；为 null 时使用 Downloads/外部存储（不写入 backups）
   /// 允许部分图片/音频文件缺失（已删除或路径无效），缺失文件会跳过并写入 missing_audio_files.txt
-  Future<String> exportDirectoryData({ValueNotifier<String>? progressNotifier, String? outputDirectory}) async {
+  Future<String> exportDirectoryData({
+    ValueNotifier<String>? progressNotifier,
+    String? outputDirectory,
+  }) async {
     try {
       Logger.log('开始导出目录数据...');
       progressNotifier?.value = "准备导出...";
-      
+
       // 临时目录用于打包，导出完成后删除；不占用 backups
       final Directory tempRoot = await getTemporaryDirectory();
-      final String tempDirPath = '${tempRoot.path}/directory_export_temp_${DateTime.now().millisecondsSinceEpoch}';
+      final String tempDirPath =
+          '${tempRoot.path}/directory_export_temp_${DateTime.now().millisecondsSinceEpoch}';
       final Directory tempDir = Directory(tempDirPath);
       if (await tempDir.exists()) {
         await tempDir.delete(recursive: true);
@@ -1462,7 +1623,10 @@ class DatabaseService {
 
       Future<void> streamTableToDirectoryData(
         String tableName,
-        Future<List<Map<String, dynamic>>> Function(List<Map<String, dynamic>> batch) processBatch,
+        Future<List<Map<String, dynamic>>> Function(
+          List<Map<String, dynamic>> batch,
+        )
+        processBatch,
       ) async {
         const int pageSize = 500;
         int offset = 0;
@@ -1471,14 +1635,20 @@ class DatabaseService {
         bool wroteAnyChunk = false;
 
         while (true) {
-          final batch = await db.query(tableName, limit: pageSize, offset: offset);
+          final batch = await db.query(
+            tableName,
+            limit: pageSize,
+            offset: offset,
+          );
           if (batch.isEmpty) break;
           final processed = await processBatch(batch);
           for (final row in processed) {
             buffer.add(row);
             if (buffer.length >= kExportChunkSize) {
               final fn = '${tableName}_$chunkIndex.json';
-              await File('$dirDataPath/$fn').writeAsString(jsonEncode(buffer), encoding: utf8);
+              await File(
+                '$dirDataPath/$fn',
+              ).writeAsString(jsonEncode(buffer), encoding: utf8);
               tableFileList.add(fn);
               buffer.clear();
               chunkIndex++;
@@ -1493,11 +1663,15 @@ class DatabaseService {
         if (buffer.isEmpty) return;
         if (!wroteAnyChunk) {
           final fn = '$tableName.json';
-          await File('$dirDataPath/$fn').writeAsString(jsonEncode(buffer), encoding: utf8);
+          await File(
+            '$dirDataPath/$fn',
+          ).writeAsString(jsonEncode(buffer), encoding: utf8);
           tableFileList.add(fn);
         } else {
           final fn = '${tableName}_$chunkIndex.json';
-          await File('$dirDataPath/$fn').writeAsString(jsonEncode(buffer), encoding: utf8);
+          await File(
+            '$dirDataPath/$fn',
+          ).writeAsString(jsonEncode(buffer), encoding: utf8);
           tableFileList.add(fn);
         }
       }
@@ -1512,80 +1686,114 @@ class DatabaseService {
       await streamTableToDirectoryData('text_boxes', (b) async => b);
 
       progressNotifier?.value = "正在处理图片文件...";
-      await streamTableToDirectoryData('image_boxes', (List<Map<String, dynamic>> batch) async {
+      await streamTableToDirectoryData('image_boxes', (
+        List<Map<String, dynamic>> batch,
+      ) async {
         const int imageBatchSize = 20;
         final out = <Map<String, dynamic>>[];
         for (int i = 0; i < batch.length; i += imageBatchSize) {
-          final end = (i + imageBatchSize < batch.length) ? i + imageBatchSize : batch.length;
+          final end =
+              (i + imageBatchSize < batch.length)
+                  ? i + imageBatchSize
+                  : batch.length;
           final sub = batch.sublist(i, end);
-          final part = await Future.wait(sub.map((imageBox) async {
-            final imageBoxCopy = Map<String, dynamic>.from(imageBox);
-            final String? imagePath = imageBox['image_path']?.toString();
-            final String? imageBoxId = imageBox['id']?.toString();
-            if (imagePath != null && imagePath.isNotEmpty) {
-              imageBoxesWithPathCount++;
-            }
-            if (imagePath != null &&
-                imagePath.isNotEmpty &&
-                imageBoxId != null &&
-                imageBoxId.isNotEmpty) {
-              final String ext = p.extension(imagePath);
-              final String originalFileName = p.basenameWithoutExtension(imagePath);
-              final String fileName = safeFileName('${imageBoxId}_$originalFileName', ext);
-              imageBoxCopy['imageFileName'] = fileName;
-              final File imageFile = File(imagePath);
-              if (await imageFile.exists()) {
-                final String relativePath = 'images/$fileName';
-                await Directory('$tempDirPath/images').create(recursive: true);
-                await copyFileWithStreaming(imageFile, '$tempDirPath/$relativePath');
-                imageFilesInZipCount++;
-                Logger.log('已导出图片框图片: $relativePath');
-              } else {
-                Logger.log('警告：图片文件不存在: $imagePath');
+          final part = await Future.wait(
+            sub.map((imageBox) async {
+              final imageBoxCopy = Map<String, dynamic>.from(imageBox);
+              final String? imagePath = imageBox['image_path']?.toString();
+              final String? imageBoxId = imageBox['id']?.toString();
+              if (imagePath != null && imagePath.isNotEmpty) {
+                imageBoxesWithPathCount++;
               }
-            }
-            return imageBoxCopy;
-          }));
+              if (imagePath != null &&
+                  imagePath.isNotEmpty &&
+                  imageBoxId != null &&
+                  imageBoxId.isNotEmpty) {
+                final String ext = p.extension(imagePath);
+                final String originalFileName = p.basenameWithoutExtension(
+                  imagePath,
+                );
+                final String fileName = safeFileName(
+                  '${imageBoxId}_$originalFileName',
+                  ext,
+                );
+                imageBoxCopy['imageFileName'] = fileName;
+                final File imageFile = File(imagePath);
+                if (await imageFile.exists()) {
+                  final String relativePath = 'images/$fileName';
+                  await Directory(
+                    '$tempDirPath/images',
+                  ).create(recursive: true);
+                  await copyFileWithStreaming(
+                    imageFile,
+                    '$tempDirPath/$relativePath',
+                  );
+                  imageFilesInZipCount++;
+                  Logger.log('已导出图片框图片: $relativePath');
+                } else {
+                  Logger.log('警告：图片文件不存在: $imagePath');
+                }
+              }
+              return imageBoxCopy;
+            }),
+          );
           out.addAll(part);
         }
         return out;
       });
 
       progressNotifier?.value = "正在处理音频文件...";
-      await streamTableToDirectoryData('audio_boxes', (List<Map<String, dynamic>> batch) async {
+      await streamTableToDirectoryData('audio_boxes', (
+        List<Map<String, dynamic>> batch,
+      ) async {
         const int audioBatchSize = 10;
         final out = <Map<String, dynamic>>[];
         for (int i = 0; i < batch.length; i += audioBatchSize) {
-          final end = (i + audioBatchSize < batch.length) ? i + audioBatchSize : batch.length;
+          final end =
+              (i + audioBatchSize < batch.length)
+                  ? i + audioBatchSize
+                  : batch.length;
           final sub = batch.sublist(i, end);
-          final part = await Future.wait(sub.map((audioBox) async {
-            final audioBoxCopy = Map<String, dynamic>.from(audioBox);
-            final String? audioPath = audioBox['audio_path']?.toString();
-            final String? audioBoxId = audioBox['id']?.toString();
-            if (audioPath != null && audioPath.isNotEmpty) {
-              audioBoxesWithPathCount++;
-            }
-            if (audioPath != null &&
-                audioPath.isNotEmpty &&
-                audioBoxId != null &&
-                audioBoxId.isNotEmpty) {
-              final String ext = p.extension(audioPath);
-              final String originalFileName = p.basenameWithoutExtension(audioPath);
-              final String fileName = safeFileName('${audioBoxId}_$originalFileName', ext);
-              audioBoxCopy['audioFileName'] = fileName;
-              final File audioFile = File(audioPath);
-              if (await audioFile.exists()) {
-                final String relativePath = 'audios/$fileName';
-                await Directory('$tempDirPath/audios').create(recursive: true);
-                await copyFileWithStreaming(audioFile, '$tempDirPath/$relativePath');
-                Logger.log('已导出音频文件: $relativePath');
-              } else {
-                Logger.log('警告：音频文件不存在: $audioPath');
-                missingAudioFiles.add(audioPath);
+          final part = await Future.wait(
+            sub.map((audioBox) async {
+              final audioBoxCopy = Map<String, dynamic>.from(audioBox);
+              final String? audioPath = audioBox['audio_path']?.toString();
+              final String? audioBoxId = audioBox['id']?.toString();
+              if (audioPath != null && audioPath.isNotEmpty) {
+                audioBoxesWithPathCount++;
               }
-            }
-            return audioBoxCopy;
-          }));
+              if (audioPath != null &&
+                  audioPath.isNotEmpty &&
+                  audioBoxId != null &&
+                  audioBoxId.isNotEmpty) {
+                final String ext = p.extension(audioPath);
+                final String originalFileName = p.basenameWithoutExtension(
+                  audioPath,
+                );
+                final String fileName = safeFileName(
+                  '${audioBoxId}_$originalFileName',
+                  ext,
+                );
+                audioBoxCopy['audioFileName'] = fileName;
+                final File audioFile = File(audioPath);
+                if (await audioFile.exists()) {
+                  final String relativePath = 'audios/$fileName';
+                  await Directory(
+                    '$tempDirPath/audios',
+                  ).create(recursive: true);
+                  await copyFileWithStreaming(
+                    audioFile,
+                    '$tempDirPath/$relativePath',
+                  );
+                  Logger.log('已导出音频文件: $relativePath');
+                } else {
+                  Logger.log('警告：音频文件不存在: $audioPath');
+                  missingAudioFiles.add(audioPath);
+                }
+              }
+              return audioBoxCopy;
+            }),
+          );
           out.addAll(part);
         }
         return out;
@@ -1595,7 +1803,9 @@ class DatabaseService {
       await streamTableToDirectoryData('canvases', (b) async => b);
 
       // 处理目录设置和背景图片
-      List<Map<String, dynamic>> directorySettings = await db.query('directory_settings');
+      List<Map<String, dynamic>> directorySettings = await db.query(
+        'directory_settings',
+      );
       List<Map<String, dynamic>> directorySettingsToExport = [];
       for (var settings in directorySettings) {
         Map<String, dynamic> settingsCopy = Map<String, dynamic>.from(settings);
@@ -1607,8 +1817,13 @@ class DatabaseService {
           File imageFile = File(backgroundImagePath);
           if (await imageFile.exists()) {
             String relativePath = 'background_images/$fileName';
-            await Directory('$tempDirPath/background_images').create(recursive: true);
-            await copyFileWithStreaming(imageFile, '$tempDirPath/$relativePath');
+            await Directory(
+              '$tempDirPath/background_images',
+            ).create(recursive: true);
+            await copyFileWithStreaming(
+              imageFile,
+              '$tempDirPath/$relativePath',
+            );
             Logger.log('已导出目录背景图片: $relativePath');
           } else {
             Logger.log('警告：目录背景图片不存在: $backgroundImagePath');
@@ -1617,13 +1832,16 @@ class DatabaseService {
         directorySettingsToExport.add(settingsCopy);
       }
       if (directorySettingsToExport.isNotEmpty) {
-        await File('$dirDataPath/directory_settings.json')
-            .writeAsString(jsonEncode(directorySettingsToExport), encoding: utf8);
+        await File(
+          '$dirDataPath/directory_settings.json',
+        ).writeAsString(jsonEncode(directorySettingsToExport), encoding: utf8);
         tableFileList.add('directory_settings.json');
       }
 
       // 处理文档设置和背景图片
-      List<Map<String, dynamic>> documentSettings = await db.query('document_settings');
+      List<Map<String, dynamic>> documentSettings = await db.query(
+        'document_settings',
+      );
       List<Map<String, dynamic>> documentSettingsToExport = [];
       for (var settings in documentSettings) {
         Map<String, dynamic> settingsCopy = Map<String, dynamic>.from(settings);
@@ -1635,8 +1853,13 @@ class DatabaseService {
           File imageFile = File(backgroundImagePath);
           if (await imageFile.exists()) {
             String relativePath = 'background_images/$fileName';
-            await Directory('$tempDirPath/background_images').create(recursive: true);
-            await copyFileWithStreaming(imageFile, '$tempDirPath/$relativePath');
+            await Directory(
+              '$tempDirPath/background_images',
+            ).create(recursive: true);
+            await copyFileWithStreaming(
+              imageFile,
+              '$tempDirPath/$relativePath',
+            );
             Logger.log('已导出文档背景图片: $relativePath');
           } else {
             Logger.log('警告：文档背景图片不存在: $backgroundImagePath');
@@ -1645,8 +1868,9 @@ class DatabaseService {
         documentSettingsToExport.add(settingsCopy);
       }
       if (documentSettingsToExport.isNotEmpty) {
-        await File('$dirDataPath/document_settings.json')
-            .writeAsString(jsonEncode(documentSettingsToExport), encoding: utf8);
+        await File(
+          '$dirDataPath/document_settings.json',
+        ).writeAsString(jsonEncode(documentSettingsToExport), encoding: utf8);
         tableFileList.add('document_settings.json');
       }
 
@@ -1661,10 +1885,7 @@ class DatabaseService {
         }
       }
 
-      final manifest = {
-        'format_version': 2,
-        'tables': tableFileList,
-      };
+      final manifest = {'format_version': 2, 'tables': tableFileList};
       final manifestFile = File('$dirDataPath/directory_manifest.json');
       await manifestFile.writeAsString(jsonEncode(manifest), encoding: utf8);
       Logger.log('[导出] SPLIT格式数据文件写入完成: $dirDataPath');
@@ -1673,13 +1894,14 @@ class DatabaseService {
       }
       Logger.log('[导出] 数据文件存在且有效，准备压缩...');
       // 压缩前打印临时目录下所有文件
-      final allFilesPreZip = await Directory(tempDirPath).list(recursive: true).toList();
+      final allFilesPreZip =
+          await Directory(tempDirPath).list(recursive: true).toList();
       Logger.log('[导出] 临时目录下文件:');
       for (final f in allFilesPreZip) {
         Logger.log('  - ${f.path}');
       }
       progressNotifier?.value = "正在创建压缩文件...";
-      
+
       // ZIP 输出目录：用户指定 > 公共下载目录（优先）> 外部存储（不写入 backups）
       String zipOutputDir;
       if (outputDirectory != null && outputDirectory.isNotEmpty) {
@@ -1689,15 +1911,24 @@ class DatabaseService {
         zipOutputDir = saveDir.path;
       }
       await Directory(zipOutputDir).create(recursive: true);
-      final String timestamp = DateTime.now().toString().replaceAll(RegExp(r'[^0-9]'), '');
-      final String zipPath = p.join(zipOutputDir, 'directory_backup_$timestamp.zip');
+      final String timestamp = DateTime.now().toString().replaceAll(
+        RegExp(r'[^0-9]'),
+        '',
+      );
+      final String zipPath = p.join(
+        zipOutputDir,
+        'directory_backup_$timestamp.zip',
+      );
       final tempDirEntity = Directory(tempDirPath);
-      
+
       // 使用流式ZipEncoder避免内存溢出
       final encoder = ZipFileEncoder();
       encoder.create(zipPath);
-      
-      await for (final entity in tempDirEntity.list(recursive: true, followLinks: false)) {
+
+      await for (final entity in tempDirEntity.list(
+        recursive: true,
+        followLinks: false,
+      )) {
         if (entity is File) {
           final relativePath = p.relative(entity.path, from: tempDirPath);
           Logger.log('[导出] 添加到ZIP: $relativePath');
@@ -1710,9 +1941,15 @@ class DatabaseService {
       Logger.log('[导出] ZIP文件写入完成: $zipPath');
 
       final int imageBoxTotalRows =
-          Sqflite.firstIntValue(await db.rawQuery('SELECT COUNT(*) FROM image_boxes')) ?? 0;
+          Sqflite.firstIntValue(
+            await db.rawQuery('SELECT COUNT(*) FROM image_boxes'),
+          ) ??
+          0;
       final int audioBoxTotalRows =
-          Sqflite.firstIntValue(await db.rawQuery('SELECT COUNT(*) FROM audio_boxes')) ?? 0;
+          Sqflite.firstIntValue(
+            await db.rawQuery('SELECT COUNT(*) FROM audio_boxes'),
+          ) ??
+          0;
 
       final int zipFileBytes = await File(zipPath).length();
       const int kMaxZipVerifySizeBytes = 400 * 1024 * 1024;
@@ -1723,26 +1960,43 @@ class DatabaseService {
 
         try {
           final int zipImageCount =
-              archiveCheck.where((file) => file.name.startsWith('images/') && !file.isDirectory).length;
+              archiveCheck
+                  .where(
+                    (file) =>
+                        file.name.startsWith('images/') && !file.isDirectory,
+                  )
+                  .length;
           Logger.log(
-              '[导出] 图片框总数: $imageBoxTotalRows，其中有路径的: $imageBoxesWithPathCount，ZIP内文件: $zipImageCount');
+            '[导出] 图片框总数: $imageBoxTotalRows，其中有路径的: $imageBoxesWithPathCount，ZIP内文件: $zipImageCount',
+          );
           if (zipImageCount > imageBoxTotalRows) {
             throw Exception(
-                '导出失败：图片文件数量异常，ZIP包内$zipImageCount个多于数据库$imageBoxTotalRows个，请联系开发者排查。');
+              '导出失败：图片文件数量异常，ZIP包内$zipImageCount个多于数据库$imageBoxTotalRows个，请联系开发者排查。',
+            );
           }
           if (zipImageCount < imageBoxesWithPathCount && kDebugMode) {
             Logger.log(
-                '[导出] 警告：部分图片文件不存在已跳过，有路径的$imageBoxesWithPathCount个，实际导出$zipImageCount个');
+              '[导出] 警告：部分图片文件不存在已跳过，有路径的$imageBoxesWithPathCount个，实际导出$zipImageCount个',
+            );
           }
           final int zipAudioCount =
-              archiveCheck.where((file) => file.name.startsWith('audios/') && !file.isDirectory).length;
+              archiveCheck
+                  .where(
+                    (file) =>
+                        file.name.startsWith('audios/') && !file.isDirectory,
+                  )
+                  .length;
           Logger.log(
-              '[导出] 音频框总数: $audioBoxTotalRows，其中有路径的: $audioBoxesWithPathCount，ZIP内: $zipAudioCount');
+            '[导出] 音频框总数: $audioBoxTotalRows，其中有路径的: $audioBoxesWithPathCount，ZIP内: $zipAudioCount',
+          );
           if (zipAudioCount > audioBoxesWithPathCount) {
             throw Exception(
-                '导出失败：音频文件数量异常，ZIP包内$zipAudioCount个多于有路径的$audioBoxesWithPathCount个，请联系开发者排查。');
+              '导出失败：音频文件数量异常，ZIP包内$zipAudioCount个多于有路径的$audioBoxesWithPathCount个，请联系开发者排查。',
+            );
           }
-          if (zipAudioCount < audioBoxesWithPathCount && missingAudioFiles.isNotEmpty && kDebugMode) {
+          if (zipAudioCount < audioBoxesWithPathCount &&
+              missingAudioFiles.isNotEmpty &&
+              kDebugMode) {
             Logger.log('[导出] 警告：${missingAudioFiles.length}个音频文件不存在已跳过');
           }
         } finally {
@@ -1750,9 +2004,11 @@ class DatabaseService {
         }
       } else {
         Logger.log(
-            '[导出] 压缩包较大 (${(zipFileBytes / (1024 * 1024)).toStringAsFixed(1)}MB)，跳过完整 ZIP 解码校验以降低内存风险');
+          '[导出] 压缩包较大 (${(zipFileBytes / (1024 * 1024)).toStringAsFixed(1)}MB)，跳过完整 ZIP 解码校验以降低内存风险',
+        );
         Logger.log(
-            '[导出] 已统计：图片框有路径 $imageBoxesWithPathCount 条，已复制 $imageFilesInZipCount 个；音频框有路径 $audioBoxesWithPathCount 条；丢失音频路径 ${missingAudioFiles.length} 条');
+          '[导出] 已统计：图片框有路径 $imageBoxesWithPathCount 条，已复制 $imageFilesInZipCount 个；音频框有路径 $audioBoxesWithPathCount 条；丢失音频路径 ${missingAudioFiles.length} 条',
+        );
       }
 
       // 清理临时目录
@@ -1770,16 +2026,19 @@ class DatabaseService {
       rethrow;
     }
   }
-  
+
   /// 导入目录数据 - 优化版，支持超大数据处理
-  Future<void> importDirectoryData(String zipPath, {ValueNotifier<String>? progressNotifier}) async {
+  Future<void> importDirectoryData(
+    String zipPath, {
+    ValueNotifier<String>? progressNotifier,
+  }) async {
     final Directory appDocDir = await getApplicationDocumentsDirectory();
     final String tempDirPath = '${appDocDir.path}/temp_import';
     final Directory tempDir = Directory(tempDirPath);
     try {
       Logger.log('开始导入目录数据...');
       progressNotifier?.value = "准备导入...";
-      
+
       // 清理临时目录
       progressNotifier?.value = "正在清理临时目录...";
       if (await Directory(tempDirPath).exists()) {
@@ -1789,13 +2048,13 @@ class DatabaseService {
 
       // 用流式InputFileStream解压ZIP文件 - 优化版
       progressNotifier?.value = "正在解压文件...";
-      
+
       final inputStream = InputFileStream(zipPath);
       final archive = ZipDecoder().decodeStream(inputStream);
-      
+
       int processedFiles = 0;
       final totalFiles = archive.length;
-      
+
       for (final file in archive) {
         final outPath = resolveSafeExtractPath(tempDirPath, file.name);
         if (file.isFile) {
@@ -1814,25 +2073,31 @@ class DatabaseService {
 
       // 读取目录数据 - 支持SPLIT格式与旧版directory_data.json
       progressNotifier?.value = "正在读取数据文件...";
-      
+
       final String dirDataPath = '$tempDirPath/directory_data';
       final File manifestFile = File('$dirDataPath/directory_manifest.json');
       final bool useSplitFormat = await manifestFile.exists();
-      
+
       Map<String, dynamic>? legacyTableData;
       List<Map<String, String>>? splitTableFiles;
       if (useSplitFormat) {
-        final manifest = jsonDecode(await manifestFile.readAsString()) as Map<String, dynamic>;
-        final tableFileList = (manifest['tables'] as List<dynamic>?)?.cast<String>() ?? [];
+        final manifest =
+            jsonDecode(await manifestFile.readAsString())
+                as Map<String, dynamic>;
+        final tableFileList =
+            (manifest['tables'] as List<dynamic>?)?.cast<String>() ?? [];
         splitTableFiles = [];
         for (final fileName in tableFileList) {
-          final tableName = fileName.replaceAll(RegExp(r'_\d+\.json$'), '.json').replaceAll('.json', '');
+          final tableName = fileName
+              .replaceAll(RegExp(r'_\d+\.json$'), '.json')
+              .replaceAll('.json', '');
           splitTableFiles.add({'table': tableName, 'file': fileName});
         }
       } else {
         File dbDataFile = File('$tempDirPath/directory_data.json');
         if (!await dbDataFile.exists()) {
-          List<FileSystemEntity> allFiles = await Directory(tempDirPath).list(recursive: true).toList();
+          List<FileSystemEntity> allFiles =
+              await Directory(tempDirPath).list(recursive: true).toList();
           List<String> foundFiles = [];
           for (final f in allFiles) {
             if (f is File && f.path.endsWith('directory_data.json')) {
@@ -1841,12 +2106,17 @@ class DatabaseService {
             }
           }
           if (foundFiles.isEmpty) {
-            throw Exception('备份中未找到directory_data.json或directory_data/目录。请确认导出的ZIP包结构正确。');
+            throw Exception(
+              '备份中未找到directory_data.json或directory_data/目录。请确认导出的ZIP包结构正确。',
+            );
           } else if (foundFiles.length > 1) {
-            throw Exception('在多个位置找到directory_data.json文件，请检查备份包结构：\n${foundFiles.join('\n')}');
+            throw Exception(
+              '在多个位置找到directory_data.json文件，请检查备份包结构：\n${foundFiles.join('\n')}',
+            );
           }
         }
-        legacyTableData = jsonDecode(await dbDataFile.readAsString()) as Map<String, dynamic>;
+        legacyTableData =
+            jsonDecode(await dbDataFile.readAsString()) as Map<String, dynamic>;
       }
 
       final db = await database;
@@ -1854,148 +2124,196 @@ class DatabaseService {
       // 准备背景图片目录
       final String backgroundImagesPath = '${appDocDir.path}/background_images';
       await Directory(backgroundImagesPath).create(recursive: true);
-      
+
       // 准备图片目录
       final String imagesDirPath = '${appDocDir.path}/images';
       await Directory(imagesDirPath).create(recursive: true);
-      
+
       // 准备音频目录
       final String audiosDirPath = '${appDocDir.path}/audios';
       await Directory(audiosDirPath).create(recursive: true);
 
       progressNotifier?.value = "正在导入数据库...";
-      
+
       // 事务有时会因并发/时序出现 "no current transaction" COMMIT 错误，重试可恢复
       const maxAttempts = 3;
       for (int attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
-      // 简化版事务：直接清空并重填
-      await db.transaction((txn) async {
-        const List<String> tableNames = [
-          'folders', 'documents', 'text_boxes', 'image_boxes', 'audio_boxes', 'canvases',
-          'document_settings', 'directory_settings'
-        ];
+          // 简化版事务：直接清空并重填
+          await db.transaction((txn) async {
+            const List<String> tableNames = [
+              'folders',
+              'documents',
+              'text_boxes',
+              'image_boxes',
+              'audio_boxes',
+              'canvases',
+              'document_settings',
+              'directory_settings',
+            ];
 
-        // 预检查 text_boxes 补列
-        try {
-          final cols = await txn.rawQuery("PRAGMA table_info(text_boxes)");
-          final has = cols.any((c) => (c['name'] as String).toLowerCase() == 'text_segments');
-          if (!has) {
-            await txn.execute('ALTER TABLE text_boxes ADD COLUMN text_segments TEXT');
-          }
-        } catch (e) {
-          Logger.log('[导入] 检查/添加 text_segments 列失败: $e');
-        }
-
-        // 构建每张真实表的列白名单
-        final Map<String, Set<String>> allowedCols = {};
-        for (final t in tableNames) {
-          final info = await txn.rawQuery('PRAGMA table_info(' + t + ')');
-          allowedCols[t] = { for (final r in info) r['name'] as String };
-        }
-
-        // 全量替换：DELETE 而不是 DROP，保留索引/触发器结构
-        for (final t in tableNames) {
-          await txn.delete(t);
-        }
-
-        final int batchSize = 100;
-        Future<void> processTableRows(String tableName, List<dynamic> rows) async {
-          if (!tableNames.contains(tableName)) return;
-          int processedRows = 0;
-          for (int i = 0; i < rows.length; i += batchSize) {
-            final end = (i + batchSize < rows.length) ? i + batchSize : rows.length;
-            final batch = rows.sublist(i, end);
-            for (var row in batch) {
-              if (tableName == 'media_items') continue;
-              Map<String, dynamic> newRow = Map<String, dynamic>.from(row as Map);
-              if (tableName == 'image_boxes' && newRow.containsKey('imageFileName')) {
-                final fileName = newRow['imageFileName'];
-                final newPath = p.join(imagesDirPath, fileName);
-                final tempPath = p.join(tempDirPath, 'images', fileName);
-                if (await File(tempPath).exists()) {
-                  await copyFileWithStreaming(File(tempPath), newPath);
-                  newRow['image_path'] = newPath;
-                } else {
-                  newRow['image_path'] = null;
-                }
-                newRow.remove('imageFileName');
-              } else if (tableName == 'audio_boxes' && newRow.containsKey('audioFileName')) {
-                final fileName = newRow['audioFileName'];
-                final newPath = p.join(audiosDirPath, fileName);
-                final tempAudioPath = p.join(tempDirPath, 'audios', fileName);
-                if (await File(tempAudioPath).exists()) {
-                  await Directory(p.dirname(newPath)).create(recursive: true);
-                  await copyFileWithStreaming(File(tempAudioPath), newPath);
-                  newRow['audio_path'] = newPath;
-                } else {
-                  newRow['audio_path'] = null;
-                }
-                newRow.remove('audioFileName');
-              } else if ((tableName == 'directory_settings' || tableName == 'document_settings') && newRow.containsKey('backgroundImageFileName')) {
-                final fileName = newRow['backgroundImageFileName'];
-                final newPath = p.join(backgroundImagesPath, fileName);
-                final tempPath = p.join(tempDirPath, 'background_images', fileName);
-                if (await File(tempPath).exists()) {
-                  await copyFileWithStreaming(File(tempPath), newPath);
-                  newRow['background_image_path'] = newPath;
-                } else {
-                  newRow['background_image_path'] = null;
-                }
-                newRow.remove('backgroundImageFileName');
-              }
-              if (tableName == 'text_boxes') {
-                if (newRow.containsKey('textSegments') && !newRow.containsKey('text_segments')) {
-                  newRow['text_segments'] = newRow['textSegments'];
-                }
-                if (newRow.containsKey('text_segments') && newRow['text_segments'] != null && newRow['text_segments'] is! String) {
-                  try { newRow['text_segments'] = jsonEncode(newRow['text_segments']); } catch (_) {}
-                }
-                newRow.remove('textSegments');
-              }
-              final allowed = allowedCols[tableName] ?? const <String>{};
-              final clean = <String, dynamic>{};
-              for (final k in newRow.keys) {
-                if (allowed.contains(k)) clean[k] = newRow[k];
-              }
-              try {
-                await txn.insert(tableName, clean, conflictAlgorithm: ConflictAlgorithm.replace);
-              } catch (rowErr, rowStack) {
-                Logger.log('[导入] 行插入失败(表:$tableName): $rowErr');
-                Error.throwWithStackTrace(
-                  Exception('目录数据导入失败，表 $tableName 存在无法写入的记录，已回滚以保护现有数据。原始错误: $rowErr'),
-                  rowStack,
+            // 预检查 text_boxes 补列
+            try {
+              final cols = await txn.rawQuery("PRAGMA table_info(text_boxes)");
+              final has = cols.any(
+                (c) => (c['name'] as String).toLowerCase() == 'text_segments',
+              );
+              if (!has) {
+                await txn.execute(
+                  'ALTER TABLE text_boxes ADD COLUMN text_segments TEXT',
                 );
               }
-              processedRows++;
-              if (processedRows % kProgressUpdateInterval == 0) {
-                progressNotifier?.value = '正在导入$tableName表: $processedRows';
+            } catch (e) {
+              Logger.log('[导入] 检查/添加 text_segments 列失败: $e');
+            }
+
+            // 构建每张真实表的列白名单
+            final Map<String, Set<String>> allowedCols = {};
+            for (final t in tableNames) {
+              final info = await txn.rawQuery('PRAGMA table_info(' + t + ')');
+              allowedCols[t] = {for (final r in info) r['name'] as String};
+            }
+
+            // 全量替换：DELETE 而不是 DROP，保留索引/触发器结构
+            for (final t in tableNames) {
+              await txn.delete(t);
+            }
+
+            final int batchSize = 100;
+            Future<void> processTableRows(
+              String tableName,
+              List<dynamic> rows,
+            ) async {
+              if (!tableNames.contains(tableName)) return;
+              int processedRows = 0;
+              for (int i = 0; i < rows.length; i += batchSize) {
+                final end =
+                    (i + batchSize < rows.length) ? i + batchSize : rows.length;
+                final batch = rows.sublist(i, end);
+                for (var row in batch) {
+                  if (tableName == 'media_items') continue;
+                  Map<String, dynamic> newRow = Map<String, dynamic>.from(
+                    row as Map,
+                  );
+                  if (tableName == 'image_boxes' &&
+                      newRow.containsKey('imageFileName')) {
+                    final fileName = newRow['imageFileName'];
+                    final newPath = p.join(imagesDirPath, fileName);
+                    final tempPath = p.join(tempDirPath, 'images', fileName);
+                    if (await File(tempPath).exists()) {
+                      await copyFileWithStreaming(File(tempPath), newPath);
+                      newRow['image_path'] = newPath;
+                    } else {
+                      newRow['image_path'] = null;
+                    }
+                    newRow.remove('imageFileName');
+                  } else if (tableName == 'audio_boxes' &&
+                      newRow.containsKey('audioFileName')) {
+                    final fileName = newRow['audioFileName'];
+                    final newPath = p.join(audiosDirPath, fileName);
+                    final tempAudioPath = p.join(
+                      tempDirPath,
+                      'audios',
+                      fileName,
+                    );
+                    if (await File(tempAudioPath).exists()) {
+                      await Directory(
+                        p.dirname(newPath),
+                      ).create(recursive: true);
+                      await copyFileWithStreaming(File(tempAudioPath), newPath);
+                      newRow['audio_path'] = newPath;
+                    } else {
+                      newRow['audio_path'] = null;
+                    }
+                    newRow.remove('audioFileName');
+                  } else if ((tableName == 'directory_settings' ||
+                          tableName == 'document_settings') &&
+                      newRow.containsKey('backgroundImageFileName')) {
+                    final fileName = newRow['backgroundImageFileName'];
+                    final newPath = p.join(backgroundImagesPath, fileName);
+                    final tempPath = p.join(
+                      tempDirPath,
+                      'background_images',
+                      fileName,
+                    );
+                    if (await File(tempPath).exists()) {
+                      await copyFileWithStreaming(File(tempPath), newPath);
+                      newRow['background_image_path'] = newPath;
+                    } else {
+                      newRow['background_image_path'] = null;
+                    }
+                    newRow.remove('backgroundImageFileName');
+                  }
+                  if (tableName == 'text_boxes') {
+                    if (newRow.containsKey('textSegments') &&
+                        !newRow.containsKey('text_segments')) {
+                      newRow['text_segments'] = newRow['textSegments'];
+                    }
+                    if (newRow.containsKey('text_segments') &&
+                        newRow['text_segments'] != null &&
+                        newRow['text_segments'] is! String) {
+                      try {
+                        newRow['text_segments'] = jsonEncode(
+                          newRow['text_segments'],
+                        );
+                      } catch (_) {}
+                    }
+                    newRow.remove('textSegments');
+                  }
+                  final allowed = allowedCols[tableName] ?? const <String>{};
+                  final clean = <String, dynamic>{};
+                  for (final k in newRow.keys) {
+                    if (allowed.contains(k)) clean[k] = newRow[k];
+                  }
+                  try {
+                    await txn.insert(
+                      tableName,
+                      clean,
+                      conflictAlgorithm: ConflictAlgorithm.replace,
+                    );
+                  } catch (rowErr, rowStack) {
+                    Logger.log('[导入] 行插入失败(表:$tableName): $rowErr');
+                    Error.throwWithStackTrace(
+                      Exception(
+                        '目录数据导入失败，表 $tableName 存在无法写入的记录，已回滚以保护现有数据。原始错误: $rowErr',
+                      ),
+                      rowStack,
+                    );
+                  }
+                  processedRows++;
+                  if (processedRows % kProgressUpdateInterval == 0) {
+                    progressNotifier?.value = '正在导入$tableName表: $processedRows';
+                  }
+                }
+              }
+              Logger.log('[导入] 表 $tableName 导入完成，共 $processedRows 行');
+            }
+
+            if (useSplitFormat) {
+              for (final tf in splitTableFiles!) {
+                final tableName = tf['table']!;
+                final f = File('$dirDataPath/${tf['file']}');
+                if (!await f.exists()) continue;
+                progressNotifier?.value = "正在读取: ${tf['file']}";
+                final rows =
+                    jsonDecode(await f.readAsString()) as List<dynamic>;
+                await processTableRows(tableName, rows);
+              }
+            } else {
+              for (var entry in legacyTableData!.entries) {
+                await processTableRows(entry.key, entry.value as List<dynamic>);
               }
             }
-          }
-          Logger.log('[导入] 表 $tableName 导入完成，共 $processedRows 行');
-        }
-
-        if (useSplitFormat) {
-          for (final tf in splitTableFiles!) {
-            final tableName = tf['table']!;
-            final f = File('$dirDataPath/${tf['file']}');
-            if (!await f.exists()) continue;
-            progressNotifier?.value = "正在读取: ${tf['file']}";
-            final rows = jsonDecode(await f.readAsString()) as List<dynamic>;
-            await processTableRows(tableName, rows);
-          }
-        } else {
-          for (var entry in legacyTableData!.entries) {
-            await processTableRows(entry.key, entry.value as List<dynamic>);
-          }
-        }
-      });
+          });
           break;
         } on DatabaseException catch (e) {
           final msg = e.toString();
-          if (msg.contains('no current transaction') && msg.contains('COMMIT') && attempt < maxAttempts) {
-            Logger.log('[导入] 事务异常，${200 * attempt}ms 后重试 ($attempt/$maxAttempts): $msg');
+          if (msg.contains('no current transaction') &&
+              msg.contains('COMMIT') &&
+              attempt < maxAttempts) {
+            Logger.log(
+              '[导入] 事务异常，${200 * attempt}ms 后重试 ($attempt/$maxAttempts): $msg',
+            );
             await Future.delayed(Duration(milliseconds: 200 * attempt));
           } else {
             rethrow;
@@ -2027,13 +2345,16 @@ class DatabaseService {
       }
     }
   }
-  
+
   // 保留原来的方法名称，但内部调用新方法，以保持兼容性
   Future<String> exportAllData() async {
     return exportDirectoryData();
   }
-  
-  Future<void> importAllData(String zipPath, {ValueNotifier<String>? progressNotifier}) async {
+
+  Future<void> importAllData(
+    String zipPath, {
+    ValueNotifier<String>? progressNotifier,
+  }) async {
     try {
       final file = File(zipPath);
       if (!await file.exists()) {
@@ -2057,19 +2378,34 @@ class DatabaseService {
       final db = await database;
       final pathsToDelete = <String>[];
 
-      final imageBoxes = await db.query('image_boxes', columns: ['image_path'], where: 'document_id = ?', whereArgs: [documentId]);
+      final imageBoxes = await db.query(
+        'image_boxes',
+        columns: ['image_path'],
+        where: 'document_id = ?',
+        whereArgs: [documentId],
+      );
       for (final row in imageBoxes) {
         final path = row['image_path']?.toString();
         if (path != null && path.isNotEmpty) pathsToDelete.add(path);
       }
 
-      final audioBoxes = await db.query('audio_boxes', columns: ['audio_path'], where: 'document_id = ?', whereArgs: [documentId]);
+      final audioBoxes = await db.query(
+        'audio_boxes',
+        columns: ['audio_path'],
+        where: 'document_id = ?',
+        whereArgs: [documentId],
+      );
       for (final row in audioBoxes) {
         final path = row['audio_path']?.toString();
         if (path != null && path.isNotEmpty) pathsToDelete.add(path);
       }
 
-      final settings = await db.query('document_settings', columns: ['background_image_path'], where: 'document_id = ?', whereArgs: [documentId]);
+      final settings = await db.query(
+        'document_settings',
+        columns: ['background_image_path'],
+        where: 'document_id = ?',
+        whereArgs: [documentId],
+      );
       for (final row in settings) {
         final path = row['background_image_path']?.toString();
         if (path != null && path.isNotEmpty) pathsToDelete.add(path);
@@ -2092,21 +2428,39 @@ class DatabaseService {
     final db = await database;
     final ids = <String>[];
 
-    final documents = await db.query('documents', columns: ['id'], where: 'parent_folder = ?', whereArgs: [folderId]);
+    final documents = await db.query(
+      'documents',
+      columns: ['id'],
+      where: 'parent_folder = ?',
+      whereArgs: [folderId],
+    );
     for (final doc in documents) ids.add(doc['id'] as String);
 
-    final subFolders = await db.query('folders', columns: ['id'], where: 'parent_folder = ?', whereArgs: [folderId]);
+    final subFolders = await db.query(
+      'folders',
+      columns: ['id'],
+      where: 'parent_folder = ?',
+      whereArgs: [folderId],
+    );
     for (final sub in subFolders) {
       ids.addAll(await _collectDocumentIdsInFolder(sub['id'] as String));
     }
     return ids;
   }
 
-  Future<void> deleteDocument(String documentName, {String? parentFolder}) async {
+  Future<void> deleteDocument(
+    String documentName, {
+    String? parentFolder,
+  }) async {
     final db = await database;
-    
+
     try {
-      List<Map<String, dynamic>> documents = await db.query('documents', columns: ['id'], where: 'name = ?', whereArgs: [documentName]);
+      List<Map<String, dynamic>> documents = await db.query(
+        'documents',
+        columns: ['id'],
+        where: 'name = ?',
+        whereArgs: [documentName],
+      );
       if (documents.isNotEmpty) {
         final documentId = documents.first['id'] as String;
         await _deleteDocumentPhysicalFiles(documentId);
@@ -2115,31 +2469,66 @@ class DatabaseService {
       await db.transaction((txn) async {
         if (documents.isNotEmpty) {
           String documentId = documents.first['id'] as String;
-          await txn.delete('text_boxes', where: 'document_id = ?', whereArgs: [documentId]);
-          await txn.delete('image_boxes', where: 'document_id = ?', whereArgs: [documentId]);
-          await txn.delete('audio_boxes', where: 'document_id = ?', whereArgs: [documentId]);
-          await txn.delete('document_settings', where: 'document_id = ?', whereArgs: [documentId]);
-          await txn.delete('documents', where: 'id = ?', whereArgs: [documentId]);
+          await txn.delete(
+            'text_boxes',
+            where: 'document_id = ?',
+            whereArgs: [documentId],
+          );
+          await txn.delete(
+            'image_boxes',
+            where: 'document_id = ?',
+            whereArgs: [documentId],
+          );
+          await txn.delete(
+            'audio_boxes',
+            where: 'document_id = ?',
+            whereArgs: [documentId],
+          );
+          await txn.delete(
+            'document_settings',
+            where: 'document_id = ?',
+            whereArgs: [documentId],
+          );
+          await txn.delete(
+            'documents',
+            where: 'id = ?',
+            whereArgs: [documentId],
+          );
         }
 
         String? parentFolderId;
         if (parentFolder != null) {
-          final parentFolderData = await txn.query('folders', where: 'name = ?', whereArgs: [parentFolder]);
-          parentFolderId = parentFolderData.isNotEmpty ? parentFolderData.first['id'] as String? : null;
+          final parentFolderData = await txn.query(
+            'folders',
+            where: 'name = ?',
+            whereArgs: [parentFolder],
+          );
+          parentFolderId =
+              parentFolderData.isNotEmpty
+                  ? parentFolderData.first['id'] as String?
+                  : null;
         }
-        
+
         List<Map<String, dynamic>> remainingDocuments = await txn.query(
           'documents',
-          where: parentFolderId == null ? 'parent_folder IS NULL' : 'parent_folder = ?',
+          where:
+              parentFolderId == null
+                  ? 'parent_folder IS NULL'
+                  : 'parent_folder = ?',
           whereArgs: parentFolderId == null ? null : [parentFolderId],
           orderBy: 'order_index ASC',
         );
-        
+
         for (int i = 0; i < remainingDocuments.length; i++) {
-          await txn.update('documents', {'order_index': i}, where: 'id = ?', whereArgs: [remainingDocuments[i]['id']]);
+          await txn.update(
+            'documents',
+            {'order_index': i},
+            where: 'id = ?',
+            whereArgs: [remainingDocuments[i]['id']],
+          );
         }
       });
-      
+
       try {
         final fileCleanupService = getService<FileCleanupService>();
         if (fileCleanupService.isInitialized) {
@@ -2148,7 +2537,7 @@ class DatabaseService {
       } catch (e) {
         if (kDebugMode) Logger.log('文件清理服务删除文档失败: $e');
       }
-      
+
       if (kDebugMode) Logger.log('成功删除文档: $documentName');
     } catch (e, stackTrace) {
       _handleError('删除文档失败: $documentName', e, stackTrace);
@@ -2166,7 +2555,7 @@ class DatabaseService {
         where: 'name = ?',
         whereArgs: [documentName],
       );
-      
+
       if (docs.isNotEmpty) {
         String documentId = docs.first['id'];
         await db.update(
@@ -2180,20 +2569,28 @@ class DatabaseService {
         Logger.log('Document not found: $documentName');
       }
     } catch (e, stackTrace) {
-      _handleError('Failed to delete document background image for $documentName', e, stackTrace);
+      _handleError(
+        'Failed to delete document background image for $documentName',
+        e,
+        stackTrace,
+      );
       rethrow;
     }
   }
 
   Future<void> deleteFolder(String folderName, {String? parentFolder}) async {
     final db = await database;
-    
+
     try {
-      final folderToDelete = await db.query('folders', where: 'name = ?', whereArgs: [folderName]);
+      final folderToDelete = await db.query(
+        'folders',
+        where: 'name = ?',
+        whereArgs: [folderName],
+      );
       if (folderToDelete.isEmpty) {
         throw Exception('文件夹不存在: $folderName');
       }
-      
+
       final folderId = folderToDelete.first['id'] as String;
       final documentIds = await _collectDocumentIdsInFolder(folderId);
       for (final docId in documentIds) {
@@ -2205,19 +2602,34 @@ class DatabaseService {
 
         String? parentFolderId;
         if (parentFolder != null) {
-          final parentFolderData = await txn.query('folders', where: 'name = ?', whereArgs: [parentFolder]);
-          parentFolderId = parentFolderData.isNotEmpty ? parentFolderData.first['id'] as String? : null;
+          final parentFolderData = await txn.query(
+            'folders',
+            where: 'name = ?',
+            whereArgs: [parentFolder],
+          );
+          parentFolderId =
+              parentFolderData.isNotEmpty
+                  ? parentFolderData.first['id'] as String?
+                  : null;
         }
-        
+
         List<Map<String, dynamic>> remainingFolders = await txn.query(
           'folders',
-          where: parentFolderId == null ? 'parent_folder IS NULL' : 'parent_folder = ?',
+          where:
+              parentFolderId == null
+                  ? 'parent_folder IS NULL'
+                  : 'parent_folder = ?',
           whereArgs: parentFolderId == null ? null : [parentFolderId],
           orderBy: 'order_index ASC',
         );
-        
+
         for (int i = 0; i < remainingFolders.length; i++) {
-          await txn.update('folders', {'order_index': i}, where: 'id = ?', whereArgs: [remainingFolders[i]['id']]);
+          await txn.update(
+            'folders',
+            {'order_index': i},
+            where: 'id = ?',
+            whereArgs: [remainingFolders[i]['id']],
+          );
         }
       });
 
@@ -2229,7 +2641,7 @@ class DatabaseService {
       } catch (e) {
         if (kDebugMode) Logger.log('文件清理服务删除文件夹失败: $e');
       }
-      
+
       if (kDebugMode) Logger.log('成功删除文件夹: $folderName');
     } catch (e, stackTrace) {
       _handleError('删除文件夹失败: $folderName', e, stackTrace);
@@ -2238,22 +2650,26 @@ class DatabaseService {
   }
 
   /// 在事务内部递归删除文件夹
-  Future<void> _deleteFolderRecursive(Transaction txn, String folderId, String folderName) async {
+  Future<void> _deleteFolderRecursive(
+    Transaction txn,
+    String folderId,
+    String folderName,
+  ) async {
     if (kDebugMode) {
       Logger.log('开始递归删除文件夹: $folderName (ID: $folderId)');
     }
-    
+
     // 获取子文档
     List<Map<String, dynamic>> documents = await txn.query(
       'documents',
       where: 'parent_folder = ?',
       whereArgs: [folderId],
     );
-    
+
     if (kDebugMode) {
       Logger.log('文件夹 $folderName 包含 ${documents.length} 个文档');
     }
-    
+
     // 删除子文档
     for (var doc in documents) {
       final docId = doc['id'] as String;
@@ -2261,10 +2677,26 @@ class DatabaseService {
       if (kDebugMode) {
         Logger.log('删除文档: $docName (ID: $docId)');
       }
-      await txn.delete('text_boxes', where: 'document_id = ?', whereArgs: [docId]);
-      await txn.delete('image_boxes', where: 'document_id = ?', whereArgs: [docId]);
-      await txn.delete('audio_boxes', where: 'document_id = ?', whereArgs: [docId]);
-      await txn.delete('document_settings', where: 'document_id = ?', whereArgs: [docId]);
+      await txn.delete(
+        'text_boxes',
+        where: 'document_id = ?',
+        whereArgs: [docId],
+      );
+      await txn.delete(
+        'image_boxes',
+        where: 'document_id = ?',
+        whereArgs: [docId],
+      );
+      await txn.delete(
+        'audio_boxes',
+        where: 'document_id = ?',
+        whereArgs: [docId],
+      );
+      await txn.delete(
+        'document_settings',
+        where: 'document_id = ?',
+        whereArgs: [docId],
+      );
       await txn.delete('documents', where: 'id = ?', whereArgs: [docId]);
     }
 
@@ -2274,11 +2706,11 @@ class DatabaseService {
       where: 'parent_folder = ?',
       whereArgs: [folderId],
     );
-    
+
     if (kDebugMode) {
       Logger.log('文件夹 $folderName 包含 ${subFolders.length} 个子文件夹');
     }
-    
+
     // 递归删除子文件夹
     for (var subFolder in subFolders) {
       final subFolderId = subFolder['id'] as String;
@@ -2306,11 +2738,14 @@ class DatabaseService {
       }
       List<Map<String, dynamic>> result = await db.query(
         'folders',
-        where: parentFolderId == null ? 'parent_folder IS NULL' : 'parent_folder = ?',
+        where:
+            parentFolderId == null
+                ? 'parent_folder IS NULL'
+                : 'parent_folder = ?',
         whereArgs: parentFolderId == null ? null : [parentFolderId],
         orderBy: 'order_index ASC',
       );
-      
+
       // 数据验证和清理
       List<Map<String, dynamic>> validResults = [];
       for (var folder in result) {
@@ -2322,11 +2757,11 @@ class DatabaseService {
           }
         }
       }
-      
+
       if (kDebugMode) {
         Logger.log('获取文件夹成功: ${validResults.length} 个有效文件夹');
       }
-      
+
       return validResults;
     } catch (e, stackTrace) {
       _handleError('获取文件夹时出错', e, stackTrace);
@@ -2335,7 +2770,9 @@ class DatabaseService {
     }
   }
 
-  Future<List<Map<String, dynamic>>> getDocuments({String? parentFolder}) async {
+  Future<List<Map<String, dynamic>>> getDocuments({
+    String? parentFolder,
+  }) async {
     final db = await database;
     try {
       String? parentFolderId;
@@ -2343,18 +2780,22 @@ class DatabaseService {
         final folder = await getFolderByName(parentFolder);
         parentFolderId = folder?['id'];
       }
-      
+
       List<Map<String, dynamic>> result = await db.query(
         'documents',
-        where: parentFolderId == null ? 'parent_folder IS NULL' : 'parent_folder = ?',
+        where:
+            parentFolderId == null
+                ? 'parent_folder IS NULL'
+                : 'parent_folder = ?',
         whereArgs: parentFolderId == null ? null : [parentFolderId],
         orderBy: 'order_index ASC',
       );
-      
+
       // 数据验证和清理
       List<Map<String, dynamic>> validResults = [];
       for (var document in result) {
-        if (document['name'] != null && document['name'].toString().isNotEmpty) {
+        if (document['name'] != null &&
+            document['name'].toString().isNotEmpty) {
           validResults.add(Map<String, dynamic>.from(document));
         } else {
           if (kDebugMode) {
@@ -2362,11 +2803,11 @@ class DatabaseService {
           }
         }
       }
-      
+
       if (kDebugMode) {
         Logger.log('获取文档成功: ${validResults.length} 个有效文档');
       }
-      
+
       return validResults;
     } catch (e, stackTrace) {
       _handleError('获取文档时出错', e, stackTrace);
@@ -2392,7 +2833,7 @@ class DatabaseService {
       return null;
     }
   }
-  
+
   Future<Map<String, dynamic>?> getDocumentByName(String documentName) async {
     final db = await database;
     try {
@@ -2416,10 +2857,10 @@ class DatabaseService {
       Logger.log('开始导出文档: $documentName');
       final Directory appDocDir = await getApplicationDocumentsDirectory();
       final String backupPath = '${appDocDir.path}/backups';
-      
+
       // 创建备份目录
       await Directory(backupPath).create(recursive: true);
-      
+
       // 创建临时目录
       final String tempDirPath = '$backupPath/temp_document_export';
       final Directory tempDir = Directory(tempDirPath);
@@ -2427,27 +2868,43 @@ class DatabaseService {
         await tempDir.delete(recursive: true);
       }
       await tempDir.create(recursive: true);
-      
+
       final db = await database;
-      
+
       // 获取文档信息
       List<Map<String, dynamic>> documents = await db.query(
         'documents',
         where: 'name = ?',
         whereArgs: [documentName],
       );
-      
+
       if (documents.isEmpty) {
         throw Exception('文档不存在: $documentName');
       }
-      
+
       String documentId = documents.first['id'];
-      
+
       // 导出文档相关的数据 (包含画布)
-      final List<Map<String, dynamic>> textBoxRows = await db.query('text_boxes', where: 'document_id = ?', whereArgs: [documentId]);
-      final List<Map<String, dynamic>> imageBoxRows = await db.query('image_boxes', where: 'document_id = ?', whereArgs: [documentId]);
-      final List<Map<String, dynamic>> audioBoxRows = await db.query('audio_boxes', where: 'document_id = ?', whereArgs: [documentId]);
-      final List<Map<String, dynamic>> canvasRows = await db.query('canvases', where: 'document_id = ?', whereArgs: [documentId]);
+      final List<Map<String, dynamic>> textBoxRows = await db.query(
+        'text_boxes',
+        where: 'document_id = ?',
+        whereArgs: [documentId],
+      );
+      final List<Map<String, dynamic>> imageBoxRows = await db.query(
+        'image_boxes',
+        where: 'document_id = ?',
+        whereArgs: [documentId],
+      );
+      final List<Map<String, dynamic>> audioBoxRows = await db.query(
+        'audio_boxes',
+        where: 'document_id = ?',
+        whereArgs: [documentId],
+      );
+      final List<Map<String, dynamic>> canvasRows = await db.query(
+        'canvases',
+        where: 'document_id = ?',
+        whereArgs: [documentId],
+      );
       final Map<String, List<Map<String, dynamic>>> documentData = {
         'documents': documents,
         'text_boxes': textBoxRows,
@@ -2460,16 +2917,17 @@ class DatabaseService {
           whereArgs: [documentId],
         ),
       };
-      
+
       // 处理图片框数据和图片文件
       List<Map<String, dynamic>> imageBoxesToExport = [];
       for (var imageBox in documentData['image_boxes']!) {
         Map<String, dynamic> imageBoxCopy = Map<String, dynamic>.from(imageBox);
-        String imagePath = imageBox['imagePath'] ?? imageBox['image_path'] ?? '';
+        String imagePath =
+            imageBox['imagePath'] ?? imageBox['image_path'] ?? '';
         if (imagePath.isNotEmpty) {
           String fileName = p.basename(imagePath);
           imageBoxCopy['imageFileName'] = fileName;
-          
+
           // 复制图片文件
           File imageFile = File(imagePath);
           if (await imageFile.exists()) {
@@ -2484,16 +2942,17 @@ class DatabaseService {
         imageBoxesToExport.add(imageBoxCopy);
       }
       documentData['image_boxes'] = imageBoxesToExport;
-      
+
       // 处理音频框数据和音频文件
       List<Map<String, dynamic>> audioBoxesToExport = [];
       for (var audioBox in documentData['audio_boxes']!) {
         Map<String, dynamic> audioBoxCopy = Map<String, dynamic>.from(audioBox);
-        String audioPath = audioBox['audioPath'] ?? audioBox['audio_path'] ?? '';
+        String audioPath =
+            audioBox['audioPath'] ?? audioBox['audio_path'] ?? '';
         if (audioPath.isNotEmpty) {
           String fileName = p.basename(audioPath);
           audioBoxCopy['audioFileName'] = fileName;
-          
+
           // 复制音频文件
           File audioFile = File(audioPath);
           if (await audioFile.exists()) {
@@ -2509,8 +2968,8 @@ class DatabaseService {
       }
       documentData['audio_boxes'] = audioBoxesToExport;
 
-  // 画布无需复制文件，只需原样写入（已在 documentData 初始化）
-      
+      // 画布无需复制文件，只需原样写入（已在 documentData 初始化）
+
       // 处理文档设置和背景图片
       List<Map<String, dynamic>> documentSettingsToExport = [];
       for (var settings in documentData['document_settings']!) {
@@ -2519,12 +2978,14 @@ class DatabaseService {
         if (backgroundImagePath != null && backgroundImagePath.isNotEmpty) {
           String fileName = p.basename(backgroundImagePath);
           settingsCopy['backgroundImageFileName'] = fileName;
-          
+
           // 复制背景图片
           File imageFile = File(backgroundImagePath);
           if (await imageFile.exists()) {
             String relativePath = 'background_images/$fileName';
-            await Directory('$tempDirPath/background_images').create(recursive: true);
+            await Directory(
+              '$tempDirPath/background_images',
+            ).create(recursive: true);
             await imageFile.copy('$tempDirPath/$relativePath');
             Logger.log('已导出背景图片: $relativePath');
           } else {
@@ -2534,23 +2995,24 @@ class DatabaseService {
         documentSettingsToExport.add(settingsCopy);
       }
       documentData['document_settings'] = documentSettingsToExport;
-      
+
       // 将数据保存为JSON文件
       final File dataFile = File('$tempDirPath/document_data.json');
       await dataFile.writeAsString(jsonEncode(documentData));
-      
+
       // 创建ZIP文件 - 使用人性化的时间格式
       final DateTime now = DateTime.now();
-      final String formattedTime = '${now.year.toString().padLeft(4, '0')}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}-${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}';
+      final String formattedTime =
+          '${now.year.toString().padLeft(4, '0')}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}-${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}';
       final String zipPath = '$backupPath/$documentName-$formattedTime.zip';
       final encoder = ZipFileEncoder();
       encoder.create(zipPath);
       await encoder.addDirectory(Directory(tempDirPath), includeDirName: false);
       encoder.close();
-      
+
       // 清理临时目录
       await tempDir.delete(recursive: true);
-      
+
       Logger.log('文档导出完成: $zipPath');
       return zipPath;
     } catch (e, stackTrace) {
@@ -2574,58 +3036,67 @@ class DatabaseService {
     return folders.isNotEmpty || documents.isNotEmpty;
   }
 
-  Future<void> importDocument(String zipPath, {String? targetDocumentName, String? targetParentFolder}) async {
+  Future<void> importDocument(
+    String zipPath, {
+    String? targetDocumentName,
+    String? targetParentFolder,
+  }) async {
     try {
       Logger.log('开始导入文档: $zipPath');
       final Directory appDocDir = await getApplicationDocumentsDirectory();
       final String tempDirPath = '${appDocDir.path}/temp_import';
       final Directory tempDir = Directory(tempDirPath);
-      
+
       // 清理并创建临时目录
       if (await tempDir.exists()) {
         await tempDir.delete(recursive: true);
       }
       await tempDir.create(recursive: true);
-      
+
       // 用流式InputFileStream解压ZIP文件
       final inputStream = InputFileStream(zipPath);
       try {
-      final archive = ZipDecoder().decodeStream(inputStream);
-      for (final file in archive) {
-        if (file.isFile) {
-          final outPath = resolveSafeExtractPath(tempDirPath, file.name);
-          await extractArchiveFileToPath(file, outPath);
+        final archive = ZipDecoder().decodeStream(inputStream);
+        for (final file in archive) {
+          if (file.isFile) {
+            final outPath = resolveSafeExtractPath(tempDirPath, file.name);
+            await extractArchiveFileToPath(file, outPath);
+          }
         }
-      }
       } finally {
         await inputStream.close();
       }
-      
+
       // 读取文档数据
       final File dataFile = File('$tempDirPath/document_data.json');
       if (!await dataFile.exists()) {
         throw Exception('导入文件格式错误：缺少document_data.json');
       }
-      
+
       final String jsonContent = await dataFile.readAsString();
       final Map<String, dynamic> importData = jsonDecode(jsonContent);
-      
+
       final db = await database;
-      
+
       await db.transaction((txn) async {
         // 处理文档数据
         List<dynamic> documents = importData['documents'] ?? [];
         if (documents.isEmpty) {
           throw Exception('导入文件中没有找到文档数据');
         }
-        
-        Map<String, dynamic> documentData = Map<String, dynamic>.from(documents.first);
+
+        Map<String, dynamic> documentData = Map<String, dynamic>.from(
+          documents.first,
+        );
         String originalDocumentId = documentData['id'];
         String newDocumentId = const Uuid().v4();
-        
+
         // 设置文档名称
-        String finalDocumentName = targetDocumentName ?? documentData['name'] ?? p.basenameWithoutExtension(zipPath);
-        
+        String finalDocumentName =
+            targetDocumentName ??
+            documentData['name'] ??
+            p.basenameWithoutExtension(zipPath);
+
         // 检查名称冲突并生成唯一名称 - 使用人性化的副本格式
         String uniqueName = finalDocumentName;
         int attempt = 0;
@@ -2657,7 +3128,7 @@ class DatabaseService {
             throw Exception('无法生成唯一的文档名称');
           }
         }
-        
+
         // 设置父文件夹
         String? parentFolderId;
         if (targetParentFolder != null) {
@@ -2670,24 +3141,24 @@ class DatabaseService {
             parentFolderId = folders.first['id'];
           }
         }
-        
+
         // 插入文档
         documentData['id'] = newDocumentId;
         documentData['name'] = uniqueName;
         documentData['parent_folder'] = parentFolderId;
         documentData['created_at'] = DateTime.now().toIso8601String();
         documentData['updated_at'] = DateTime.now().toIso8601String();
-        
+
         // 移除可能存在的错误字段名
         documentData.remove('parent_folder_id');
-        
+
         await txn.insert('documents', documentData);
         Logger.log('已导入文档: $uniqueName');
-        
+
         // === 先处理文本/图片/音频框并记录旧->新ID映射，供画布重映射 ===
-        final Map<String,String> textIdMap = {};
-        final Map<String,String> imageIdMap = {};
-        final Map<String,String> audioIdMap = {};
+        final Map<String, String> textIdMap = {};
+        final Map<String, String> imageIdMap = {};
+        final Map<String, String> audioIdMap = {};
         // 处理文本框
         List<dynamic> textBoxes = importData['text_boxes'] ?? [];
         for (var textBox in List.from(textBoxes)) {
@@ -2778,39 +3249,46 @@ class DatabaseService {
               where: 'document_id = ? AND id = ?',
               whereArgs: [newDocumentId, data['id']],
             );
-            
+
             // 始终生成新ID，保持与导出/复制策略一致
             final oldId = data['id'].toString();
             data['id'] = const Uuid().v4();
             textIdMap[oldId] = data['id'];
-            await txn.insert('text_boxes', data, conflictAlgorithm: ConflictAlgorithm.replace);
+            await txn.insert(
+              'text_boxes',
+              data,
+              conflictAlgorithm: ConflictAlgorithm.replace,
+            );
           }
         }
         Logger.log('已导入 ${textBoxes.length} 个文本框');
-        
+
         // 处理图片框和图片文件
         List<dynamic> imageBoxes = importData['image_boxes'] ?? [];
         for (var imageBox in List.from(imageBoxes)) {
-          Map<String, dynamic> imageBoxData = Map<String, dynamic>.from(imageBox);
+          Map<String, dynamic> imageBoxData = Map<String, dynamic>.from(
+            imageBox,
+          );
           final oldId = imageBoxData['id'].toString();
           final newImageBoxId = const Uuid().v4();
           imageBoxData['id'] = newImageBoxId;
           imageBoxData['document_id'] = newDocumentId;
-          
+
           // 处理图片文件
           String? imageFileName = imageBoxData['imageFileName'];
           if (imageFileName != null && imageFileName.isNotEmpty) {
             String sourcePath = '$tempDirPath/images/$imageFileName';
             File sourceFile = File(sourcePath);
             if (await sourceFile.exists()) {
-              String targetPath = '${appDocDir.path}/images/$newImageBoxId.${p.extension(imageFileName).substring(1)}';
+              String targetPath =
+                  '${appDocDir.path}/images/$newImageBoxId.${p.extension(imageFileName).substring(1)}';
               await Directory(p.dirname(targetPath)).create(recursive: true);
               await sourceFile.copy(targetPath);
               imageBoxData['image_path'] = targetPath;
               Logger.log('已导入图片: $imageFileName -> $targetPath');
             }
           }
-          
+
           // 移除临时字段和错误字段名
           imageBoxData.remove('imageFileName');
           imageBoxData.remove('imagePath');
@@ -2818,11 +3296,13 @@ class DatabaseService {
           imageIdMap[oldId] = newImageBoxId;
         }
         Logger.log('已导入 ${imageBoxes.length} 个图片框');
-        
+
         // 处理音频框和音频文件
         List<dynamic> audioBoxes = importData['audio_boxes'] ?? [];
         for (var audioBox in audioBoxes) {
-          Map<String, dynamic> audioBoxData = Map<String, dynamic>.from(audioBox);
+          Map<String, dynamic> audioBoxData = Map<String, dynamic>.from(
+            audioBox,
+          );
           final oldId = audioBoxData['id'].toString();
           final newAudioBoxId = const Uuid().v4();
           audioBoxData['id'] = newAudioBoxId;
@@ -2850,59 +3330,88 @@ class DatabaseService {
 
         // === 导入画布并重映射内部关联 ID ===
         List<dynamic> canvases = importData['canvases'] ?? [];
-        String remap(String? csv, Map<String,String> m) {
+        String remap(String? csv, Map<String, String> m) {
           if (csv == null || csv.trim().isEmpty) return '';
-          return csv.split(',').map((id)=>m[id.trim()]??'').where((v)=>v.isNotEmpty).join(',');
+          return csv
+              .split(',')
+              .map((id) => m[id.trim()] ?? '')
+              .where((v) => v.isNotEmpty)
+              .join(',');
         }
+
         for (var canvas in canvases) {
-          Map<String,dynamic> c = Map<String,dynamic>.from(canvas as Map);
+          Map<String, dynamic> c = Map<String, dynamic>.from(canvas as Map);
           c['id'] = const Uuid().v4();
           c['document_id'] = newDocumentId;
-          c['front_text_box_ids'] = remap(c['front_text_box_ids']?.toString(), textIdMap);
-          c['back_text_box_ids'] = remap(c['back_text_box_ids']?.toString(), textIdMap);
-          c['front_image_box_ids'] = remap(c['front_image_box_ids']?.toString(), imageIdMap);
-          c['back_image_box_ids'] = remap(c['back_image_box_ids']?.toString(), imageIdMap);
-          c['front_audio_box_ids'] = remap(c['front_audio_box_ids']?.toString(), audioIdMap);
-          c['back_audio_box_ids'] = remap(c['back_audio_box_ids']?.toString(), audioIdMap);
+          c['front_text_box_ids'] = remap(
+            c['front_text_box_ids']?.toString(),
+            textIdMap,
+          );
+          c['back_text_box_ids'] = remap(
+            c['back_text_box_ids']?.toString(),
+            textIdMap,
+          );
+          c['front_image_box_ids'] = remap(
+            c['front_image_box_ids']?.toString(),
+            imageIdMap,
+          );
+          c['back_image_box_ids'] = remap(
+            c['back_image_box_ids']?.toString(),
+            imageIdMap,
+          );
+          c['front_audio_box_ids'] = remap(
+            c['front_audio_box_ids']?.toString(),
+            audioIdMap,
+          );
+          c['back_audio_box_ids'] = remap(
+            c['back_audio_box_ids']?.toString(),
+            audioIdMap,
+          );
           final now = DateTime.now().millisecondsSinceEpoch;
           c['created_at'] = now;
           c['updated_at'] = now;
           await txn.insert('canvases', c);
         }
         Logger.log('已导入 ${canvases.length} 个画布');
-        
+
         // 处理文档设置和背景图片
         List<dynamic> documentSettings = importData['document_settings'] ?? [];
         for (var settings in documentSettings) {
-          Map<String, dynamic> settingsData = Map<String, dynamic>.from(settings);
+          Map<String, dynamic> settingsData = Map<String, dynamic>.from(
+            settings,
+          );
           settingsData['document_id'] = newDocumentId;
           // 移除错误的id字段
           settingsData.remove('id');
-          
+
           // 处理背景图片
-          String? backgroundImageFileName = settingsData['backgroundImageFileName'];
-          if (backgroundImageFileName != null && backgroundImageFileName.isNotEmpty) {
-            String sourcePath = '$tempDirPath/background_images/$backgroundImageFileName';
+          String? backgroundImageFileName =
+              settingsData['backgroundImageFileName'];
+          if (backgroundImageFileName != null &&
+              backgroundImageFileName.isNotEmpty) {
+            String sourcePath =
+                '$tempDirPath/background_images/$backgroundImageFileName';
             File sourceFile = File(sourcePath);
             if (await sourceFile.exists()) {
-              String targetPath = '${appDocDir.path}/background_images/${newDocumentId}_$backgroundImageFileName';
+              String targetPath =
+                  '${appDocDir.path}/background_images/${newDocumentId}_$backgroundImageFileName';
               await Directory(p.dirname(targetPath)).create(recursive: true);
               await sourceFile.copy(targetPath);
               settingsData['background_image_path'] = targetPath;
               Logger.log('已导入背景图片: $backgroundImageFileName -> $targetPath');
             }
           }
-          
+
           // 移除临时字段
           settingsData.remove('backgroundImageFileName');
           await txn.insert('document_settings', settingsData);
         }
         Logger.log('已导入 ${documentSettings.length} 个文档设置');
       });
-      
+
       // 清理临时目录
       await tempDir.delete(recursive: true);
-      
+
       Logger.log('文档导入完成');
     } catch (e, stackTrace) {
       _handleError('导入文档失败', e, stackTrace);
@@ -2928,7 +3437,7 @@ class DatabaseService {
       where: 'name = ?',
       whereArgs: [oldName],
     );
-    
+
     if (oldDocuments.isNotEmpty) {
       final String documentId = oldDocuments.first['id'];
       // text_boxes表使用document_id而不是documentName
@@ -2943,7 +3452,7 @@ class DatabaseService {
       where: 'name = ?',
       whereArgs: [newName], // 使用新名称查询，因为documents表已经更新
     );
-    
+
     if (docs.isNotEmpty) {
       String documentId = docs.first['id'];
       // document_settings表没有document_name字段，只有document_id字段
@@ -3008,8 +3517,14 @@ class DatabaseService {
   }
 
   // Future<void> copyDocument(String sourceName, String targetName) async { // OLD SIGNATURE
-  Future<String> copyDocument(String sourceDocumentName, {String? parentFolder}) async { // NEW SIGNATURE
-    Logger.log('copyDocument called for $sourceDocumentName, parentFolder: $parentFolder');
+  Future<String> copyDocument(
+    String sourceDocumentName, {
+    String? parentFolder,
+  }) async {
+    // NEW SIGNATURE
+    Logger.log(
+      'copyDocument called for $sourceDocumentName, parentFolder: $parentFolder',
+    );
     final db = await database;
 
     // 1. 生成唯一的文档名称
@@ -3021,7 +3536,9 @@ class DatabaseService {
       attempt++;
       finalNewDocumentName = attempt > 1 ? '$baseName($attempt)' : baseName;
       if (attempt > 100) {
-        Logger.log('Failed to generate a unique name for document copy after 100 attempts.');
+        Logger.log(
+          'Failed to generate a unique name for document copy after 100 attempts.',
+        );
         throw Exception('Failed to generate a unique name for document copy.');
       }
     }
@@ -3056,11 +3573,31 @@ class DatabaseService {
         }
       }
 
-      final textBoxes = await db.query('text_boxes', where: 'document_id = ?', whereArgs: [sourceId]);
-      final imageBoxes = await db.query('image_boxes', where: 'document_id = ?', whereArgs: [sourceId]);
-      final audioBoxes = await db.query('audio_boxes', where: 'document_id = ?', whereArgs: [sourceId]);
-      final sourceCanvases = await db.query('canvases', where: 'document_id = ?', whereArgs: [sourceId]);
-      final docSettings = await db.query('document_settings', where: 'document_id = ?', whereArgs: [sourceId]);
+      final textBoxes = await db.query(
+        'text_boxes',
+        where: 'document_id = ?',
+        whereArgs: [sourceId],
+      );
+      final imageBoxes = await db.query(
+        'image_boxes',
+        where: 'document_id = ?',
+        whereArgs: [sourceId],
+      );
+      final audioBoxes = await db.query(
+        'audio_boxes',
+        where: 'document_id = ?',
+        whereArgs: [sourceId],
+      );
+      final sourceCanvases = await db.query(
+        'canvases',
+        where: 'document_id = ?',
+        whereArgs: [sourceId],
+      );
+      final docSettings = await db.query(
+        'document_settings',
+        where: 'document_id = ?',
+        whereArgs: [sourceId],
+      );
 
       String newDocId = const Uuid().v4();
       final Map<String, String> textIdMap = {};
@@ -3075,7 +3612,8 @@ class DatabaseService {
         newSettings!['document_id'] = newDocId;
         newSettings!.remove('document_name');
         String? originalBackgroundPath = newSettings!['background_image_path'];
-        if (originalBackgroundPath != null && originalBackgroundPath.isNotEmpty) {
+        if (originalBackgroundPath != null &&
+            originalBackgroundPath.isNotEmpty) {
           try {
             final originalFile = File(originalBackgroundPath);
             if (await originalFile.exists()) {
@@ -3085,10 +3623,13 @@ class DatabaseService {
                 await backgroundDir.create(recursive: true);
               }
               final ext = p.extension(originalBackgroundPath);
-              final newBackgroundPath = '${backgroundDir.path}/${const Uuid().v4()}$ext';
+              final newBackgroundPath =
+                  '${backgroundDir.path}/${const Uuid().v4()}$ext';
               await originalFile.copy(newBackgroundPath);
               newSettings!['background_image_path'] = newBackgroundPath;
-              Logger.log('复制背景图片: $originalBackgroundPath -> $newBackgroundPath');
+              Logger.log(
+                '复制背景图片: $originalBackgroundPath -> $newBackgroundPath',
+              );
             } else {
               newSettings!['background_image_path'] = null;
             }
@@ -3144,18 +3685,41 @@ class DatabaseService {
 
         String remapIdList(String? csv, Map<String, String> idMap) {
           if (csv == null || csv.trim().isEmpty) return '';
-          return csv.split(',').map((id) => idMap[id.trim()] ?? '').where((v) => v.isNotEmpty).join(',');
+          return csv
+              .split(',')
+              .map((id) => idMap[id.trim()] ?? '')
+              .where((v) => v.isNotEmpty)
+              .join(',');
         }
+
         for (var canvas in sourceCanvases) {
           final newCanvas = Map<String, dynamic>.from(canvas);
           newCanvas['id'] = const Uuid().v4();
           newCanvas['document_id'] = newDocId;
-          newCanvas['front_text_box_ids'] = remapIdList(canvas['front_text_box_ids']?.toString(), textIdMap);
-          newCanvas['back_text_box_ids'] = remapIdList(canvas['back_text_box_ids']?.toString(), textIdMap);
-          newCanvas['front_image_box_ids'] = remapIdList(canvas['front_image_box_ids']?.toString(), imageIdMap);
-          newCanvas['back_image_box_ids'] = remapIdList(canvas['back_image_box_ids']?.toString(), imageIdMap);
-          newCanvas['front_audio_box_ids'] = remapIdList(canvas['front_audio_box_ids']?.toString(), audioIdMap);
-          newCanvas['back_audio_box_ids'] = remapIdList(canvas['back_audio_box_ids']?.toString(), audioIdMap);
+          newCanvas['front_text_box_ids'] = remapIdList(
+            canvas['front_text_box_ids']?.toString(),
+            textIdMap,
+          );
+          newCanvas['back_text_box_ids'] = remapIdList(
+            canvas['back_text_box_ids']?.toString(),
+            textIdMap,
+          );
+          newCanvas['front_image_box_ids'] = remapIdList(
+            canvas['front_image_box_ids']?.toString(),
+            imageIdMap,
+          );
+          newCanvas['back_image_box_ids'] = remapIdList(
+            canvas['back_image_box_ids']?.toString(),
+            imageIdMap,
+          );
+          newCanvas['front_audio_box_ids'] = remapIdList(
+            canvas['front_audio_box_ids']?.toString(),
+            audioIdMap,
+          );
+          newCanvas['back_audio_box_ids'] = remapIdList(
+            canvas['back_audio_box_ids']?.toString(),
+            audioIdMap,
+          );
           newCanvas['created_at'] = DateTime.now().millisecondsSinceEpoch;
           newCanvas['updated_at'] = DateTime.now().millisecondsSinceEpoch;
           await txn.insert('canvases', newCanvas);
@@ -3175,8 +3739,14 @@ class DatabaseService {
     }
   }
 
-  Future<String> createDocumentFromTemplate(String templateName, String newDocumentName, {String? parentFolder}) async {
-    Logger.log('createDocumentFromTemplate called for template $templateName, newName: $newDocumentName, parentFolder: $parentFolder');
+  Future<String> createDocumentFromTemplate(
+    String templateName,
+    String newDocumentName, {
+    String? parentFolder,
+  }) async {
+    Logger.log(
+      'createDocumentFromTemplate called for template $templateName, newName: $newDocumentName, parentFolder: $parentFolder',
+    );
     final db = await database;
 
     String finalNewDocumentName = newDocumentName;
@@ -3186,14 +3756,22 @@ class DatabaseService {
       attempt++;
       finalNewDocumentName = attempt > 1 ? '$baseName($attempt)' : baseName;
       if (attempt > 100) {
-        Logger.log('Failed to generate a unique name for document from template after 100 attempts.');
-        throw Exception('Failed to generate a unique name for document from template.');
+        Logger.log(
+          'Failed to generate a unique name for document from template after 100 attempts.',
+        );
+        throw Exception(
+          'Failed to generate a unique name for document from template.',
+        );
       }
     }
     Logger.log('Final new document name from template: $finalNewDocumentName');
 
     try {
-      final templateDocs = await db.query('documents', where: 'name = ?', whereArgs: [templateName]);
+      final templateDocs = await db.query(
+        'documents',
+        where: 'name = ?',
+        whereArgs: [templateName],
+      );
       if (templateDocs.isEmpty) {
         throw Exception('Template document not found: $templateName');
       }
@@ -3216,11 +3794,31 @@ class DatabaseService {
         maxOrder = (docs.first['order_index'] as int?) ?? 0;
       }
 
-      final textBoxes = await db.query('text_boxes', where: 'document_id = ?', whereArgs: [templateId]);
-      final imageBoxes = await db.query('image_boxes', where: 'document_id = ?', whereArgs: [templateId]);
-      final audioBoxes = await db.query('audio_boxes', where: 'document_id = ?', whereArgs: [templateId]);
-      final templateCanvases = await db.query('canvases', where: 'document_id = ?', whereArgs: [templateId]);
-      final docSettings = await db.query('document_settings', where: 'document_id = ?', whereArgs: [templateId]);
+      final textBoxes = await db.query(
+        'text_boxes',
+        where: 'document_id = ?',
+        whereArgs: [templateId],
+      );
+      final imageBoxes = await db.query(
+        'image_boxes',
+        where: 'document_id = ?',
+        whereArgs: [templateId],
+      );
+      final audioBoxes = await db.query(
+        'audio_boxes',
+        where: 'document_id = ?',
+        whereArgs: [templateId],
+      );
+      final templateCanvases = await db.query(
+        'canvases',
+        where: 'document_id = ?',
+        whereArgs: [templateId],
+      );
+      final docSettings = await db.query(
+        'document_settings',
+        where: 'document_id = ?',
+        whereArgs: [templateId],
+      );
 
       String newDocId = const Uuid().v4();
       final Map<String, String> tplTextIdMap = {};
@@ -3235,20 +3833,28 @@ class DatabaseService {
         newSettings!['document_id'] = newDocId;
         newSettings!.remove('document_name');
         String? originalBackgroundPath = newSettings!['background_image_path'];
-        if (originalBackgroundPath != null && originalBackgroundPath.isNotEmpty) {
+        if (originalBackgroundPath != null &&
+            originalBackgroundPath.isNotEmpty) {
           try {
             final originalFile = File(originalBackgroundPath);
             if (await originalFile.exists()) {
               final appDir = await getApplicationDocumentsDirectory();
-              final backgroundsDir = Directory(p.join(appDir.path, 'backgrounds'));
+              final backgroundsDir = Directory(
+                p.join(appDir.path, 'backgrounds'),
+              );
               if (!await backgroundsDir.exists()) {
                 await backgroundsDir.create(recursive: true);
               }
               final ext = p.extension(originalBackgroundPath);
-              final newBackgroundPath = p.join(backgroundsDir.path, '${const Uuid().v4()}$ext');
+              final newBackgroundPath = p.join(
+                backgroundsDir.path,
+                '${const Uuid().v4()}$ext',
+              );
               await originalFile.copy(newBackgroundPath);
               newSettings!['background_image_path'] = newBackgroundPath;
-              Logger.log('从模板复制背景图片: $originalBackgroundPath -> $newBackgroundPath');
+              Logger.log(
+                '从模板复制背景图片: $originalBackgroundPath -> $newBackgroundPath',
+              );
             } else {
               newSettings!['background_image_path'] = null;
             }
@@ -3304,18 +3910,41 @@ class DatabaseService {
 
         String remap(String? csv, Map<String, String> m) {
           if (csv == null || csv.trim().isEmpty) return '';
-          return csv.split(',').map((id) => m[id.trim()] ?? '').where((v) => v.isNotEmpty).join(',');
+          return csv
+              .split(',')
+              .map((id) => m[id.trim()] ?? '')
+              .where((v) => v.isNotEmpty)
+              .join(',');
         }
+
         for (var canvas in templateCanvases) {
           final newCanvas = Map<String, dynamic>.from(canvas);
           newCanvas['id'] = const Uuid().v4();
           newCanvas['document_id'] = newDocId;
-          newCanvas['front_text_box_ids'] = remap(canvas['front_text_box_ids']?.toString(), tplTextIdMap);
-          newCanvas['back_text_box_ids'] = remap(canvas['back_text_box_ids']?.toString(), tplTextIdMap);
-          newCanvas['front_image_box_ids'] = remap(canvas['front_image_box_ids']?.toString(), tplImageIdMap);
-          newCanvas['back_image_box_ids'] = remap(canvas['back_image_box_ids']?.toString(), tplImageIdMap);
-          newCanvas['front_audio_box_ids'] = remap(canvas['front_audio_box_ids']?.toString(), tplAudioIdMap);
-          newCanvas['back_audio_box_ids'] = remap(canvas['back_audio_box_ids']?.toString(), tplAudioIdMap);
+          newCanvas['front_text_box_ids'] = remap(
+            canvas['front_text_box_ids']?.toString(),
+            tplTextIdMap,
+          );
+          newCanvas['back_text_box_ids'] = remap(
+            canvas['back_text_box_ids']?.toString(),
+            tplTextIdMap,
+          );
+          newCanvas['front_image_box_ids'] = remap(
+            canvas['front_image_box_ids']?.toString(),
+            tplImageIdMap,
+          );
+          newCanvas['back_image_box_ids'] = remap(
+            canvas['back_image_box_ids']?.toString(),
+            tplImageIdMap,
+          );
+          newCanvas['front_audio_box_ids'] = remap(
+            canvas['front_audio_box_ids']?.toString(),
+            tplAudioIdMap,
+          );
+          newCanvas['back_audio_box_ids'] = remap(
+            canvas['back_audio_box_ids']?.toString(),
+            tplAudioIdMap,
+          );
           final now = DateTime.now().millisecondsSinceEpoch;
           newCanvas['created_at'] = now;
           newCanvas['updated_at'] = now;
@@ -3327,7 +3956,9 @@ class DatabaseService {
         }
       });
 
-      Logger.log('Successfully created document from template: $finalNewDocumentName');
+      Logger.log(
+        'Successfully created document from template: $finalNewDocumentName',
+      );
       return finalNewDocumentName;
     } catch (e, stackTrace) {
       _handleError('从模板创建文档时出错', e, stackTrace);
@@ -3369,17 +4000,19 @@ class DatabaseService {
         throw Exception('备份中未找到目录数据文件');
       }
 
-      final Map<String, dynamic> tableData = jsonDecode(await dbDataFile.readAsString());
+      final Map<String, dynamic> tableData = jsonDecode(
+        await dbDataFile.readAsString(),
+      );
       final db = await database;
 
       // 准备背景图片目录
       final String backgroundImagesPath = '${appDocDir.path}/background_images';
       await Directory(backgroundImagesPath).create(recursive: true);
-      
+
       // 准备图片目录
       final String imagesDirPath = '${appDocDir.path}/images';
       await Directory(imagesDirPath).create(recursive: true);
-      
+
       // 准备音频目录
       final String audiosDirPath = '${appDocDir.path}/audios';
       await Directory(audiosDirPath).create(recursive: true);
@@ -3408,7 +4041,11 @@ class DatabaseService {
               if (fileName != null) {
                 // 复制背景图片到新位置
                 String newPath = p.join(backgroundImagesPath, fileName);
-                String tempPath = p.join(tempDirPath, 'background_images', fileName);
+                String tempPath = p.join(
+                  tempDirPath,
+                  'background_images',
+                  fileName,
+                );
                 if (await File(tempPath).exists()) {
                   await File(tempPath).copy(newPath);
                   settings['background_image_path'] = newPath;
@@ -3424,7 +4061,11 @@ class DatabaseService {
               if (fileName != null) {
                 // 复制背景图片到新位置
                 String newPath = p.join(backgroundImagesPath, fileName);
-                String tempPath = p.join(tempDirPath, 'background_images', fileName);
+                String tempPath = p.join(
+                  tempDirPath,
+                  'background_images',
+                  fileName,
+                );
                 if (await File(tempPath).exists()) {
                   await File(tempPath).copy(newPath);
                   settings['background_image_path'] = newPath;
@@ -3451,11 +4092,16 @@ class DatabaseService {
               await txn.insert(tableName, imageBox);
             }
           } else if (tableName == 'audio_boxes') {
-            Logger.log('[导入调试] 正在导入audio_boxes, 行数: '+rows.length.toString());
+            Logger.log('[导入调试] 正在导入audio_boxes, 行数: ' + rows.length.toString());
             for (var row in rows) {
               Map<String, dynamic> audioBox = Map<String, dynamic>.from(row);
               String? audioFileName = audioBox.remove('audioFileName');
-              Logger.log('[导入调试] audioBox: '+audioBox.toString()+', audioFileName: '+(audioFileName??'null'));
+              Logger.log(
+                '[导入调试] audioBox: ' +
+                    audioBox.toString() +
+                    ', audioFileName: ' +
+                    (audioFileName ?? 'null'),
+              );
               if (audioFileName != null) {
                 String audiosDirPath = p.join(appDocDir.path, 'audios');
                 await Directory(audiosDirPath).create(recursive: true);
@@ -3463,7 +4109,9 @@ class DatabaseService {
                 String tempPath = p.join(tempDirPath, 'audios', audioFileName);
                 Logger.log('[导入音频] audioFileName: $audioFileName');
                 Logger.log('[导入音频] tempPath: $tempPath');
-                Logger.log('[导入音频] tempPath文件是否存在: ${await File(tempPath).exists()}');
+                Logger.log(
+                  '[导入音频] tempPath文件是否存在: ${await File(tempPath).exists()}',
+                );
                 if (await File(tempPath).exists()) {
                   await File(tempPath).copy(newPath);
                   Logger.log('[导入音频] 已复制音频文件: $tempPath -> $newPath');
@@ -3491,13 +4139,20 @@ class DatabaseService {
 
       // 导入完成后再次校验所有音频文件存在性
       final db2 = await database;
-      final List<Map<String, dynamic>> audioBoxes = await db2.query('audio_boxes');
+      final List<Map<String, dynamic>> audioBoxes = await db2.query(
+        'audio_boxes',
+      );
       for (final audioBox in audioBoxes) {
         String? audioPath = audioBox['audio_path'];
         if (audioPath != null && audioPath.isNotEmpty) {
           if (!await File(audioPath).exists()) {
             Logger.log('[导入后校验] 音频文件不存在，清空路径: $audioPath');
-            await db2.update('audio_boxes', {'audio_path': null}, where: 'id = ?', whereArgs: [audioBox['id']]);
+            await db2.update(
+              'audio_boxes',
+              {'audio_path': null},
+              where: 'id = ?',
+              whereArgs: [audioBox['id']],
+            );
           } else {
             Logger.log('[导入后校验] 音频文件存在: $audioPath');
           }
@@ -3549,11 +4204,13 @@ class DatabaseService {
   // ==================== Missing Methods from DatabaseHelper ====================
 
   /// Get directory settings with optional folder name parameter
-  Future<Map<String, dynamic>?> getDirectorySettings([String? folderName]) async {
+  Future<Map<String, dynamic>?> getDirectorySettings([
+    String? folderName,
+  ]) async {
     try {
       final db = await database;
       List<Map<String, dynamic>> result;
-      
+
       if (folderName != null) {
         result = await db.query(
           'directory_settings',
@@ -3567,7 +4224,7 @@ class DatabaseService {
           where: 'folder_name IS NULL',
         );
       }
-      
+
       if (result.isNotEmpty) {
         return result.first;
       }
@@ -3588,12 +4245,12 @@ class DatabaseService {
   }) async {
     try {
       final db = await database;
-      
+
       Map<String, dynamic> data = {
         'folder_name': folderName,
         'updated_at': DateTime.now().millisecondsSinceEpoch,
       };
-      
+
       // 只有在明确传递imagePath参数或clearImagePath为true时才更新背景图片字段
       if (clearImagePath == true) {
         data['background_image_path'] = null;
@@ -3601,15 +4258,15 @@ class DatabaseService {
         data['background_image_path'] = imagePath;
       }
       // 如果imagePath为null且clearImagePath不为true，则不更新background_image_path字段
-      
+
       if (colorValue != null) {
         data['background_color'] = colorValue;
       }
-      
+
       if (isFreeSortMode != null) {
         data['is_free_sort_mode'] = isFreeSortMode;
       }
-      
+
       // 查询特定文件夹的设置
       List<Map<String, dynamic>> existing;
       if (folderName != null) {
@@ -3624,7 +4281,7 @@ class DatabaseService {
           where: 'folder_name IS NULL',
         );
       }
-      
+
       if (existing.isEmpty) {
         // 如果不存在，则插入新记录
         data['created_at'] = DateTime.now().millisecondsSinceEpoch;
@@ -3667,7 +4324,11 @@ class DatabaseService {
   }
 
   /// Insert document
-  Future<void> insertDocument(String name, {String? parentFolder, String? position}) async {
+  Future<void> insertDocument(
+    String name, {
+    String? parentFolder,
+    String? position,
+  }) async {
     try {
       final db = await database;
       String? parentFolderId;
@@ -3687,19 +4348,16 @@ class DatabaseService {
       int folderMax = (folderResult.first['maxOrder'] ?? -1) + 1;
       int docOrder = (docResult.first['maxOrder'] ?? -1) + 1;
       int order = folderMax > docOrder ? folderMax : docOrder;
-      await db.insert(
-        'documents',
-        {
-          'id': const Uuid().v4(),
-          'name': name,
-          'parent_folder': parentFolderId,
-          'order_index': order,
-          'is_template': 0,
-          'position': position,
-          'created_at': DateTime.now().millisecondsSinceEpoch,
-          'updated_at': DateTime.now().millisecondsSinceEpoch,
-        },
-      );
+      await db.insert('documents', {
+        'id': const Uuid().v4(),
+        'name': name,
+        'parent_folder': parentFolderId,
+        'order_index': order,
+        'is_template': 0,
+        'position': position,
+        'created_at': DateTime.now().millisecondsSinceEpoch,
+        'updated_at': DateTime.now().millisecondsSinceEpoch,
+      });
     } catch (e, stackTrace) {
       _handleError('插入文档失败', e, stackTrace);
       rethrow;
@@ -3723,7 +4381,11 @@ class DatabaseService {
   }
 
   /// Insert folder
-  Future<void> insertFolder(String name, {String? parentFolder, String? position}) async {
+  Future<void> insertFolder(
+    String name, {
+    String? parentFolder,
+    String? position,
+  }) async {
     try {
       final db = await database;
       // 获取父文件夹ID
@@ -3741,18 +4403,15 @@ class DatabaseService {
         WHERE parent_folder ${parentFolderId == null ? 'IS NULL' : '= ?'}
       ''', parentFolderId != null ? [parentFolderId] : []);
       int order = (result.first['maxOrder'] ?? -1) + 1;
-      await db.insert(
-        'folders',
-        {
-          'id': const Uuid().v4(),
-          'name': name,
-          'parent_folder': parentFolderId,
-          'order_index': order,
-          'position': position,
-          'created_at': DateTime.now().millisecondsSinceEpoch,
-          'updated_at': DateTime.now().millisecondsSinceEpoch,
-        },
-      );
+      await db.insert('folders', {
+        'id': const Uuid().v4(),
+        'name': name,
+        'parent_folder': parentFolderId,
+        'order_index': order,
+        'position': position,
+        'created_at': DateTime.now().millisecondsSinceEpoch,
+        'updated_at': DateTime.now().millisecondsSinceEpoch,
+      });
     } catch (e, stackTrace) {
       _handleError('插入文件夹失败', e, stackTrace);
       rethrow;
@@ -3760,7 +4419,9 @@ class DatabaseService {
   }
 
   /// Get text boxes by document
-  Future<List<Map<String, dynamic>>> getTextBoxesByDocument(String documentName) async {
+  Future<List<Map<String, dynamic>>> getTextBoxesByDocument(
+    String documentName,
+  ) async {
     Logger.log('🔍 [DB] 开始查询文本框数据，文档名: $documentName');
     try {
       final db = await database;
@@ -3774,7 +4435,7 @@ class DatabaseService {
         Logger.log('📋 [DB] 第一条文本框数据字段: ${result.first.keys.toList()}');
         Logger.log('📋 [DB] 第一条文本框数据值: ${result.first}');
       }
-      
+
       // 转换字段名
       return result.map((map) {
         Map<String, dynamic> convertedMap = Map<String, dynamic>.from(map);
@@ -3807,10 +4468,14 @@ class DatabaseService {
           convertedMap['isUnderlined'] = convertedMap.remove('is_underlined');
         }
         if (convertedMap.containsKey('is_strike_through')) {
-          convertedMap['isStrikeThrough'] = convertedMap.remove('is_strike_through');
+          convertedMap['isStrikeThrough'] = convertedMap.remove(
+            'is_strike_through',
+          );
         }
         if (convertedMap.containsKey('background_color')) {
-          convertedMap['backgroundColor'] = convertedMap.remove('background_color');
+          convertedMap['backgroundColor'] = convertedMap.remove(
+            'background_color',
+          );
         }
         if (convertedMap.containsKey('text_align')) {
           convertedMap['textAlign'] = convertedMap.remove('text_align');
@@ -3819,7 +4484,8 @@ class DatabaseService {
         if (convertedMap.containsKey('text_segments')) {
           try {
             final raw = convertedMap.remove('text_segments');
-            convertedMap['textSegments'] = (raw == null || raw == '') ? [] : jsonDecode(raw as String);
+            convertedMap['textSegments'] =
+                (raw == null || raw == '') ? [] : jsonDecode(raw as String);
           } catch (_) {
             convertedMap['textSegments'] = [];
           }
@@ -3835,7 +4501,9 @@ class DatabaseService {
   }
 
   /// Get image boxes by document
-  Future<List<Map<String, dynamic>>> getImageBoxesByDocument(String documentName) async {
+  Future<List<Map<String, dynamic>>> getImageBoxesByDocument(
+    String documentName,
+  ) async {
     Logger.log('🔍 [DB] 开始查询图片框数据，文档名: $documentName');
     try {
       final db = await database;
@@ -3849,7 +4517,7 @@ class DatabaseService {
         Logger.log('📋 [DB] 第一条图片框数据字段: ${result.first.keys.toList()}');
         Logger.log('📋 [DB] 第一条图片框数据值: ${result.first}');
       }
-      
+
       // 转换字段名
       return result.map((map) {
         Map<String, dynamic> convertedMap = Map<String, dynamic>.from(map);
@@ -3873,7 +4541,9 @@ class DatabaseService {
   }
 
   /// Get audio boxes by document
-  Future<List<Map<String, dynamic>>> getAudioBoxesByDocument(String documentName) async {
+  Future<List<Map<String, dynamic>>> getAudioBoxesByDocument(
+    String documentName,
+  ) async {
     Logger.log('🔍 [DB] 开始查询音频框数据，文档名: $documentName');
     try {
       final db = await database;
@@ -3887,7 +4557,7 @@ class DatabaseService {
         Logger.log('📋 [DB] 第一条音频框数据字段: ${result.first.keys.toList()}');
         Logger.log('📋 [DB] 第一条音频框数据值: ${result.first}');
       }
-      
+
       // 转换字段名
       return result.map((map) {
         Map<String, dynamic> convertedMap = Map<String, dynamic>.from(map);
@@ -3911,7 +4581,9 @@ class DatabaseService {
   }
 
   /// 获取指定文档的画布列表
-  Future<List<Map<String, dynamic>>> getCanvasesByDocument(String documentName) async {
+  Future<List<Map<String, dynamic>>> getCanvasesByDocument(
+    String documentName,
+  ) async {
     Logger.log('🔍 [DB] 开始查询画布数据，文档名: $documentName');
     try {
       final db = await database;
@@ -3919,7 +4591,7 @@ class DatabaseService {
         'canvases',
         where: 'document_id = (SELECT id FROM documents WHERE name = ?)',
         whereArgs: [documentName],
-        orderBy: 'created_at ASC'
+        orderBy: 'created_at ASC',
       );
       Logger.log('✅ [DB] 画布查询成功，返回 ${result.length} 条记录');
       if (result.isNotEmpty) {
@@ -3935,12 +4607,23 @@ class DatabaseService {
   }
 
   /// 保存画布列表（新增 / 更新 / 删除）
-  Future<void> saveCanvases(List<Map<String, dynamic>> canvases, List<String> deletedCanvasIds, String documentName) async {
-    Logger.log('🔧 [DB] 开始保存画布，文档名: $documentName, 传入画布数: ${canvases.length}, 已删除数: ${deletedCanvasIds.length}');
+  Future<void> saveCanvases(
+    List<Map<String, dynamic>> canvases,
+    List<String> deletedCanvasIds,
+    String documentName,
+  ) async {
+    Logger.log(
+      '🔧 [DB] 开始保存画布，文档名: $documentName, 传入画布数: ${canvases.length}, 已删除数: ${deletedCanvasIds.length}',
+    );
     final db = await database;
     await db.transaction((txn) async {
       // 获取文档ID
-      final docRows = await txn.query('documents', columns: ['id'], where: 'name = ?', whereArgs: [documentName]);
+      final docRows = await txn.query(
+        'documents',
+        columns: ['id'],
+        where: 'name = ?',
+        whereArgs: [documentName],
+      );
       if (docRows.isEmpty) {
         Logger.log('❌ [DB] 保存画布失败：文档不存在');
         return;
@@ -3948,15 +4631,28 @@ class DatabaseService {
       final documentId = docRows.first['id'];
 
       // 查询现有画布ID
-      final existingRows = await txn.query('canvases', columns: ['id'], where: 'document_id = ?', whereArgs: [documentId]);
+      final existingRows = await txn.query(
+        'canvases',
+        columns: ['id'],
+        where: 'document_id = ?',
+        whereArgs: [documentId],
+      );
       final existingIds = existingRows.map((e) => e['id'] as String).toSet();
       final incomingIds = canvases.map((c) => c['id'] as String).toSet();
-      final idsToDelete = existingIds.difference(incomingIds).union(deletedCanvasIds.toSet());
-      Logger.log('🔧 [DB] existingIds=${existingIds.length}, incomingIds=${incomingIds.length}, idsToDelete=${idsToDelete.length}');
+      final idsToDelete = existingIds
+          .difference(incomingIds)
+          .union(deletedCanvasIds.toSet());
+      Logger.log(
+        '🔧 [DB] existingIds=${existingIds.length}, incomingIds=${incomingIds.length}, idsToDelete=${idsToDelete.length}',
+      );
 
       // 删除遗失或标记删除的画布
       for (final delId in idsToDelete) {
-        final count = await txn.delete('canvases', where: 'id = ?', whereArgs: [delId]);
+        final count = await txn.delete(
+          'canvases',
+          where: 'id = ?',
+          whereArgs: [delId],
+        );
         Logger.log('🗑️ [DB] 删除画布 id=$delId, affected=$count');
       }
 
@@ -3967,22 +4663,35 @@ class DatabaseService {
         final data = <String, dynamic>{
           'id': id,
           'document_id': documentId,
-          'position_x': (canvas['position_x'] ?? canvas['positionX'] ?? 0.0).toDouble(),
-          'position_y': (canvas['position_y'] ?? canvas['positionY'] ?? 0.0).toDouble(),
+          'position_x':
+              (canvas['position_x'] ?? canvas['positionX'] ?? 0.0).toDouble(),
+          'position_y':
+              (canvas['position_y'] ?? canvas['positionY'] ?? 0.0).toDouble(),
           'width': (canvas['width'] ?? 300.0).toDouble(),
           'height': (canvas['height'] ?? 200.0).toDouble(),
-          'is_flipped': (canvas['is_flipped'] ?? canvas['isFlipped'] ?? 0) == 1 ? 1 : 0,
-          'front_text_box_ids': canvas['front_text_box_ids'] ?? canvas['frontTextBoxIds'],
-          'front_image_box_ids': canvas['front_image_box_ids'] ?? canvas['frontImageBoxIds'],
-          'front_audio_box_ids': canvas['front_audio_box_ids'] ?? canvas['frontAudioBoxIds'],
-          'back_text_box_ids': canvas['back_text_box_ids'] ?? canvas['backTextBoxIds'],
-          'back_image_box_ids': canvas['back_image_box_ids'] ?? canvas['backImageBoxIds'],
-          'back_audio_box_ids': canvas['back_audio_box_ids'] ?? canvas['backAudioBoxIds'],
+          'is_flipped':
+              (canvas['is_flipped'] ?? canvas['isFlipped'] ?? 0) == 1 ? 1 : 0,
+          'front_text_box_ids':
+              canvas['front_text_box_ids'] ?? canvas['frontTextBoxIds'],
+          'front_image_box_ids':
+              canvas['front_image_box_ids'] ?? canvas['frontImageBoxIds'],
+          'front_audio_box_ids':
+              canvas['front_audio_box_ids'] ?? canvas['frontAudioBoxIds'],
+          'back_text_box_ids':
+              canvas['back_text_box_ids'] ?? canvas['backTextBoxIds'],
+          'back_image_box_ids':
+              canvas['back_image_box_ids'] ?? canvas['backImageBoxIds'],
+          'back_audio_box_ids':
+              canvas['back_audio_box_ids'] ?? canvas['backAudioBoxIds'],
           'updated_at': now,
         };
         if (!existingIds.contains(id)) {
           data['created_at'] = now;
-          await txn.insert('canvases', data, conflictAlgorithm: ConflictAlgorithm.replace);
+          await txn.insert(
+            'canvases',
+            data,
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
           Logger.log('➕ [DB] 新增画布 id=$id');
         } else {
           await txn.update('canvases', data, where: 'id = ?', whereArgs: [id]);
@@ -3990,7 +4699,14 @@ class DatabaseService {
         }
       }
 
-      final total = Sqflite.firstIntValue(await txn.rawQuery('SELECT COUNT(*) FROM canvases WHERE document_id = ?', [documentId])) ?? 0;
+      final total =
+          Sqflite.firstIntValue(
+            await txn.rawQuery(
+              'SELECT COUNT(*) FROM canvases WHERE document_id = ?',
+              [documentId],
+            ),
+          ) ??
+          0;
       Logger.log('📊 [DB] 保存完成，当前文档画布总数: $total');
     });
   }
@@ -3998,14 +4714,21 @@ class DatabaseService {
   /// 根据ID删除单个画布
   Future<void> deleteCanvasById(String canvasId) async {
     final db = await database;
-    final count = await db.delete('canvases', where: 'id = ?', whereArgs: [canvasId]);
+    final count = await db.delete(
+      'canvases',
+      where: 'id = ?',
+      whereArgs: [canvasId],
+    );
     if (kDebugMode) {
       Logger.log('🗑️ [DB] deleteCanvasById id=$canvasId affected=$count');
     }
   }
 
   /// Set document as template
-  Future<void> setDocumentAsTemplate(String documentName, bool isTemplate) async {
+  Future<void> setDocumentAsTemplate(
+    String documentName,
+    bool isTemplate,
+  ) async {
     try {
       final db = await database;
       await db.update(
@@ -4021,10 +4744,13 @@ class DatabaseService {
   }
 
   /// Save text boxes
-  Future<void> saveTextBoxes(List<Map<String, dynamic>> textBoxes, String documentName) async {
+  Future<void> saveTextBoxes(
+    List<Map<String, dynamic>> textBoxes,
+    String documentName,
+  ) async {
     try {
       final db = await database;
-      
+
       await db.transaction((txn) async {
         // Get document ID
         final docResult = await txn.query(
@@ -4033,23 +4759,24 @@ class DatabaseService {
           where: 'name = ?',
           whereArgs: [documentName],
         );
-        
+
         if (docResult.isEmpty) {
           throw Exception('Document not found: $documentName');
         }
-        
+
         final documentId = docResult.first['id'] as String;
-        
+
         // Get existing text boxes for comparison
         final existingBoxes = await txn.query(
           'text_boxes',
           where: 'document_id = ?',
           whereArgs: [documentId],
         );
-        
-        final existingIds = existingBoxes.map((box) => box['id'] as String).toSet();
+
+        final existingIds =
+            existingBoxes.map((box) => box['id'] as String).toSet();
         final newIds = textBoxes.map((box) => box['id'] as String).toSet();
-        
+
         // Delete removed text boxes
         final idsToDelete = existingIds.difference(newIds);
         for (final id in idsToDelete) {
@@ -4059,7 +4786,7 @@ class DatabaseService {
             whereArgs: [documentId, id],
           );
         }
-        
+
         // Insert or update text boxes
         for (var textBox in List.from(textBoxes)) {
           if (validateTextBoxData(textBox)) {
@@ -4069,7 +4796,7 @@ class DatabaseService {
             data['document_id'] = documentId;
             data['created_at'] = DateTime.now().millisecondsSinceEpoch;
             data['updated_at'] = DateTime.now().millisecondsSinceEpoch;
-            
+
             // Convert field names to match database schema
             if (data.containsKey('positionX')) {
               data['position_x'] = data.remove('positionX');
@@ -4117,14 +4844,13 @@ class DatabaseService {
               }
             }
 
-            
             // Check if text box exists
             final existing = await txn.query(
               'text_boxes',
               where: 'document_id = ? AND id = ?',
               whereArgs: [documentId, data['id']],
             );
-            
+
             if (existing.isNotEmpty) {
               // Update existing text box
               data['updated_at'] = DateTime.now().millisecondsSinceEpoch;
@@ -4152,10 +4878,13 @@ class DatabaseService {
   }
 
   /// Save image boxes
-  Future<void> saveImageBoxes(List<Map<String, dynamic>> imageBoxes, String documentName) async {
+  Future<void> saveImageBoxes(
+    List<Map<String, dynamic>> imageBoxes,
+    String documentName,
+  ) async {
     try {
       final db = await database;
-      
+
       await db.transaction((txn) async {
         // Get document ID
         final docResult = await txn.query(
@@ -4164,32 +4893,37 @@ class DatabaseService {
           where: 'name = ?',
           whereArgs: [documentName],
         );
-        
+
         if (docResult.isEmpty) {
           throw Exception('Document not found: $documentName');
         }
-        
+
         final documentId = docResult.first['id'] as String;
-        
+
         // Get existing image boxes for comparison
         final existingBoxes = await txn.query(
           'image_boxes',
           where: 'document_id = ?',
           whereArgs: [documentId],
         );
-        
-        final existingIds = existingBoxes.map((box) => box['id'] as String).toSet();
+
+        final existingIds =
+            existingBoxes.map((box) => box['id'] as String).toSet();
         final newIds = imageBoxes.map((box) => box['id'] as String).toSet();
-        
+
         // Delete removed image boxes（同时删除物理文件以释放空间）
         final idsToDelete = existingIds.difference(newIds);
         for (final id in idsToDelete) {
-          final box = existingBoxes.firstWhere((b) => b['id'] == id, orElse: () => <String, dynamic>{});
+          final box = existingBoxes.firstWhere(
+            (b) => b['id'] == id,
+            orElse: () => <String, dynamic>{},
+          );
           final path = box['image_path'] ?? box['imagePath'] ?? '';
           if (path.toString().isNotEmpty) {
             try {
               final fcs = getService<FileCleanupService>();
-              if (fcs.isInitialized) await fcs.deleteMediaFileCompletely(path.toString());
+              if (fcs.isInitialized)
+                await fcs.deleteMediaFileCompletely(path.toString());
             } catch (_) {}
           }
           await txn.delete(
@@ -4198,7 +4932,7 @@ class DatabaseService {
             whereArgs: [documentId, id],
           );
         }
-        
+
         // Insert or update image boxes
         for (var imageBox in List.from(imageBoxes)) {
           final data = Map<String, dynamic>.from(imageBox);
@@ -4207,7 +4941,7 @@ class DatabaseService {
           data['document_id'] = documentId;
           data['created_at'] = DateTime.now().millisecondsSinceEpoch;
           data['updated_at'] = DateTime.now().millisecondsSinceEpoch;
-          
+
           // Convert field names to match database schema
           if (data.containsKey('positionX')) {
             data['position_x'] = data.remove('positionX');
@@ -4218,14 +4952,14 @@ class DatabaseService {
           if (data.containsKey('imagePath')) {
             data['image_path'] = data.remove('imagePath');
           }
-          
+
           // Check if image box exists
           final existing = await txn.query(
             'image_boxes',
             where: 'document_id = ? AND id = ?',
             whereArgs: [documentId, data['id']],
           );
-          
+
           if (existing.isNotEmpty) {
             // Update existing image box
             data['updated_at'] = DateTime.now().millisecondsSinceEpoch;
@@ -4252,10 +4986,13 @@ class DatabaseService {
   }
 
   /// Save audio boxes
-  Future<void> saveAudioBoxes(List<Map<String, dynamic>> audioBoxes, String documentName) async {
+  Future<void> saveAudioBoxes(
+    List<Map<String, dynamic>> audioBoxes,
+    String documentName,
+  ) async {
     try {
       final db = await database;
-      
+
       await db.transaction((txn) async {
         // Get document ID
         final docResult = await txn.query(
@@ -4264,32 +5001,37 @@ class DatabaseService {
           where: 'name = ?',
           whereArgs: [documentName],
         );
-        
+
         if (docResult.isEmpty) {
           throw Exception('Document not found: $documentName');
         }
-        
+
         final documentId = docResult.first['id'] as String;
-        
+
         // Get existing audio boxes for comparison
         final existingBoxes = await txn.query(
           'audio_boxes',
           where: 'document_id = ?',
           whereArgs: [documentId],
         );
-        
-        final existingIds = existingBoxes.map((box) => box['id'] as String).toSet();
+
+        final existingIds =
+            existingBoxes.map((box) => box['id'] as String).toSet();
         final newIds = audioBoxes.map((box) => box['id'] as String).toSet();
-        
+
         // Delete removed audio boxes（同时删除物理文件以释放空间）
         final idsToDelete = existingIds.difference(newIds);
         for (final id in idsToDelete) {
-          final box = existingBoxes.firstWhere((b) => b['id'] == id, orElse: () => <String, dynamic>{});
+          final box = existingBoxes.firstWhere(
+            (b) => b['id'] == id,
+            orElse: () => <String, dynamic>{},
+          );
           final path = box['audio_path'] ?? box['audioPath'] ?? '';
           if (path.toString().isNotEmpty) {
             try {
               final fcs = getService<FileCleanupService>();
-              if (fcs.isInitialized) await fcs.deleteMediaFileCompletely(path.toString());
+              if (fcs.isInitialized)
+                await fcs.deleteMediaFileCompletely(path.toString());
             } catch (_) {}
           }
           await txn.delete(
@@ -4298,7 +5040,7 @@ class DatabaseService {
             whereArgs: [documentId, id],
           );
         }
-        
+
         // Insert or update audio boxes
         for (var audioBox in audioBoxes) {
           final data = Map<String, dynamic>.from(audioBox);
@@ -4307,7 +5049,7 @@ class DatabaseService {
           data['document_id'] = documentId;
           data['created_at'] = DateTime.now().millisecondsSinceEpoch;
           data['updated_at'] = DateTime.now().millisecondsSinceEpoch;
-          
+
           // Convert field names to match database schema
           if (data.containsKey('positionX')) {
             data['position_x'] = data.remove('positionX');
@@ -4318,14 +5060,14 @@ class DatabaseService {
           if (data.containsKey('audioPath')) {
             data['audio_path'] = data.remove('audioPath');
           }
-          
+
           // Check if audio box exists
           final existing = await txn.query(
             'audio_boxes',
             where: 'document_id = ? AND id = ?',
             whereArgs: [documentId, data['id']],
           );
-          
+
           if (existing.isNotEmpty) {
             // Update existing audio box
             data['updated_at'] = DateTime.now().millisecondsSinceEpoch;
@@ -4386,10 +5128,12 @@ class DatabaseService {
   }) async {
     try {
       Logger.log('🔧 [DB] 开始插入或更新文档设置，文档名: $documentName');
-      Logger.log('🔧 [DB] 传入参数 - imagePath: $imagePath, colorValue: $colorValue, textEnhanceMode: $textEnhanceMode, positionLocked: $positionLocked');
-      
+      Logger.log(
+        '🔧 [DB] 传入参数 - imagePath: $imagePath, colorValue: $colorValue, textEnhanceMode: $textEnhanceMode, positionLocked: $positionLocked',
+      );
+
       final db = await database;
-      
+
       // Get document ID
       final docResult = await db.query(
         'documents',
@@ -4397,55 +5141,65 @@ class DatabaseService {
         where: 'name = ?',
         whereArgs: [documentName],
       );
-      
+
       if (docResult.isEmpty) {
         throw Exception('Document not found: $documentName');
       }
-      
+
       final documentId = docResult.first['id'] as String;
       Logger.log('🔧 [DB] 找到文档ID: $documentId');
-      
+
       // Check if settings exist
       List<Map<String, dynamic>> existingSettings = await db.query(
         'document_settings',
         where: 'document_id = ?',
         whereArgs: [documentId],
       );
-      
+
       Logger.log('🔧 [DB] 现有设置数量: ${existingSettings.length}');
       if (existingSettings.isNotEmpty) {
         Logger.log('🔧 [DB] 现有设置: ${existingSettings.first}');
       }
-      
+
       Map<String, dynamic> settingsData = {
         'document_id': documentId,
         'updated_at': DateTime.now().millisecondsSinceEpoch,
       };
-      
+
       if (existingSettings.isNotEmpty) {
         var existing = existingSettings.first;
-        settingsData['background_image_path'] = imagePath ?? existing['background_image_path'];
-        settingsData['background_color'] = colorValue ?? existing['background_color'];
-        settingsData['text_enhance_mode'] = textEnhanceMode != null
-            ? (textEnhanceMode ? 1 : 0)
-            : existing['text_enhance_mode'];
-        settingsData['position_locked'] = positionLocked != null
-            ? (positionLocked ? 1 : 0)
-            : existing['position_locked'];
+        settingsData['background_image_path'] =
+            imagePath ?? existing['background_image_path'];
+        settingsData['background_color'] =
+            colorValue ?? existing['background_color'];
+        settingsData['text_enhance_mode'] =
+            textEnhanceMode != null
+                ? (textEnhanceMode ? 1 : 0)
+                : existing['text_enhance_mode'];
+        settingsData['position_locked'] =
+            positionLocked != null
+                ? (positionLocked ? 1 : 0)
+                : existing['position_locked'];
         // 保留原有的created_at字段
         settingsData['created_at'] = existing['created_at'];
-        Logger.log('🔧 [DB] 更新现有设置 - text_enhance_mode: ${settingsData['text_enhance_mode']}, position_locked: ${settingsData['position_locked']}');
+        Logger.log(
+          '🔧 [DB] 更新现有设置 - text_enhance_mode: ${settingsData['text_enhance_mode']}, position_locked: ${settingsData['position_locked']}',
+        );
       } else {
         settingsData['background_image_path'] = imagePath;
         settingsData['background_color'] = colorValue;
-        settingsData['text_enhance_mode'] = textEnhanceMode != null ? (textEnhanceMode ? 1 : 0) : 1;
-        settingsData['position_locked'] = positionLocked != null ? (positionLocked ? 1 : 0) : 1;
+        settingsData['text_enhance_mode'] =
+            textEnhanceMode != null ? (textEnhanceMode ? 1 : 0) : 1;
+        settingsData['position_locked'] =
+            positionLocked != null ? (positionLocked ? 1 : 0) : 1;
         settingsData['created_at'] = DateTime.now().millisecondsSinceEpoch;
-        Logger.log('🔧 [DB] 创建新设置 - text_enhance_mode: ${settingsData['text_enhance_mode']}, position_locked: ${settingsData['position_locked']}');
+        Logger.log(
+          '🔧 [DB] 创建新设置 - text_enhance_mode: ${settingsData['text_enhance_mode']}, position_locked: ${settingsData['position_locked']}',
+        );
       }
-      
+
       Logger.log('🔧 [DB] 最终写入数据: $settingsData');
-      
+
       if (existingSettings.isNotEmpty) {
         // 使用UPDATE操作更新现有记录
         await db.update(
@@ -4460,9 +5214,9 @@ class DatabaseService {
         await db.insert('document_settings', settingsData);
         Logger.log('🔧 [DB] INSERT操作完成');
       }
-      
+
       Logger.log('🔧 [DB] 数据库写入完成');
-      
+
       // 验证写入结果
       List<Map<String, dynamic>> verifySettings = await db.query(
         'document_settings',
@@ -4472,7 +5226,6 @@ class DatabaseService {
       if (verifySettings.isNotEmpty) {
         Logger.log('🔧 [DB] 验证写入结果: ${verifySettings.first}');
       }
-      
     } catch (e, stackTrace) {
       Logger.log('❌ [DB] 插入或更新文档设置失败: $e');
       _handleError('插入或更新文档设置失败', e, stackTrace);
@@ -4497,10 +5250,10 @@ class DatabaseService {
   Future<void> insertCoverImage(String imagePath) async {
     try {
       final db = await database;
-      
+
       // Ensure cover_image table exists
       List<Map<String, dynamic>> tables = await db.rawQuery(
-          "SELECT name FROM sqlite_master WHERE type='table' AND name='cover_image';"
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='cover_image';",
       );
 
       if (tables.isEmpty) {
@@ -4516,10 +5269,10 @@ class DatabaseService {
 
       // Delete existing records and insert new one
       await db.delete('cover_image');
-      await db.insert(
-        'cover_image',
-        {'path': imagePath, 'timestamp': DateTime.now().millisecondsSinceEpoch},
-      );
+      await db.insert('cover_image', {
+        'path': imagePath,
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+      });
       Logger.log('成功插入封面图片路径: $imagePath');
     } catch (e, stackTrace) {
       _handleError('插入封面图片路径失败', e, stackTrace);
@@ -4532,10 +5285,10 @@ class DatabaseService {
   Future<List<Map<String, dynamic>>> getCoverImage() async {
     try {
       final db = await database;
-      
+
       // Ensure cover_image table exists
       List<Map<String, dynamic>> tables = await db.rawQuery(
-          "SELECT name FROM sqlite_master WHERE type='table' AND name='cover_image';"
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='cover_image';",
       );
 
       if (tables.isEmpty) {
@@ -4550,11 +5303,7 @@ class DatabaseService {
         return [];
       }
 
-      return await db.query(
-        'cover_image',
-        orderBy: 'id DESC',
-        limit: 1,
-      );
+      return await db.query('cover_image', orderBy: 'id DESC', limit: 1);
     } catch (e, stackTrace) {
       _handleError('获取封面图片失败', e, stackTrace);
       Logger.log('获取封面图片时出错: $e');
@@ -4566,10 +5315,10 @@ class DatabaseService {
   Future<void> deleteCoverImage() async {
     try {
       final db = await database;
-      
+
       // Ensure cover_image table exists
       List<Map<String, dynamic>> tables = await db.rawQuery(
-          "SELECT name FROM sqlite_master WHERE type='table' AND name='cover_image';"
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='cover_image';",
       );
 
       if (tables.isEmpty) {
@@ -4625,17 +5374,24 @@ class DatabaseService {
       if (pathStr == null || pathStr.isEmpty) return '';
       final s = pathStr.trim();
       if (s.isEmpty) return '';
-      final abs = s.startsWith('/') || (s.length > 1 && s[1] == ':') ? s : p.join(appDocDir, s);
+      final abs =
+          s.startsWith('/') || (s.length > 1 && s[1] == ':')
+              ? s
+              : p.join(appDocDir, s);
       return p.normalize(p.absolute(abs));
     }
 
     try {
-      final mediaItems = await db.query('media_items', columns: ['path', 'thumbnail_path']);
+      final mediaItems = await db.query(
+        'media_items',
+        columns: ['path', 'thumbnail_path'],
+      );
       for (final row in mediaItems) {
         final path = row['path']?.toString();
         if (path != null && path.isNotEmpty) validPaths.add(toAbsolute(path));
         final thumb = row['thumbnail_path']?.toString();
-        if (thumb != null && thumb.isNotEmpty) validPaths.add(toAbsolute(thumb));
+        if (thumb != null && thumb.isNotEmpty)
+          validPaths.add(toAbsolute(thumb));
       }
 
       final imageBoxes = await db.query('image_boxes', columns: ['image_path']);
@@ -4650,7 +5406,10 @@ class DatabaseService {
         if (path != null && path.isNotEmpty) validPaths.add(toAbsolute(path));
       }
 
-      final docSettings = await db.query('document_settings', columns: ['background_image_path']);
+      final docSettings = await db.query(
+        'document_settings',
+        columns: ['background_image_path'],
+      );
       for (final row in docSettings) {
         final path = row['background_image_path']?.toString();
         if (path != null && path.isNotEmpty) validPaths.add(toAbsolute(path));
@@ -4662,7 +5421,9 @@ class DatabaseService {
         if (path != null && path.isNotEmpty) validPaths.add(toAbsolute(path));
       }
 
-      final coverSettings = await db.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name='cover_settings'");
+      final coverSettings = await db.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='cover_settings'",
+      );
       if (coverSettings.isNotEmpty) {
         final rows = await db.query('cover_settings');
         for (final row in rows) {
@@ -4671,7 +5432,9 @@ class DatabaseService {
         }
       }
 
-      final diarySettings = await db.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name='diary_settings'");
+      final diarySettings = await db.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='diary_settings'",
+      );
       if (diarySettings.isNotEmpty) {
         final rows = await db.query('diary_settings');
         for (final row in rows) {
@@ -4681,25 +5444,36 @@ class DatabaseService {
       }
 
       // 目录界面的背景图片
-      final dirSettings = await db.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name='directory_settings'");
+      final dirSettings = await db.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='directory_settings'",
+      );
       if (dirSettings.isNotEmpty) {
-        final rows = await db.query('directory_settings', columns: ['background_image_path']);
+        final rows = await db.query(
+          'directory_settings',
+          columns: ['background_image_path'],
+        );
         for (final row in rows) {
           final path = row['background_image_path']?.toString();
           if (path != null && path.isNotEmpty) validPaths.add(toAbsolute(path));
         }
       }
 
-      final diaryEntries = await db.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name='diary_entries'");
+      final diaryEntries = await db.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='diary_entries'",
+      );
       if (diaryEntries.isNotEmpty) {
-        final rows = await db.query('diary_entries', columns: ['image_paths', 'audio_paths', 'video_paths']);
+        final rows = await db.query(
+          'diary_entries',
+          columns: ['image_paths', 'audio_paths', 'video_paths'],
+        );
         for (final row in rows) {
           for (final key in ['image_paths', 'audio_paths', 'video_paths']) {
             final val = row[key];
             if (val == null) continue;
             try {
               final list = jsonDecode(val.toString()) as List?;
-              if (list != null) for (final p in list) validPaths.add(toAbsolute(p.toString()));
+              if (list != null)
+                for (final p in list) validPaths.add(toAbsolute(p.toString()));
             } catch (_) {}
           }
         }
@@ -4790,7 +5564,8 @@ class DatabaseService {
         final newImages = await migratePathList(images);
         final newVideos = await migratePathList(videos);
         final newAudios = await migratePathList(audios);
-        final changed = jsonEncode(images) != jsonEncode(newImages) ||
+        final changed =
+            jsonEncode(images) != jsonEncode(newImages) ||
             jsonEncode(videos) != jsonEncode(newVideos) ||
             jsonEncode(audios) != jsonEncode(newAudios);
         if (changed) {
@@ -4819,10 +5594,7 @@ class DatabaseService {
               final now = DateTime.now().millisecondsSinceEpoch;
               await db.update(
                 'diary_settings',
-                {
-                  'background_image_path': n,
-                  'updated_at': now,
-                },
+                {'background_image_path': n, 'updated_at': now},
                 where: 'id = ?',
                 whereArgs: [first['id']],
               );
@@ -4837,13 +5609,17 @@ class DatabaseService {
       }
     } catch (e, stack) {
       if (kDebugMode) {
-        Logger.log('migrateDiaryMediaOutOfLibraryFolderIfNeeded 失败: $e\n$stack');
+        Logger.log(
+          'migrateDiaryMediaOutOfLibraryFolderIfNeeded 失败: $e\n$stack',
+        );
       }
     }
   }
 
   /// 替换所有媒体项（分块读取，不一次性加载）- 用于大容量导入
-  Future<void> replaceAllMediaItemsFromChunks(Future<List<dynamic>?> Function() getNextChunk) async {
+  Future<void> replaceAllMediaItemsFromChunks(
+    Future<List<dynamic>?> Function() getNextChunk,
+  ) async {
     final db = await database;
     const tempTable = 'media_items_temp';
     await db.transaction((txn) async {
@@ -4878,7 +5654,11 @@ class DatabaseService {
         if (chunk == null || chunk.isEmpty) break;
         final batch = txn.batch();
         for (var item in chunk) {
-          batch.insert(tempTable, Map<String, dynamic>.from(item), conflictAlgorithm: ConflictAlgorithm.replace);
+          batch.insert(
+            tempTable,
+            Map<String, dynamic>.from(item),
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
         }
         await batch.commit(noResult: true);
       }
@@ -4921,7 +5701,11 @@ class DatabaseService {
 
       final batch = txn.batch();
       for (var item in items) {
-        batch.insert(tempTable, Map<String, dynamic>.from(item), conflictAlgorithm: ConflictAlgorithm.replace);
+        batch.insert(
+          tempTable,
+          Map<String, dynamic>.from(item),
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
       }
       await batch.commit(noResult: true);
 
@@ -4931,7 +5715,9 @@ class DatabaseService {
   }
 
   /// 替换所有日记条目（分块读取，不一次性加载）- 用于大容量导入，避免 OOM
-  Future<void> replaceAllDiaryEntriesFromChunks(Future<List<DiaryEntry>?> Function() getNextChunk) async {
+  Future<void> replaceAllDiaryEntriesFromChunks(
+    Future<List<DiaryEntry>?> Function() getNextChunk,
+  ) async {
     final db = await database;
     const tempTable = 'diary_entries_temp';
     await db.transaction((txn) async {
@@ -4956,7 +5742,11 @@ class DatabaseService {
         if (chunk == null || chunk.isEmpty) break;
         final batch = txn.batch();
         for (var entry in chunk) {
-          batch.insert(tempTable, entry.toMap(), conflictAlgorithm: ConflictAlgorithm.replace);
+          batch.insert(
+            tempTable,
+            entry.toMap(),
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
         }
         await batch.commit(noResult: true);
       }
@@ -4989,11 +5779,15 @@ class DatabaseService {
           is_favorite INTEGER DEFAULT 0
         )
       ''');
-      
+
       // 2. 将所有新数据批量插入临时表
       final batch = txn.batch();
       for (var entry in entries) {
-        batch.insert(tempTable, entry.toMap(), conflictAlgorithm: ConflictAlgorithm.replace);
+        batch.insert(
+          tempTable,
+          entry.toMap(),
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
       }
       await batch.commit(noResult: true);
 
@@ -5023,7 +5817,10 @@ class DatabaseService {
   }
 
   /// 插入或更新日记本设置
-  Future<void> insertOrUpdateDiarySettings({String? imagePath, int? colorValue}) async {
+  Future<void> insertOrUpdateDiarySettings({
+    String? imagePath,
+    int? colorValue,
+  }) async {
     try {
       final db = await database;
       Map<String, dynamic> data = {
@@ -5074,18 +5871,18 @@ class DatabaseService {
       'mediaItemCount': 0,
       'diaryEntryCount': 0,
     };
-    
+
     try {
       // 检查文件夹数据完整性
       final folders = await db.query('folders');
       report['folderCount'] = folders.length;
-      
+
       for (var folder in folders) {
         if (folder['name'] == null || folder['name'].toString().isEmpty) {
           report['isValid'] = false;
           report['issues'].add('发现无效文件夹名称: ${folder['id']}');
         }
-        
+
         if (folder['parent_folder'] != null) {
           final parentExists = await db.query(
             'folders',
@@ -5098,17 +5895,17 @@ class DatabaseService {
           }
         }
       }
-      
+
       // 检查文档数据完整性
       final documents = await db.query('documents');
       report['documentCount'] = documents.length;
-      
+
       for (var document in documents) {
         if (document['name'] == null || document['name'].toString().isEmpty) {
           report['isValid'] = false;
           report['issues'].add('发现无效文档名称: ${document['id']}');
         }
-        
+
         if (document['parent_folder'] != null) {
           final parentExists = await db.query(
             'folders',
@@ -5121,21 +5918,31 @@ class DatabaseService {
           }
         }
       }
-      
+
       // 检查媒体项数据完整性
       try {
         final mediaItems = await db.query('media_items');
         report['mediaItemCount'] = mediaItems.length;
         const systemDirs = ['root', 'recycle_bin', 'favorites'];
-        final folderIds = (await db.query('media_items', columns: ['id'], where: 'type = ?', whereArgs: [3])).map((r) => r['id'] as String).toSet();
+        final folderIds =
+            (await db.query(
+              'media_items',
+              columns: ['id'],
+              where: 'type = ?',
+              whereArgs: [3],
+            )).map((r) => r['id'] as String).toSet();
         for (var item in mediaItems) {
           final dir = item['directory']?.toString();
-          if (dir != null && dir.isNotEmpty && !systemDirs.contains(dir) && !folderIds.contains(dir)) {
+          if (dir != null &&
+              dir.isNotEmpty &&
+              !systemDirs.contains(dir) &&
+              !folderIds.contains(dir)) {
             report['isValid'] = false;
             report['issues'].add('媒体项 ${item['name']} 的父目录引用无效: $dir');
           }
           final typeIndex = item['type'] as int? ?? 0;
-          if (typeIndex != 3 && (item['path'] == null || item['path'].toString().isEmpty)) {
+          if (typeIndex != 3 &&
+              (item['path'] == null || item['path'].toString().isEmpty)) {
             report['isValid'] = false;
             report['issues'].add('媒体项 ${item['name']} 缺少有效路径');
           }
@@ -5143,10 +5950,12 @@ class DatabaseService {
       } catch (e) {
         report['issues'].add('媒体项检查异常: $e');
       }
-      
+
       // 检查日记条目数据完整性
       try {
-        final diaryTable = await db.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name='diary_entries'");
+        final diaryTable = await db.rawQuery(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='diary_entries'",
+        );
         if (diaryTable.isNotEmpty) {
           final diaryEntries = await db.query('diary_entries');
           report['diaryEntryCount'] = diaryEntries.length;
@@ -5164,7 +5973,7 @@ class DatabaseService {
       } catch (e) {
         report['issues'].add('日记条目检查异常: $e');
       }
-      
+
       if (kDebugMode) {
         Logger.log('数据完整性检查完成: ${report['isValid'] ? '通过' : '发现问题'}');
         if (report['issues'].isNotEmpty) {
@@ -5174,50 +5983,41 @@ class DatabaseService {
           }
         }
       }
-      
     } catch (e, stackTrace) {
       _handleError('数据完整性检查失败', e, stackTrace);
       report['isValid'] = false;
       report['issues'].add('检查过程出错: $e');
     }
-    
+
     return report;
   }
 
   /// 修复数据完整性问题
   Future<void> repairDataIntegrity() async {
     final db = await database;
-    
+
     try {
       await db.transaction((txn) async {
         // 修复无效的文件夹名称
-        await txn.update(
-          'folders',
-          {'name': '未命名文件夹_${DateTime.now().millisecondsSinceEpoch}'},
-          where: 'name IS NULL OR name = ""',
-        );
-        
+        await txn.update('folders', {
+          'name': '未命名文件夹_${DateTime.now().millisecondsSinceEpoch}',
+        }, where: 'name IS NULL OR name = ""');
+
         // 修复无效的文档名称
-        await txn.update(
-          'documents',
-          {'name': '未命名文档_${DateTime.now().millisecondsSinceEpoch}'},
-          where: 'name IS NULL OR name = ""',
-        );
-        
+        await txn.update('documents', {
+          'name': '未命名文档_${DateTime.now().millisecondsSinceEpoch}',
+        }, where: 'name IS NULL OR name = ""');
+
         // 清理无效的父文件夹引用
-        await txn.update(
-          'folders',
-          {'parent_folder': null},
-          where: 'parent_folder NOT IN (SELECT id FROM folders)',
-        );
-        
-        await txn.update(
-          'documents',
-          {'parent_folder': null},
-          where: 'parent_folder NOT IN (SELECT id FROM folders)',
-        );
+        await txn.update('folders', {
+          'parent_folder': null,
+        }, where: 'parent_folder NOT IN (SELECT id FROM folders)');
+
+        await txn.update('documents', {
+          'parent_folder': null,
+        }, where: 'parent_folder NOT IN (SELECT id FROM folders)');
       });
-      
+
       if (kDebugMode) {
         Logger.log('数据完整性修复完成');
       }
@@ -5230,11 +6030,16 @@ class DatabaseService {
   /// 复制文件夹（包含其子文件夹与文档）
   /// - sourceFolderName: 要复制的源文件夹名称
   /// - targetParentFolder: 复制后的新文件夹应放到的父文件夹名称；若为空，则与源文件夹同级
-  Future<String> copyFolder(String sourceFolderName, {String? targetParentFolder}) async {
+  Future<String> copyFolder(
+    String sourceFolderName, {
+    String? targetParentFolder,
+  }) async {
     final db = await database;
 
     // 1) 获取源文件夹信息
-    final Map<String, dynamic>? sourceFolder = await getFolderByName(sourceFolderName);
+    final Map<String, dynamic>? sourceFolder = await getFolderByName(
+      sourceFolderName,
+    );
     if (sourceFolder == null) {
       throw Exception('源文件夹不存在: $sourceFolderName');
     }
@@ -5273,7 +6078,9 @@ class DatabaseService {
 
     // 5) 复制目录设置（如背景图与颜色）
     try {
-      final Map<String, dynamic>? settings = await getDirectorySettings(sourceFolderName);
+      final Map<String, dynamic>? settings = await getDirectorySettings(
+        sourceFolderName,
+      );
       if (settings != null) {
         await insertOrUpdateDirectorySettings(
           folderName: finalNewFolderName,
@@ -5286,14 +6093,18 @@ class DatabaseService {
     }
 
     // 6) 复制该文件夹下的文档
-    final List<Map<String, dynamic>> docs = await getDocuments(parentFolder: sourceFolderName);
+    final List<Map<String, dynamic>> docs = await getDocuments(
+      parentFolder: sourceFolderName,
+    );
     for (final doc in docs) {
       final String docName = doc['name'] as String;
       await copyDocument(docName, parentFolder: finalNewFolderName);
     }
 
     // 7) 递归复制子文件夹
-    final List<Map<String, dynamic>> subFolders = await getFolders(parentFolder: sourceFolderName);
+    final List<Map<String, dynamic>> subFolders = await getFolders(
+      parentFolder: sourceFolderName,
+    );
     for (final folder in subFolders) {
       final String childFolderName = folder['name'] as String;
       await copyFolder(childFolderName, targetParentFolder: finalNewFolderName);

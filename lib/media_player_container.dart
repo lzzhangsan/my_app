@@ -48,6 +48,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
   double _imagePanRoamCoverage = 0.28;
   ImageLetterboxFill _letterboxFill = ImageLetterboxFill.transparent;
   int _sequentialIndex = 0;
+
   /// 每次成功切到下一条媒体递增，避免同一视频再次播放时 ValueKey 不变导致 onVideoEnd 永不触发。
   int _playbackNonce = 0;
 
@@ -82,7 +83,8 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
     final prefs = await SharedPreferences.getInstance();
     final settings = await loadMediaPlayerSettings(prefs);
     setState(() {
-      _selectedDirectory = prefs.getString('selected_media_directory') ?? 'root';
+      _selectedDirectory =
+          prefs.getString('selected_media_directory') ?? 'root';
       _imageDuration = settings.imageDuration;
       _imageMode = settings.imageMode;
       _zoomMax = settings.zoomMaxScale;
@@ -135,7 +137,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
     setState(() {
       _mediaList = []; // 先清空列表，避免在加载过程中显示旧的媒体
     });
-    
+
     List<Map<String, dynamic>> mediaList = await _getMediaList();
 
     final prefs = await SharedPreferences.getInstance();
@@ -253,9 +255,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
 
   Future<MediaItem?> getCurrentMedia() async {
     if (_currentPlayingMedia == null) return null;
-    return MediaItem.fromMap(
-      Map<String, dynamic>.from(_currentPlayingMedia!),
-    );
+    return MediaItem.fromMap(Map<String, dynamic>.from(_currentPlayingMedia!));
   }
 
   // 获取当前的VideoPlayerWidget实例
@@ -283,7 +283,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
       initial: p,
       editable: false,
       useScreenSizeForNormalization: true,
-      readonlyTranslateYOffset: 27,
+      readonlyTranslateYOffset: 0,
       child: child,
     );
   }
@@ -307,13 +307,14 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
       enableDoubleTapToSetZoomCenter: false,
       onZoomCenterSet: null,
       loop: _mediaMode == MediaMode.manual,
-      onAnimationComplete: _mediaMode == MediaMode.auto
-          ? () {
-              if (_mediaMode != MediaMode.auto) return;
-              if (sessionForAutoAdvance != _mediaSessionId) return;
-              unawaited(_showNextMedia());
-            }
-          : null,
+      onAnimationComplete:
+          _mediaMode == MediaMode.auto
+              ? () {
+                if (_mediaMode != MediaMode.auto) return;
+                if (sessionForAutoAdvance != _mediaSessionId) return;
+                unawaited(_showNextMedia());
+              }
+              : null,
     );
   }
 
@@ -378,9 +379,10 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
           return;
         }
 
-        final int mediaIndex = _playbackOrder == MediaPlaybackOrder.random
-            ? _random.nextInt(_mediaList.length)
-            : _sequentialIndex % _mediaList.length;
+        final int mediaIndex =
+            _playbackOrder == MediaPlaybackOrder.random
+                ? _random.nextInt(_mediaList.length)
+                : _sequentialIndex % _mediaList.length;
         final Map<String, dynamic> nextMedia = _mediaList[mediaIndex];
 
         await _databaseService.tryRepairMediaItemPath(nextMedia);
@@ -413,8 +415,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
         void advanceSequentialCursor() {
           if (_playbackOrder == MediaPlaybackOrder.sequential &&
               _mediaList.isNotEmpty) {
-            _sequentialIndex =
-                (_sequentialIndex + 1) % _mediaList.length;
+            _sequentialIndex = (_sequentialIndex + 1) % _mediaList.length;
             unawaited(_persistSequentialIndex());
           }
         }
@@ -456,13 +457,14 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
                   letterboxFill: _letterboxFill,
                   fitContainInViewport: sideways,
                   loop: _mediaMode == MediaMode.manual,
-                  onAnimationComplete: _mediaMode == MediaMode.auto
-                      ? () {
-                          if (_mediaMode != MediaMode.auto) return;
-                          if (sessionThisMedia != _mediaSessionId) return;
-                          unawaited(_showNextMedia());
-                        }
-                      : null,
+                  onAnimationComplete:
+                      _mediaMode == MediaMode.auto
+                          ? () {
+                            if (_mediaMode != MediaMode.auto) return;
+                            if (sessionThisMedia != _mediaSessionId) return;
+                            unawaited(_showNextMedia());
+                          }
+                          : null,
                 ),
                 nextMedia,
               );
@@ -513,14 +515,15 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
                 if (sessionThisMedia != _mediaSessionId) return;
                 unawaited(_showNextMedia());
               },
-              onVideoError: _mediaMode == MediaMode.auto
-                  ? () {
-                      Logger.w('视频解码/播放失败，自动尝试下一条');
-                      if (_mediaMode != MediaMode.auto) return;
-                      if (sessionThisMedia != _mediaSessionId) return;
-                      unawaited(_showNextMedia());
-                    }
-                  : null,
+              onVideoError:
+                  _mediaMode == MediaMode.auto
+                      ? () {
+                        Logger.w('视频解码/播放失败，自动尝试下一条');
+                        if (_mediaMode != MediaMode.auto) return;
+                        if (sessionThisMedia != _mediaSessionId) return;
+                        unawaited(_showNextMedia());
+                      }
+                      : null,
               looping: false,
               forceManualLoop: _mediaMode == MediaMode.manual,
             );
@@ -557,7 +560,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
       String path = mediaItem['path']?.toString() ?? '';
       if (path.isEmpty) return null;
       File file = File(path);
-      
+
       if (await file.exists()) {
         try {
           // 尝试简单读取操作验证文件可读
@@ -575,7 +578,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
           }
         }
       }
-      
+
       Logger.w('文件不存在: $path');
       return null;
     } catch (e) {
@@ -593,28 +596,29 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
     Logger.d('Showing media source selection dialog');
     showDialog(
       context: context,
-      barrierDismissible: true,  // 允许点击外部关闭对话框
-      builder: (BuildContext dialogContext) => MediaSelectionDialog(
-        selectedDirectory: _selectedDirectory,  // 传入当前选中的目录
-        onDirectorySelected: (directory) async {
-          if (directory != _selectedDirectory) {
-            setState(() {
-              _selectedDirectory = directory;
-              _currentPlayingMedia = null; // 选择新的媒体源时重置当前播放
-              _mediaWidget = null; // 清除当前显示的媒体
-              _currentVideoWidget = null;
-              _mediaMode = MediaMode.none; // 停止播放模式
-              _mediaTimer?.cancel(); // 取消自动播放定时器
-            });
-            
-            await _saveSelectedDirectory(directory);
-            await _loadMediaList(); // 重新加载媒体列表
-            Logger.i('已选择目录并加载新的媒体列表: $directory');
-          }
-          // 选择完成后关闭对话框
-          Navigator.of(dialogContext).pop();
-        },
-      ),
+      barrierDismissible: true, // 允许点击外部关闭对话框
+      builder:
+          (BuildContext dialogContext) => MediaSelectionDialog(
+            selectedDirectory: _selectedDirectory, // 传入当前选中的目录
+            onDirectorySelected: (directory) async {
+              if (directory != _selectedDirectory) {
+                setState(() {
+                  _selectedDirectory = directory;
+                  _currentPlayingMedia = null; // 选择新的媒体源时重置当前播放
+                  _mediaWidget = null; // 清除当前显示的媒体
+                  _currentVideoWidget = null;
+                  _mediaMode = MediaMode.none; // 停止播放模式
+                  _mediaTimer?.cancel(); // 取消自动播放定时器
+                });
+
+                await _saveSelectedDirectory(directory);
+                await _loadMediaList(); // 重新加载媒体列表
+                Logger.i('已选择目录并加载新的媒体列表: $directory');
+              }
+              // 选择完成后关闭对话框
+              Navigator.of(dialogContext).pop();
+            },
+          ),
     ).then((_) {
       Logger.d('Dialog closed');
     });
@@ -632,71 +636,94 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
       _showMessage(context, '没有正在播放的媒体文件');
       return false;
     }
-    
+
     try {
       // 显示移动对话框
-      final List<Map<String, dynamic>> availableFolders = await _getAllAvailableFolders();
-      
+      final List<Map<String, dynamic>> availableFolders =
+          await _getAllAvailableFolders();
+
       if (!context.mounted) return false;
-      
+
       final String? targetDirectory = await showDialog<String>(
         context: context,
-        builder: (context) => AlertDialog(
-          backgroundColor: Colors.white.withAlpha((0.6 * 255).round()), // 增加透明度（使用 withAlpha 以避免弃用警告）
-          title: Container(
-            padding: EdgeInsets.zero,
-            height: 30,
-            child: const Text('移动到', style: TextStyle(fontSize: 14)),
-          ),
-          titlePadding: const EdgeInsets.only(left: 12, top: 8, bottom: 0),
-          contentPadding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
-          content: SizedBox(
-            width: MediaQuery.of(context).size.width * 0.9, // 加宽面板
-            height: MediaQuery.of(context).size.height * 0.7, // 加高面板
-            child: Wrap(
-              spacing: 4, // 水平间距
-              runSpacing: 2, // 垂直间距
-              children: [
-                // 根目录选项
-                SizedBox(
-                  width: (MediaQuery.of(context).size.width * 0.9 - 20) / 2, // 计算每个项的宽度
-                  height: 32, // 固定高度
-                  child: ListTile(
-                    dense: true,
-                    visualDensity: VisualDensity(horizontal: 0, vertical: -4), // 进一步压缩
-                    contentPadding: EdgeInsets.symmetric(horizontal: 4),
-                    title: const Text('根目录', style: TextStyle(fontSize: 13)),
-                    onTap: () => Navigator.of(context).pop('root'),
-                  ),
-                ),
-                // 其他文件夹选项
-                ...availableFolders.map((folder) {
-                  return SizedBox(
-                    width: (MediaQuery.of(context).size.width * 0.9 - 20) / 2, // 计算每个项的宽度
-                    height: 32, // 固定高度
-                    child: ListTile(
-                      dense: true,
-                      visualDensity: VisualDensity(horizontal: 0, vertical: -4), // 进一步压缩
-                      contentPadding: EdgeInsets.symmetric(horizontal: 4),
-                      title: Text(folder['name'], style: const TextStyle(fontSize: 13)),
-                      onTap: () => Navigator.of(context).pop(folder['id']),
+        builder:
+            (context) => AlertDialog(
+              backgroundColor: Colors.white.withAlpha(
+                (0.6 * 255).round(),
+              ), // 增加透明度（使用 withAlpha 以避免弃用警告）
+              title: Container(
+                padding: EdgeInsets.zero,
+                height: 30,
+                child: const Text('移动到', style: TextStyle(fontSize: 14)),
+              ),
+              titlePadding: const EdgeInsets.only(left: 12, top: 8, bottom: 0),
+              contentPadding: const EdgeInsets.symmetric(
+                vertical: 4,
+                horizontal: 8,
+              ),
+              content: SizedBox(
+                width: MediaQuery.of(context).size.width * 0.9, // 加宽面板
+                height: MediaQuery.of(context).size.height * 0.7, // 加高面板
+                child: Wrap(
+                  spacing: 4, // 水平间距
+                  runSpacing: 2, // 垂直间距
+                  children: [
+                    // 根目录选项
+                    SizedBox(
+                      width:
+                          (MediaQuery.of(context).size.width * 0.9 - 20) /
+                          2, // 计算每个项的宽度
+                      height: 32, // 固定高度
+                      child: ListTile(
+                        dense: true,
+                        visualDensity: VisualDensity(
+                          horizontal: 0,
+                          vertical: -4,
+                        ), // 进一步压缩
+                        contentPadding: EdgeInsets.symmetric(horizontal: 4),
+                        title: const Text(
+                          '根目录',
+                          style: TextStyle(fontSize: 13),
+                        ),
+                        onTap: () => Navigator.of(context).pop('root'),
+                      ),
                     ),
-                  );
-                }),
+                    // 其他文件夹选项
+                    ...availableFolders.map((folder) {
+                      return SizedBox(
+                        width:
+                            (MediaQuery.of(context).size.width * 0.9 - 20) /
+                            2, // 计算每个项的宽度
+                        height: 32, // 固定高度
+                        child: ListTile(
+                          dense: true,
+                          visualDensity: VisualDensity(
+                            horizontal: 0,
+                            vertical: -4,
+                          ), // 进一步压缩
+                          contentPadding: EdgeInsets.symmetric(horizontal: 4),
+                          title: Text(
+                            folder['name'],
+                            style: const TextStyle(fontSize: 13),
+                          ),
+                          onTap: () => Navigator.of(context).pop(folder['id']),
+                        ),
+                      );
+                    }),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(null),
+                  child: const Text('取消', style: TextStyle(fontSize: 13)),
+                ),
               ],
             ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(null),
-              child: const Text('取消', style: TextStyle(fontSize: 13)),
-            ),
-          ],
-        ),
       );
-      
+
       if (targetDirectory == null) return false;
-      
+
       // 检查目标是否与当前目录相同
       if (_currentPlayingMedia!['directory'] == targetDirectory) {
         if (context.mounted) {
@@ -704,11 +731,13 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
         }
         return false;
       }
-      
+
       // 获取当前媒体信息的完整副本和索引
       final currentMedia = Map<String, dynamic>.from(_currentPlayingMedia!);
-      final int currentIndex = _mediaList.indexWhere((media) => media['id'] == currentMedia['id']);
-      
+      final int currentIndex = _mediaList.indexWhere(
+        (media) => media['id'] == currentMedia['id'],
+      );
+
       // 如果是只读文件，我们仍然可以更新数据库记录，但不能移动实际文件
       try {
         // 获取文件信息
@@ -720,9 +749,9 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
         }
       } catch (fileError) {
         Logger.w('检查文件时出错: $fileError');
-         // 我们仍然可以继续更新数据库记录
+        // 我们仍然可以继续更新数据库记录
       }
-      
+
       // 更新数据库记录
       await _databaseService.updateMediaItem({
         'id': currentMedia['id'],
@@ -730,9 +759,10 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
         'path': currentMedia['path'],
         'type': currentMedia['type'],
         'directory': targetDirectory,
-        'date_added': currentMedia['date_added'] ?? DateTime.now().millisecondsSinceEpoch,
+        'date_added':
+            currentMedia['date_added'] ?? DateTime.now().millisecondsSinceEpoch,
       });
-      
+
       // 立即从当前列表中移除该媒体
       if (currentIndex != -1) {
         setState(() {
@@ -740,20 +770,21 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
         });
         _adjustSequentialAfterRemove(removedIndex: currentIndex);
       }
-      
+
       if (!context.mounted) return false;
-      
+
       // 如果列表为空，停止播放
       if (_mediaList.isEmpty) {
         stop();
         return true;
       }
-      
+
       // 如果删除的是当前播放的媒体，立即播放下一个
-      if (_currentPlayingMedia != null && _currentPlayingMedia!['id'] == currentMedia['id']) {
+      if (_currentPlayingMedia != null &&
+          _currentPlayingMedia!['id'] == currentMedia['id']) {
         _showNextMedia();
       }
-      
+
       return true;
     } catch (e) {
       Logger.e('移动媒体文件时出错', e);
@@ -763,30 +794,30 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
       return false;
     }
   }
-  
+
   // 获取所有可用的文件夹
   Future<List<Map<String, dynamic>>> _getAllAvailableFolders() async {
     try {
       final db = await _databaseService.database;
-      
+
       // 获取所有文件夹
       final List<Map<String, dynamic>> allFolders = await db.query(
         'media_items',
         where: 'type = ?',
         whereArgs: [3], // 文件夹类型
       );
-      
+
       return allFolders;
     } catch (e) {
       Logger.e('获取可用文件夹时出错', e);
       return [];
     }
   }
-  
+
   // 辅助方法：处理文件读取权限问题并提供解决方案
   Future<File> _ensureFileAccessible(String filePath) async {
     final originalFile = File(filePath);
-    
+
     try {
       // 仅读取前 8KB 检查权限，避免大文件 OOM
       await originalFile.openRead(0, 8192).first;
@@ -794,193 +825,202 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
     } catch (e) {
       Logger.w('文件访问出错，创建临时副本: $e');
 
-     // 创建临时文件副本（流式复制，避免大文件 OOM）
-     final tempDir = await getTemporaryDirectory();
-     final String fileName = path.basename(filePath);
-     final String tempPath = '${tempDir.path}/$fileName';
+      // 创建临时文件副本（流式复制，避免大文件 OOM）
+      final tempDir = await getTemporaryDirectory();
+      final String fileName = path.basename(filePath);
+      final String tempPath = '${tempDir.path}/$fileName';
 
-     final tempFile = File(tempPath);
+      final tempFile = File(tempPath);
 
-     try {
-       await originalFile.openRead().pipe(tempFile.openWrite());
-       return tempFile;
-     } catch (copyError) {
-       Logger.w('创建临时副本失败: $copyError');
-         throw Exception('无法访问文件: $filePath，原因: $copyError');
-       }
-     }
-   }
+      try {
+        await originalFile.openRead().pipe(tempFile.openWrite());
+        return tempFile;
+      } catch (copyError) {
+        Logger.w('创建临时副本失败: $copyError');
+        throw Exception('无法访问文件: $filePath，原因: $copyError');
+      }
+    }
+  }
 
-   // 新增方法: 导出当前媒体
-   Future<bool> exportCurrentMedia(BuildContext context) async {
-     if (_currentPlayingMedia == null) {
-       _showMessage(context, '没有正在播放的媒体文件');
-       return false;
-     }
+  // 新增方法: 导出当前媒体
+  Future<bool> exportCurrentMedia(BuildContext context) async {
+    if (_currentPlayingMedia == null) {
+      _showMessage(context, '没有正在播放的媒体文件');
+      return false;
+    }
 
-     try {
-       // 获取文件路径
-       final String filePath = _currentPlayingMedia!['path'];
+    try {
+      // 获取文件路径
+      final String filePath = _currentPlayingMedia!['path'];
 
-       // 创建文件对象
-       final File originalFile = File(filePath);
+      // 创建文件对象
+      final File originalFile = File(filePath);
 
-       if (!await originalFile.exists()) {
-         _showMessage(context, '文件不存在: $filePath');
-         return false;
-       }
+      if (!await originalFile.exists()) {
+        _showMessage(context, '文件不存在: $filePath');
+        return false;
+      }
 
-       // 确保文件可访问，可能需要创建临时副本
-       File fileToShare = originalFile;
-       bool needsCleanup = false;
+      // 确保文件可访问，可能需要创建临时副本
+      File fileToShare = originalFile;
+      bool needsCleanup = false;
 
-       try {
-         // 尝试直接分享原始文件
-         await Share.shareXFiles([XFile(filePath)], subject: '分享: ${_currentPlayingMedia!['name']}');
-       } catch (shareError) {
-         Logger.w('直接分享文件失败，尝试创建临时副本: $shareError');
+      try {
+        // 尝试直接分享原始文件
+        await Share.shareXFiles([
+          XFile(filePath),
+        ], subject: '分享: ${_currentPlayingMedia!['name']}');
+      } catch (shareError) {
+        Logger.w('直接分享文件失败，尝试创建临时副本: $shareError');
 
-         try {
-           // 确保文件可访问
-           fileToShare = await _ensureFileAccessible(filePath);
-           needsCleanup = fileToShare.path != filePath;
+        try {
+          // 确保文件可访问
+          fileToShare = await _ensureFileAccessible(filePath);
+          needsCleanup = fileToShare.path != filePath;
 
-           // 使用临时文件分享
-           await Share.shareXFiles([XFile(fileToShare.path)], subject: '分享: ${_currentPlayingMedia!['name']}');
-         } catch (accessError) {
-           Logger.w('文件访问错误: $accessError');
-           // 分享失败时清理临时文件，避免堆积
-           if (needsCleanup && fileToShare.path != filePath) {
-             try {
-               await fileToShare.delete();
-             } catch (_) {}
-           }
-           if (!context.mounted) return false;
-           _showMessage(context, '无法访问文件，导出失败');
-           return false;
-         }
-       }
+          // 使用临时文件分享
+          await Share.shareXFiles([
+            XFile(fileToShare.path),
+          ], subject: '分享: ${_currentPlayingMedia!['name']}');
+        } catch (accessError) {
+          Logger.w('文件访问错误: $accessError');
+          // 分享失败时清理临时文件，避免堆积
+          if (needsCleanup && fileToShare.path != filePath) {
+            try {
+              await fileToShare.delete();
+            } catch (_) {}
+          }
+          if (!context.mounted) return false;
+          _showMessage(context, '无法访问文件，导出失败');
+          return false;
+        }
+      }
 
-       // 如果使用了临时文件，在分享后清理
-       if (needsCleanup) {
-         try {
-           await fileToShare.delete();
-         } catch (e) {
-           Logger.w('清理临时文件失败: $e');
-           // 这不是关键错误，可以忽略
-         }
-       }
+      // 如果使用了临时文件，在分享后清理
+      if (needsCleanup) {
+        try {
+          await fileToShare.delete();
+        } catch (e) {
+          Logger.w('清理临时文件失败: $e');
+          // 这不是关键错误，可以忽略
+        }
+      }
 
-       if (!context.mounted) return false;
-       return true;
-     } catch (e) {
-       Logger.e('导出媒体文件时出错', e);
-       if (context.mounted) {
-         _showMessage(context, '导出媒体文件时出错: $e');
-       }
-       return false;
-     }
-   }
+      if (!context.mounted) return false;
+      return true;
+    } catch (e) {
+      Logger.e('导出媒体文件时出错', e);
+      if (context.mounted) {
+        _showMessage(context, '导出媒体文件时出错: $e');
+      }
+      return false;
+    }
+  }
 
-   // 新增方法: 删除当前媒体 (无确认对话框直接删除)
-   Future<bool> deleteCurrentMedia(BuildContext context) async {
-     if (_currentPlayingMedia == null) {
-       _showMessage(context, '没有正在播放的媒体文件');
-       return false;
-     }
+  // 新增方法: 删除当前媒体 (无确认对话框直接删除)
+  Future<bool> deleteCurrentMedia(BuildContext context) async {
+    if (_currentPlayingMedia == null) {
+      _showMessage(context, '没有正在播放的媒体文件');
+      return false;
+    }
 
-     try {
-       // 获取完整的媒体信息
-       final String mediaId = _currentPlayingMedia!['id'];
-       final String mediaName = _currentPlayingMedia!['name'];
-       final String mediaPath = _currentPlayingMedia!['path'];
-       final int currentIndex = _mediaList.indexWhere((media) => media['id'] == mediaId);
+    try {
+      // 获取完整的媒体信息
+      final String mediaId = _currentPlayingMedia!['id'];
+      final String mediaName = _currentPlayingMedia!['name'];
+      final String mediaPath = _currentPlayingMedia!['path'];
+      final int currentIndex = _mediaList.indexWhere(
+        (media) => media['id'] == mediaId,
+      );
 
-       // 先删除数据库记录
-       await _databaseService.deleteMediaItem(mediaId);
+      // 先删除数据库记录
+      await _databaseService.deleteMediaItem(mediaId);
 
-       // 尝试删除文件
-       try {
-         final File file = File(mediaPath);
-         if (await file.exists()) {
-           await file.delete();
-         }
-       } catch (fileError) {
-         // 文件可能是只读的，但数据库项已经删除，所以我们继续
-         Logger.w('删除媒体文件时出错 (仅文件删除失败): $fileError');
-         // 如果我们无法删除文件，这可能是因为文件在系统位置或只读位置，但数据库记录已经删除
-       }
+      // 尝试删除文件
+      try {
+        final File file = File(mediaPath);
+        if (await file.exists()) {
+          await file.delete();
+        }
+      } catch (fileError) {
+        // 文件可能是只读的，但数据库项已经删除，所以我们继续
+        Logger.w('删除媒体文件时出错 (仅文件删除失败): $fileError');
+        // 如果我们无法删除文件，这可能是因为文件在系统位置或只读位置，但数据库记录已经删除
+      }
 
-       // 立即从当前列表中移除该媒体
-       if (currentIndex != -1) {
-         setState(() {
-           _mediaList.removeAt(currentIndex);
-         });
-         _adjustSequentialAfterRemove(removedIndex: currentIndex);
-       }
+      // 立即从当前列表中移除该媒体
+      if (currentIndex != -1) {
+        setState(() {
+          _mediaList.removeAt(currentIndex);
+        });
+        _adjustSequentialAfterRemove(removedIndex: currentIndex);
+      }
 
-       if (!context.mounted) return false;
+      if (!context.mounted) return false;
 
-       // 如果列表为空，停止播放
-       if (_mediaList.isEmpty) {
-         stop();
-         return true;
-       }
+      // 如果列表为空，停止播放
+      if (_mediaList.isEmpty) {
+        stop();
+        return true;
+      }
 
-       // 如果删除的是当前播放的媒体，立即播放下一个
-       if (_currentPlayingMedia != null && _currentPlayingMedia!['id'] == mediaId) {
-         _showNextMedia();
-       }
+      // 如果删除的是当前播放的媒体，立即播放下一个
+      if (_currentPlayingMedia != null &&
+          _currentPlayingMedia!['id'] == mediaId) {
+        _showNextMedia();
+      }
 
-       return true;
-     } catch (e) {
-       Logger.e('删除媒体文件时出错', e);
-       if (context.mounted) {
-         _showMessage(context, '删除媒体文件时出错: $e');
-       }
-       return false;
-     }
-   }
+      return true;
+    } catch (e) {
+      Logger.e('删除媒体文件时出错', e);
+      if (context.mounted) {
+        _showMessage(context, '删除媒体文件时出错: $e');
+      }
+      return false;
+    }
+  }
 
-   /// 从当前列表中移除当前播放的媒体并切换到下一个。
-   /// 用于文档编辑界面等场景：外部已更新数据库（如移动到回收站/收藏夹）后，
-   /// 需要从展示列表中移除该项并自动播放下一个，与媒体页面的删除/收藏/移动行为一致。
-   void removeCurrentAndPlayNext() {
-     if (_currentPlayingMedia == null) return;
-     final String currentId = _currentPlayingMedia!['id'];
-     final int currentIndex = _mediaList.indexWhere((media) => media['id'] == currentId);
-     if (currentIndex == -1) return;
+  /// 从当前列表中移除当前播放的媒体并切换到下一个。
+  /// 用于文档编辑界面等场景：外部已更新数据库（如移动到回收站/收藏夹）后，
+  /// 需要从展示列表中移除该项并自动播放下一个，与媒体页面的删除/收藏/移动行为一致。
+  void removeCurrentAndPlayNext() {
+    if (_currentPlayingMedia == null) return;
+    final String currentId = _currentPlayingMedia!['id'];
+    final int currentIndex = _mediaList.indexWhere(
+      (media) => media['id'] == currentId,
+    );
+    if (currentIndex == -1) return;
 
-     setState(() {
-       _mediaList.removeAt(currentIndex);
-     });
-     _adjustSequentialAfterRemove(removedIndex: currentIndex);
+    setState(() {
+      _mediaList.removeAt(currentIndex);
+    });
+    _adjustSequentialAfterRemove(removedIndex: currentIndex);
 
-     if (_mediaList.isEmpty) {
-       stop();
-       return;
-     }
+    if (_mediaList.isEmpty) {
+      stop();
+      return;
+    }
 
-     _showNextMedia();
-   }
+    _showNextMedia();
+  }
 
-   // 辅助方法：显示消息
-   void _showMessage(BuildContext context, String message) {
-     ScaffoldMessenger.of(context).showSnackBar(
-       SnackBar(content: Text(message)),
-     );
-   }
+  // 辅助方法：显示消息
+  void _showMessage(BuildContext context, String message) {
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
 
-   // 新增方法：刷新媒体列表
-   Future<void> refreshMediaList() async {
-     Logger.d('刷新媒体列表...');
-     await _loadMediaList();
-   }
+  // 新增方法：刷新媒体列表
+  Future<void> refreshMediaList() async {
+    Logger.d('刷新媒体列表...');
+    await _loadMediaList();
+  }
 
-   @override
-   Widget build(BuildContext context) {
-     return _mediaWidget != null
-         ? SizedBox.expand(child: _mediaWidget!)
-         : Container();
-   }
- }
+  @override
+  Widget build(BuildContext context) {
+    return _mediaWidget != null
+        ? SizedBox.expand(child: _mediaWidget!)
+        : Container();
+  }
+}

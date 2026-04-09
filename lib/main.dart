@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
@@ -13,6 +14,7 @@ import 'services/background_media_service.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart' show kDebugMode;
 import 'diary_page.dart';
+import 'services/database_service.dart';
 import 'services/error_service.dart';
 import 'services/logger.dart';
 
@@ -21,36 +23,54 @@ final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
 
   // 捕获未处理的异步异常，防止静默崩溃
-  runZonedGuarded(() async {
-    try {
-      await serviceLocator.initialize();
-      Logger.i('服务架构初始化成功');
+  runZonedGuarded(
+    () async {
+      try {
+        await serviceLocator.initialize();
+        final view = ui.PlatformDispatcher.instance.views.firstOrNull;
+        if (view != null) {
+          final viewport = Size(
+            view.physicalSize.width / view.devicePixelRatio,
+            view.physicalSize.height / view.devicePixelRatio,
+          );
+          await getService<DatabaseService>()
+              .migrateLegacyVideoViewParamsIfNeeded(viewport);
+        }
+        Logger.i('服务架构初始化成功');
 
-      final backgroundService = getService<BackgroundMediaService>();
-      if (backgroundService.isInitialized) {
-        Logger.i('后台媒体服务已启动');
+        final backgroundService = getService<BackgroundMediaService>();
+        if (backgroundService.isInitialized) {
+          Logger.i('后台媒体服务已启动');
+        }
+      } catch (e) {
+        Logger.e('服务架构初始化失败', e);
       }
-    } catch (e) {
-      Logger.e('服务架构初始化失败', e);
-    }
 
-    runApp(const MyApp());
-  }, (error, stack) {
-    Logger.e('未捕获的异步异常', error, stack);
-    if (kDebugMode) {
-      debugPrint('runZonedGuarded 捕获: $error\n$stack');
-    }
-    try {
-      final errorService = getService<ErrorService>();
-      errorService.recordError(error, stack, context: 'runZonedGuarded', severity: ErrorSeverity.critical);
-    } catch (recordErr, recordStack) {
+      runApp(const MyApp());
+    },
+    (error, stack) {
+      Logger.e('未捕获的异步异常', error, stack);
       if (kDebugMode) {
-        debugPrint('记录错误时失败: $recordErr\n$recordStack');
+        debugPrint('runZonedGuarded 捕获: $error\n$stack');
       }
-    }
-  });
+      try {
+        final errorService = getService<ErrorService>();
+        errorService.recordError(
+          error,
+          stack,
+          context: 'runZonedGuarded',
+          severity: ErrorSeverity.critical,
+        );
+      } catch (recordErr, recordStack) {
+        if (kDebugMode) {
+          debugPrint('记录错误时失败: $recordErr\n$recordStack');
+        }
+      }
+    },
+  );
 }
 
 class MyApp extends StatelessWidget {
@@ -99,15 +119,19 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     if (_isBrowserHomePage != isHomePage) {
       setState(() {
         _isBrowserHomePage = isHomePage;
-        Logger.d('[_MainScreenState] _isBrowserHomePage updated to: $_isBrowserHomePage');
+        Logger.d(
+          '[_MainScreenState] _isBrowserHomePage updated to: $_isBrowserHomePage',
+        );
       });
     } else {
-       Logger.d('[_MainScreenState] _isBrowserHomePage state is already $isHomePage');
+      Logger.d(
+        '[_MainScreenState] _isBrowserHomePage state is already $isHomePage',
+      );
     }
   }
 
   void goToPage(int index) {
-     _pageController.animateToPage(
+    _pageController.animateToPage(
       index,
       duration: const Duration(milliseconds: 300),
       curve: Curves.easeInOut,
@@ -142,17 +166,20 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => DocumentEditorPage(
-          documentName: documentName,
-          onSave: (updatedTextBoxes) {},
-        ),
+        builder:
+            (context) => DocumentEditorPage(
+              documentName: documentName,
+              onSave: (updatedTextBoxes) {},
+            ),
       ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    Logger.d('[_MainScreenState.build] _currentPage: $_currentPage, _isBrowserHomePage: $_isBrowserHomePage, Calculated PageView Physics: ${_currentPage == 3 ? (_isBrowserHomePage ? 'ClampingScrollPhysics' : 'NeverScrollableScrollPhysics') : 'ClampingScrollPhysics'}');
+    Logger.d(
+      '[_MainScreenState.build] _currentPage: $_currentPage, _isBrowserHomePage: $_isBrowserHomePage, Calculated PageView Physics: ${_currentPage == 3 ? (_isBrowserHomePage ? 'ClampingScrollPhysics' : 'NeverScrollableScrollPhysics') : 'ClampingScrollPhysics'}',
+    );
 
     return Scaffold(
       // 使用 KeyboardListener 替换已弃用的 RawKeyboardListener
@@ -161,12 +188,14 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         autofocus: true,
         onKeyEvent: (KeyEvent event) {
           if (event is KeyDownEvent) {
-            if (event.logicalKey == LogicalKeyboardKey.arrowLeft && _currentPage > 0) {
+            if (event.logicalKey == LogicalKeyboardKey.arrowLeft &&
+                _currentPage > 0) {
               _pageController.previousPage(
                 duration: const Duration(milliseconds: 300),
                 curve: Curves.easeInOut,
               );
-            } else if (event.logicalKey == LogicalKeyboardKey.arrowRight && _currentPage < 4) {
+            } else if (event.logicalKey == LogicalKeyboardKey.arrowRight &&
+                _currentPage < 4) {
               _pageController.nextPage(
                 duration: const Duration(milliseconds: 300),
                 curve: Curves.easeInOut,
@@ -180,7 +209,9 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
             Listener(
               onPointerSignal: (pointerSignal) {
                 if (pointerSignal is PointerScrollEvent) {
-                  Logger.d('[_MainScreenState] PointerScrollEvent dx: ${pointerSignal.scrollDelta.dx}, current page: $_currentPage, isBrowserHomePage: $_isBrowserHomePage');
+                  Logger.d(
+                    '[_MainScreenState] PointerScrollEvent dx: ${pointerSignal.scrollDelta.dx}, current page: $_currentPage, isBrowserHomePage: $_isBrowserHomePage',
+                  );
 
                   if (!(_currentPage == 3 && !_isBrowserHomePage)) {
                     if (pointerSignal.scrollDelta.dx > 0 && _currentPage < 3) {
@@ -188,7 +219,8 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                         duration: const Duration(milliseconds: 300),
                         curve: Curves.easeInOut,
                       );
-                    } else if (pointerSignal.scrollDelta.dx < 0 && _currentPage > 0) {
+                    } else if (pointerSignal.scrollDelta.dx < 0 &&
+                        _currentPage > 0) {
                       _pageController.previousPage(
                         duration: const Duration(milliseconds: 300),
                         curve: Curves.easeInOut,
@@ -205,9 +237,10 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                     Logger.d('[_MainScreenState] Page changed to: $index');
                   });
                 },
-                physics: _currentPage == 2 && _isMediaMultiSelectMode
-                    ? const NeverScrollableScrollPhysics()
-                    : _currentPage == 3
+                physics:
+                    _currentPage == 2 && _isMediaMultiSelectMode
+                        ? const NeverScrollableScrollPhysics()
+                        : _currentPage == 3
                         ? (_isBrowserHomePage
                             ? const ClampingScrollPhysics()
                             : const NeverScrollableScrollPhysics())

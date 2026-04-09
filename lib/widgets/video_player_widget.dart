@@ -10,7 +10,8 @@ import 'video_interactive_surface.dart';
 
 // Use an Expando to associate the StatefulWidget instance with its State safely
 // without adding mutable fields to the immutable widget class.
-final Expando<_VideoPlayerWidgetState> _widgetStateExpando = Expando<_VideoPlayerWidgetState>();
+final Expando<_VideoPlayerWidgetState> _widgetStateExpando =
+    Expando<_VideoPlayerWidgetState>();
 
 class VideoPlayerWidget extends StatefulWidget {
   final File file;
@@ -40,7 +41,8 @@ class VideoPlayerWidget extends StatefulWidget {
   // Provide controller access via the Expando-registered state. This keeps the
   // widget immutable while still allowing external callers to get the
   // underlying VideoPlayerController if the state exists.
-  VideoPlayerController? get controller => _widgetStateExpando[this]?._controller;
+  VideoPlayerController? get controller =>
+      _widgetStateExpando[this]?._controller;
 }
 
 class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
@@ -68,72 +70,82 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     _controller = VideoPlayerController.file(widget.file);
     Logger.d('[播放器] 初始化controller: ${widget.file.path}');
 
-    _controller.initialize().then((_) {
-      if (!mounted) return;
+    _controller
+        .initialize()
+        .then((_) {
+          if (!mounted) return;
 
-      // 文档编辑区嵌入：有 VideoControlsOverlay 外部底栏，不显示 Chewie 自带控制层。
-      final bool embedInDocumentEditor = widget.viewParams != null;
+          // 文档编辑区嵌入：有 VideoControlsOverlay 外部底栏，不显示 Chewie 自带控制层。
+          final bool embedInDocumentEditor = widget.viewParams != null;
 
-      _chewieController = ChewieController(
-        videoPlayerController: _controller,
-        autoPlay: true,
-        looping: widget.looping,
-        allowFullScreen: true,
-        allowMuting: true,
-        showControls: !embedInDocumentEditor,
-        showControlsOnInitialize: !embedInDocumentEditor,
-        customControls: embedInDocumentEditor
-            ? null
-            : const MaterialControls(
-                hideBottomBar: true,
-              ),
-        deviceOrientationsAfterFullScreen: [DeviceOrientation.portraitUp],
-        materialProgressColors: ChewieProgressColors(
-          playedColor: Colors.red,
-          handleColor: Colors.red,
-          // Replace deprecated withOpacity usage with alpha-based color to avoid deprecation warnings
-          backgroundColor: Colors.white.withAlpha((0.3 * 255).round()),
-          bufferedColor: Colors.white.withAlpha((0.5 * 255).round()),
-        ),
-        errorBuilder: (context, errorMessage) {
-          return Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const Icon(Icons.error_outline, color: Colors.red, size: 48),
-                const SizedBox(height: 16),
-                Text(
-                  '视频播放失败\n$errorMessage',
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(color: Colors.white),
-                ),
-                const SizedBox(height: 16),
-                ElevatedButton(
-                  onPressed: () {
-                    _controller.initialize().then((_) {
-                      if (mounted) setState(() {});
-                    });
-                  },
-                  child: const Text('重试'),
-                ),
-              ],
+          _chewieController = ChewieController(
+            videoPlayerController: _controller,
+            autoPlay: true,
+            looping: widget.looping,
+            allowFullScreen: true,
+            allowMuting: true,
+            showControls: !embedInDocumentEditor,
+            showControlsOnInitialize: !embedInDocumentEditor,
+            customControls:
+                embedInDocumentEditor
+                    ? null
+                    : const MaterialControls(hideBottomBar: true),
+            deviceOrientationsAfterFullScreen: [DeviceOrientation.portraitUp],
+            materialProgressColors: ChewieProgressColors(
+              playedColor: Colors.red,
+              handleColor: Colors.red,
+              // Replace deprecated withOpacity usage with alpha-based color to avoid deprecation warnings
+              backgroundColor: Colors.white.withAlpha((0.3 * 255).round()),
+              bufferedColor: Colors.white.withAlpha((0.5 * 255).round()),
             ),
+            errorBuilder: (context, errorMessage) {
+              return Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(
+                      Icons.error_outline,
+                      color: Colors.red,
+                      size: 48,
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      '视频播放失败\n$errorMessage',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(color: Colors.white),
+                    ),
+                    const SizedBox(height: 16),
+                    ElevatedButton(
+                      onPressed: () {
+                        _controller.initialize().then((_) {
+                          if (mounted) setState(() {});
+                        });
+                      },
+                      child: const Text('重试'),
+                    ),
+                  ],
+                ),
+              );
+            },
           );
-        },
-      );
 
-      setState(() {});
-      _controller.play();
-      _controller.setLooping(widget.looping);
-      
-      Logger.i('[播放器] 初始化成功, isInitialized: ${_controller.value.isInitialized}, isPlaying: ${_controller.value.isPlaying}');
+          setState(() {});
+          _controller.play();
+          _controller.setLooping(widget.looping);
 
-      _progressTimer = Timer.periodic(const Duration(milliseconds: 100), (_) {
-        if (mounted) setState(() {});
-      });
-    }).catchError((error) {
-      _handleError(error.toString());
-    });
+          Logger.i(
+            '[播放器] 初始化成功, isInitialized: ${_controller.value.isInitialized}, isPlaying: ${_controller.value.isPlaying}',
+          );
+
+          _progressTimer = Timer.periodic(const Duration(milliseconds: 100), (
+            _,
+          ) {
+            if (mounted) setState(() {});
+          });
+        })
+        .catchError((error) {
+          _handleError(error.toString());
+        });
 
     _controller.addListener(_videoListener);
   }
@@ -160,15 +172,19 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
 
     // 必须在 duration 已加载且 >0 后才判定结束；否则 duration==0 时 0>=0 会误触发 onVideoEnd，打乱自动切下一条。
     // 部分机型片尾 position 永远略小于 duration，故用片尾容差。
-    if (!v.isInitialized || widget.looping || _isEnded || dur <= Duration.zero) {
+    if (!v.isInitialized ||
+        widget.looping ||
+        _isEnded ||
+        dur <= Duration.zero) {
       return;
     }
 
     // 片尾容差：略大于 position 抖动；短片段用比例下限，长视频用时长约 6%（封顶）避免永远判不到「已结束」
     final int durMs = dur.inMilliseconds;
-    final int slackMs = durMs < 500
-        ? (durMs / 5).round().clamp(50, 120)
-        : (durMs * 0.06).round().clamp(120, 450);
+    final int slackMs =
+        durMs < 500
+            ? (durMs / 5).round().clamp(50, 120)
+            : (durMs * 0.06).round().clamp(120, 450);
     final Duration slack = Duration(milliseconds: slackMs);
     final bool reachedEnd = pos >= dur - slack;
 
@@ -205,7 +221,8 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   @override
   void didUpdateWidget(covariant VideoPlayerWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
-    final fileOrLoopChanged = oldWidget.file.path != widget.file.path ||
+    final fileOrLoopChanged =
+        oldWidget.file.path != widget.file.path ||
         oldWidget.looping != widget.looping ||
         oldWidget.forceManualLoop != widget.forceManualLoop;
     if (fileOrLoopChanged) {
@@ -260,9 +277,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     }
 
     if (!_controller.value.isInitialized || _chewieController == null) {
-      return const Center(
-        child: CircularProgressIndicator(),
-      );
+      return const Center(child: CircularProgressIndicator());
     }
 
     final vp = widget.viewParams;
@@ -279,6 +294,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
                 videoChild: const PlayerWithControls(),
                 initial: vp,
                 editable: false,
+                useScreenSizeForNormalization: true,
               ),
             ),
           ),
