@@ -222,33 +222,20 @@ class _KenBurnsImageDisplayState extends State<KenBurnsImageDisplay>
                               child: SizedBox(
                                 width: dw,
                                 height: dh,
-                                child: Stack(
-                                  clipBehavior: Clip.none,
-                                  children: [
-                                    GestureDetector(
-                                      behavior: HitTestBehavior.opaque,
-                                      onDoubleTapDown: (d) {
-                                        _handleDoubleTapDown(d, dw, dh);
-                                      },
-                                      child: Image.file(
-                                        widget.imageFile,
-                                        fit: widget.fitContainInViewport
-                                            ? BoxFit.contain
-                                            : BoxFit.fitWidth,
-                                        alignment: Alignment.center,
-                                        filterQuality: FilterQuality.none,
-                                        cacheWidth: cacheW,
-                                      ),
-                                    ),
-                                    if (_hasCustomZoomCenter)
-                                      ZoomCenterMarker(
-                                        nx: _nx,
-                                        ny: _ny,
-                                        width: dw,
-                                        height: dh,
-                                        visible: _zoomCenterMarkerVisible(s),
-                                      ),
-                                  ],
+                                child: GestureDetector(
+                                  behavior: HitTestBehavior.opaque,
+                                  onDoubleTapDown: (d) {
+                                    _handleDoubleTapDown(d, dw, dh);
+                                  },
+                                  child: Image.file(
+                                    widget.imageFile,
+                                    fit: widget.fitContainInViewport
+                                        ? BoxFit.contain
+                                        : BoxFit.fitWidth,
+                                    alignment: Alignment.center,
+                                    filterQuality: FilterQuality.none,
+                                    cacheWidth: cacheW,
+                                  ),
                                 ),
                               ),
                             ),

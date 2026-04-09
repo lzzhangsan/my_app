@@ -78,8 +78,6 @@ class _FitWidthBlurStaticImageState extends State<FitWidthBlurStaticImage> {
             final disp = widget.fitContainInViewport
                 ? containDisplaySize(pixelSize, vw, vh)
                 : fitWidthDisplaySize(pixelSize, vw);
-            final showCenterMarker = widget.zoomCenterX != null &&
-                widget.zoomCenterY != null;
             return ClipRect(
               child: Stack(
                 fit: StackFit.expand,
@@ -92,34 +90,14 @@ class _FitWidthBlurStaticImageState extends State<FitWidthBlurStaticImage> {
                       child: SizedBox(
                         width: disp.width,
                         height: disp.height,
-                        child: showCenterMarker
-                            ? Stack(
-                                clipBehavior: Clip.none,
-                                children: [
-                                  Image.file(
-                                    widget.file,
-                                    fit: widget.fitContainInViewport
-                                        ? BoxFit.contain
-                                        : BoxFit.fill,
-                                    filterQuality: FilterQuality.medium,
-                                    cacheWidth: cacheW,
-                                  ),
-                                  ZoomCenterMarker(
-                                    nx: widget.zoomCenterX!.clamp(0.0, 1.0),
-                                    ny: widget.zoomCenterY!.clamp(0.0, 1.0),
-                                    width: disp.width,
-                                    height: disp.height,
-                                  ),
-                                ],
-                              )
-                            : Image.file(
-                                widget.file,
-                                fit: widget.fitContainInViewport
-                                    ? BoxFit.contain
-                                    : BoxFit.fill,
-                                filterQuality: FilterQuality.medium,
-                                cacheWidth: cacheW,
-                              ),
+                        child: Image.file(
+                          widget.file,
+                          fit: widget.fitContainInViewport
+                              ? BoxFit.contain
+                              : BoxFit.fill,
+                          filterQuality: FilterQuality.medium,
+                          cacheWidth: cacheW,
+                        ),
                       ),
                     ),
                   ),

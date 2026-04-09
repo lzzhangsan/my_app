@@ -259,7 +259,11 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
         final q = _quarterTurns % 4;
         // 90°/270° 时轴对齐包围盒为 vh×vw，大于竖屏视口宽度，必须在未缩放时也允许平移才能看到左右裁切区。
         final sideways = q == 1 || q == 3;
-        final panOk = widget.editable && (scale > 1.01 || sideways);
+        // 防误触：单指只用于页面左右切换；仅双指接触时允许平移当前画面。
+        final panOk =
+            widget.editable &&
+            _activePointers.length >= 2 &&
+            (scale > 1.01 || sideways);
 
         final iv = InteractiveViewer(
           transformationController: _tc,

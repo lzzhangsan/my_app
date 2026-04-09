@@ -231,7 +231,11 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
         }
 
         final scale = _scaleNow();
-        final panOk = widget.editable && scale > 1.01;
+        // 防误触：单指只用于页面左右切换；仅双指接触时允许平移当前画面。
+        final panOk =
+            widget.editable &&
+            _activePointers.length >= 2 &&
+            scale > 1.01;
 
         final iv = InteractiveViewer(
           transformationController: _tc,

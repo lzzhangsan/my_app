@@ -405,7 +405,7 @@ class ZoomCenterMarkerCoverOverlay extends StatelessWidget {
     required this.nx,
     required this.ny,
     /// 略缩图格子内约为全屏标记的两倍半径，更易辨认。
-    this.radius = 5.0,
+    this.radius = 2.5,
   });
 
   final File file;
