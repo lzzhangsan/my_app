@@ -107,6 +107,7 @@ class _ResizableImageBoxState extends State<ResizableImageBox> {
                 file: File(widget.imagePath),
                 useScreenSizeForNormalization: false,
                 readonlyTranslateYOffset: 0,
+                useCacheWidth: false,
               ),
             ),
           )

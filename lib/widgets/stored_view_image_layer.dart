@@ -17,11 +17,13 @@ class StoredViewImageLayer extends StatefulWidget {
     required this.file,
     this.useScreenSizeForNormalization = true,
     this.readonlyTranslateYOffset = 0,
+    this.useCacheWidth = true,
   });
 
   final File file;
   final bool useScreenSizeForNormalization;
   final double readonlyTranslateYOffset;
+  final bool useCacheWidth;
 
   @override
   State<StoredViewImageLayer> createState() => _StoredViewImageLayerState();
@@ -67,6 +69,7 @@ class _StoredViewImageLayerState extends State<StoredViewImageLayer> {
             file: widget.file,
             letterboxFill: ImageLetterboxFill.transparent,
             fitContainInViewport: sideways,
+            useCacheWidth: widget.useCacheWidth,
           ),
         );
       },

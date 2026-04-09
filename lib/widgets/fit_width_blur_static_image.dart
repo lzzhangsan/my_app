@@ -11,6 +11,7 @@ class FitWidthBlurStaticImage extends StatefulWidget {
     required this.file,
     this.letterboxFill = ImageLetterboxFill.transparent,
     this.fitContainInViewport = false,
+    this.useCacheWidth = true,
     this.zoomCenterX,
     this.zoomCenterY,
   });
@@ -18,8 +19,11 @@ class FitWidthBlurStaticImage extends StatefulWidget {
   final File file;
   final ImageLetterboxFill letterboxFill;
   final bool fitContainInViewport;
+  final bool useCacheWidth;
+
   /// 已保存的渐进放大中心横坐标（与 [zoomCenterY] 同时非 null 时在图上显示标记）。
   final double? zoomCenterX;
+
   /// 已保存的渐进放大中心纵坐标。
   final double? zoomCenterY;
 
@@ -72,9 +76,11 @@ class _FitWidthBlurStaticImageState extends State<FitWidthBlurStaticImage> {
           builder: (context, constraints) {
             final vw = constraints.maxWidth;
             final vh = constraints.maxHeight;
-            final cacheW = (vw * MediaQuery.devicePixelRatioOf(context))
-                .round()
-                .clamp(1, 8192);
+            final cacheW = widget.useCacheWidth
+                ? (vw * MediaQuery.devicePixelRatioOf(context))
+                    .round()
+                    .clamp(1, 8192)
+                : null;
             final disp = widget.fitContainInViewport
                 ? containDisplaySize(pixelSize, vw, vh)
                 : fitWidthDisplaySize(pixelSize, vw);
@@ -96,6 +102,7 @@ class _FitWidthBlurStaticImageState extends State<FitWidthBlurStaticImage> {
                               ? BoxFit.contain
                               : BoxFit.fill,
                           filterQuality: FilterQuality.medium,
+                          gaplessPlayback: true,
                           cacheWidth: cacheW,
                         ),
                       ),
