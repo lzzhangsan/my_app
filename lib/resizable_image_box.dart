@@ -50,6 +50,8 @@ class _ResizableImageBoxState extends State<ResizableImageBox> {
                   child: StoredViewImageLayer(
                     key: ValueKey(widget.imagePath),
                     file: File(widget.imagePath),
+                    useScreenSizeForNormalization: false,
+                    readonlyTranslateYOffset: 0,
                   ),
                 )
               : Center(child: Text('点击左上角设置按钮更改图片')),

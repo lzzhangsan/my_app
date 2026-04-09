@@ -1100,17 +1100,25 @@ class DatabaseService {
     if (pathStr.isEmpty) return const VideoViewParams();
     try {
       final db = await database;
-      final byPath = await db.query(
-        'media_items',
-        columns: [
-          'video_view_scale',
-          'video_view_tx',
-          'video_view_ty',
-          'video_view_rot',
-        ],
-        where: 'path = ?',
-        whereArgs: [pathStr],
-        limit: 1,
+      final normPath = p.normalize(pathStr);
+      final slashPath = normPath.replaceAll('\\', '/');
+      final byPath = await db.rawQuery(
+        '''
+        SELECT video_view_scale, video_view_tx, video_view_ty, video_view_rot
+        FROM media_items
+        WHERE path = ?
+           OR path = ?
+           OR REPLACE(path, '\\\\', '/') = ?
+        ORDER BY
+          CASE
+            WHEN path = ? THEN 0
+            WHEN path = ? THEN 1
+            ELSE 2
+          END,
+          COALESCE(updated_at, 0) DESC
+        LIMIT 1
+        ''',
+        [pathStr, normPath, slashPath, pathStr, normPath],
       );
       if (byPath.isNotEmpty) {
         return VideoViewParams.fromMediaMap(byPath.first);
@@ -1120,17 +1128,24 @@ class DatabaseService {
       final digest = await md5.bind(file.openRead()).first;
       final hash = digest.toString();
       if (hash.isEmpty) return const VideoViewParams();
-      final byHash = await db.query(
-        'media_items',
-        columns: [
-          'video_view_scale',
-          'video_view_tx',
-          'video_view_ty',
-          'video_view_rot',
-        ],
-        where: 'file_hash = ?',
-        whereArgs: [hash],
-        limit: 1,
+      final byHash = await db.rawQuery(
+        '''
+        SELECT video_view_scale, video_view_tx, video_view_ty, video_view_rot
+        FROM media_items
+        WHERE file_hash = ?
+        ORDER BY
+          CASE
+            WHEN ABS(COALESCE(video_view_scale, 1) - 1.0) > 0.0001
+              OR ABS(COALESCE(video_view_tx, 0)) > 0.0001
+              OR ABS(COALESCE(video_view_ty, 0)) > 0.0001
+              OR COALESCE(video_view_rot, 0) != 0
+            THEN 0
+            ELSE 1
+          END,
+          COALESCE(updated_at, 0) DESC
+        LIMIT 1
+        ''',
+        [hash],
       );
       if (byHash.isNotEmpty) {
         return VideoViewParams.fromMediaMap(byHash.first);

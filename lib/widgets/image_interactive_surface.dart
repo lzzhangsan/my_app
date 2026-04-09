@@ -14,12 +14,18 @@ class ImageInteractiveSurface extends StatefulWidget {
     required this.initial,
     this.editable = true,
     this.onChanged,
+    this.useScreenSizeForNormalization = false,
+    this.readonlyTranslateYOffset = 0,
   });
 
   final Widget child;
   final VideoViewParams initial;
   final bool editable;
   final ValueChanged<VideoViewParams>? onChanged;
+  /// 为 true 时，平移归一化按整屏尺寸计算，减少不同页面容器高度差导致的复现偏移。
+  final bool useScreenSizeForNormalization;
+  /// 仅用于只读展示时的额外纵向像素补偿（>0 向下）。
+  final double readonlyTranslateYOffset;
 
   @override
   State<ImageInteractiveSurface> createState() =>
@@ -31,9 +37,15 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
   Timer? _debounce;
   int _quarterTurns = 0;
   bool _appliedInitial = false;
+  bool _hasUserInteracted = false;
 
   double _lastViewportW = 1;
   double _lastViewportH = 1;
+  double _lastNormBasisW = 1;
+  double _lastNormBasisH = 1;
+  double _lastAppliedBasisW = 1;
+  double _lastAppliedBasisH = 1;
+  bool _reapplyScheduled = false;
 
   final Set<int> _activePointers = {};
   final List<Offset> _strokePoints = [];
@@ -53,6 +65,7 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
       _quarterTurns = widget.initial.quarterTurns % 4;
       if (_quarterTurns < 0) _quarterTurns += 4;
       _appliedInitial = false;
+      _hasUserInteracted = false;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
         _applyInitial(_lastViewportW, _lastViewportH);
@@ -63,6 +76,7 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
 
   void _onMatrixChanged() {
     if (!widget.editable || !mounted) return;
+    if (!_hasUserInteracted) return;
     setState(() {});
     _debounce?.cancel();
     _debounce = Timer(const Duration(milliseconds: 450), () {
@@ -70,26 +84,33 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
     });
   }
 
-  void _emitChanged() {
+  void _emitChanged({bool force = false}) {
+    if (!force && !_hasUserInteracted) return;
     final m = _tc.value;
     final t = m.getTranslation();
     final s = m.getMaxScaleOnAxis().clamp(1.0, 6.0);
-    final vw = _lastViewportW;
-    final vh = _lastViewportH;
-    final tx = vw > 1e-6 ? t.x / vw : 0.0;
-    final ty = vh > 1e-6 ? t.y / vh : 0.0;
-    widget.onChanged?.call(VideoViewParams(
+    final bw = _lastNormBasisW;
+    final bh = _lastNormBasisH;
+    final tx = bw > 1e-6 ? t.x / bw : 0.0;
+    final ty = bh > 1e-6 ? t.y / bh : 0.0;
+    final current = VideoViewParams(
       scale: s,
       txNorm: tx,
       tyNorm: ty,
       quarterTurns: _quarterTurns,
-    ));
+    );
+    if (current == widget.initial) return;
+    widget.onChanged?.call(current);
   }
 
   void _applyInitial(double vw, double vh) {
     final p = widget.initial;
+    final bw = _lastNormBasisW;
+    final bh = _lastNormBasisH;
+    _lastAppliedBasisW = bw;
+    _lastAppliedBasisH = bh;
     _tc.value = Matrix4.identity()
-      ..translate(p.txNorm * vw, p.tyNorm * vh)
+      ..translate(p.txNorm * bw, p.tyNorm * bh + widget.readonlyTranslateYOffset)
       ..scale(p.scale.clamp(1.0, 6.0));
   }
 
@@ -102,6 +123,7 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
   }
 
   void _onPointerDown(PointerDownEvent e) {
+    if (widget.editable) _hasUserInteracted = true;
     _activePointers.add(e.pointer);
     if (_activePointers.length == 1 && widget.editable) {
       _strokePoints
@@ -139,7 +161,7 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
           if (_quarterTurns < 0) _quarterTurns += 4;
           _tc.value = Matrix4.identity()..scale(preservedScale);
         });
-        _emitChanged();
+        _emitChanged(force: true);
       }
     }
     _strokePoints.clear();
@@ -199,12 +221,37 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
         final vh = c.maxHeight;
         _lastViewportW = vw;
         _lastViewportH = vh;
+        final view = View.of(context);
+        final screenSize = Size(
+          view.physicalSize.width / view.devicePixelRatio,
+          view.physicalSize.height / view.devicePixelRatio,
+        );
+        _lastNormBasisW = widget.useScreenSizeForNormalization
+            ? screenSize.width
+            : vw;
+        _lastNormBasisH = widget.useScreenSizeForNormalization
+            ? screenSize.height
+            : vh;
 
         if (!_appliedInitial && vw > 1 && vh > 1) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (!mounted || _appliedInitial) return;
             _applyInitial(vw, vh);
             setState(() => _appliedInitial = true);
+          });
+        }
+        final basisChanged =
+            (_lastNormBasisW - _lastAppliedBasisW).abs() > 0.5 ||
+            (_lastNormBasisH - _lastAppliedBasisH).abs() > 0.5;
+        if (_appliedInitial &&
+            !_hasUserInteracted &&
+            basisChanged &&
+            !_reapplyScheduled) {
+          _reapplyScheduled = true;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            _reapplyScheduled = false;
+            if (!mounted || _hasUserInteracted) return;
+            _applyInitial(_lastViewportW, _lastViewportH);
           });
         }
 
@@ -220,7 +267,14 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
           maxScale: 6.0,
           panEnabled: panOk,
           scaleEnabled: widget.editable,
+          boundaryMargin: widget.editable
+              ? const EdgeInsets.all(double.infinity)
+              : EdgeInsets.zero,
+          constrained: widget.editable ? false : true,
           clipBehavior: sideways ? Clip.none : Clip.hardEdge,
+          onInteractionStart: (_) {
+            if (widget.editable) _hasUserInteracted = true;
+          },
           onInteractionEnd: (_) {
             if (widget.editable) _emitChanged();
           },

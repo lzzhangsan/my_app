@@ -165,7 +165,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
   /// 保存视频/图片视窗（缩放/平移/旋转），持久化到 `media_items`，文档栏与预览会套用。
   Future<void> _persistMediaViewParams(MediaItem item, VideoViewParams p) async {
     final idx = widget.mediaItems.indexWhere((e) => e.id == item.id);
-    if (idx >= 0) {
+    if (idx >= 0 && widget.mediaItems[idx].videoViewParams != p && mounted) {
       setState(() {
         widget.mediaItems[idx] =
             widget.mediaItems[idx].copyWith(videoViewParams: p);
@@ -949,6 +949,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
       key: ValueKey('img_isurf_${item.id}_${item.videoViewParams.hashCode}'),
       initial: item.videoViewParams,
       editable: true,
+      useScreenSizeForNormalization: true,
       onChanged: (p) => _persistMediaViewParams(item, p),
       child: inner,
     );
@@ -1010,6 +1011,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
               videoChild: const PlayerWithControls(),
               initial: item.videoViewParams,
               editable: true,
+              useScreenSizeForNormalization: true,
               onChanged: (p) => _persistMediaViewParams(item, p),
             ),
             const Positioned(

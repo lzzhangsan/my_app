@@ -15,9 +15,13 @@ class StoredViewImageLayer extends StatefulWidget {
   const StoredViewImageLayer({
     super.key,
     required this.file,
+    this.useScreenSizeForNormalization = true,
+    this.readonlyTranslateYOffset = 21,
   });
 
   final File file;
+  final bool useScreenSizeForNormalization;
+  final double readonlyTranslateYOffset;
 
   @override
   State<StoredViewImageLayer> createState() => _StoredViewImageLayerState();
@@ -56,6 +60,8 @@ class _StoredViewImageLayerState extends State<StoredViewImageLayer> {
           key: ValueKey('svil_${widget.file.path}_${p.hashCode}'),
           initial: p,
           editable: false,
+          useScreenSizeForNormalization: widget.useScreenSizeForNormalization,
+          readonlyTranslateYOffset: widget.readonlyTranslateYOffset,
           child: FitWidthBlurStaticImage(
             file: widget.file,
             letterboxFill: ImageLetterboxFill.transparent,
