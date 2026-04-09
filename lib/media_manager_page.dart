@@ -548,6 +548,24 @@ class MediaManagerPage extends StatefulWidget {
   _MediaManagerPageState createState() => _MediaManagerPageState();
 }
 
+class _FolderPropertiesStats {
+  const _FolderPropertiesStats({
+    required this.directChildCount,
+    required this.totalItems,
+    required this.fileCount,
+    required this.subFolderCount,
+    required this.totalBytes,
+    required this.missingOrUnreadableFiles,
+  });
+
+  final int directChildCount;
+  final int totalItems;
+  final int fileCount;
+  final int subFolderCount;
+  final int totalBytes;
+  final int missingOrUnreadableFiles;
+}
+
 class _MediaManagerPageState extends State<MediaManagerPage>
     with SingleTickerProviderStateMixin {
   final List<MediaItem> _mediaItems = [];
@@ -2383,15 +2401,26 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
     if (item.type == MediaType.folder) {
       final loc = await locationLabel();
+      final stats = await _collectFolderPropertiesStats(item.id);
       final ordered = <String, String>{
         '名称': item.name,
         '类型': '文件夹',
       };
       try {
-        final n = await _databaseService.getMediaItemCount(item.id);
-        ordered['包含项数'] = '$n';
+        ordered['当前层级项数'] = '${stats.directChildCount}';
+        ordered['总项数(含子级)'] = '${stats.totalItems}';
+        ordered['文件数量(含子级)'] = '${stats.fileCount}';
+        ordered['子文件夹数量(含子级)'] = '${stats.subFolderCount}';
+        ordered['总大小'] = _formatPropertyBytes(stats.totalBytes);
+        if (stats.missingOrUnreadableFiles > 0) {
+          ordered['异常文件'] = '${stats.missingOrUnreadableFiles} (缺失/不可读)';
+        }
       } catch (_) {
-        ordered['包含项数'] = '—';
+        ordered['当前层级项数'] = '—';
+        ordered['总项数(含子级)'] = '—';
+        ordered['文件数量(含子级)'] = '—';
+        ordered['子文件夹数量(含子级)'] = '—';
+        ordered['总大小'] = '—';
       }
       ordered['导入时间'] = df.format(item.dateAdded);
       ordered['所在位置'] = loc;
@@ -2428,6 +2457,73 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       '所在位置': loc,
       if (item.path.isNotEmpty) '存储路径': item.path,
     };
+  }
+
+  Future<_FolderPropertiesStats> _collectFolderPropertiesStats(
+    String rootFolderId,
+  ) async {
+    int directChildCount = 0;
+    int totalItems = 0;
+    int fileCount = 0;
+    int subFolderCount = 0;
+    int totalBytes = 0;
+    int missingOrUnreadableFiles = 0;
+
+    final Queue<String> pendingFolders = Queue<String>()..add(rootFolderId);
+    bool isRootLevel = true;
+
+    while (pendingFolders.isNotEmpty) {
+      final currentFolderId = pendingFolders.removeFirst();
+      final rows = await _databaseService.getMediaItems(currentFolderId);
+
+      if (isRootLevel) {
+        directChildCount = rows.length;
+        isRootLevel = false;
+      }
+
+      for (final row in rows) {
+        totalItems++;
+        final type = row['type'];
+        final typeIndex = type is int ? type : int.tryParse(type?.toString() ?? '') ?? -1;
+        final isFolder = typeIndex == MediaType.folder.index;
+
+        if (isFolder) {
+          subFolderCount++;
+          final childFolderId = row['id']?.toString();
+          if (childFolderId != null && childFolderId.isNotEmpty) {
+            pendingFolders.add(childFolderId);
+          }
+          continue;
+        }
+
+        fileCount++;
+        final filePath = row['path']?.toString();
+        if (filePath == null || filePath.isEmpty) {
+          missingOrUnreadableFiles++;
+          continue;
+        }
+
+        try {
+          final file = File(filePath);
+          if (await file.exists()) {
+            totalBytes += await file.length();
+          } else {
+            missingOrUnreadableFiles++;
+          }
+        } catch (_) {
+          missingOrUnreadableFiles++;
+        }
+      }
+    }
+
+    return _FolderPropertiesStats(
+      directChildCount: directChildCount,
+      totalItems: totalItems,
+      fileCount: fileCount,
+      subFolderCount: subFolderCount,
+      totalBytes: totalBytes,
+      missingOrUnreadableFiles: missingOrUnreadableFiles,
+    );
   }
 
   Future<void> _moveMediaItem(MediaItem item, String targetDirectory) async {
