@@ -515,6 +515,54 @@ class _BrowserPageState extends State<BrowserPage>
     return row;
   }
 
+  Future<Map<String, dynamic>?> _findExistingVideoByNameHint(String url) async {
+    final uri = Uri.tryParse(_toAbsoluteUrl(url));
+    if (uri == null) return null;
+
+    final candidateNames = <String>{};
+    if (uri.pathSegments.isNotEmpty) {
+      final last = Uri.decodeComponent(uri.pathSegments.last).trim();
+      if (last.isNotEmpty) {
+        candidateNames.add(last);
+      }
+    }
+    for (final key in const ['filename', 'file', 'name', 'download']) {
+      final value = uri.queryParameters[key]?.trim();
+      if (value != null && value.isNotEmpty) {
+        candidateNames.add(Uri.decodeComponent(value));
+      }
+    }
+    if (candidateNames.isEmpty) return null;
+
+    final db = await _databaseService.database;
+    for (final fileName in candidateNames) {
+      final rows = await db.query(
+        'media_items',
+        where: 'name = ? AND directory != ?',
+        whereArgs: [fileName, 'recycle_bin'],
+      );
+      for (final row in rows) {
+        if (DatabaseService.mediaTypeIndex(row) != MediaType.video.index) {
+          continue;
+        }
+        final path = row['path']?.toString() ?? '';
+        if (path.isEmpty) continue;
+        if (await File(path).exists()) {
+          return row;
+        }
+      }
+    }
+    return null;
+  }
+
+  Future<Map<String, dynamic>?> _findExistingVideoBeforeDownload(
+    String url,
+  ) async {
+    final bySource = await _findExistingVideoBySourceUrl(url);
+    if (bySource != null) return bySource;
+    return _findExistingVideoByNameHint(url);
+  }
+
   Future<void> _showVideoDuplicateSnackBar(
     Map<String, dynamic> existingRow,
   ) async {
@@ -527,7 +575,7 @@ class _BrowserPageState extends State<BrowserPage>
       builder: (dialogContext) {
         return AlertDialog(
           title: const Text('视频已存在'),
-          content: Text('媒体库中已经有这个视频了。\n\n文件名：\n位置：'),
+          content: Text('媒体库中已经有这个视频了。\n\n文件名：$title\n位置：$location'),
           actions: [
             TextButton(
               onPressed: () => Navigator.of(dialogContext).pop(),
@@ -1680,7 +1728,7 @@ class _BrowserPageState extends State<BrowserPage>
           selectedType = MediaType.video;
         }
         if (selectedType == MediaType.video) {
-          final existing = await _findExistingVideoBySourceUrl(resolvedUrl);
+          final existing = await _findExistingVideoBeforeDownload(resolvedUrl);
           if (existing != null) {
             await _showVideoDuplicateSnackBar(existing);
             return;
@@ -2506,7 +2554,7 @@ class _BrowserPageState extends State<BrowserPage>
           final MediaType mediaType = result['mediaType'];
           if (shouldDownload && mediaType != MediaType.audio) {
             if (mediaType == MediaType.video) {
-              final existing = await _findExistingVideoBySourceUrl(
+              final existing = await _findExistingVideoBeforeDownload(
                 processedUrl,
               );
               if (existing != null) {
@@ -2529,7 +2577,7 @@ class _BrowserPageState extends State<BrowserPage>
         }
       } else {
         if (selectedType == MediaType.video) {
-          final existing = await _findExistingVideoBySourceUrl(processedUrl);
+          final existing = await _findExistingVideoBeforeDownload(processedUrl);
           if (existing != null) {
             await _showVideoDuplicateSnackBar(existing);
             return;
