@@ -17,6 +17,7 @@ class VideoInteractiveSurface extends StatefulWidget {
     this.onChanged,
     this.onTripleTapReset,
     this.useScreenSizeForNormalization = false,
+    this.persistNonce = 0,
   });
 
   final VideoPlayerController videoController;
@@ -28,13 +29,16 @@ class VideoInteractiveSurface extends StatefulWidget {
   final VoidCallback? onTripleTapReset;
   final bool useScreenSizeForNormalization;
 
+  /// 父组件递增此值时，立即将当前矩阵写入 [onChanged]。
+  final int persistNonce;
+
   @override
   State<VideoInteractiveSurface> createState() =>
       _VideoInteractiveSurfaceState();
 }
 
 class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
-  static const EdgeInsets _editableBoundaryMargin = EdgeInsets.all(100000);
+  static const EdgeInsets _editableBoundaryMargin = EdgeInsets.all(double.infinity);
   final TransformationController _tc = TransformationController();
   Timer? _debounce;
   int _quarterTurns = 0;
@@ -86,6 +90,12 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
         setState(() => _appliedInitial = true);
       });
     }
+    if (widget.persistNonce != oldWidget.persistNonce) {
+      _debounce?.cancel();
+      if (widget.editable && _hasUserInteracted) {
+        _emitChanged(force: true);
+      }
+    }
   }
 
   void _onMatrixChanged() {
@@ -131,7 +141,7 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
       tyNorm: ty,
       quarterTurns: _quarterTurns,
     );
-    if (current == widget.initial) return;
+    if (!force && current == widget.initial) return;
     widget.onChanged?.call(current);
   }
 
@@ -390,6 +400,9 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
   @override
   void dispose() {
     _debounce?.cancel();
+    if (widget.editable && _hasUserInteracted) {
+      _emitChanged(force: true);
+    }
     _tc.removeListener(_onMatrixChanged);
     _tc.dispose();
     super.dispose();
@@ -451,9 +464,9 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
             _activePointers.length >= requiredPointerCount &&
             scale > 1.01;
 
+        // 勿设 alignment，与 [ImageInteractiveSurface] 相同原因（裸矩阵读写须与 Transform 一致）。
         final iv = InteractiveViewer(
           transformationController: _tc,
-          alignment: Alignment.center,
           minScale: 1.0,
           maxScale: 6.0,
           panEnabled: panOk,

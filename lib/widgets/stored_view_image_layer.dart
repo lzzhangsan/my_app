@@ -15,7 +15,7 @@ class StoredViewImageLayer extends StatefulWidget {
   const StoredViewImageLayer({
     super.key,
     required this.file,
-    this.useScreenSizeForNormalization = true,
+    this.useScreenSizeForNormalization = false,
     this.readonlyTranslateYOffset = 0,
     this.useCacheWidth = true,
   });

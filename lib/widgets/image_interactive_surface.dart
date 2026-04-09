@@ -17,6 +17,7 @@ class ImageInteractiveSurface extends StatefulWidget {
     this.onTripleTapReset,
     this.useScreenSizeForNormalization = false,
     this.readonlyTranslateYOffset = 0,
+    this.persistNonce = 0,
   });
 
   final Widget child;
@@ -28,13 +29,17 @@ class ImageInteractiveSurface extends StatefulWidget {
   final bool useScreenSizeForNormalization;
   final double readonlyTranslateYOffset;
 
+  /// 父组件递增此值时，立即取消 debounce 并将当前矩阵写入 [onChanged]（用于「固定取景」或退出前落库）。
+  final int persistNonce;
+
   @override
   State<ImageInteractiveSurface> createState() =>
       _ImageInteractiveSurfaceState();
 }
 
 class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
-  static const EdgeInsets _editableBoundaryMargin = EdgeInsets.all(100000);
+  /// 须为「全向无限」边界，否则 InteractiveViewer 仍会夹紧平移，getTranslation 与归一化模型不一致，退出再进会漂移。
+  static const EdgeInsets _editableBoundaryMargin = EdgeInsets.all(double.infinity);
   final TransformationController _tc = TransformationController();
   Timer? _debounce;
   int _quarterTurns = 0;
@@ -86,6 +91,12 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
         setState(() => _appliedInitial = true);
       });
     }
+    if (widget.persistNonce != oldWidget.persistNonce) {
+      _debounce?.cancel();
+      if (widget.editable && _hasUserInteracted) {
+        _emitChanged(force: true);
+      }
+    }
   }
 
   void _onMatrixChanged() {
@@ -131,7 +142,7 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
       tyNorm: ty,
       quarterTurns: _quarterTurns,
     );
-    if (current == widget.initial) return;
+    if (!force && current == widget.initial) return;
     widget.onChanged?.call(current);
   }
 
@@ -391,6 +402,9 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
   @override
   void dispose() {
     _debounce?.cancel();
+    if (widget.editable && _hasUserInteracted) {
+      _emitChanged(force: true);
+    }
     _tc.removeListener(_onMatrixChanged);
     _tc.dispose();
     super.dispose();
@@ -475,9 +489,10 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
             _activePointers.length >= requiredPointerCount &&
             (scale > 1.01 || sideways);
 
+        // 勿设 alignment：非 null 时 RenderTransform 会做 T(枢轴)*M*T(-枢轴)，
+        // 而 _emitChanged 仍读控制器内裸矩阵的 getTranslation，二者不一致会存错 tx/ty，重进预览左/上偏。
         final iv = InteractiveViewer(
           transformationController: _tc,
-          alignment: Alignment.center,
           minScale: 1.0,
           maxScale: 6.0,
           panEnabled: panOk,

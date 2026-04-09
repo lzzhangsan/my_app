@@ -294,7 +294,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
                 videoChild: const PlayerWithControls(),
                 initial: vp,
                 editable: false,
-                useScreenSizeForNormalization: true,
+                useScreenSizeForNormalization: false,
               ),
             ),
           ),

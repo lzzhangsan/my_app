@@ -282,7 +282,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
       key: ValueKey('img_doc_${id}_${p.hashCode}'),
       initial: p,
       editable: false,
-      useScreenSizeForNormalization: true,
+      useScreenSizeForNormalization: false,
       readonlyTranslateYOffset: 0,
       child: child,
     );
