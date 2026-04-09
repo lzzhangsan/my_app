@@ -93,7 +93,7 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
     if (!_hasUserInteracted) return;
     setState(() {});
     _debounce?.cancel();
-    _debounce = Timer(const Duration(milliseconds: 450), () {
+    _debounce = Timer(const Duration(milliseconds: 120), () {
       if (mounted) _emitChanged();
     });
   }
@@ -396,8 +396,8 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
     super.dispose();
   }
 
-  Widget _buildRotatedContent(double vw, double vh, int q) {
-    final inner = SizedBox(width: vw, height: vh, child: widget.child);
+  Widget _buildRotatedContent(double basisW, double basisH, int q) {
+    final inner = SizedBox(width: basisW, height: basisH, child: widget.child);
     Widget rotated;
     if (q == 0) {
       rotated = inner;
@@ -411,8 +411,8 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
     }
     if (q == 1 || q == 3) {
       return SizedBox(
-        width: vh,
-        height: vw,
+        width: basisH,
+        height: basisW,
         child: Stack(
           clipBehavior: Clip.none,
           alignment: Alignment.center,
@@ -436,6 +436,10 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
           view.physicalSize.width / view.devicePixelRatio,
           view.physicalSize.height / view.devicePixelRatio,
         );
+        final renderBasisW =
+            widget.useScreenSizeForNormalization ? screenSize.width : vw;
+        final renderBasisH =
+            widget.useScreenSizeForNormalization ? screenSize.height : vh;
         _lastNormBasisW =
             widget.useScreenSizeForNormalization ? screenSize.width : vw;
         _lastNormBasisH =
@@ -501,7 +505,7 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
           onInteractionEnd: (_) {
             if (widget.editable) _emitChanged();
           },
-          child: _buildRotatedContent(vw, vh, q),
+          child: _buildRotatedContent(renderBasisW, renderBasisH, q),
         );
 
         if (!widget.editable) {

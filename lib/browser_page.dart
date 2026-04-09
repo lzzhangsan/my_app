@@ -1,4 +1,4 @@
-import 'dart:io';
+﻿import 'dart:io';
 import 'dart:async';
 import 'dart:collection';
 import 'dart:isolate';
@@ -49,6 +49,7 @@ class _HlsSegTask {
   final int mediaSeq;
   final bool useAes128;
   final Uint8List? aesKey;
+
   /// 来自 #EXT-X-KEY；为 null 时用 [mediaSeq] 生成 IV。
   final Uint8List? explicitIv;
 }
@@ -69,7 +70,8 @@ const int _kParallelRangeVideoMinBytes = 3 * 1024 * 1024;
 const int _kParallelRangeVideoConnections = 6;
 
 /// 下载进度：`fraction` 为 0~1；`detail` 为可选说明（如 HLS 分片、已下字节）。
-typedef DownloadProgressCallback = void Function(double fraction, {String? detail});
+typedef DownloadProgressCallback =
+    void Function(double fraction, {String? detail});
 
 /// 保存到媒体库的 SnackBar 时长（缩短展示时间，减少遮挡）
 const Duration _kMediaSaveSnackDuration = Duration(seconds: 2);
@@ -82,25 +84,38 @@ List<int>? encodeArchive(Archive archive) {
   return ZipEncoder().encode(archive);
 }
 
+class _ExistingMediaDuplicateException implements Exception {
+  const _ExistingMediaDuplicateException(this.existingRow);
+
+  final Map<String, dynamic> existingRow;
+}
+
 class BrowserPage extends StatefulWidget {
   final ValueChanged<bool>? onBrowserHomePageChanged;
+
   /// 当前主界面选中的标签页索引（0=封面 1=目录 2=媒体 3=浏览器 4=日记），用于从其他标签切换过来时显示主界面
   final int? currentMainPageIndex;
 
-  const BrowserPage({Key? key, this.onBrowserHomePageChanged, this.currentMainPageIndex}) : super(key: key);
+  const BrowserPage({
+    Key? key,
+    this.onBrowserHomePageChanged,
+    this.currentMainPageIndex,
+  }) : super(key: key);
 
   @override
   _BrowserPageState createState() => _BrowserPageState();
 }
 
-class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClientMixin {
-
+class _BrowserPageState extends State<BrowserPage>
+    with AutomaticKeepAliveClientMixin {
   /// 将相对 URL 解析为绝对 URL（使用当前页面地址作为基准）
   String _toAbsoluteUrl(String url) {
     if (url.isEmpty) return url;
     final trimmed = url.trim();
-    if (trimmed.startsWith('http://') || trimmed.startsWith('https://') ||
-        trimmed.startsWith('data:') || trimmed.startsWith('blob:')) {
+    if (trimmed.startsWith('http://') ||
+        trimmed.startsWith('https://') ||
+        trimmed.startsWith('data:') ||
+        trimmed.startsWith('blob:')) {
       return trimmed;
     }
     String base = _urlController.text.trim();
@@ -116,34 +131,78 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   bool _isApiEndpointUrl(String url) {
     if (url.startsWith('blob:') || url.startsWith('data:')) return false;
     final lower = url.toLowerCase();
-    if (RegExp(r'\.(jpg|jpeg|png|gif|webp|mp4|webm|mov|m3u8|ts|mp3|m4a)(\?|$)', caseSensitive: false).hasMatch(url)) return false;
-    final videoHosts = ['tik.', 'porn', 'xvideos', 'xhamster', 'pornhub', 'redtube', 'cdn.', 'stream', 'video.', 'media.'];
+    if (RegExp(
+      r'\.(jpg|jpeg|png|gif|webp|mp4|webm|mov|m3u8|ts|mp3|m4a)(\?|$)',
+      caseSensitive: false,
+    ).hasMatch(url))
+      return false;
+    final videoHosts = [
+      'tik.',
+      'porn',
+      'xvideos',
+      'xhamster',
+      'pornhub',
+      'redtube',
+      'cdn.',
+      'stream',
+      'video.',
+      'media.',
+    ];
     try {
       final host = Uri.parse(url).host.toLowerCase();
       if (videoHosts.any((h) => host.contains(h))) return false;
     } catch (_) {}
     const apiPatterns = [
-      'detailrecommend', 'wisesearchsetpic', 'wisejson',
-      'getrelatedvideos', 'getuserbyslug', '/graphql', '/v1/', '/v2/', '/v3/',
-      '/models', '/model/', '/slug', '/users/', '/search?', '/query', '/json', '/rest/', '/endpoint', '/service',
-      'getuser', 'getpost', 'relatedvideos', 'userbyslug', 'byslug',
+      'detailrecommend',
+      'wisesearchsetpic',
+      'wisejson',
+      'getrelatedvideos',
+      'getuserbyslug',
+      '/graphql',
+      '/v1/',
+      '/v2/',
+      '/v3/',
+      '/models',
+      '/model/',
+      '/slug',
+      '/users/',
+      '/search?',
+      '/query',
+      '/json',
+      '/rest/',
+      '/endpoint',
+      '/service',
+      'getuser',
+      'getpost',
+      'relatedvideos',
+      'userbyslug',
+      'byslug',
     ];
     if (apiPatterns.any((p) => lower.contains(p))) return true;
-    return RegExp(r'/(get|post|api|graphql|rest|v1|v2|models|user|slug)/').hasMatch(url);
+    return RegExp(
+      r'/(get|post|api|graphql|rest|v1|v2|models|user|slug)/',
+    ).hasMatch(url);
   }
 
-  Future<String> _resolveFinalUrl(String url, {Map<String, String>? headers}) async {
+  Future<String> _resolveFinalUrl(
+    String url, {
+    Map<String, String>? headers,
+  }) async {
     final absoluteUrl = _toAbsoluteUrl(url);
     try {
       final networkService = NetworkService();
       await networkService.initialize();
-      final resp = await networkService.dio.head(absoluteUrl, options: Options(
-        method: 'HEAD',
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36',
-          ...?headers,
-        },
-      ));
+      final resp = await networkService.dio.head(
+        absoluteUrl,
+        options: Options(
+          method: 'HEAD',
+          headers: {
+            'User-Agent':
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36',
+            ...?headers,
+          },
+        ),
+      );
       final finalUrl = resp.realUri.toString();
       return finalUrl.isNotEmpty ? finalUrl : absoluteUrl;
     } catch (_) {
@@ -168,7 +227,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
   // 下载任务列表：支持查看、取消
   final List<Map<String, dynamic>> _downloadTasks = [];
-  final ValueNotifier<List<Map<String, dynamic>>> _downloadTasksNotifier = ValueNotifier([]);
+  final ValueNotifier<List<Map<String, dynamic>>> _downloadTasksNotifier =
+      ValueNotifier([]);
   static const int _maxDisplayTasks = 8;
   bool _downloadPanelExpanded = false;
   Offset? _downloadPanelPosition;
@@ -242,9 +302,9 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         final lower = url.toLowerCase();
         final isAppScheme = _isNoisyExternalAppScheme(lower);
         if (!isAppScheme && mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('无法打开: $url')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('无法打开: $url')));
         }
       }
     } catch (e) {
@@ -252,12 +312,13 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       final lower = url.toLowerCase();
       final isAppScheme = _isNoisyExternalAppScheme(lower);
       if (!isAppScheme && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('打开链接时出错: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('打开链接时出错: $e')));
       }
     }
   }
+
   bool _shouldKeepWebPageState = false;
   String? _lastBrowsedUrl;
 
@@ -283,13 +344,14 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
   Future<void> _reorderWebsites(int oldIndex, int newIndex) async {
     // 如果是添加网站按钮，不允许拖动
-    if (oldIndex >= _commonWebsites.length || newIndex > _commonWebsites.length) {
+    if (oldIndex >= _commonWebsites.length ||
+        newIndex > _commonWebsites.length) {
       return;
     }
-    
+
     // 调整newIndex，因为ReorderableGridView的newIndex计算方式与ReorderableListView不同
     if (newIndex > _commonWebsites.length) newIndex = _commonWebsites.length;
-    
+
     setState(() {
       if (oldIndex < newIndex) newIndex -= 1;
       final item = _commonWebsites.removeAt(oldIndex);
@@ -300,7 +362,13 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   }
 
   Future<void> _addWebsite(String name, String url, IconData icon) async {
-    setState(() => _commonWebsites.add({'name': name, 'url': url, 'iconCode': icon.codePoint}));
+    setState(
+      () => _commonWebsites.add({
+        'name': name,
+        'url': url,
+        'iconCode': icon.codePoint,
+      }),
+    );
     await _saveCommonWebsites();
     debugPrint('已添加并立即保存网站: $name');
   }
@@ -326,7 +394,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       _goToHomePage();
     }
   }
-  
+
   Future<void> _initializeDownloader() async {
     await FlutterDownloader.initialize();
     await _requestPermissions();
@@ -404,7 +472,9 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     return uri.replace(query: query, fragment: '').toString();
   }
 
-  Future<String> _resolveMediaLocationLabel(Map<String, dynamic> mediaRow) async {
+  Future<String> _resolveMediaLocationLabel(
+    Map<String, dynamic> mediaRow,
+  ) async {
     final dir = mediaRow['directory']?.toString() ?? '';
     if (dir.isEmpty || dir == 'root') return '根目录';
     if (dir == 'favorites') return '收藏夹';
@@ -415,7 +485,9 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     return dir;
   }
 
-  Future<Map<String, dynamic>?> _findExistingVideoBySourceUrl(String url) async {
+  Future<Map<String, dynamic>?> _findExistingVideoBySourceUrl(
+    String url,
+  ) async {
     final normalized = _normalizeVideoSourceUrl(url);
     final mediaId = _videoSourceUrlToMediaId[normalized];
     if (mediaId == null || mediaId.isEmpty) return null;
@@ -443,29 +515,53 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     return row;
   }
 
-  Future<void> _showVideoDuplicateSnackBar(Map<String, dynamic> existingRow) async {
+  Future<void> _showVideoDuplicateSnackBar(
+    Map<String, dynamic> existingRow,
+  ) async {
     if (!mounted) return;
     final location = await _resolveMediaLocationLabel(existingRow);
     final title = existingRow['name']?.toString() ?? '该视频';
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('媒体库已存在：$title（位置：$location）'),
-        duration: _kMediaSaveSnackDuration,
-        action: SnackBarAction(
-          label: '查看',
-          onPressed: () {
-            final mediaItem = MediaItem.fromMap(
-              Map<String, dynamic>.from(existingRow),
-            );
-            Navigator.of(context).push(
-              MaterialPageRoute(
-                builder: (context) =>
-                    MediaPreviewPage(mediaItems: [mediaItem], initialIndex: 0),
-              ),
-            );
-          },
-        ),
-      ),
+    final mediaItem = MediaItem.fromMap(Map<String, dynamic>.from(existingRow));
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('视频已存在'),
+          content: Text('媒体库中已经有这个视频了。\n\n文件名：\n位置：'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('取消'),
+            ),
+            TextButton(
+              onPressed: () {
+                Navigator.of(dialogContext).pop();
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (context) => const MediaManagerPage(),
+                  ),
+                );
+              },
+              child: const Text('打开媒体库'),
+            ),
+            FilledButton(
+              onPressed: () {
+                Navigator.of(dialogContext).pop();
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder:
+                        (context) => MediaPreviewPage(
+                          mediaItems: [mediaItem],
+                          initialIndex: 0,
+                        ),
+                  ),
+                );
+              },
+              child: const Text('直接查看'),
+            ),
+          ],
+        );
+      },
     );
   }
 
@@ -473,7 +569,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     var storageStatus = await Permission.storage.request();
     debugPrint('存储权限状态: $storageStatus');
     if (Platform.isAndroid) {
-      var manageStorageStatus = await Permission.manageExternalStorage.request();
+      var manageStorageStatus =
+          await Permission.manageExternalStorage.request();
       debugPrint('管理外部存储权限状态: $manageStorageStatus');
     }
     var recordStatus = await Permission.microphone.request();
@@ -482,12 +579,15 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
   void _setupWebViewController(InAppWebViewController ctrl) {
     _controller = ctrl;
-    ctrl.addJavaScriptHandler(handlerName: 'Flutter', callback: (args) {
-      if (args.isNotEmpty && args[0] != null) {
-        debugPrint('来自JavaScript的消息: ${args[0]}');
-        _handleJavaScriptMessage(args[0].toString());
-      }
-    });
+    ctrl.addJavaScriptHandler(
+      handlerName: 'Flutter',
+      callback: (args) {
+        if (args.isNotEmpty && args[0] != null) {
+          debugPrint('来自JavaScript的消息: ${args[0]}');
+          _handleJavaScriptMessage(args[0].toString());
+        }
+      },
+    );
   }
 
   bool _isYouTubeLink(String url) {
@@ -498,6 +598,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   final Map<String, String> _videoSourceUrlToMediaId = {};
   static const String _kVideoSourceUrlMapPrefsKey =
       'browser_video_source_url_map_v1';
+
   /// 记录非 Base64 媒体 URL 最近一次开始处理的时间；与 [markMediaUrlProcessing] 配合，避免永久占用。
   final Map<String, DateTime> _processedMediaUrlsSince = {};
   bool _awaitingCanvasFallbackResult = false;
@@ -507,7 +608,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   void _injectDownloadHandlers() {
     if (_controller == null) return;
     debugPrint('为所有网站注入超强媒体下载处理程序 - 95%成功率版本');
-    _controller!.evaluateJavascript(source: '''
+    _controller!.evaluateJavascript(
+      source: '''
       window.Flutter = window.Flutter || { postMessage: function(m){ try { if(window.flutter_inappwebview && window.flutter_inappwebview.callHandler) window.flutter_inappwebview.callHandler('Flutter', m); } catch(e){} } };
       window.MediaInterceptor = window.MediaInterceptor || {
         processedUrls: new Set(),
@@ -1499,7 +1601,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         });
         console.log('初始扫描完成，找到', initialMediaElements.length, '个媒体元素');
       }, 1000);
-    ''');
+    ''',
+    );
   }
 
   Future<void> _handleJavaScriptMessage(String message) async {
@@ -1510,10 +1613,17 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       final dynamic urlValue = data['url'];
       final bool isBase64 = data['isBase64'] ?? false;
       final String? action = data['action'];
-      final String mediaType = data['mediaType'] ??
-          (_guessMimeType(urlValue is String ? urlValue : '').startsWith('image/')
+      final String mediaType =
+          data['mediaType'] ??
+          (_guessMimeType(
+                urlValue is String ? urlValue : '',
+              ).startsWith('image/')
               ? 'image'
-              : (_guessMimeType(urlValue is String ? urlValue : '').startsWith('video/') ? 'video' : 'audio'));
+              : (_guessMimeType(
+                    urlValue is String ? urlValue : '',
+                  ).startsWith('video/')
+                  ? 'video'
+                  : 'audio'));
 
       if (urlValue is! String) return;
       if (action != 'download') return;
@@ -1536,122 +1646,132 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       }
 
       try {
-      debugPrint('Received URL from JavaScript with download action: $urlValue, type: $mediaType, isBase64: $isBase64');
+        debugPrint(
+          'Received URL from JavaScript with download action: $urlValue, type: $mediaType, isBase64: $isBase64',
+        );
 
-      if (isBase64) {
-        if (_awaitingCanvasFallbackResult) {
-          _canvasFallbackSucceeded = true;
-          _canvasFallbackCompleter?.complete(true);
-        }
-        await _handleBlobUrl(urlValue, mediaType);
-        return;
-      }
-
-      _mediaDownloadFailHintTimer?.cancel();
-      _mediaDownloadSaveResolved = false;
-
-      final absoluteUrl = _toAbsoluteUrl(urlValue);
-      final referer = _getMediaReferer(absoluteUrl);
-      final resolvedUrl = await _resolveFinalUrl(
-        urlValue,
-        headers: {
-          'Referer': referer,
-          'User-Agent': 'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
-          'Accept': '*/*',
-        },
-      );
-      final mimeType = _guessMimeType(resolvedUrl);
-      MediaType selectedType = _determineMediaType(mimeType);
-      if (selectedType == MediaType.image && _urlLooksLikeVideoStream(resolvedUrl)) {
-        selectedType = MediaType.video;
-      }
-      if (selectedType == MediaType.video) {
-        final existing = await _findExistingVideoBySourceUrl(resolvedUrl);
-        if (existing != null) {
-          await _showVideoDuplicateSnackBar(existing);
+        if (isBase64) {
+          if (_awaitingCanvasFallbackResult) {
+            _canvasFallbackSucceeded = true;
+            _canvasFallbackCompleter?.complete(true);
+          }
+          await _handleBlobUrl(urlValue, mediaType);
           return;
         }
-      }
-      final mayFallback =
-          selectedType == MediaType.image || selectedType == MediaType.video;
-      final success = await _performBackgroundDownload(
-        resolvedUrl,
-        selectedType,
-        skipFailurePrompt: mayFallback,
-      );
-      if (success) {
-        _notifyMediaDownloadSaved();
-      } else if (!success &&
-          (selectedType == MediaType.image || selectedType == MediaType.video) &&
-          mounted) {
-        try {
-          final ctrl = _controller;
-          if (ctrl != null) {
-            _awaitingCanvasFallbackResult = true;
-            _canvasFallbackSucceeded = false;
-            _canvasFallbackCompleter = Completer<bool>();
-            await ctrl.evaluateJavascript(
-              source:
-                  'typeof tryCanvasCaptureFallback === "function" && tryCanvasCaptureFallback();',
-            );
-            final canvasSucceeded = await _canvasFallbackCompleter!.future.timeout(
-              const Duration(seconds: 5),
-              onTimeout: () {
-                if (!_canvasFallbackCompleter!.isCompleted) {
-                  _canvasFallbackCompleter!.complete(false);
-                }
-                return false;
-              },
-            );
-            var recovered = canvasSucceeded;
-            if (!canvasSucceeded && selectedType == MediaType.image) {
-              recovered = await _tryScreenshotFallback(ctrl) || recovered;
-            }
-            _awaitingCanvasFallbackResult = false;
-            _canvasFallbackCompleter = null;
-            // canvas 成功仅表示已取得像素/base64，真正落盘在 _handleBlobUrl；此处不 _notify，避免与失败提示打架
-            // 极晚到的 base64 仍可能随后触发 _handleBlobUrl 并成功，故用短延迟再提示失败，避免与成功条打架。
-            if (!recovered &&
-                mayFallback &&
-                !_mediaDownloadSaveResolved &&
-                mounted) {
-              _mediaDownloadFailHintTimer?.cancel();
-              _mediaDownloadFailHintTimer = Timer(const Duration(seconds: 2), () {
-                if (!mounted || _mediaDownloadSaveResolved) return;
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text(
-                      _downloadErrorForUser(
-                        Exception('[下载失败] 无法保存该媒体，请稍后重试或长按图片本身'),
-                      ),
-                    ),
-                    duration: _kMediaSaveSnackDuration,
-                  ),
-                );
-              });
-            }
-          }
-        } catch (_) {
-          _awaitingCanvasFallbackResult = false;
-          _canvasFallbackCompleter = null;
-          if (mayFallback && !_mediaDownloadSaveResolved && mounted) {
-            _mediaDownloadFailHintTimer?.cancel();
-            _mediaDownloadFailHintTimer = Timer(const Duration(seconds: 2), () {
-              if (!mounted || _mediaDownloadSaveResolved) return;
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text(
-                    _downloadErrorForUser(
-                      Exception('[下载失败] 无法保存该媒体'),
-                    ),
-                  ),
-                  duration: _kMediaSaveSnackDuration,
-                ),
-              );
-            });
+
+        _mediaDownloadFailHintTimer?.cancel();
+        _mediaDownloadSaveResolved = false;
+
+        final absoluteUrl = _toAbsoluteUrl(urlValue);
+        final referer = _getMediaReferer(absoluteUrl);
+        final resolvedUrl = await _resolveFinalUrl(
+          urlValue,
+          headers: {
+            'Referer': referer,
+            'User-Agent':
+                'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+            'Accept': '*/*',
+          },
+        );
+        final mimeType = _guessMimeType(resolvedUrl);
+        MediaType selectedType = _determineMediaType(mimeType);
+        if (selectedType == MediaType.image &&
+            _urlLooksLikeVideoStream(resolvedUrl)) {
+          selectedType = MediaType.video;
+        }
+        if (selectedType == MediaType.video) {
+          final existing = await _findExistingVideoBySourceUrl(resolvedUrl);
+          if (existing != null) {
+            await _showVideoDuplicateSnackBar(existing);
+            return;
           }
         }
-      }
+        final mayFallback =
+            selectedType == MediaType.image || selectedType == MediaType.video;
+        final success = await _performBackgroundDownload(
+          resolvedUrl,
+          selectedType,
+          skipFailurePrompt: mayFallback,
+        );
+        if (success) {
+          _notifyMediaDownloadSaved();
+        } else if (!success &&
+            (selectedType == MediaType.image ||
+                selectedType == MediaType.video) &&
+            mounted) {
+          try {
+            final ctrl = _controller;
+            if (ctrl != null) {
+              _awaitingCanvasFallbackResult = true;
+              _canvasFallbackSucceeded = false;
+              _canvasFallbackCompleter = Completer<bool>();
+              await ctrl.evaluateJavascript(
+                source:
+                    'typeof tryCanvasCaptureFallback === "function" && tryCanvasCaptureFallback();',
+              );
+              final canvasSucceeded = await _canvasFallbackCompleter!.future
+                  .timeout(
+                    const Duration(seconds: 5),
+                    onTimeout: () {
+                      if (!_canvasFallbackCompleter!.isCompleted) {
+                        _canvasFallbackCompleter!.complete(false);
+                      }
+                      return false;
+                    },
+                  );
+              var recovered = canvasSucceeded;
+              if (!canvasSucceeded && selectedType == MediaType.image) {
+                recovered = await _tryScreenshotFallback(ctrl) || recovered;
+              }
+              _awaitingCanvasFallbackResult = false;
+              _canvasFallbackCompleter = null;
+              // canvas 成功仅表示已取得像素/base64，真正落盘在 _handleBlobUrl；此处不 _notify，避免与失败提示打架
+              // 极晚到的 base64 仍可能随后触发 _handleBlobUrl 并成功，故用短延迟再提示失败，避免与成功条打架。
+              if (!recovered &&
+                  mayFallback &&
+                  !_mediaDownloadSaveResolved &&
+                  mounted) {
+                _mediaDownloadFailHintTimer?.cancel();
+                _mediaDownloadFailHintTimer = Timer(
+                  const Duration(seconds: 2),
+                  () {
+                    if (!mounted || _mediaDownloadSaveResolved) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          _downloadErrorForUser(
+                            Exception('[下载失败] 无法保存该媒体，请稍后重试或长按图片本身'),
+                          ),
+                        ),
+                        duration: _kMediaSaveSnackDuration,
+                      ),
+                    );
+                  },
+                );
+              }
+            }
+          } catch (_) {
+            _awaitingCanvasFallbackResult = false;
+            _canvasFallbackCompleter = null;
+            if (mayFallback && !_mediaDownloadSaveResolved && mounted) {
+              _mediaDownloadFailHintTimer?.cancel();
+              _mediaDownloadFailHintTimer = Timer(
+                const Duration(seconds: 2),
+                () {
+                  if (!mounted || _mediaDownloadSaveResolved) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(
+                        _downloadErrorForUser(Exception('[下载失败] 无法保存该媒体')),
+                      ),
+                      duration: _kMediaSaveSnackDuration,
+                    ),
+                  );
+                },
+              );
+            }
+          }
+        }
       } finally {
         if (didRegisterMediaUrl) {
           _processedMediaUrlsSince.remove(urlValue);
@@ -1675,7 +1795,10 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         } else {
           final commaIdx = raw.indexOf(',');
           if (commaIdx < 0 || commaIdx >= raw.length - 1) {
-            if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Base64数据格式错误：data URL缺少有效内容')));
+            if (mounted)
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Base64数据格式错误：data URL缺少有效内容')),
+              );
             return;
           }
           raw = raw.substring(commaIdx + 1);
@@ -1683,7 +1806,10 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       }
       raw = raw.replaceAll(RegExp(r'[\s\r\n]'), '');
       if (raw.isEmpty || raw.length < 10) {
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Base64数据为空或过短')));
+        if (mounted)
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('Base64数据为空或过短')));
         return;
       }
       List<int> bytes;
@@ -1693,7 +1819,10 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         try {
           bytes = base64Url.decode(raw);
         } catch (e2) {
-          if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Base64解码失败: $e2')));
+          if (mounted)
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(SnackBar(content: Text('Base64解码失败: $e2')));
           return;
         }
       }
@@ -1701,19 +1830,35 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       final mediaDir = Directory('${appDir.path}/media');
       if (!await mediaDir.exists()) await mediaDir.create(recursive: true);
       final uuid = const Uuid().v4();
-      String extension = mediaType == 'image' ? '.jpg' : (mediaType == 'audio' ? '.webm' : '.mp4');
+      String extension =
+          mediaType == 'image'
+              ? '.jpg'
+              : (mediaType == 'audio' ? '.webm' : '.mp4');
       final filePath = '${mediaDir.path}/$uuid$extension';
       final file = File(filePath);
       await file.writeAsBytes(bytes);
       debugPrint('已从Base64保存文件: $filePath');
-      await _saveToMediaLibrary(file, mediaType == 'image' ? MediaType.image : (mediaType == 'audio' ? MediaType.audio : MediaType.video));
+      await _saveToMediaLibrary(
+        file,
+        mediaType == 'image'
+            ? MediaType.image
+            : (mediaType == 'audio' ? MediaType.audio : MediaType.video),
+      );
       _notifyMediaDownloadSaved();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('已保存到媒体库：${file.path.split('/').last}'),
             duration: _kMediaSaveSnackDuration,
-            action: SnackBarAction(label: '查看', onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (context) => const MediaManagerPage()))),
+            action: SnackBarAction(
+              label: '查看',
+              onPressed:
+                  () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (context) => const MediaManagerPage(),
+                    ),
+                  ),
+            ),
           ),
         );
       }
@@ -1722,7 +1867,10 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       debugPrint('错误堆栈: $stackTrace');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('下载失败: $e'), duration: _kMediaSaveSnackDuration),
+          SnackBar(
+            content: Text('下载失败: $e'),
+            duration: _kMediaSaveSnackDuration,
+          ),
         );
       }
     }
@@ -1730,15 +1878,16 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
   void _loadUrl(String url) {
     String processedUrl = url;
-    if (!url.startsWith('http://') && !url.startsWith('https://')) processedUrl = 'https://$url';
+    if (!url.startsWith('http://') && !url.startsWith('https://'))
+      processedUrl = 'https://$url';
     final uri = Uri.tryParse(processedUrl);
     if (uri != null) {
       _controller?.loadUrl(urlRequest: URLRequest(url: WebUri(processedUrl)));
     } else {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('无效的URL: $processedUrl')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('无效的URL: $processedUrl')));
       }
       return;
     }
@@ -1757,25 +1906,45 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     if (!_showHomePage) {
       await _saveCommonWebsites();
       await _loadBookmarks();
-      
+
       // 确保常用网站列表被正确加载
       await _loadCommonWebsites();
-      
+
       // 如果常用网站列表为空，强制加载默认网站
       if (_commonWebsites.isEmpty) {
         debugPrint('常用网站列表为空，加载默认网站');
         setState(() {
           _commonWebsites.addAll([
-            {'name': 'Google', 'url': 'https://www.google.com', 'iconCode': Icons.public.codePoint},
-            {'name': 'Edge', 'url': 'https://www.bing.com', 'iconCode': Icons.public.codePoint},
-            {'name': 'X', 'url': 'https://twitter.com', 'iconCode': Icons.public.codePoint},
-            {'name': 'Facebook', 'url': 'https://www.facebook.com', 'iconCode': Icons.public.codePoint},
-            {'name': '百度', 'url': 'https://www.baidu.com', 'iconCode': Icons.public.codePoint}
+            {
+              'name': 'Google',
+              'url': 'https://www.google.com',
+              'iconCode': Icons.public.codePoint,
+            },
+            {
+              'name': 'Edge',
+              'url': 'https://www.bing.com',
+              'iconCode': Icons.public.codePoint,
+            },
+            {
+              'name': 'X',
+              'url': 'https://twitter.com',
+              'iconCode': Icons.public.codePoint,
+            },
+            {
+              'name': 'Facebook',
+              'url': 'https://www.facebook.com',
+              'iconCode': Icons.public.codePoint,
+            },
+            {
+              'name': '百度',
+              'url': 'https://www.baidu.com',
+              'iconCode': Icons.public.codePoint,
+            },
           ]);
         });
         await _saveCommonWebsites();
       }
-      
+
       setState(() => _showHomePage = true);
       widget.onBrowserHomePageChanged?.call(_showHomePage);
     }
@@ -1808,7 +1977,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       debugPrint('构建主页时发现常用网站列表为空，加载默认网站');
       _loadCommonWebsites();
     }
-    
+
     return Stack(
       children: [
         Column(
@@ -1835,9 +2004,17 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                         child: Column(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: const [
-                            Icon(Icons.add_circle_outline, size: 40, color: Colors.green),
+                            Icon(
+                              Icons.add_circle_outline,
+                              size: 40,
+                              color: Colors.green,
+                            ),
                             SizedBox(height: 8),
-                            Text('添加网站', style: TextStyle(fontSize: 16), textAlign: TextAlign.center),
+                            Text(
+                              '添加网站',
+                              style: TextStyle(fontSize: 16),
+                              textAlign: TextAlign.center,
+                            ),
                           ],
                         ),
                       ),
@@ -1878,22 +2055,27 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           nameController.text = "获取中...";
 
           // 异步获取网页标题
-          _controller?.getTitle().then((title) {
-            if (title != null && title.isNotEmpty && nameController.text == "获取中...") {
-              // 直接更新文本控制器，而不使用setState
-              nameController.text = title;
-              // 自动选中文本，方便用户编辑
-              nameController.selection = TextSelection(
-                baseOffset: 0,
-                extentOffset: title.length,
-              );
-            }
-          }).catchError((error) {
-            debugPrint('获取网页标题出错: $error');
-            if (nameController.text == "获取中...") {
-              nameController.text = "";
-            }
-          });
+          _controller
+              ?.getTitle()
+              .then((title) {
+                if (title != null &&
+                    title.isNotEmpty &&
+                    nameController.text == "获取中...") {
+                  // 直接更新文本控制器，而不使用setState
+                  nameController.text = title;
+                  // 自动选中文本，方便用户编辑
+                  nameController.selection = TextSelection(
+                    baseOffset: 0,
+                    extentOffset: title.length,
+                  );
+                }
+              })
+              .catchError((error) {
+                debugPrint('获取网页标题出错: $error');
+                if (nameController.text == "获取中...") {
+                  nameController.text = "";
+                }
+              });
         }
 
         return AlertDialog(
@@ -1930,7 +2112,6 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                 if (nameController.text.isNotEmpty &&
                     urlController.text.isNotEmpty &&
                     nameController.text != "获取中...") {
-
                   // 创建一个变量存储加载对话框的context
                   BuildContext? loadingDialogContext;
 
@@ -1952,11 +2133,16 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                     },
                   );
 
-                  await _addWebsite(nameController.text, urlController.text, Icons.web);
+                  await _addWebsite(
+                    nameController.text,
+                    urlController.text,
+                    Icons.web,
+                  );
                   await _saveCommonWebsites();
 
                   // 安全地关闭加载对话框
-                  if (loadingDialogContext != null && Navigator.canPop(loadingDialogContext!)) {
+                  if (loadingDialogContext != null &&
+                      Navigator.canPop(loadingDialogContext!)) {
                     Navigator.pop(loadingDialogContext!);
                   }
 
@@ -1988,62 +2174,90 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
   // 移除_buildEditableWebsiteItem方法，因为我们已经移除了编辑模式
 
-  void _showRenameWebsiteDialog(BuildContext context, Map<String, dynamic> website, int index) {
+  void _showRenameWebsiteDialog(
+    BuildContext context,
+    Map<String, dynamic> website,
+    int index,
+  ) {
     final nameController = TextEditingController(text: website['name']);
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('重命名网站'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            TextField(
-              controller: nameController,
-              decoration: const InputDecoration(labelText: '网站名称', hintText: '输入新的网站名称'),
-              autofocus: true,
-            ),
-            const SizedBox(height: 8),
-            Text('当前URL: ${website['url']}', style: TextStyle(fontSize: 12, color: Colors.grey[600])),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
-          TextButton(
-            onPressed: () async {
-              if (nameController.text.isNotEmpty && nameController.text != website['name']) {
-                showDialog(
-                  context: context,
-                  barrierDismissible: false,
-                  builder: (context) => const AlertDialog(
-                    content: Row(
-                      children: [CircularProgressIndicator(), SizedBox(width: 20), Text('保存中...')],
-                    ),
+      builder:
+          (context) => AlertDialog(
+            title: const Text('重命名网站'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TextField(
+                  controller: nameController,
+                  decoration: const InputDecoration(
+                    labelText: '网站名称',
+                    hintText: '输入新的网站名称',
                   ),
-                );
-                setState(() => _commonWebsites[index]['name'] = nameController.text);
-                await _saveCommonWebsites();
-                Navigator.of(context).pop();
-                Navigator.of(context).pop();
-              } else {
-                Navigator.pop(context);
-              }
-            },
-            child: const Text('保存'),
+                  autofocus: true,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  '当前URL: ${website['url']}',
+                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('取消'),
+              ),
+              TextButton(
+                onPressed: () async {
+                  if (nameController.text.isNotEmpty &&
+                      nameController.text != website['name']) {
+                    showDialog(
+                      context: context,
+                      barrierDismissible: false,
+                      builder:
+                          (context) => const AlertDialog(
+                            content: Row(
+                              children: [
+                                CircularProgressIndicator(),
+                                SizedBox(width: 20),
+                                Text('保存中...'),
+                              ],
+                            ),
+                          ),
+                    );
+                    setState(
+                      () =>
+                          _commonWebsites[index]['name'] = nameController.text,
+                    );
+                    await _saveCommonWebsites();
+                    Navigator.of(context).pop();
+                    Navigator.of(context).pop();
+                  } else {
+                    Navigator.pop(context);
+                  }
+                },
+                child: const Text('保存'),
+              ),
+            ],
           ),
-        ],
-      ),
     );
   }
 
   Widget _buildWebsiteCard(Map<String, dynamic> website, int index) {
     // 根据 iconCode 获取对应的图标
     IconData iconData = _getIconFromCode(website['iconCode']);
-    
+
     return InkWell(
       key: ValueKey(website['url']),
       onTap: () => _loadUrl(website['url']),
-      onDoubleTap: () => _showWebsiteOptionsDialog(context, website, _commonWebsites.indexWhere((site) => site['url'] == website['url'])),
+      onDoubleTap:
+          () => _showWebsiteOptionsDialog(
+            context,
+            website,
+            _commonWebsites.indexWhere((site) => site['url'] == website['url']),
+          ),
       child: Card(
         elevation: 4.0,
         child: Column(
@@ -2051,88 +2265,116 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           children: [
             Icon(iconData, size: 40, color: Colors.blue),
             const SizedBox(height: 8),
-            Text(website['name'], style: const TextStyle(fontSize: 16), textAlign: TextAlign.center),
+            Text(
+              website['name'],
+              style: const TextStyle(fontSize: 16),
+              textAlign: TextAlign.center,
+            ),
           ],
         ),
       ),
     );
   }
-  
-  void _showWebsiteOptionsDialog(BuildContext pageContext, Map<String, dynamic> website, int index) {
+
+  void _showWebsiteOptionsDialog(
+    BuildContext pageContext,
+    Map<String, dynamic> website,
+    int index,
+  ) {
     showModalBottomSheet(
       context: pageContext,
-      builder: (sheetContext) => Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          ListTile(
-            leading: const Icon(Icons.edit, color: Colors.blue),
-            title: const Text('重命名'),
-            onTap: () {
-              Navigator.pop(sheetContext);
-              _showRenameWebsiteDialog(pageContext, website, index);
-            },
-          ),
-          ListTile(
-            leading: const Icon(Icons.link, color: Colors.green),
-            title: const Text('复制网址'),
-            onTap: () {
-              final url = website['url']?.toString() ?? '';
-              if (url.isNotEmpty) {
-                Clipboard.setData(ClipboardData(text: url));
-                Navigator.pop(sheetContext);
-                if (pageContext.mounted) {
-                  ScaffoldMessenger.of(pageContext).showSnackBar(
-                    const SnackBar(content: Text('网址已复制到剪贴板'), duration: Duration(seconds: 1)),
+      builder:
+          (sheetContext) => Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.edit, color: Colors.blue),
+                title: const Text('重命名'),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  _showRenameWebsiteDialog(pageContext, website, index);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.link, color: Colors.green),
+                title: const Text('复制网址'),
+                onTap: () {
+                  final url = website['url']?.toString() ?? '';
+                  if (url.isNotEmpty) {
+                    Clipboard.setData(ClipboardData(text: url));
+                    Navigator.pop(sheetContext);
+                    if (pageContext.mounted) {
+                      ScaffoldMessenger.of(pageContext).showSnackBar(
+                        const SnackBar(
+                          content: Text('网址已复制到剪贴板'),
+                          duration: Duration(seconds: 1),
+                        ),
+                      );
+                    }
+                  }
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.delete, color: Colors.red),
+                title: const Text('删除'),
+                onTap: () async {
+                  // 先显示确认对话框（此时 sheet 仍打开，sheetContext 有效）
+                  final shouldDelete =
+                      await showDialog<bool>(
+                        context: sheetContext,
+                        builder:
+                            (ctx) => AlertDialog(
+                              title: const Text('删除网站'),
+                              content: Text('确定要删除 ${website['name']} 吗？'),
+                              actions: [
+                                TextButton(
+                                  onPressed: () => Navigator.pop(ctx, false),
+                                  child: const Text('取消'),
+                                ),
+                                TextButton(
+                                  onPressed: () => Navigator.pop(ctx, true),
+                                  child: const Text('删除'),
+                                ),
+                              ],
+                            ),
+                      ) ??
+                      false;
+                  if (!shouldDelete) return;
+                  // 关闭底部面板后再执行删除，使用 pageContext 确保有效
+                  if (!pageContext.mounted) return;
+                  Navigator.pop(sheetContext);
+                  // 使用 pageContext 显示加载框并执行删除
+                  showDialog(
+                    context: pageContext,
+                    barrierDismissible: false,
+                    builder:
+                        (_) => const AlertDialog(
+                          content: Row(
+                            children: [
+                              CircularProgressIndicator(),
+                              SizedBox(width: 20),
+                              Text('删除中...'),
+                            ],
+                          ),
+                        ),
                   );
-                }
-              }
-            },
+                  // 若 index 可能失效，则按 url 重新查找
+                  int idx = index;
+                  if (idx < 0 || idx >= _commonWebsites.length) {
+                    idx = _commonWebsites.indexWhere(
+                      (s) => s['url'] == website['url'],
+                    );
+                  }
+                  if (idx >= 0) {
+                    await _removeWebsite(idx);
+                  }
+                  if (pageContext.mounted) {
+                    Navigator.of(pageContext).pop();
+                  }
+                },
+              ),
+            ],
           ),
-          ListTile(
-            leading: const Icon(Icons.delete, color: Colors.red),
-            title: const Text('删除'),
-            onTap: () async {
-              // 先显示确认对话框（此时 sheet 仍打开，sheetContext 有效）
-              final shouldDelete = await showDialog<bool>(
-                context: sheetContext,
-                builder: (ctx) => AlertDialog(
-                  title: const Text('删除网站'),
-                  content: Text('确定要删除 ${website['name']} 吗？'),
-                  actions: [
-                    TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
-                    TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('删除')),
-                  ],
-                ),
-              ) ?? false;
-              if (!shouldDelete) return;
-              // 关闭底部面板后再执行删除，使用 pageContext 确保有效
-              if (!pageContext.mounted) return;
-              Navigator.pop(sheetContext);
-              // 使用 pageContext 显示加载框并执行删除
-              showDialog(
-                context: pageContext,
-                barrierDismissible: false,
-                builder: (_) => const AlertDialog(
-                  content: Row(
-                    children: [CircularProgressIndicator(), SizedBox(width: 20), Text('删除中...')],
-                  ),
-                ),
-              );
-              // 若 index 可能失效，则按 url 重新查找
-              int idx = index;
-              if (idx < 0 || idx >= _commonWebsites.length) {
-                idx = _commonWebsites.indexWhere((s) => s['url'] == website['url']);
-              }
-              if (idx >= 0) {
-                await _removeWebsite(idx);
-              }
-              if (pageContext.mounted) {
-                Navigator.of(pageContext).pop();
-              }
-            },
-          ),
-        ],
-      ),
     );
   }
 
@@ -2144,20 +2386,33 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         _bookmarks.clear();
         if (bookmarksJsonString != null && bookmarksJsonString.isNotEmpty) {
           final decoded = jsonDecode(bookmarksJsonString);
-          if (decoded.isNotEmpty && decoded[0] is Map<String, dynamic> && decoded[0].containsKey('name') && decoded[0].containsKey('url')) {
-            _bookmarks = (decoded as List).map((item) => {
-              'name': item['name']?.toString() ?? '',
-              'url': item['url']?.toString() ?? '',
-            }).toList();
+          if (decoded.isNotEmpty &&
+              decoded[0] is Map<String, dynamic> &&
+              decoded[0].containsKey('name') &&
+              decoded[0].containsKey('url')) {
+            _bookmarks =
+                (decoded as List)
+                    .map(
+                      (item) => {
+                        'name': item['name']?.toString() ?? '',
+                        'url': item['url']?.toString() ?? '',
+                      },
+                    )
+                    .toList();
           } else if (decoded.isNotEmpty && decoded[0] is String) {
-            _bookmarks = (decoded as List<String>).map((url) => {'name': url, 'url': url} as Map<String, String>).toList();
+            _bookmarks =
+                (decoded as List<String>)
+                    .map(
+                      (url) => {'name': url, 'url': url} as Map<String, String>,
+                    )
+                    .toList();
             _saveBookmarks();
           }
         }
         if (_bookmarks.isEmpty) {
           _bookmarks = [
             {'name': '百度', 'url': 'https://www.baidu.com'},
-            {'name': 'Bilibili', 'url': 'https://www.bilibili.com'}
+            {'name': 'Bilibili', 'url': 'https://www.bilibili.com'},
           ];
           _saveBookmarks();
         }
@@ -2173,25 +2428,38 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       if (_commonWebsites.isEmpty) {
         debugPrint('警告：尝试保存空的常用网站列表，将加载默认网站');
         _commonWebsites.addAll([
-          {'name': 'Google', 'url': 'https://www.google.com', 'iconCode': Icons.public.codePoint},
-          {'name': '百度', 'url': 'https://www.baidu.com', 'iconCode': Icons.public.codePoint}
+          {
+            'name': 'Google',
+            'url': 'https://www.google.com',
+            'iconCode': Icons.public.codePoint,
+          },
+          {
+            'name': '百度',
+            'url': 'https://www.baidu.com',
+            'iconCode': Icons.public.codePoint,
+          },
         ]);
       }
-      
+
       final prefs = await SharedPreferences.getInstance();
-      final cleanedWebsites = _commonWebsites.map((site) => {
-        'name': site['name'],
-        'url': site['url'],
-        'iconCode': Icons.public.codePoint,
-      }).toList();
+      final cleanedWebsites =
+          _commonWebsites
+              .map(
+                (site) => {
+                  'name': site['name'],
+                  'url': site['url'],
+                  'iconCode': Icons.public.codePoint,
+                },
+              )
+              .toList();
       final jsonString = jsonEncode(cleanedWebsites);
-      
+
       // 先获取旧数据作为备份
       final oldJsonString = prefs.getString('common_websites');
-      
+
       // 直接设置新数据，不先移除
       final success = await prefs.setString('common_websites', jsonString);
-      
+
       if (success) {
         debugPrint('成功保存了${cleanedWebsites.length}个常用网站');
       } else {
@@ -2205,17 +2473,26 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     }
   }
 
-  Future<void> _handleDownload(String url, String contentDisposition, String mimeType, {MediaType? selectedType}) async {
+  Future<void> _handleDownload(
+    String url,
+    String contentDisposition,
+    String mimeType, {
+    MediaType? selectedType,
+  }) async {
     try {
       final absoluteUrl = _toAbsoluteUrl(url);
       debugPrint('开始处理下载: $absoluteUrl, MIME类型: $mimeType');
       if (_downloadingUrls.contains(absoluteUrl)) {
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('该文件正在下载中，请稍候...')));
+        if (mounted)
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('该文件正在下载中，请稍候...')));
         return;
       }
 
       String processedUrl = absoluteUrl;
-      if (absoluteUrl.contains('youtube.com') || absoluteUrl.contains('youtu.be')) {
+      if (absoluteUrl.contains('youtube.com') ||
+          absoluteUrl.contains('youtu.be')) {
         processedUrl = await _resolveYouTubeUrl(absoluteUrl);
       }
 
@@ -2229,16 +2506,25 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           final MediaType mediaType = result['mediaType'];
           if (shouldDownload && mediaType != MediaType.audio) {
             if (mediaType == MediaType.video) {
-              final existing = await _findExistingVideoBySourceUrl(processedUrl);
+              final existing = await _findExistingVideoBySourceUrl(
+                processedUrl,
+              );
               if (existing != null) {
                 await _showVideoDuplicateSnackBar(existing);
                 return;
               }
             }
-            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('开始下载，将在后台进行...'), duration: Duration(seconds: 2)));
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('开始下载，将在后台进行...'),
+                duration: Duration(seconds: 2),
+              ),
+            );
             _performBackgroundDownload(processedUrl, mediaType);
           } else if (mediaType == MediaType.audio) {
-            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('当前仅支持下载图片和视频，不支持音频')));
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(const SnackBar(content: Text('当前仅支持下载图片和视频，不支持音频')));
           }
         }
       } else {
@@ -2249,13 +2535,21 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
             return;
           }
         }
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('开始下载，将在后台进行...'), duration: Duration(seconds: 2)));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('开始下载，将在后台进行...'),
+            duration: Duration(seconds: 2),
+          ),
+        );
         _performBackgroundDownload(processedUrl, selectedType);
       }
     } catch (e, stackTrace) {
       debugPrint('处理下载时出错: $e');
       debugPrint('错误堆栈: $stackTrace');
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('下载出错: $e')));
+      if (mounted)
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('下载出错: $e')));
     }
   }
 
@@ -2266,41 +2560,52 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   Widget _buildDownloadDialog(String url, String mimeType) {
     MediaType detected = _determineMediaType(mimeType);
     // 仅支持图片和视频，音频不提供下载
-    MediaType selectedType = (detected == MediaType.audio) ? MediaType.image : detected;
+    MediaType selectedType =
+        (detected == MediaType.audio) ? MediaType.image : detected;
     return StatefulBuilder(
-      builder: (context, setState) => AlertDialog(
-        title: const Text('下载媒体'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('您想下载这个文件吗？'),
-            const SizedBox(height: 8),
-            Text('URL: $url', style: TextStyle(fontSize: 12, color: Colors.grey[600])),
-            const SizedBox(height: 16),
-            const Text('选择媒体类型:'),
-            RadioListTile<MediaType>(
-              title: const Text('图片'),
-              value: MediaType.image,
-              groupValue: selectedType,
-              onChanged: (value) => setState(() => selectedType = value!),
+      builder:
+          (context, setState) => AlertDialog(
+            title: const Text('下载媒体'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('您想下载这个文件吗？'),
+                const SizedBox(height: 8),
+                Text(
+                  'URL: $url',
+                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                ),
+                const SizedBox(height: 16),
+                const Text('选择媒体类型:'),
+                RadioListTile<MediaType>(
+                  title: const Text('图片'),
+                  value: MediaType.image,
+                  groupValue: selectedType,
+                  onChanged: (value) => setState(() => selectedType = value!),
+                ),
+                RadioListTile<MediaType>(
+                  title: const Text('视频'),
+                  value: MediaType.video,
+                  groupValue: selectedType,
+                  onChanged: (value) => setState(() => selectedType = value!),
+                ),
+              ],
             ),
-            RadioListTile<MediaType>(
-              title: const Text('视频'),
-              value: MediaType.video,
-              groupValue: selectedType,
-              onChanged: (value) => setState(() => selectedType = value!),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
-          TextButton(
-            onPressed: () => Navigator.of(context).pop({'download': true, 'mediaType': selectedType}),
-            child: const Text('下载'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('取消'),
+              ),
+              TextButton(
+                onPressed:
+                    () => Navigator.of(
+                      context,
+                    ).pop({'download': true, 'mediaType': selectedType}),
+                child: const Text('下载'),
+              ),
+            ],
           ),
-        ],
-      ),
     );
   }
 
@@ -2320,26 +2625,69 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   bool _urlLooksLikeVideoStream(String url) {
     final u = url.toLowerCase();
     if (u.contains('.m3u8') || u.contains('.m3u')) return true;
-    return RegExp(r'\.(mp4|webm|mov|ts)(\?|#|$)', caseSensitive: false).hasMatch(u);
+    return RegExp(
+      r'\.(mp4|webm|mov|ts)(\?|#|$)',
+      caseSensitive: false,
+    ).hasMatch(u);
   }
 
   bool _isDownloadableLink(String url) {
     debugPrint('检查URL是否为可下载链接: $url');
     final fileExtensions = [
-      '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg', '.ico',
-      '.mp4', '.avi', '.mov', '.wmv', '.flv', '.mkv', '.webm', '.m3u8', '.ts',
-      '.mp3', '.wav', '.ogg', '.aac', '.flac', '.m4a',
-      '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.txt',
-      '.zip', '.rar', '.7z', '.tar', '.gz',
-      '.exe', '.apk', '.dmg', '.iso'
+      '.jpg',
+      '.jpeg',
+      '.png',
+      '.gif',
+      '.bmp',
+      '.webp',
+      '.svg',
+      '.ico',
+      '.mp4',
+      '.avi',
+      '.mov',
+      '.wmv',
+      '.flv',
+      '.mkv',
+      '.webm',
+      '.m3u8',
+      '.ts',
+      '.mp3',
+      '.wav',
+      '.ogg',
+      '.aac',
+      '.flac',
+      '.m4a',
+      '.pdf',
+      '.doc',
+      '.docx',
+      '.xls',
+      '.xlsx',
+      '.ppt',
+      '.pptx',
+      '.txt',
+      '.zip',
+      '.rar',
+      '.7z',
+      '.tar',
+      '.gz',
+      '.exe',
+      '.apk',
+      '.dmg',
+      '.iso',
     ];
     final lowercaseUrl = url.toLowerCase();
     for (final ext in fileExtensions) {
       if (lowercaseUrl.endsWith(ext)) return true;
     }
     final downloadKeywords = [
-      '/download/', '/dl/', '/attachment/', '/file/', '/media/download/',
-      '/photo/download/', '/video/download/', '/document/download/'
+      '/download/',
+      '/dl/',
+      '/attachment/',
+      '/file/',
+      '/media/download/',
+      '/photo/download/',
+      '/video/download/',
+      '/document/download/',
     ];
     for (final keyword in downloadKeywords) {
       if (lowercaseUrl.contains(keyword)) return true;
@@ -2388,8 +2736,14 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     final q = uri.query.toLowerCase();
     if (q.isEmpty) return url;
     final stripParams = [
-      'x-bce-process', 'image/resize', 'image/format', 'image/quality',
-      'image/crop', 'image/watermark', 'imagemogr2', 'imageview2',
+      'x-bce-process',
+      'image/resize',
+      'image/format',
+      'image/quality',
+      'image/crop',
+      'image/watermark',
+      'imagemogr2',
+      'imageview2',
     ];
     if (stripParams.any((p) => q.contains(p))) {
       return uri.replace(query: '').toString();
@@ -2407,26 +2761,46 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   /// 根据 URL 和当前页面返回合适的 Referer，用于绕过反盗链
   String _getMediaReferer(String url) {
     final lower = url.toLowerCase();
-    if (lower.contains('baidu.com') || lower.contains('bdstatic.com')) return 'https://www.baidu.com';
-    if (lower.contains('gstatic.com') || lower.contains('googleusercontent.com') || lower.contains('google.com')) return 'https://www.google.com';
-    if (lower.contains('bing.com') || lower.contains('bcbits.com')) return 'https://www.bing.com';
-    if (lower.contains('twitter.com') || lower.contains('twimg.com')) return 'https://twitter.com';
-    if (lower.contains('facebook.com') || lower.contains('fbcdn.net')) return 'https://www.facebook.com';
-    if (lower.contains('instagram.com') || lower.contains('cdninstagram.com')) return 'https://www.instagram.com';
+    if (lower.contains('baidu.com') || lower.contains('bdstatic.com'))
+      return 'https://www.baidu.com';
+    if (lower.contains('gstatic.com') ||
+        lower.contains('googleusercontent.com') ||
+        lower.contains('google.com'))
+      return 'https://www.google.com';
+    if (lower.contains('bing.com') || lower.contains('bcbits.com'))
+      return 'https://www.bing.com';
+    if (lower.contains('twitter.com') || lower.contains('twimg.com'))
+      return 'https://twitter.com';
+    if (lower.contains('facebook.com') || lower.contains('fbcdn.net'))
+      return 'https://www.facebook.com';
+    if (lower.contains('instagram.com') || lower.contains('cdninstagram.com'))
+      return 'https://www.instagram.com';
     if (lower.contains('zhihu.com')) return 'https://www.zhihu.com';
-    if (lower.contains('weibo.com') || lower.contains('sinaimg.cn')) return 'https://weibo.com';
-    if (lower.contains('xcdn') || lower.contains('cdn1.') || lower.contains('cdn101')) {
-      final page = _urlController.text.trim().isNotEmpty ? _urlController.text.trim() : _currentUrl;
+    if (lower.contains('weibo.com') || lower.contains('sinaimg.cn'))
+      return 'https://weibo.com';
+    if (lower.contains('xcdn') ||
+        lower.contains('cdn1.') ||
+        lower.contains('cdn101')) {
+      final page =
+          _urlController.text.trim().isNotEmpty
+              ? _urlController.text.trim()
+              : _currentUrl;
       if (page.startsWith('http')) return page;
     }
-    final pageUrl = _urlController.text.trim().isNotEmpty ? _urlController.text.trim() : _currentUrl;
+    final pageUrl =
+        _urlController.text.trim().isNotEmpty
+            ? _urlController.text.trim()
+            : _currentUrl;
     if (pageUrl.startsWith('http')) return pageUrl;
     return Uri.tryParse(pageUrl)?.origin ?? 'https://www.google.com';
   }
 
   /// 403 时尝试的 Referer 列表（按优先级）
   List<String> _getRefererCandidates(String mediaUrl) {
-    final page = _urlController.text.trim().isNotEmpty ? _urlController.text.trim() : _currentUrl;
+    final page =
+        _urlController.text.trim().isNotEmpty
+            ? _urlController.text.trim()
+            : _currentUrl;
     final candidates = <String>[];
     if (page.startsWith('http')) {
       candidates.add(page);
@@ -2442,7 +2816,10 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
   bool _isValidVideoBytes(List<int> bytes) {
     if (bytes.length < 8) return false;
-    return bytes[4] == 0x66 && bytes[5] == 0x74 && bytes[6] == 0x79 && bytes[7] == 0x70;
+    return bytes[4] == 0x66 &&
+        bytes[5] == 0x74 &&
+        bytes[6] == 0x79 &&
+        bytes[7] == 0x70;
   }
 
   /// HLS 分片拼接后为 MPEG-TS，与 MP4 头不同；Android ExoPlayer 可播放 `.ts`。
@@ -2459,7 +2836,9 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   bool _bytesLookLikeHlsPlaylistText(List<int> bytes) {
     if (bytes.length < 7) return false;
     final s = String.fromCharCodes(bytes.take(16));
-    return s.startsWith('#EXTM3U') || s.startsWith('#EXTINF') || s.startsWith('#EXT-X-VERSION');
+    return s.startsWith('#EXTM3U') ||
+        s.startsWith('#EXTINF') ||
+        s.startsWith('#EXT-X-VERSION');
   }
 
   /// 验证图片字节是否有效（检查文件头 magic numbers）
@@ -2468,12 +2847,28 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     // JPEG: FF D8 FF
     if (bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF) return true;
     // PNG: 89 50 4E 47 0D 0A 1A 0A
-    if (bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47) return true;
+    if (bytes[0] == 0x89 &&
+        bytes[1] == 0x50 &&
+        bytes[2] == 0x4E &&
+        bytes[3] == 0x47)
+      return true;
     // GIF: 47 49 46 38
-    if (bytes[0] == 0x47 && bytes[1] == 0x49 && bytes[2] == 0x46 && bytes[3] == 0x38) return true;
+    if (bytes[0] == 0x47 &&
+        bytes[1] == 0x49 &&
+        bytes[2] == 0x46 &&
+        bytes[3] == 0x38)
+      return true;
     // WebP: 52 49 46 46 ... 57 45 42 50
-    if (bytes.length >= 12 && bytes[0] == 0x52 && bytes[1] == 0x49 && bytes[2] == 0x46 &&
-        bytes[3] == 0x46 && bytes[8] == 0x57 && bytes[9] == 0x45 && bytes[10] == 0x42 && bytes[11] == 0x50) return true;
+    if (bytes.length >= 12 &&
+        bytes[0] == 0x52 &&
+        bytes[1] == 0x49 &&
+        bytes[2] == 0x46 &&
+        bytes[3] == 0x46 &&
+        bytes[8] == 0x57 &&
+        bytes[9] == 0x45 &&
+        bytes[10] == 0x42 &&
+        bytes[11] == 0x50)
+      return true;
     return false;
   }
 
@@ -2482,13 +2877,19 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     Duration? receiveTimeout,
     bool forVideoDownload = false,
   }) {
-    final dio = Dio(BaseOptions(
-      connectTimeout: connectTimeout ?? const Duration(seconds: 15),
-      receiveTimeout: receiveTimeout ?? (forVideoDownload ? const Duration(seconds: 60) : const Duration(seconds: 30)),
-      sendTimeout: const Duration(seconds: 15),
-      followRedirects: true,
-      maxRedirects: 5,
-    ));
+    final dio = Dio(
+      BaseOptions(
+        connectTimeout: connectTimeout ?? const Duration(seconds: 15),
+        receiveTimeout:
+            receiveTimeout ??
+            (forVideoDownload
+                ? const Duration(seconds: 60)
+                : const Duration(seconds: 30)),
+        sendTimeout: const Duration(seconds: 15),
+        followRedirects: true,
+        maxRedirects: 5,
+      ),
+    );
     (dio.httpClientAdapter as IOHttpClientAdapter).createHttpClient = () {
       final client = HttpClient();
       client.badCertificateCallback = (_, __, ___) => true;
@@ -2572,7 +2973,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       final m = RegExp(r'bytes \d+-\d+/(\d+)').firstMatch(cr);
       if (m != null) {
         final total = int.tryParse(m.group(1)!);
-        if (total != null && total >= _kParallelRangeVideoMinBytes) return total;
+        if (total != null && total >= _kParallelRangeVideoMinBytes)
+          return total;
       }
     } catch (e) {
       debugPrint('Range 探测 GET 失败（可忽略）: $e');
@@ -2582,8 +2984,10 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
   int _parallelRangePartsForTotalSize(int totalBytes) {
     if (totalBytes < _kParallelRangeVideoMinBytes) return 1;
-    if (totalBytes < 32 * 1024 * 1024) return min(4, _kParallelRangeVideoConnections);
-    if (totalBytes < 128 * 1024 * 1024) return min(6, _kParallelRangeVideoConnections);
+    if (totalBytes < 32 * 1024 * 1024)
+      return min(4, _kParallelRangeVideoConnections);
+    if (totalBytes < 128 * 1024 * 1024)
+      return min(6, _kParallelRangeVideoConnections);
     return _kParallelRangeVideoConnections;
   }
 
@@ -2615,12 +3019,17 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       'User-Agent': browserUA,
       'Referer': referer,
       'Accept': '*/*',
-      if (referer.startsWith('http')) 'Origin': Uri.tryParse(referer)?.origin ?? referer,
+      if (referer.startsWith('http'))
+        'Origin': Uri.tryParse(referer)?.origin ?? referer,
     };
 
     int? totalBytes;
     try {
-      totalBytes = await _probeVideoTotalBytesForRangeDownload(downloadDio, url, headers);
+      totalBytes = await _probeVideoTotalBytesForRangeDownload(
+        downloadDio,
+        url,
+        headers,
+      );
     } catch (_) {
       return null;
     }
@@ -2639,7 +3048,10 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       );
     }
 
-    final partPaths = List<String>.generate(ranges.length, (i) => '$filePath.part$i');
+    final partPaths = List<String>.generate(
+      ranges.length,
+      (i) => '$filePath.part$i',
+    );
     final perPart = List<int>.filled(ranges.length, 0);
 
     Future<void> downloadOneRange(int ri) async {
@@ -2726,14 +3138,23 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     }
   }
 
-  Future<File?> _downloadFile(String url, MediaType mediaType, {CancelToken? cancelToken, DownloadProgressCallback? onProgress}) async {
+  Future<File?> _downloadFile(
+    String url,
+    MediaType mediaType, {
+    CancelToken? cancelToken,
+    DownloadProgressCallback? onProgress,
+  }) async {
     try {
       final absoluteUrl = _toAbsoluteUrl(url);
       final downloadUrl = _getCleanMediaUrl(absoluteUrl);
       debugPrint('开始下载文件，URL: $downloadUrl');
-      final downloadDio = mediaType == MediaType.image
-          ? _createDownloadDio(connectTimeout: const Duration(seconds: 5), receiveTimeout: const Duration(seconds: 10))
-          : _createDownloadDio(forVideoDownload: true);
+      final downloadDio =
+          mediaType == MediaType.image
+              ? _createDownloadDio(
+                connectTimeout: const Duration(seconds: 5),
+                receiveTimeout: const Duration(seconds: 10),
+              )
+              : _createDownloadDio(forVideoDownload: true);
 
       final appDir = await getApplicationDocumentsDirectory();
       final mediaDir = Directory('${appDir.path}/media');
@@ -2747,22 +3168,36 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       if (extension.isEmpty) {
         final mimeType = _guessMimeType(absoluteUrl);
         if (mimeType.startsWith('image/')) {
-          extension = mimeType == 'image/png' ? '.png' : mimeType == 'image/gif' ? '.gif' :
-              mimeType == 'image/webp' ? '.webp' : '.jpg';
-        } else if (mimeType.startsWith('video/') || mimeType == 'application/x-mpegURL') {
+          extension =
+              mimeType == 'image/png'
+                  ? '.png'
+                  : mimeType == 'image/gif'
+                  ? '.gif'
+                  : mimeType == 'image/webp'
+                  ? '.webp'
+                  : '.jpg';
+        } else if (mimeType.startsWith('video/') ||
+            mimeType == 'application/x-mpegURL') {
           extension = '.mp4';
         } else if (mimeType.startsWith('audio/')) {
           extension = '.mp3';
         } else {
-          extension = mediaType == MediaType.image ? '.jpg' :
-              mediaType == MediaType.video ? '.mp4' : mediaType == MediaType.audio ? '.mp3' : '.bin';
+          extension =
+              mediaType == MediaType.image
+                  ? '.jpg'
+                  : mediaType == MediaType.video
+                  ? '.mp4'
+                  : mediaType == MediaType.audio
+                  ? '.mp3'
+                  : '.bin';
         }
       }
 
       final filePath = '${mediaDir.path}/$uuid$extension';
       debugPrint('将下载到文件路径: $filePath');
 
-      const browserUA = 'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
+      const browserUA =
+          'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
       final refererCandidates = _getRefererCandidates(absoluteUrl);
       int retryCount = 0;
       final maxRetries = mediaType == MediaType.image ? 2 : 5;
@@ -2771,7 +3206,10 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
       while (retryCount < maxRetries) {
         try {
-          final referer = refererIdx < refererCandidates.length ? refererCandidates[refererIdx] : refererCandidates.last;
+          final referer =
+              refererIdx < refererCandidates.length
+                  ? refererCandidates[refererIdx]
+                  : refererCandidates.last;
           debugPrint('下载尝试 ${retryCount + 1}/$maxRetries, Referer: $referer');
 
           if (mediaType == MediaType.video &&
@@ -2800,13 +3238,15 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
             options: Options(
               followRedirects: true,
               maxRedirects: 5,
-              validateStatus: (status) => status != null && status >= 200 && status < 300,
+              validateStatus:
+                  (status) => status != null && status >= 200 && status < 300,
               responseType: ResponseType.bytes,
               headers: {
                 'User-Agent': browserUA,
                 'Referer': referer,
                 'Accept': '*/*',
-                if (referer.startsWith('http')) 'Origin': Uri.tryParse(referer)?.origin ?? referer,
+                if (referer.startsWith('http'))
+                  'Origin': Uri.tryParse(referer)?.origin ?? referer,
               },
             ),
             onReceiveProgress: (received, total) {
@@ -2814,12 +3254,22 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
               final isPlaylist = extension == '.m3u8' || extension == '.m3u';
               if (isPlaylist) {
                 if (total > 0) {
-                  onProgress((received / total) * 0.02, detail: '播放列表 ${_formatBytes(received)} / ${_formatBytes(total)}');
+                  onProgress(
+                    (received / total) * 0.02,
+                    detail:
+                        '播放列表 ${_formatBytes(received)} / ${_formatBytes(total)}',
+                  );
                 } else {
-                  onProgress(0.01, detail: '正在获取播放列表 ${_formatBytes(received)}…');
+                  onProgress(
+                    0.01,
+                    detail: '正在获取播放列表 ${_formatBytes(received)}…',
+                  );
                 }
               } else if (total > 0) {
-                onProgress(received / total, detail: '${_formatBytes(received)} / ${_formatBytes(total)}');
+                onProgress(
+                  received / total,
+                  detail: '${_formatBytes(received)} / ${_formatBytes(total)}',
+                );
               } else {
                 onProgress(0.0, detail: '已下载 ${_formatBytes(received)}（总大小未知）');
               }
@@ -2831,10 +3281,12 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
               downloadUrl,
               downloadDio,
               onMergeProgress: (completed, totalSegs, mergedBytes) {
-                final frac = totalSegs > 0 ? 0.02 + (completed / totalSegs) * 0.98 : 0.5;
+                final frac =
+                    totalSegs > 0 ? 0.02 + (completed / totalSegs) * 0.98 : 0.5;
                 onProgress?.call(
                   frac.clamp(0.0, 1.0),
-                  detail: 'HLS 分片 $completed/$totalSegs · 已合并 ${_formatBytes(mergedBytes)}',
+                  detail:
+                      'HLS 分片 $completed/$totalSegs · 已合并 ${_formatBytes(mergedBytes)}',
                 );
               },
             );
@@ -2867,15 +3319,20 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           retryCount++;
           debugPrint('下载失败 (尝试 $retryCount/$maxRetries): $e\n$stackTrace');
           if (e is DioException) {
-            if (e.type == DioExceptionType.connectionTimeout || e.type == DioExceptionType.receiveTimeout || e.type == DioExceptionType.sendTimeout) {
-              if (retryCount >= maxRetries) throw Exception('[下载失败] 连接/接收超时，请检查网络或稍后重试');
+            if (e.type == DioExceptionType.connectionTimeout ||
+                e.type == DioExceptionType.receiveTimeout ||
+                e.type == DioExceptionType.sendTimeout) {
+              if (retryCount >= maxRetries)
+                throw Exception('[下载失败] 连接/接收超时，请检查网络或稍后重试');
             } else if (e.type == DioExceptionType.badResponse) {
               final code = e.response?.statusCode ?? 0;
               if (code == 400 || code == 403) {
                 if (refererIdx + 1 < refererCandidates.length) {
                   refererIdx++;
                   retryCount--;
-                  debugPrint('403/400，尝试下一个Referer: ${refererCandidates[refererIdx]}');
+                  debugPrint(
+                    '403/400，尝试下一个Referer: ${refererCandidates[refererIdx]}',
+                  );
                 } else {
                   final stripped = _getStrippedMediaUrl(downloadUrl);
                   if (stripped != urlToTry && urlToTry == downloadUrl) {
@@ -2884,23 +3341,33 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                     retryCount--;
                   }
                 }
-                if (retryCount >= maxRetries) throw Exception('[下载失败] 服务器拒绝(403/400)，已尝试多种Referer，该资源可能需登录');
+                if (retryCount >= maxRetries)
+                  throw Exception(
+                    '[下载失败] 服务器拒绝(403/400)，已尝试多种Referer，该资源可能需登录',
+                  );
               } else {
-                if (retryCount >= maxRetries) throw Exception('[下载失败] 服务器返回$code，请检查URL是否有效');
+                if (retryCount >= maxRetries)
+                  throw Exception('[下载失败] 服务器返回$code，请检查URL是否有效');
               }
             } else if (e.type == DioExceptionType.connectionError) {
-              if (retryCount >= maxRetries) throw Exception('[下载失败] 无法连接服务器: ${e.message ?? "请检查网络"}');
+              if (retryCount >= maxRetries)
+                throw Exception('[下载失败] 无法连接服务器: ${e.message ?? "请检查网络"}');
             } else if (e.type == DioExceptionType.unknown) {
-              if (retryCount >= maxRetries) throw Exception('[下载失败] 网络异常: ${e.message ?? e.error ?? "未知错误"}');
+              if (retryCount >= maxRetries)
+                throw Exception(
+                  '[下载失败] 网络异常: ${e.message ?? e.error ?? "未知错误"}',
+                );
             } else {
-              if (retryCount >= maxRetries) throw Exception('[下载失败] ${e.message ?? "网络错误"}');
+              if (retryCount >= maxRetries)
+                throw Exception('[下载失败] ${e.message ?? "网络错误"}');
             }
           } else {
             if (retryCount >= maxRetries) throw Exception('[下载失败] $e');
           }
-          final retryDelayMs = mediaType == MediaType.image
-              ? (retryCount * 200).clamp(200, 500)
-              : (retryCount * 800).clamp(800, 3000);
+          final retryDelayMs =
+              mediaType == MediaType.image
+                  ? (retryCount * 200).clamp(200, 500)
+                  : (retryCount * 800).clamp(800, 3000);
           await Future.delayed(Duration(milliseconds: retryDelayMs));
         }
       }
@@ -2923,33 +3390,49 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
             .openRead(0, 32)
             .fold<List<int>>([], (prev, chunk) => [...prev, ...chunk]);
         if (_bytesLookLikeHlsPlaylistText(peek)) {
-          final merged = await _handleM3u8Download(file.path, downloadUrl, downloadDio);
+          final merged = await _handleM3u8Download(
+            file.path,
+            downloadUrl,
+            downloadDio,
+          );
           try {
             if (await file.exists()) await file.delete();
           } catch (_) {}
-          if (merged == null || !await merged.exists() || await merged.length() == 0) {
+          if (merged == null ||
+              !await merged.exists() ||
+              await merged.length() == 0) {
             throw Exception('[下载失败] M3U8 解析或合并失败');
           }
           return merged;
         }
       }
       if (mediaType == MediaType.image) {
-        final bytes = await file.openRead(0, 32).fold<List<int>>([], (prev, chunk) => [...prev, ...chunk]);
+        final bytes = await file
+            .openRead(0, 32)
+            .fold<List<int>>([], (prev, chunk) => [...prev, ...chunk]);
         if (!_isValidImageBytes(bytes)) {
           await file.delete();
-          throw Exception('[下载失败] 下载内容不是有效图片格式(非jpg/png/gif/webp)，可能是HTML错误页或需登录');
+          throw Exception(
+            '[下载失败] 下载内容不是有效图片格式(非jpg/png/gif/webp)，可能是HTML错误页或需登录',
+          );
         }
       }
       if (mediaType == MediaType.video && extension == '.mp4') {
-        final bytes = await file.openRead(0, 12).fold<List<int>>([], (prev, chunk) => [...prev, ...chunk]);
+        final bytes = await file
+            .openRead(0, 12)
+            .fold<List<int>>([], (prev, chunk) => [...prev, ...chunk]);
         if (!_isValidVideoBytes(bytes)) {
           await file.delete();
-          throw Exception('[下载失败] 下载内容不是有效MP4格式，可能是HTML错误页(403/404)或需登录，请长按视频获取');
+          throw Exception(
+            '[下载失败] 下载内容不是有效MP4格式，可能是HTML错误页(403/404)或需登录，请长按视频获取',
+          );
         }
       }
       if (mediaType == MediaType.video &&
           (extension == '.ts' || extension == '.mts')) {
-        final bytes = await file.openRead(0, 512).fold<List<int>>([], (prev, chunk) => [...prev, ...chunk]);
+        final bytes = await file
+            .openRead(0, 512)
+            .fold<List<int>>([], (prev, chunk) => [...prev, ...chunk]);
         if (!_isLikelyMpegTs(bytes)) {
           await file.delete();
           throw Exception('[下载失败] 不是有效的 TS 视频流');
@@ -2958,14 +3441,26 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       return file;
     } on DioException catch (e, st) {
       String reason = '未知网络错误';
-      if (e.type == DioExceptionType.connectionTimeout) reason = '连接超时，请检查网络';
-      else if (e.type == DioExceptionType.receiveTimeout) reason = '接收超时，文件可能过大或网络慢';
-      else if (e.type == DioExceptionType.sendTimeout) reason = '发送超时';
+      if (e.type == DioExceptionType.connectionTimeout)
+        reason = '连接超时，请检查网络';
+      else if (e.type == DioExceptionType.receiveTimeout)
+        reason = '接收超时，文件可能过大或网络慢';
+      else if (e.type == DioExceptionType.sendTimeout)
+        reason = '发送超时';
       else if (e.type == DioExceptionType.badResponse) {
         final code = e.response?.statusCode ?? 0;
-        reason = '服务器返回 $code: ${code == 403 ? "禁止访问(可能需Referer/登录)" : code == 404 ? "文件不存在" : code == 400 ? "请求错误" : "请检查URL"}';
-      } else if (e.type == DioExceptionType.connectionError) reason = '连接失败: ${e.message ?? "无法连接服务器"}';
-      else if (e.type == DioExceptionType.unknown) reason = '网络异常: ${e.message ?? e.error?.toString() ?? "未知"}';
+        reason =
+            '服务器返回 $code: ${code == 403
+                ? "禁止访问(可能需Referer/登录)"
+                : code == 404
+                ? "文件不存在"
+                : code == 400
+                ? "请求错误"
+                : "请检查URL"}';
+      } else if (e.type == DioExceptionType.connectionError)
+        reason = '连接失败: ${e.message ?? "无法连接服务器"}';
+      else if (e.type == DioExceptionType.unknown)
+        reason = '网络异常: ${e.message ?? e.error?.toString() ?? "未知"}';
       debugPrint('下载Dio错误: $e\n$st');
       throw Exception('[下载失败] $reason');
     } catch (e, stackTrace) {
@@ -2983,7 +3478,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     String m3u8Path,
     String pageUrl,
     Dio? dio, {
-    void Function(int completed, int totalSegments, int mergedBytes)? onMergeProgress,
+    void Function(int completed, int totalSegments, int mergedBytes)?
+    onMergeProgress,
   }) async {
     final Dio client;
     if (dio != null) {
@@ -3002,13 +3498,22 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     }
     Uri baseUri = Uri.parse(pageUrl);
     var effectivePageUrl = pageUrl;
-    final lines0 = content.split('\n').map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
-    if (lines0.any((l) => l.contains('EXT-X-STREAM-INF')) && !lines0.any((l) => l.contains('EXTINF'))) {
+    final lines0 =
+        content
+            .split('\n')
+            .map((s) => s.trim())
+            .where((s) => s.isNotEmpty)
+            .toList();
+    if (lines0.any((l) => l.contains('EXT-X-STREAM-INF')) &&
+        !lines0.any((l) => l.contains('EXTINF'))) {
       for (var i = 0; i < lines0.length; i++) {
-        if (lines0[i].contains('EXT-X-STREAM-INF') && i + 1 < lines0.length && !lines0[i + 1].startsWith('#')) {
-          final mediaUrl = lines0[i + 1].startsWith('http')
-              ? lines0[i + 1]
-              : baseUri.resolve(lines0[i + 1]).toString();
+        if (lines0[i].contains('EXT-X-STREAM-INF') &&
+            i + 1 < lines0.length &&
+            !lines0[i + 1].startsWith('#')) {
+          final mediaUrl =
+              lines0[i + 1].startsWith('http')
+                  ? lines0[i + 1]
+                  : baseUri.resolve(lines0[i + 1]).toString();
           content = (await client.get(mediaUrl)).data.toString();
           baseUri = Uri.parse(mediaUrl);
           effectivePageUrl = mediaUrl;
@@ -3032,11 +3537,22 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     final headers = <String, String>{
       'Referer': referer,
       'User-Agent': ua,
-      if (referer.startsWith('http')) 'Origin': Uri.tryParse(referer)?.origin ?? referer,
+      if (referer.startsWith('http'))
+        'Origin': Uri.tryParse(referer)?.origin ?? referer,
     };
 
-    final segLines = content.split('\n').map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
-    final tasks = await _parseHlsSegmentTasks(segLines, baseUri, client, headers);
+    final segLines =
+        content
+            .split('\n')
+            .map((s) => s.trim())
+            .where((s) => s.isNotEmpty)
+            .toList();
+    final tasks = await _parseHlsSegmentTasks(
+      segLines,
+      baseUri,
+      client,
+      headers,
+    );
     if (tasks == null) {
       await sink.close();
       try {
@@ -3144,7 +3660,10 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
             debugPrint('M3U8: EXT-X-KEY 缺少 URI');
             return null;
           }
-          final keyAbs = uriStr.startsWith('http') ? uriStr : baseUri.resolve(uriStr).toString();
+          final keyAbs =
+              uriStr.startsWith('http')
+                  ? uriStr
+                  : baseUri.resolve(uriStr).toString();
           aesKey = keyCache[keyAbs];
           aesKey ??= await _fetchHlsKeyBytes(client, keyAbs, headers);
           if (aesKey == null || aesKey.length != 16) {
@@ -3170,18 +3689,21 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           lineIdx++;
           continue;
         }
-        final segmentUrl = nextLine.startsWith('http://') || nextLine.startsWith('https://')
-            ? nextLine
-            : baseUri.resolve(nextLine).toString();
+        final segmentUrl =
+            nextLine.startsWith('http://') || nextLine.startsWith('https://')
+                ? nextLine
+                : baseUri.resolve(nextLine).toString();
         final seq = sequenceForNextSegment;
         sequenceForNextSegment++;
-        tasks.add(_HlsSegTask(
-          url: segmentUrl,
-          mediaSeq: seq,
-          useAes128: useAes128,
-          aesKey: useAes128 ? aesKey : null,
-          explicitIv: useAes128 ? explicitIvFromKey : null,
-        ));
+        tasks.add(
+          _HlsSegTask(
+            url: segmentUrl,
+            mediaSeq: seq,
+            useAes128: useAes128,
+            aesKey: useAes128 ? aesKey : null,
+            explicitIv: useAes128 ? explicitIvFromKey : null,
+          ),
+        );
         lineIdx += 2;
         continue;
       }
@@ -3190,14 +3712,15 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     return tasks;
   }
 
-  Future<Uint8List?> _downloadHlsSegmentRaw(Dio client, String url, Map<String, String> headers) async {
+  Future<Uint8List?> _downloadHlsSegmentRaw(
+    Dio client,
+    String url,
+    Map<String, String> headers,
+  ) async {
     try {
       final r = await client.get<List<int>>(
         url,
-        options: Options(
-          responseType: ResponseType.bytes,
-          headers: headers,
-        ),
+        options: Options(responseType: ResponseType.bytes, headers: headers),
       );
       final d = r.data;
       if (d == null) return null;
@@ -3214,7 +3737,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     Dio client,
     Map<String, String> headers,
     IOSink sink, {
-    void Function(int completed, int totalSegments, int mergedBytes)? onProgress,
+    void Function(int completed, int totalSegments, int mergedBytes)?
+    onProgress,
   }) async {
     final total = tasks.length;
     var mergedBytes = 0;
@@ -3223,7 +3747,9 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     for (var i = 0; i < tasks.length; i += _kHlsParallelSegmentFetches) {
       final end = min(i + _kHlsParallelSegmentFetches, tasks.length);
       final batch = tasks.sublist(i, end);
-      final raws = await Future.wait(batch.map((t) => _downloadHlsSegmentRaw(client, t.url, headers)));
+      final raws = await Future.wait(
+        batch.map((t) => _downloadHlsSegmentRaw(client, t.url, headers)),
+      );
       for (var j = 0; j < batch.length; j++) {
         final raw = raws[j];
         if (raw == null || raw.isEmpty) return false;
@@ -3253,7 +3779,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     Map<String, String> headers,
     IOSink sink,
     List<String> urls, {
-    void Function(int completed, int totalSegments, int mergedBytes)? onProgress,
+    void Function(int completed, int totalSegments, int mergedBytes)?
+    onProgress,
   }) async {
     final total = urls.length;
     var mergedBytes = 0;
@@ -3262,7 +3789,9 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     for (var i = 0; i < urls.length; i += _kHlsParallelSegmentFetches) {
       final end = min(i + _kHlsParallelSegmentFetches, urls.length);
       final batch = urls.sublist(i, end);
-      final raws = await Future.wait(batch.map((u) => _downloadHlsSegmentRaw(client, u, headers)));
+      final raws = await Future.wait(
+        batch.map((u) => _downloadHlsSegmentRaw(client, u, headers)),
+      );
       for (final raw in raws) {
         if (raw == null || raw.isEmpty) return null;
         sink.add(raw);
@@ -3275,7 +3804,10 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   }
 
   /// 无 #EXTINF 时的兜底：收集非 # 行中的分片 URL（仅用于未加密的媒体 playlist）。
-  List<String> _collectHlsPlaintextSegmentUrls(List<String> lines, Uri baseUri) {
+  List<String> _collectHlsPlaintextSegmentUrls(
+    List<String> lines,
+    Uri baseUri,
+  ) {
     final out = <String>[];
     for (final line in lines) {
       if (line.startsWith('#')) continue;
@@ -3322,14 +3854,15 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     return out;
   }
 
-  Future<Uint8List?> _fetchHlsKeyBytes(Dio client, String url, Map<String, String> headers) async {
+  Future<Uint8List?> _fetchHlsKeyBytes(
+    Dio client,
+    String url,
+    Map<String, String> headers,
+  ) async {
     try {
       final r = await client.get<List<int>>(
         url,
-        options: Options(
-          responseType: ResponseType.bytes,
-          headers: headers,
-        ),
+        options: Options(responseType: ResponseType.bytes, headers: headers),
       );
       final data = r.data;
       if (data == null) return null;
@@ -3340,9 +3873,18 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     }
   }
 
-  Uint8List _decryptHlsAes128Cbc(Uint8List key, Uint8List iv, Uint8List ciphertext) {
-    final encrypter = enc.Encrypter(enc.AES(enc.Key(key), mode: enc.AESMode.cbc));
-    final decrypted = encrypter.decryptBytes(enc.Encrypted(ciphertext), iv: enc.IV(iv));
+  Uint8List _decryptHlsAes128Cbc(
+    Uint8List key,
+    Uint8List iv,
+    Uint8List ciphertext,
+  ) {
+    final encrypter = enc.Encrypter(
+      enc.AES(enc.Key(key), mode: enc.AESMode.cbc),
+    );
+    final decrypted = encrypter.decryptBytes(
+      enc.Encrypted(ciphertext),
+      iv: enc.IV(iv),
+    );
     return Uint8List.fromList(decrypted);
   }
 
@@ -3358,8 +3900,13 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     try {
       final fileName = file.path.split('/').last;
       final fileHash = await _calculateFileHash(file);
-      final duplicate = await _databaseService.findDuplicateMediaItem(fileHash, fileName);
-      if (duplicate != null) throw Exception('文件已存在于媒体库中');
+      final duplicate = await _databaseService.findDuplicateMediaItem(
+        fileHash,
+        fileName,
+      );
+      if (duplicate != null) {
+        throw _ExistingMediaDuplicateException(duplicate);
+      }
       final uuid = const Uuid().v4();
       final mediaItem = MediaItem(
         id: uuid,
@@ -3374,7 +3921,7 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       await _databaseService.insertMediaItem(mediaItemMap);
       return mediaItemMap;
     } catch (e) {
-      debugPrint('保存到媒体库时出错: $e');
+      debugPrint('保存到媒体库时出错: ');
       rethrow;
     }
   }
@@ -3397,7 +3944,15 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           SnackBar(
             content: const Text('已截屏保存'),
             duration: _kMediaSaveSnackDuration,
-            action: SnackBarAction(label: '查看', onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (context) => const MediaManagerPage()))),
+            action: SnackBarAction(
+              label: '查看',
+              onPressed:
+                  () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (context) => const MediaManagerPage(),
+                    ),
+                  ),
+            ),
           ),
         );
       }
@@ -3429,226 +3984,285 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   void _addBookmark(String url) {
     // 检查是否已存在相同URL的书签
     if (_bookmarks.any((bookmark) => bookmark['url'] == url)) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('书签已存在')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('书签已存在')));
       return;
     }
 
     // 创建一个文本控制器，初始值设为当前网页的标题或URL
     final nameController = TextEditingController();
-    
+
     // 如果在浏览网页，尝试获取网页标题
     if (!_showHomePage && _isBrowsingWebPage) {
       nameController.text = "获取中...";
       final c = _controller;
-      if (c != null) c.getTitle().then((title) {
-        if (title != null && title.isNotEmpty && nameController.text == "获取中...") {
-          nameController.text = title;
-          // 自动选中文本，方便用户编辑
-          nameController.selection = TextSelection(
-            baseOffset: 0,
-            extentOffset: title.length,
-          );
-        }
-      }).catchError((error) {
-        debugPrint('获取网页标题出错: $error');
-        if (nameController.text == "获取中...") {
-          nameController.text = "";
-        }
-      });
+      if (c != null)
+        c
+            .getTitle()
+            .then((title) {
+              if (title != null &&
+                  title.isNotEmpty &&
+                  nameController.text == "获取中...") {
+                nameController.text = title;
+                // 自动选中文本，方便用户编辑
+                nameController.selection = TextSelection(
+                  baseOffset: 0,
+                  extentOffset: title.length,
+                );
+              }
+            })
+            .catchError((error) {
+              debugPrint('获取网页标题出错: $error');
+              if (nameController.text == "获取中...") {
+                nameController.text = "";
+              }
+            });
     }
 
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('添加书签'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: nameController,
-              decoration: const InputDecoration(
-                labelText: '书签名称',
-                hintText: '输入自定义名称',
-                helperText: '为书签设置一个简短易记的名称',
-              ),
-              autofocus: true,
+      builder:
+          (context) => AlertDialog(
+            title: const Text('添加书签'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: nameController,
+                  decoration: const InputDecoration(
+                    labelText: '书签名称',
+                    hintText: '输入自定义名称',
+                    helperText: '为书签设置一个简短易记的名称',
+                  ),
+                  autofocus: true,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'URL: $url',
+                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                ),
+              ],
             ),
-            const SizedBox(height: 8),
-            Text('URL: $url', style: TextStyle(fontSize: 12, color: Colors.grey[600])),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            onPressed: () async {
-              if (nameController.text.isNotEmpty && nameController.text != "获取中...") {
-                // 创建一个变量存储加载对话框的context
-                BuildContext? loadingDialogContext;
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('取消'),
+              ),
+              TextButton(
+                onPressed: () async {
+                  if (nameController.text.isNotEmpty &&
+                      nameController.text != "获取中...") {
+                    // 创建一个变量存储加载对话框的context
+                    BuildContext? loadingDialogContext;
 
-                // 显示加载对话框并保存context
-                showDialog(
-                  context: context,
-                  barrierDismissible: false,
-                  builder: (context) {
-                    loadingDialogContext = context;
-                    return const AlertDialog(
-                      content: Row(
-                        children: [
-                          CircularProgressIndicator(),
-                          SizedBox(width: 20),
-                          Text('添加中...'),
-                        ],
+                    // 显示加载对话框并保存context
+                    showDialog(
+                      context: context,
+                      barrierDismissible: false,
+                      builder: (context) {
+                        loadingDialogContext = context;
+                        return const AlertDialog(
+                          content: Row(
+                            children: [
+                              CircularProgressIndicator(),
+                              SizedBox(width: 20),
+                              Text('添加中...'),
+                            ],
+                          ),
+                        );
+                      },
+                    );
+
+                    setState(
+                      () => _bookmarks.add({
+                        'name': nameController.text,
+                        'url': url,
+                      }),
+                    );
+                    await _saveBookmarks();
+
+                    // 安全地关闭加载对话框
+                    if (loadingDialogContext != null &&
+                        Navigator.canPop(loadingDialogContext!)) {
+                      Navigator.pop(loadingDialogContext!);
+                    }
+
+                    // 关闭主对话框
+                    Navigator.of(context).pop();
+                  } else if (nameController.text == "获取中...") {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('请等待网页标题获取完成，或输入自定义名称'),
+                        duration: Duration(seconds: 2),
                       ),
                     );
-                  },
-                );
-
-                setState(() => _bookmarks.add({
-                  'name': nameController.text,
-                  'url': url,
-                }));
-                await _saveBookmarks();
-
-                // 安全地关闭加载对话框
-                if (loadingDialogContext != null && Navigator.canPop(loadingDialogContext!)) {
-                  Navigator.pop(loadingDialogContext!);
-                }
-
-                // 关闭主对话框
-                Navigator.of(context).pop();
-              } else if (nameController.text == "获取中...") {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('请等待网页标题获取完成，或输入自定义名称'),
-                    duration: Duration(seconds: 2),
-                  ),
-                );
-              } else {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('请输入书签名称'),
-                    duration: Duration(seconds: 2),
-                  ),
-                );
-              }
-            },
-            child: const Text('添加'),
+                  } else {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('请输入书签名称'),
+                        duration: Duration(seconds: 2),
+                      ),
+                    );
+                  }
+                },
+                child: const Text('添加'),
+              ),
+            ],
           ),
-        ],
-      ),
     );
   }
 
   void _showBookmarks() {
     showModalBottomSheet(
       context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (BuildContext context, StateSetter modalSetState) {
-          return SizedBox(
-            height: MediaQuery.of(context).size.height * 0.5,
-            child: Column(
-              children: [
-                ListTile(
-                  leading: const Icon(Icons.content_copy, color: Colors.blue),
-                  title: const Text('复制当前网址'),
-                  onTap: () {
-                    final url = _urlController.text.trim().isNotEmpty
-                        ? _urlController.text.trim()
-                        : _currentUrl;
-                    if (url.isNotEmpty) {
-                      Clipboard.setData(ClipboardData(text: url));
-                      if (context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('当前网址已复制到剪贴板'), duration: Duration(seconds: 1)),
-                        );
-                      }
-                    }
-                  },
-                ),
-                const Divider(height: 1),
-                Expanded(
-                  child: ReorderableListView.builder(
-                    itemCount: _bookmarks.length,
-                    onReorder: (oldIndex, newIndex) async {
-                      if (oldIndex < newIndex) newIndex -= 1;
-                      final item = _bookmarks.removeAt(oldIndex);
-                      _bookmarks.insert(newIndex, item);
-                      modalSetState(() {});
-                      await _saveBookmarks();
-                    },
-                    buildDefaultDragHandles: true,
-                    itemBuilder: (context, index) {
-                      final bookmark = _bookmarks[index];
-                      final url = bookmark['url']?.toString() ?? '';
-                      final name = bookmark['name'] ?? url;
-                      return ListTile(
-                        key: ValueKey('bookmark_$url$index'),
-                        title: Text(name),
-                        onTap: () {
-                          _loadUrl(url);
-                          Navigator.pop(context);
+      builder:
+          (context) => StatefulBuilder(
+            builder: (BuildContext context, StateSetter modalSetState) {
+              return SizedBox(
+                height: MediaQuery.of(context).size.height * 0.5,
+                child: Column(
+                  children: [
+                    ListTile(
+                      leading: const Icon(
+                        Icons.content_copy,
+                        color: Colors.blue,
+                      ),
+                      title: const Text('复制当前网址'),
+                      onTap: () {
+                        final url =
+                            _urlController.text.trim().isNotEmpty
+                                ? _urlController.text.trim()
+                                : _currentUrl;
+                        if (url.isNotEmpty) {
+                          Clipboard.setData(ClipboardData(text: url));
+                          if (context.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('当前网址已复制到剪贴板'),
+                                duration: Duration(seconds: 1),
+                              ),
+                            );
+                          }
+                        }
+                      },
+                    ),
+                    const Divider(height: 1),
+                    Expanded(
+                      child: ReorderableListView.builder(
+                        itemCount: _bookmarks.length,
+                        onReorder: (oldIndex, newIndex) async {
+                          if (oldIndex < newIndex) newIndex -= 1;
+                          final item = _bookmarks.removeAt(oldIndex);
+                          _bookmarks.insert(newIndex, item);
+                          modalSetState(() {});
+                          await _saveBookmarks();
                         },
-                        trailing: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            IconButton(
-                              icon: const Icon(Icons.edit, color: Colors.blue),
-                              onPressed: () {
-                                Navigator.pop(context);
-                                _showRenameBookmarkDialog(context, index);
-                              },
-                              tooltip: '重命名',
-                            ),
-                            IconButton(
-                              icon: const Icon(Icons.delete, color: Colors.red),
-                              onPressed: () async {
-                                final shouldDelete = await showDialog<bool>(
-                                  context: context,
-                                  builder: (context) => AlertDialog(
-                                    title: const Text('删除书签'),
-                                    content: Text('确定要删除书签 "$name" 吗？'),
-                                    actions: [
-                                      TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-                                      TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('删除')),
-                                    ],
+                        buildDefaultDragHandles: true,
+                        itemBuilder: (context, index) {
+                          final bookmark = _bookmarks[index];
+                          final url = bookmark['url']?.toString() ?? '';
+                          final name = bookmark['name'] ?? url;
+                          return ListTile(
+                            key: ValueKey('bookmark_$url$index'),
+                            title: Text(name),
+                            onTap: () {
+                              _loadUrl(url);
+                              Navigator.pop(context);
+                            },
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                IconButton(
+                                  icon: const Icon(
+                                    Icons.edit,
+                                    color: Colors.blue,
                                   ),
-                                ) ?? false;
-                                if (shouldDelete) {
-                                  modalSetState(() {
-                                    _bookmarks.removeAt(index);
-                                  });
-                                  await _saveBookmarks();
-                                }
-                              },
+                                  onPressed: () {
+                                    Navigator.pop(context);
+                                    _showRenameBookmarkDialog(context, index);
+                                  },
+                                  tooltip: '重命名',
+                                ),
+                                IconButton(
+                                  icon: const Icon(
+                                    Icons.delete,
+                                    color: Colors.red,
+                                  ),
+                                  onPressed: () async {
+                                    final shouldDelete =
+                                        await showDialog<bool>(
+                                          context: context,
+                                          builder:
+                                              (context) => AlertDialog(
+                                                title: const Text('删除书签'),
+                                                content: Text(
+                                                  '确定要删除书签 "$name" 吗？',
+                                                ),
+                                                actions: [
+                                                  TextButton(
+                                                    onPressed:
+                                                        () => Navigator.pop(
+                                                          context,
+                                                          false,
+                                                        ),
+                                                    child: const Text('取消'),
+                                                  ),
+                                                  TextButton(
+                                                    onPressed:
+                                                        () => Navigator.pop(
+                                                          context,
+                                                          true,
+                                                        ),
+                                                    child: const Text('删除'),
+                                                  ),
+                                                ],
+                                              ),
+                                        ) ??
+                                        false;
+                                    if (shouldDelete) {
+                                      modalSetState(() {
+                                        _bookmarks.removeAt(index);
+                                      });
+                                      await _saveBookmarks();
+                                    }
+                                  },
+                                ),
+                                IconButton(
+                                  icon: const Icon(
+                                    Icons.content_copy,
+                                    color: Colors.green,
+                                  ),
+                                  onPressed: () {
+                                    if (url.isNotEmpty) {
+                                      Clipboard.setData(
+                                        ClipboardData(text: url),
+                                      );
+                                      if (context.mounted) {
+                                        ScaffoldMessenger.of(
+                                          context,
+                                        ).showSnackBar(
+                                          const SnackBar(
+                                            content: Text('书签网址已复制到剪贴板'),
+                                            duration: Duration(seconds: 1),
+                                          ),
+                                        );
+                                      }
+                                    }
+                                  },
+                                  tooltip: '复制网址',
+                                ),
+                              ],
                             ),
-                            IconButton(
-                              icon: const Icon(Icons.content_copy, color: Colors.green),
-                              onPressed: () {
-                                if (url.isNotEmpty) {
-                                  Clipboard.setData(ClipboardData(text: url));
-                                  if (context.mounted) {
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      const SnackBar(content: Text('书签网址已复制到剪贴板'), duration: Duration(seconds: 1)),
-                                    );
-                                  }
-                                }
-                              },
-                              tooltip: '复制网址',
-                            ),
-                          ],
-                        ),
-                      );
-                    },
-                  ),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
                 ),
-              ],
-            ),
-          );
-        },
-      ),
+              );
+            },
+          ),
     );
   }
 
@@ -3657,47 +4271,65 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     final nameController = TextEditingController(text: bookmark['name']);
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('重命名书签'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            TextField(
-              controller: nameController,
-              decoration: const InputDecoration(labelText: '书签名称', hintText: '输入新的书签名称'),
-              autofocus: true,
-            ),
-            const SizedBox(height: 8),
-            Text('URL: ${bookmark['url']}', style: TextStyle(fontSize: 12, color: Colors.grey[600])),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
-          TextButton(
-            onPressed: () async {
-              if (nameController.text.isNotEmpty && nameController.text != bookmark['name']) {
-                showDialog(
-                  context: context,
-                  barrierDismissible: false,
-                  builder: (context) => const AlertDialog(
-                    content: Row(
-                      children: [CircularProgressIndicator(), SizedBox(width: 20), Text('保存中...')],
-                    ),
+      builder:
+          (context) => AlertDialog(
+            title: const Text('重命名书签'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TextField(
+                  controller: nameController,
+                  decoration: const InputDecoration(
+                    labelText: '书签名称',
+                    hintText: '输入新的书签名称',
                   ),
-                );
-                setState(() => _bookmarks[index]['name'] = nameController.text);
-                await _saveBookmarks();
-                Navigator.of(context).pop();
-                Navigator.of(context).pop();
-              } else {
-                Navigator.pop(context);
-              }
-            },
-            child: const Text('保存'),
+                  autofocus: true,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'URL: ${bookmark['url']}',
+                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('取消'),
+              ),
+              TextButton(
+                onPressed: () async {
+                  if (nameController.text.isNotEmpty &&
+                      nameController.text != bookmark['name']) {
+                    showDialog(
+                      context: context,
+                      barrierDismissible: false,
+                      builder:
+                          (context) => const AlertDialog(
+                            content: Row(
+                              children: [
+                                CircularProgressIndicator(),
+                                SizedBox(width: 20),
+                                Text('保存中...'),
+                              ],
+                            ),
+                          ),
+                    );
+                    setState(
+                      () => _bookmarks[index]['name'] = nameController.text,
+                    );
+                    await _saveBookmarks();
+                    Navigator.of(context).pop();
+                    Navigator.of(context).pop();
+                  } else {
+                    Navigator.pop(context);
+                  }
+                },
+                child: const Text('保存'),
+              ),
+            ],
           ),
-        ],
-      ),
     );
   }
 
@@ -3718,30 +4350,41 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       if (commonWebsitesJson != null && commonWebsitesJson.isNotEmpty) {
         final decoded = jsonDecode(commonWebsitesJson);
         final List<dynamic> websitesList = decoded is List ? decoded : [];
-        
+
         if (websitesList.isNotEmpty) {
           setState(() {
             _commonWebsites.clear();
-            final mapped = websitesList
-                .map((item) => {
-                  'name': item['name'],
-                  'url': item['url'],
-                  'iconCode': Icons.public.codePoint,
-                })
-                .toList();
+            final mapped =
+                websitesList
+                    .map(
+                      (item) => {
+                        'name': item['name'],
+                        'url': item['url'],
+                        'iconCode': Icons.public.codePoint,
+                      },
+                    )
+                    .toList();
             _commonWebsites.addAll(mapped);
           });
           debugPrint('从SharedPreferences加载了${_commonWebsites.length}个常用网站');
           return;
         }
       }
-      
+
       // 如果没有从SharedPreferences加载到数据，或者加载的数据为空，则加载默认网站
       setState(() {
         _commonWebsites.clear();
         _commonWebsites.addAll([
-          {'name': 'Google', 'url': 'https://www.google.com', 'iconCode': Icons.public.codePoint},
-          {'name': '百度', 'url': 'https://www.baidu.com', 'iconCode': Icons.public.codePoint}
+          {
+            'name': 'Google',
+            'url': 'https://www.google.com',
+            'iconCode': Icons.public.codePoint,
+          },
+          {
+            'name': '百度',
+            'url': 'https://www.baidu.com',
+            'iconCode': Icons.public.codePoint,
+          },
         ]);
       });
       debugPrint('加载了默认常用网站');
@@ -3752,8 +4395,16 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       setState(() {
         _commonWebsites.clear();
         _commonWebsites.addAll([
-          {'name': 'Google', 'url': 'https://www.google.com', 'iconCode': Icons.public.codePoint},
-          {'name': '百度', 'url': 'https://www.baidu.com', 'iconCode': Icons.public.codePoint}
+          {
+            'name': 'Google',
+            'url': 'https://www.google.com',
+            'iconCode': Icons.public.codePoint,
+          },
+          {
+            'name': '百度',
+            'url': 'https://www.baidu.com',
+            'iconCode': Icons.public.codePoint,
+          },
         ]);
       });
       debugPrint('加载出错，使用默认常用网站');
@@ -3794,7 +4445,9 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
   @override
   Widget build(BuildContext context) {
-    debugPrint('[_BrowserPage.build] _showHomePage: $_showHomePage, _isBrowsingWebPage: $_isBrowsingWebPage, _shouldKeepWebPageState: $_shouldKeepWebPageState');
+    debugPrint(
+      '[_BrowserPage.build] _showHomePage: $_showHomePage, _isBrowsingWebPage: $_isBrowsingWebPage, _shouldKeepWebPageState: $_shouldKeepWebPageState',
+    );
     super.build(context);
     return WillPopScope(
       onWillPop: () async {
@@ -3814,13 +4467,14 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         appBar: AppBar(
           titleSpacing: 0,
           title: _showHomePage ? const Text('浏览器') : const SizedBox.shrink(),
-          leading: _showHomePage
-              ? null
-              : IconButton(
-                  icon: const Icon(Icons.home),
-                  onPressed: _goToHomePage,
-                  tooltip: '回到主页',
-                ),
+          leading:
+              _showHomePage
+                  ? null
+                  : IconButton(
+                    icon: const Icon(Icons.home),
+                    onPressed: _goToHomePage,
+                    tooltip: '回到主页',
+                  ),
           centerTitle: true,
           actions: [
             // 添加媒体库按钮到actions列表的第一个位置
@@ -3830,7 +4484,9 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
                 onPressed: () {
                   Logger.log('[BrowserPage] 媒体库按钮被点击');
                   Navigator.of(context).push(
-                    MaterialPageRoute(builder: (context) => const MediaManagerPage()),
+                    MaterialPageRoute(
+                      builder: (context) => const MediaManagerPage(),
+                    ),
                   );
                 },
                 tooltip: '媒体库',
@@ -3879,288 +4535,403 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
             return Stack(
               children: [
                 Column(
-                    children: [
-                      Padding(
-                        padding: const EdgeInsets.all(8.0),
-                        child: Row(
-                          children: [
-                            IconButton(
-                              icon: const Icon(Icons.arrow_back),
-                              onPressed: () async {
-                                if (_controller != null && await _controller!.canGoBack()) _controller!.goBack();
-                              },
-                              tooltip: '后退',
-                            ),
-                            IconButton(
-                              icon: const Icon(Icons.arrow_forward),
-                              onPressed: () async {
-                                if (_controller != null && await _controller!.canGoForward()) _controller!.goForward();
-                              },
-                              tooltip: '前进',
-                            ),
-                            IconButton(
-                              icon: const Icon(Icons.refresh),
-                              onPressed: () => _controller?.reload(),
-                              tooltip: '刷新',
-                            ),
-                            Expanded(
-                              child: TextField(
-                                controller: _urlController,
-                                decoration: const InputDecoration(
-                                  hintText: '输入网址',
-                                  contentPadding: EdgeInsets.symmetric(horizontal: 8),
-                                  border: OutlineInputBorder(),
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.all(8.0),
+                      child: Row(
+                        children: [
+                          IconButton(
+                            icon: const Icon(Icons.arrow_back),
+                            onPressed: () async {
+                              if (_controller != null &&
+                                  await _controller!.canGoBack())
+                                _controller!.goBack();
+                            },
+                            tooltip: '后退',
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.arrow_forward),
+                            onPressed: () async {
+                              if (_controller != null &&
+                                  await _controller!.canGoForward())
+                                _controller!.goForward();
+                            },
+                            tooltip: '前进',
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.refresh),
+                            onPressed: () => _controller?.reload(),
+                            tooltip: '刷新',
+                          ),
+                          Expanded(
+                            child: TextField(
+                              controller: _urlController,
+                              decoration: const InputDecoration(
+                                hintText: '输入网址',
+                                contentPadding: EdgeInsets.symmetric(
+                                  horizontal: 8,
                                 ),
-                                keyboardType: TextInputType.url,
-                                onSubmitted: _loadUrl,
+                                border: OutlineInputBorder(),
                               ),
+                              keyboardType: TextInputType.url,
+                              onSubmitted: _loadUrl,
                             ),
-                            IconButton(
-                              icon: const Icon(Icons.search),
-                              onPressed: () => _loadUrl(_urlController.text),
-                              tooltip: '前往',
-                            ),
-                          ],
-                        ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.search),
+                            onPressed: () => _loadUrl(_urlController.text),
+                            tooltip: '前往',
+                          ),
+                        ],
                       ),
-                      if (_isLoading) LinearProgressIndicator(value: _loadingProgress),
-                      Expanded(
-                        child: Stack(
-                          children: [
-                            InAppWebView(
-                              initialUrlRequest: URLRequest(url: WebUri('about:blank')),
-                              initialSettings: InAppWebViewSettings(
-                                javaScriptEnabled: true,
-                                useHybridComposition: true,
-                                useOnLoadResource: true,
-                                allowFileAccess: true,
-                                domStorageEnabled: true,
-                                mixedContentMode: MixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
-                                userAgent: 'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
-                              ),
-                              initialUserScripts: UnmodifiableListView([]),
-                              onWebViewCreated: (ctrl) => _setupWebViewController(ctrl),
-                              shouldAllowDeprecatedTLS: (ctrl, challenge) async {
-                                return ShouldAllowDeprecatedTLSAction.ALLOW;
-                              },
-                              // 注意：PROCEED 会跳过证书校验，存在中间人攻击风险。
-                              // 若需更高安全性，可改为 DENY 或实现白名单校验。
-                              onReceivedServerTrustAuthRequest: (ctrl, challenge) async {
-                                return ServerTrustAuthResponse(
-                                  action: ServerTrustAuthResponseAction.PROCEED,
-                                );
-                              },
-                              onLoadStart: (ctrl, url) {
-                                setState(() {
-                                  _isLoading = true;
-                                  if (url != null) {
-                                    final urlStr = url.toString();
-                                    _currentUrl = urlStr;
-                                    _urlController.text = _currentUrl;
-                                    // 仅当加载真实网页时切换到 WebView，about:blank 不切换（保持主界面）
-                                    if (urlStr.startsWith('http://') || urlStr.startsWith('https://')) {
-                                      _showHomePage = false;
-                                      widget.onBrowserHomePageChanged?.call(false);
-                                    }
+                    ),
+                    if (_isLoading)
+                      LinearProgressIndicator(value: _loadingProgress),
+                    Expanded(
+                      child: Stack(
+                        children: [
+                          InAppWebView(
+                            initialUrlRequest: URLRequest(
+                              url: WebUri('about:blank'),
+                            ),
+                            initialSettings: InAppWebViewSettings(
+                              javaScriptEnabled: true,
+                              useHybridComposition: true,
+                              useOnLoadResource: true,
+                              allowFileAccess: true,
+                              domStorageEnabled: true,
+                              mixedContentMode:
+                                  MixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
+                              userAgent:
+                                  'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+                            ),
+                            initialUserScripts: UnmodifiableListView([]),
+                            onWebViewCreated:
+                                (ctrl) => _setupWebViewController(ctrl),
+                            shouldAllowDeprecatedTLS: (ctrl, challenge) async {
+                              return ShouldAllowDeprecatedTLSAction.ALLOW;
+                            },
+                            // 注意：PROCEED 会跳过证书校验，存在中间人攻击风险。
+                            // 若需更高安全性，可改为 DENY 或实现白名单校验。
+                            onReceivedServerTrustAuthRequest: (
+                              ctrl,
+                              challenge,
+                            ) async {
+                              return ServerTrustAuthResponse(
+                                action: ServerTrustAuthResponseAction.PROCEED,
+                              );
+                            },
+                            onLoadStart: (ctrl, url) {
+                              setState(() {
+                                _isLoading = true;
+                                if (url != null) {
+                                  final urlStr = url.toString();
+                                  _currentUrl = urlStr;
+                                  _urlController.text = _currentUrl;
+                                  // 仅当加载真实网页时切换到 WebView，about:blank 不切换（保持主界面）
+                                  if (urlStr.startsWith('http://') ||
+                                      urlStr.startsWith('https://')) {
+                                    _showHomePage = false;
+                                    widget.onBrowserHomePageChanged?.call(
+                                      false,
+                                    );
                                   }
-                                });
-                              },
-                              onProgressChanged: (ctrl, progress) {
-                                setState(() {
-                                  _loadingProgress = progress / 100;
-                                  _isLoading = _loadingProgress < 1.0;
-                                });
-                              },
-                              onLoadStop: (ctrl, url) {
-                                if (url != null) _onPageFinished(url.toString());
-                              },
-                              onReceivedError: (ctrl, req, err) => debugPrint('WebView错误: ${err?.description}'),
-                              shouldOverrideUrlLoading: (ctrl, nav) async {
-                                final url = nav.request.url?.toString() ?? '';
-                                debugPrint('导航请求: $url');
-                                if (_isDownloadableLink(url) || _isYouTubeLink(url)) {
-                                  debugPrint('检测到可能的下载链接: $url');
-                                  _handleDownload(url, '', _guessMimeType(url));
+                                }
+                              });
+                            },
+                            onProgressChanged: (ctrl, progress) {
+                              setState(() {
+                                _loadingProgress = progress / 100;
+                                _isLoading = _loadingProgress < 1.0;
+                              });
+                            },
+                            onLoadStop: (ctrl, url) {
+                              if (url != null) _onPageFinished(url.toString());
+                            },
+                            onReceivedError:
+                                (ctrl, req, err) => debugPrint(
+                                  'WebView错误: ${err?.description}',
+                                ),
+                            shouldOverrideUrlLoading: (ctrl, nav) async {
+                              final url = nav.request.url?.toString() ?? '';
+                              debugPrint('导航请求: $url');
+                              if (_isDownloadableLink(url) ||
+                                  _isYouTubeLink(url)) {
+                                debugPrint('检测到可能的下载链接: $url');
+                                _handleDownload(url, '', _guessMimeType(url));
+                                return NavigationActionPolicy.CANCEL;
+                              }
+                              if (!url.startsWith('http://') &&
+                                  !url.startsWith('https://')) {
+                                if (url.startsWith('data:') ||
+                                    url.startsWith('blob:')) {
+                                  return NavigationActionPolicy.ALLOW;
+                                }
+                                final lower = url.toLowerCase();
+                                if (_isNoisyExternalAppScheme(lower)) {
                                   return NavigationActionPolicy.CANCEL;
                                 }
-                                if (!url.startsWith('http://') && !url.startsWith('https://')) {
-                                  if (url.startsWith('data:') || url.startsWith('blob:')) {
-                                    return NavigationActionPolicy.ALLOW;
-                                  }
-                                  final lower = url.toLowerCase();
-                                  if (_isNoisyExternalAppScheme(lower)) {
-                                    return NavigationActionPolicy.CANCEL;
-                                  }
-                                  debugPrint('检测到自定义URL协议: $url');
-                                  _launchExternalApp(url);
-                                  return NavigationActionPolicy.CANCEL;
-                                }
-                                return NavigationActionPolicy.ALLOW;
-                              },
-                            ),
-                          ],
-                        ),
+                                debugPrint('检测到自定义URL协议: $url');
+                                _launchExternalApp(url);
+                                return NavigationActionPolicy.CANCEL;
+                              }
+                              return NavigationActionPolicy.ALLOW;
+                            },
+                          ),
+                        ],
                       ),
-                    ],
-                  ),
-            if (_showHomePage)
-              Positioned.fill(
-                child: Container(
-                  color: Theme.of(context).scaffoldBackgroundColor,
-                  child: _buildHomePage(),
+                    ),
+                  ],
                 ),
-              ),
-            // 下载任务面板：可拖动，打开网站时常驻；主页面仅在有下载任务时显示（Positioned 必须是 Stack 的直接子项）
-            ValueListenableBuilder<List<Map<String, dynamic>>>(
-              valueListenable: _downloadTasksNotifier,
-              builder: (context, tasks, child) {
-                final activeTasks = tasks.where((t) => t['status'] == 'downloading').toList();
-                final shouldShow = !_showHomePage || activeTasks.isNotEmpty;
-                if (!shouldShow) return const SizedBox.shrink();
-                final panelW = _downloadPanelExpanded ? 320.0 : 60.0;
-                final panelH = _downloadPanelExpanded ? 280.0 : 60.0;
-                final defaultLeft = bodyW - 16 - panelW;
-                final defaultTop = bodyH * 0.75 - panelH / 2;
-                final left = (_downloadPanelPosition?.dx ?? defaultLeft).clamp(0.0, bodyW - panelW);
-                final top = (_downloadPanelPosition?.dy ?? defaultTop).clamp(0.0, bodyH - panelH);
-                return Positioned(
-                  left: left,
-                  top: top,
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onPanUpdate: (details) {
-                      setState(() {
-                        final dx = (left + details.delta.dx).clamp(0.0, bodyW - panelW);
-                        final dy = (top + details.delta.dy).clamp(0.0, bodyH - panelH);
-                        _downloadPanelPosition = Offset(dx, dy);
-                      });
-                    },
-                    child: _buildDownloadTasksPanel(tasks, activeTasks),
+                if (_showHomePage)
+                  Positioned.fill(
+                    child: Container(
+                      color: Theme.of(context).scaffoldBackgroundColor,
+                      child: _buildHomePage(),
+                    ),
                   ),
-                );
-              },
-            ),
-          ],
-        );
+                // 下载任务面板：可拖动，打开网站时常驻；主页面仅在有下载任务时显示（Positioned 必须是 Stack 的直接子项）
+                ValueListenableBuilder<List<Map<String, dynamic>>>(
+                  valueListenable: _downloadTasksNotifier,
+                  builder: (context, tasks, child) {
+                    final activeTasks =
+                        tasks
+                            .where((t) => t['status'] == 'downloading')
+                            .toList();
+                    final shouldShow = !_showHomePage || activeTasks.isNotEmpty;
+                    if (!shouldShow) return const SizedBox.shrink();
+                    final panelW = _downloadPanelExpanded ? 320.0 : 60.0;
+                    final panelH = _downloadPanelExpanded ? 280.0 : 60.0;
+                    final defaultLeft = bodyW - 16 - panelW;
+                    final defaultTop = bodyH * 0.75 - panelH / 2;
+                    final left = (_downloadPanelPosition?.dx ?? defaultLeft)
+                        .clamp(0.0, bodyW - panelW);
+                    final top = (_downloadPanelPosition?.dy ?? defaultTop)
+                        .clamp(0.0, bodyH - panelH);
+                    return Positioned(
+                      left: left,
+                      top: top,
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onPanUpdate: (details) {
+                          setState(() {
+                            final dx = (left + details.delta.dx).clamp(
+                              0.0,
+                              bodyW - panelW,
+                            );
+                            final dy = (top + details.delta.dy).clamp(
+                              0.0,
+                              bodyH - panelH,
+                            );
+                            _downloadPanelPosition = Offset(dx, dy);
+                          });
+                        },
+                        child: _buildDownloadTasksPanel(tasks, activeTasks),
+                      ),
+                    );
+                  },
+                ),
+              ],
+            );
           },
         ),
       ),
     );
   }
 
-  Widget _buildDownloadTasksPanel(List<Map<String, dynamic>> tasks, List<Map<String, dynamic>> activeTasks) {
+  Widget _buildDownloadTasksPanel(
+    List<Map<String, dynamic>> tasks,
+    List<Map<String, dynamic>> activeTasks,
+  ) {
     return GestureDetector(
-      onTap: () => setState(() => _downloadPanelExpanded = !_downloadPanelExpanded),
+      onTap:
+          () =>
+              setState(() => _downloadPanelExpanded = !_downloadPanelExpanded),
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
         constraints: BoxConstraints(
           maxWidth: _downloadPanelExpanded ? 320 : 60,
           maxHeight: _downloadPanelExpanded ? 280 : 60,
         ),
-            decoration: BoxDecoration(
-              color: Colors.black.withOpacity(0.75),
-              borderRadius: BorderRadius.circular(_downloadPanelExpanded ? 12 : 30),
-              boxShadow: [BoxShadow(color: Colors.black26, blurRadius: 8, offset: const Offset(0, 2))],
+        decoration: BoxDecoration(
+          color: Colors.black.withOpacity(0.75),
+          borderRadius: BorderRadius.circular(_downloadPanelExpanded ? 12 : 30),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black26,
+              blurRadius: 8,
+              offset: const Offset(0, 2),
             ),
-            child: _downloadPanelExpanded
+          ],
+        ),
+        child:
+            _downloadPanelExpanded
                 ? Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Row(
-                          children: [
-                            const Icon(Icons.downloading, color: Colors.green, size: 20),
-                            const SizedBox(width: 8),
-                            Text('下载任务 (${tasks.length})', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                          ],
-                        ),
-                        const SizedBox(height: 8),
-                        Flexible(
-                          child: ListView.builder(
-                            shrinkWrap: true,
-                            itemCount: tasks.length,
-                            itemBuilder: (context, i) {
-                              final t = tasks[i];
-                              final status = t['status'] as String? ?? '';
-                              final progress = (t['progress'] as num?)?.toDouble() ?? 0.0;
-                              final name = t['displayName'] as String? ?? '未知';
-                              final progressDetail = (t['progressDetail'] as String?)?.trim() ?? '';
-                              final isDownloading = status == 'downloading';
-                              final isPaused = status == 'paused';
-                              final canRetry = status == 'cancelled' || status == 'failed';
-                              final canStopOrResume = isDownloading || isPaused || canRetry;
-                              return Padding(
-                                padding: const EdgeInsets.only(bottom: 6),
-                                child: Row(
-                                  children: [
-                                    Expanded(
-                                      child: Column(
-                                        crossAxisAlignment: CrossAxisAlignment.start,
-                                        children: [
-                                          Text(name, style: const TextStyle(color: Colors.white, fontSize: 12), maxLines: 1, overflow: TextOverflow.ellipsis),
-                                          if (isDownloading) ...[
-                                            LinearProgressIndicator(value: progress, backgroundColor: Colors.grey, valueColor: const AlwaysStoppedAnimation<Color>(Colors.green)),
-                                            if (progressDetail.isNotEmpty)
-                                              Padding(
-                                                padding: const EdgeInsets.only(top: 4),
-                                                child: Text(
-                                                  progressDetail,
-                                                  style: const TextStyle(color: Colors.white70, fontSize: 10, height: 1.2),
-                                                  maxLines: 2,
-                                                  overflow: TextOverflow.ellipsis,
-                                                ),
-                                              ),
-                                          ] else
-                                            Text(
-                                              status == 'completed' ? '已完成' : status == 'paused' ? '已暂停' : status == 'cancelled' ? '已取消' : '失败',
-                                              style: TextStyle(color: status == 'completed' ? Colors.green : Colors.grey, fontSize: 10),
-                                            ),
-                                        ],
-                                      ),
-                                    ),
-                                    if (canStopOrResume)
-                                      IconButton(
-                                        icon: Icon(
-                                          isDownloading ? Icons.stop : Icons.play_arrow,
-                                          color: isDownloading ? Colors.red : Colors.green,
-                                          size: 22,
-                                        ),
-                                        onPressed: () => _togglePauseResume(t['id'] as String),
-                                        padding: EdgeInsets.zero,
-                                        constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                                        tooltip: isDownloading ? '停止' : (isPaused ? '继续下载' : '重新下载'),
-                                      ),
-                                  ],
-                                ),
-                              );
-                            },
-                          ),
-                        ),
-                      ],
-                    ),
-                  )
-                : Stack(
-                    alignment: Alignment.center,
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      if (activeTasks.isNotEmpty)
-                        SizedBox(
-                          width: 50,
-                          height: 50,
-                          child: CircularProgressIndicator(
-                            value: activeTasks.first['progress'] as double?,
-                            backgroundColor: Colors.grey.withOpacity(0.5),
-                            valueColor: const AlwaysStoppedAnimation<Color>(Colors.green),
-                            strokeWidth: 4,
+                      Row(
+                        children: [
+                          const Icon(
+                            Icons.downloading,
+                            color: Colors.green,
+                            size: 20,
                           ),
-                        )
-                      else
-                        Icon(tasks.isEmpty ? Icons.download : Icons.download_done, color: Colors.green, size: 28),
+                          const SizedBox(width: 8),
+                          Text(
+                            '下载任务 (${tasks.length})',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Flexible(
+                        child: ListView.builder(
+                          shrinkWrap: true,
+                          itemCount: tasks.length,
+                          itemBuilder: (context, i) {
+                            final t = tasks[i];
+                            final status = t['status'] as String? ?? '';
+                            final progress =
+                                (t['progress'] as num?)?.toDouble() ?? 0.0;
+                            final name = t['displayName'] as String? ?? '未知';
+                            final progressDetail =
+                                (t['progressDetail'] as String?)?.trim() ?? '';
+                            final isDownloading = status == 'downloading';
+                            final isPaused = status == 'paused';
+                            final canRetry =
+                                status == 'cancelled' || status == 'failed';
+                            final canStopOrResume =
+                                isDownloading || isPaused || canRetry;
+                            return Padding(
+                              padding: const EdgeInsets.only(bottom: 6),
+                              child: Row(
+                                children: [
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          name,
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 12,
+                                          ),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                        if (isDownloading) ...[
+                                          LinearProgressIndicator(
+                                            value: progress,
+                                            backgroundColor: Colors.grey,
+                                            valueColor:
+                                                const AlwaysStoppedAnimation<
+                                                  Color
+                                                >(Colors.green),
+                                          ),
+                                          if (progressDetail.isNotEmpty)
+                                            Padding(
+                                              padding: const EdgeInsets.only(
+                                                top: 4,
+                                              ),
+                                              child: Text(
+                                                progressDetail,
+                                                style: const TextStyle(
+                                                  color: Colors.white70,
+                                                  fontSize: 10,
+                                                  height: 1.2,
+                                                ),
+                                                maxLines: 2,
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                            ),
+                                        ] else
+                                          Text(
+                                            status == 'completed'
+                                                ? '已完成'
+                                                : status == 'paused'
+                                                ? '已暂停'
+                                                : status == 'cancelled'
+                                                ? '已取消'
+                                                : '失败',
+                                            style: TextStyle(
+                                              color:
+                                                  status == 'completed'
+                                                      ? Colors.green
+                                                      : Colors.grey,
+                                              fontSize: 10,
+                                            ),
+                                          ),
+                                      ],
+                                    ),
+                                  ),
+                                  if (canStopOrResume)
+                                    IconButton(
+                                      icon: Icon(
+                                        isDownloading
+                                            ? Icons.stop
+                                            : Icons.play_arrow,
+                                        color:
+                                            isDownloading
+                                                ? Colors.red
+                                                : Colors.green,
+                                        size: 22,
+                                      ),
+                                      onPressed:
+                                          () => _togglePauseResume(
+                                            t['id'] as String,
+                                          ),
+                                      padding: EdgeInsets.zero,
+                                      constraints: const BoxConstraints(
+                                        minWidth: 36,
+                                        minHeight: 36,
+                                      ),
+                                      tooltip:
+                                          isDownloading
+                                              ? '停止'
+                                              : (isPaused ? '继续下载' : '重新下载'),
+                                    ),
+                                ],
+                              ),
+                            );
+                          },
+                        ),
+                      ),
                     ],
                   ),
-          ),
-        );
+                )
+                : Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    if (activeTasks.isNotEmpty)
+                      SizedBox(
+                        width: 50,
+                        height: 50,
+                        child: CircularProgressIndicator(
+                          value: activeTasks.first['progress'] as double?,
+                          backgroundColor: Colors.grey.withOpacity(0.5),
+                          valueColor: const AlwaysStoppedAnimation<Color>(
+                            Colors.green,
+                          ),
+                          strokeWidth: 4,
+                        ),
+                      )
+                    else
+                      Icon(
+                        tasks.isEmpty ? Icons.download : Icons.download_done,
+                        color: Colors.green,
+                        size: 28,
+                      ),
+                  ],
+                ),
+      ),
+    );
   }
 
   @override
@@ -4187,19 +4958,23 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     super.dispose();
   }
 
-  Future<bool> _performBackgroundDownload(String url, MediaType mediaType, {bool skipFailurePrompt = false}) async {
+  Future<bool> _performBackgroundDownload(
+    String url,
+    MediaType mediaType, {
+    bool skipFailurePrompt = false,
+  }) async {
     // 仅下载图片和视频，不下载语音/音频
     if (mediaType == MediaType.audio) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('当前仅支持下载图片和视频，不支持音频文件')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('当前仅支持下载图片和视频，不支持音频文件')));
       }
       return false;
     }
     final absoluteUrl = _toAbsoluteUrl(url);
     if (_isApiEndpointUrl(absoluteUrl)) {
-      debugPrint('跳过 API 接口 URL（非媒体文件）: $absoluteUrl');
+      debugPrint('跳过 API 接口 URL（非媒体文件）: ');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -4215,21 +4990,27 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     final cancelToken = CancelToken();
     if (mounted) _addDownloadTask(taskId, absoluteUrl, mediaType, cancelToken);
 
+    File? downloadedFile;
     try {
-      debugPrint('开始后台下载: $absoluteUrl, 媒体类型: $mediaType');
+      debugPrint('开始后台下载: , 媒体类型: ');
 
-      final file = await _downloadFile(
+      downloadedFile = await _downloadFile(
         absoluteUrl,
         mediaType,
         cancelToken: cancelToken,
         onProgress: (p, {detail}) {
-          if (mounted) _updateDownloadTask(taskId, progress: p, progressDetail: detail ?? '');
+          if (mounted)
+            _updateDownloadTask(
+              taskId,
+              progress: p,
+              progressDetail: detail ?? '',
+            );
         },
       );
 
-      if (file != null) {
-        debugPrint('文件下载成功: ${file.path}');
-        final mediaMap = await _saveToMediaLibrary(file, mediaType);
+      if (downloadedFile != null) {
+        debugPrint('文件下载成功: ');
+        final mediaMap = await _saveToMediaLibrary(downloadedFile!, mediaType);
         if (mediaType == MediaType.video) {
           final norm = _normalizeVideoSourceUrl(absoluteUrl);
           final mediaId = mediaMap['id']?.toString();
@@ -4242,9 +5023,17 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           _updateDownloadTask(taskId, status: 'completed', progressDetail: '');
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('${mediaType == MediaType.video ? "视频" : mediaType == MediaType.image ? "图片" : "音频"}已保存：${file.path.split('/').last}'),
+              content: Text('已保存：'),
               duration: _kMediaSaveSnackDuration,
-              action: SnackBarAction(label: '查看', onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (context) => const MediaManagerPage()))),
+              action: SnackBarAction(
+                label: '查看',
+                onPressed:
+                    () => Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (context) => const MediaManagerPage(),
+                      ),
+                    ),
+              ),
             ),
           );
         }
@@ -4254,7 +5043,11 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           _updateDownloadTask(taskId, status: 'failed', progressDetail: '');
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text(_downloadErrorForUser(Exception('未能生成有效文件，链接可能失效或内容不是可保存的媒体格式'))),
+              content: Text(
+                _downloadErrorForUser(
+                  Exception('未能生成有效文件，链接可能失效或内容不是可保存的媒体格式'),
+                ),
+              ),
               duration: _kMediaSaveSnackDuration,
             ),
           );
@@ -4265,40 +5058,45 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       }
     } on DioException catch (e) {
       if (e.type == DioExceptionType.cancel) {
-        debugPrint('用户暂停下载: $absoluteUrl');
+        debugPrint('用户暂停下载: ');
         return false;
       }
-      debugPrint('后台下载出错: $absoluteUrl, 错误: $e');
+      debugPrint('后台下载出错: , 错误: ');
       if (mounted && !skipFailurePrompt) {
         _updateDownloadTask(taskId, status: 'failed', progressDetail: '');
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(_downloadErrorForUser(e)), duration: _kMediaSaveSnackDuration),
+          SnackBar(
+            content: Text(_downloadErrorForUser(e)),
+            duration: _kMediaSaveSnackDuration,
+          ),
         );
       } else if (mounted && skipFailurePrompt) {
         _removeDownloadTask(taskId);
       }
       return false;
     } catch (e, st) {
-      debugPrint('后台下载出错: $absoluteUrl, 错误: $e\n$st');
-      final isLibraryDuplicate = e.toString().contains('已存在于媒体库') ||
-          e.toString().contains('文件已存在');
+      debugPrint('后台下载出错: , 错误: \n');
+      final duplicateRow =
+          e is _ExistingMediaDuplicateException ? e.existingRow : null;
+      final isLibraryDuplicate = duplicateRow != null;
+      if (isLibraryDuplicate) {
+        try {
+          if (downloadedFile != null && await downloadedFile.exists()) {
+            await downloadedFile.delete();
+          }
+        } catch (_) {}
+      }
       if (mounted) {
         if (isLibraryDuplicate) {
           _removeDownloadTask(taskId);
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                skipFailurePrompt
-                    ? '媒体库中已有相同内容。若已删除仍出现，请稍候再试或刷新页面后长按保存'
-                    : _downloadErrorForUser(e),
-              ),
-              duration: _kMediaSaveSnackDuration,
-            ),
-          );
+          await _showVideoDuplicateSnackBar(duplicateRow!);
         } else if (!skipFailurePrompt) {
           _updateDownloadTask(taskId, status: 'failed', progressDetail: '');
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(_downloadErrorForUser(e)), duration: _kMediaSaveSnackDuration),
+            SnackBar(
+              content: Text(_downloadErrorForUser(e)),
+              duration: _kMediaSaveSnackDuration,
+            ),
           );
         } else {
           _removeDownloadTask(taskId);
@@ -4310,7 +5108,12 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     }
   }
 
-  void _addDownloadTask(String id, String url, MediaType mediaType, CancelToken cancelToken) {
+  void _addDownloadTask(
+    String id,
+    String url,
+    MediaType mediaType,
+    CancelToken cancelToken,
+  ) {
     final displayName = _getShortDisplayName(url);
     _downloadTasks.insert(0, {
       'id': id,
@@ -4326,12 +5129,18 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     _downloadTasksNotifier.value = List.from(_downloadTasks);
   }
 
-  void _updateDownloadTask(String id, {double? progress, String? status, String? progressDetail}) {
+  void _updateDownloadTask(
+    String id, {
+    double? progress,
+    String? status,
+    String? progressDetail,
+  }) {
     final idx = _downloadTasks.indexWhere((t) => t['id'] == id);
     if (idx < 0) return;
     if (progress != null) _downloadTasks[idx]['progress'] = progress;
     if (status != null) _downloadTasks[idx]['status'] = status;
-    if (progressDetail != null) _downloadTasks[idx]['progressDetail'] = progressDetail;
+    if (progressDetail != null)
+      _downloadTasks[idx]['progressDetail'] = progressDetail;
     _downloadTasksNotifier.value = List.from(_downloadTasks);
   }
 
@@ -4339,7 +5148,9 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     try {
       final uri = Uri.parse(url);
       final path = uri.path;
-      final name = path.split('/').lastWhere((s) => s.isNotEmpty, orElse: () => 'media');
+      final name = path
+          .split('/')
+          .lastWhere((s) => s.isNotEmpty, orElse: () => 'media');
       return name.length > 20 ? '${name.substring(0, 17)}...' : name;
     } catch (_) {
       return url.length > 25 ? '${url.substring(0, 22)}...' : url;
@@ -4349,7 +5160,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   String _formatBytes(int bytes) {
     if (bytes < 1024) return '$bytes B';
     if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    if (bytes < 1024 * 1024 * 1024) return '${(bytes / (1024 * 1024)).toStringAsFixed(2)} MB';
+    if (bytes < 1024 * 1024 * 1024)
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(2)} MB';
     return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
   }
 
@@ -4401,10 +5213,18 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     if (e.type == DioExceptionType.sendTimeout) return '发送超时';
     if (e.type == DioExceptionType.badResponse) {
       final code = e.response?.statusCode ?? 0;
-      return '服务器返回$code: ${code == 403 ? "禁止访问(可能需Referer/登录)" : code == 404 ? "文件不存在" : code == 400 ? "请求错误" : "请检查URL"}';
+      return '服务器返回$code: ${code == 403
+          ? "禁止访问(可能需Referer/登录)"
+          : code == 404
+          ? "文件不存在"
+          : code == 400
+          ? "请求错误"
+          : "请检查URL"}';
     }
-    if (e.type == DioExceptionType.connectionError) return '连接失败: ${e.message ?? "无法连接服务器"}';
-    if (e.type == DioExceptionType.unknown) return '网络异常: ${e.message ?? e.error?.toString() ?? "未知"}';
+    if (e.type == DioExceptionType.connectionError)
+      return '连接失败: ${e.message ?? "无法连接服务器"}';
+    if (e.type == DioExceptionType.unknown)
+      return '网络异常: ${e.message ?? e.error?.toString() ?? "未知"}';
     return e.message ?? '网络错误';
   }
 
@@ -4417,7 +5237,9 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       final token = task['cancelToken'] as CancelToken?;
       token?.cancel('用户暂停');
       _updateDownloadTask(taskId, status: 'paused');
-    } else if (status == 'paused' || status == 'cancelled' || status == 'failed') {
+    } else if (status == 'paused' ||
+        status == 'cancelled' ||
+        status == 'failed') {
       final url = task['url'] as String?;
       final mediaType = task['mediaType'] as MediaType?;
       if (url != null && mediaType != null) {
@@ -4431,36 +5253,37 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     _downloadTasks.removeWhere((t) => t['id'] == taskId);
     _downloadTasksNotifier.value = List.from(_downloadTasks);
   }
-  
+
   /// 显示导入导出菜单
   void _showExportImportMenu() {
     showModalBottomSheet(
       context: context,
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.upload_file),
-              title: const Text('导出浏览器数据'),
-              subtitle: const Text('导出书签和常用网站'),
-              onTap: () {
-                Navigator.pop(context);
-                _exportBrowserData();
-              },
+      builder:
+          (context) => SafeArea(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.upload_file),
+                  title: const Text('导出浏览器数据'),
+                  subtitle: const Text('导出书签和常用网站'),
+                  onTap: () {
+                    Navigator.pop(context);
+                    _exportBrowserData();
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.download),
+                  title: const Text('导入浏览器数据'),
+                  subtitle: const Text('导入书签和常用网站'),
+                  onTap: () {
+                    Navigator.pop(context);
+                    _importBrowserData();
+                  },
+                ),
+              ],
             ),
-            ListTile(
-              leading: const Icon(Icons.download),
-              title: const Text('导入浏览器数据'),
-              subtitle: const Text('导入书签和常用网站'),
-              onTap: () {
-                Navigator.pop(context);
-                _importBrowserData();
-              },
-            ),
-          ],
-        ),
-      ),
+          ),
     );
   }
 
@@ -4469,31 +5292,34 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     String currentPhase = '准备';
     try {
       // 创建进度通知器
-      final ValueNotifier<String> progressNotifier = ValueNotifier<String>('准备导出浏览器数据...');
-      
+      final ValueNotifier<String> progressNotifier = ValueNotifier<String>(
+        '准备导出浏览器数据...',
+      );
+
       // 显示进度对话框
       showDialog(
         context: context,
         barrierDismissible: false,
-        builder: (context) => AlertDialog(
-          content: ValueListenableBuilder<String>(
-            valueListenable: progressNotifier,
-            builder: (context, progress, child) {
-              return Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const CircularProgressIndicator(),
-                  const SizedBox(height: 20),
-                  Text(
-                    progress,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(fontSize: 14),
-                  ),
-                ],
-              );
-            },
-          ),
-        ),
+        builder:
+            (context) => AlertDialog(
+              content: ValueListenableBuilder<String>(
+                valueListenable: progressNotifier,
+                builder: (context, progress, child) {
+                  return Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const CircularProgressIndicator(),
+                      const SizedBox(height: 20),
+                      Text(
+                        progress,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(fontSize: 14),
+                      ),
+                    ],
+                  );
+                },
+              ),
+            ),
       );
 
       // 获取导出目录
@@ -4531,7 +5357,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       progressNotifier.value = '创建ZIP文件...';
 
       // 创建ZIP文件
-      final String zipPath = '$exportDir/browser_backup_${DateTime.now().millisecondsSinceEpoch}.zip';
+      final String zipPath =
+          '$exportDir/browser_backup_${DateTime.now().millisecondsSinceEpoch}.zip';
       final Archive archive = Archive();
       final bytes = await jsonFile.readAsBytes();
       archive.addFile(ArchiveFile('browser_data.json', bytes.length, bytes));
@@ -4581,7 +5408,11 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       if (mounted) {
         Navigator.pop(context); // 关闭进度对话框
         final userMsg = formatExportImportError(e, '导出失败');
-        showExportImportErrorDialog(context, '浏览器数据导出失败', '出错阶段：$currentPhase\n\n$userMsg');
+        showExportImportErrorDialog(
+          context,
+          '浏览器数据导出失败',
+          '出错阶段：$currentPhase\n\n$userMsg',
+        );
       }
     }
   }
@@ -4593,20 +5424,21 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       // 显示警告对话框
       bool? confirm = await showDialog<bool>(
         context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('警告'),
-          content: const Text('导入浏览器数据将会覆盖当前的书签和常用网站，确定要继续吗？'),
-          actions: [
-            TextButton(
-              child: const Text('取消'),
-              onPressed: () => Navigator.of(context).pop(false),
+        builder:
+            (context) => AlertDialog(
+              title: const Text('警告'),
+              content: const Text('导入浏览器数据将会覆盖当前的书签和常用网站，确定要继续吗？'),
+              actions: [
+                TextButton(
+                  child: const Text('取消'),
+                  onPressed: () => Navigator.of(context).pop(false),
+                ),
+                TextButton(
+                  child: const Text('确定'),
+                  onPressed: () => Navigator.of(context).pop(true),
+                ),
+              ],
             ),
-            TextButton(
-              child: const Text('确定'),
-              onPressed: () => Navigator.of(context).pop(true),
-            ),
-          ],
-        ),
       );
 
       if (confirm != true) return;
@@ -4620,31 +5452,34 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       final zipPath = result?.files.single.path;
       if (result != null && zipPath != null && zipPath.isNotEmpty) {
         // 创建进度通知器
-        final ValueNotifier<String> progressNotifier = ValueNotifier<String>('准备导入...');
-        
+        final ValueNotifier<String> progressNotifier = ValueNotifier<String>(
+          '准备导入...',
+        );
+
         // 显示进度对话框
         showDialog(
           context: context,
           barrierDismissible: false,
-          builder: (context) => AlertDialog(
-            content: ValueListenableBuilder<String>(
-              valueListenable: progressNotifier,
-              builder: (context, progress, child) {
-                return Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const CircularProgressIndicator(),
-                    const SizedBox(height: 20),
-                    Text(
-                      progress,
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(fontSize: 14),
-                    ),
-                  ],
-                );
-              },
-            ),
-          ),
+          builder:
+              (context) => AlertDialog(
+                content: ValueListenableBuilder<String>(
+                  valueListenable: progressNotifier,
+                  builder: (context, progress, child) {
+                    return Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const CircularProgressIndicator(),
+                        const SizedBox(height: 20),
+                        Text(
+                          progress,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(fontSize: 14),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+              ),
         );
 
         currentPhase = '解压文件';
@@ -4655,7 +5490,9 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         final File zipFile = File(zipPath);
         final fileSize = await zipFile.length();
         if (fileSize > kMaxZipSizeBytes) {
-          throw Exception('ZIP 文件过大 (${(fileSize / 1024 / 1024).toStringAsFixed(1)}MB)，超过 100MB 限制，请选择较小的备份文件');
+          throw Exception(
+            'ZIP 文件过大 (${(fileSize / 1024 / 1024).toStringAsFixed(1)}MB)，超过 100MB 限制，请选择较小的备份文件',
+          );
         }
         final List<int> zipBytes = await zipFile.readAsBytes();
         final Archive? archive = ZipDecoder().decodeBytes(zipBytes);
@@ -4696,7 +5533,10 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         if (browserData['bookmarks'] != null) {
           final List<dynamic> bookmarksData = browserData['bookmarks'];
           setState(() {
-            _bookmarks = bookmarksData.map((item) => Map<String, String>.from(item)).toList();
+            _bookmarks =
+                bookmarksData
+                    .map((item) => Map<String, String>.from(item))
+                    .toList();
           });
           await _saveBookmarks();
         }
@@ -4707,7 +5547,9 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
           setState(() {
             _commonWebsites.clear();
             for (final item in websitesData) {
-              final Map<String, dynamic> website = Map<String, dynamic>.from(item);
+              final Map<String, dynamic> website = Map<String, dynamic>.from(
+                item,
+              );
               // 只保存 iconCode，不动态创建 IconData 实例
               if (website['iconCode'] == null) {
                 website['iconCode'] = Icons.public.codePoint;
@@ -4739,7 +5581,11 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
       if (mounted) {
         Navigator.pop(context); // 关闭进度对话框
         final userMsg = formatExportImportError(e, '导入失败');
-        showExportImportErrorDialog(context, '浏览器数据导入失败', '出错阶段：$currentPhase\n\n$userMsg');
+        showExportImportErrorDialog(
+          context,
+          '浏览器数据导入失败',
+          '出错阶段：$currentPhase\n\n$userMsg',
+        );
       }
     }
   }
@@ -4749,12 +5595,14 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
     if (url.isEmpty) return '';
     try {
       final uri = Uri.tryParse(url);
-      if (uri == null) return url.length > 45 ? '${url.substring(0, 42)}...' : url;
+      if (uri == null)
+        return url.length > 45 ? '${url.substring(0, 42)}...' : url;
       final host = uri.host.isNotEmpty ? uri.host : url;
       final path = uri.path;
       if (path.isEmpty || path == '/') return host;
       // 路径过长时只保留前一段
-      final pathDisplay = path.length > 25 ? '${path.substring(0, 22)}...' : path;
+      final pathDisplay =
+          path.length > 25 ? '${path.substring(0, 22)}...' : path;
       return '$host$pathDisplay';
     } catch (_) {
       return url.length > 45 ? '${url.substring(0, 42)}...' : url;
@@ -4765,144 +5613,216 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   void _showHistory() {
     showModalBottomSheet(
       context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setState) => SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              ListTile(
-                leading: const Icon(Icons.delete_forever),
-                title: const Text('清空全部历史记录'),
-                onTap: () async {
-                  Navigator.pop(context);
-                  _history.clear();
-                  await _saveHistory();
-                  setState(() {});
-                },
-              ),
-              const Divider(),
-              Expanded(
-                child: ListView.builder(
-                  itemCount: _history.length,
-                  itemBuilder: (context, index) {
-                    final item = _history[index];
-                    final title = item['title'] as String?;
-                    final url = item['url'] as String? ?? '';
-                    final timeStr = (item['datetime'] as String?)?.substring(0, 19).replaceAll('T', ' ') ?? '';
-                    // 优先用标题，若标题过长或与 URL 相同则用缩短的 URL
-                    final displayText = (title != null && title != url && title.length <= 50)
-                        ? title
-                        : _shortenUrlForDisplay(url);
-                    return SizedBox(
-                      height: 32,
-                      child: Material(
-                        color: Colors.transparent,
-                        child: InkWell(
-                          onTap: () {
-                            Navigator.pop(context);
-                            _loadUrl(url);
-                          },
-                          onLongPress: () async {
-                            _history.removeAt(index);
-                            await _saveHistory();
-                            setState(() {});
-                          },
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 16),
-                            child: Row(
-                              children: [
-                                Expanded(
-                                  child: Text(
-                                    displayText,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(fontSize: 14),
+      builder:
+          (context) => StatefulBuilder(
+            builder:
+                (context, setState) => SafeArea(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      ListTile(
+                        leading: const Icon(Icons.delete_forever),
+                        title: const Text('清空全部历史记录'),
+                        onTap: () async {
+                          Navigator.pop(context);
+                          _history.clear();
+                          await _saveHistory();
+                          setState(() {});
+                        },
+                      ),
+                      const Divider(),
+                      Expanded(
+                        child: ListView.builder(
+                          itemCount: _history.length,
+                          itemBuilder: (context, index) {
+                            final item = _history[index];
+                            final title = item['title'] as String?;
+                            final url = item['url'] as String? ?? '';
+                            final timeStr =
+                                (item['datetime'] as String?)
+                                    ?.substring(0, 19)
+                                    .replaceAll('T', ' ') ??
+                                '';
+                            // 优先用标题，若标题过长或与 URL 相同则用缩短的 URL
+                            final displayText =
+                                (title != null &&
+                                        title != url &&
+                                        title.length <= 50)
+                                    ? title
+                                    : _shortenUrlForDisplay(url);
+                            return SizedBox(
+                              height: 32,
+                              child: Material(
+                                color: Colors.transparent,
+                                child: InkWell(
+                                  onTap: () {
+                                    Navigator.pop(context);
+                                    _loadUrl(url);
+                                  },
+                                  onLongPress: () async {
+                                    _history.removeAt(index);
+                                    await _saveHistory();
+                                    setState(() {});
+                                  },
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 16,
+                                    ),
+                                    child: Row(
+                                      children: [
+                                        Expanded(
+                                          child: Text(
+                                            displayText,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: const TextStyle(
+                                              fontSize: 14,
+                                            ),
+                                          ),
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Text(
+                                          timeStr,
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            color: Colors.grey[600],
+                                          ),
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ],
+                                    ),
                                   ),
                                 ),
-                                const SizedBox(width: 8),
-                                Text(
-                                  timeStr,
-                                  style: TextStyle(fontSize: 11, color: Colors.grey[600]),
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ],
-                            ),
-                          ),
+                              ),
+                            );
+                          },
                         ),
                       ),
-                    );
-                  },
+                    ],
+                  ),
                 ),
-              ),
-            ],
           ),
-        ),
-      ),
     );
   }
 
   // 根据 iconCode 获取对应的图标（使用常量映射避免动态创建）
   IconData _getIconFromCode(int? iconCode) {
     if (iconCode == null) return Icons.public;
-    
+
     // 使用常量图标映射，避免动态创建 IconData
     switch (iconCode) {
-      case 0xe3c3: return Icons.public; // public
-      case 0xe3c4: return Icons.public_off; // public_off
-      case 0xe3c5: return Icons.publish; // publish
-      case 0xe3c6: return Icons.query_builder; // query_builder
-      case 0xe3c7: return Icons.question_answer; // question_answer
-      case 0xe3c8: return Icons.queue; // queue
-      case 0xe3c9: return Icons.queue_music; // queue_music
-      case 0xe3ca: return Icons.queue_play_next; // queue_play_next
-      case 0xe3cb: return Icons.radio; // radio
-      case 0xe3cc: return Icons.radio_button_checked; // radio_button_checked
-      case 0xe3cd: return Icons.radio_button_unchecked; // radio_button_unchecked
-      case 0xe3ce: return Icons.rate_review; // rate_review
-      case 0xe3cf: return Icons.receipt; // receipt
-      case 0xe3d0: return Icons.recent_actors; // recent_actors
-      case 0xe3d1: return Icons.record_voice_over; // record_voice_over
-      case 0xe3d2: return Icons.redeem; // redeem
-      case 0xe3d3: return Icons.redo; // redo
-      case 0xe3d4: return Icons.refresh; // refresh
-      case 0xe3d5: return Icons.remove; // remove
-      case 0xe3d6: return Icons.remove_circle; // remove_circle
-      case 0xe3d7: return Icons.remove_circle_outline; // remove_circle_outline
-      case 0xe3d8: return Icons.remove_from_queue; // remove_from_queue
-      case 0xe3d9: return Icons.visibility; // visibility
-      case 0xe3da: return Icons.visibility_off; // visibility_off
-      case 0xe3db: return Icons.voice_chat; // voice_chat
-      case 0xe3dc: return Icons.voicemail; // voicemail
-      case 0xe3dd: return Icons.volume_down; // volume_down
-      case 0xe3de: return Icons.volume_mute; // volume_mute
-      case 0xe3df: return Icons.volume_off; // volume_off
-      case 0xe3e0: return Icons.volume_up; // volume_up
-      case 0xe3e1: return Icons.vpn_key; // vpn_key
-      case 0xe3e2: return Icons.vpn_lock; // vpn_lock
-      case 0xe3e3: return Icons.wallpaper; // wallpaper
-      case 0xe3e4: return Icons.warning; // warning
-      case 0xe3e5: return Icons.watch; // watch
-      case 0xe3e6: return Icons.watch_later; // watch_later
-      case 0xe3e7: return Icons.wb_auto; // wb_auto
-      case 0xe3e8: return Icons.wb_incandescent; // wb_incandescent
-      case 0xe3e9: return Icons.wb_iridescent; // wb_iridescent
-      case 0xe3ea: return Icons.wb_sunny; // wb_sunny
-      case 0xe3eb: return Icons.wc; // wc
-      case 0xe3ec: return Icons.web; // web
-      case 0xe3ed: return Icons.web_asset; // web_asset
-      case 0xe3ee: return Icons.weekend; // weekend
-      case 0xe3ef: return Icons.whatshot; // whatshot
-      case 0xe3f0: return Icons.widgets; // widgets
-      case 0xe3f1: return Icons.wifi; // wifi
-      case 0xe3f2: return Icons.wifi_lock; // wifi_lock
-      case 0xe3f3: return Icons.wifi_tethering; // wifi_tethering
-      case 0xe3f4: return Icons.work; // work
-      case 0xe3f5: return Icons.wrap_text; // wrap_text
-      case 0xe3f6: return Icons.youtube_searched_for; // youtube_searched_for
-      case 0xe3f7: return Icons.zoom_in; // zoom_in
-      case 0xe3f8: return Icons.zoom_out; // zoom_out
-      case 0xe3f9: return Icons.zoom_out_map; // zoom_out_map
-      default: return Icons.public; // 默认图标
+      case 0xe3c3:
+        return Icons.public; // public
+      case 0xe3c4:
+        return Icons.public_off; // public_off
+      case 0xe3c5:
+        return Icons.publish; // publish
+      case 0xe3c6:
+        return Icons.query_builder; // query_builder
+      case 0xe3c7:
+        return Icons.question_answer; // question_answer
+      case 0xe3c8:
+        return Icons.queue; // queue
+      case 0xe3c9:
+        return Icons.queue_music; // queue_music
+      case 0xe3ca:
+        return Icons.queue_play_next; // queue_play_next
+      case 0xe3cb:
+        return Icons.radio; // radio
+      case 0xe3cc:
+        return Icons.radio_button_checked; // radio_button_checked
+      case 0xe3cd:
+        return Icons.radio_button_unchecked; // radio_button_unchecked
+      case 0xe3ce:
+        return Icons.rate_review; // rate_review
+      case 0xe3cf:
+        return Icons.receipt; // receipt
+      case 0xe3d0:
+        return Icons.recent_actors; // recent_actors
+      case 0xe3d1:
+        return Icons.record_voice_over; // record_voice_over
+      case 0xe3d2:
+        return Icons.redeem; // redeem
+      case 0xe3d3:
+        return Icons.redo; // redo
+      case 0xe3d4:
+        return Icons.refresh; // refresh
+      case 0xe3d5:
+        return Icons.remove; // remove
+      case 0xe3d6:
+        return Icons.remove_circle; // remove_circle
+      case 0xe3d7:
+        return Icons.remove_circle_outline; // remove_circle_outline
+      case 0xe3d8:
+        return Icons.remove_from_queue; // remove_from_queue
+      case 0xe3d9:
+        return Icons.visibility; // visibility
+      case 0xe3da:
+        return Icons.visibility_off; // visibility_off
+      case 0xe3db:
+        return Icons.voice_chat; // voice_chat
+      case 0xe3dc:
+        return Icons.voicemail; // voicemail
+      case 0xe3dd:
+        return Icons.volume_down; // volume_down
+      case 0xe3de:
+        return Icons.volume_mute; // volume_mute
+      case 0xe3df:
+        return Icons.volume_off; // volume_off
+      case 0xe3e0:
+        return Icons.volume_up; // volume_up
+      case 0xe3e1:
+        return Icons.vpn_key; // vpn_key
+      case 0xe3e2:
+        return Icons.vpn_lock; // vpn_lock
+      case 0xe3e3:
+        return Icons.wallpaper; // wallpaper
+      case 0xe3e4:
+        return Icons.warning; // warning
+      case 0xe3e5:
+        return Icons.watch; // watch
+      case 0xe3e6:
+        return Icons.watch_later; // watch_later
+      case 0xe3e7:
+        return Icons.wb_auto; // wb_auto
+      case 0xe3e8:
+        return Icons.wb_incandescent; // wb_incandescent
+      case 0xe3e9:
+        return Icons.wb_iridescent; // wb_iridescent
+      case 0xe3ea:
+        return Icons.wb_sunny; // wb_sunny
+      case 0xe3eb:
+        return Icons.wc; // wc
+      case 0xe3ec:
+        return Icons.web; // web
+      case 0xe3ed:
+        return Icons.web_asset; // web_asset
+      case 0xe3ee:
+        return Icons.weekend; // weekend
+      case 0xe3ef:
+        return Icons.whatshot; // whatshot
+      case 0xe3f0:
+        return Icons.widgets; // widgets
+      case 0xe3f1:
+        return Icons.wifi; // wifi
+      case 0xe3f2:
+        return Icons.wifi_lock; // wifi_lock
+      case 0xe3f3:
+        return Icons.wifi_tethering; // wifi_tethering
+      case 0xe3f4:
+        return Icons.work; // work
+      case 0xe3f5:
+        return Icons.wrap_text; // wrap_text
+      case 0xe3f6:
+        return Icons.youtube_searched_for; // youtube_searched_for
+      case 0xe3f7:
+        return Icons.zoom_in; // zoom_in
+      case 0xe3f8:
+        return Icons.zoom_out; // zoom_out
+      case 0xe3f9:
+        return Icons.zoom_out_map; // zoom_out_map
+      default:
+        return Icons.public; // 默认图标
     }
   }
 
@@ -4910,7 +5830,8 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
   void _onPageFinished(String url) async {
     try {
       // about:blank 为 WebView 初始空白页，不切换主界面、不加入历史
-      final isBlankPage = url.isEmpty ||
+      final isBlankPage =
+          url.isEmpty ||
           url.toLowerCase().startsWith('about:blank') ||
           url.toLowerCase().startsWith('about://blank');
       if (isBlankPage) {
@@ -4924,12 +5845,12 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
 
       // 注入媒体下载处理程序
       _injectDownloadHandlers();
-      
+
       // 添加历史记录（仅真实网页）
       final ctrl = _controller;
       String title = ctrl != null ? (await ctrl.getTitle() ?? url) : url;
       await _addHistory(title, url);
-      
+
       // 更新状态：仅当加载真实网页时切换到 WebView
       setState(() {
         _isLoading = false;
@@ -4937,14 +5858,13 @@ class _BrowserPageState extends State<BrowserPage> with AutomaticKeepAliveClient
         _urlController.text = url;
         _showHomePage = false;
       });
-      
+
       // 通知父组件浏览器状态变化
       widget.onBrowserHomePageChanged?.call(_showHomePage);
-      
+
       debugPrint('页面加载完成: $url, 标题: $title');
     } catch (e) {
       debugPrint('页面加载完成处理时出错: $e');
     }
   }
 }
-

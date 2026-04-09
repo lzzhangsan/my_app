@@ -30,8 +30,8 @@ import 'models/media_item.dart';
 import 'media_preview_page.dart';
 import 'create_folder_dialog.dart';
 import 'models/media_type.dart';
-import 'media_player_settings.dart' show
-    applyMediaSettingsImportMap, buildMediaSettingsExportMap;
+import 'media_player_settings.dart'
+    show applyMediaSettingsImportMap, buildMediaSettingsExportMap;
 import 'widgets/image_layout_utils.dart' show ZoomCenterMarkerCoverOverlay;
 import 'browser_page.dart';
 import 'services/cache_service.dart';
@@ -591,7 +591,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   Timer? _thumbnailPrefetchDebounce;
   Timer? _thumbnailUiRefreshDebounce;
   bool _isThumbnailPrefetchRunning = false;
-  String? _lastViewedVideoId;
+  String? _lastViewedMediaId;
   final List<String> _availableDirectories = ['root'];
   final ScrollController _gridScrollController = ScrollController();
   bool _isDragSelecting = false;
@@ -2138,17 +2138,12 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           }
           final msg =
               cancelled
-                  ? (parts.isEmpty
-                      ? '导入已取消'
-                      : '导入已取消：${parts.join('，')}')
+                  ? (parts.isEmpty ? '导入已取消' : '导入已取消：${parts.join('，')}')
                   : (parts.isEmpty
                       ? '无新文件导入（全部为重复）'
                       : '导入完成：${parts.join('，')}');
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(msg),
-              duration: const Duration(seconds: 4),
-            ),
+            SnackBar(content: Text(msg), duration: const Duration(seconds: 4)),
           );
         }
       }
@@ -2356,15 +2351,16 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                                 ),
                               ),
                               Expanded(
-                                child: e.key == '存储路径'
-                                    ? SelectableText(
-                                        e.value,
-                                        style: const TextStyle(fontSize: 13),
-                                      )
-                                    : Text(
-                                        e.value,
-                                        style: const TextStyle(fontSize: 14),
-                                      ),
+                                child:
+                                    e.key == '存储路径'
+                                        ? SelectableText(
+                                          e.value,
+                                          style: const TextStyle(fontSize: 13),
+                                        )
+                                        : Text(
+                                          e.value,
+                                          style: const TextStyle(fontSize: 14),
+                                        ),
                               ),
                             ],
                           ),
@@ -2386,7 +2382,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     );
   }
 
-  Future<Map<String, String>> _collectMediaItemProperties(MediaItem item) async {
+  Future<Map<String, String>> _collectMediaItemProperties(
+    MediaItem item,
+  ) async {
     final df = DateFormat('yyyy-MM-dd HH:mm:ss');
 
     Future<String> locationLabel() async {
@@ -2402,10 +2400,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     if (item.type == MediaType.folder) {
       final loc = await locationLabel();
       final stats = await _collectFolderPropertiesStats(item.id);
-      final ordered = <String, String>{
-        '名称': item.name,
-        '类型': '文件夹',
-      };
+      final ordered = <String, String>{'名称': item.name, '类型': '文件夹'};
       try {
         ordered['当前层级项数'] = '${stats.directChildCount}';
         ordered['总项数(含子级)'] = '${stats.totalItems}';
@@ -2484,7 +2479,8 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       for (final row in rows) {
         totalItems++;
         final type = row['type'];
-        final typeIndex = type is int ? type : int.tryParse(type?.toString() ?? '') ?? -1;
+        final typeIndex =
+            type is int ? type : int.tryParse(type?.toString() ?? '') ?? -1;
         final isFolder = typeIndex == MediaType.folder.index;
 
         if (isFolder) {
@@ -2982,6 +2978,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
             _isMultiSelectMode = false;
           });
           widget.onMultiSelectModeChanged?.call(false);
+          await Future<void>.delayed(const Duration(milliseconds: 900));
           await _loadMediaItems();
         }
       } catch (e) {
@@ -3296,7 +3293,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   Widget _buildMediaItem(MediaItem item, int index) {
     final isSystemFolder = item.id == 'recycle_bin' || item.id == 'favorites';
     bool isSelected = _selectedItems.contains(item.id);
-    bool isLastViewed = item.id == _lastViewedVideoId;
+    bool isLastViewed = item.id == _lastViewedMediaId;
 
     return GestureDetector(
       key: ValueKey(item.id),
@@ -3643,7 +3640,10 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     return null;
   }
 
-  Widget _buildVideoThumbnailLoadedStack(File file, String videoPathForErrorLog) {
+  Widget _buildVideoThumbnailLoadedStack(
+    File file,
+    String videoPathForErrorLog,
+  ) {
     return Stack(
       fit: StackFit.expand,
       children: [
@@ -3664,11 +3664,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
               color: Colors.black45,
               borderRadius: BorderRadius.circular(12),
             ),
-            child: const Icon(
-              Icons.play_arrow,
-              size: 16,
-              color: Colors.white,
-            ),
+            child: const Icon(Icons.play_arrow, size: 16, color: Colors.white),
           ),
         ),
       ],
@@ -3685,9 +3681,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
             height: 20,
             child: CircularProgressIndicator(
               strokeWidth: 2,
-              valueColor: AlwaysStoppedAnimation<Color>(
-                Colors.white70,
-              ),
+              valueColor: AlwaysStoppedAnimation<Color>(Colors.white70),
             ),
           ),
         ),
@@ -4328,11 +4322,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           await _loadMediaItems();
           if (!mounted) return;
           // 预览页面关闭时刷新列表（删除/移动/收藏等操作后需同步显示）
-          if (item.type == MediaType.video) {
-            setState(() {
-              _lastViewedVideoId = item.id;
-            });
-          }
+          setState(() {
+            _lastViewedMediaId = item.id;
+          });
           _scheduleGridScrollRestore(scrollBeforeReload);
         });
   }
@@ -4391,7 +4383,10 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                   ),
                   TextButton(
                     onPressed: () => Navigator.of(context).pop(true),
-                    child: const Text('清空', style: TextStyle(color: Colors.red)),
+                    child: const Text(
+                      '清空',
+                      style: TextStyle(color: Colors.red),
+                    ),
                   ),
                 ],
               ),
@@ -4436,9 +4431,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('清空回收站失败: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('清空回收站失败: $e')));
     }
   }
 
@@ -4798,15 +4793,18 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       int errorCount = 0;
       final Map<String, List<Map<String, dynamic>>> hashGroups = {};
 
-      for (var pass1Index = 0; pass1Index < allMediaItems.length; pass1Index++) {
+      for (
+        var pass1Index = 0;
+        pass1Index < allMediaItems.length;
+        pass1Index++
+      ) {
         if (cancelRef.value) {
           msgRef.value = '正在停止…';
           break;
         }
         final item = allMediaItems[pass1Index];
         final name = item['name']?.toString() ?? '';
-        msgRef.value =
-            '阶段 1/2 计算哈希 (${pass1Index + 1}/$totalPass1)\n$name';
+        msgRef.value = '阶段 1/2 计算哈希 (${pass1Index + 1}/$totalPass1)\n$name';
         progRef.value = (pass1Index / totalPass1) * 0.88;
 
         try {
@@ -4953,8 +4951,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       final cancelRef = ValueNotifier(false);
       final progRef = ValueNotifier(0.0);
       final msgRef = ValueNotifier('准备查重…');
-      final locLabel =
-          _currentDirectory == 'root' ? '根目录' : _currentDirectory;
+      final locLabel = _currentDirectory == 'root' ? '根目录' : _currentDirectory;
 
       showCancellableProgressDialog(
         context,
@@ -4975,8 +4972,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         }
         final item = mediaFiles[i];
         final n = item['name']?.toString() ?? '';
-        msgRef.value =
-            '阶段 1/2 计算哈希 ($locLabel)\n(${i + 1}/$totalPass1) $n';
+        msgRef.value = '阶段 1/2 计算哈希 ($locLabel)\n(${i + 1}/$totalPass1) $n';
         progRef.value = ((i + 1) / totalPass1) * 0.85;
 
         try {
@@ -5017,8 +5013,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
             }
             dupStep++;
             progRef.value = 0.85 + (dupStep / dupTotal) * 0.15;
-            msgRef.value =
-                '阶段 2/2 移至回收站 ($dupStep/$dupTotal)\n${dup['name']}';
+            msgRef.value = '阶段 2/2 移至回收站 ($dupStep/$dupTotal)\n${dup['name']}';
             try {
               await _databaseService.updateMediaItemDirectory(
                 dup['id'],
@@ -5042,9 +5037,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         if (cancelRef.value) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text(
-                '查重已取消（错误: $errorCount）',
-              ),
+              content: Text('查重已取消（错误: $errorCount）'),
               duration: const Duration(seconds: 3),
             ),
           );
@@ -5449,8 +5442,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
       message.value = '正在导出设置...';
       final prefs = await SharedPreferences.getInstance();
-      final settingsJson =
-          jsonEncode(await buildMediaSettingsExportMap(prefs));
+      final settingsJson = jsonEncode(await buildMediaSettingsExportMap(prefs));
       final settingsBytes = utf8.encode(settingsJson);
       final settingsFile = ArchiveFile(
         'media_settings.json',
@@ -6689,11 +6681,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   Widget _buildMediaFloatingTopBar() {
     const Color fg = Color(0xE6000000);
     final pad = MediaQuery.paddingOf(context);
-    const ts = TextStyle(
-      fontSize: 20,
-      fontWeight: FontWeight.w500,
-      color: fg,
-    );
+    const ts = TextStyle(fontSize: 20, fontWeight: FontWeight.w500, color: fg);
     const countStyle = TextStyle(fontSize: 11, color: fg);
 
     final bool showRootTitle =
@@ -6735,14 +6723,20 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           const SizedBox(width: 2),
           Text(
             '$_imageCount',
-            style: countStyle.copyWith(fontSize: 14, fontWeight: FontWeight.w600),
+            style: countStyle.copyWith(
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+            ),
           ),
           const SizedBox(width: 8),
           const Icon(Icons.videocam, size: 18, color: fg),
           const SizedBox(width: 2),
           Text(
             '$_videoCount',
-            style: countStyle.copyWith(fontSize: 14, fontWeight: FontWeight.w600),
+            style: countStyle.copyWith(
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+            ),
           ),
         ],
       ),
@@ -6935,9 +6929,8 @@ void showCancellableProgressDialog(
                 ValueListenableBuilder<double>(
                   valueListenable: progress,
                   builder:
-                      (_, v, __) => LinearProgressIndicator(
-                        value: v.clamp(0.0, 1.0),
-                      ),
+                      (_, v, __) =>
+                          LinearProgressIndicator(value: v.clamp(0.0, 1.0)),
                 ),
                 const SizedBox(height: 8),
                 ValueListenableBuilder<double>(
@@ -6953,10 +6946,8 @@ void showCancellableProgressDialog(
                 ValueListenableBuilder<String>(
                   valueListenable: message,
                   builder:
-                      (_, msg, __) => Text(
-                        msg,
-                        style: const TextStyle(fontSize: 13),
-                      ),
+                      (_, msg, __) =>
+                          Text(msg, style: const TextStyle(fontSize: 13)),
                 ),
               ],
             ),

@@ -93,7 +93,7 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
     if (!_hasUserInteracted) return;
     setState(() {});
     _debounce?.cancel();
-    _debounce = Timer(const Duration(milliseconds: 450), () {
+    _debounce = Timer(const Duration(milliseconds: 120), () {
       if (mounted) _emitChanged();
     });
   }

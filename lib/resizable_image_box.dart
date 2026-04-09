@@ -5,8 +5,6 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
-import 'widgets/stored_view_image_layer.dart';
-
 class ResizableImageBox extends StatefulWidget {
   const ResizableImageBox({
     super.key,
@@ -102,12 +100,12 @@ class _ResizableImageBoxState extends State<ResizableImageBox> {
     final imageLayer = widget.imagePath.isNotEmpty
         ? IgnorePointer(
             child: RepaintBoundary(
-              child: StoredViewImageLayer(
+              child: Image.file(
                 key: ValueKey(widget.imagePath),
-                file: File(widget.imagePath),
-                useScreenSizeForNormalization: false,
-                readonlyTranslateYOffset: 0,
-                useCacheWidth: false,
+                File(widget.imagePath),
+                fit: BoxFit.contain,
+                filterQuality: FilterQuality.medium,
+                gaplessPlayback: true,
               ),
             ),
           )

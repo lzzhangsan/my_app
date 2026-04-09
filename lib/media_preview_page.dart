@@ -74,6 +74,9 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
   bool _transformOnlyMode = false;
   final Map<String, Timer> _pendingCenterCommitTimers = {};
   DateTime? _ignoreCenterTapUntil;
+  Future<void> _pendingViewPersist = Future<void>.value();
+  bool _allowPreviewPop = false;
+  bool _isFlushingBeforePop = false;
 
   bool get _isCurrentInRecycleBin {
     if (_currentIndex < 0 || _currentIndex >= widget.mediaItems.length) {
@@ -192,11 +195,11 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     return ignore;
   }
 
-  Future<void> _schedulePersistKenBurnsCenter(
+  void _schedulePersistKenBurnsCenter(
     MediaItem item,
     double nx,
     double ny,
-  ) async {
+  ) {
     if (_shouldIgnoreCenterTap(item)) return;
     _pendingCenterCommitTimers[item.id]?.cancel();
     _pendingCenterCommitTimers[item.id] = Timer(
@@ -209,11 +212,11 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     );
   }
 
-  Future<void> _schedulePersistKenBurnsCenterAndStartStaticDemo(
+  void _schedulePersistKenBurnsCenterAndStartStaticDemo(
     MediaItem item,
     double nx,
     double ny,
-  ) async {
+  ) {
     if (_shouldIgnoreCenterTap(item)) return;
     _pendingCenterCommitTimers[item.id]?.cancel();
     _pendingCenterCommitTimers[item.id] = Timer(
@@ -272,6 +275,42 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
   }
 
   /// 保存视频/图片视窗（缩放/平移/旋转），持久化到 `media_items`，文档栏与预览会套用。
+  /*
+  Future<void> _persistMediaViewParams(
+    MediaItem item,
+    VideoViewParams p,
+  ) async {
+    final idx = widget.mediaItems.indexWhere((e) => e.id == item.id);
+    if (idx >= 0 && widget.mediaItems[idx].videoViewParams != p && mounted) {
+      setState(() {
+        widget.mediaItems[idx] = widget.mediaItems[idx].copyWith(
+          videoViewParams: p,
+        );
+      });
+    }
+    final payload = {
+      'id': item.id,
+      ...p.toDbUpdateMap(),
+      'updated_at': DateTime.now().millisecondsSinceEpoch,
+    };
+    final future = _pendingViewPersist.then((_) async {
+      try {
+        await _dbService.updateMediaItem(payload);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('保存显示方式失败: $e'),
+          behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+        ),
+      );
+    }
+  }
+
+  /// 静态预览：双击后保存中心并进入一轮 Ken Burns 演示（与渐进放大模式参数一致）。
+  */
+
   Future<void> _persistMediaViewParams(
     MediaItem item,
     VideoViewParams p,
@@ -294,7 +333,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('保存显示方式失败: $e'),
+          content: Text('淇濆瓨鏄剧ず鏂瑰紡澶辫触: $e'),
           behavior: SnackBarBehavior.floating,
           margin: const EdgeInsets.fromLTRB(16, 0, 16, 20),
         ),
@@ -302,7 +341,6 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     }
   }
 
-  /// 静态预览：双击后保存中心并进入一轮 Ken Burns 演示（与渐进放大模式参数一致）。
   Future<void> _persistKenBurnsCenterAndStartStaticDemo(
     MediaItem item,
     double nx,
@@ -1023,8 +1061,9 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
           zoomCenterX: item.kenBurnsCenterX,
           zoomCenterY: item.kenBurnsCenterY,
           enableDoubleTapToSetZoomCenter: true,
-          onZoomCenterSet: (nx, ny) =>
-              _schedulePersistKenBurnsCenter(item, nx, ny),
+          onZoomCenterSet: (nx, ny) async {
+            _schedulePersistKenBurnsCenter(item, nx, ny);
+          },
           loop: loopAnim,
           onAnimationComplete: loopAnim ? null : onAnimComplete,
         );
@@ -1068,8 +1107,9 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
             zoomCenterX: item.kenBurnsCenterX,
             zoomCenterY: item.kenBurnsCenterY,
             enableDoubleTapToSetZoomCenter: true,
-            onZoomCenterSet: (nx, ny) =>
-                _schedulePersistKenBurnsCenter(item, nx, ny),
+            onZoomCenterSet: (nx, ny) async {
+              _schedulePersistKenBurnsCenter(item, nx, ny);
+            },
             loop: false,
             onAnimationComplete: _finishStaticKenBurnsDemo,
           );
