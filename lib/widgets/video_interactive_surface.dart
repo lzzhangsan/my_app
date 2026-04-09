@@ -15,6 +15,7 @@ class VideoInteractiveSurface extends StatefulWidget {
     required this.initial,
     this.editable = true,
     this.onChanged,
+    this.onTripleTapReset,
     this.useScreenSizeForNormalization = false,
   });
 
@@ -24,6 +25,7 @@ class VideoInteractiveSurface extends StatefulWidget {
   final VideoViewParams initial;
   final bool editable;
   final ValueChanged<VideoViewParams>? onChanged;
+  final VoidCallback? onTripleTapReset;
   /// 为 true 时，平移归一化按整屏尺寸计算，减少不同页面容器高度差导致的复现偏移。
   final bool useScreenSizeForNormalization;
 
@@ -49,6 +51,11 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
 
   final Set<int> _activePointers = {};
   final List<Offset> _strokePoints = [];
+  DateTime? _lastTapAt;
+  int _tapCount = 0;
+  DateTime? _singlePointerDownAt;
+  Offset? _singlePointerDownPos;
+  bool _singlePointerMovedTooFar = false;
 
   @override
   void initState() {
@@ -114,6 +121,17 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
       ..scale(p.scale.clamp(1.0, 6.0));
   }
 
+  void _resetToDefaultView() {
+    if (!widget.editable) return;
+    setState(() {
+      _quarterTurns = 0;
+      _tc.value = Matrix4.identity();
+      _hasUserInteracted = true;
+    });
+    _emitChanged(force: true);
+    widget.onTripleTapReset?.call();
+  }
+
   double _scaleNow() {
     try {
       return _tc.value.getMaxScaleOnAxis();
@@ -122,8 +140,27 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
     }
   }
 
+  Matrix4 _centeredScaleMatrix(double scale) {
+    final s = scale.clamp(1.0, 6.0).toDouble();
+    final tx = (_lastViewportW * (1 - s)) / 2;
+    final ty = (_lastViewportH * (1 - s)) / 2;
+    return Matrix4.identity()
+      ..translate(tx, ty)
+      ..scale(s);
+  }
+
   void _onPointerDown(PointerDownEvent e) {
     if (widget.editable) _hasUserInteracted = true;
+    if (_activePointers.isEmpty) {
+      _singlePointerDownAt = DateTime.now();
+      _singlePointerDownPos = e.localPosition;
+      _singlePointerMovedTooFar = false;
+    } else {
+      _singlePointerDownAt = null;
+      _singlePointerDownPos = null;
+      _singlePointerMovedTooFar = true;
+      _tapCount = 0;
+    }
     _activePointers.add(e.pointer);
     if (_activePointers.length == 1 && widget.editable) {
       _strokePoints
@@ -136,6 +173,10 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
 
   void _onPointerMove(PointerMoveEvent e) {
     if (!widget.editable) return;
+    final downPos = _singlePointerDownPos;
+    if (downPos != null && (e.localPosition - downPos).distance > 24.0) {
+      _singlePointerMovedTooFar = true;
+    }
     // 单指轨迹用于「7」形旋转识别；放大后仍需有效，故不再限制 scale。
     if (_activePointers.length == 1) {
       _strokePoints.add(e.localPosition);
@@ -158,10 +199,30 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
               ? (_quarterTurns + 1) % 4
               : (_quarterTurns - 1) % 4;
           if (_quarterTurns < 0) _quarterTurns += 4;
+          // 旋转后保持当前缩放并重新居中，避免画面偏到可视区外。
+          _tc.value = _centeredScaleMatrix(_tc.value.getMaxScaleOnAxis());
         });
         _emitChanged(force: true);
       }
     }
+    final downAt = _singlePointerDownAt;
+    if (soloStroke && !_singlePointerMovedTooFar && downAt != null) {
+      final now = DateTime.now();
+      if (_lastTapAt == null ||
+          now.difference(_lastTapAt!) > const Duration(milliseconds: 700)) {
+        _tapCount = 1;
+      } else {
+        _tapCount += 1;
+      }
+      _lastTapAt = now;
+      if (_tapCount >= 3) {
+        _tapCount = 0;
+        _resetToDefaultView();
+      }
+    }
+    _singlePointerDownAt = null;
+    _singlePointerDownPos = null;
+    _singlePointerMovedTooFar = false;
     _strokePoints.clear();
   }
 

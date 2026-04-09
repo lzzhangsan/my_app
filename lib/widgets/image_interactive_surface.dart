@@ -14,6 +14,7 @@ class ImageInteractiveSurface extends StatefulWidget {
     required this.initial,
     this.editable = true,
     this.onChanged,
+    this.onTripleTapReset,
     this.useScreenSizeForNormalization = false,
     this.readonlyTranslateYOffset = 0,
   });
@@ -22,6 +23,7 @@ class ImageInteractiveSurface extends StatefulWidget {
   final VideoViewParams initial;
   final bool editable;
   final ValueChanged<VideoViewParams>? onChanged;
+  final VoidCallback? onTripleTapReset;
   /// 为 true 时，平移归一化按整屏尺寸计算，减少不同页面容器高度差导致的复现偏移。
   final bool useScreenSizeForNormalization;
   /// 仅用于只读展示时的额外纵向像素补偿（>0 向下）。
@@ -49,6 +51,11 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
 
   final Set<int> _activePointers = {};
   final List<Offset> _strokePoints = [];
+  DateTime? _lastTapAt;
+  int _tapCount = 0;
+  DateTime? _singlePointerDownAt;
+  Offset? _singlePointerDownPos;
+  bool _singlePointerMovedTooFar = false;
 
   @override
   void initState() {
@@ -107,11 +114,27 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
     final p = widget.initial;
     final bw = _lastNormBasisW;
     final bh = _lastNormBasisH;
+    // 背景只读态保留纵向补偿，但按缩放衰减，避免高倍缩放时补偿被视觉放大。
+    final yOffset = !widget.editable && widget.readonlyTranslateYOffset != 0
+        ? widget.readonlyTranslateYOffset /
+            p.scale.clamp(1.0, 6.0).toDouble()
+        : 0.0;
     _lastAppliedBasisW = bw;
     _lastAppliedBasisH = bh;
     _tc.value = Matrix4.identity()
-      ..translate(p.txNorm * bw, p.tyNorm * bh + widget.readonlyTranslateYOffset)
+      ..translate(p.txNorm * bw, p.tyNorm * bh + yOffset)
       ..scale(p.scale.clamp(1.0, 6.0));
+  }
+
+  void _resetToDefaultView() {
+    if (!widget.editable) return;
+    setState(() {
+      _quarterTurns = 0;
+      _tc.value = Matrix4.identity();
+      _hasUserInteracted = true;
+    });
+    _emitChanged(force: true);
+    widget.onTripleTapReset?.call();
   }
 
   double _scaleNow() {
@@ -122,8 +145,27 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
     }
   }
 
+  Matrix4 _centeredScaleMatrix(double scale) {
+    final s = scale.clamp(1.0, 6.0).toDouble();
+    final tx = (_lastViewportW * (1 - s)) / 2;
+    final ty = (_lastViewportH * (1 - s)) / 2;
+    return Matrix4.identity()
+      ..translate(tx, ty)
+      ..scale(s);
+  }
+
   void _onPointerDown(PointerDownEvent e) {
     if (widget.editable) _hasUserInteracted = true;
+    if (_activePointers.isEmpty) {
+      _singlePointerDownAt = DateTime.now();
+      _singlePointerDownPos = e.localPosition;
+      _singlePointerMovedTooFar = false;
+    } else {
+      _singlePointerDownAt = null;
+      _singlePointerDownPos = null;
+      _singlePointerMovedTooFar = true;
+      _tapCount = 0;
+    }
     _activePointers.add(e.pointer);
     if (_activePointers.length == 1 && widget.editable) {
       _strokePoints
@@ -136,6 +178,10 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
 
   void _onPointerMove(PointerMoveEvent e) {
     if (!widget.editable) return;
+    final downPos = _singlePointerDownPos;
+    if (downPos != null && (e.localPosition - downPos).distance > 24.0) {
+      _singlePointerMovedTooFar = true;
+    }
     if (_activePointers.length == 1) {
       _strokePoints.add(e.localPosition);
     }
@@ -159,11 +205,30 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
               ? (_quarterTurns + 1) % 4
               : (_quarterTurns - 1) % 4;
           if (_quarterTurns < 0) _quarterTurns += 4;
-          _tc.value = Matrix4.identity()..scale(preservedScale);
+          // 旋转后重建为「当前缩放 + 居中」，避免高倍缩放下画面跑出可视区。
+          _tc.value = _centeredScaleMatrix(preservedScale);
         });
         _emitChanged(force: true);
       }
     }
+    final downAt = _singlePointerDownAt;
+    if (soloStroke && !_singlePointerMovedTooFar && downAt != null) {
+      final now = DateTime.now();
+      if (_lastTapAt == null ||
+          now.difference(_lastTapAt!) > const Duration(milliseconds: 700)) {
+        _tapCount = 1;
+      } else {
+        _tapCount += 1;
+      }
+      _lastTapAt = now;
+      if (_tapCount >= 3) {
+        _tapCount = 0;
+        _resetToDefaultView();
+      }
+    }
+    _singlePointerDownAt = null;
+    _singlePointerDownPos = null;
+    _singlePointerMovedTooFar = false;
     _strokePoints.clear();
   }
 

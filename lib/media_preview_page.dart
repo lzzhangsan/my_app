@@ -70,6 +70,8 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
   bool _skipNextPageChanged = false; // 删除/收藏/移动后忽略一次 onPageChanged，避免跳回第一项
   int _activePreviewPointers = 0;
   bool _transformOnlyMode = false;
+  final Map<String, Timer> _pendingCenterCommitTimers = {};
+  DateTime? _ignoreCenterTapUntil;
 
   bool get _isCurrentInRecycleBin {
     if (_currentIndex < 0 || _currentIndex >= widget.mediaItems.length) {
@@ -105,6 +107,10 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     _removeVideoCompleteListener();
     _pageController.dispose();
     _mediaTimer?.cancel();
+    for (final t in _pendingCenterCommitTimers.values) {
+      t.cancel();
+    }
+    _pendingCenterCommitTimers.clear();
     
     // 释放所有视频控制器
     for (final controller in _videoControllers.values) {
@@ -121,6 +127,57 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     );
     
     super.dispose();
+  }
+
+  void _onTripleTapResetGesture(MediaItem item) {
+    _ignoreCenterTapUntil = DateTime.now().add(const Duration(milliseconds: 900));
+    final timer = _pendingCenterCommitTimers.remove(item.id);
+    timer?.cancel();
+  }
+
+  bool _shouldIgnoreCenterTap(MediaItem item) {
+    final until = _ignoreCenterTapUntil;
+    if (until == null) return false;
+    final ignore = DateTime.now().isBefore(until);
+    if (ignore) {
+      final timer = _pendingCenterCommitTimers.remove(item.id);
+      timer?.cancel();
+    }
+    return ignore;
+  }
+
+  Future<void> _schedulePersistKenBurnsCenter(
+    MediaItem item,
+    double nx,
+    double ny,
+  ) async {
+    if (_shouldIgnoreCenterTap(item)) return;
+    _pendingCenterCommitTimers[item.id]?.cancel();
+    _pendingCenterCommitTimers[item.id] = Timer(
+      const Duration(milliseconds: 360),
+      () {
+        _pendingCenterCommitTimers.remove(item.id);
+        if (_shouldIgnoreCenterTap(item)) return;
+        unawaited(_persistKenBurnsCenter(item, nx, ny));
+      },
+    );
+  }
+
+  Future<void> _schedulePersistKenBurnsCenterAndStartStaticDemo(
+    MediaItem item,
+    double nx,
+    double ny,
+  ) async {
+    if (_shouldIgnoreCenterTap(item)) return;
+    _pendingCenterCommitTimers[item.id]?.cancel();
+    _pendingCenterCommitTimers[item.id] = Timer(
+      const Duration(milliseconds: 360),
+      () {
+        _pendingCenterCommitTimers.remove(item.id);
+        if (_shouldIgnoreCenterTap(item)) return;
+        unawaited(_persistKenBurnsCenterAndStartStaticDemo(item, nx, ny));
+      },
+    );
   }
 
   /// 双击设置渐进放大中心；归一化坐标写入数据库并更新当前列表项，并立即重播动画。
@@ -839,9 +896,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
                 final lp = d.localPosition;
                 final nx = (lp.dx / dw).clamp(0.0, 1.0);
                 final ny = ((lp.dy - imageTopY) / dh).clamp(0.0, 1.0);
-                unawaited(
-                  _persistKenBurnsCenterAndStartStaticDemo(item, nx, ny),
-                );
+                _schedulePersistKenBurnsCenterAndStartStaticDemo(item, nx, ny);
               },
               child: FitWidthBlurStaticImage(
                 key: ValueKey(
@@ -892,7 +947,8 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
           zoomCenterX: item.kenBurnsCenterX,
           zoomCenterY: item.kenBurnsCenterY,
           enableDoubleTapToSetZoomCenter: true,
-          onZoomCenterSet: (nx, ny) => _persistKenBurnsCenter(item, nx, ny),
+          onZoomCenterSet: (nx, ny) =>
+              _schedulePersistKenBurnsCenter(item, nx, ny),
           loop: loopAnim,
           onAnimationComplete: loopAnim ? null : onAnimComplete,
         );
@@ -936,7 +992,8 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
             zoomCenterX: item.kenBurnsCenterX,
             zoomCenterY: item.kenBurnsCenterY,
             enableDoubleTapToSetZoomCenter: true,
-            onZoomCenterSet: (nx, ny) => _persistKenBurnsCenter(item, nx, ny),
+            onZoomCenterSet: (nx, ny) =>
+                _schedulePersistKenBurnsCenter(item, nx, ny),
             loop: false,
             onAnimationComplete: _finishStaticKenBurnsDemo,
           );
@@ -952,6 +1009,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
       initial: item.videoViewParams,
       editable: true,
       useScreenSizeForNormalization: true,
+      onTripleTapReset: () => _onTripleTapResetGesture(item),
       onChanged: (p) => _persistMediaViewParams(item, p),
       child: inner,
     );
@@ -1014,6 +1072,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
               initial: item.videoViewParams,
               editable: true,
               useScreenSizeForNormalization: true,
+              onTripleTapReset: () => _onTripleTapResetGesture(item),
               onChanged: (p) => _persistMediaViewParams(item, p),
             ),
             const Positioned(

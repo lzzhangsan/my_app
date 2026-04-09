@@ -283,7 +283,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
       initial: p,
       editable: false,
       useScreenSizeForNormalization: true,
-      readonlyTranslateYOffset: 21,
+      readonlyTranslateYOffset: 27,
       child: child,
     );
   }

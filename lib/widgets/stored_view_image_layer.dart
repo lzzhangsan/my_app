@@ -16,7 +16,7 @@ class StoredViewImageLayer extends StatefulWidget {
     super.key,
     required this.file,
     this.useScreenSizeForNormalization = true,
-    this.readonlyTranslateYOffset = 21,
+    this.readonlyTranslateYOffset = 27,
   });
 
   final File file;
