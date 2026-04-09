@@ -48,6 +48,9 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
   double _lastAppliedBasisW = 1;
   double _lastAppliedBasisH = 1;
   bool _reapplyScheduled = false;
+  double _interactionStartScale = 1.0;
+  double _interactionStartTxNorm = 0.0;
+  double _interactionStartTyNorm = 0.0;
 
   final Set<int> _activePointers = {};
   final List<Offset> _strokePoints = [];
@@ -69,6 +72,10 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
   void didUpdateWidget(covariant VideoInteractiveSurface oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.initial != widget.initial) {
+      final current = _currentViewParams();
+      if (widget.editable && _hasUserInteracted && current == widget.initial) {
+        return;
+      }
       _quarterTurns = widget.initial.quarterTurns % 4;
       if (_quarterTurns < 0) _quarterTurns += 4;
       _appliedInitial = false;
@@ -96,16 +103,28 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
     final m = _tc.value;
     final t = m.getTranslation();
     final s = m.getMaxScaleOnAxis().clamp(1.0, 6.0);
+    final centeredBase = _centeredBaseTranslation(
+      basisW: _lastNormBasisW,
+      basisH: _lastNormBasisH,
+      scale: s,
+      quarterTurns: _quarterTurns,
+    );
     final extents = _panHalfExtents(
       basisW: _lastNormBasisW,
       basisH: _lastNormBasisH,
       scale: s,
       quarterTurns: _quarterTurns,
     );
-    final tx =
-        extents.maxX > 1e-6 ? (t.x / extents.maxX).clamp(-1.0, 1.0) : 0.0;
-    final ty =
-        extents.maxY > 1e-6 ? (t.y / extents.maxY).clamp(-1.0, 1.0) : 0.0;
+    final tx = _normFromTranslation(
+      translation: t.x,
+      centeredBase: centeredBase.dx,
+      extent: extents.maxX,
+    );
+    final ty = _normFromTranslation(
+      translation: t.y,
+      centeredBase: centeredBase.dy,
+      extent: extents.maxY,
+    );
     final current = VideoViewParams(
       scale: s,
       txNorm: tx,
@@ -118,22 +137,107 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
 
   void _applyInitial(double vw, double vh) {
     final p = widget.initial;
-    final scale = p.scale.clamp(1.0, 6.0).toDouble();
+    _lastAppliedBasisW = _lastNormBasisW;
+    _lastAppliedBasisH = _lastNormBasisH;
+    _setMatrixForView(scale: p.scale, txNorm: p.txNorm, tyNorm: p.tyNorm);
+  }
+
+  VideoViewParams _currentViewParams() {
+    final m = _tc.value;
+    final t = m.getTranslation();
+    final s = m.getMaxScaleOnAxis().clamp(1.0, 6.0).toDouble();
+    final centeredBase = _centeredBaseTranslation(
+      basisW: _lastNormBasisW,
+      basisH: _lastNormBasisH,
+      scale: s,
+      quarterTurns: _quarterTurns,
+    );
     final extents = _panHalfExtents(
       basisW: _lastNormBasisW,
       basisH: _lastNormBasisH,
-      scale: scale,
+      scale: s,
       quarterTurns: _quarterTurns,
     );
-    _lastAppliedBasisW = _lastNormBasisW;
-    _lastAppliedBasisH = _lastNormBasisH;
-    _tc.value =
-        Matrix4.identity()
-          ..translate(
-            p.txNorm.clamp(-1.0, 1.0) * extents.maxX,
-            p.tyNorm.clamp(-1.0, 1.0) * extents.maxY,
-          )
-          ..scale(scale);
+    final txNorm = _normFromTranslation(
+      translation: t.x,
+      centeredBase: centeredBase.dx,
+      extent: extents.maxX,
+    );
+    final tyNorm = _normFromTranslation(
+      translation: t.y,
+      centeredBase: centeredBase.dy,
+      extent: extents.maxY,
+    );
+    return VideoViewParams(
+      scale: s,
+      txNorm: txNorm,
+      tyNorm: tyNorm,
+      quarterTurns: _quarterTurns,
+    );
+  }
+
+  void _setMatrixForView({
+    required double scale,
+    required double txNorm,
+    required double tyNorm,
+  }) {
+    final resolvedScale = scale.clamp(1.0, 6.0).toDouble();
+    final centeredBase = _centeredBaseTranslation(
+      basisW: _lastNormBasisW,
+      basisH: _lastNormBasisH,
+      scale: resolvedScale,
+      quarterTurns: _quarterTurns,
+    );
+    final extents = _panHalfExtents(
+      basisW: _lastNormBasisW,
+      basisH: _lastNormBasisH,
+      scale: resolvedScale,
+      quarterTurns: _quarterTurns,
+    );
+    _tc.value = Matrix4.identity()
+      ..translate(
+        _translationFromNorm(
+          norm: txNorm,
+          centeredBase: centeredBase.dx,
+          extent: extents.maxX,
+        ),
+        _translationFromNorm(
+          norm: tyNorm,
+          centeredBase: centeredBase.dy,
+          extent: extents.maxY,
+        ),
+      )
+      ..scale(resolvedScale);
+  }
+
+  double _normFromTranslation({
+    required double translation,
+    required double centeredBase,
+    required double extent,
+  }) {
+    if (extent <= 1e-6) return 0.0;
+    return (-(translation - centeredBase) / extent).clamp(-1.0, 1.0);
+  }
+
+  double _translationFromNorm({
+    required double norm,
+    required double centeredBase,
+    required double extent,
+  }) {
+    if (extent <= 1e-6) return centeredBase;
+    return centeredBase - norm.clamp(-1.0, 1.0) * extent;
+  }
+
+  Offset _centeredBaseTranslation({
+    required double basisW,
+    required double basisH,
+    required double scale,
+    required int quarterTurns,
+  }) {
+    final sideways = quarterTurns % 2 == 1;
+    final childW = sideways ? basisH : basisW;
+    final childH = sideways ? basisW : basisH;
+    return Offset((basisW - childW * scale) / 2, (basisH - childH * scale) / 2);
   }
 
   ({double maxX, double maxY}) _panHalfExtents({
@@ -173,11 +277,33 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
   }
 
   Matrix4 _centeredScaleMatrix(double scale) {
+    final params = _currentViewParams();
     final s = scale.clamp(1.0, 6.0).toDouble();
-    final tx = (_lastViewportW * (1 - s)) / 2;
-    final ty = (_lastViewportH * (1 - s)) / 2;
+    final centeredBase = _centeredBaseTranslation(
+      basisW: _lastNormBasisW,
+      basisH: _lastNormBasisH,
+      scale: s,
+      quarterTurns: _quarterTurns,
+    );
+    final extents = _panHalfExtents(
+      basisW: _lastNormBasisW,
+      basisH: _lastNormBasisH,
+      scale: s,
+      quarterTurns: _quarterTurns,
+    );
     return Matrix4.identity()
-      ..translate(tx, ty)
+      ..translate(
+        _translationFromNorm(
+          norm: params.txNorm,
+          centeredBase: centeredBase.dx,
+          extent: extents.maxX,
+        ),
+        _translationFromNorm(
+          norm: params.tyNorm,
+          centeredBase: centeredBase.dy,
+          extent: extents.maxY,
+        ),
+      )
       ..scale(s);
   }
 
@@ -306,7 +432,7 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
         }
         final basisChanged =
             (_lastNormBasisW - _lastAppliedBasisW).abs() > 0.5 ||
-            (_lastNormBasisH - _lastAppliedBasisH).abs() > 0.5;
+                (_lastNormBasisH - _lastAppliedBasisH).abs() > 0.5;
         if (_appliedInitial &&
             !_hasUserInteracted &&
             basisChanged &&
@@ -321,8 +447,7 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
 
         final scale = _scaleNow();
         final requiredPointerCount = widget.singleFingerPanEnabled ? 1 : 2;
-        final panOk =
-            widget.editable &&
+        final panOk = widget.editable &&
             _activePointers.length >= requiredPointerCount &&
             scale > 1.01;
 
@@ -338,7 +463,20 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
           constrained: true,
           clipBehavior: Clip.hardEdge,
           onInteractionStart: (_) {
-            if (widget.editable) _hasUserInteracted = true;
+            if (!widget.editable) return;
+            _hasUserInteracted = true;
+            final params = _currentViewParams();
+            _interactionStartScale = params.scale;
+            _interactionStartTxNorm = params.txNorm;
+            _interactionStartTyNorm = params.tyNorm;
+          },
+          onInteractionUpdate: (details) {
+            if (!widget.editable || _activePointers.length < 2) return;
+            _setMatrixForView(
+              scale: _interactionStartScale * details.scale,
+              txNorm: _interactionStartTxNorm,
+              tyNorm: _interactionStartTyNorm,
+            );
           },
           onInteractionEnd: (_) {
             if (widget.editable) _emitChanged();

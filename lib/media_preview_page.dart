@@ -576,10 +576,9 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     if (_currentIndex < widget.mediaItems.length - 1)
       indicesToKeep.add(_currentIndex + 1);
 
-    final List<int> indicesToRemove =
-        _videoControllers.keys
-            .where((index) => !indicesToKeep.contains(index))
-            .toList();
+    final List<int> indicesToRemove = _videoControllers.keys
+        .where((index) => !indicesToKeep.contains(index))
+        .toList();
 
     for (final index in indicesToRemove) {
       _disposeVideoControllerAt(index);
@@ -666,11 +665,10 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
       context: context,
       isScrollControlled: true,
       useRootNavigator: cc.useRootNavigator,
-      builder:
-          (context) => PlaybackSpeedDialog(
-            speeds: cc.playbackSpeeds,
-            selected: vc.value.playbackSpeed,
-          ),
+      builder: (context) => PlaybackSpeedDialog(
+        speeds: cc.playbackSpeeds,
+        selected: vc.value.playbackSpeed,
+      ),
     );
     if (chosen != null && mounted) {
       await vc.setPlaybackSpeed(chosen);
@@ -742,11 +740,10 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     try {
       // 获取根目录下的文件夹
       final rootItems = await _dbService.getMediaItems('root');
-      final rootFolders =
-          rootItems
-              .where((item) => item['type'] == MediaType.folder.index)
-              .map((item) => MediaItem.fromMap(item))
-              .toList();
+      final rootFolders = rootItems
+          .where((item) => item['type'] == MediaType.folder.index)
+          .map((item) => MediaItem.fromMap(item))
+          .toList();
 
       folders = rootFolders;
 
@@ -754,11 +751,10 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
       for (var folder in rootFolders) {
         try {
           final subItems = await _dbService.getMediaItems(folder.id);
-          final subFolders =
-              subItems
-                  .where((item) => item['type'] == MediaType.folder.index)
-                  .map((item) => MediaItem.fromMap(item))
-                  .toList();
+          final subFolders = subItems
+              .where((item) => item['type'] == MediaType.folder.index)
+              .map((item) => MediaItem.fromMap(item))
+              .toList();
           if (subFolders.isNotEmpty) {
             folders.addAll(subFolders);
           }
@@ -774,105 +770,102 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     final itemCount = folders.length + 1; // +1 根目录
     final contentHeight = itemCount * itemHeight + headerHeight;
     final maxPanelHeight = screenHeight * 0.5;
-    final panelHeight = (contentHeight < maxPanelHeight
-            ? contentHeight
-            : maxPanelHeight)
-        .clamp(minPanelHeight, maxPanelHeight);
+    final panelHeight =
+        (contentHeight < maxPanelHeight ? contentHeight : maxPanelHeight)
+            .clamp(minPanelHeight, maxPanelHeight);
 
     final MediaItem? targetFolder = await showModalBottomSheet<MediaItem?>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder:
-          (context) => Container(
-            height: panelHeight,
-            decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.5),
-              borderRadius: const BorderRadius.vertical(
-                top: Radius.circular(12),
+      builder: (context) => Container(
+        height: panelHeight,
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.5),
+          borderRadius: const BorderRadius.vertical(
+            top: Radius.circular(12),
+          ),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(
+                vertical: 12,
+                horizontal: 16,
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    '移动到',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('取消', style: TextStyle(fontSize: 13)),
+                  ),
+                ],
               ),
             ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Padding(
-                  padding: const EdgeInsets.symmetric(
-                    vertical: 12,
-                    horizontal: 16,
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text(
-                        '移动到',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
+            Flexible(
+              child: ListView.builder(
+                itemCount: folders.length + 1,
+                itemBuilder: (context, index) {
+                  if (index == 0) {
+                    return ListTile(
+                      dense: true,
+                      visualDensity: const VisualDensity(
+                        horizontal: 0,
+                        vertical: -4,
+                      ),
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                      ),
+                      leading: const Icon(Icons.folder_open, size: 20),
+                      title: const Text(
+                        '根目录',
+                        style: TextStyle(fontSize: 13),
+                      ),
+                      onTap: () => Navigator.pop(
+                        context,
+                        MediaItem(
+                          id: 'root',
+                          name: '根目录',
+                          path: '',
+                          type: MediaType.folder,
+                          directory: '',
+                          dateAdded: DateTime.now(),
                         ),
                       ),
-                      TextButton(
-                        onPressed: () => Navigator.pop(context),
-                        child: const Text('取消', style: TextStyle(fontSize: 13)),
-                      ),
-                    ],
-                  ),
-                ),
-                Flexible(
-                  child: ListView.builder(
-                    itemCount: folders.length + 1,
-                    itemBuilder: (context, index) {
-                      if (index == 0) {
-                        return ListTile(
-                          dense: true,
-                          visualDensity: const VisualDensity(
-                            horizontal: 0,
-                            vertical: -4,
-                          ),
-                          contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 16,
-                          ),
-                          leading: const Icon(Icons.folder_open, size: 20),
-                          title: const Text(
-                            '根目录',
-                            style: TextStyle(fontSize: 13),
-                          ),
-                          onTap:
-                              () => Navigator.pop(
-                                context,
-                                MediaItem(
-                                  id: 'root',
-                                  name: '根目录',
-                                  path: '',
-                                  type: MediaType.folder,
-                                  directory: '',
-                                  dateAdded: DateTime.now(),
-                                ),
-                              ),
-                        );
-                      }
-                      final folder = folders[index - 1];
-                      return ListTile(
-                        dense: true,
-                        visualDensity: const VisualDensity(
-                          horizontal: 0,
-                          vertical: -4,
-                        ),
-                        contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                        ),
-                        leading: const Icon(Icons.folder, size: 20),
-                        title: Text(
-                          folder.name,
-                          style: const TextStyle(fontSize: 13),
-                        ),
-                        onTap: () => Navigator.pop(context, folder),
-                      );
-                    },
-                  ),
-                ),
-              ],
+                    );
+                  }
+                  final folder = folders[index - 1];
+                  return ListTile(
+                    dense: true,
+                    visualDensity: const VisualDensity(
+                      horizontal: 0,
+                      vertical: -4,
+                    ),
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                    ),
+                    leading: const Icon(Icons.folder, size: 20),
+                    title: Text(
+                      folder.name,
+                      style: const TextStyle(fontSize: 13),
+                    ),
+                    onTap: () => Navigator.pop(context, folder),
+                  );
+                },
+              ),
             ),
-          ),
+          ],
+        ),
+      ),
     );
 
     // 如果用户取消，则不执行任何操作
@@ -881,21 +874,20 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder:
-          (context) => AlertDialog(
-            backgroundColor: Colors.white.withOpacity(0.8),
-            content: Row(
-              children: [
-                SizedBox(
-                  width: 24,
-                  height: 24,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-                SizedBox(width: 20),
-                Text('正在移动媒体...', style: TextStyle(fontSize: 13)),
-              ],
+      builder: (context) => AlertDialog(
+        backgroundColor: Colors.white.withOpacity(0.8),
+        content: Row(
+          children: [
+            SizedBox(
+              width: 24,
+              height: 24,
+              child: CircularProgressIndicator(strokeWidth: 2),
             ),
-          ),
+            SizedBox(width: 20),
+            Text('正在移动媒体...', style: TextStyle(fontSize: 13)),
+          ],
+        ),
+      ),
     );
 
     try {
@@ -966,10 +958,9 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
           builder: (context, constraints) {
             final vw = constraints.maxWidth;
             final vh = constraints.maxHeight;
-            final disp =
-                sideways
-                    ? containDisplaySize(pixelSize, vw, vh)
-                    : fitWidthDisplaySize(pixelSize, vw);
+            final disp = sideways
+                ? containDisplaySize(pixelSize, vw, vh)
+                : fitWidthDisplaySize(pixelSize, vw);
             final dw = disp.width;
             final dh = disp.height;
             // 与 Ken Burns 一致：归一化坐标相对「图片矩形」左上角。静态图在 Stack 内垂直居中，
@@ -1032,8 +1023,8 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
           zoomCenterX: item.kenBurnsCenterX,
           zoomCenterY: item.kenBurnsCenterY,
           enableDoubleTapToSetZoomCenter: true,
-          onZoomCenterSet:
-              (nx, ny) => _schedulePersistKenBurnsCenter(item, nx, ny),
+          onZoomCenterSet: (nx, ny) =>
+              _schedulePersistKenBurnsCenter(item, nx, ny),
           loop: loopAnim,
           onAnimationComplete: loopAnim ? null : onAnimComplete,
         );
@@ -1077,8 +1068,8 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
             zoomCenterX: item.kenBurnsCenterX,
             zoomCenterY: item.kenBurnsCenterY,
             enableDoubleTapToSetZoomCenter: true,
-            onZoomCenterSet:
-                (nx, ny) => _schedulePersistKenBurnsCenter(item, nx, ny),
+            onZoomCenterSet: (nx, ny) =>
+                _schedulePersistKenBurnsCenter(item, nx, ny),
             loop: false,
             onAnimationComplete: _finishStaticKenBurnsDemo,
           );
@@ -1090,7 +1081,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
 
     // 与视频一致：双指缩放、单指平移、「7」字旋转；持久化到 media_items.video_view_*。
     return ImageInteractiveSurface(
-      key: ValueKey('img_isurf_${item.id}_${item.videoViewParams.hashCode}'),
+      key: ValueKey('img_isurf_${item.id}'),
       initial: item.videoViewParams,
       editable: true,
       singleFingerPanEnabled: _transformOnlyMode,
@@ -1146,7 +1137,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
           fit: StackFit.expand,
           children: [
             VideoInteractiveSurface(
-              key: ValueKey('${item.id}_${item.videoViewParams.hashCode}'),
+              key: ValueKey(item.id),
               videoController: videoController,
               videoChild: const PlayerWithControls(),
               initial: item.videoViewParams,
@@ -1225,10 +1216,9 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
               child: PageView.builder(
                 key: ValueKey(widget.mediaItems.length), // 列表变更时强制重建，确保视频正确切换
                 controller: _pageController,
-                physics:
-                    pageSwipeLocked
-                        ? const NeverScrollableScrollPhysics()
-                        : const PageScrollPhysics(),
+                physics: pageSwipeLocked
+                    ? const NeverScrollableScrollPhysics()
+                    : const PageScrollPhysics(),
                 itemCount: widget.mediaItems.length,
                 onPageChanged: (index) {
                   if (_skipNextPageChanged) {
@@ -1330,10 +1320,9 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
                               playAuto();
                             }
                           },
-                          tooltip:
-                              _mediaMode == MediaMode.auto
-                                  ? '暂停自动播放'
-                                  : '开始自动播放',
+                          tooltip: _mediaMode == MediaMode.auto
+                              ? '暂停自动播放'
+                              : '开始自动播放',
                         ),
                         if (widget.mediaItems.isNotEmpty &&
                             _currentIndex < widget.mediaItems.length &&
@@ -1377,10 +1366,9 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
                   _buildActionButton(
                     icon: Icons.delete_outline,
                     tooltip: _isCurrentInRecycleBin ? '彻底删除' : '删除',
-                    onPressed:
-                        _isCurrentInRecycleBin
-                            ? _deleteCurrentMediaItem
-                            : _moveToTrash,
+                    onPressed: _isCurrentInRecycleBin
+                        ? _deleteCurrentMediaItem
+                        : _moveToTrash,
                   ),
                   const SizedBox(height: 8),
                   _buildActionButton(
@@ -1390,10 +1378,9 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
                   ),
                   const SizedBox(height: 8),
                   _buildActionButton(
-                    icon:
-                        _transformOnlyMode
-                            ? Icons.pan_tool
-                            : Icons.zoom_out_map,
+                    icon: _transformOnlyMode
+                        ? Icons.pan_tool
+                        : Icons.zoom_out_map,
                     tooltip: _transformOnlyMode ? '关闭缩放/移动模式' : '开启缩放/移动模式',
                     onPressed: () {
                       setState(() {
@@ -1436,10 +1423,9 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
 
       if (!mounted) return;
       _disposeAllVideoControllers();
-      final nextIndex =
-          _currentIndex >= widget.mediaItems.length - 1
-              ? widget.mediaItems.length - 2
-              : _currentIndex;
+      final nextIndex = _currentIndex >= widget.mediaItems.length - 1
+          ? widget.mediaItems.length - 2
+          : _currentIndex;
       _skipNextPageChanged = true;
       setState(() {
         widget.mediaItems.removeAt(_currentIndex);
@@ -1474,15 +1460,13 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     try {
       // 获取所有文件夹以找到回收站文件夹
       final rootItems = await _dbService.getMediaItems('root');
-      final trashFolder =
-          rootItems
-              .where(
-                (item) =>
-                    item['type'] == MediaType.folder.index &&
-                    item['name'] == '回收站',
-              )
-              .map((item) => MediaItem.fromMap(item))
-              .firstOrNull;
+      final trashFolder = rootItems
+          .where(
+            (item) =>
+                item['type'] == MediaType.folder.index && item['name'] == '回收站',
+          )
+          .map((item) => MediaItem.fromMap(item))
+          .firstOrNull;
 
       if (trashFolder == null) {
         throw Exception('找不到回收站文件夹');
@@ -1498,10 +1482,9 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
 
       if (!mounted) return;
       _disposeAllVideoControllers();
-      final nextIndex =
-          _currentIndex >= widget.mediaItems.length - 1
-              ? widget.mediaItems.length - 2
-              : _currentIndex;
+      final nextIndex = _currentIndex >= widget.mediaItems.length - 1
+          ? widget.mediaItems.length - 2
+          : _currentIndex;
       _skipNextPageChanged = true;
       setState(() {
         widget.mediaItems.removeAt(_currentIndex);

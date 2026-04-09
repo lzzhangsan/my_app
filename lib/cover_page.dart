@@ -34,7 +34,7 @@ class CoverPage extends StatefulWidget {
   _CoverPageState createState() => _CoverPageState();
 }
 
-class _CoverPageState extends State<CoverPage> {
+class _CoverPageState extends State<CoverPage> with WidgetsBindingObserver {
   File? _backgroundImage;
   Color _backgroundColor = Colors.grey[200]!; // 默认背景颜色
   bool _isLoading = true;
@@ -45,9 +45,24 @@ class _CoverPageState extends State<CoverPage> {
   static const String coverDocumentName = '__CoverPage__';
   late final DatabaseService _databaseService;
 
+  Future<void> _persistCoverState() async {
+    if (kIsWeb) return;
+    try {
+      await _saveCoverSettings(
+        _backgroundImage?.path,
+        _hasCustomBackgroundColor ? _backgroundColor.value : null,
+        preserveExisting: false,
+      );
+      await _saveContent();
+    } catch (e) {
+      Logger.e('自动保存封面页状态时出错', e);
+    }
+  }
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     Logger.i('CoverPage initState: ${DateTime.now()}'); // 添加日志
 
     if (kIsWeb) {
@@ -109,6 +124,8 @@ class _CoverPageState extends State<CoverPage> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _persistCoverState();
     Logger.i('CoverPage dispose: ${DateTime.now()}'); // 添加日志
     // 清理工作，例如取消订阅、释放资源等
     // _textBoxes.forEach((textBoxData) {
@@ -116,6 +133,17 @@ class _CoverPageState extends State<CoverPage> {
     //   controller?.dispose();
     // });
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.detached) {
+      _persistCoverState();
+    }
   }
 
   // 确保cover_image表存在
@@ -208,10 +236,13 @@ class _CoverPageState extends State<CoverPage> {
 
         if (tables.isNotEmpty) {
           // 更新设置，清除背景图片和颜色
-          await db.update('cover_settings', {
-            'background_image_path': null,
-            'background_color': null,
-          }, where: 'id = 1');
+          await db.update(
+              'cover_settings',
+              {
+                'background_image_path': null,
+                'background_color': null,
+              },
+              where: 'id = 1');
         }
 
         setState(() {
@@ -251,10 +282,13 @@ class _CoverPageState extends State<CoverPage> {
           // 保留原有背景颜色
           int? backgroundColor = settings.first['background_color'];
 
-          await db.update('cover_settings', {
-            'background_image_path': null,
-            'background_color': backgroundColor,
-          }, where: 'id = 1');
+          await db.update(
+              'cover_settings',
+              {
+                'background_image_path': null,
+                'background_color': backgroundColor,
+              },
+              where: 'id = 1');
         }
       }
 
@@ -473,19 +507,17 @@ class _CoverPageState extends State<CoverPage> {
     final customTextStyle = CustomTextStyle(
       fontSize: data['fontSize'],
       fontColor: Color(data['fontColor']),
-      fontWeight:
-          data.containsKey('fontWeight')
-              ? FontWeight.values[data['fontWeight']]
-              : FontWeight.normal,
+      fontWeight: data.containsKey('fontWeight')
+          ? FontWeight.values[data['fontWeight']]
+          : FontWeight.normal,
       isItalic: data.containsKey('isItalic') ? data['isItalic'] == 1 : false,
       backgroundColor:
           data.containsKey('backgroundColor') && data['backgroundColor'] != null
               ? Color(data['backgroundColor'])
               : null,
-      textAlign:
-          data.containsKey('textAlign')
-              ? TextAlign.values[data['textAlign']]
-              : TextAlign.left,
+      textAlign: data.containsKey('textAlign')
+          ? TextAlign.values[data['textAlign']]
+          : TextAlign.left,
     );
 
     // 使用Positioned组件定位文本框，并添加GestureDetector实现拖拽功能
@@ -512,18 +544,17 @@ class _CoverPageState extends State<CoverPage> {
           initialSize: Size(data['width'], data['height']),
           initialText: data['text'],
           initialTextStyle: customTextStyle,
-          initialTextSegments:
-              data['textSegments'] != null &&
-                      data['textSegments'] is List &&
-                      (data['textSegments'] as List).isNotEmpty
-                  ? (data['textSegments'] as List)
-                      .map(
-                        (e) => TextSegment.fromMap(
-                          Map<String, dynamic>.from(e as Map),
-                        ),
-                      )
-                      .toList()
-                  : null,
+          initialTextSegments: data['textSegments'] != null &&
+                  data['textSegments'] is List &&
+                  (data['textSegments'] as List).isNotEmpty
+              ? (data['textSegments'] as List)
+                  .map(
+                    (e) => TextSegment.fromMap(
+                      Map<String, dynamic>.from(e as Map),
+                    ),
+                  )
+                  .toList()
+              : null,
           onSave: (size, text, textStyle, textSegments) {
             setState(() {
               data['width'] = size.width;
@@ -832,10 +863,9 @@ class _CoverPageState extends State<CoverPage> {
                   subtitle != null && title.contains('删除') ? iconColor : null,
             ),
           ),
-          subtitle:
-              subtitle != null
-                  ? Text(subtitle, style: TextStyle(fontSize: 12))
-                  : null,
+          subtitle: subtitle != null
+              ? Text(subtitle, style: TextStyle(fontSize: 12))
+              : null,
           onTap: onTap,
         ),
         if (!isLast) Divider(height: 1, indent: 56, endIndent: 16),
@@ -936,7 +966,11 @@ class _CoverPageState extends State<CoverPage> {
     }
   }
 
-  Future<void> _saveCoverSettings(String? imagePath, int? colorValue) async {
+  Future<void> _saveCoverSettings(
+    String? imagePath,
+    int? colorValue, {
+    bool preserveExisting = true,
+  }) async {
     try {
       // 确保表存在
       await _ensureCoverImageTableExists();
@@ -969,12 +1003,12 @@ class _CoverPageState extends State<CoverPage> {
       Map<String, dynamic> data = {'id': 1};
 
       // 如果有现有设置，继承那些没有明确指定要更改的值
-      if (settings.isNotEmpty) {
+      if (settings.isNotEmpty && preserveExisting) {
         // 如果没有明确指定图片路径，保留现有的
         if (imagePath == null &&
             !settings.first['background_image_path'].toString().contains(
-              'null',
-            )) {
+                  'null',
+                )) {
           data['background_image_path'] =
               settings.first['background_image_path'];
         } else {
@@ -1014,8 +1048,7 @@ class _CoverPageState extends State<CoverPage> {
 
   // 清空封面页所有内容（背景图片、背景颜色和文本框）
   Future<void> _clearAllContent() async {
-    final shouldClear =
-        await showDialog<bool>(
+    final shouldClear = await showDialog<bool>(
           context: context,
           builder: (context) {
             return AlertDialog(
@@ -1052,10 +1085,13 @@ class _CoverPageState extends State<CoverPage> {
         );
 
         if (tables.isNotEmpty) {
-          await db.update('cover_settings', {
-            'background_image_path': null,
-            'background_color': null,
-          }, where: 'id = 1');
+          await db.update(
+              'cover_settings',
+              {
+                'background_image_path': null,
+                'background_color': null,
+              },
+              where: 'id = 1');
         }
 
         // 3. 删除所有文本框
@@ -1116,47 +1152,45 @@ class _CoverPageState extends State<CoverPage> {
 
       showDialog(
         context: context,
-        builder:
-            (context) => AlertDialog(
-              title: const Text('智能空间清理'),
-              content: Text(content),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: const Text('取消'),
-                ),
-                TextButton(
-                  onPressed: () async {
-                    Navigator.pop(context);
-                    await _cleanImportTempFiles();
-                  },
-                  child: const Text('立即清理'),
-                ),
-              ],
+        builder: (context) => AlertDialog(
+          title: const Text('智能空间清理'),
+          content: Text(content),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('取消'),
             ),
+            TextButton(
+              onPressed: () async {
+                Navigator.pop(context);
+                await _cleanImportTempFiles();
+              },
+              child: const Text('立即清理'),
+            ),
+          ],
+        ),
       );
     } catch (e) {
       // 如果获取缓存信息失败，显示简化版对话框
       showDialog(
         context: context,
-        builder:
-            (context) => AlertDialog(
-              title: const Text('智能空间清理'),
-              content: const Text('一键清理导入临时大文件和无效缓存，释放存储空间。\n不会影响缩略图等有用缓存。'),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: const Text('取消'),
-                ),
-                TextButton(
-                  onPressed: () async {
-                    Navigator.pop(context);
-                    await _cleanImportTempFiles();
-                  },
-                  child: const Text('立即清理'),
-                ),
-              ],
+        builder: (context) => AlertDialog(
+          title: const Text('智能空间清理'),
+          content: const Text('一键清理导入临时大文件和无效缓存，释放存储空间。\n不会影响缩略图等有用缓存。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('取消'),
             ),
+            TextButton(
+              onPressed: () async {
+                Navigator.pop(context);
+                await _cleanImportTempFiles();
+              },
+              child: const Text('立即清理'),
+            ),
+          ],
+        ),
       );
     }
   }
@@ -1168,16 +1202,15 @@ class _CoverPageState extends State<CoverPage> {
       showDialog(
         context: context,
         barrierDismissible: false,
-        builder:
-            (context) => const AlertDialog(
-              content: Row(
-                children: [
-                  CircularProgressIndicator(),
-                  SizedBox(width: 20),
-                  Text('正在智能清理缓存...'),
-                ],
-              ),
-            ),
+        builder: (context) => const AlertDialog(
+          content: Row(
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(width: 20),
+              Text('正在智能清理缓存...'),
+            ],
+          ),
+        ),
       );
 
       // 使用CacheService进行智能清理
