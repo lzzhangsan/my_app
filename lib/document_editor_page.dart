@@ -1057,15 +1057,21 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
     });
   }
 
-  void _updateImageBox(String id, Size size) {
-    setState(() {
+  void _updateImageBox(String id, Size size, {bool rebuild = true}) {
+    void apply() {
       int index = _imageBoxes.indexWhere((imageBox) => imageBox['id'] == id);
       if (index != -1) {
         _imageBoxes[index]['width'] = size.width;
         _imageBoxes[index]['height'] = size.height;
         _contentChanged = true;
       }
-    });
+    }
+
+    if (rebuild) {
+      setState(apply);
+    } else {
+      apply();
+    }
   }
 
   void _deleteImageBox(String id) {
@@ -2247,11 +2253,17 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
                                   data['height'],
                                 ),
                                 imagePath: data['imagePath'],
+                                isPositionLocked: _isPositionLocked,
                                 onResize: (size) {
-                                  _updateImageBox(data['id'], size);
+                                  _updateImageBox(
+                                    data['id'],
+                                    size,
+                                    rebuild: false,
+                                  );
                                   _debouncedSave();
                                 },
-                                onResizeEnd: () {
+                                onResizeEnd: (size) {
+                                  _updateImageBox(data['id'], size);
                                   _saveStateToHistory();
                                 },
                                 onSettingsPressed: () =>
