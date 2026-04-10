@@ -26,7 +26,7 @@ import 'package:crypto/crypto.dart';
 /// 数据库服务 - 统一管理所有数据库操作
 class DatabaseService {
   static const String _databaseName = 'change_app.db';
-  static const int _databaseVersion = 15; // media_items：视频缩放/平移/旋转 video_view_*
+  static const int _databaseVersion = 16; // 16: video_view_basis_w/h 取景视口 + JSON 同步暂存
 
   Database? _database;
   final Completer<Database> _initCompleter = Completer<Database>();
@@ -38,6 +38,18 @@ class DatabaseService {
   /// 性能监控Timer
   Timer? _performanceMonitoringTimer;
 
+  /// 媒体预览取景（缩放/平移/旋转）的最新快照。
+  ///
+  /// [_persistMediaViewParams] 里 `await updateMediaItem` 未完成时用户若直接划掉应用，SQLite 可能仍是旧值；
+  /// 进程内切换页面时列表内存已更新故看起来正常，冷启动从库读就会偏。此处先同步写入快照，在 [flushStagedVideoViewParamsToDisk]（如进入后台）时再保证落盘。
+  final Map<String, VideoViewParams> _stagedVideoViewParamsByMediaId = {};
+
+  /// 应用文档目录，用于取景参数 JSON 同步暂存（杀进程前 SQLite 可能未写完）。
+  String? _appDocumentsDirectoryPath;
+
+  static const String _videoViewStagingJsonFileName =
+      'media_view_params_staging.json';
+
   /// 初始化数据库服务
   Future<void> initialize() async {
     if (_isInitialized) {
@@ -45,12 +57,18 @@ class DatabaseService {
       if (_database != null) {
         await _ensureMediaItemsKenBurnsColumns(_database!);
         await _ensureMediaItemsVideoViewColumns(_database!);
+        try {
+          final d = await getApplicationDocumentsDirectory();
+          _appDocumentsDirectoryPath = d.path;
+          await _mergeVideoViewStagingJsonIfNeeded();
+        } catch (_) {}
       }
       return;
     }
 
     try {
       final documentsDirectory = await getApplicationDocumentsDirectory();
+      _appDocumentsDirectoryPath = documentsDirectory.path;
       final dbPath = p.join(documentsDirectory.path, _databaseName);
 
       _database = await openDatabase(
@@ -91,6 +109,8 @@ class DatabaseService {
 
       _initCompleter.complete(_database!);
       _isInitialized = true;
+
+      await _mergeVideoViewStagingJsonIfNeeded();
 
       // 启动性能监控
       _startPerformanceMonitoring();
@@ -268,6 +288,8 @@ class DatabaseService {
           video_view_tx REAL DEFAULT 0,
           video_view_ty REAL DEFAULT 0,
           video_view_rot INTEGER DEFAULT 0,
+          video_view_basis_w REAL,
+          video_view_basis_h REAL,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
         )
@@ -482,6 +504,21 @@ class DatabaseService {
         } catch (_) {}
         if (kDebugMode) {
           Logger.log('已添加 video_view_scale/tx/ty/rot 列到 media_items');
+        }
+        break;
+      case 16:
+        try {
+          await db.execute(
+            'ALTER TABLE media_items ADD COLUMN video_view_basis_w REAL',
+          );
+        } catch (_) {}
+        try {
+          await db.execute(
+            'ALTER TABLE media_items ADD COLUMN video_view_basis_h REAL',
+          );
+        } catch (_) {}
+        if (kDebugMode) {
+          Logger.log('已添加 video_view_basis_w/h 列到 media_items');
         }
         break;
       case 8:
@@ -801,6 +838,14 @@ class DatabaseService {
       await addIfMissing(
         'video_view_rot',
         'ALTER TABLE media_items ADD COLUMN video_view_rot INTEGER DEFAULT 0',
+      );
+      await addIfMissing(
+        'video_view_basis_w',
+        'ALTER TABLE media_items ADD COLUMN video_view_basis_w REAL',
+      );
+      await addIfMissing(
+        'video_view_basis_h',
+        'ALTER TABLE media_items ADD COLUMN video_view_basis_h REAL',
       );
     } catch (e, stackTrace) {
       _handleError('补全 video_view 列失败', e, stackTrace);
@@ -1168,7 +1213,8 @@ class DatabaseService {
       final slashPath = normPath.replaceAll('\\', '/');
       final byPath = await db.rawQuery(
         '''
-        SELECT video_view_scale, video_view_tx, video_view_ty, video_view_rot
+        SELECT video_view_scale, video_view_tx, video_view_ty, video_view_rot,
+               video_view_basis_w, video_view_basis_h
         FROM media_items
         WHERE path = ?
            OR path = ?
@@ -1194,7 +1240,8 @@ class DatabaseService {
       if (hash.isEmpty) return const VideoViewParams();
       final byHash = await db.rawQuery(
         '''
-        SELECT video_view_scale, video_view_tx, video_view_ty, video_view_rot
+        SELECT video_view_scale, video_view_tx, video_view_ty, video_view_rot,
+               video_view_basis_w, video_view_basis_h
         FROM media_items
         WHERE file_hash = ?
         ORDER BY
@@ -1325,12 +1372,97 @@ class DatabaseService {
   /// 删除媒体项
   Future<int> deleteMediaItem(String id) async {
     try {
+      _stagedVideoViewParamsByMediaId.remove(id);
+      _syncVideoViewStagingJsonToDiskSync();
       final db = await database;
       return await db.delete('media_items', where: 'id = ?', whereArgs: [id]);
     } catch (e, stackTrace) {
       _handleError('删除媒体项失败', e, stackTrace);
       rethrow;
     }
+  }
+
+  /// 在异步写库前同步记下当前取景参数（见 [_stagedVideoViewParamsByMediaId]）。
+  void stageVideoViewParamsForDisk(String mediaId, VideoViewParams params) {
+    _stagedVideoViewParamsByMediaId[mediaId] = params;
+    _syncVideoViewStagingJsonToDiskSync();
+  }
+
+  void _syncVideoViewStagingJsonToDiskSync() {
+    final root = _appDocumentsDirectoryPath;
+    if (root == null) return;
+    try {
+      final payload = <String, dynamic>{
+        'v': 1,
+        'items': <String, dynamic>{
+          for (final e in _stagedVideoViewParamsByMediaId.entries)
+            e.key: e.value.toJsonStaging(),
+        },
+      };
+      File(
+        p.join(root, _videoViewStagingJsonFileName),
+      ).writeAsStringSync(jsonEncode(payload), flush: true);
+    } catch (_) {}
+  }
+
+  /// 冷启动时把 JSON 暂存合并进 SQLite（应对进程被杀时 await 未完成）。
+  Future<void> _mergeVideoViewStagingJsonIfNeeded() async {
+    final root = _appDocumentsDirectoryPath;
+    if (root == null) return;
+    final file = File(p.join(root, _videoViewStagingJsonFileName));
+    if (!await file.exists()) return;
+    try {
+      final raw = await file.readAsString();
+      if (raw.trim().isEmpty) {
+        await file.delete();
+        return;
+      }
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map<String, dynamic>) return;
+      final itemsRaw = decoded['items'];
+      if (itemsRaw is! Map) return;
+      final db = await database;
+      await _ensureMediaItemsVideoViewColumns(db);
+      final items = Map<String, dynamic>.from(itemsRaw);
+      for (final entry in items.entries) {
+        final id = entry.key;
+        final value = entry.value;
+        if (value is! Map) continue;
+        final m = Map<String, dynamic>.from(value);
+        final p = VideoViewParams.fromJsonStaging(m);
+        await updateMediaItem({
+          'id': id,
+          ...p.toDbUpdateMap(),
+          'updated_at': DateTime.now().millisecondsSinceEpoch,
+        });
+      }
+      await file.delete();
+    } catch (e, stackTrace) {
+      _handleError('合并取景 JSON 暂存失败', e, stackTrace);
+    }
+  }
+
+  /// 将暂存取景写入数据库；若某 id 在写入期间又被更新，则保留较新快照以便下次刷盘。
+  Future<void> flushStagedVideoViewParamsToDisk() async {
+    if (_stagedVideoViewParamsByMediaId.isEmpty) return;
+    final ids = _stagedVideoViewParamsByMediaId.keys.toList();
+    for (final id in ids) {
+      final p = _stagedVideoViewParamsByMediaId[id];
+      if (p == null) continue;
+      try {
+        await updateMediaItem({
+          'id': id,
+          ...p.toDbUpdateMap(),
+          'updated_at': DateTime.now().millisecondsSinceEpoch,
+        });
+        if (_stagedVideoViewParamsByMediaId[id] == p) {
+          _stagedVideoViewParamsByMediaId.remove(id);
+        }
+      } catch (e, stackTrace) {
+        _handleError('刷盘 media 取景参数失败', e, stackTrace);
+      }
+    }
+    _syncVideoViewStagingJsonToDiskSync();
   }
 
   /// 更新媒体项
@@ -1340,7 +1472,9 @@ class DatabaseService {
       if (item.containsKey('video_view_scale') ||
           item.containsKey('video_view_tx') ||
           item.containsKey('video_view_ty') ||
-          item.containsKey('video_view_rot')) {
+          item.containsKey('video_view_rot') ||
+          item.containsKey('video_view_basis_w') ||
+          item.containsKey('video_view_basis_h')) {
         await _ensureMediaItemsVideoViewColumns(db);
       }
       return await db.update(
@@ -5644,6 +5778,8 @@ class DatabaseService {
           video_view_tx REAL DEFAULT 0,
           video_view_ty REAL DEFAULT 0,
           video_view_rot INTEGER DEFAULT 0,
+          video_view_basis_w REAL,
+          video_view_basis_h REAL,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
         )
@@ -5694,6 +5830,8 @@ class DatabaseService {
           video_view_tx REAL DEFAULT 0,
           video_view_ty REAL DEFAULT 0,
           video_view_rot INTEGER DEFAULT 0,
+          video_view_basis_w REAL,
+          video_view_basis_h REAL,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
         )

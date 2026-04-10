@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' show pi;
 
 import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
@@ -47,8 +48,10 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
 
   double _lastViewportW = 1;
   double _lastViewportH = 1;
-  double _lastNormBasisW = 1;
-  double _lastNormBasisH = 1;
+  double _renderBasisW = 1;
+  double _renderBasisH = 1;
+  double _ivPanBasisW = 1;
+  double _ivPanBasisH = 1;
   double _lastAppliedBasisW = 1;
   double _lastAppliedBasisH = 1;
   bool _reapplyScheduled = false;
@@ -114,16 +117,16 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
     final t = m.getTranslation();
     final s = m.getMaxScaleOnAxis().clamp(1.0, 6.0);
     final centeredBase = _centeredBaseTranslation(
-      basisW: _lastNormBasisW,
-      basisH: _lastNormBasisH,
+      basisW: _ivPanBasisW,
+      basisH: _ivPanBasisH,
       scale: s,
-      quarterTurns: _quarterTurns,
+      quarterTurns: 0,
     );
     final extents = _panHalfExtents(
-      basisW: _lastNormBasisW,
-      basisH: _lastNormBasisH,
+      basisW: _ivPanBasisW,
+      basisH: _ivPanBasisH,
       scale: s,
-      quarterTurns: _quarterTurns,
+      quarterTurns: 0,
     );
     final tx = _normFromTranslation(
       translation: t.x,
@@ -140,15 +143,20 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
       txNorm: tx,
       tyNorm: ty,
       quarterTurns: _quarterTurns,
+      basisW: _ivPanBasisW >= 1 ? _ivPanBasisW : null,
+      basisH: _ivPanBasisH >= 1 ? _ivPanBasisH : null,
     );
     if (!force && current == widget.initial) return;
     widget.onChanged?.call(current);
   }
 
   void _applyInitial(double vw, double vh) {
-    final p = widget.initial;
-    _lastAppliedBasisW = _lastNormBasisW;
-    _lastAppliedBasisH = _lastNormBasisH;
+    var p = widget.initial.remappedToViewport(_ivPanBasisW, _ivPanBasisH);
+    if (p.isLikelyIdentityTransform) {
+      p = const VideoViewParams();
+    }
+    _lastAppliedBasisW = _ivPanBasisW;
+    _lastAppliedBasisH = _ivPanBasisH;
     _setMatrixForView(scale: p.scale, txNorm: p.txNorm, tyNorm: p.tyNorm);
   }
 
@@ -157,16 +165,16 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
     final t = m.getTranslation();
     final s = m.getMaxScaleOnAxis().clamp(1.0, 6.0).toDouble();
     final centeredBase = _centeredBaseTranslation(
-      basisW: _lastNormBasisW,
-      basisH: _lastNormBasisH,
+      basisW: _ivPanBasisW,
+      basisH: _ivPanBasisH,
       scale: s,
-      quarterTurns: _quarterTurns,
+      quarterTurns: 0,
     );
     final extents = _panHalfExtents(
-      basisW: _lastNormBasisW,
-      basisH: _lastNormBasisH,
+      basisW: _ivPanBasisW,
+      basisH: _ivPanBasisH,
       scale: s,
-      quarterTurns: _quarterTurns,
+      quarterTurns: 0,
     );
     final txNorm = _normFromTranslation(
       translation: t.x,
@@ -183,6 +191,8 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
       txNorm: txNorm,
       tyNorm: tyNorm,
       quarterTurns: _quarterTurns,
+      basisW: _ivPanBasisW >= 1 ? _ivPanBasisW : null,
+      basisH: _ivPanBasisH >= 1 ? _ivPanBasisH : null,
     );
   }
 
@@ -193,16 +203,16 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
   }) {
     final resolvedScale = scale.clamp(1.0, 6.0).toDouble();
     final centeredBase = _centeredBaseTranslation(
-      basisW: _lastNormBasisW,
-      basisH: _lastNormBasisH,
+      basisW: _ivPanBasisW,
+      basisH: _ivPanBasisH,
       scale: resolvedScale,
-      quarterTurns: _quarterTurns,
+      quarterTurns: 0,
     );
     final extents = _panHalfExtents(
-      basisW: _lastNormBasisW,
-      basisH: _lastNormBasisH,
+      basisW: _ivPanBasisW,
+      basisH: _ivPanBasisH,
       scale: resolvedScale,
-      quarterTurns: _quarterTurns,
+      quarterTurns: 0,
     );
     _tc.value = Matrix4.identity()
       ..translate(
@@ -289,17 +299,18 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
   Matrix4 _centeredScaleMatrix(double scale) {
     final params = _currentViewParams();
     final s = scale.clamp(1.0, 6.0).toDouble();
+    final ivBox = _ivPanBox(_renderBasisW, _renderBasisH, _quarterTurns);
     final centeredBase = _centeredBaseTranslation(
-      basisW: _lastNormBasisW,
-      basisH: _lastNormBasisH,
+      basisW: ivBox.w,
+      basisH: ivBox.h,
       scale: s,
-      quarterTurns: _quarterTurns,
+      quarterTurns: 0,
     );
     final extents = _panHalfExtents(
-      basisW: _lastNormBasisW,
-      basisH: _lastNormBasisH,
+      basisW: ivBox.w,
+      basisH: ivBox.h,
       scale: s,
-      quarterTurns: _quarterTurns,
+      quarterTurns: 0,
     );
     return Matrix4.identity()
       ..translate(
@@ -362,11 +373,13 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
         _strokePoints.length >= 8) {
       final rot = detectSevenStrokeRotation(List.from(_strokePoints));
       if (rot != null) {
+        final preservedScale =
+            _tc.value.getMaxScaleOnAxis().clamp(1.0, 6.0);
         setState(() {
           _quarterTurns =
               rot ? (_quarterTurns + 1) % 4 : (_quarterTurns - 1) % 4;
           if (_quarterTurns < 0) _quarterTurns += 4;
-          _tc.value = _centeredScaleMatrix(_tc.value.getMaxScaleOnAxis());
+          _tc.value = _centeredScaleMatrix(preservedScale);
         });
         _emitChanged(force: true);
       }
@@ -408,15 +421,66 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
     super.dispose();
   }
 
+  ({double w, double h}) _ivPanBox(double rbW, double rbH, int q) {
+    final qq = q % 4;
+    if (qq == 1 || qq == 3) {
+      return (w: rbH, h: rbW);
+    }
+    return (w: rbW, h: rbH);
+  }
+
+  /// 与 [ImageInteractiveSurface._buildRotatedContent] 同构；视频在 basisW×basisH 内 contain 放置。
+  Widget _buildRotatedVideoContent(double basisW, double basisH, int q) {
+    final sz = widget.videoController.value.size;
+    final videoW = sz.width;
+    final videoH = sz.height;
+    final inner = SizedBox(
+      width: basisW,
+      height: basisH,
+      child: Center(
+        child: FittedBox(
+          fit: BoxFit.contain,
+          alignment: Alignment.center,
+          child: SizedBox(
+            width: videoW,
+            height: videoH,
+            child: widget.videoChild,
+          ),
+        ),
+      ),
+    );
+    Widget rotated;
+    if (q == 0) {
+      rotated = inner;
+    } else {
+      rotated = Transform.rotate(
+        angle: q * pi / 2,
+        alignment: Alignment.center,
+        filterQuality: FilterQuality.low,
+        child: inner,
+      );
+    }
+    if (q == 1 || q == 3) {
+      return SizedBox(
+        width: basisH,
+        height: basisW,
+        child: Stack(
+          clipBehavior: Clip.none,
+          alignment: Alignment.center,
+          children: [rotated],
+        ),
+      );
+    }
+    return rotated;
+  }
+
   @override
   Widget build(BuildContext context) {
     if (!widget.videoController.value.isInitialized) {
       return const SizedBox.shrink();
     }
     final size = widget.videoController.value.size;
-    final w = size.width;
-    final h = size.height;
-    if (w <= 0 || h <= 0) {
+    if (size.width <= 0 || size.height <= 0) {
       return const Center(child: CircularProgressIndicator());
     }
 
@@ -431,10 +495,15 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
           view.physicalSize.width / view.devicePixelRatio,
           view.physicalSize.height / view.devicePixelRatio,
         );
-        _lastNormBasisW =
+        final renderBasisW =
             widget.useScreenSizeForNormalization ? screenSize.width : vw;
-        _lastNormBasisH =
+        final renderBasisH =
             widget.useScreenSizeForNormalization ? screenSize.height : vh;
+        _renderBasisW = renderBasisW;
+        _renderBasisH = renderBasisH;
+        final panBox = _ivPanBox(renderBasisW, renderBasisH, _quarterTurns);
+        _ivPanBasisW = panBox.w;
+        _ivPanBasisH = panBox.h;
 
         if (!_appliedInitial && vw > 1 && vh > 1) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -444,8 +513,8 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
           });
         }
         final basisChanged =
-            (_lastNormBasisW - _lastAppliedBasisW).abs() > 0.5 ||
-                (_lastNormBasisH - _lastAppliedBasisH).abs() > 0.5;
+            (_ivPanBasisW - _lastAppliedBasisW).abs() > 0.5 ||
+                (_ivPanBasisH - _lastAppliedBasisH).abs() > 0.5;
         if (_appliedInitial &&
             !_hasUserInteracted &&
             basisChanged &&
@@ -459,13 +528,15 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
         }
 
         final scale = _scaleNow();
+        final q = _quarterTurns % 4;
+        final sideways = q == 1 || q == 3;
         final requiredPointerCount = widget.singleFingerPanEnabled ? 1 : 2;
         final panOk = widget.editable &&
             _activePointers.length >= requiredPointerCount &&
-            scale > 1.01;
+            (scale > 1.01 || sideways);
 
         // 勿设 alignment，与 [ImageInteractiveSurface] 相同原因（裸矩阵读写须与 Transform 一致）。
-        final iv = InteractiveViewer(
+        final viewer = InteractiveViewer(
           transformationController: _tc,
           minScale: 1.0,
           maxScale: 6.0,
@@ -474,7 +545,7 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
           boundaryMargin:
               widget.editable ? _editableBoundaryMargin : EdgeInsets.zero,
           constrained: true,
-          clipBehavior: Clip.hardEdge,
+          clipBehavior: sideways ? Clip.none : Clip.hardEdge,
           onInteractionStart: (_) {
             if (!widget.editable) return;
             _hasUserInteracted = true;
@@ -494,14 +565,11 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
           onInteractionEnd: (_) {
             if (widget.editable) _emitChanged();
           },
-          child: RotatedBox(
-            quarterTurns: _quarterTurns,
-            child: SizedBox(width: w, height: h, child: widget.videoChild),
-          ),
+          child: _buildRotatedVideoContent(renderBasisW, renderBasisH, q),
         );
 
         if (!widget.editable) {
-          return iv;
+          return viewer;
         }
 
         return Listener(
@@ -510,7 +578,7 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
           onPointerMove: _onPointerMove,
           onPointerUp: _onPointerUp,
           onPointerCancel: _onPointerCancel,
-          child: iv,
+          child: viewer,
         );
       },
     );

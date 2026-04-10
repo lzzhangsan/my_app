@@ -118,6 +118,7 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
 
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
       backgroundColor: Colors.transparent,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(10)),
@@ -294,7 +295,11 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
               ),
               child: SingleChildScrollView(
                 child: Padding(
-                  padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+                  padding: EdgeInsets.only(
+                    bottom: MediaQuery.of(context).viewInsets.bottom +
+                        MediaQuery.of(context).viewPadding.bottom +
+                        8,
+                  ),
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [

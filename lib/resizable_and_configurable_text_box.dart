@@ -1087,12 +1087,16 @@ class _ResizableAndConfigurableTextBoxState
           behavior: HitTestBehavior.opaque,
           child: Container(
             constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.5),
-            child: StatefulBuilder(
-              builder: (BuildContext context, StateSetter setModalState) {
-                return SingleChildScrollView(
-                  child: _buildTextBoxSettings(setModalState),
-                );
-              },
+            child: SafeArea(
+              top: false,
+              minimum: const EdgeInsets.only(bottom: 8),
+              child: StatefulBuilder(
+                builder: (BuildContext context, StateSetter setModalState) {
+                  return SingleChildScrollView(
+                    child: _buildTextBoxSettings(setModalState),
+                  );
+                },
+              ),
             ),
           ),
         );

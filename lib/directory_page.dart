@@ -20,6 +20,7 @@ import 'services/export_import_utils.dart';
 import 'utils/export_import_error_utils.dart';
 import 'widgets/stored_view_image_layer.dart';
 import 'widgets/floating_ui_shadows.dart';
+import 'widgets/safe_modal_sheet_body.dart';
 
 class DirectoryPage extends StatefulWidget {
   final Function(String) onDocumentOpen;
@@ -1717,120 +1718,115 @@ class _DirectoryPageState extends State<DirectoryPage>
 
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
       builder: (context) {
-        return ConstrainedBox(
-          constraints: BoxConstraints(
-            maxHeight: MediaQuery.of(context).size.height * 0.6,
-          ),
-          child: SingleChildScrollView(
-            child: Wrap(
-              children: [
-                ListTile(
-                  leading: Icon(Icons.delete),
-                  title: Text('删除'),
-                  contentPadding: EdgeInsets.symmetric(
-                    horizontal: 16.0,
-                    vertical: 2.0,
-                  ),
-                  dense: true,
-                  onTap: () {
-                    Navigator.pop(context);
-                    _deleteDocument(documentName);
-                  },
-                ),
-                Divider(height: 1.0, thickness: 0.5),
-                ListTile(
-                  leading: Icon(Icons.copy),
-                  title: Text('复制'),
-                  contentPadding: EdgeInsets.symmetric(
-                    horizontal: 16.0,
-                    vertical: 2.0,
-                  ),
-                  dense: true,
-                  onTap: () {
-                    Navigator.pop(context);
-                    _copyDocument(documentName);
-                  },
-                ),
-                Divider(height: 1.0, thickness: 0.5),
-                ListTile(
-                  leading: Icon(Icons.drive_file_rename_outline),
-                  title: Text('重命名'),
-                  contentPadding: EdgeInsets.symmetric(
-                    horizontal: 16.0,
-                    vertical: 2.0,
-                  ),
-                  dense: true,
-                  onTap: () {
-                    Navigator.pop(context);
-                    _renameDocument(documentName);
-                  },
-                ),
-                Divider(height: 1.0, thickness: 0.5),
-                ListTile(
-                  leading: Icon(isTemplate ? Icons.star : Icons.star_border),
-                  title: Text(isTemplate ? '取消设为模板' : '设为模板'),
-                  contentPadding: EdgeInsets.symmetric(
-                    horizontal: 16.0,
-                    vertical: 2.0,
-                  ),
-                  dense: true,
-                  onTap: () async {
-                    Navigator.pop(context);
-                    await getService<DatabaseService>().setDocumentAsTemplate(
-                      documentName,
-                      !isTemplate,
-                    );
-                    if (mounted) {
-                      _loadData();
-                    }
-                  },
-                ),
-                Divider(height: 1.0, thickness: 0.5),
-                ListTile(
-                  leading: Icon(Icons.folder),
-                  title: Text('移动到文件夹'),
-                  contentPadding: EdgeInsets.symmetric(
-                    horizontal: 16.0,
-                    vertical: 2.0,
-                  ),
-                  dense: true,
-                  onTap: () {
-                    Navigator.pop(context);
-                    _moveDocumentToFolder(documentName);
-                  },
-                ),
-                Divider(height: 1.0, thickness: 0.5),
-                ListTile(
-                  leading: Icon(Icons.drive_file_move),
-                  title: Text('移动到目录'),
-                  contentPadding: EdgeInsets.symmetric(
-                    horizontal: 16.0,
-                    vertical: 2.0,
-                  ),
-                  dense: true,
-                  onTap: () {
-                    Navigator.pop(context);
-                    _moveDocumentToDirectoryOption(documentName);
-                  },
-                ),
-                Divider(height: 1.0, thickness: 0.5),
-                ListTile(
-                  leading: Icon(Icons.share),
-                  title: Text('导出'),
-                  contentPadding: EdgeInsets.symmetric(
-                    horizontal: 16.0,
-                    vertical: 2.0,
-                  ),
-                  dense: true,
-                  onTap: () {
-                    Navigator.pop(context);
-                    _exportDocument(documentName);
-                  },
-                ),
-              ],
+        return SafeModalSheetScrollable(
+          children: [
+            ListTile(
+              leading: Icon(Icons.delete),
+              title: Text('删除'),
+              contentPadding: EdgeInsets.symmetric(
+                horizontal: 16.0,
+                vertical: 2.0,
+              ),
+              dense: true,
+              onTap: () {
+                Navigator.pop(context);
+                _deleteDocument(documentName);
+              },
             ),
-          ),
+            Divider(height: 1.0, thickness: 0.5),
+            ListTile(
+              leading: Icon(Icons.copy),
+              title: Text('复制'),
+              contentPadding: EdgeInsets.symmetric(
+                horizontal: 16.0,
+                vertical: 2.0,
+              ),
+              dense: true,
+              onTap: () {
+                Navigator.pop(context);
+                _copyDocument(documentName);
+              },
+            ),
+            Divider(height: 1.0, thickness: 0.5),
+            ListTile(
+              leading: Icon(Icons.drive_file_rename_outline),
+              title: Text('重命名'),
+              contentPadding: EdgeInsets.symmetric(
+                horizontal: 16.0,
+                vertical: 2.0,
+              ),
+              dense: true,
+              onTap: () {
+                Navigator.pop(context);
+                _renameDocument(documentName);
+              },
+            ),
+            Divider(height: 1.0, thickness: 0.5),
+            ListTile(
+              leading: Icon(isTemplate ? Icons.star : Icons.star_border),
+              title: Text(isTemplate ? '取消设为模板' : '设为模板'),
+              contentPadding: EdgeInsets.symmetric(
+                horizontal: 16.0,
+                vertical: 2.0,
+              ),
+              dense: true,
+              onTap: () async {
+                Navigator.pop(context);
+                await getService<DatabaseService>().setDocumentAsTemplate(
+                  documentName,
+                  !isTemplate,
+                );
+                if (mounted) {
+                  _loadData();
+                }
+              },
+            ),
+            Divider(height: 1.0, thickness: 0.5),
+            ListTile(
+              leading: Icon(Icons.folder),
+              title: Text('移动到文件夹'),
+              contentPadding: EdgeInsets.symmetric(
+                horizontal: 16.0,
+                vertical: 2.0,
+              ),
+              dense: true,
+              onTap: () {
+                Navigator.pop(context);
+                _moveDocumentToFolder(documentName);
+              },
+            ),
+            Divider(height: 1.0, thickness: 0.5),
+            ListTile(
+              leading: Icon(Icons.drive_file_move),
+              title: Text('移动到目录'),
+              contentPadding: EdgeInsets.symmetric(
+                horizontal: 16.0,
+                vertical: 2.0,
+              ),
+              dense: true,
+              onTap: () {
+                Navigator.pop(context);
+                _moveDocumentToDirectoryOption(documentName);
+              },
+            ),
+            Divider(height: 1.0, thickness: 0.5),
+            ListTile(
+              leading: Icon(Icons.share),
+              title: Text('分享'),
+              subtitle: Text('导出文档并分享'),
+              contentPadding: EdgeInsets.symmetric(
+                horizontal: 16.0,
+                vertical: 2.0,
+              ),
+              dense: true,
+              onTap: () {
+                Navigator.pop(context);
+                _exportDocument(documentName);
+              },
+            ),
+          ],
         );
       },
     );
@@ -1839,8 +1835,9 @@ class _DirectoryPageState extends State<DirectoryPage>
   void _showFolderOptions(String folderName) {
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
       builder: (context) {
-        return Wrap(
+        return SafeModalSheetScrollable(
           children: [
             ListTile(
               leading: Icon(Icons.edit),
@@ -1850,6 +1847,7 @@ class _DirectoryPageState extends State<DirectoryPage>
                 _renameFolder(folderName);
               },
             ),
+            Divider(height: 1, thickness: 0.5),
             ListTile(
               leading: Icon(Icons.folder_open),
               title: Text('移动到文件夹'),
@@ -1858,6 +1856,7 @@ class _DirectoryPageState extends State<DirectoryPage>
                 _moveFolderToFolder(folderName);
               },
             ),
+            Divider(height: 1, thickness: 0.5),
             ListTile(
               leading: Icon(Icons.drive_file_move),
               title: Text('移动到目录'),
@@ -1866,6 +1865,7 @@ class _DirectoryPageState extends State<DirectoryPage>
                 _moveFolderToDirectoryOption(folderName);
               },
             ),
+            Divider(height: 1, thickness: 0.5),
             ListTile(
               leading: Icon(Icons.copy),
               title: Text('复制'),
@@ -1874,9 +1874,10 @@ class _DirectoryPageState extends State<DirectoryPage>
                 _copyFolder(folderName);
               },
             ),
+            Divider(height: 1, thickness: 0.5),
             ListTile(
-              leading: Icon(Icons.delete),
-              title: Text('删除'),
+              leading: Icon(Icons.delete, color: Colors.red),
+              title: Text('删除', style: TextStyle(color: Colors.red)),
               onTap: () {
                 Navigator.pop(context);
                 _deleteFolder(folderName);
@@ -1899,10 +1900,13 @@ class _DirectoryPageState extends State<DirectoryPage>
           maxChildSize: 0.9,
           expand: false,
           builder: (context, scrollController) {
-            return SingleChildScrollView(
-              controller: scrollController,
-              child: Wrap(
-                children: [
+            return SafeArea(
+              top: false,
+              minimum: const EdgeInsets.only(bottom: 8),
+              child: SingleChildScrollView(
+                controller: scrollController,
+                child: Wrap(
+                  children: [
                   ListTile(
                     leading: Icon(Icons.image),
                     title: Text('设置背景图片'),
@@ -1972,6 +1976,7 @@ class _DirectoryPageState extends State<DirectoryPage>
                     },
                   ),
                 ],
+                ),
               ),
             );
           },
@@ -2173,8 +2178,9 @@ class _DirectoryPageState extends State<DirectoryPage>
   void _showAddOptions() {
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
       builder: (context) {
-        return Wrap(
+        return SafeModalSheetScrollable(
           children: [
             ListTile(
               leading: Icon(Icons.create_new_folder, color: Colors.amber),
@@ -2184,6 +2190,7 @@ class _DirectoryPageState extends State<DirectoryPage>
                 _addFolder();
               },
             ),
+            Divider(height: 1, thickness: 0.5),
             ListTile(
               leading: Icon(Icons.note_add, color: Colors.blue),
               title: Text('新建文档'),
@@ -2192,6 +2199,7 @@ class _DirectoryPageState extends State<DirectoryPage>
                 _addDocument();
               },
             ),
+            Divider(height: 1, thickness: 0.5),
             ListTile(
               leading: Icon(Icons.file_upload),
               title: Text('导入文档'),
@@ -2200,6 +2208,7 @@ class _DirectoryPageState extends State<DirectoryPage>
                 _importDocument();
               },
             ),
+            Divider(height: 1, thickness: 0.5),
             ListTile(
               leading: Icon(Icons.star, color: Colors.amber),
               title: Text('使用模板创建'),

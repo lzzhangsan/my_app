@@ -730,8 +730,9 @@ class _CoverPageState extends State<CoverPage> with WidgetsBindingObserver {
               top: 16,
               left: 16,
               right: 16,
-              // 添加底部内边距，确保在有软键盘时内容不被遮挡
-              bottom: MediaQuery.of(context).viewInsets.bottom + 16,
+              bottom: MediaQuery.of(context).viewInsets.bottom +
+                  MediaQuery.of(context).viewPadding.bottom +
+                  16,
             ),
             child: Column(
               mainAxisSize: MainAxisSize.min,

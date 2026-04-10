@@ -48,8 +48,12 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
 
   double _lastViewportW = 1;
   double _lastViewportH = 1;
-  double _lastNormBasisW = 1;
-  double _lastNormBasisH = 1;
+  /// 与 [_buildRotatedContent] 使用的 render 基准一致（视口或整屏）。
+  double _renderBasisW = 1;
+  double _renderBasisH = 1;
+  /// [InteractiveViewer] 子控件外框（旋转 90°/270° 时为 vh×vw），平移归一化必须相对此框而非裸 vw×vh。
+  double _ivPanBasisW = 1;
+  double _ivPanBasisH = 1;
   double _lastAppliedBasisW = 1;
   double _lastAppliedBasisH = 1;
   bool _reapplyScheduled = false;
@@ -97,6 +101,17 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
         _emitChanged(force: true);
       }
     }
+    // fitWidth 静态图：FutureBuilder 先占位再换 GestureDetector+LayoutBuilder，若仅在首帧应用矩阵会与「未操作」的恒等路径不一致。
+    if (oldWidget.child.runtimeType != widget.child.runtimeType &&
+        (!widget.editable || !_hasUserInteracted) &&
+        _lastViewportW > 1 &&
+        _lastViewportH > 1) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        if (widget.editable && _hasUserInteracted) return;
+        _applyInitial(_lastViewportW, _lastViewportH);
+      });
+    }
   }
 
   void _onMatrixChanged() {
@@ -115,16 +130,16 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
     final t = m.getTranslation();
     final s = m.getMaxScaleOnAxis().clamp(1.0, 6.0);
     final centeredBase = _centeredBaseTranslation(
-      basisW: _lastNormBasisW,
-      basisH: _lastNormBasisH,
+      basisW: _ivPanBasisW,
+      basisH: _ivPanBasisH,
       scale: s,
-      quarterTurns: _quarterTurns,
+      quarterTurns: 0,
     );
     final extents = _panHalfExtents(
-      basisW: _lastNormBasisW,
-      basisH: _lastNormBasisH,
+      basisW: _ivPanBasisW,
+      basisH: _ivPanBasisH,
       scale: s,
-      quarterTurns: _quarterTurns,
+      quarterTurns: 0,
     );
     final tx = _normFromTranslation(
       translation: t.x,
@@ -141,15 +156,20 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
       txNorm: tx,
       tyNorm: ty,
       quarterTurns: _quarterTurns,
+      basisW: _ivPanBasisW >= 1 ? _ivPanBasisW : null,
+      basisH: _ivPanBasisH >= 1 ? _ivPanBasisH : null,
     );
     if (!force && current == widget.initial) return;
     widget.onChanged?.call(current);
   }
 
   void _applyInitial(double vw, double vh) {
-    final p = widget.initial;
-    _lastAppliedBasisW = _lastNormBasisW;
-    _lastAppliedBasisH = _lastNormBasisH;
+    var p = widget.initial.remappedToViewport(_ivPanBasisW, _ivPanBasisH);
+    if (p.isLikelyIdentityTransform) {
+      p = const VideoViewParams();
+    }
+    _lastAppliedBasisW = _ivPanBasisW;
+    _lastAppliedBasisH = _ivPanBasisH;
     _setMatrixForView(scale: p.scale, txNorm: p.txNorm, tyNorm: p.tyNorm);
   }
 
@@ -158,16 +178,16 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
     final t = m.getTranslation();
     final s = m.getMaxScaleOnAxis().clamp(1.0, 6.0).toDouble();
     final centeredBase = _centeredBaseTranslation(
-      basisW: _lastNormBasisW,
-      basisH: _lastNormBasisH,
+      basisW: _ivPanBasisW,
+      basisH: _ivPanBasisH,
       scale: s,
-      quarterTurns: _quarterTurns,
+      quarterTurns: 0,
     );
     final extents = _panHalfExtents(
-      basisW: _lastNormBasisW,
-      basisH: _lastNormBasisH,
+      basisW: _ivPanBasisW,
+      basisH: _ivPanBasisH,
       scale: s,
-      quarterTurns: _quarterTurns,
+      quarterTurns: 0,
     );
     final txNorm = _normFromTranslation(
       translation: t.x,
@@ -184,6 +204,8 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
       txNorm: txNorm,
       tyNorm: tyNorm,
       quarterTurns: _quarterTurns,
+      basisW: _ivPanBasisW >= 1 ? _ivPanBasisW : null,
+      basisH: _ivPanBasisH >= 1 ? _ivPanBasisH : null,
     );
   }
 
@@ -194,16 +216,16 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
   }) {
     final resolvedScale = scale.clamp(1.0, 6.0).toDouble();
     final centeredBase = _centeredBaseTranslation(
-      basisW: _lastNormBasisW,
-      basisH: _lastNormBasisH,
+      basisW: _ivPanBasisW,
+      basisH: _ivPanBasisH,
       scale: resolvedScale,
-      quarterTurns: _quarterTurns,
+      quarterTurns: 0,
     );
     final extents = _panHalfExtents(
-      basisW: _lastNormBasisW,
-      basisH: _lastNormBasisH,
+      basisW: _ivPanBasisW,
+      basisH: _ivPanBasisH,
       scale: resolvedScale,
-      quarterTurns: _quarterTurns,
+      quarterTurns: 0,
     );
     _tc.value = Matrix4.identity()
       ..translate(
@@ -290,17 +312,18 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
   Matrix4 _centeredScaleMatrix(double scale) {
     final params = _currentViewParams();
     final s = scale.clamp(1.0, 6.0).toDouble();
+    final ivBox = _ivPanBox(_renderBasisW, _renderBasisH, _quarterTurns);
     final centeredBase = _centeredBaseTranslation(
-      basisW: _lastNormBasisW,
-      basisH: _lastNormBasisH,
+      basisW: ivBox.w,
+      basisH: ivBox.h,
       scale: s,
-      quarterTurns: _quarterTurns,
+      quarterTurns: 0,
     );
     final extents = _panHalfExtents(
-      basisW: _lastNormBasisW,
-      basisH: _lastNormBasisH,
+      basisW: ivBox.w,
+      basisH: ivBox.h,
       scale: s,
-      quarterTurns: _quarterTurns,
+      quarterTurns: 0,
     );
     return Matrix4.identity()
       ..translate(
@@ -410,6 +433,15 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
     super.dispose();
   }
 
+  /// [InteractiveViewer] 子控件最外层尺寸；90°/270° 时为 vh×vw，与 [_buildRotatedContent] 一致。
+  ({double w, double h}) _ivPanBox(double rbW, double rbH, int q) {
+    final qq = q % 4;
+    if (qq == 1 || qq == 3) {
+      return (w: rbH, h: rbW);
+    }
+    return (w: rbW, h: rbH);
+  }
+
   Widget _buildRotatedContent(double basisW, double basisH, int q) {
     final inner = SizedBox(width: basisW, height: basisH, child: widget.child);
     Widget rotated;
@@ -454,10 +486,11 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
             widget.useScreenSizeForNormalization ? screenSize.width : vw;
         final renderBasisH =
             widget.useScreenSizeForNormalization ? screenSize.height : vh;
-        _lastNormBasisW =
-            widget.useScreenSizeForNormalization ? screenSize.width : vw;
-        _lastNormBasisH =
-            widget.useScreenSizeForNormalization ? screenSize.height : vh;
+        _renderBasisW = renderBasisW;
+        _renderBasisH = renderBasisH;
+        final panBox = _ivPanBox(renderBasisW, renderBasisH, _quarterTurns);
+        _ivPanBasisW = panBox.w;
+        _ivPanBasisH = panBox.h;
 
         if (!_appliedInitial && vw > 1 && vh > 1) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -467,8 +500,8 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
           });
         }
         final basisChanged =
-            (_lastNormBasisW - _lastAppliedBasisW).abs() > 0.5 ||
-                (_lastNormBasisH - _lastAppliedBasisH).abs() > 0.5;
+            (_ivPanBasisW - _lastAppliedBasisW).abs() > 0.5 ||
+                (_ivPanBasisH - _lastAppliedBasisH).abs() > 0.5;
         if (_appliedInitial &&
             !_hasUserInteracted &&
             basisChanged &&
@@ -491,7 +524,7 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
 
         // 勿设 alignment：非 null 时 RenderTransform 会做 T(枢轴)*M*T(-枢轴)，
         // 而 _emitChanged 仍读控制器内裸矩阵的 getTranslation，二者不一致会存错 tx/ty，重进预览左/上偏。
-        final iv = InteractiveViewer(
+        final viewer = InteractiveViewer(
           transformationController: _tc,
           minScale: 1.0,
           maxScale: 6.0,
@@ -524,7 +557,7 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
         );
 
         if (!widget.editable) {
-          return iv;
+          return viewer;
         }
 
         return Listener(
@@ -533,7 +566,7 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
           onPointerMove: _onPointerMove,
           onPointerUp: _onPointerUp,
           onPointerCancel: _onPointerCancel,
-          child: iv,
+          child: viewer,
         );
       },
     );

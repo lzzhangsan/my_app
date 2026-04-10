@@ -1,4 +1,4 @@
-﻿import 'dart:io';
+import 'dart:io';
 import 'dart:async';
 import 'dart:collection';
 import 'dart:isolate';
@@ -33,6 +33,7 @@ import 'models/media_item.dart';
 import 'models/media_type.dart';
 import 'media_manager_page.dart';
 import 'media_preview_page.dart';
+import 'widgets/safe_modal_sheet_body.dart';
 import 'services/logger.dart';
 import 'services/network_service.dart';
 
@@ -2331,10 +2332,9 @@ class _BrowserPageState extends State<BrowserPage>
   ) {
     showModalBottomSheet(
       context: pageContext,
-      builder:
-          (sheetContext) => Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
+      isScrollControlled: true,
+      builder: (sheetContext) => SafeModalSheetScrollable(
+        children: [
               ListTile(
                 leading: const Icon(Icons.edit, color: Colors.blue),
                 title: const Text('重命名'),
@@ -2343,6 +2343,7 @@ class _BrowserPageState extends State<BrowserPage>
                   _showRenameWebsiteDialog(pageContext, website, index);
                 },
               ),
+              const Divider(height: 1),
               ListTile(
                 leading: const Icon(Icons.link, color: Colors.green),
                 title: const Text('复制网址'),
@@ -2362,6 +2363,7 @@ class _BrowserPageState extends State<BrowserPage>
                   }
                 },
               ),
+              const Divider(height: 1),
               ListTile(
                 leading: const Icon(Icons.delete, color: Colors.red),
                 title: const Text('删除'),
@@ -2421,8 +2423,8 @@ class _BrowserPageState extends State<BrowserPage>
                   }
                 },
               ),
-            ],
-          ),
+        ],
+      ),
     );
   }
 

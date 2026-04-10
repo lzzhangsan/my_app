@@ -33,6 +33,7 @@ import 'models/media_type.dart';
 import 'media_player_settings.dart'
     show applyMediaSettingsImportMap, buildMediaSettingsExportMap;
 import 'widgets/image_layout_utils.dart' show ZoomCenterMarkerCoverOverlay;
+import 'widgets/safe_modal_sheet_body.dart';
 import 'browser_page.dart';
 import 'services/cache_service.dart';
 import 'services/export_import_utils.dart'
@@ -4332,38 +4333,37 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   void _showMultiSelectOptions() {
     showModalBottomSheet(
       context: context,
-      builder:
-          (context) => SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                ListTile(
-                  leading: const Icon(Icons.select_all),
-                  title: const Text('全选'),
-                  onTap: () {
-                    Navigator.pop(context);
-                    _selectAll();
-                  },
-                ),
-                ListTile(
-                  leading: const Icon(Icons.move_to_inbox),
-                  title: const Text('移动到'),
-                  onTap: () {
-                    Navigator.pop(context);
-                    _showMoveDialog();
-                  },
-                ),
-                ListTile(
-                  leading: const Icon(Icons.delete, color: Colors.red),
-                  title: const Text('删除', style: TextStyle(color: Colors.red)),
-                  onTap: () {
-                    Navigator.pop(context);
-                    _deleteSelectedItems();
-                  },
-                ),
-              ],
-            ),
+      isScrollControlled: true,
+      builder: (context) => SafeModalSheetScrollable(
+        children: [
+          ListTile(
+            leading: const Icon(Icons.select_all),
+            title: const Text('全选'),
+            onTap: () {
+              Navigator.pop(context);
+              _selectAll();
+            },
           ),
+          const Divider(height: 1),
+          ListTile(
+            leading: const Icon(Icons.move_to_inbox),
+            title: const Text('移动到'),
+            onTap: () {
+              Navigator.pop(context);
+              _showMoveDialog();
+            },
+          ),
+          const Divider(height: 1),
+          ListTile(
+            leading: const Icon(Icons.delete, color: Colors.red),
+            title: const Text('删除', style: TextStyle(color: Colors.red)),
+            onTap: () {
+              Navigator.pop(context);
+              _deleteSelectedItems();
+            },
+          ),
+        ],
+      ),
     );
   }
 
@@ -4440,6 +4440,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   void _showSettingsMenu() {
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
       backgroundColor: Colors.white.withOpacity(0.5),
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(12)),
@@ -4559,7 +4560,10 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
         return StatefulBuilder(
           builder: (context, setModalState) {
-            return ConstrainedBox(
+            return SafeArea(
+              top: false,
+              minimum: const EdgeInsets.only(bottom: 8),
+              child: ConstrainedBox(
               constraints: const BoxConstraints(maxHeight: 460),
               child: Container(
                 width: dialogWidth,
@@ -4662,6 +4666,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                   ],
                 ),
               ),
+            ),
             );
           },
         );

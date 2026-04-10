@@ -153,6 +153,14 @@ class MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden) {
+      unawaited(
+        getService<DatabaseService>().flushStagedVideoViewParamsToDisk(),
+      );
+    }
     if (state == AppLifecycleState.resumed) {
       _refreshCurrentPage();
     }

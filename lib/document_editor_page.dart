@@ -26,6 +26,7 @@ import 'models/media_type.dart'; // 导入MediaType枚举
 import 'performance_monitor_page.dart';
 import 'widgets/stored_view_image_layer.dart';
 import 'widgets/floating_ui_shadows.dart';
+import 'widgets/safe_modal_sheet_body.dart';
 
 class DocumentEditorPage extends StatefulWidget {
   final String documentName;
@@ -1188,8 +1189,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
 
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
       builder: (context) {
-        return Wrap(
+        return SafeModalSheetScrollable(
           children: [
             ListTile(
               leading: Icon(Icons.mic),
@@ -1205,6 +1207,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
                 ).showSnackBar(SnackBar(content: Text('开始录音...长按停止录音')));
               },
             ),
+            Divider(height: 1),
             ListTile(
               leading: Icon(Icons.delete),
               title: Text('删除语音框'),
@@ -2516,6 +2519,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
   void _showImageBoxOptions(String id) {
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
       backgroundColor: Colors.transparent,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(10)),
@@ -2533,55 +2537,65 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
               ),
             ],
           ),
-          child: Wrap(
-            children: [
-              Padding(
-                padding: EdgeInsets.symmetric(vertical: 12),
-                child: Center(
-                  child: Text(
-                    '图片框设置',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+          child: SafeArea(
+            top: false,
+            minimum: const EdgeInsets.only(bottom: 8),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Padding(
+                    padding: EdgeInsets.symmetric(vertical: 12),
+                    child: Center(
+                      child: Text(
+                        '图片框设置',
+                        style: TextStyle(
+                            fontSize: 16, fontWeight: FontWeight.bold),
+                      ),
+                    ),
                   ),
-                ),
+                  Divider(height: 1, thickness: 1),
+                  ListTile(
+                    leading: Icon(Icons.image, color: Colors.blue),
+                    title: Text('更换图片'),
+                    onTap: () {
+                      Navigator.pop(context);
+                      _selectImageForBox(id);
+                    },
+                  ),
+                  ListTile(
+                    leading: Icon(Icons.copy, color: Colors.green),
+                    title: Text('复制图片框'),
+                    onTap: () {
+                      Navigator.pop(context);
+                      _duplicateImageBox(id);
+                    },
+                  ),
+                  ListTile(
+                    leading: Icon(Icons.delete, color: Colors.red),
+                    title: Text('删除图片框'),
+                    onTap: () {
+                      Navigator.pop(context);
+                      _deleteImageBox(id);
+                      _debouncedSave();
+                      _saveStateToHistory();
+                    },
+                  ),
+                  Center(
+                    child: Container(
+                      height: 4,
+                      width: 40,
+                      margin: EdgeInsets.symmetric(vertical: 12),
+                      decoration: BoxDecoration(
+                        color: Colors.grey.withOpacity(0.5),
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                  ),
+                ],
               ),
-              Divider(height: 1, thickness: 1),
-              ListTile(
-                leading: Icon(Icons.image, color: Colors.blue),
-                title: Text('更换图片'),
-                onTap: () {
-                  Navigator.pop(context);
-                  _selectImageForBox(id);
-                },
-              ),
-              ListTile(
-                leading: Icon(Icons.copy, color: Colors.green),
-                title: Text('复制图片框'),
-                onTap: () {
-                  Navigator.pop(context);
-                  _duplicateImageBox(id);
-                },
-              ),
-              ListTile(
-                leading: Icon(Icons.delete, color: Colors.red),
-                title: Text('删除图片框'),
-                onTap: () {
-                  Navigator.pop(context);
-                  _deleteImageBox(id);
-                  _debouncedSave();
-                  _saveStateToHistory();
-                },
-              ),
-              Container(
-                height: 4,
-                width: 40,
-                margin: EdgeInsets.symmetric(vertical: 12),
-                decoration: BoxDecoration(
-                  color: Colors.grey.withOpacity(0.5),
-                  borderRadius: BorderRadius.circular(2),
-                ),
-                alignment: Alignment.center,
-              ),
-            ],
+            ),
           ),
         );
       },

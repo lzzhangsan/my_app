@@ -111,6 +111,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
 
   @override
   void dispose() {
+    unawaited(_dbService.flushStagedVideoViewParamsToDisk());
     _removeVideoCompleteListener();
     _pageController.dispose();
     _mediaTimer?.cancel();
@@ -142,6 +143,8 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
 
   Future<void> _resetMediaPresentationToPristine(MediaItem item) async {
     try {
+      const clearedView = VideoViewParams();
+      _dbService.stageVideoViewParamsForDisk(item.id, clearedView);
       await _dbService.updateMediaItem({
         'id': item.id,
         'ken_burns_center_x': null,
@@ -150,6 +153,8 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
         'video_view_tx': 0.0,
         'video_view_ty': 0.0,
         'video_view_rot': 0,
+        'video_view_basis_w': null,
+        'video_view_basis_h': null,
         'updated_at': DateTime.now().millisecondsSinceEpoch,
       });
       if (!mounted) return;
@@ -317,6 +322,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     MediaItem item,
     VideoViewParams p,
   ) async {
+    _dbService.stageVideoViewParamsForDisk(item.id, p);
     final idx = widget.mediaItems.indexWhere((e) => e.id == item.id);
     if (idx >= 0 && widget.mediaItems[idx].videoViewParams != p && mounted) {
       setState(() {

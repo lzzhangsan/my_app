@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'widgets/stored_view_image_layer.dart';
+import 'widgets/safe_modal_sheet_body.dart';
 import 'package:intl/intl.dart';
 import 'models/diary_entry.dart';
 import 'services/diary_service.dart';
@@ -402,66 +403,69 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
   void _showDiarySettings() {
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
+      builder: (context) => SafeModalSheetScrollable(
+        children: [
+          ListTile(
+            leading: Icon(Icons.image),
+            title: Text('设置背景图片'),
+            onTap: () async {
+              Navigator.pop(context);
+              await _pickDiaryBackgroundImage();
+            },
+          ),
+          Divider(height: 1),
+          ListTile(
+            leading: Icon(Icons.color_lens),
+            title: Text('设置背景颜色'),
+            onTap: () async {
+              Navigator.pop(context);
+              await _pickDiaryBackgroundColor();
+            },
+          ),
+          if (_diaryBgImage != null) ...[
+            Divider(height: 1),
             ListTile(
-              leading: Icon(Icons.image),
-              title: Text('设置背景图片'),
+              leading: Icon(Icons.delete, color: Colors.red),
+              title: Text('清除背景图片'),
               onTap: () async {
                 Navigator.pop(context);
-                await _pickDiaryBackgroundImage();
-              },
-            ),
-            ListTile(
-              leading: Icon(Icons.color_lens),
-              title: Text('设置背景颜色'),
-              onTap: () async {
-                Navigator.pop(context);
-                await _pickDiaryBackgroundColor();
-              },
-            ),
-            if (_diaryBgImage != null)
-              ListTile(
-                leading: Icon(Icons.delete, color: Colors.red),
-                title: Text('清除背景图片'),
-                onTap: () async {
-                  Navigator.pop(context);
-                  await _removeDiaryBackgroundImage();
-                },
-              ),
-            Divider(),
-            ListTile(
-              leading: Icon(Icons.upload_file),
-              title: Text('导出日记本数据'),
-              onTap: () {
-                Navigator.pop(context);
-                _exportDiaryData();
-              },
-            ),
-            ListTile(
-              leading: Icon(Icons.download_rounded),
-              title: Text('导入日记本数据'),
-              onTap: () {
-                Navigator.pop(context);
-                _importDiaryData();
-              },
-            ),
-            ListTile(
-              leading: Icon(Icons.science, color: Colors.orange),
-              title: Text('生成测试数据'),
-              subtitle: Text('用于验证导出/导入性能'),
-              onTap: () {
-                Navigator.pop(context);
-                _showGenerateTestDataDialog();
+                await _removeDiaryBackgroundImage();
               },
             ),
           ],
-        ),
+          Divider(height: 1),
+          ListTile(
+            leading: Icon(Icons.upload_file),
+            title: Text('导出日记本数据'),
+            onTap: () {
+              Navigator.pop(context);
+              _exportDiaryData();
+            },
+          ),
+          Divider(height: 1),
+          ListTile(
+            leading: Icon(Icons.download_rounded),
+            title: Text('导入日记本数据'),
+            onTap: () {
+              Navigator.pop(context);
+              _importDiaryData();
+            },
+          ),
+          Divider(height: 1),
+          ListTile(
+            leading: Icon(Icons.science, color: Colors.orange),
+            title: Text('生成测试数据'),
+            subtitle: Text('用于验证导出/导入性能'),
+            onTap: () {
+              Navigator.pop(context);
+              _showGenerateTestDataDialog();
+            },
+          ),
+        ],
       ),
     );
   }
@@ -2220,44 +2224,31 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
                                           onSettingsPressed: () {
                                             showModalBottomSheet(
                                               context: context,
-                                              builder: (ctx) => SafeArea(
-                                                child: Wrap(
-                                                  children: [
-                                                    ListTile(
-                                                      leading: Icon(
-                                                        Icons.mic,
-                                                      ),
-                                                      title: Text(
-                                                        '录制新语音',
-                                                      ),
-                                                      onTap: () {
-                                                        Navigator.pop(
-                                                          ctx,
-                                                        );
-                                                        _updateAudioPath(
-                                                          idx,
-                                                          '',
-                                                        );
-                                                      },
-                                                    ),
-                                                    ListTile(
-                                                      leading: Icon(
-                                                        Icons.delete,
-                                                      ),
-                                                      title: Text(
-                                                        '删除语音框',
-                                                      ),
-                                                      onTap: () {
-                                                        Navigator.pop(
-                                                          ctx,
-                                                        );
-                                                        _removeAudioBox(
-                                                          idx,
-                                                        );
-                                                      },
-                                                    ),
-                                                  ],
-                                                ),
+                                              isScrollControlled: true,
+                                              builder: (ctx) =>
+                                                  SafeModalSheetScrollable(
+                                                children: [
+                                                  ListTile(
+                                                    leading: Icon(Icons.mic),
+                                                    title: Text('录制新语音'),
+                                                    onTap: () {
+                                                      Navigator.pop(ctx);
+                                                      _updateAudioPath(
+                                                        idx,
+                                                        '',
+                                                      );
+                                                    },
+                                                  ),
+                                                  Divider(height: 1),
+                                                  ListTile(
+                                                    leading: Icon(Icons.delete),
+                                                    title: Text('删除语音框'),
+                                                    onTap: () {
+                                                      Navigator.pop(ctx);
+                                                      _removeAudioBox(idx);
+                                                    },
+                                                  ),
+                                                ],
                                               ),
                                             );
                                           },
