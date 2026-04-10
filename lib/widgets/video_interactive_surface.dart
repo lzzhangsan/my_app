@@ -147,6 +147,8 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
       quarterTurns: _quarterTurns,
       basisW: _ivPanBasisW >= 1 ? _ivPanBasisW : null,
       basisH: _ivPanBasisH >= 1 ? _ivPanBasisH : null,
+      anchorXNorm: _anchorNormFromTranslation(t.x, _ivPanBasisW),
+      anchorYNorm: _anchorNormFromTranslation(t.y, _ivPanBasisH),
     );
     if (!force && current == widget.initial) return;
     widget.onChanged?.call(current);
@@ -159,7 +161,7 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
     }
     _lastAppliedBasisW = _ivPanBasisW;
     _lastAppliedBasisH = _ivPanBasisH;
-    _setMatrixForView(scale: p.scale, txNorm: p.txNorm, tyNorm: p.tyNorm);
+    _setMatrixForParams(p);
   }
 
   VideoViewParams _currentViewParams() {
@@ -195,6 +197,25 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
       quarterTurns: _quarterTurns,
       basisW: _ivPanBasisW >= 1 ? _ivPanBasisW : null,
       basisH: _ivPanBasisH >= 1 ? _ivPanBasisH : null,
+      anchorXNorm: _anchorNormFromTranslation(t.x, _ivPanBasisW),
+      anchorYNorm: _anchorNormFromTranslation(t.y, _ivPanBasisH),
+    );
+  }
+
+  void _setMatrixForParams(VideoViewParams params) {
+    final hasAnchor = params.anchorXNorm != null && params.anchorYNorm != null;
+    if (hasAnchor) {
+      _setMatrixForAnchor(
+        scale: params.scale,
+        anchorXNorm: params.anchorXNorm!,
+        anchorYNorm: params.anchorYNorm!,
+      );
+      return;
+    }
+    _setMatrixForView(
+      scale: params.scale,
+      txNorm: params.txNorm,
+      tyNorm: params.tyNorm,
     );
   }
 
@@ -233,6 +254,18 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
           ..scale(resolvedScale);
   }
 
+  void _setMatrixForAnchor({
+    required double scale,
+    required double anchorXNorm,
+    required double anchorYNorm,
+  }) {
+    final resolvedScale = scale.clamp(1.0, 6.0).toDouble();
+    _tc.value =
+        Matrix4.identity()
+          ..translate(anchorXNorm * _ivPanBasisW, anchorYNorm * _ivPanBasisH)
+          ..scale(resolvedScale);
+  }
+
   double _normFromTranslation({
     required double translation,
     required double centeredBase,
@@ -249,6 +282,11 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
   }) {
     if (extent <= 1e-6) return centeredBase;
     return centeredBase - norm.clamp(-1.0, 1.0) * extent;
+  }
+
+  double? _anchorNormFromTranslation(double translation, double basis) {
+    if (basis <= 1e-6) return null;
+    return translation / basis;
   }
 
   Offset _centeredBaseTranslation({
@@ -302,6 +340,14 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
   Matrix4 _centeredScaleMatrix(double scale) {
     final params = _currentViewParams();
     final s = scale.clamp(1.0, 6.0).toDouble();
+    if (params.anchorXNorm != null && params.anchorYNorm != null) {
+      return Matrix4.identity()
+        ..translate(
+          params.anchorXNorm! * _ivPanBasisW,
+          params.anchorYNorm! * _ivPanBasisH,
+        )
+        ..scale(s);
+    }
     final ivBox = _ivPanBox(_renderBasisW, _renderBasisH, _quarterTurns);
     final centeredBase = _centeredBaseTranslation(
       basisW: ivBox.w,
