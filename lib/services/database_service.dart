@@ -26,7 +26,8 @@ import 'package:crypto/crypto.dart';
 /// 数据库服务 - 统一管理所有数据库操作
 class DatabaseService {
   static const String _databaseName = 'change_app.db';
-  static const int _databaseVersion = 16; // 16: video_view_basis_w/h 取景视口 + JSON 同步暂存
+  static const int _databaseVersion =
+      17; // 17: image screen anchor x/y for stable cold-start restore
 
   Database? _database;
   final Completer<Database> _initCompleter = Completer<Database>();
@@ -290,6 +291,8 @@ class DatabaseService {
           video_view_rot INTEGER DEFAULT 0,
           video_view_basis_w REAL,
           video_view_basis_h REAL,
+          video_view_anchor_x REAL,
+          video_view_anchor_y REAL,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
         )
@@ -847,6 +850,14 @@ class DatabaseService {
         'video_view_basis_h',
         'ALTER TABLE media_items ADD COLUMN video_view_basis_h REAL',
       );
+      await addIfMissing(
+        'video_view_anchor_x',
+        'ALTER TABLE media_items ADD COLUMN video_view_anchor_x REAL',
+      );
+      await addIfMissing(
+        'video_view_anchor_y',
+        'ALTER TABLE media_items ADD COLUMN video_view_anchor_y REAL',
+      );
     } catch (e, stackTrace) {
       _handleError('补全 video_view 列失败', e, stackTrace);
       rethrow;
@@ -1214,7 +1225,8 @@ class DatabaseService {
       final byPath = await db.rawQuery(
         '''
         SELECT video_view_scale, video_view_tx, video_view_ty, video_view_rot,
-               video_view_basis_w, video_view_basis_h
+               video_view_basis_w, video_view_basis_h,
+               video_view_anchor_x, video_view_anchor_y
         FROM media_items
         WHERE path = ?
            OR path = ?
@@ -1241,7 +1253,8 @@ class DatabaseService {
       final byHash = await db.rawQuery(
         '''
         SELECT video_view_scale, video_view_tx, video_view_ty, video_view_rot,
-               video_view_basis_w, video_view_basis_h
+               video_view_basis_w, video_view_basis_h,
+               video_view_anchor_x, video_view_anchor_y
         FROM media_items
         WHERE file_hash = ?
         ORDER BY
@@ -1474,7 +1487,9 @@ class DatabaseService {
           item.containsKey('video_view_ty') ||
           item.containsKey('video_view_rot') ||
           item.containsKey('video_view_basis_w') ||
-          item.containsKey('video_view_basis_h')) {
+          item.containsKey('video_view_basis_h') ||
+          item.containsKey('video_view_anchor_x') ||
+          item.containsKey('video_view_anchor_y')) {
         await _ensureMediaItemsVideoViewColumns(db);
       }
       return await db.update(
@@ -5780,6 +5795,8 @@ class DatabaseService {
           video_view_rot INTEGER DEFAULT 0,
           video_view_basis_w REAL,
           video_view_basis_h REAL,
+          video_view_anchor_x REAL,
+          video_view_anchor_y REAL,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
         )
@@ -5832,6 +5849,8 @@ class DatabaseService {
           video_view_rot INTEGER DEFAULT 0,
           video_view_basis_w REAL,
           video_view_basis_h REAL,
+          video_view_anchor_x REAL,
+          video_view_anchor_y REAL,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
         )

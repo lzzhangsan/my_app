@@ -23,6 +23,7 @@ class KenBurnsImageDisplay extends StatefulWidget {
     this.loop = false,
     this.onAnimationComplete,
     this.letterboxFill = ImageLetterboxFill.transparent,
+
     /// 为 true 时在 vw×vh 内按 contain 排整图（与外层 90°/270° 旋转配合，避免竖图先被裁成中间一条）。
     this.fitContainInViewport = false,
     this.zoomCenterX,
@@ -38,8 +39,10 @@ class KenBurnsImageDisplay extends StatefulWidget {
   final VoidCallback? onAnimationComplete;
   final ImageLetterboxFill letterboxFill;
   final bool fitContainInViewport;
+
   /// 缩放锚点横坐标 0～1，null 表示 0.5。
   final double? zoomCenterX;
+
   /// 缩放锚点纵坐标 0～1，null 表示 0.5。
   final double? zoomCenterY;
   final bool enableDoubleTapToSetZoomCenter;
@@ -55,6 +58,7 @@ class _KenBurnsImageDisplayState extends State<KenBurnsImageDisplay>
   late AnimationController _controller;
 
   static const double _zoomInEnd = 0.5;
+
   /// 在 [1×, maxScale] 倍率区间里，处于**下端 5%**（从 1× 起、尚未放得很大）时显示中心点。
   static const double _maxScaleMarkerBottomFraction = 0.05;
 
@@ -71,18 +75,14 @@ class _KenBurnsImageDisplayState extends State<KenBurnsImageDisplay>
     final maxS = widget.maxScale;
     if (maxS <= 1.001) return s <= 1.001;
     // 下端 5%：s ∈ [1, 1 + 0.05*(maxS - 1)]
-    final hi =
-        1.0 + _maxScaleMarkerBottomFraction * (maxS - 1.0);
+    final hi = 1.0 + _maxScaleMarkerBottomFraction * (maxS - 1.0);
     return s <= hi + 1e-6;
   }
 
   /// 将 (nx,ny) 在最大倍率时移到视口中心所需的平移；[blend] 与缩放进度同步，0 表示不平移。
   Offset _centerPointOffset(double dw, double dh, double blend) {
     final b = blend.clamp(0.0, 1.0);
-    return Offset(
-      dw * (0.5 - _nx) * b,
-      dh * (0.5 - _ny) * b,
-    );
+    return Offset(dw * (0.5 - _nx) * b, dh * (0.5 - _ny) * b);
   }
 
   /// 与当前 scale 同步：1× 时为 0，[maxScale] 时为 1，缩小时与放大对称回退。
@@ -189,11 +189,13 @@ class _KenBurnsImageDisplayState extends State<KenBurnsImageDisplay>
                     widget.maxScale.clamp(1.0, 3.0))
                 .round()
                 .clamp(1, 8192);
-            final disp = widget.fitContainInViewport
-                ? containDisplaySize(pixelSize, vw, vh)
-                : fitWidthDisplaySize(pixelSize, vw);
+            final disp =
+                widget.fitContainInViewport
+                    ? containDisplaySize(pixelSize, vw, vh)
+                    : fitWidthDisplaySize(pixelSize, vw);
             final dw = disp.width;
             final dh = disp.height;
+            notifyImageDisplayLayoutReady(context);
             return Stack(
               fit: StackFit.expand,
               clipBehavior: Clip.none,
@@ -207,8 +209,10 @@ class _KenBurnsImageDisplayState extends State<KenBurnsImageDisplay>
                     child: AnimatedBuilder(
                       animation: _controller,
                       builder: (context, _) {
-                        final s =
-                            _scaleForT(_controller.value, widget.maxScale);
+                        final s = _scaleForT(
+                          _controller.value,
+                          widget.maxScale,
+                        );
                         final blend = _translateBlendForScale(
                           s,
                           widget.maxScale,
@@ -229,9 +233,10 @@ class _KenBurnsImageDisplayState extends State<KenBurnsImageDisplay>
                                   },
                                   child: Image.file(
                                     widget.imageFile,
-                                    fit: widget.fitContainInViewport
-                                        ? BoxFit.contain
-                                        : BoxFit.fitWidth,
+                                    fit:
+                                        widget.fitContainInViewport
+                                            ? BoxFit.contain
+                                            : BoxFit.fitWidth,
                                     alignment: Alignment.center,
                                     filterQuality: FilterQuality.none,
                                     cacheWidth: cacheW,

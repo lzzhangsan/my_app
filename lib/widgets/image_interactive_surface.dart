@@ -3,6 +3,7 @@ import 'dart:math' show pi;
 
 import 'package:flutter/material.dart';
 
+import 'image_layout_utils.dart';
 import '../models/video_view_params.dart';
 import 'video_seven_stroke.dart';
 
@@ -39,7 +40,9 @@ class ImageInteractiveSurface extends StatefulWidget {
 
 class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
   /// 须为「全向无限」边界，否则 InteractiveViewer 仍会夹紧平移，getTranslation 与归一化模型不一致，退出再进会漂移。
-  static const EdgeInsets _editableBoundaryMargin = EdgeInsets.all(double.infinity);
+  static const EdgeInsets _editableBoundaryMargin = EdgeInsets.all(
+    double.infinity,
+  );
   final TransformationController _tc = TransformationController();
   Timer? _debounce;
   int _quarterTurns = 0;
@@ -48,9 +51,11 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
 
   double _lastViewportW = 1;
   double _lastViewportH = 1;
+
   /// 与 [_buildRotatedContent] 使用的 render 基准一致（视口或整屏）。
   double _renderBasisW = 1;
   double _renderBasisH = 1;
+
   /// [InteractiveViewer] 子控件外框（旋转 90°/270° 时为 vh×vw），平移归一化必须相对此框而非裸 vw×vh。
   double _ivPanBasisW = 1;
   double _ivPanBasisH = 1;
@@ -158,6 +163,8 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
       quarterTurns: _quarterTurns,
       basisW: _ivPanBasisW >= 1 ? _ivPanBasisW : null,
       basisH: _ivPanBasisH >= 1 ? _ivPanBasisH : null,
+      anchorXNorm: _anchorNormFromTranslation(t.x, _ivPanBasisW),
+      anchorYNorm: _anchorNormFromTranslation(t.y, _ivPanBasisH),
     );
     if (!force && current == widget.initial) return;
     widget.onChanged?.call(current);
@@ -170,7 +177,7 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
     }
     _lastAppliedBasisW = _ivPanBasisW;
     _lastAppliedBasisH = _ivPanBasisH;
-    _setMatrixForView(scale: p.scale, txNorm: p.txNorm, tyNorm: p.tyNorm);
+    _setMatrixForParams(p);
   }
 
   VideoViewParams _currentViewParams() {
@@ -206,6 +213,25 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
       quarterTurns: _quarterTurns,
       basisW: _ivPanBasisW >= 1 ? _ivPanBasisW : null,
       basisH: _ivPanBasisH >= 1 ? _ivPanBasisH : null,
+      anchorXNorm: _anchorNormFromTranslation(t.x, _ivPanBasisW),
+      anchorYNorm: _anchorNormFromTranslation(t.y, _ivPanBasisH),
+    );
+  }
+
+  void _setMatrixForParams(VideoViewParams params) {
+    final hasAnchor = params.anchorXNorm != null && params.anchorYNorm != null;
+    if (hasAnchor) {
+      _setMatrixForAnchor(
+        scale: params.scale,
+        anchorXNorm: params.anchorXNorm!,
+        anchorYNorm: params.anchorYNorm!,
+      );
+      return;
+    }
+    _setMatrixForView(
+      scale: params.scale,
+      txNorm: params.txNorm,
+      tyNorm: params.tyNorm,
     );
   }
 
@@ -227,20 +253,33 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
       scale: resolvedScale,
       quarterTurns: 0,
     );
-    _tc.value = Matrix4.identity()
-      ..translate(
-        _translationFromNorm(
-          norm: txNorm,
-          centeredBase: centeredBase.dx,
-          extent: extents.maxX,
-        ),
-        _translationFromNorm(
-          norm: tyNorm,
-          centeredBase: centeredBase.dy,
-          extent: extents.maxY,
-        ),
-      )
-      ..scale(resolvedScale);
+    _tc.value =
+        Matrix4.identity()
+          ..translate(
+            _translationFromNorm(
+              norm: txNorm,
+              centeredBase: centeredBase.dx,
+              extent: extents.maxX,
+            ),
+            _translationFromNorm(
+              norm: tyNorm,
+              centeredBase: centeredBase.dy,
+              extent: extents.maxY,
+            ),
+          )
+          ..scale(resolvedScale);
+  }
+
+  void _setMatrixForAnchor({
+    required double scale,
+    required double anchorXNorm,
+    required double anchorYNorm,
+  }) {
+    final resolvedScale = scale.clamp(1.0, 6.0).toDouble();
+    _tc.value =
+        Matrix4.identity()
+          ..translate(anchorXNorm * _ivPanBasisW, anchorYNorm * _ivPanBasisH)
+          ..scale(resolvedScale);
   }
 
   double _normFromTranslation({
@@ -259,6 +298,11 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
   }) {
     if (extent <= 1e-6) return centeredBase;
     return centeredBase - norm.clamp(-1.0, 1.0) * extent;
+  }
+
+  double? _anchorNormFromTranslation(double translation, double basis) {
+    if (basis <= 1e-6) return null;
+    return translation / basis;
   }
 
   Offset _centeredBaseTranslation({
@@ -425,12 +469,23 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
   @override
   void dispose() {
     _debounce?.cancel();
-    if (widget.editable && _hasUserInteracted) {
-      _emitChanged(force: true);
-    }
     _tc.removeListener(_onMatrixChanged);
     _tc.dispose();
     super.dispose();
+  }
+
+  bool _onImageLayoutReady(ImageDisplayLayoutReadyNotification notification) {
+    if (_hasUserInteracted || _lastViewportW <= 1 || _lastViewportH <= 1) {
+      return false;
+    }
+    if (_reapplyScheduled) return false;
+    _reapplyScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _reapplyScheduled = false;
+      if (!mounted || _hasUserInteracted) return;
+      _applyInitial(_lastViewportW, _lastViewportH);
+    });
+    return false;
   }
 
   /// [InteractiveViewer] 子控件最外层尺寸；90°/270° 时为 vh×vw，与 [_buildRotatedContent] 一致。
@@ -501,7 +556,7 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
         }
         final basisChanged =
             (_ivPanBasisW - _lastAppliedBasisW).abs() > 0.5 ||
-                (_ivPanBasisH - _lastAppliedBasisH).abs() > 0.5;
+            (_ivPanBasisH - _lastAppliedBasisH).abs() > 0.5;
         if (_appliedInitial &&
             !_hasUserInteracted &&
             basisChanged &&
@@ -518,7 +573,8 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
         final q = _quarterTurns % 4;
         final sideways = q == 1 || q == 3;
         final requiredPointerCount = widget.singleFingerPanEnabled ? 1 : 2;
-        final panOk = widget.editable &&
+        final panOk =
+            widget.editable &&
             _activePointers.length >= requiredPointerCount &&
             (scale > 1.01 || sideways);
 
@@ -556,8 +612,14 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
           child: _buildRotatedContent(renderBasisW, renderBasisH, q),
         );
 
+        final wrappedViewer =
+            NotificationListener<ImageDisplayLayoutReadyNotification>(
+              onNotification: _onImageLayoutReady,
+              child: viewer,
+            );
+
         if (!widget.editable) {
-          return viewer;
+          return wrappedViewer;
         }
 
         return Listener(
@@ -566,7 +628,7 @@ class _ImageInteractiveSurfaceState extends State<ImageInteractiveSurface> {
           onPointerMove: _onPointerMove,
           onPointerUp: _onPointerUp,
           onPointerCancel: _onPointerCancel,
-          child: viewer,
+          child: wrappedViewer,
         );
       },
     );

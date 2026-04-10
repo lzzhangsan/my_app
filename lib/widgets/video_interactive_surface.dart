@@ -39,7 +39,9 @@ class VideoInteractiveSurface extends StatefulWidget {
 }
 
 class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
-  static const EdgeInsets _editableBoundaryMargin = EdgeInsets.all(double.infinity);
+  static const EdgeInsets _editableBoundaryMargin = EdgeInsets.all(
+    double.infinity,
+  );
   final TransformationController _tc = TransformationController();
   Timer? _debounce;
   int _quarterTurns = 0;
@@ -214,20 +216,21 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
       scale: resolvedScale,
       quarterTurns: 0,
     );
-    _tc.value = Matrix4.identity()
-      ..translate(
-        _translationFromNorm(
-          norm: txNorm,
-          centeredBase: centeredBase.dx,
-          extent: extents.maxX,
-        ),
-        _translationFromNorm(
-          norm: tyNorm,
-          centeredBase: centeredBase.dy,
-          extent: extents.maxY,
-        ),
-      )
-      ..scale(resolvedScale);
+    _tc.value =
+        Matrix4.identity()
+          ..translate(
+            _translationFromNorm(
+              norm: txNorm,
+              centeredBase: centeredBase.dx,
+              extent: extents.maxX,
+            ),
+            _translationFromNorm(
+              norm: tyNorm,
+              centeredBase: centeredBase.dy,
+              extent: extents.maxY,
+            ),
+          )
+          ..scale(resolvedScale);
   }
 
   double _normFromTranslation({
@@ -373,8 +376,7 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
         _strokePoints.length >= 8) {
       final rot = detectSevenStrokeRotation(List.from(_strokePoints));
       if (rot != null) {
-        final preservedScale =
-            _tc.value.getMaxScaleOnAxis().clamp(1.0, 6.0);
+        final preservedScale = _tc.value.getMaxScaleOnAxis().clamp(1.0, 6.0);
         setState(() {
           _quarterTurns =
               rot ? (_quarterTurns + 1) % 4 : (_quarterTurns - 1) % 4;
@@ -413,9 +415,6 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
   @override
   void dispose() {
     _debounce?.cancel();
-    if (widget.editable && _hasUserInteracted) {
-      _emitChanged(force: true);
-    }
     _tc.removeListener(_onMatrixChanged);
     _tc.dispose();
     super.dispose();
@@ -514,7 +513,7 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
         }
         final basisChanged =
             (_ivPanBasisW - _lastAppliedBasisW).abs() > 0.5 ||
-                (_ivPanBasisH - _lastAppliedBasisH).abs() > 0.5;
+            (_ivPanBasisH - _lastAppliedBasisH).abs() > 0.5;
         if (_appliedInitial &&
             !_hasUserInteracted &&
             basisChanged &&
@@ -531,7 +530,8 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
         final q = _quarterTurns % 4;
         final sideways = q == 1 || q == 3;
         final requiredPointerCount = widget.singleFingerPanEnabled ? 1 : 2;
-        final panOk = widget.editable &&
+        final panOk =
+            widget.editable &&
             _activePointers.length >= requiredPointerCount &&
             (scale > 1.01 || sideways);
 

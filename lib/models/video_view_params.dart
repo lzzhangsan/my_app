@@ -10,6 +10,8 @@ class VideoViewParams {
     this.quarterTurns = 0,
     this.basisW,
     this.basisH,
+    this.anchorXNorm,
+    this.anchorYNorm,
   });
 
   /// 缩放倍数，≥1。
@@ -30,6 +32,12 @@ class VideoViewParams {
   /// 保存时所用逻辑视口高。
   final double? basisH;
 
+  /// 变换后内容左上角相对当前逻辑视口宽度的归一化位置。
+  final double? anchorXNorm;
+
+  /// 变换后内容左上角相对当前逻辑视口高度的归一化位置。
+  final double? anchorYNorm;
+
   static VideoViewParams fromMediaMap(Map<String, dynamic> map) {
     final s = map['video_view_scale'];
     final tx = map['video_view_tx'];
@@ -37,6 +45,8 @@ class VideoViewParams {
     final r = map['video_view_rot'];
     final bw = map['video_view_basis_w'];
     final bh = map['video_view_basis_h'];
+    final ax = map['video_view_anchor_x'];
+    final ay = map['video_view_anchor_y'];
     if (s == null && tx == null && ty == null && r == null) {
       return const VideoViewParams();
     }
@@ -65,6 +75,8 @@ class VideoViewParams {
       quarterTurns: rot,
       basisW: obw,
       basisH: obh,
+      anchorXNorm: ax is num ? ax.toDouble() : null,
+      anchorYNorm: ay is num ? ay.toDouble() : null,
     );
   }
 
@@ -78,6 +90,8 @@ class VideoViewParams {
         'video_view_basis_w': basisW,
       if (basisW != null && basisH != null && basisW! >= 1 && basisH! >= 1)
         'video_view_basis_h': basisH,
+      if (anchorXNorm != null) 'video_view_anchor_x': anchorXNorm,
+      if (anchorYNorm != null) 'video_view_anchor_y': anchorYNorm,
     };
   }
 
@@ -90,6 +104,8 @@ class VideoViewParams {
       'r': quarterTurns % 4,
       if (basisW != null) 'bw': basisW,
       if (basisH != null) 'bh': basisH,
+      if (anchorXNorm != null) 'ax': anchorXNorm,
+      if (anchorYNorm != null) 'ay': anchorYNorm,
     };
   }
 
@@ -107,6 +123,8 @@ class VideoViewParams {
     double? bh;
     final rawBw = m['bw'];
     final rawBh = m['bh'];
+    final rawAx = m['ax'];
+    final rawAy = m['ay'];
     if (rawBw is num && rawBh is num) {
       bw = rawBw.toDouble();
       bh = rawBh.toDouble();
@@ -116,12 +134,15 @@ class VideoViewParams {
       }
     }
     return VideoViewParams(
-      scale: (m['s'] is num) ? (m['s'] as num).toDouble().clamp(1.0, 16.0) : 1.0,
+      scale:
+          (m['s'] is num) ? (m['s'] as num).toDouble().clamp(1.0, 16.0) : 1.0,
       txNorm: (m['tx'] is num) ? (m['tx'] as num).toDouble() : 0.0,
       tyNorm: (m['ty'] is num) ? (m['ty'] as num).toDouble() : 0.0,
       quarterTurns: rot,
       basisW: bw,
       basisH: bh,
+      anchorXNorm: rawAx is num ? rawAx.toDouble() : null,
+      anchorYNorm: rawAy is num ? rawAy.toDouble() : null,
     );
   }
 
@@ -133,6 +154,18 @@ class VideoViewParams {
     if (ow == null || oh == null) {
       return this;
     }
+    if (anchorXNorm != null && anchorYNorm != null) {
+      return VideoViewParams(
+        scale: scale,
+        txNorm: txNorm,
+        tyNorm: tyNorm,
+        quarterTurns: quarterTurns,
+        basisW: newW,
+        basisH: newH,
+        anchorXNorm: anchorXNorm,
+        anchorYNorm: anchorYNorm,
+      );
+    }
     // 轻微视口抖动（状态栏、安全区、整像素取整）不应触发线性重映射，否则易放大舍入误差。
     if ((ow - newW).abs() < 2.0 && (oh - newH).abs() < 2.0) {
       return VideoViewParams(
@@ -142,6 +175,8 @@ class VideoViewParams {
         quarterTurns: quarterTurns,
         basisW: newW,
         basisH: newH,
+        anchorXNorm: anchorXNorm,
+        anchorYNorm: anchorYNorm,
       );
     }
     // basis 为 IV 子控件外框（含 90°/270° 时的 vh×vw）；归一化编解码在表面层用 quarterTurns:0，此处须一致。
@@ -164,6 +199,8 @@ class VideoViewParams {
       quarterTurns: quarterTurns,
       basisW: newW,
       basisH: newH,
+      anchorXNorm: anchorXNorm,
+      anchorYNorm: anchorYNorm,
     );
   }
 
@@ -189,7 +226,9 @@ class VideoViewParams {
         (tyNorm - other.tyNorm).abs() < 1e-6 &&
         (quarterTurns % 4) == (other.quarterTurns % 4) &&
         _sameOpt(basisW, other.basisW) &&
-        _sameOpt(basisH, other.basisH);
+        _sameOpt(basisH, other.basisH) &&
+        _sameOpt(anchorXNorm, other.anchorXNorm) &&
+        _sameOpt(anchorYNorm, other.anchorYNorm);
   }
 
   static bool _sameOpt(double? a, double? b) {
@@ -200,13 +239,15 @@ class VideoViewParams {
 
   @override
   int get hashCode => Object.hash(
-        scale,
-        txNorm,
-        tyNorm,
-        quarterTurns % 4,
-        basisW != null ? (basisW! * 1000).round() : 0,
-        basisH != null ? (basisH! * 1000).round() : 0,
-      );
+    scale,
+    txNorm,
+    tyNorm,
+    quarterTurns % 4,
+    basisW != null ? (basisW! * 1000).round() : 0,
+    basisH != null ? (basisH! * 1000).round() : 0,
+    anchorXNorm != null ? (anchorXNorm! * 1000).round() : 0,
+    anchorYNorm != null ? (anchorYNorm! * 1000).round() : 0,
+  );
 }
 
 Offset _centeredBaseTranslation(

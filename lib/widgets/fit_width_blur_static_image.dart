@@ -76,14 +76,17 @@ class _FitWidthBlurStaticImageState extends State<FitWidthBlurStaticImage> {
           builder: (context, constraints) {
             final vw = constraints.maxWidth;
             final vh = constraints.maxHeight;
-            final cacheW = widget.useCacheWidth
-                ? (vw * MediaQuery.devicePixelRatioOf(context))
-                    .round()
-                    .clamp(1, 8192)
-                : null;
-            final disp = widget.fitContainInViewport
-                ? containDisplaySize(pixelSize, vw, vh)
-                : fitWidthDisplaySize(pixelSize, vw);
+            final cacheW =
+                widget.useCacheWidth
+                    ? (vw * MediaQuery.devicePixelRatioOf(context))
+                        .round()
+                        .clamp(1, 8192)
+                    : null;
+            final disp =
+                widget.fitContainInViewport
+                    ? containDisplaySize(pixelSize, vw, vh)
+                    : fitWidthDisplaySize(pixelSize, vw);
+            notifyImageDisplayLayoutReady(context);
             return ClipRect(
               child: Stack(
                 fit: StackFit.expand,
@@ -98,9 +101,10 @@ class _FitWidthBlurStaticImageState extends State<FitWidthBlurStaticImage> {
                         height: disp.height,
                         child: Image.file(
                           widget.file,
-                          fit: widget.fitContainInViewport
-                              ? BoxFit.contain
-                              : BoxFit.fill,
+                          fit:
+                              widget.fitContainInViewport
+                                  ? BoxFit.contain
+                                  : BoxFit.fill,
                           filterQuality: FilterQuality.medium,
                           gaplessPlayback: true,
                           cacheWidth: cacheW,

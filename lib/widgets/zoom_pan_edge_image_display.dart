@@ -25,6 +25,7 @@ class ZoomPanEdgeImageDisplay extends StatefulWidget {
     this.loop = false,
     this.onAnimationComplete,
     this.letterboxFill = ImageLetterboxFill.transparent,
+
     /// 为 true 时在 vw×vh 内整图 contain（与外层 90°/270° 旋转配合）。
     this.fitContainInViewport = false,
   });
@@ -33,6 +34,7 @@ class ZoomPanEdgeImageDisplay extends StatefulWidget {
   final Duration totalDuration;
   final double maxScale;
   final bool clockwise;
+
   /// 单段动画巡游段中沿路径前进比例；越小同时间内位移越慢、越不必扫完整幅。
   final double panPathCoverage;
   final bool loop;
@@ -62,10 +64,7 @@ class _ZoomPanEdgeImageDisplayState extends State<ZoomPanEdgeImageDisplay>
   static const double _zoomInEnd = 0.20;
   static const double _roamEnd = 0.80;
 
-  static double _scaleAt({
-    required double t,
-    required double zoomEndScale,
-  }) {
+  static double _scaleAt({required double t, required double zoomEndScale}) {
     if (t < _zoomInEnd) {
       final u = Curves.easeInOut.transform(t / _zoomInEnd);
       return 1.0 + (zoomEndScale - 1.0) * u;
@@ -73,8 +72,7 @@ class _ZoomPanEdgeImageDisplayState extends State<ZoomPanEdgeImageDisplay>
     if (t < _roamEnd) {
       return zoomEndScale;
     }
-    final uOut =
-        Curves.easeInOut.transform((t - _roamEnd) / (1.0 - _roamEnd));
+    final uOut = Curves.easeInOut.transform((t - _roamEnd) / (1.0 - _roamEnd));
     return zoomEndScale + (1.0 - zoomEndScale) * uOut;
   }
 
@@ -176,16 +174,19 @@ class _ZoomPanEdgeImageDisplayState extends State<ZoomPanEdgeImageDisplay>
           builder: (context, constraints) {
             final vw = constraints.maxWidth;
             final vh = constraints.maxHeight;
-            final disp = widget.fitContainInViewport
-                ? containDisplaySize(pixelSize, vw, vh)
-                : fitWidthDisplaySize(pixelSize, vw);
+            final disp =
+                widget.fitContainInViewport
+                    ? containDisplaySize(pixelSize, vw, vh)
+                    : fitWidthDisplaySize(pixelSize, vw);
             final double dw = disp.width;
             final double dh = disp.height;
             final double maxS = widget.maxScale.clamp(1.01, 10.0);
+            notifyImageDisplayLayoutReady(context);
             // 横图 dh<vh 时需至少放大到 vh/dh，竖向才能被清晰图完全盖住（巡游时不再露模糊）
-            final double coverFloor = widget.fitContainInViewport
-                ? 1.0
-                : (dh < vh - 0.5 ? (vh / dh).clamp(1.0, 10.0) : 1.0);
+            final double coverFloor =
+                widget.fitContainInViewport
+                    ? 1.0
+                    : (dh < vh - 0.5 ? (vh / dh).clamp(1.0, 10.0) : 1.0);
             final double zoomEndScale = math.max(maxS, coverFloor);
 
             return ClipRect(
@@ -211,12 +212,16 @@ class _ZoomPanEdgeImageDisplayState extends State<ZoomPanEdgeImageDisplay>
                       );
                       final double mxE = limAtEnd.maxX;
                       final double myE = limAtEnd.maxY;
-                      final spiralPath =
-                          _rectPathFor(mxE, myE, widget.clockwise);
-                      final double cov =
-                          widget.panPathCoverage.clamp(0.05, 1.0);
-                      final double phase =
-                          (_spiralLoop % 4) / 4.0;
+                      final spiralPath = _rectPathFor(
+                        mxE,
+                        myE,
+                        widget.clockwise,
+                      );
+                      final double cov = widget.panPathCoverage.clamp(
+                        0.05,
+                        1.0,
+                      );
+                      final double phase = (_spiralLoop % 4) / 4.0;
 
                       Offset offset;
                       if (t < _zoomInEnd) {
@@ -278,9 +283,10 @@ class _ZoomPanEdgeImageDisplayState extends State<ZoomPanEdgeImageDisplay>
                         height: dh,
                         child: Image.file(
                           widget.imageFile,
-                          fit: widget.fitContainInViewport
-                              ? BoxFit.contain
-                              : BoxFit.fitWidth,
+                          fit:
+                              widget.fitContainInViewport
+                                  ? BoxFit.contain
+                                  : BoxFit.fitWidth,
                           alignment: Alignment.center,
                           filterQuality: FilterQuality.none,
                           cacheWidth: (vw *

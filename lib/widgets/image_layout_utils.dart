@@ -5,6 +5,17 @@ import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/material.dart';
 
+class ImageDisplayLayoutReadyNotification extends Notification {
+  ImageDisplayLayoutReadyNotification();
+}
+
+void notifyImageDisplayLayoutReady(BuildContext context) {
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    if (!context.mounted) return;
+    ImageDisplayLayoutReadyNotification().dispatch(context);
+  });
+}
+
 /// 读取图片像素尺寸。
 Future<Size> measureImageFileSize(File file) async {
   final completer = Completer<Size>();
@@ -50,19 +61,13 @@ Size containDisplaySize(Size imageSize, double viewportW, double viewportH) {
   if (imageSize.width <= 0 || imageSize.height <= 0) {
     return Size(viewportW, viewportH);
   }
-  final s = math.min(
-    viewportW / imageSize.width,
-    viewportH / imageSize.height,
-  );
+  final s = math.min(viewportW / imageSize.width, viewportH / imageSize.height);
   return Size(imageSize.width * s, imageSize.height * s);
 }
 
 /// BoxFit.cover：整屏均被图片盖住，宽与高均 ≥ 视口对应边（一边贴齐、一边超出可裁切）。
 Size coverDisplaySize(Size imageSize, double viewportW, double viewportH) {
-  final s = math.max(
-    viewportW / imageSize.width,
-    viewportH / imageSize.height,
-  );
+  final s = math.max(viewportW / imageSize.width, viewportH / imageSize.height);
   return Size(imageSize.width * s, imageSize.height * s);
 }
 
@@ -158,7 +163,11 @@ List<Offset> buildRectangularSpiralPathInnerToOuter(
   double my,
   bool clockwise,
 ) {
-  final outerToInner = buildRectangularSpiralPathOuterToInner(mx, my, clockwise);
+  final outerToInner = buildRectangularSpiralPathOuterToInner(
+    mx,
+    my,
+    clockwise,
+  );
   return outerToInner.reversed.toList();
 }
 
@@ -254,10 +263,13 @@ Offset sampleOffsetAlongPath(
 enum ImageLetterboxFill {
   /// 浅灰纯色底（非纯白，避免与白色图标对比度不足）；色值见 [kLetterboxSolidNeutral]。
   white,
+
   /// 透出底层背景（如页面 Scaffold 底色）。
   transparent,
+
   /// 旧版：同图放大铺满 + 暗化叠层，层次较强。
   softCover,
+
   /// 同图强模糊；个别机型若出现发灰可改用「纯白」。
   blurHeavy,
 }
@@ -277,9 +289,7 @@ Widget letterboxFillLayer(File file, ImageLetterboxFill fill) {
         child: ColoredBox(color: kLetterboxSolidNeutral),
       );
     case ImageLetterboxFill.transparent:
-      return const Positioned.fill(
-        child: ColoredBox(color: Color(0x00000000)),
-      );
+      return const Positioned.fill(child: ColoredBox(color: Color(0x00000000)));
     case ImageLetterboxFill.softCover:
       return Positioned.fill(
         child: ClipRect(
@@ -331,10 +341,7 @@ BoxDecoration zoomCenterMarkerDotDecoration() {
     shape: BoxShape.circle,
     color: const Color(0xFFFFD54F).withOpacity(0.52),
     boxShadow: [
-      BoxShadow(
-        color: Colors.black.withOpacity(0.22),
-        blurRadius: 2,
-      ),
+      BoxShadow(color: Colors.black.withOpacity(0.22), blurRadius: 2),
     ],
   );
 }
@@ -346,10 +353,7 @@ BoxDecoration zoomCenterMarkerThumbnailDotDecoration() {
     color: const Color(0xFFFFC107).withOpacity(0.82),
     border: Border.all(color: Colors.white.withOpacity(0.95), width: 1.0),
     boxShadow: [
-      BoxShadow(
-        color: Colors.black.withOpacity(0.35),
-        blurRadius: 3,
-      ),
+      BoxShadow(color: Colors.black.withOpacity(0.35), blurRadius: 3),
     ],
   );
 }
@@ -371,12 +375,15 @@ class ZoomCenterMarker extends StatelessWidget {
 
   /// 归一化横坐标 0～1。
   final double nx;
+
   /// 归一化纵坐标 0～1。
   final double ny;
   final double width;
   final double height;
+
   /// 为 false 时不绘制（仍占位无：返回 [SizedBox.shrink]）。
   final bool visible;
+
   /// 圆点半径（逻辑像素），默认约为初版一半大小。
   final double radius;
 
@@ -404,6 +411,7 @@ class ZoomCenterMarkerCoverOverlay extends StatelessWidget {
     required this.file,
     required this.nx,
     required this.ny,
+
     /// 略缩图格子内约为全屏标记的两倍半径，更易辨认。
     this.radius = 2.5,
   });
