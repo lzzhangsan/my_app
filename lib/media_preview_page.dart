@@ -73,8 +73,6 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
   int _activePreviewPointers = 0;
   bool _transformOnlyMode = false;
 
-  /// 按媒体 id 递增，仅当前项的 [ImageInteractiveSurface]/[VideoInteractiveSurface] 会落库。
-  final Map<String, int> _viewPersistNonceById = {};
   final Map<String, Timer> _pendingCenterCommitTimers = {};
   DateTime? _ignoreCenterTapUntil;
   Future<void> _pendingViewPersist = Future<void>.value();
@@ -346,26 +344,6 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
         ),
       );
     }
-  }
-
-  void _onPinCurrentViewTransform() {
-    if (_currentIndex < 0 || _currentIndex >= widget.mediaItems.length) {
-      return;
-    }
-    final id = widget.mediaItems[_currentIndex].id;
-    setState(() {
-      _viewPersistNonceById[id] = (_viewPersistNonceById[id] ?? 0) + 1;
-    });
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).hideCurrentSnackBar();
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('已将当前缩放与位置写入数据库（未调整过则与已保存状态相同）'),
-        duration: Duration(milliseconds: 2000),
-        behavior: SnackBarBehavior.floating,
-        margin: EdgeInsets.fromLTRB(16, 0, 16, 20),
-      ),
-    );
   }
 
   Future<void> _persistKenBurnsCenterAndStartStaticDemo(
@@ -1164,7 +1142,6 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
       // 必须与 InteractiveViewer 实际视口 (LayoutBuilder) 一致，勿用整屏尺寸，
       // 否则退出再进入会因基准不一致出现系统性偏移（常见左上）。
       useScreenSizeForNormalization: false,
-      persistNonce: _viewPersistNonceById[item.id] ?? 0,
       onTripleTapReset: () => _onTripleTapResetGesture(item),
       onChanged: (p) => _persistMediaViewParams(item, p),
       child: inner,
@@ -1225,7 +1202,6 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
               // 必须与 InteractiveViewer 实际视口 (LayoutBuilder) 一致，勿用整屏尺寸，
               // 否则退出再进入会因基准不一致出现系统性偏移（常见左上）。
               useScreenSizeForNormalization: false,
-              persistNonce: _viewPersistNonceById[item.id] ?? 0,
               onTripleTapReset: () => _onTripleTapResetGesture(item),
               onChanged: (p) => _persistMediaViewParams(item, p),
             ),
@@ -1365,21 +1341,6 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
                       ),
                       onPressed: _shareMediaItem,
                     ),
-                    if (widget.mediaItems.isNotEmpty &&
-                        _currentIndex < widget.mediaItems.length &&
-                        (widget.mediaItems[_currentIndex].type ==
-                                MediaType.image ||
-                            widget.mediaItems[_currentIndex].type ==
-                                MediaType.video))
-                      IconButton(
-                        icon: Icon(
-                          Icons.push_pin_outlined,
-                          color: Colors.white,
-                          shadows: FloatingUiShadows.whiteIcon,
-                        ),
-                        tooltip: '固定当前缩放与位置',
-                        onPressed: _onPinCurrentViewTransform,
-                      ),
                     const Spacer(),
                     Row(
                       mainAxisSize: MainAxisSize.min,
