@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'widgets/image_layout_utils.dart' show ImageLetterboxFill;
+import 'media_playback_portable_prefs.dart';
 import 'media_source_favorite_filter.dart';
 
 /// 媒体栏随机/顺序播放
@@ -65,7 +66,8 @@ Future<MediaPlayerSettingsSnapshot> loadMediaPlayerSettings(
   );
 }
 
-/// 写入 zip 内 `media_settings.json`：媒体页可见性、自动导入及媒体栏/预览播放偏好。
+/// 写入 zip 内 `media_settings.json`：媒体页可见性、自动导入、媒体栏/预览播放偏好，
+/// 以及顺序播放游标与顺序模式下视频续播位置（`playback_state_ints`，按媒体 id 可随库迁移）。
 /// 导入时由 [applyMediaSettingsImportMap] 写回，便于新机恢复效果。
 Future<Map<String, dynamic>> buildMediaSettingsExportMap(
   SharedPreferences prefs,
@@ -94,6 +96,11 @@ Future<Map<String, dynamic>> buildMediaSettingsExportMap(
   }
   final lb = prefs.getInt(MediaPlayerPrefsKeys.imageLetterboxFill);
   if (lb != null) m[MediaPlayerPrefsKeys.imageLetterboxFill] = lb;
+
+  final playInts = collectPlaybackStateIntPrefs(prefs);
+  if (playInts.isNotEmpty) {
+    m['playback_state_ints'] = playInts;
+  }
   return m;
 }
 
@@ -139,6 +146,8 @@ Future<void> applyMediaSettingsImportMap(
   if (lb != null) {
     await prefs.setInt(MediaPlayerPrefsKeys.imageLetterboxFill, lb);
   }
+
+  await mergePlaybackStateIntPrefs(prefs, json);
 }
 
 Future<void> saveMediaPlayerSettings(

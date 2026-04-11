@@ -28,6 +28,8 @@ class FileCleanupService {
     (title: '孤立视频文件', subdir: 'videos'),
     (title: '孤立日记媒体', subdir: 'diary_media'),
     (title: '孤立文档附件', subdir: 'documents'),
+    /// 与 [deleteFolderCompletely] 使用的目录一致；库内路径均不指向此目录，仅清理删除文件夹后的残留。
+    (title: '孤立文件夹附件', subdir: 'folders'),
   ];
 
   bool _isInitialized = false;

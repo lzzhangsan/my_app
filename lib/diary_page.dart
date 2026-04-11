@@ -177,49 +177,60 @@ class _DiaryPageState extends State<DiaryPage>
   Future<void> _loadDiarySettings() async {
     final db = getService<DatabaseService>();
     final settings = await db.getDiarySettings();
-    if (mounted) {
+    if (!mounted) return;
+
+    if (settings == null) {
       setState(() {
-        if (settings != null) {
-          final imagePath = settings['background_image_path'] as String?;
-          final videoPath = settings['background_video_path'] as String?;
-          final colorValue = settings['background_color'] as int?;
-
-          File? nextVid;
-          if (videoPath != null &&
-              videoPath.isNotEmpty &&
-              File(videoPath).existsSync()) {
-            nextVid = File(videoPath);
-          }
-          File? nextImg;
-          if (nextVid == null &&
-              imagePath != null &&
-              imagePath.isNotEmpty &&
-              File(imagePath).existsSync()) {
-            nextImg = File(imagePath);
-          }
-          _diaryBgVideo = nextVid;
-          _diaryBgImage = nextImg;
-          _diaryBgImageOrigin = BackgroundMediaOrigin.fromDbValue(
-            settings['background_image_origin'] as int?,
-          );
-          _diaryBgVideoOrigin = BackgroundMediaOrigin.fromDbValue(
-            settings['background_video_origin'] as int?,
-          );
-
-          if (colorValue != null) {
-            _diaryBgColor = Color(colorValue);
-          } else {
-            _diaryBgColor = null;
-          }
-        } else {
-          _diaryBgImage = null;
-          _diaryBgVideo = null;
-          _diaryBgImageOrigin = null;
-          _diaryBgVideoOrigin = null;
-          _diaryBgColor = null;
-        }
+        _diaryBgImage = null;
+        _diaryBgVideo = null;
+        _diaryBgImageOrigin = null;
+        _diaryBgVideoOrigin = null;
+        _diaryBgColor = null;
       });
+      return;
     }
+
+    final imagePath = settings['background_image_path'] as String?;
+    final videoPath = settings['background_video_path'] as String?;
+    final colorValue = settings['background_color'] as int?;
+
+    File? nextVid;
+    if (videoPath != null && videoPath.isNotEmpty) {
+      if (await File(videoPath).exists()) {
+        nextVid = File(videoPath);
+      } else {
+        await db.deleteDiaryBackgroundVideo();
+      }
+    }
+
+    File? nextImg;
+    if (nextVid == null && imagePath != null && imagePath.isNotEmpty) {
+      if (await File(imagePath).exists()) {
+        nextImg = File(imagePath);
+      } else {
+        await db.deleteDiaryBackgroundImage();
+      }
+    }
+
+    final imgOrig = BackgroundMediaOrigin.fromDbValue(
+      settings['background_image_origin'] as int?,
+    );
+    final vidOrig = BackgroundMediaOrigin.fromDbValue(
+      settings['background_video_origin'] as int?,
+    );
+
+    if (!mounted) return;
+    setState(() {
+      _diaryBgVideo = nextVid;
+      _diaryBgImage = nextImg;
+      _diaryBgImageOrigin = nextImg == null ? null : imgOrig;
+      _diaryBgVideoOrigin = nextVid == null ? null : vidOrig;
+      if (colorValue != null) {
+        _diaryBgColor = Color(colorValue);
+      } else {
+        _diaryBgColor = null;
+      }
+    });
   }
 
   Future<void> _pickDiaryBackgroundImage() async {

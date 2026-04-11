@@ -202,26 +202,40 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
 
         File? nextImg;
         File? nextVid;
-        if (videoPath != null &&
-            videoPath.isNotEmpty &&
-            await File(videoPath).exists()) {
-          nextVid = File(videoPath);
+        if (videoPath != null && videoPath.isNotEmpty) {
+          if (await File(videoPath).exists()) {
+            nextVid = File(videoPath);
+          }
         }
         if (nextVid == null &&
             imagePath != null &&
-            imagePath.isNotEmpty &&
-            await File(imagePath).exists()) {
-          nextImg = File(imagePath);
+            imagePath.isNotEmpty) {
+          if (await File(imagePath).exists()) {
+            nextImg = File(imagePath);
+          }
         }
+
+        final bool orphanBackground =
+            (videoPath != null &&
+                videoPath.isNotEmpty &&
+                nextVid == null) ||
+            (imagePath != null &&
+                imagePath.isNotEmpty &&
+                nextImg == null &&
+                nextVid == null);
+
+        final imgOrig = BackgroundMediaOrigin.fromDbValue(
+          settings['background_image_origin'] as int?,
+        );
+        final vidOrig = BackgroundMediaOrigin.fromDbValue(
+          settings['background_video_origin'] as int?,
+        );
+
         setState(() {
           _backgroundVideo = nextVid;
           _backgroundImage = nextImg;
-          _backgroundImageOrigin = BackgroundMediaOrigin.fromDbValue(
-            settings['background_image_origin'] as int?,
-          );
-          _backgroundVideoOrigin = BackgroundMediaOrigin.fromDbValue(
-            settings['background_video_origin'] as int?,
-          );
+          _backgroundImageOrigin = nextImg == null ? null : imgOrig;
+          _backgroundVideoOrigin = nextVid == null ? null : vidOrig;
         });
         if (colorValue != null) {
           setState(() {
@@ -233,21 +247,25 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
           _isPositionLocked = positionLocked;
         });
 
-        // 保存默认值到数据库，确保所有文档都有统一的默认设置
-        await _databaseService.insertOrUpdateDocumentSettings(
-          widget.documentName,
-          imagePath: imagePath,
-          videoPath: videoPath,
-          colorValue: colorValue,
-          textEnhanceMode: textEnhanceMode,
-          positionLocked: positionLocked,
-          backgroundImageOrigin: BackgroundMediaOrigin.fromDbValue(
-            settings['background_image_origin'] as int?,
-          ),
-          backgroundVideoOrigin: BackgroundMediaOrigin.fromDbValue(
-            settings['background_video_origin'] as int?,
-          ),
-        );
+        if (orphanBackground) {
+          await _databaseService.insertOrUpdateDocumentSettings(
+            widget.documentName,
+            imagePath: nextImg?.path,
+            videoPath: nextVid?.path,
+            colorValue: colorValue,
+            textEnhanceMode: textEnhanceMode,
+            positionLocked: positionLocked,
+            commitBackgroundMedia: true,
+            backgroundImageOrigin: nextImg == null ? null : imgOrig,
+            backgroundVideoOrigin: nextVid == null ? null : vidOrig,
+          );
+        } else {
+          await _databaseService.insertOrUpdateDocumentSettings(
+            widget.documentName,
+            textEnhanceMode: textEnhanceMode,
+            positionLocked: positionLocked,
+          );
+        }
       } else {
         // 如果没有设置记录，创建默认设置
         setState(() {

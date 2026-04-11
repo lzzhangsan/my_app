@@ -22,6 +22,8 @@ import '../utils/app_storage_paths.dart';
 import '../utils/background_physical_file.dart';
 import '../models/background_media_origin.dart';
 import '../models/video_view_params.dart';
+import '../media_playback_portable_prefs.dart';
+import '../video_sequential_resume_prefs.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:crypto/crypto.dart';
 
@@ -1753,7 +1755,16 @@ class DatabaseService {
       _stagedVideoViewParamsByMediaId.remove(id);
       _syncVideoViewStagingJsonToDiskSync();
       final db = await database;
-      return await db.delete('media_items', where: 'id = ?', whereArgs: [id]);
+      final n = await db.delete('media_items', where: 'id = ?', whereArgs: [id]);
+      if (n > 0 && id.isNotEmpty) {
+        unawaited(() async {
+          try {
+            final prefs = await SharedPreferences.getInstance();
+            await clearVideoResumePositionMs(prefs, id);
+          } catch (_) {}
+        }());
+      }
+      return n;
     } catch (e, stackTrace) {
       _handleError('删除媒体项失败', e, stackTrace);
       rethrow;
@@ -2388,6 +2399,24 @@ class DatabaseService {
         tableFileList.add('document_settings.json');
       }
 
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final playInts = collectPlaybackStateIntPrefs(prefs);
+        if (playInts.isNotEmpty) {
+          await File(
+            '$dirDataPath/portable_prefs.json',
+          ).writeAsString(
+            jsonEncode({
+              'format_version': 1,
+              'playback_state_ints': playInts,
+            }),
+            encoding: utf8,
+          );
+        }
+      } catch (e) {
+        Logger.log('[导出] 写入 portable_prefs.json 失败（已跳过）: $e');
+      }
+
       // 写入丢失音频文件列表到missing_audio_files.txt
       if (missingAudioFiles.isNotEmpty) {
         final File missingFile = File('$tempDirPath/missing_audio_files.txt');
@@ -2832,6 +2861,20 @@ class DatabaseService {
           } else {
             rethrow;
           }
+        }
+      }
+
+      final portablePrefsFile = File('$dirDataPath/portable_prefs.json');
+      if (await portablePrefsFile.exists()) {
+        try {
+          final raw =
+              jsonDecode(await portablePrefsFile.readAsString())
+                  as Map<String, dynamic>;
+          final prefs = await SharedPreferences.getInstance();
+          await mergePlaybackStateIntPrefs(prefs, raw);
+          Logger.log('[导入] 已恢复 portable_prefs.json 中的播放游标/续播位置');
+        } catch (e) {
+          Logger.log('[导入] portable_prefs.json 恢复失败（已跳过）: $e');
         }
       }
 
@@ -6082,7 +6125,11 @@ class DatabaseService {
     return await db.query('media_items');
   }
 
-  /// 获取数据库中所有有效引用的文件路径（用于清理孤立文件）
+  /// 获取数据库中所有有效引用的文件路径（用于清理孤立文件、媒体整库导入时保留非包内文件）。
+  ///
+  /// 须覆盖：媒体库与缩略图、[image_boxes]/[audio_boxes]、文档/目录/日记/封面背景、
+  /// [background_file_view_params]、日记条目内嵌媒体路径。应用仅将 `documents/`、`folders/`
+  /// 用作删除文档/文件夹后的整目录清理目标，正常引用不会指向这两处，故孤立扫描可安全清理其中的残留文件。
   Future<Set<String>> getAllValidFilePaths() async {
     final db = await database;
     final appDocDir = (await getApplicationDocumentsDirectory()).path;

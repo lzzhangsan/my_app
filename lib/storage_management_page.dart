@@ -135,6 +135,7 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
             continue;
           final known = {
             'documents',
+            'folders',
             'images',
             'audios',
             'audio',
@@ -142,6 +143,7 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
             'diary_media',
             'background_images',
             'backgrounds',
+            'background_videos',
             'diary_backgrounds',
             'backups',
             'videos',

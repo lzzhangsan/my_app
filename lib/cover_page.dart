@@ -426,35 +426,63 @@ class _CoverPageState extends State<CoverPage> with WidgetsBindingObserver {
         });
       }
 
-      setState(() {
-        _coverBgImageOrigin = BackgroundMediaOrigin.fromDbValue(
-          settings.first['background_image_origin'] as int?,
-        );
-        _coverBgVideoOrigin = BackgroundMediaOrigin.fromDbValue(
-          settings.first['background_video_origin'] as int?,
-        );
-      });
+      final imgOrig = BackgroundMediaOrigin.fromDbValue(
+        settings.first['background_image_origin'] as int?,
+      );
+      final vidOrig = BackgroundMediaOrigin.fromDbValue(
+        settings.first['background_video_origin'] as int?,
+      );
 
       final videoPath = settings.first['background_video_path'] as String?;
+      final imagePath = settings.first['background_image_path'] as String?;
+
+      File? nextVideo;
       if (videoPath != null && videoPath.isNotEmpty) {
-        if (await File(videoPath).exists()) {
-          setState(() {
-            _backgroundVideo = File(videoPath);
-            _backgroundImage = null;
-          });
+        final vf = File(videoPath);
+        if (await vf.exists()) {
+          nextVideo = vf;
           Logger.i('从设置中加载背景视频: $videoPath');
+        } else {
+          Logger.i('封面背景视频文件不存在，清除数据库记录: $videoPath');
+          await db.update(
+            'cover_settings',
+            {
+              'background_video_path': null,
+              'background_video_origin': null,
+            },
+            where: 'id = 1',
+          );
         }
-      } else {
-        final imagePath = settings.first['background_image_path'] as String?;
-        if (imagePath != null && imagePath.isNotEmpty) {
-          if (await File(imagePath).exists()) {
-            setState(() {
-              _backgroundImage = File(imagePath);
-              _backgroundVideo = null;
-            });
-            Logger.i('从设置中加载背景图片: $imagePath');
-          }
+      }
+
+      File? nextImage;
+      if (nextVideo == null &&
+          imagePath != null &&
+          imagePath.isNotEmpty) {
+        final inf = File(imagePath);
+        if (await inf.exists()) {
+          nextImage = inf;
+          Logger.i('从设置中加载背景图片: $imagePath');
+        } else {
+          Logger.i('封面背景图片文件不存在，清除数据库记录: $imagePath');
+          await db.update(
+            'cover_settings',
+            {
+              'background_image_path': null,
+              'background_image_origin': null,
+            },
+            where: 'id = 1',
+          );
         }
+      }
+
+      if (mounted) {
+        setState(() {
+          _backgroundVideo = nextVideo;
+          _backgroundImage = nextImage;
+          _coverBgImageOrigin = nextImage == null ? null : imgOrig;
+          _coverBgVideoOrigin = nextVideo == null ? null : vidOrig;
+        });
       }
     } catch (e) {
       Logger.e('加载封面设置时出错', e);
