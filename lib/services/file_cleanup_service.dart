@@ -14,6 +14,22 @@ class FileCleanupService {
   factory FileCleanupService() => _instance;
   FileCleanupService._internal();
 
+  /// 应用文档目录下按「非数据库引用」规则扫描孤立文件的子目录名（标题用于预览；须与 [cleanOrphanedFiles] 一致）。
+  static const List<({String title, String subdir})> kOrphanScanDocumentSubdirs =
+      [
+    (title: '孤立媒体文件', subdir: 'media'),
+    (title: '孤立图片文件', subdir: 'images'),
+    (title: '孤立音频文件', subdir: 'audio'),
+    (title: '孤立音频文件', subdir: 'audios'),
+    (title: '孤立背景文件', subdir: 'background_images'),
+    (title: '孤立背景文件', subdir: 'backgrounds'),
+    (title: '孤立背景视频', subdir: 'background_videos'),
+    (title: '孤立日记背景', subdir: 'diary_backgrounds'),
+    (title: '孤立视频文件', subdir: 'videos'),
+    (title: '孤立日记媒体', subdir: 'diary_media'),
+    (title: '孤立文档附件', subdir: 'documents'),
+  ];
+
   bool _isInitialized = false;
   Directory? _appDocumentsDirectory;
   Directory? _appCacheDirectory;
@@ -604,13 +620,9 @@ class FileCleanupService {
 
     try {
       final base = _appDocumentsDirectory!.path;
-      await scanAndDelete(Directory('$base/media'));
-      await scanAndDelete(Directory('$base/images'));
-      await scanAndDelete(Directory('$base/audio'));
-      await scanAndDelete(Directory('$base/audios'));
-      await scanAndDelete(Directory('$base/background_images'));
-      await scanAndDelete(Directory('$base/diary_media'));
-      await scanAndDelete(Directory('$base/documents'));
+      for (final spec in kOrphanScanDocumentSubdirs) {
+        await scanAndDelete(Directory(path.join(base, spec.subdir)));
+      }
       await cleanSupportVideoThumbnails();
 
       if (kDebugMode) {
@@ -970,21 +982,13 @@ class FileCleanupService {
         validFilePaths.map((p) => toKey(p)).where((p) => p.isNotEmpty).toSet();
     if (validSet.isNotEmpty && _appDocumentsDirectory != null) {
       final base = _appDocumentsDirectory!.path;
-      final orphanRoots = <(String title, Directory dir)>[
-        ('孤立媒体文件', Directory('$base/media')),
-        ('孤立图片文件', Directory('$base/images')),
-        ('孤立音频文件', Directory('$base/audio')),
-        ('孤立音频文件', Directory('$base/audios')),
-        ('孤立背景文件', Directory('$base/background_images')),
-        ('孤立日记媒体', Directory('$base/diary_media')),
-        ('孤立文档附件', Directory('$base/documents')),
-      ];
-      for (final root in orphanRoots) {
+      for (final spec in kOrphanScanDocumentSubdirs) {
+        final dir = Directory(path.join(base, spec.subdir));
         final result = await _scanDeletableFilesInDirectory(
-          root.$2,
+          dir,
           (file) => !validSet.contains(toKey(file.path)),
         );
-        addSection(root.$1, root.$2.path, result.count, result.bytes);
+        addSection(spec.title, dir.path, result.count, result.bytes);
       }
 
       final thumbDir = await _getExistingVideoThumbnailCacheDirectory();

@@ -4,7 +4,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
-import 'widgets/floating_ui_shadows.dart';
 import 'package:path_provider/path_provider.dart';
 import '../core/service_locator.dart';
 import '../services/logger.dart';
@@ -476,11 +475,19 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
   }
 
   Widget _buildStorageFloatingTopBar() {
-    const lightFg = false;
+    const Color fg = Color(0xDE000000);
     final pad = MediaQuery.paddingOf(context);
-    final ic = FloatingUiBarStyle.iconColor(lightFg);
-    final sh = FloatingUiBarStyle.iconShadow(lightFg);
-    final ts = FloatingUiBarStyle.titleStyle(lightFg, fontSize: 18);
+    const ts = TextStyle(
+      fontSize: 18,
+      fontWeight: FontWeight.w500,
+      color: fg,
+    );
+    final iconBtnStyle = IconButton.styleFrom(
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      minimumSize: const Size(36, 36),
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      visualDensity: VisualDensity.standard,
+    );
     return Positioned(
       top: 0,
       left: 0,
@@ -495,17 +502,19 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
             children: [
               if (Navigator.of(context).canPop())
                 IconButton(
-                  icon: Icon(Icons.arrow_back, color: ic, shadows: sh),
+                  icon: const Icon(Icons.arrow_back, color: fg),
                   onPressed: () => Navigator.of(context).pop(),
                   tooltip: '返回',
+                  style: iconBtnStyle,
                 ),
-              Expanded(
+              const Expanded(
                 child: Text('存储管理', style: ts),
               ),
               IconButton(
-                icon: Icon(Icons.refresh, color: ic, shadows: sh),
+                icon: const Icon(Icons.refresh, color: fg),
                 onPressed: _loadStorageInfo,
                 tooltip: '刷新',
+                style: iconBtnStyle,
               ),
             ],
           ),

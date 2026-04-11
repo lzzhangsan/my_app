@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'widgets/stored_view_image_layer.dart';
+import 'widgets/stored_view_video_background_layer.dart';
 import 'widgets/safe_modal_sheet_body.dart';
 import 'package:intl/intl.dart';
 import 'models/diary_entry.dart';
@@ -31,8 +32,11 @@ import 'utils/safe_path_utils.dart';
 import 'utils/app_storage_paths.dart';
 import 'services/test_data_generator_service.dart';
 import 'widgets/floating_ui_shadows.dart';
-import 'media_preview_page.dart';
-import 'models/media_item.dart';
+import 'models/media_type.dart';
+import 'utils/background_media_preview.dart';
+import 'utils/background_layer_defaults.dart';
+import 'utils/background_physical_file.dart';
+import 'models/background_media_origin.dart';
 
 // 全局函数：显示进度条弹窗，支持取消操作
 void showProgressDialog(
@@ -97,8 +101,11 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
   bool _isSearching = false;
   Timer? _searchDebounce;
 
-  // 新增：日记本背景图片和颜色
+  // 新增：日记本背景图片/视频和颜色
   File? _diaryBgImage;
+  File? _diaryBgVideo;
+  BackgroundMediaOrigin? _diaryBgImageOrigin;
+  BackgroundMediaOrigin? _diaryBgVideoOrigin;
   Color? _diaryBgColor;
   int _backgroundViewRefreshTick = 0;
 
@@ -133,7 +140,10 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
     try {
       await getService<DatabaseService>().insertOrUpdateDiarySettings(
         imagePath: _diaryBgImage?.path,
+        videoPath: _diaryBgVideo?.path,
         colorValue: _diaryBgColor?.value,
+        backgroundImageOrigin: _diaryBgImageOrigin,
+        backgroundVideoOrigin: _diaryBgVideoOrigin,
       );
     } catch (_) {}
   }
@@ -145,14 +155,31 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
       setState(() {
         if (settings != null) {
           final imagePath = settings['background_image_path'] as String?;
+          final videoPath = settings['background_video_path'] as String?;
           final colorValue = settings['background_color'] as int?;
-          if (imagePath != null &&
+
+          File? nextVid;
+          if (videoPath != null &&
+              videoPath.isNotEmpty &&
+              File(videoPath).existsSync()) {
+            nextVid = File(videoPath);
+          }
+          File? nextImg;
+          if (nextVid == null &&
+              imagePath != null &&
               imagePath.isNotEmpty &&
               File(imagePath).existsSync()) {
-            _diaryBgImage = File(imagePath);
-          } else {
-            _diaryBgImage = null;
+            nextImg = File(imagePath);
           }
+          _diaryBgVideo = nextVid;
+          _diaryBgImage = nextImg;
+          _diaryBgImageOrigin = BackgroundMediaOrigin.fromDbValue(
+            settings['background_image_origin'] as int?,
+          );
+          _diaryBgVideoOrigin = BackgroundMediaOrigin.fromDbValue(
+            settings['background_video_origin'] as int?,
+          );
+
           if (colorValue != null) {
             _diaryBgColor = Color(colorValue);
           } else {
@@ -160,6 +187,9 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
           }
         } else {
           _diaryBgImage = null;
+          _diaryBgVideo = null;
+          _diaryBgImageOrigin = null;
+          _diaryBgVideoOrigin = null;
           _diaryBgColor = null;
         }
       });
@@ -167,63 +197,110 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
   }
 
   Future<void> _pickDiaryBackgroundImage() async {
-    final imagePath = await ImagePickerService.pickImage(context);
-    if (imagePath != null) {
+    final picked = await ImagePickerService.pickImage(context);
+    if (picked != null) {
       final appDir = await getApplicationDocumentsDirectory();
       final bgDir = Directory('${appDir.path}/diary_backgrounds');
       if (!await bgDir.exists()) await bgDir.create(recursive: true);
       final fileName =
-          'diary_bg_${DateTime.now().millisecondsSinceEpoch}${path.extension(imagePath)}';
+          'diary_bg_${DateTime.now().millisecondsSinceEpoch}${path.extension(picked.path)}';
       final destPath = '${bgDir.path}/$fileName';
-      final newImage = await File(imagePath).copy(destPath);
+      final newImage = await File(picked.path).copy(destPath);
       await getService<DatabaseService>().insertOrUpdateDiarySettings(
         imagePath: destPath,
         colorValue: _diaryBgColor?.value,
+        backgroundImageOrigin: picked.origin,
       );
       setState(() {
         _diaryBgImage = newImage;
+        _diaryBgVideo = null;
+        _diaryBgImageOrigin = picked.origin;
+        _diaryBgVideoOrigin = null;
       });
     }
   }
 
+  Future<void> _pickDiaryBackgroundVideo() async {
+    final picked = await ImagePickerService.pickVideo(context);
+    if (picked == null) return;
+    final appDir = await getApplicationDocumentsDirectory();
+    final bgDir = Directory('${appDir.path}/diary_backgrounds');
+    if (!await bgDir.exists()) await bgDir.create(recursive: true);
+    final ext =
+        path.extension(picked.path).isNotEmpty ? path.extension(picked.path) : '.mp4';
+    final fileName =
+        'diary_bgv_${DateTime.now().millisecondsSinceEpoch}$ext';
+    final destPath = '${bgDir.path}/$fileName';
+    final newVideo = await File(picked.path).copy(destPath);
+    await getService<DatabaseService>().insertOrUpdateDiarySettings(
+      videoPath: destPath,
+      colorValue: _diaryBgColor?.value,
+      backgroundVideoOrigin: picked.origin,
+    );
+    setState(() {
+      _diaryBgVideo = newVideo;
+      _diaryBgImage = null;
+      _diaryBgVideoOrigin = picked.origin;
+      _diaryBgImageOrigin = null;
+    });
+  }
+
   Future<void> _removeDiaryBackgroundImage() async {
+    final appDir = (await getApplicationDocumentsDirectory()).path;
+    await deleteBackgroundPhysicalFileIfAllowed(
+      _diaryBgImage?.path,
+      _diaryBgImageOrigin,
+      appDir,
+    );
     await getService<DatabaseService>().deleteDiaryBackgroundImage();
     setState(() {
       _diaryBgImage = null;
+      _diaryBgImageOrigin = null;
+    });
+  }
+
+  Future<void> _removeDiaryBackgroundVideo() async {
+    final appDir = (await getApplicationDocumentsDirectory()).path;
+    await deleteBackgroundPhysicalFileIfAllowed(
+      _diaryBgVideo?.path,
+      _diaryBgVideoOrigin,
+      appDir,
+    );
+    await getService<DatabaseService>().deleteDiaryBackgroundVideo();
+    setState(() {
+      _diaryBgVideo = null;
+      _diaryBgVideoOrigin = null;
+    });
+  }
+
+  Future<void> _clearDiaryBackgroundToBlank() async {
+    await getService<DatabaseService>().clearDiaryBackgroundToBlank();
+    if (!mounted) return;
+    final settings = await getService<DatabaseService>().getDiarySettings();
+    final int? cv = settings?['background_color'] as int?;
+    setState(() {
+      _diaryBgImage = null;
+      _diaryBgVideo = null;
+      _diaryBgImageOrigin = null;
+      _diaryBgVideoOrigin = null;
+      _diaryBgColor = cv != null ? Color(cv) : null;
     });
   }
 
   Future<void> _openBackgroundImagePreviewEditor() async {
     final bg = _diaryBgImage;
     if (bg == null) return;
-    final mediaMap = await getService<DatabaseService>().getMediaItemByFilePath(
-      bg.path,
-    );
-    final previewItem =
-        mediaMap != null
-            ? MediaItem.fromMap(mediaMap)
-            : MediaItem.fromMap({
-              'id': 'background_preview_temp',
-              'name':
-                  bg.uri.pathSegments.isNotEmpty
-                      ? bg.uri.pathSegments.last
-                      : '????',
-              'path': bg.path,
-              'type': 0,
-              'directory': '__background_preview__',
-              'date_added': DateTime.now().toIso8601String(),
-            });
-    await Navigator.push<void>(
-      context,
-      MaterialPageRoute(
-        builder:
-            (context) => MediaPreviewPage(
-              mediaItems: [previewItem],
-              initialIndex: 0,
-              standaloneBackgroundFilePath: mediaMap == null ? bg.path : null,
-            ),
-      ),
-    );
+    await pushBackgroundMediaAdjustPage(context, bg, MediaType.image);
+    if (!mounted) return;
+    setState(() {
+      _backgroundViewRefreshTick++;
+    });
+  }
+
+  Future<void> _openBackgroundVideoPreviewEditor() async {
+    final v = _diaryBgVideo;
+    if (v == null) return;
+    await pushBackgroundMediaAdjustPage(context, v, MediaType.video);
     if (!mounted) return;
     setState(() {
       _backgroundViewRefreshTick++;
@@ -237,7 +314,7 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
     final pickedColor = await showDialog<Color>(
       context: context,
       builder: (context) {
-        Color tempColor = _diaryBgColor ?? Colors.white;
+        Color tempColor = backgroundColorPickerSeed(_diaryBgColor);
         return StatefulBuilder(
           builder: (context, setDialogState) {
             return AlertDialog(
@@ -297,7 +374,10 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
     if (pickedColor != null) {
       await getService<DatabaseService>().insertOrUpdateDiarySettings(
         imagePath: _diaryBgImage?.path,
+        videoPath: _diaryBgVideo?.path,
         colorValue: pickedColor.value,
+        backgroundImageOrigin: _diaryBgImageOrigin,
+        backgroundVideoOrigin: _diaryBgVideoOrigin,
       );
       setState(() {
         _diaryBgColor = pickedColor;
@@ -465,6 +545,15 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
               ),
               Divider(height: 1),
               ListTile(
+                leading: Icon(Icons.videocam),
+                title: Text('设置背景视频'),
+                onTap: () async {
+                  Navigator.pop(context);
+                  await _pickDiaryBackgroundVideo();
+                },
+              ),
+              Divider(height: 1),
+              ListTile(
                 leading: Icon(Icons.color_lens),
                 title: Text('设置背景颜色'),
                 onTap: () async {
@@ -489,6 +578,38 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
                   onTap: () async {
                     Navigator.pop(context);
                     await _removeDiaryBackgroundImage();
+                  },
+                ),
+              ],
+              if (_diaryBgVideo != null) ...[
+                Divider(height: 1),
+                ListTile(
+                  leading: Icon(Icons.tune),
+                  title: Text('调整背景视频'),
+                  onTap: () async {
+                    Navigator.pop(context);
+                    await _openBackgroundVideoPreviewEditor();
+                  },
+                ),
+                Divider(height: 1),
+                ListTile(
+                  leading: Icon(Icons.delete, color: Colors.red),
+                  title: Text('清除背景视频'),
+                  onTap: () async {
+                    Navigator.pop(context);
+                    await _removeDiaryBackgroundVideo();
+                  },
+                ),
+              ],
+              if (_diaryBgImage != null || _diaryBgVideo != null) ...[
+                Divider(height: 1),
+                ListTile(
+                  leading: Icon(Icons.layers_clear),
+                  title: Text('清空背景图/视频'),
+                  subtitle: Text('仅移除背景图与视频，保留背景色；未设背景色时为白底'),
+                  onTap: () async {
+                    Navigator.pop(context);
+                    await _clearDiaryBackgroundToBlank();
                   },
                 ),
               ],
@@ -710,7 +831,7 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     final lightFg = FloatingUiBarStyle.preferLightForeground(
-      hasBackgroundImage: _diaryBgImage != null,
+      hasBackgroundImage: _diaryBgImage != null || _diaryBgVideo != null,
       backgroundSolidColor: _diaryBgColor,
     );
     final contentTop = MediaQuery.paddingOf(context).top + kToolbarHeight;
@@ -719,8 +840,17 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
       value: lightFg ? SystemUiOverlayStyle.light : SystemUiOverlayStyle.dark,
       child: Stack(
         children: [
-          // 第一层：背景图片层（最底层）
-          if (_diaryBgImage != null)
+          // 第一层：背景图/视频（最底层）
+          if (_diaryBgVideo != null)
+            Positioned.fill(
+              child: StoredViewVideoBackgroundLayer(
+                key: ValueKey(
+                  'diary_bgv_${_diaryBgVideo!.path}_$_backgroundViewRefreshTick',
+                ),
+                file: _diaryBgVideo!,
+              ),
+            )
+          else if (_diaryBgImage != null)
             Positioned.fill(
               child: StoredViewImageLayer(
                 key: ValueKey(
@@ -729,8 +859,17 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
                 file: _diaryBgImage!,
               ),
             ),
-          // 第二层：背景颜色层（在背景图片之上）
-          if (_diaryBgColor != null) Container(color: _diaryBgColor),
+          // 第二层：背景颜色层（有图/视频时默认全透明）
+          Positioned.fill(
+            child: Container(
+              color: backgroundTintLayerColor(
+                stored: _diaryBgColor,
+                hasBackgroundMedia:
+                    _diaryBgImage != null || _diaryBgVideo != null,
+                fallbackWhenNoMedia: Colors.white,
+              ),
+            ),
+          ),
           // 主内容层
           Scaffold(
             backgroundColor: Colors.transparent,
@@ -1392,12 +1531,13 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
         }
       }
 
-      // 5.6. 导出日记本设置（背景图片、背景色）
+      // 5.6. 导出日记本设置（背景图片/视频、背景色）
       message.value = '正在导出日记本设置...';
       final diarySettings = await dbSvc.getDiarySettings();
       if (diarySettings != null) {
         final settingsExport = <String, dynamic>{};
         final bgImagePath = diarySettings['background_image_path'] as String?;
+        final bgVideoPath = diarySettings['background_video_path'] as String?;
         final bgColor = diarySettings['background_color'] as int?;
         if (bgColor != null) settingsExport['background_color'] = bgColor;
         if (bgImagePath != null && bgImagePath.isNotEmpty) {
@@ -1411,6 +1551,20 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
             final targetPath = path.join(bgDir.path, fileName);
             await copyFileWithStreaming(imageFile, targetPath);
             settingsExport['background_image_file'] =
+                'diary_background/$fileName';
+          }
+        }
+        if (bgVideoPath != null && bgVideoPath.isNotEmpty) {
+          final videoFile = File(bgVideoPath);
+          if (await videoFile.exists()) {
+            final fileName = path.basename(bgVideoPath);
+            final bgDir = Directory(
+              path.join(tempExportDir.path, 'diary_background'),
+            );
+            await bgDir.create(recursive: true);
+            final targetPath = path.join(bgDir.path, fileName);
+            await copyFileWithStreaming(videoFile, targetPath);
+            settingsExport['background_video_file'] =
                 'diary_background/$fileName';
           }
         }
@@ -1718,7 +1872,7 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
       });
       progress.value = 0.8;
 
-      // 7. 导入日记本设置（背景图片、背景色）
+      // 7. 导入日记本设置（背景图片/视频、背景色）
       final settingsFile = File(
         path.join(tempImportDir.path, 'diary_settings.json'),
       );
@@ -1730,6 +1884,7 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
                   as Map<String, dynamic>;
           final bgColor = settingsJson['background_color'] as int?;
           final bgImageRel = settingsJson['background_image_file'] as String?;
+          final bgVideoRel = settingsJson['background_video_file'] as String?;
           String? newBgImagePath;
           if (bgImageRel != null && bgImageRel.isNotEmpty) {
             final sourcePath = path.join(tempImportDir.path, bgImageRel);
@@ -1747,8 +1902,26 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
               Logger.i('已导入日记本背景图片: $fileName');
             }
           }
+          String? newBgVideoPath;
+          if (bgVideoRel != null && bgVideoRel.isNotEmpty) {
+            final sourcePath = path.join(tempImportDir.path, bgVideoRel);
+            final sourceFile = File(sourcePath);
+            if (await sourceFile.exists()) {
+              final appDir = await getApplicationDocumentsDirectory();
+              final bgDir = Directory(
+                path.join(appDir.path, 'diary_backgrounds'),
+              );
+              if (!await bgDir.exists()) await bgDir.create(recursive: true);
+              final fileName = path.basename(bgVideoRel);
+              final destPath = path.join(bgDir.path, fileName);
+              await copyFileWithStreaming(sourceFile, destPath);
+              newBgVideoPath = destPath;
+              Logger.i('已导入日记本背景视频: $fileName');
+            }
+          }
           await getService<DatabaseService>().insertOrUpdateDiarySettings(
             imagePath: newBgImagePath,
+            videoPath: newBgVideoPath,
             colorValue: bgColor,
           );
         } catch (e) {
@@ -2567,10 +2740,10 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
   }
 
   Future<void> _pickImage() async {
-    final path = await ImagePickerService.pickImage(context);
-    if (path != null) {
+    final picked = await ImagePickerService.pickImage(context);
+    if (picked != null) {
       setState(() {
-        _imagePaths.add(path);
+        _imagePaths.add(picked.path);
       });
       await _autoSave();
     }
@@ -2768,8 +2941,9 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
   @override
   Future<void> _pickVideo() async {
     try {
-      final path = await ImagePickerService.pickVideo(context);
-      if (path != null && path.isNotEmpty) {
+      final picked = await ImagePickerService.pickVideo(context);
+      if (picked != null && picked.path.isNotEmpty) {
+        final path = picked.path;
         setState(() {
           _videoPaths.add(path);
         });

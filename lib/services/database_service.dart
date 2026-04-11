@@ -19,6 +19,8 @@ import 'export_import_utils.dart';
 import '../models/diary_entry.dart';
 import '../utils/safe_path_utils.dart';
 import '../utils/app_storage_paths.dart';
+import '../utils/background_physical_file.dart';
+import '../models/background_media_origin.dart';
 import '../models/video_view_params.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:crypto/crypto.dart';
@@ -27,7 +29,7 @@ import 'package:crypto/crypto.dart';
 class DatabaseService {
   static const String _databaseName = 'change_app.db';
   static const int _databaseVersion =
-      17; // 17: image screen anchor x/y for stable cold-start restore
+      19; // 19: background_image_origin / background_video_origin
 
   Database? _database;
   final Completer<Database> _initCompleter = Completer<Database>();
@@ -64,6 +66,12 @@ class DatabaseService {
           final d = await getApplicationDocumentsDirectory();
           _appDocumentsDirectoryPath = d.path;
           await _mergeVideoViewStagingJsonIfNeeded();
+        } catch (_) {}
+        try {
+          await _ensureBackgroundVideoPathColumns(_database!);
+        } catch (_) {}
+        try {
+          await _ensureBackgroundMediaOriginColumns(_database!);
         } catch (_) {}
       }
       return;
@@ -110,6 +118,8 @@ class DatabaseService {
       await _ensureMediaItemsKenBurnsColumns(_database!);
       await _ensureMediaItemsVideoViewColumns(_database!);
       await _ensureBackgroundFileViewParamsTable(_database!);
+      await _ensureBackgroundVideoPathColumns(_database!);
+      await _ensureBackgroundMediaOriginColumns(_database!);
 
       _initCompleter.complete(_database!);
       _isInitialized = true;
@@ -306,6 +316,9 @@ class DatabaseService {
         CREATE TABLE document_settings(
           document_id TEXT PRIMARY KEY,
           background_image_path TEXT,
+          background_video_path TEXT,
+          background_image_origin INTEGER,
+          background_video_origin INTEGER,
           background_color INTEGER,
           text_enhance_mode INTEGER DEFAULT 0,
           position_locked INTEGER DEFAULT 1,
@@ -332,6 +345,9 @@ class DatabaseService {
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           folder_name TEXT,
           background_image_path TEXT,
+          background_video_path TEXT,
+          background_image_origin INTEGER,
+          background_video_origin INTEGER,
           background_color INTEGER,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
@@ -368,6 +384,9 @@ class DatabaseService {
         CREATE TABLE diary_settings(
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           background_image_path TEXT,
+          background_video_path TEXT,
+          background_image_origin INTEGER,
+          background_video_origin INTEGER,
           background_color INTEGER,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
@@ -448,6 +467,58 @@ class DatabaseService {
       CREATE INDEX IF NOT EXISTS idx_background_file_view_params_hash
       ON $_backgroundFileViewParamsTable(file_hash)
     ''');
+  }
+
+  /// 热重载或旧库补列：各页背景视频路径。
+  Future<void> _ensureBackgroundVideoPathColumns(Database db) async {
+    const column = 'background_video_path';
+    for (final table in [
+      'directory_settings',
+      'document_settings',
+      'diary_settings',
+      'cover_settings',
+    ]) {
+      try {
+        final rows = await db.rawQuery('PRAGMA table_info($table)');
+        if (rows.any((r) => r['name'] == column)) continue;
+      } catch (_) {
+        continue;
+      }
+      try {
+        await db.execute(
+          'ALTER TABLE $table ADD COLUMN $column TEXT',
+        );
+      } catch (_) {}
+    }
+  }
+
+  /// 背景图/视频来源（拍照可删副本，相册与媒体库不删文件）。
+  Future<void> _ensureBackgroundMediaOriginColumns(DatabaseExecutor db) async {
+    const pairs = [
+      ('background_image_origin', 'INTEGER'),
+      ('background_video_origin', 'INTEGER'),
+    ];
+    for (final table in [
+      'directory_settings',
+      'document_settings',
+      'diary_settings',
+      'cover_settings',
+    ]) {
+      for (final pair in pairs) {
+        final column = pair.$1;
+        try {
+          final rows = await db.rawQuery('PRAGMA table_info($table)');
+          if (rows.any((r) => r['name'] == column)) continue;
+        } catch (_) {
+          continue;
+        }
+        try {
+          await db.execute(
+            'ALTER TABLE $table ADD COLUMN ${pair.$1} ${pair.$2}',
+          );
+        } catch (_) {}
+      }
+    }
   }
 
   Future<String?> _computeFileHashIfExists(String pathStr) async {
@@ -567,6 +638,29 @@ class DatabaseService {
         } catch (_) {}
         if (kDebugMode) {
           Logger.log('已添加 video_view_basis_w/h 列到 media_items');
+        }
+        break;
+      case 18:
+        for (final table in [
+          'directory_settings',
+          'document_settings',
+          'diary_settings',
+          'cover_settings',
+        ]) {
+          try {
+            await db.execute(
+              'ALTER TABLE $table ADD COLUMN background_video_path TEXT',
+            );
+          } catch (_) {}
+        }
+        if (kDebugMode) {
+          Logger.log('已添加 background_video_path 列（目录/文档/日记/封面）');
+        }
+        break;
+      case 19:
+        await _ensureBackgroundMediaOriginColumns(db);
+        if (kDebugMode) {
+          Logger.log('已添加背景媒体来源列（目录/文档/日记/封面）');
         }
         break;
       case 8:
@@ -2719,6 +2813,7 @@ class DatabaseService {
       if (!fileCleanupService.isInitialized) return;
 
       final db = await database;
+      final appDir = (await getApplicationDocumentsDirectory()).path;
       final pathsToDelete = <String>[];
 
       final imageBoxes = await db.query(
@@ -2745,13 +2840,26 @@ class DatabaseService {
 
       final settings = await db.query(
         'document_settings',
-        columns: ['background_image_path'],
+        columns: [
+          'background_image_path',
+          'background_video_path',
+          'background_image_origin',
+          'background_video_origin',
+        ],
         where: 'document_id = ?',
         whereArgs: [documentId],
       );
       for (final row in settings) {
-        final path = row['background_image_path']?.toString();
-        if (path != null && path.isNotEmpty) pathsToDelete.add(path);
+        final img = row['background_image_path'] as String?;
+        final vid = row['background_video_path'] as String?;
+        final io = BackgroundMediaOrigin.fromDbValue(
+          row['background_image_origin'] as int?,
+        );
+        final vo = BackgroundMediaOrigin.fromDbValue(
+          row['background_video_origin'] as int?,
+        );
+        await deleteBackgroundPhysicalFileIfAllowed(img, io, appDir);
+        await deleteBackgroundPhysicalFileIfAllowed(vid, vo, appDir);
       }
 
       for (final filePath in pathsToDelete) {
@@ -2903,7 +3011,10 @@ class DatabaseService {
         String documentId = docs.first['id'];
         await db.update(
           'document_settings',
-          {'background_image_path': null},
+          {
+            'background_image_path': null,
+            'background_image_origin': null,
+          },
           where: 'document_id = ?',
           whereArgs: [documentId],
         );
@@ -2918,6 +3029,85 @@ class DatabaseService {
         stackTrace,
       );
       rethrow;
+    }
+  }
+
+  Future<void> deleteDocumentBackgroundVideo(String documentName) async {
+    final db = await database;
+    try {
+      final List<Map<String, dynamic>> docs = await db.query(
+        'documents',
+        columns: ['id'],
+        where: 'name = ?',
+        whereArgs: [documentName],
+      );
+
+      if (docs.isNotEmpty) {
+        final documentId = docs.first['id'] as String;
+        await db.update(
+          'document_settings',
+          {
+            'background_video_path': null,
+            'background_video_origin': null,
+          },
+          where: 'document_id = ?',
+          whereArgs: [documentId],
+        );
+        Logger.log('Background video path deleted for document: $documentName');
+      } else {
+        Logger.log('Document not found: $documentName');
+      }
+    } catch (e, stackTrace) {
+      _handleError(
+        'Failed to delete document background video for $documentName',
+        e,
+        stackTrace,
+      );
+      rethrow;
+    }
+  }
+
+  /// 清空文档背景图/视频（留白），保留已保存的 [background_color]；并按来源规则尝试删除拍照产生的本地副本。
+  Future<void> clearDocumentBackgroundToBlank(String documentName) async {
+    final appDir = (await getApplicationDocumentsDirectory()).path;
+    final db = await database;
+    final docs = await db.query(
+      'documents',
+      columns: ['id'],
+      where: 'name = ?',
+      whereArgs: [documentName],
+    );
+    if (docs.isEmpty) return;
+    final documentId = docs.first['id'] as String;
+    final rows = await db.query(
+      'document_settings',
+      where: 'document_id = ?',
+      whereArgs: [documentId],
+    );
+    if (rows.isNotEmpty) {
+      final s = rows.first;
+      final img = s['background_image_path'] as String?;
+      final vid = s['background_video_path'] as String?;
+      final io = BackgroundMediaOrigin.fromDbValue(
+        s['background_image_origin'] as int?,
+      );
+      final vo = BackgroundMediaOrigin.fromDbValue(
+        s['background_video_origin'] as int?,
+      );
+      await deleteBackgroundPhysicalFileIfAllowed(img, io, appDir);
+      await deleteBackgroundPhysicalFileIfAllowed(vid, vo, appDir);
+      await db.update(
+        'document_settings',
+        {
+          'background_image_path': null,
+          'background_video_path': null,
+          'background_image_origin': null,
+          'background_video_origin': null,
+          'updated_at': DateTime.now().millisecondsSinceEpoch,
+        },
+        where: 'document_id = ?',
+        whereArgs: [documentId],
+      );
     }
   }
 
@@ -4582,9 +4772,15 @@ class DatabaseService {
   Future<void> insertOrUpdateDirectorySettings({
     String? folderName,
     String? imagePath,
+    String? videoPath,
     int? colorValue,
     int? isFreeSortMode,
     bool? clearImagePath, // 新增参数，明确指示是否要清除背景图片
+    bool? clearVideoPath,
+    /// 为 true 时同时写入图/视频路径（可为 null），用于生命周期保存当前内存状态。
+    bool commitBackgroundPaths = false,
+    BackgroundMediaOrigin? backgroundImageOrigin,
+    BackgroundMediaOrigin? backgroundVideoOrigin,
   }) async {
     try {
       final db = await database;
@@ -4594,13 +4790,38 @@ class DatabaseService {
         'updated_at': DateTime.now().millisecondsSinceEpoch,
       };
 
-      // 只有在明确传递imagePath参数或clearImagePath为true时才更新背景图片字段
-      if (clearImagePath == true) {
-        data['background_image_path'] = null;
-      } else if (imagePath != null) {
+      if (commitBackgroundPaths) {
         data['background_image_path'] = imagePath;
+        data['background_video_path'] = videoPath;
+        data['background_image_origin'] =
+            imagePath == null
+                ? null
+                : backgroundImageOrigin?.dbValue;
+        data['background_video_origin'] =
+            videoPath == null
+                ? null
+                : backgroundVideoOrigin?.dbValue;
+      } else {
+        if (clearImagePath == true) {
+          data['background_image_path'] = null;
+          data['background_image_origin'] = null;
+        } else if (imagePath != null) {
+          data['background_image_path'] = imagePath;
+          data['background_video_path'] = null;
+          data['background_image_origin'] = backgroundImageOrigin?.dbValue;
+          data['background_video_origin'] = null;
+        }
+
+        if (clearVideoPath == true) {
+          data['background_video_path'] = null;
+          data['background_video_origin'] = null;
+        } else if (videoPath != null) {
+          data['background_video_path'] = videoPath;
+          data['background_image_path'] = null;
+          data['background_video_origin'] = backgroundVideoOrigin?.dbValue;
+          data['background_image_origin'] = null;
+        }
       }
-      // 如果imagePath为null且clearImagePath不为true，则不更新background_image_path字段
 
       if (colorValue != null) {
         data['background_color'] = colorValue;
@@ -4652,16 +4873,28 @@ class DatabaseService {
     }
   }
 
-  /// Delete directory background image
+  /// Delete directory background image（不影响背景视频）
   Future<void> deleteDirectoryBackgroundImage([String? folderName]) async {
     try {
-      // 使用新的insertOrUpdateDirectorySettings方法，明确指示清除背景图片
       await insertOrUpdateDirectorySettings(
         folderName: folderName,
         clearImagePath: true,
       );
     } catch (e, stackTrace) {
       _handleError('删除目录背景图片失败', e, stackTrace);
+      rethrow;
+    }
+  }
+
+  /// Delete directory background video（不影响背景图片）
+  Future<void> deleteDirectoryBackgroundVideo([String? folderName]) async {
+    try {
+      await insertOrUpdateDirectorySettings(
+        folderName: folderName,
+        clearVideoPath: true,
+      );
+    } catch (e, stackTrace) {
+      _handleError('删除目录背景视频失败', e, stackTrace);
       rethrow;
     }
   }
@@ -5465,14 +5698,19 @@ class DatabaseService {
   Future<void> insertOrUpdateDocumentSettings(
     String documentName, {
     String? imagePath,
+    String? videoPath,
     int? colorValue,
     bool? textEnhanceMode,
     bool? positionLocked,
+    /// 为 true 时按传入的 [imagePath]/[videoPath]（可为 null）整体写入背景媒体，用于生命周期保存。
+    bool commitBackgroundMedia = false,
+    BackgroundMediaOrigin? backgroundImageOrigin,
+    BackgroundMediaOrigin? backgroundVideoOrigin,
   }) async {
     try {
       Logger.log('🔧 [DB] 开始插入或更新文档设置，文档名: $documentName');
       Logger.log(
-        '🔧 [DB] 传入参数 - imagePath: $imagePath, colorValue: $colorValue, textEnhanceMode: $textEnhanceMode, positionLocked: $positionLocked',
+        '🔧 [DB] 传入参数 - imagePath: $imagePath, videoPath: $videoPath, colorValue: $colorValue, textEnhanceMode: $textEnhanceMode, positionLocked: $positionLocked',
       );
 
       final db = await database;
@@ -5511,8 +5749,38 @@ class DatabaseService {
 
       if (existingSettings.isNotEmpty) {
         var existing = existingSettings.first;
-        settingsData['background_image_path'] =
-            imagePath ?? existing['background_image_path'];
+        int? imgOrig = existing['background_image_origin'] as int?;
+        int? vidOrig = existing['background_video_origin'] as int?;
+        if (commitBackgroundMedia) {
+          settingsData['background_image_path'] = imagePath;
+          settingsData['background_video_path'] = videoPath;
+          imgOrig =
+              imagePath == null
+                  ? null
+                  : (backgroundImageOrigin?.dbValue ?? imgOrig);
+          vidOrig =
+              videoPath == null
+                  ? null
+                  : (backgroundVideoOrigin?.dbValue ?? vidOrig);
+        } else {
+          String? nextImg = existing['background_image_path'] as String?;
+          String? nextVid = existing['background_video_path'] as String?;
+          if (imagePath != null) {
+            nextImg = imagePath;
+            nextVid = null;
+            imgOrig = backgroundImageOrigin?.dbValue ?? imgOrig;
+            vidOrig = null;
+          } else if (videoPath != null) {
+            nextVid = videoPath;
+            nextImg = null;
+            vidOrig = backgroundVideoOrigin?.dbValue ?? vidOrig;
+            imgOrig = null;
+          }
+          settingsData['background_image_path'] = nextImg;
+          settingsData['background_video_path'] = nextVid;
+        }
+        settingsData['background_image_origin'] = imgOrig;
+        settingsData['background_video_origin'] = vidOrig;
         settingsData['background_color'] =
             colorValue ?? existing['background_color'];
         settingsData['text_enhance_mode'] =
@@ -5529,7 +5797,37 @@ class DatabaseService {
           '🔧 [DB] 更新现有设置 - text_enhance_mode: ${settingsData['text_enhance_mode']}, position_locked: ${settingsData['position_locked']}',
         );
       } else {
-        settingsData['background_image_path'] = imagePath;
+        int? imgOrig;
+        int? vidOrig;
+        if (commitBackgroundMedia) {
+          settingsData['background_image_path'] = imagePath;
+          settingsData['background_video_path'] = videoPath;
+          imgOrig =
+              imagePath == null
+                  ? null
+                  : backgroundImageOrigin?.dbValue;
+          vidOrig =
+              videoPath == null
+                  ? null
+                  : backgroundVideoOrigin?.dbValue;
+        } else if (imagePath != null) {
+          settingsData['background_image_path'] = imagePath;
+          settingsData['background_video_path'] = null;
+          imgOrig = backgroundImageOrigin?.dbValue;
+          vidOrig = null;
+        } else if (videoPath != null) {
+          settingsData['background_video_path'] = videoPath;
+          settingsData['background_image_path'] = null;
+          vidOrig = backgroundVideoOrigin?.dbValue;
+          imgOrig = null;
+        } else {
+          settingsData['background_image_path'] = null;
+          settingsData['background_video_path'] = null;
+          imgOrig = null;
+          vidOrig = null;
+        }
+        settingsData['background_image_origin'] = imgOrig;
+        settingsData['background_video_origin'] = vidOrig;
         settingsData['background_color'] = colorValue;
         settingsData['text_enhance_mode'] =
             textEnhanceMode != null ? (textEnhanceMode ? 1 : 0) : 1;
@@ -5751,11 +6049,13 @@ class DatabaseService {
 
       final docSettings = await db.query(
         'document_settings',
-        columns: ['background_image_path'],
+        columns: ['background_image_path', 'background_video_path'],
       );
       for (final row in docSettings) {
-        final path = row['background_image_path']?.toString();
-        if (path != null && path.isNotEmpty) validPaths.add(toAbsolute(path));
+        for (final key in ['background_image_path', 'background_video_path']) {
+          final path = row[key]?.toString();
+          if (path != null && path.isNotEmpty) validPaths.add(toAbsolute(path));
+        }
       }
 
       final coverImages = await db.query('cover_image', columns: ['path']);
@@ -5768,10 +6068,15 @@ class DatabaseService {
         "SELECT name FROM sqlite_master WHERE type='table' AND name='cover_settings'",
       );
       if (coverSettings.isNotEmpty) {
-        final rows = await db.query('cover_settings');
+        final rows = await db.query(
+          'cover_settings',
+          columns: ['background_image_path', 'background_video_path'],
+        );
         for (final row in rows) {
-          final path = row['background_image_path']?.toString();
-          if (path != null && path.isNotEmpty) validPaths.add(toAbsolute(path));
+          for (final key in ['background_image_path', 'background_video_path']) {
+            final path = row[key]?.toString();
+            if (path != null && path.isNotEmpty) validPaths.add(toAbsolute(path));
+          }
         }
       }
 
@@ -5779,10 +6084,15 @@ class DatabaseService {
         "SELECT name FROM sqlite_master WHERE type='table' AND name='diary_settings'",
       );
       if (diarySettings.isNotEmpty) {
-        final rows = await db.query('diary_settings');
+        final rows = await db.query(
+          'diary_settings',
+          columns: ['background_image_path', 'background_video_path'],
+        );
         for (final row in rows) {
-          final path = row['background_image_path']?.toString();
-          if (path != null && path.isNotEmpty) validPaths.add(toAbsolute(path));
+          for (final key in ['background_image_path', 'background_video_path']) {
+            final path = row[key]?.toString();
+            if (path != null && path.isNotEmpty) validPaths.add(toAbsolute(path));
+          }
         }
       }
 
@@ -5793,11 +6103,32 @@ class DatabaseService {
       if (dirSettings.isNotEmpty) {
         final rows = await db.query(
           'directory_settings',
-          columns: ['background_image_path'],
+          columns: ['background_image_path', 'background_video_path'],
         );
         for (final row in rows) {
-          final path = row['background_image_path']?.toString();
-          if (path != null && path.isNotEmpty) validPaths.add(toAbsolute(path));
+          for (final key in ['background_image_path', 'background_video_path']) {
+            final path = row[key]?.toString();
+            if (path != null && path.isNotEmpty) validPaths.add(toAbsolute(path));
+          }
+        }
+      }
+
+      // 背景图/视频取景参数表：主键与路径变体均可能指向磁盘文件，须纳入有效集以免孤立清理误删。
+      final bgViewParams = await db.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='background_file_view_params'",
+      );
+      if (bgViewParams.isNotEmpty) {
+        final rows = await db.query(
+          'background_file_view_params',
+          columns: ['path', 'normalized_path', 'slash_path'],
+        );
+        for (final row in rows) {
+          for (final key in ['path', 'normalized_path', 'slash_path']) {
+            final pathStr = row[key]?.toString();
+            if (pathStr != null && pathStr.isNotEmpty) {
+              validPaths.add(toAbsolute(pathStr));
+            }
+          }
         }
       }
 
@@ -6170,23 +6501,47 @@ class DatabaseService {
   /// 插入或更新日记本设置
   Future<void> insertOrUpdateDiarySettings({
     String? imagePath,
+    String? videoPath,
     int? colorValue,
+    BackgroundMediaOrigin? backgroundImageOrigin,
+    BackgroundMediaOrigin? backgroundVideoOrigin,
   }) async {
     try {
       final db = await database;
+      final existing = await db.query('diary_settings');
+
+      String? nextImg;
+      String? nextVid;
+      int? nextImgOrig;
+      int? nextVidOrig;
+      if (existing.isNotEmpty) {
+        nextImg = existing.first['background_image_path'] as String?;
+        nextVid = existing.first['background_video_path'] as String?;
+        nextImgOrig = existing.first['background_image_origin'] as int?;
+        nextVidOrig = existing.first['background_video_origin'] as int?;
+      }
+      if (imagePath != null) {
+        nextImg = imagePath;
+        nextVid = null;
+        nextImgOrig = backgroundImageOrigin?.dbValue ?? nextImgOrig;
+        nextVidOrig = null;
+      } else if (videoPath != null) {
+        nextVid = videoPath;
+        nextImg = null;
+        nextVidOrig = backgroundVideoOrigin?.dbValue ?? nextVidOrig;
+        nextImgOrig = null;
+      }
+
       Map<String, dynamic> data = {
         'updated_at': DateTime.now().millisecondsSinceEpoch,
+        'background_image_path': nextImg,
+        'background_video_path': nextVid,
+        'background_image_origin': nextImgOrig,
+        'background_video_origin': nextVidOrig,
       };
-      if (imagePath == null) {
-        data['background_image_path'] = null;
-      } else {
-        data['background_image_path'] = imagePath;
-      }
       if (colorValue != null) {
         data['background_color'] = colorValue;
       }
-      // 查询是否已有设置
-      final existing = await db.query('diary_settings');
       if (existing.isEmpty) {
         data['created_at'] = DateTime.now().millisecondsSinceEpoch;
         await db.insert('diary_settings', data);
@@ -6200,14 +6555,99 @@ class DatabaseService {
     }
   }
 
-  /// 删除日记本背景图片
+  /// 删除日记本背景图片（不影响背景视频）
   Future<void> deleteDiaryBackgroundImage() async {
     try {
       final db = await database;
-      await db.update('diary_settings', {'background_image_path': null});
+      await db.update('diary_settings', {
+        'background_image_path': null,
+        'background_image_origin': null,
+      });
     } catch (e, stackTrace) {
       _handleError('删除日记本背景图片失败', e, stackTrace);
       rethrow;
+    }
+  }
+
+  /// 删除日记本背景视频（不影响背景图片）
+  Future<void> deleteDiaryBackgroundVideo() async {
+    try {
+      final db = await database;
+      await db.update('diary_settings', {
+        'background_video_path': null,
+        'background_video_origin': null,
+      });
+    } catch (e, stackTrace) {
+      _handleError('删除日记本背景视频失败', e, stackTrace);
+      rethrow;
+    }
+  }
+
+  /// 清空日记背景图/视频（留白），保留已保存的 [background_color]；并按来源规则尝试删除拍照产生的本地副本。
+  Future<void> clearDiaryBackgroundToBlank() async {
+    final appDir = (await getApplicationDocumentsDirectory()).path;
+    final db = await database;
+    final existing = await db.query('diary_settings');
+    if (existing.isEmpty) return;
+    final s = existing.first;
+    final img = s['background_image_path'] as String?;
+    final vid = s['background_video_path'] as String?;
+    final io = BackgroundMediaOrigin.fromDbValue(
+      s['background_image_origin'] as int?,
+    );
+    final vo = BackgroundMediaOrigin.fromDbValue(
+      s['background_video_origin'] as int?,
+    );
+    await deleteBackgroundPhysicalFileIfAllowed(img, io, appDir);
+    await deleteBackgroundPhysicalFileIfAllowed(vid, vo, appDir);
+    await db.update(
+      'diary_settings',
+      {
+        'background_image_path': null,
+        'background_video_path': null,
+        'background_image_origin': null,
+        'background_video_origin': null,
+        'updated_at': DateTime.now().millisecondsSinceEpoch,
+      },
+    );
+  }
+
+  /// 清空目录背景图/视频（留白），保留已保存的 [background_color]；并按来源规则尝试删除拍照产生的本地副本。
+  Future<void> clearDirectoryBackgroundToBlank([String? folderName]) async {
+    final appDir = (await getApplicationDocumentsDirectory()).path;
+    final s = await getDirectorySettings(folderName);
+    if (s == null) return;
+    final img = s['background_image_path'] as String?;
+    final vid = s['background_video_path'] as String?;
+    final io = BackgroundMediaOrigin.fromDbValue(
+      s['background_image_origin'] as int?,
+    );
+    final vo = BackgroundMediaOrigin.fromDbValue(
+      s['background_video_origin'] as int?,
+    );
+    await deleteBackgroundPhysicalFileIfAllowed(img, io, appDir);
+    await deleteBackgroundPhysicalFileIfAllowed(vid, vo, appDir);
+    final db = await database;
+    final payload = <String, dynamic>{
+      'background_image_path': null,
+      'background_video_path': null,
+      'background_image_origin': null,
+      'background_video_origin': null,
+      'updated_at': DateTime.now().millisecondsSinceEpoch,
+    };
+    if (folderName != null) {
+      await db.update(
+        'directory_settings',
+        payload,
+        where: 'folder_name = ?',
+        whereArgs: [folderName],
+      );
+    } else {
+      await db.update(
+        'directory_settings',
+        payload,
+        where: 'folder_name IS NULL',
+      );
     }
   }
 

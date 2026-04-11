@@ -12,6 +12,9 @@ import 'package:share_plus/share_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:async'; // For Timer
 import 'package:path/path.dart' as path;
+import 'utils/background_physical_file.dart';
+import 'models/background_media_origin.dart';
+import 'utils/background_layer_defaults.dart';
 import 'services/image_picker_service.dart';
 import 'services/file_cleanup_service.dart';
 import 'services/test_data_generator_service.dart';
@@ -19,10 +22,11 @@ import 'package:archive/archive_io.dart';
 import 'services/export_import_utils.dart';
 import 'utils/export_import_error_utils.dart';
 import 'widgets/stored_view_image_layer.dart';
+import 'widgets/stored_view_video_background_layer.dart';
 import 'widgets/floating_ui_shadows.dart';
 import 'widgets/safe_modal_sheet_body.dart';
-import 'media_preview_page.dart';
-import 'models/media_item.dart';
+import 'models/media_type.dart';
+import 'utils/background_media_preview.dart';
 
 class DirectoryPage extends StatefulWidget {
   final Function(String) onDocumentOpen;
@@ -90,6 +94,9 @@ class _DirectoryPageState extends State<DirectoryPage>
   List<DirectoryItem> _items = [];
   String? _currentParentFolder;
   File? _backgroundImage;
+  File? _backgroundVideo;
+  BackgroundMediaOrigin? _backgroundImageOrigin;
+  BackgroundMediaOrigin? _backgroundVideoOrigin;
   Color? _backgroundColor;
   int _backgroundViewRefreshTick = 0;
   List<Map<String, dynamic>> _templateDocuments = [];
@@ -403,6 +410,7 @@ class _DirectoryPageState extends State<DirectoryPage>
       if (mounted) {
         setState(() {
           _backgroundImage = null;
+          _backgroundVideo = null;
           _backgroundColor = Colors.white; // Default for web
         });
       }
@@ -414,11 +422,12 @@ class _DirectoryPageState extends State<DirectoryPage>
           .getDirectorySettings(_currentParentFolder);
 
       if (settings != null) {
-        String? imagePath = settings['background_image_path'];
+        String? imagePath = settings['background_image_path'] as String?;
+        String? videoPath = settings['background_video_path'] as String?;
         int? colorValue = settings['background_color'];
 
         Logger.log(
-          '从数据库加载设置 - 图片路径: ${imagePath ?? "空"}, 颜色值: ${colorValue ?? "空"}',
+          '从数据库加载设置 - 图片: ${imagePath ?? "空"}, 视频: ${videoPath ?? "空"}, 颜色: ${colorValue ?? "空"}',
         );
 
         if (mounted) {
@@ -433,31 +442,49 @@ class _DirectoryPageState extends State<DirectoryPage>
           });
         }
 
-        if (imagePath != null && imagePath.isNotEmpty) {
-          File imageFile = File(imagePath);
-          bool exists = await imageFile.exists();
-          Logger.log('检查图片文件: $imagePath, 是否存在: $exists');
+        File? nextImage;
+        File? nextVideo;
 
-          if (exists && mounted) {
-            setState(() {
-              _backgroundImage = imageFile;
-              Logger.log('已加载背景图片: $imagePath');
-            });
+        if (videoPath != null && videoPath.isNotEmpty) {
+          final vf = File(videoPath);
+          if (await vf.exists()) {
+            nextVideo = vf;
+            Logger.log('已加载背景视频: $videoPath');
+          } else {
+            Logger.log('背景视频文件不存在: $videoPath');
+            await getService<DatabaseService>().deleteDirectoryBackgroundVideo(
+              _currentParentFolder,
+            );
+          }
+        }
+
+        if (nextVideo == null &&
+            imagePath != null &&
+            imagePath.isNotEmpty) {
+          final imageFile = File(imagePath);
+          final exists = await imageFile.exists();
+          Logger.log('检查图片文件: $imagePath, 是否存在: $exists');
+          if (exists) {
+            nextImage = imageFile;
+            Logger.log('已加载背景图片: $imagePath');
           } else {
             Logger.log('背景图片文件不存在: $imagePath');
-            if (mounted) {
-              setState(() {
-                _backgroundImage = null;
-              });
-            }
             await getService<DatabaseService>().deleteDirectoryBackgroundImage(
               _currentParentFolder,
             );
           }
-        } else if (mounted) {
+        }
+
+        if (mounted) {
           setState(() {
-            _backgroundImage = null;
-            Logger.log('背景图片路径为空');
+            _backgroundVideo = nextVideo;
+            _backgroundImage = nextImage;
+            _backgroundImageOrigin = BackgroundMediaOrigin.fromDbValue(
+              settings['background_image_origin'] as int?,
+            );
+            _backgroundVideoOrigin = BackgroundMediaOrigin.fromDbValue(
+              settings['background_video_origin'] as int?,
+            );
           });
         }
       } else {
@@ -465,6 +492,9 @@ class _DirectoryPageState extends State<DirectoryPage>
         if (mounted) {
           setState(() {
             _backgroundImage = null;
+            _backgroundVideo = null;
+            _backgroundImageOrigin = null;
+            _backgroundVideoOrigin = null;
             _backgroundColor = null; // 使用默认白色
           });
         }
@@ -474,6 +504,9 @@ class _DirectoryPageState extends State<DirectoryPage>
       if (mounted) {
         setState(() {
           _backgroundImage = null;
+          _backgroundVideo = null;
+          _backgroundImageOrigin = null;
+          _backgroundVideoOrigin = null;
           _backgroundColor = null; // 使用默认白色
         });
       }
@@ -486,9 +519,9 @@ class _DirectoryPageState extends State<DirectoryPage>
       return;
     }
     try {
-      final imagePath = await ImagePickerService.pickImage(context);
+      final picked = await ImagePickerService.pickImage(context);
 
-      if (imagePath != null) {
+      if (picked != null) {
         final Directory appDocDir = await getApplicationDocumentsDirectory();
         final String backgroundImagesPath =
             '${appDocDir.path}/background_images';
@@ -502,17 +535,21 @@ class _DirectoryPageState extends State<DirectoryPage>
             'background_${DateTime.now().millisecondsSinceEpoch}.jpg';
         final String permanentPath = '$backgroundImagesPath/$fileName';
 
-        final File newImage = await File(imagePath).copy(permanentPath);
+        final File newImage = await File(picked.path).copy(permanentPath);
 
         if (mounted) {
           setState(() {
             _backgroundImage = newImage;
+            _backgroundVideo = null;
+            _backgroundImageOrigin = picked.origin;
+            _backgroundVideoOrigin = null;
           });
         }
 
         await getService<DatabaseService>().insertOrUpdateDirectorySettings(
           folderName: _currentParentFolder,
           imagePath: permanentPath,
+          backgroundImageOrigin: picked.origin,
         );
 
         Logger.log('已持久化保存背景图片: $permanentPath');
@@ -535,6 +572,12 @@ class _DirectoryPageState extends State<DirectoryPage>
     final shouldDelete = await _showDeleteConfirmationDialog("背景图像", "目录的背景图像");
     if (shouldDelete) {
       try {
+        final appDir = (await getApplicationDocumentsDirectory()).path;
+        await deleteBackgroundPhysicalFileIfAllowed(
+          _backgroundImage?.path,
+          _backgroundImageOrigin,
+          appDir,
+        );
         await getService<DatabaseService>().deleteDirectoryBackgroundImage(
           _currentParentFolder,
         );
@@ -542,6 +585,7 @@ class _DirectoryPageState extends State<DirectoryPage>
         if (mounted) {
           setState(() {
             _backgroundImage = null;
+            _backgroundImageOrigin = null;
           });
         }
 
@@ -552,6 +596,96 @@ class _DirectoryPageState extends State<DirectoryPage>
           ScaffoldMessenger.of(
             context,
           ).showSnackBar(SnackBar(content: Text('移除背景图像出错。请重试。')));
+        }
+      }
+    }
+  }
+
+  Future<void> _pickBackgroundVideo() async {
+    if (kIsWeb) {
+      _showWebUnsupportedDialog();
+      return;
+    }
+    try {
+      final picked = await ImagePickerService.pickVideo(context);
+      if (picked == null) return;
+
+      final Directory appDocDir = await getApplicationDocumentsDirectory();
+      final String backgroundVideosPath =
+          '${appDocDir.path}/background_videos';
+      final Directory backgroundDir = Directory(backgroundVideosPath);
+      if (!await backgroundDir.exists()) {
+        await backgroundDir.create(recursive: true);
+      }
+
+      final ext = path.extension(picked.path).isNotEmpty
+          ? path.extension(picked.path)
+          : '.mp4';
+      final String fileName =
+          'background_${DateTime.now().millisecondsSinceEpoch}$ext';
+      final String permanentPath = '$backgroundVideosPath/$fileName';
+
+      final File newVideo = await File(picked.path).copy(permanentPath);
+
+      if (mounted) {
+        setState(() {
+          _backgroundVideo = newVideo;
+          _backgroundImage = null;
+          _backgroundVideoOrigin = picked.origin;
+          _backgroundImageOrigin = null;
+        });
+      }
+
+      await getService<DatabaseService>().insertOrUpdateDirectorySettings(
+        folderName: _currentParentFolder,
+        videoPath: permanentPath,
+        backgroundVideoOrigin: picked.origin,
+      );
+
+      Logger.log('已持久化保存背景视频: $permanentPath');
+    } catch (e) {
+      Logger.log('选择背景视频出错: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('选择背景视频出错。请重试。')));
+      }
+    }
+  }
+
+  Future<void> _removeBackgroundVideo() async {
+    if (kIsWeb) {
+      _showWebUnsupportedDialog();
+      return;
+    }
+    final shouldDelete =
+        await _showDeleteConfirmationDialog('背景视频', '目录的背景视频');
+    if (shouldDelete) {
+      try {
+        final appDir = (await getApplicationDocumentsDirectory()).path;
+        await deleteBackgroundPhysicalFileIfAllowed(
+          _backgroundVideo?.path,
+          _backgroundVideoOrigin,
+          appDir,
+        );
+        await getService<DatabaseService>().deleteDirectoryBackgroundVideo(
+          _currentParentFolder,
+        );
+
+        if (mounted) {
+          setState(() {
+            _backgroundVideo = null;
+            _backgroundVideoOrigin = null;
+          });
+        }
+
+        Logger.log('背景视频已删除');
+      } catch (e) {
+        Logger.log('移除背景视频出错: $e');
+        if (mounted) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('移除背景视频出错。请重试。')));
         }
       }
     }
@@ -595,7 +729,7 @@ class _DirectoryPageState extends State<DirectoryPage>
     Color? pickedColor = await showDialog<Color>(
       context: context,
       builder: (context) {
-        Color tempColor = _backgroundColor ?? Colors.white;
+        Color tempColor = backgroundColorPickerSeed(_backgroundColor);
         return StatefulBuilder(
           builder: (context, setDialogState) {
             return AlertDialog(
@@ -666,34 +800,17 @@ class _DirectoryPageState extends State<DirectoryPage>
   Future<void> _openBackgroundImagePreviewEditor() async {
     final bg = _backgroundImage;
     if (bg == null) return;
-    final mediaMap = await getService<DatabaseService>().getMediaItemByFilePath(
-      bg.path,
-    );
-    final previewItem =
-        mediaMap != null
-            ? MediaItem.fromMap(mediaMap)
-            : MediaItem.fromMap({
-              'id': 'background_preview_temp',
-              'name':
-                  bg.uri.pathSegments.isNotEmpty
-                      ? bg.uri.pathSegments.last
-                      : '????',
-              'path': bg.path,
-              'type': 0,
-              'directory': '__background_preview__',
-              'date_added': DateTime.now().toIso8601String(),
-            });
-    await Navigator.push<void>(
-      context,
-      MaterialPageRoute(
-        builder:
-            (context) => MediaPreviewPage(
-              mediaItems: [previewItem],
-              initialIndex: 0,
-              standaloneBackgroundFilePath: mediaMap == null ? bg.path : null,
-            ),
-      ),
-    );
+    await pushBackgroundMediaAdjustPage(context, bg, MediaType.image);
+    if (!mounted) return;
+    setState(() {
+      _backgroundViewRefreshTick++;
+    });
+  }
+
+  Future<void> _openBackgroundVideoPreviewEditor() async {
+    final v = _backgroundVideo;
+    if (v == null) return;
+    await pushBackgroundMediaAdjustPage(context, v, MediaType.video);
     if (!mounted) return;
     setState(() {
       _backgroundViewRefreshTick++;
@@ -1940,6 +2057,38 @@ class _DirectoryPageState extends State<DirectoryPage>
     );
   }
 
+  Future<void> _clearDirectoryBackgroundToBlank() async {
+    if (kIsWeb) {
+      _showWebUnsupportedDialog();
+      return;
+    }
+    try {
+      await getService<DatabaseService>().clearDirectoryBackgroundToBlank(
+        _currentParentFolder,
+      );
+      if (mounted) {
+        final settings = await getService<DatabaseService>().getDirectorySettings(
+          _currentParentFolder,
+        );
+        final int? cv = settings?['background_color'] as int?;
+        setState(() {
+          _backgroundImage = null;
+          _backgroundVideo = null;
+          _backgroundImageOrigin = null;
+          _backgroundVideoOrigin = null;
+          _backgroundColor = cv != null ? Color(cv) : null;
+        });
+      }
+    } catch (e) {
+      Logger.log('清空目录背景出错: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('清空背景失败，请重试。')));
+      }
+    }
+  }
+
   void _showDirectorySettings() {
     showModalBottomSheet(
       context: context,
@@ -1967,6 +2116,14 @@ class _DirectoryPageState extends State<DirectoryPage>
                       },
                     ),
                     ListTile(
+                      leading: Icon(Icons.videocam),
+                      title: Text('设置背景视频'),
+                      onTap: () {
+                        Navigator.pop(context);
+                        _pickBackgroundVideo();
+                      },
+                    ),
+                    ListTile(
                       leading: Icon(Icons.color_lens),
                       title: Text('设置背景颜色'),
                       onTap: () {
@@ -1983,6 +2140,15 @@ class _DirectoryPageState extends State<DirectoryPage>
                           _openBackgroundImagePreviewEditor();
                         },
                       ),
+                    if (_backgroundVideo != null)
+                      ListTile(
+                        leading: Icon(Icons.tune),
+                        title: Text('调整背景视频'),
+                        onTap: () {
+                          Navigator.pop(context);
+                          _openBackgroundVideoPreviewEditor();
+                        },
+                      ),
                     if (_backgroundImage != null)
                       ListTile(
                         leading: Icon(Icons.delete),
@@ -1990,6 +2156,25 @@ class _DirectoryPageState extends State<DirectoryPage>
                         onTap: () {
                           Navigator.pop(context);
                           _removeBackgroundImage();
+                        },
+                      ),
+                    if (_backgroundVideo != null)
+                      ListTile(
+                        leading: Icon(Icons.delete),
+                        title: Text('删除背景视频'),
+                        onTap: () {
+                          Navigator.pop(context);
+                          _removeBackgroundVideo();
+                        },
+                      ),
+                    if (_backgroundImage != null || _backgroundVideo != null)
+                      ListTile(
+                        leading: Icon(Icons.layers_clear),
+                        title: Text('清空背景图/视频'),
+                        subtitle: Text('仅移除背景图与视频，保留背景色；未设背景色时为白底'),
+                        onTap: () async {
+                          Navigator.pop(context);
+                          await _clearDirectoryBackgroundToBlank();
                         },
                       ),
                     Divider(),
@@ -2299,10 +2484,17 @@ class _DirectoryPageState extends State<DirectoryPage>
       await getService<DatabaseService>().insertOrUpdateDirectorySettings(
         folderName: _currentParentFolder,
         imagePath: _backgroundImage?.path,
+        videoPath: _backgroundVideo?.path,
         colorValue: _backgroundColor?.value,
+        commitBackgroundPaths: true,
+        backgroundImageOrigin: _backgroundImageOrigin,
+        backgroundVideoOrigin: _backgroundVideoOrigin,
       );
       if (_backgroundImage != null) {
         Logger.log('保存当前背景图片: ${_backgroundImage!.path}');
+      }
+      if (_backgroundVideo != null) {
+        Logger.log('保存当前背景视频: ${_backgroundVideo!.path}');
       }
       if (_backgroundColor != null) {
         Logger.log('保存当前背景颜色: ${_backgroundColor!.value}');
@@ -2312,30 +2504,44 @@ class _DirectoryPageState extends State<DirectoryPage>
     }
   }
 
-  Future<void> _checkAndRestoreBackgroundImage() async {
+  Future<void> _checkAndRestoreBackgroundMedia() async {
     if (kIsWeb) {
       Logger.log(
-        "Web environment: Skipping background image check/restore from database.",
+        "Web environment: Skipping background media check/restore from database.",
       );
       return;
     }
     try {
       Map<String, dynamic>? settings = await getService<DatabaseService>()
           .getDirectorySettings(_currentParentFolder);
-      if (settings != null) {
-        String? imagePath = settings['background_image_path'];
-        if (imagePath != null && imagePath.isNotEmpty) {
-          File imageFile = File(imagePath);
-          if (await imageFile.exists() && mounted) {
-            setState(() {
-              _backgroundImage = imageFile;
-              Logger.log('恢复背景图片: $imagePath');
-            });
-          }
+      if (settings == null) return;
+
+      final String? videoPath = settings['background_video_path'] as String?;
+      if (videoPath != null && videoPath.isNotEmpty) {
+        final vf = File(videoPath);
+        if (await vf.exists() && mounted) {
+          setState(() {
+            _backgroundVideo = vf;
+            _backgroundImage = null;
+            Logger.log('恢复背景视频: $videoPath');
+          });
+          return;
+        }
+      }
+
+      final String? imagePath = settings['background_image_path'] as String?;
+      if (imagePath != null && imagePath.isNotEmpty) {
+        final imageFile = File(imagePath);
+        if (await imageFile.exists() && mounted) {
+          setState(() {
+            _backgroundImage = imageFile;
+            _backgroundVideo = null;
+            Logger.log('恢复背景图片: $imagePath');
+          });
         }
       }
     } catch (e) {
-      Logger.log('恢复背景图片时出错: $e');
+      Logger.log('恢复背景媒体时出错: $e');
     }
   }
 
@@ -2710,8 +2916,9 @@ class _DirectoryPageState extends State<DirectoryPage>
     }
   }
 
-  /// 无边透明顶栏（与文档/媒体预览一致）
-  Widget _buildDirectoryFloatingTopBar(bool lightFg) {
+  /// 无边透明顶栏：目录各层统一白字+阴影，与背景图/浅色底都协调。
+  Widget _buildDirectoryFloatingTopBar() {
+    const lightFg = true;
     final pad = MediaQuery.paddingOf(context);
     final ic = FloatingUiBarStyle.iconColor(lightFg);
     final sh = FloatingUiBarStyle.iconShadow(lightFg);
@@ -2790,26 +2997,48 @@ class _DirectoryPageState extends State<DirectoryPage>
   Widget build(BuildContext context) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       Future.delayed(Duration.zero, () {
-        if (_backgroundImage == null && mounted) {
-          _checkAndRestoreBackgroundImage();
+        if (_backgroundImage == null &&
+            _backgroundVideo == null &&
+            mounted) {
+          _checkAndRestoreBackgroundMedia();
         }
       });
     });
 
-    final lightFg = FloatingUiBarStyle.preferLightForeground(
-      hasBackgroundImage: _backgroundImage != null,
+    // 状态栏/系统 UI：仍按实际背景亮度切换；顶栏统一白字+阴影（见 _buildDirectoryFloatingTopBar）。
+    final lightFgForSystemUi = FloatingUiBarStyle.preferLightForeground(
+      hasBackgroundImage:
+          _backgroundImage != null || _backgroundVideo != null,
       backgroundSolidColor: _backgroundColor,
     );
-    final contentTop = MediaQuery.paddingOf(context).top + kToolbarHeight;
+    final mq = MediaQuery.of(context);
+    final contentTop = mq.padding.top + kToolbarHeight;
+    final navBottom = mq.padding.bottom;
+    const gapBelowLastRow = 28.0;
+    final multiSelectBarExtra =
+        (_isMultiSelectMode && _selectedItems.isNotEmpty) ? 56.0 : 0.0;
+    final listBottomPadding = navBottom + gapBelowLastRow + multiSelectBarExtra;
 
     return AnnotatedRegion<SystemUiOverlayStyle>(
-      value: lightFg ? SystemUiOverlayStyle.light : SystemUiOverlayStyle.dark,
+      value:
+          lightFgForSystemUi
+              ? SystemUiOverlayStyle.light
+              : SystemUiOverlayStyle.dark,
       child: Scaffold(
         backgroundColor: Colors.transparent,
         body: Stack(
           children: [
-            // 第一层：背景图片层（最底层），复用媒体页视窗参数
-            if (_backgroundImage != null)
+            // 第一层：背景图/视频（最底层），复用媒体页视窗参数
+            if (_backgroundVideo != null)
+              Positioned.fill(
+                child: StoredViewVideoBackgroundLayer(
+                  key: ValueKey(
+                    'dir_bgv_${_backgroundVideo!.path}_$_backgroundViewRefreshTick',
+                  ),
+                  file: _backgroundVideo!,
+                ),
+              )
+            else if (_backgroundImage != null)
               Positioned.fill(
                 child: StoredViewImageLayer(
                   key: ValueKey(
@@ -2819,8 +3048,15 @@ class _DirectoryPageState extends State<DirectoryPage>
                 ),
               ),
 
-            // 第二层：背景颜色层（在背景图片之上）
-            Container(color: _backgroundColor ?? Colors.white),
+            // 第二层：背景颜色层（有图/视频时默认全透明）
+            Container(
+              color: backgroundTintLayerColor(
+                stored: _backgroundColor,
+                hasBackgroundMedia:
+                    _backgroundImage != null || _backgroundVideo != null,
+                fallbackWhenNoMedia: Colors.white,
+              ),
+            ),
 
             // 第三层：内容层
             Positioned.fill(
@@ -2849,7 +3085,7 @@ class _DirectoryPageState extends State<DirectoryPage>
                             0,
                             contentTop + 4.0,
                             0,
-                            4.0,
+                            listBottomPadding,
                           ),
                           itemCount: _items.length,
                           buildDefaultDragHandles: false,
@@ -3174,7 +3410,7 @@ class _DirectoryPageState extends State<DirectoryPage>
                   ),
                 ),
               ),
-            _buildDirectoryFloatingTopBar(lightFg),
+            _buildDirectoryFloatingTopBar(),
           ],
         ),
       ),

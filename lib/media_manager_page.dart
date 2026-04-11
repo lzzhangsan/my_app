@@ -6688,20 +6688,16 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     );
   }
 
-  /// 无边透明顶栏：清爽深灰/黑字与图标，无阴影；窄屏右侧可横滑避免溢出
+  /// 无边透明顶栏：媒体页主界面用纯黑字/图标、无阴影（浅色 Scaffold 底上可读）
   Widget _buildMediaFloatingTopBar() {
-    const Color fg = Colors.white;
-    const iconShadows = [
-      Shadow(color: Colors.black54, blurRadius: 6, offset: Offset(0, 2)),
-    ];
+    const Color fg = Color(0xDE000000);
     final pad = MediaQuery.paddingOf(context);
     const ts = TextStyle(
       fontSize: 20,
       fontWeight: FontWeight.w500,
       color: fg,
-      shadows: iconShadows,
     );
-    const countStyle = TextStyle(fontSize: 11, color: fg, shadows: iconShadows);
+    const countStyle = TextStyle(fontSize: 11, color: fg);
 
     final bool showRootTitle =
         !Navigator.of(context).canPop() && _currentDirectory == 'root';
@@ -6717,14 +6713,14 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     Widget leadingSlot;
     if (Navigator.of(context).canPop()) {
       leadingSlot = IconButton(
-        icon: const Icon(Icons.arrow_back, color: fg, shadows: iconShadows),
+        icon: const Icon(Icons.arrow_back, color: fg),
         onPressed: () => Navigator.of(context).pop(),
         tooltip: '返回',
         style: iconBtnStyle,
       );
     } else if (_currentDirectory != 'root') {
       leadingSlot = IconButton(
-        icon: const Icon(Icons.arrow_upward, color: fg, shadows: iconShadows),
+        icon: const Icon(Icons.arrow_upward, color: fg),
         onPressed: _navigateUp,
         tooltip: '返回上级',
         style: iconBtnStyle,
@@ -6738,7 +6734,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(Icons.image, size: 18, color: fg, shadows: iconShadows),
+          const Icon(Icons.image, size: 18, color: fg),
           const SizedBox(width: 2),
           Text(
             '$_imageCount',
@@ -6748,7 +6744,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
             ),
           ),
           const SizedBox(width: 8),
-          const Icon(Icons.videocam, size: 18, color: fg, shadows: iconShadows),
+          const Icon(Icons.videocam, size: 18, color: fg),
           const SizedBox(width: 2),
           Text(
             '$_videoCount',
@@ -6782,7 +6778,6 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                     Icons.delete_forever,
                     size: 24,
                     color: Colors.redAccent,
-                    shadows: iconShadows,
                   ),
                   onPressed: _clearRecycleBin,
                   tooltip: '清空回收站',
@@ -6809,7 +6804,6 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                         _mediaVisible ? Icons.visibility : Icons.visibility_off,
                         size: 18,
                         color: fg,
-                        shadows: iconShadows,
                       ),
                       onPressed: _toggleMediaVisibility,
                       tooltip: '切换媒体可见性',
@@ -6820,7 +6814,6 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                         Icons.storage,
                         size: 18,
                         color: fg,
-                        shadows: iconShadows,
                       ),
                       onPressed: _showStorageManagement,
                       tooltip: '存储管理',
@@ -6831,7 +6824,6 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                         Icons.settings,
                         size: 18,
                         color: fg,
-                        shadows: iconShadows,
                       ),
                       onPressed: _showSettingsMenu,
                       tooltip: '设置',
@@ -6842,7 +6834,6 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                         Icons.refresh,
                         size: 18,
                         color: fg,
-                        shadows: iconShadows,
                       ),
                       onPressed: () => unawaited(_refreshMediaAndThumbnails()),
                       tooltip: '刷新',
@@ -6853,7 +6844,6 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                         Icons.find_replace,
                         size: 18,
                         color: fg,
-                        shadows: iconShadows,
                       ),
                       onPressed: _deduplicateCurrentFolder,
                       tooltip: '当前目录查重',

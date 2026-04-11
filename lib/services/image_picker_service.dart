@@ -4,9 +4,18 @@ import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import '../widgets/media_library_image_picker.dart';
+import '../widgets/media_library_video_picker.dart';
+import '../models/background_media_origin.dart';
+
+/// 带来源信息的选图/选视频结果（用于背景等媒体策略）。
+class PickedMedia {
+  const PickedMedia({required this.path, required this.origin});
+  final String path;
+  final BackgroundMediaOrigin origin;
+}
 
 class ImagePickerService {
-  static Future<String?> pickImage(BuildContext context) async {
+  static Future<PickedMedia?> pickImage(BuildContext context) async {
     final source = await showDialog<dynamic>(
       context: context,
       builder: (context) {
@@ -48,7 +57,6 @@ class ImagePickerService {
       return null;
     }
 
-    // 如果选择的是媒体库
     if (source == 'media_library') {
       final selectedImagePath = await showDialog<String>(
         context: context,
@@ -58,7 +66,13 @@ class ImagePickerService {
           },
         ),
       );
-      return selectedImagePath;
+      if (selectedImagePath == null || selectedImagePath.isEmpty) {
+        return null;
+      }
+      return PickedMedia(
+        path: selectedImagePath,
+        origin: BackgroundMediaOrigin.mediaLibrary,
+      );
     }
 
     try {
@@ -72,18 +86,22 @@ class ImagePickerService {
         return null;
       }
 
-      // 获取应用文档目录
       final appDir = await getApplicationDocumentsDirectory();
+      final subDir =
+          source == ImageSource.camera ? 'camera' : 'gallery';
       final fileName = '${DateTime.now().millisecondsSinceEpoch}.jpg';
-      final savedImage = File('${appDir.path}/images/$fileName');
+      final savedImage = File('${appDir.path}/images/$subDir/$fileName');
 
-      // 确保目录存在
       await savedImage.parent.create(recursive: true);
-      
-      // 复制图片到应用目录
       await File(pickedFile.path).copy(savedImage.path);
-      
-      return savedImage.path;
+
+      return PickedMedia(
+        path: savedImage.path,
+        origin:
+            source == ImageSource.camera
+                ? BackgroundMediaOrigin.camera
+                : BackgroundMediaOrigin.gallery,
+      );
     } catch (e) {
       Logger.log('选择图片时出错: $e');
       if (context.mounted) {
@@ -95,7 +113,7 @@ class ImagePickerService {
     }
   }
 
-  static Future<String?> pickVideo(BuildContext context) async {
+  static Future<PickedMedia?> pickVideo(BuildContext context) async {
     final source = await showDialog<dynamic>(
       context: context,
       builder: (context) {
@@ -117,6 +135,11 @@ class ImagePickerService {
                 title: Text('相册'),
                 onTap: () => Navigator.of(context).pop(ImageSource.gallery),
               ),
+              ListTile(
+                leading: Icon(Icons.folder, color: Colors.orange),
+                title: Text('媒体库'),
+                onTap: () => Navigator.of(context).pop('media_library'),
+              ),
               SizedBox(height: 8),
               TextButton(
                 onPressed: () => Navigator.of(context).pop(null),
@@ -128,16 +151,44 @@ class ImagePickerService {
       },
     );
     if (source == null) return null;
+
+    if (source == 'media_library') {
+      final selectedPath = await showDialog<String>(
+        context: context,
+        builder:
+            (context) => MediaLibraryVideoPicker(
+              onVideoSelected: (String p) {
+                Navigator.of(context).pop(p);
+              },
+            ),
+      );
+      if (selectedPath == null || selectedPath.isEmpty) return null;
+      return PickedMedia(
+        path: selectedPath,
+        origin: BackgroundMediaOrigin.mediaLibrary,
+      );
+    }
+
     try {
       final picker = ImagePicker();
-      final XFile? pickedFile = await picker.pickVideo(source: source as ImageSource);
+      final XFile? pickedFile = await picker.pickVideo(
+        source: source as ImageSource,
+      );
       if (pickedFile == null) return null;
       final appDir = await getApplicationDocumentsDirectory();
+      final subDir =
+          source == ImageSource.camera ? 'camera' : 'gallery';
       final fileName = '${DateTime.now().millisecondsSinceEpoch}.mp4';
-      final savedVideo = File('${appDir.path}/videos/$fileName');
+      final savedVideo = File('${appDir.path}/videos/$subDir/$fileName');
       await savedVideo.parent.create(recursive: true);
       await File(pickedFile.path).copy(savedVideo.path);
-      return savedVideo.path;
+      return PickedMedia(
+        path: savedVideo.path,
+        origin:
+            source == ImageSource.camera
+                ? BackgroundMediaOrigin.camera
+                : BackgroundMediaOrigin.gallery,
+      );
     } catch (e) {
       Logger.log('选择视频时出错: $e');
       if (context.mounted) {

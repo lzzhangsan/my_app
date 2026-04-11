@@ -26,9 +26,13 @@ import 'services/image_picker_service.dart';
 import 'models/media_type.dart'; // 导入MediaType枚举
 import 'performance_monitor_page.dart';
 import 'widgets/stored_view_image_layer.dart';
+import 'widgets/stored_view_video_background_layer.dart';
 import 'widgets/floating_ui_shadows.dart';
 import 'widgets/safe_modal_sheet_body.dart';
-import 'models/media_item.dart';
+import 'utils/background_media_preview.dart';
+import 'utils/background_layer_defaults.dart';
+import 'utils/background_physical_file.dart';
+import 'models/background_media_origin.dart';
 
 class DocumentEditorPage extends StatefulWidget {
   final String documentName;
@@ -62,6 +66,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
   final GlobalKey<MediaPlayerContainerState> _mediaPlayerKey =
       GlobalKey<MediaPlayerContainerState>();
   File? _backgroundImage;
+  File? _backgroundVideo;
+  BackgroundMediaOrigin? _backgroundImageOrigin;
+  BackgroundMediaOrigin? _backgroundVideoOrigin;
   Color? _backgroundColor;
   bool _isLoading = true;
   bool _isTemplate = false;
@@ -120,9 +127,13 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
       await _databaseService.insertOrUpdateDocumentSettings(
         widget.documentName,
         imagePath: _backgroundImage?.path,
+        videoPath: _backgroundVideo?.path,
         colorValue: _backgroundColor?.value,
         textEnhanceMode: _textEnhanceMode,
         positionLocked: _isPositionLocked,
+        commitBackgroundMedia: true,
+        backgroundImageOrigin: _backgroundImageOrigin,
+        backgroundVideoOrigin: _backgroundVideoOrigin,
       );
       if (_contentChanged && !_isSaving) {
         await _saveContent();
@@ -179,22 +190,36 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
       Map<String, dynamic>? settings = await _databaseService
           .getDocumentSettings(widget.documentName);
       if (settings != null) {
-        String? imagePath = settings['background_image_path'];
+        String? imagePath = settings['background_image_path'] as String?;
+        String? videoPath = settings['background_video_path'] as String?;
         int? colorValue = settings['background_color'];
         // 强制设置为true，确保所有文档都默认启用这两个功能
         bool textEnhanceMode = true;
         bool positionLocked = true;
-        if (imagePath != null &&
+
+        File? nextImg;
+        File? nextVid;
+        if (videoPath != null &&
+            videoPath.isNotEmpty &&
+            await File(videoPath).exists()) {
+          nextVid = File(videoPath);
+        }
+        if (nextVid == null &&
+            imagePath != null &&
             imagePath.isNotEmpty &&
             await File(imagePath).exists()) {
-          setState(() {
-            _backgroundImage = File(imagePath);
-          });
-        } else {
-          setState(() {
-            _backgroundImage = null;
-          });
+          nextImg = File(imagePath);
         }
+        setState(() {
+          _backgroundVideo = nextVid;
+          _backgroundImage = nextImg;
+          _backgroundImageOrigin = BackgroundMediaOrigin.fromDbValue(
+            settings['background_image_origin'] as int?,
+          );
+          _backgroundVideoOrigin = BackgroundMediaOrigin.fromDbValue(
+            settings['background_video_origin'] as int?,
+          );
+        });
         if (colorValue != null) {
           setState(() {
             _backgroundColor = Color(colorValue);
@@ -209,15 +234,24 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
         await _databaseService.insertOrUpdateDocumentSettings(
           widget.documentName,
           imagePath: imagePath,
+          videoPath: videoPath,
           colorValue: colorValue,
           textEnhanceMode: textEnhanceMode,
           positionLocked: positionLocked,
+          backgroundImageOrigin: BackgroundMediaOrigin.fromDbValue(
+            settings['background_image_origin'] as int?,
+          ),
+          backgroundVideoOrigin: BackgroundMediaOrigin.fromDbValue(
+            settings['background_video_origin'] as int?,
+          ),
         );
       } else {
         // 如果没有设置记录，创建默认设置
         setState(() {
           _textEnhanceMode = true;
           _isPositionLocked = true;
+          _backgroundImageOrigin = null;
+          _backgroundVideoOrigin = null;
         });
 
         // 保存默认值到数据库
@@ -238,56 +272,58 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
 
   Future<void> _pickBackgroundImage() async {
     try {
-      final imagePath = await ImagePickerService.pickImage(context);
-      if (imagePath != null) {
-        // 获取应用私有目录
-        final appDir = await getApplicationDocumentsDirectory();
-        final backgroundDir = Directory('${appDir.path}/backgrounds');
-        if (!await backgroundDir.exists()) {
-          await backgroundDir.create(recursive: true);
-        }
-
-        String finalImagePath;
-
-        // 检查是否是媒体库中的图片（已经在应用目录中）
-        if (imagePath.contains(appDir.path)) {
-          // 媒体库图片，直接使用原路径
-          finalImagePath = imagePath;
-        } else {
-          // 相机或相册图片，需要复制到backgrounds目录
-          final uuid = const Uuid().v4();
-          final extension = path.extension(imagePath);
-          final fileName = '$uuid$extension';
-          final destinationPath = '${backgroundDir.path}/$fileName';
-
-          // 复制文件到应用私有目录
-          await File(imagePath).copy(destinationPath);
-          finalImagePath = destinationPath;
-        }
-
-        // 删除旧的背景图片文件
-        if (_backgroundImage != null &&
-            _backgroundImage!.path != finalImagePath) {
-          try {
-            await _backgroundImage!.delete();
-          } catch (e) {
-            Logger.log('删除旧背景图片时出错: $e');
-          }
-        }
-
-        // 直接设置背景图片并保存到数据库
-        setState(() {
-          _backgroundImage = File(finalImagePath);
-          _contentChanged = true;
-        });
-
-        await _databaseService.insertOrUpdateDocumentSettings(
-          widget.documentName,
-          imagePath: finalImagePath,
-          colorValue: _backgroundColor?.value,
-        );
-        _saveStateToHistory();
+      final picked = await ImagePickerService.pickImage(context);
+      if (picked == null) return;
+      final appDir = await getApplicationDocumentsDirectory();
+      final appDirPath = appDir.path;
+      final backgroundDir = Directory('$appDirPath/backgrounds');
+      if (!await backgroundDir.exists()) {
+        await backgroundDir.create(recursive: true);
       }
+
+      String finalImagePath;
+      if (picked.path.contains(appDirPath)) {
+        finalImagePath = picked.path;
+      } else {
+        final uuid = const Uuid().v4();
+        final extension = path.extension(picked.path);
+        final fileName = '$uuid$extension';
+        final destinationPath = '${backgroundDir.path}/$fileName';
+        await File(picked.path).copy(destinationPath);
+        finalImagePath = destinationPath;
+      }
+
+      if (_backgroundImage != null &&
+          _backgroundImage!.path != finalImagePath) {
+        await deleteBackgroundPhysicalFileIfAllowed(
+          _backgroundImage!.path,
+          _backgroundImageOrigin,
+          appDirPath,
+        );
+      }
+      if (_backgroundVideo != null) {
+        await deleteBackgroundPhysicalFileIfAllowed(
+          _backgroundVideo!.path,
+          _backgroundVideoOrigin,
+          appDirPath,
+        );
+      }
+
+      setState(() {
+        _backgroundImage = File(finalImagePath);
+        _backgroundVideo = null;
+        _backgroundImageOrigin = picked.origin;
+        _backgroundVideoOrigin = null;
+        _contentChanged = true;
+      });
+
+      await _databaseService.insertOrUpdateDocumentSettings(
+        widget.documentName,
+        imagePath: finalImagePath,
+        colorValue: _backgroundColor?.value,
+        backgroundImageOrigin: picked.origin,
+      );
+      _saveStateToHistory();
     } catch (e) {
       Logger.log('选择背景图片时出错: $e');
       ScaffoldMessenger.of(
@@ -297,21 +333,19 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
   }
 
   Future<void> _removeBackgroundImage() async {
-    // 删除背景图片文件
-    if (_backgroundImage != null) {
-      try {
-        await _backgroundImage!.delete();
-      } catch (e) {
-        Logger.log('删除背景图片文件时出错: $e');
-      }
-    }
+    final appDir = (await getApplicationDocumentsDirectory()).path;
+    await deleteBackgroundPhysicalFileIfAllowed(
+      _backgroundImage?.path,
+      _backgroundImageOrigin,
+      appDir,
+    );
 
     setState(() {
       _backgroundImage = null;
+      _backgroundImageOrigin = null;
       _contentChanged = true;
     });
     try {
-      // Ensure the method name and signature match the DatabaseService definition
       await _databaseService.deleteDocumentBackgroundImage(widget.documentName);
 
       await _databaseService.insertOrUpdateDocumentSettings(
@@ -328,6 +362,117 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
     }
   }
 
+  Future<void> _pickBackgroundVideo() async {
+    try {
+      final picked = await ImagePickerService.pickVideo(context);
+      if (picked == null) return;
+
+      final appDir = await getApplicationDocumentsDirectory();
+      final appDirPath = appDir.path;
+      final backgroundDir = Directory('$appDirPath/background_videos');
+      if (!await backgroundDir.exists()) {
+        await backgroundDir.create(recursive: true);
+      }
+
+      String finalVideoPath;
+      if (picked.path.contains(appDirPath)) {
+        finalVideoPath = picked.path;
+      } else {
+        final uuid = const Uuid().v4();
+        final extension =
+            path.extension(picked.path).isNotEmpty ? path.extension(picked.path) : '.mp4';
+        final fileName = '$uuid$extension';
+        final destinationPath = '${backgroundDir.path}/$fileName';
+        await File(picked.path).copy(destinationPath);
+        finalVideoPath = destinationPath;
+      }
+
+      if (_backgroundVideo != null &&
+          _backgroundVideo!.path != finalVideoPath) {
+        await deleteBackgroundPhysicalFileIfAllowed(
+          _backgroundVideo!.path,
+          _backgroundVideoOrigin,
+          appDirPath,
+        );
+      }
+      if (_backgroundImage != null) {
+        await deleteBackgroundPhysicalFileIfAllowed(
+          _backgroundImage!.path,
+          _backgroundImageOrigin,
+          appDirPath,
+        );
+      }
+
+      setState(() {
+        _backgroundVideo = File(finalVideoPath);
+        _backgroundImage = null;
+        _backgroundVideoOrigin = picked.origin;
+        _backgroundImageOrigin = null;
+        _contentChanged = true;
+      });
+
+      await _databaseService.insertOrUpdateDocumentSettings(
+        widget.documentName,
+        videoPath: finalVideoPath,
+        colorValue: _backgroundColor?.value,
+        backgroundVideoOrigin: picked.origin,
+      );
+      _saveStateToHistory();
+    } catch (e) {
+      Logger.log('选择背景视频时出错: $e');
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('选择背景视频时出错，请重试。')));
+    }
+  }
+
+  Future<void> _removeBackgroundVideo() async {
+    final appDir = (await getApplicationDocumentsDirectory()).path;
+    await deleteBackgroundPhysicalFileIfAllowed(
+      _backgroundVideo?.path,
+      _backgroundVideoOrigin,
+      appDir,
+    );
+
+    setState(() {
+      _backgroundVideo = null;
+      _backgroundVideoOrigin = null;
+      _contentChanged = true;
+    });
+    try {
+      await _databaseService.deleteDocumentBackgroundVideo(widget.documentName);
+      await _databaseService.insertOrUpdateDocumentSettings(
+        widget.documentName,
+        colorValue: _backgroundColor?.value,
+      );
+      _saveStateToHistory();
+    } catch (e) {
+      Logger.log('移除背景视频时出错: $e');
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('移除背景视频时出错，请重试。')));
+    }
+  }
+
+  /// 清空背景图、背景视频；保留已设背景色，未设时界面为默认白底。仅删除拍照产生的可删副本。
+  Future<void> _clearAllBackgroundToBlank() async {
+    await _databaseService.clearDocumentBackgroundToBlank(widget.documentName);
+    if (!mounted) return;
+    final settings = await _databaseService.getDocumentSettings(
+      widget.documentName,
+    );
+    final int? cv = settings?['background_color'] as int?;
+    setState(() {
+      _backgroundImage = null;
+      _backgroundVideo = null;
+      _backgroundImageOrigin = null;
+      _backgroundVideoOrigin = null;
+      _backgroundColor = cv != null ? Color(cv) : null;
+      _contentChanged = true;
+    });
+    _saveStateToHistory();
+  }
+
   Future<void> _pickBackgroundColor() async {
     // 保存原始颜色，用于取消时恢复
     final originalColor = _backgroundColor;
@@ -335,7 +480,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
     Color? pickedColor = await showDialog<Color>(
       context: context,
       builder: (context) {
-        Color tempColor = _backgroundColor ?? Colors.white;
+        Color tempColor = backgroundColorPickerSeed(_backgroundColor);
         return StatefulBuilder(
           builder: (context, setDialogState) {
             return AlertDialog(
@@ -403,6 +548,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
         await _databaseService.insertOrUpdateDocumentSettings(
           widget.documentName,
           imagePath: _backgroundImage?.path,
+          videoPath: _backgroundVideo?.path,
           colorValue: pickedColor.value,
         );
         _saveStateToHistory();
@@ -576,6 +722,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
             _deletedCanvasIds.where((id) => id != null),
           ),
           'backgroundImage': _backgroundImage?.path,
+          'backgroundVideo': _backgroundVideo?.path,
+          'backgroundImageOrigin': _backgroundImageOrigin?.dbValue,
+          'backgroundVideoOrigin': _backgroundVideoOrigin?.dbValue,
           'backgroundColor': _backgroundColor?.value,
           'textEnhanceMode': _textEnhanceMode,
         });
@@ -764,12 +913,12 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
 
   Future<void> _selectImageForBox(String id) async {
     try {
-      final imagePath = await ImagePickerService.pickImage(context);
-      if (imagePath != null) {
+      final picked = await ImagePickerService.pickImage(context);
+      if (picked != null) {
         setState(() {
           int index = _imageBoxes.indexWhere((box) => box['id'] == id);
           if (index != -1) {
-            _imageBoxes[index]['imagePath'] = imagePath;
+            _imageBoxes[index]['imagePath'] = picked.path;
             _debouncedSave();
             _saveStateToHistory();
           }
@@ -1766,6 +1915,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
           _deletedCanvasIds.where((id) => id != null),
         ), // 新增：已删除画布ID
         'backgroundImage': _backgroundImage?.path,
+        'backgroundVideo': _backgroundVideo?.path,
+        'backgroundImageOrigin': _backgroundImageOrigin?.dbValue,
+        'backgroundVideoOrigin': _backgroundVideoOrigin?.dbValue,
         'backgroundColor': _backgroundColor?.value,
         'textEnhanceMode': _textEnhanceMode,
       });
@@ -1782,6 +1934,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
         'deletedAudioBoxIds': <String>[],
         'deletedCanvasIds': <String>[], // 新增：空删除画布列表
         'backgroundImage': null,
+        'backgroundVideo': null,
+        'backgroundImageOrigin': null,
+        'backgroundVideoOrigin': null,
         'backgroundColor': null,
         'textEnhanceMode': false,
       });
@@ -1834,11 +1989,25 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
             ? List<String>.from(historyState['deletedCanvasIds'])
             : [];
 
-    if (historyState['backgroundImage'] != null) {
-      _backgroundImage = File(historyState['backgroundImage']);
+    final String? histVid = historyState['backgroundVideo'] as String?;
+    final String? histImg = historyState['backgroundImage'] as String?;
+    if (histVid != null && histVid.isNotEmpty) {
+      _backgroundVideo = File(histVid);
+      _backgroundImage = null;
+    } else if (histImg != null && histImg.isNotEmpty) {
+      _backgroundImage = File(histImg);
+      _backgroundVideo = null;
     } else {
       _backgroundImage = null;
+      _backgroundVideo = null;
     }
+
+    _backgroundImageOrigin = BackgroundMediaOrigin.fromDbValue(
+      historyState['backgroundImageOrigin'] as int?,
+    );
+    _backgroundVideoOrigin = BackgroundMediaOrigin.fromDbValue(
+      historyState['backgroundVideoOrigin'] as int?,
+    );
 
     if (historyState['backgroundColor'] != null) {
       _backgroundColor = Color(historyState['backgroundColor']);
@@ -1856,9 +2025,13 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
     _databaseService.insertOrUpdateDocumentSettings(
       widget.documentName,
       imagePath: _backgroundImage?.path,
+      videoPath: _backgroundVideo?.path,
       colorValue: _backgroundColor?.value,
       textEnhanceMode: _textEnhanceMode,
       positionLocked: _isPositionLocked,
+      commitBackgroundMedia: true,
+      backgroundImageOrigin: _backgroundImageOrigin,
+      backgroundVideoOrigin: _backgroundVideoOrigin,
     );
     if (_contentChanged) {
       Logger.log('页面销毁前保存文档内容...');
@@ -1941,6 +2114,14 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
                   },
                 ),
                 ListTile(
+                  leading: Icon(Icons.videocam),
+                  title: Text('设置背景视频'),
+                  onTap: () {
+                    Navigator.pop(context);
+                    _pickBackgroundVideo();
+                  },
+                ),
+                ListTile(
                   leading: Icon(Icons.format_color_fill),
                   title: Text('设置背景颜色'),
                   onTap: () {
@@ -1957,6 +2138,15 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
                       _openBackgroundImagePreviewEditor();
                     },
                   ),
+                if (_backgroundVideo != null)
+                  ListTile(
+                    leading: Icon(Icons.tune),
+                    title: Text('调整背景视频'),
+                    onTap: () {
+                      Navigator.pop(context);
+                      _openBackgroundVideoPreviewEditor();
+                    },
+                  ),
                 if (_backgroundImage != null)
                   ListTile(
                     leading: Icon(Icons.delete),
@@ -1964,6 +2154,25 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
                     onTap: () {
                       Navigator.pop(context);
                       _removeBackgroundImage();
+                    },
+                  ),
+                if (_backgroundVideo != null)
+                  ListTile(
+                    leading: Icon(Icons.delete),
+                    title: Text('删除背景视频'),
+                    onTap: () {
+                      Navigator.pop(context);
+                      _removeBackgroundVideo();
+                    },
+                  ),
+                if (_backgroundImage != null || _backgroundVideo != null)
+                  ListTile(
+                    leading: Icon(Icons.layers_clear),
+                    title: Text('清空背景图/视频'),
+                    subtitle: Text('仅移除背景图与视频，保留背景色；未设背景色时为白底'),
+                    onTap: () {
+                      Navigator.pop(context);
+                      _clearAllBackgroundToBlank();
                     },
                   ),
                 ListTile(
@@ -2178,19 +2387,33 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
               body: Stack(
                 key: ValueKey('main_stack'),
                 children: [
-                  // 背景图片层（底层）：复用媒体页为该文件保存的缩放/平移/旋转
-                  if (_backgroundImage != null)
+                  // 背景图/视频（底层）：复用媒体页视窗参数
+                  if (_backgroundVideo != null)
+                    Positioned.fill(
+                      key: ValueKey(
+                        'background_video_container_$_backgroundViewRefreshTick',
+                      ),
+                      child: StoredViewVideoBackgroundLayer(
+                        file: _backgroundVideo!,
+                      ),
+                    )
+                  else if (_backgroundImage != null)
                     Positioned.fill(
                       key: ValueKey(
                         'background_image_container_$_backgroundViewRefreshTick',
                       ),
                       child: StoredViewImageLayer(file: _backgroundImage!),
                     ),
-                  // 背景颜色层（上层）
+                  // 背景颜色层（上层；有图/视频时默认全透明，不挡底图）
                   Container(
                     key: ValueKey('background_color_container'),
                     decoration: BoxDecoration(
-                      color: _backgroundColor ?? Colors.white,
+                      color: backgroundTintLayerColor(
+                        stored: _backgroundColor,
+                        hasBackgroundMedia:
+                            _backgroundImage != null || _backgroundVideo != null,
+                        fallbackWhenNoMedia: Colors.white,
+                      ),
                     ),
                   ),
                   Positioned.fill(
@@ -2767,6 +2990,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
     _databaseService.insertOrUpdateDocumentSettings(
       widget.documentName,
       imagePath: _backgroundImage?.path,
+      videoPath: _backgroundVideo?.path,
       colorValue: _backgroundColor?.value,
       textEnhanceMode: newMode,
       positionLocked: _isPositionLocked,
@@ -2790,6 +3014,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
     _databaseService.insertOrUpdateDocumentSettings(
       widget.documentName,
       imagePath: _backgroundImage?.path,
+      videoPath: _backgroundVideo?.path,
       colorValue: _backgroundColor?.value,
       textEnhanceMode: _textEnhanceMode,
       positionLocked: newLockState,
@@ -2988,32 +3213,17 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
   Future<void> _openBackgroundImagePreviewEditor() async {
     final bg = _backgroundImage;
     if (bg == null) return;
-    final mediaMap = await _databaseService.getMediaItemByFilePath(bg.path);
-    final previewItem =
-        mediaMap != null
-            ? MediaItem.fromMap(mediaMap)
-            : MediaItem.fromMap({
-              'id': 'background_preview_temp',
-              'name':
-                  bg.uri.pathSegments.isNotEmpty
-                      ? bg.uri.pathSegments.last
-                      : '????',
-              'path': bg.path,
-              'type': 0,
-              'directory': '__background_preview__',
-              'date_added': DateTime.now().toIso8601String(),
-            });
-    await Navigator.push<void>(
-      context,
-      MaterialPageRoute(
-        builder:
-            (context) => MediaPreviewPage(
-              mediaItems: [previewItem],
-              initialIndex: 0,
-              standaloneBackgroundFilePath: mediaMap == null ? bg.path : null,
-            ),
-      ),
-    );
+    await pushBackgroundMediaAdjustPage(context, bg, MediaType.image);
+    if (!mounted) return;
+    setState(() {
+      _backgroundViewRefreshTick++;
+    });
+  }
+
+  Future<void> _openBackgroundVideoPreviewEditor() async {
+    final v = _backgroundVideo;
+    if (v == null) return;
+    await pushBackgroundMediaAdjustPage(context, v, MediaType.video);
     if (!mounted) return;
     setState(() {
       _backgroundViewRefreshTick++;

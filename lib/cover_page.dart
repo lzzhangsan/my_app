@@ -26,8 +26,12 @@ import 'package:share_plus/share_plus.dart';
 import 'package:path/path.dart' as p;
 import 'services/cache_service.dart';
 import 'widgets/stored_view_image_layer.dart';
-import 'media_preview_page.dart';
-import 'models/media_item.dart';
+import 'widgets/stored_view_video_background_layer.dart';
+import 'models/media_type.dart';
+import 'utils/background_media_preview.dart';
+import 'utils/background_layer_defaults.dart';
+import 'utils/background_physical_file.dart';
+import 'models/background_media_origin.dart';
 
 class CoverPage extends StatefulWidget {
   const CoverPage({super.key});
@@ -38,10 +42,13 @@ class CoverPage extends StatefulWidget {
 
 class _CoverPageState extends State<CoverPage> with WidgetsBindingObserver {
   File? _backgroundImage;
-  Color _backgroundColor = Colors.grey[200]!; // 默认背景颜色
+  File? _backgroundVideo;
+  Color _backgroundColor = Colors.white; // 无自定义背景色时的占位（实际叠层见 build 中 tint 逻辑）
   bool _isLoading = true;
   int _backgroundViewRefreshTick = 0;
   bool _hasCustomBackgroundColor = false; // 是否设置了自定义背景颜色
+  BackgroundMediaOrigin? _coverBgImageOrigin;
+  BackgroundMediaOrigin? _coverBgVideoOrigin;
 
   List<Map<String, dynamic>> _textBoxes = [];
   final List<String> _deletedTextBoxIds = [];
@@ -54,7 +61,10 @@ class _CoverPageState extends State<CoverPage> with WidgetsBindingObserver {
       await _saveCoverSettings(
         _backgroundImage?.path,
         _hasCustomBackgroundColor ? _backgroundColor.value : null,
+        videoPath: _backgroundVideo?.path,
         preserveExisting: false,
+        imageOrigin: _coverBgImageOrigin,
+        videoOrigin: _coverBgVideoOrigin,
       );
       await _saveContent();
     } catch (e) {
@@ -75,7 +85,7 @@ class _CoverPageState extends State<CoverPage> with WidgetsBindingObserver {
         setState(() {
           _isLoading = false;
           _textBoxes = [];
-          _backgroundColor = Colors.grey[200]!;
+          _backgroundColor = Colors.white;
         });
       }
       return;
@@ -179,40 +189,55 @@ class _CoverPageState extends State<CoverPage> with WidgetsBindingObserver {
 
   Future<void> _pickBackgroundImage() async {
     try {
-      final imagePath = await ImagePickerService.pickImage(context);
+      final picked = await ImagePickerService.pickImage(context);
 
-      if (imagePath != null) {
-        // 获取应用私有目录
+      if (picked != null) {
         final appDir = await getApplicationDocumentsDirectory();
-        final backgroundDir = Directory('${appDir.path}/backgrounds');
+        final appDirPath = appDir.path;
+        final backgroundDir = Directory('$appDirPath/backgrounds');
         if (!await backgroundDir.exists()) {
           await backgroundDir.create(recursive: true);
         }
 
-        // 删除旧的背景图片文件
         if (_backgroundImage != null) {
-          try {
-            await _backgroundImage!.delete();
-          } catch (e) {
-            Logger.w('删除旧背景图片时出错: $e');
-          }
+          await deleteBackgroundPhysicalFileIfAllowed(
+            _backgroundImage!.path,
+            _coverBgImageOrigin,
+            appDirPath,
+          );
         }
 
-        // 生成唯一的文件名
         final uuid = const Uuid().v4();
-        final extension = path.extension(imagePath);
+        final extension = path.extension(picked.path);
         final fileName = '$uuid$extension';
         final destinationPath = '${backgroundDir.path}/$fileName';
 
-        // 复制文件到应用私有目录
-        await File(imagePath).copy(destinationPath);
+        await File(picked.path).copy(destinationPath);
+
+        if (_backgroundVideo != null) {
+          await deleteBackgroundPhysicalFileIfAllowed(
+            _backgroundVideo!.path,
+            _coverBgVideoOrigin,
+            appDirPath,
+          );
+        }
 
         setState(() {
           _backgroundImage = File(destinationPath);
+          _backgroundVideo = null;
+          _coverBgImageOrigin = picked.origin;
+          _coverBgVideoOrigin = null;
         });
 
-        // 更新数据库
         await getService<DatabaseService>().insertCoverImage(destinationPath);
+        await _saveCoverSettings(
+          destinationPath,
+          _hasCustomBackgroundColor ? _backgroundColor.value : null,
+          videoPath: null,
+          preserveExisting: true,
+          imageOrigin: picked.origin,
+          videoOrigin: null,
+        );
       }
     } catch (e) {
       Logger.e('选择背景图片时出错', e);
@@ -226,6 +251,17 @@ class _CoverPageState extends State<CoverPage> with WidgetsBindingObserver {
     final shouldDelete = await _showDeleteConfirmationDialog();
     if (shouldDelete) {
       try {
+        final appDir = (await getApplicationDocumentsDirectory()).path;
+        await deleteBackgroundPhysicalFileIfAllowed(
+          _backgroundImage?.path,
+          _coverBgImageOrigin,
+          appDir,
+        );
+        await deleteBackgroundPhysicalFileIfAllowed(
+          _backgroundVideo?.path,
+          _coverBgVideoOrigin,
+          appDir,
+        );
         await _ensureCoverImageTableExists(); // 确保表存在
         await getService<DatabaseService>().deleteCoverImage();
 
@@ -241,13 +277,19 @@ class _CoverPageState extends State<CoverPage> with WidgetsBindingObserver {
           // 更新设置，清除背景图片和颜色
           await db.update('cover_settings', {
             'background_image_path': null,
+            'background_video_path': null,
+            'background_image_origin': null,
+            'background_video_origin': null,
             'background_color': null,
           }, where: 'id = 1');
         }
 
         setState(() {
           _backgroundImage = null;
-          _backgroundColor = Colors.grey[200]!; // 恢复默认背景色
+          _backgroundVideo = null;
+          _coverBgImageOrigin = null;
+          _coverBgVideoOrigin = null;
+          _backgroundColor = Colors.white;
           _hasCustomBackgroundColor = false;
         });
       } catch (e) {
@@ -262,6 +304,12 @@ class _CoverPageState extends State<CoverPage> with WidgetsBindingObserver {
   // 只删除背景图片，保留背景颜色
   Future<void> _removeBackgroundImageOnly() async {
     try {
+      final appDir = (await getApplicationDocumentsDirectory()).path;
+      await deleteBackgroundPhysicalFileIfAllowed(
+        _backgroundImage?.path,
+        _coverBgImageOrigin,
+        appDir,
+      );
       // 获取数据库实例
       Database db = await _databaseService.database;
 
@@ -284,6 +332,7 @@ class _CoverPageState extends State<CoverPage> with WidgetsBindingObserver {
 
           await db.update('cover_settings', {
             'background_image_path': null,
+            'background_image_origin': null,
             'background_color': backgroundColor,
           }, where: 'id = 1');
         }
@@ -291,7 +340,8 @@ class _CoverPageState extends State<CoverPage> with WidgetsBindingObserver {
 
       setState(() {
         _backgroundImage = null;
-        // 不重置背景颜色，保留当前颜色
+        _coverBgImageOrigin = null;
+        // 不重置背景颜色，保留当前颜色；背景视频保留
       });
     } catch (e) {
       Logger.e('删除背景图片时出错', e);
@@ -305,25 +355,27 @@ class _CoverPageState extends State<CoverPage> with WidgetsBindingObserver {
     try {
       await _ensureCoverImageTableExists(); // 确保表存在
 
-      // 先尝试加载图片
-      List<Map<String, dynamic>> imageRecords =
-          await getService<DatabaseService>().getCoverImage();
-      if (imageRecords.isNotEmpty) {
-        String imagePath = imageRecords.first['path'];
-        if (await File(imagePath).exists()) {
-          setState(() {
-            _backgroundImage = File(imagePath);
-          });
-          Logger.i('成功加载背景图片: $imagePath');
-        } else {
-          Logger.w('图片文件不存在: $imagePath');
-        }
-      } else {
-        Logger.d('没有找到背景图片记录');
-      }
-
-      // 再尝试加载封面设置（包括背景颜色）
+      // 优先从 cover_settings 加载图/视频与颜色
       await _loadCoverSettings();
+
+      // 兼容旧数据：仅当设置中无图/视频时，使用 cover_image 表
+      if (_backgroundImage == null && _backgroundVideo == null) {
+        final imageRecords =
+            await getService<DatabaseService>().getCoverImage();
+        if (imageRecords.isNotEmpty) {
+          final mediaPath = imageRecords.first['path'] as String;
+          if (await File(mediaPath).exists()) {
+            setState(() {
+              _backgroundImage = File(mediaPath);
+            });
+            Logger.i('成功从 cover_image 加载背景: $mediaPath');
+          } else {
+            Logger.w('媒体文件不存在: $mediaPath');
+          }
+        } else {
+          Logger.d('没有找到 cover_image 记录');
+        }
+      }
     } catch (e) {
       Logger.e('加载背景图片时出错', e);
     } finally {
@@ -367,16 +419,41 @@ class _CoverPageState extends State<CoverPage> with WidgetsBindingObserver {
           _hasCustomBackgroundColor = true;
         });
         Logger.i('成功加载背景颜色: $colorValue');
+      } else {
+        setState(() {
+          _backgroundColor = Colors.white;
+          _hasCustomBackgroundColor = false;
+        });
       }
 
-      // 获取背景图片路径
-      if (settings.first['background_image_path'] != null) {
-        String imagePath = settings.first['background_image_path'];
-        if (await File(imagePath).exists()) {
+      setState(() {
+        _coverBgImageOrigin = BackgroundMediaOrigin.fromDbValue(
+          settings.first['background_image_origin'] as int?,
+        );
+        _coverBgVideoOrigin = BackgroundMediaOrigin.fromDbValue(
+          settings.first['background_video_origin'] as int?,
+        );
+      });
+
+      final videoPath = settings.first['background_video_path'] as String?;
+      if (videoPath != null && videoPath.isNotEmpty) {
+        if (await File(videoPath).exists()) {
           setState(() {
-            _backgroundImage = File(imagePath);
+            _backgroundVideo = File(videoPath);
+            _backgroundImage = null;
           });
-          Logger.i('从设置中加载背景图片: $imagePath');
+          Logger.i('从设置中加载背景视频: $videoPath');
+        }
+      } else {
+        final imagePath = settings.first['background_image_path'] as String?;
+        if (imagePath != null && imagePath.isNotEmpty) {
+          if (await File(imagePath).exists()) {
+            setState(() {
+              _backgroundImage = File(imagePath);
+              _backgroundVideo = null;
+            });
+            Logger.i('从设置中加载背景图片: $imagePath');
+          }
         }
       }
     } catch (e) {
@@ -401,7 +478,11 @@ class _CoverPageState extends State<CoverPage> with WidgetsBindingObserver {
       });
 
       // 同时更新封面设置
-      await _saveCoverSettings(imagePath, null);
+      await _saveCoverSettings(
+        imagePath,
+        null,
+        imageOrigin: _coverBgImageOrigin,
+      );
 
       Logger.i('背景图片路径已保存: $imagePath');
     } catch (e) {
@@ -632,8 +713,17 @@ class _CoverPageState extends State<CoverPage> with WidgetsBindingObserver {
       extendBodyBehindAppBar: true, // 让body延伸到顶部
       body: Stack(
         children: [
-          // 第一层：背景图片层（最底层），复用媒体页视窗参数
-          if (_backgroundImage != null)
+          // 第一层：背景图/视频（最底层），复用媒体页视窗参数
+          if (_backgroundVideo != null)
+            Positioned.fill(
+              child: StoredViewVideoBackgroundLayer(
+                key: ValueKey(
+                  'cover_bgv_${_backgroundVideo!.path}_$_backgroundViewRefreshTick',
+                ),
+                file: _backgroundVideo!,
+              ),
+            )
+          else if (_backgroundImage != null)
             Positioned.fill(
               child: StoredViewImageLayer(
                 key: ValueKey(
@@ -643,16 +733,24 @@ class _CoverPageState extends State<CoverPage> with WidgetsBindingObserver {
               ),
             ),
 
-          // 第二层：背景颜色层（在背景图片之上）
-          Container(color: _backgroundColor),
+          // 第二层：背景颜色层（有图/视频且无自定义色时为透明，不挡底图；无媒体时为白底）
+          Container(
+            color: backgroundTintLayerColor(
+              stored: _hasCustomBackgroundColor ? _backgroundColor : null,
+              hasBackgroundMedia:
+                  _backgroundImage != null || _backgroundVideo != null,
+              fallbackWhenNoMedia: Colors.white,
+            ),
+          ),
 
           // 第三层：文本框层
           if (_textBoxes.isEmpty &&
               _backgroundImage == null &&
+              _backgroundVideo == null &&
               !_hasCustomBackgroundColor)
             Center(
               child: Text(
-                '点击右下角设置按钮\n设置封面背景图片或颜色',
+                '点击右下角设置按钮\n设置封面背景图片、视频或颜色',
                 textAlign: TextAlign.center,
                 style: TextStyle(fontSize: 24, color: Colors.black54),
               ),
@@ -724,36 +822,179 @@ class _CoverPageState extends State<CoverPage> with WidgetsBindingObserver {
   Future<void> _openBackgroundImagePreviewEditor() async {
     final bg = _backgroundImage;
     if (bg == null) return;
-    final mediaMap = await _databaseService.getMediaItemByFilePath(bg.path);
-    final previewItem =
-        mediaMap != null
-            ? MediaItem.fromMap(mediaMap)
-            : MediaItem.fromMap({
-              'id': 'background_preview_temp',
-              'name':
-                  bg.uri.pathSegments.isNotEmpty
-                      ? bg.uri.pathSegments.last
-                      : '????',
-              'path': bg.path,
-              'type': 0,
-              'directory': '__background_preview__',
-              'date_added': DateTime.now().toIso8601String(),
-            });
-    await Navigator.push<void>(
-      context,
-      MaterialPageRoute(
-        builder:
-            (context) => MediaPreviewPage(
-              mediaItems: [previewItem],
-              initialIndex: 0,
-              standaloneBackgroundFilePath: mediaMap == null ? bg.path : null,
-            ),
-      ),
-    );
+    await pushBackgroundMediaAdjustPage(context, bg, MediaType.image);
     if (!mounted) return;
     setState(() {
       _backgroundViewRefreshTick++;
     });
+  }
+
+  Future<void> _openBackgroundVideoPreviewEditor() async {
+    final v = _backgroundVideo;
+    if (v == null) return;
+    await pushBackgroundMediaAdjustPage(context, v, MediaType.video);
+    if (!mounted) return;
+    setState(() {
+      _backgroundViewRefreshTick++;
+    });
+  }
+
+  Future<void> _pickBackgroundVideo() async {
+    try {
+      final picked = await ImagePickerService.pickVideo(context);
+      if (picked == null) return;
+
+      final appDir = await getApplicationDocumentsDirectory();
+      final appDirPath = appDir.path;
+      final backgroundDir = Directory('$appDirPath/backgrounds');
+      if (!await backgroundDir.exists()) {
+        await backgroundDir.create(recursive: true);
+      }
+
+      if (_backgroundVideo != null) {
+        await deleteBackgroundPhysicalFileIfAllowed(
+          _backgroundVideo!.path,
+          _coverBgVideoOrigin,
+          appDirPath,
+        );
+      }
+      if (_backgroundImage != null) {
+        await deleteBackgroundPhysicalFileIfAllowed(
+          _backgroundImage!.path,
+          _coverBgImageOrigin,
+          appDirPath,
+        );
+      }
+
+      final uuid = const Uuid().v4();
+      final extension =
+          path.extension(picked.path).isNotEmpty ? path.extension(picked.path) : '.mp4';
+      final fileName = '$uuid$extension';
+      final destinationPath = '${backgroundDir.path}/$fileName';
+      await File(picked.path).copy(destinationPath);
+
+      await getService<DatabaseService>().deleteCoverImage();
+
+      setState(() {
+        _backgroundVideo = File(destinationPath);
+        _backgroundImage = null;
+        _coverBgVideoOrigin = picked.origin;
+        _coverBgImageOrigin = null;
+      });
+
+      await _saveCoverSettings(
+        null,
+        _hasCustomBackgroundColor ? _backgroundColor.value : null,
+        videoPath: destinationPath,
+        preserveExisting: true,
+        imageOrigin: null,
+        videoOrigin: picked.origin,
+      );
+    } catch (e) {
+      Logger.e('选择背景视频时出错', e);
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('选择背景视频时出错，请重试。')));
+    }
+  }
+
+  Future<void> _removeBackgroundVideoOnly() async {
+    try {
+      final appDir = (await getApplicationDocumentsDirectory()).path;
+      await deleteBackgroundPhysicalFileIfAllowed(
+        _backgroundVideo?.path,
+        _coverBgVideoOrigin,
+        appDir,
+      );
+      final db = await _databaseService.database;
+      final tables = await db.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='cover_settings';",
+      );
+      if (tables.isNotEmpty) {
+        final settings = await db.query('cover_settings', where: 'id = 1');
+        final int? backgroundColor =
+            settings.isNotEmpty ? settings.first['background_color'] as int? : null;
+        final upd = <String, dynamic>{
+          'background_video_path': null,
+          'background_video_origin': null,
+        };
+        if (backgroundColor != null) {
+          upd['background_color'] = backgroundColor;
+        }
+        await db.update('cover_settings', upd, where: 'id = 1');
+      }
+      setState(() {
+        _backgroundVideo = null;
+        _coverBgVideoOrigin = null;
+      });
+    } catch (e) {
+      Logger.e('删除背景视频时出错', e);
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('删除背景视频时出错，请重试。')));
+    }
+  }
+
+  /// 清空背景图/视频，保留已设背景色；未设背景色时为白底。不删除文本框。
+  Future<void> _clearCoverBackgroundOnly() async {
+    if (kIsWeb) return;
+    try {
+      final appDir = (await getApplicationDocumentsDirectory()).path;
+      await deleteBackgroundPhysicalFileIfAllowed(
+        _backgroundImage?.path,
+        _coverBgImageOrigin,
+        appDir,
+      );
+      await deleteBackgroundPhysicalFileIfAllowed(
+        _backgroundVideo?.path,
+        _coverBgVideoOrigin,
+        appDir,
+      );
+      final db = await _databaseService.database;
+      await db.delete('cover_image');
+      final tables = await db.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='cover_settings';",
+      );
+      int? keptColorValue;
+      if (tables.isNotEmpty) {
+        final existing = await db.query('cover_settings', where: 'id = 1');
+        if (existing.isNotEmpty) {
+          keptColorValue = existing.first['background_color'] as int?;
+        }
+        await db.update(
+          'cover_settings',
+          {
+            'background_image_path': null,
+            'background_video_path': null,
+            'background_image_origin': null,
+            'background_video_origin': null,
+          },
+          where: 'id = 1',
+        );
+      }
+      if (!mounted) return;
+      setState(() {
+        _backgroundImage = null;
+        _backgroundVideo = null;
+        _coverBgImageOrigin = null;
+        _coverBgVideoOrigin = null;
+        if (keptColorValue != null) {
+          _backgroundColor = Color(keptColorValue);
+          _hasCustomBackgroundColor = true;
+        } else {
+          _backgroundColor = Colors.white;
+          _hasCustomBackgroundColor = false;
+        }
+        _backgroundViewRefreshTick++;
+      });
+    } catch (e) {
+      Logger.e('清空封面背景时出错', e);
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('清空背景失败，请重试。')));
+      }
+    }
   }
 
   void _showSettingsPanel() {
@@ -798,6 +1039,15 @@ class _CoverPageState extends State<CoverPage> with WidgetsBindingObserver {
                   },
                 ),
                 _buildSettingItem(
+                  icon: Icons.videocam,
+                  iconColor: Colors.indigo,
+                  title: '设置背景视频',
+                  onTap: () {
+                    Navigator.pop(context);
+                    _pickBackgroundVideo();
+                  },
+                ),
+                _buildSettingItem(
                   icon: Icons.color_lens,
                   iconColor: Colors.purple,
                   title: '设置背景颜色',
@@ -818,6 +1068,16 @@ class _CoverPageState extends State<CoverPage> with WidgetsBindingObserver {
                       _openBackgroundImagePreviewEditor();
                     },
                   ),
+                if (_backgroundVideo != null)
+                  _buildSettingItem(
+                    icon: Icons.tune,
+                    iconColor: Colors.teal,
+                    title: '调整背景视频',
+                    onTap: () {
+                      Navigator.pop(context);
+                      _openBackgroundVideoPreviewEditor();
+                    },
+                  ),
                 if (_backgroundImage != null)
                   _buildSettingItem(
                     icon: Icons.hide_image,
@@ -829,9 +1089,34 @@ class _CoverPageState extends State<CoverPage> with WidgetsBindingObserver {
                       _removeBackgroundImageOnly();
                     },
                   ),
+                if (_backgroundVideo != null)
+                  _buildSettingItem(
+                    icon: Icons.videocam_off,
+                    iconColor: Colors.orange,
+                    title: '仅删除背景视频',
+                    subtitle: '保留背景颜色设置',
+                    onTap: () {
+                      Navigator.pop(context);
+                      _removeBackgroundVideoOnly();
+                    },
+                  ),
+
+                if (_backgroundImage != null || _backgroundVideo != null)
+                  _buildSettingItem(
+                    icon: Icons.layers_clear,
+                    iconColor: Colors.blueGrey,
+                    title: '清空背景图/视频',
+                    subtitle: '仅移除图/视频，保留背景色；未设背景色时为白底',
+                    onTap: () {
+                      Navigator.pop(context);
+                      _clearCoverBackgroundOnly();
+                    },
+                  ),
 
                 // 完全删除背景设置的选项
-                if (_backgroundImage != null || _hasCustomBackgroundColor)
+                if (_backgroundImage != null ||
+                    _backgroundVideo != null ||
+                    _hasCustomBackgroundColor)
                   _buildSettingItem(
                     icon: Icons.delete,
                     iconColor: Colors.red[300]!,
@@ -935,7 +1220,9 @@ class _CoverPageState extends State<CoverPage> with WidgetsBindingObserver {
     showDialog(
       context: context,
       builder: (context) {
-        Color pickerColor = _backgroundColor;
+        Color pickerColor = backgroundColorPickerSeed(
+          _hasCustomBackgroundColor ? _backgroundColor : null,
+        );
         return StatefulBuilder(
           builder: (context, setDialogState) {
             return AlertDialog(
@@ -1022,7 +1309,10 @@ class _CoverPageState extends State<CoverPage> with WidgetsBindingObserver {
   Future<void> _saveCoverSettings(
     String? imagePath,
     int? colorValue, {
+    String? videoPath,
     bool preserveExisting = true,
+    BackgroundMediaOrigin? imageOrigin,
+    BackgroundMediaOrigin? videoOrigin,
   }) async {
     try {
       // 确保表存在
@@ -1042,6 +1332,9 @@ class _CoverPageState extends State<CoverPage> with WidgetsBindingObserver {
           CREATE TABLE cover_settings (
             id INTEGER PRIMARY KEY CHECK (id = 1),
             background_image_path TEXT,
+            background_video_path TEXT,
+            background_image_origin INTEGER,
+            background_video_origin INTEGER,
             background_color INTEGER
           )
         ''');
@@ -1055,28 +1348,69 @@ class _CoverPageState extends State<CoverPage> with WidgetsBindingObserver {
       );
       Map<String, dynamic> data = {'id': 1};
 
-      // 如果有现有设置，继承那些没有明确指定要更改的值
-      if (settings.isNotEmpty && preserveExisting) {
-        // 如果没有明确指定图片路径，保留现有的
-        if (imagePath == null &&
-            !settings.first['background_image_path'].toString().contains(
-              'null',
-            )) {
-          data['background_image_path'] =
-              settings.first['background_image_path'];
-        } else {
-          data['background_image_path'] = imagePath;
-        }
-
-        // 如果没有明确指定颜色，保留现有的
-        if (colorValue == null && settings.first['background_color'] != null) {
-          data['background_color'] = settings.first['background_color'];
+      if (!preserveExisting) {
+        data['background_image_path'] = imagePath;
+        data['background_video_path'] = videoPath;
+        data['background_image_origin'] =
+            imagePath == null ? null : (imageOrigin?.dbValue);
+        data['background_video_origin'] =
+            videoPath == null ? null : (videoOrigin?.dbValue);
+        if (settings.isNotEmpty) {
+          data['background_color'] =
+              colorValue ?? settings.first['background_color'];
         } else {
           data['background_color'] = colorValue;
         }
+      } else if (settings.isNotEmpty) {
+        final existing = settings.first;
+        String? nextImg = existing['background_image_path'] as String?;
+        String? nextVid = existing['background_video_path'] as String?;
+        int? imgOrig = existing['background_image_origin'] as int?;
+        int? vidOrig = existing['background_video_origin'] as int?;
+
+        if (imagePath != null) {
+          nextImg = imagePath;
+          nextVid = null;
+          imgOrig = imageOrigin?.dbValue ?? imgOrig;
+          vidOrig = null;
+        } else if (videoPath != null) {
+          nextVid = videoPath;
+          nextImg = null;
+          vidOrig = videoOrigin?.dbValue ?? vidOrig;
+          imgOrig = null;
+        }
+
+        data['background_image_path'] = nextImg;
+        data['background_video_path'] = nextVid;
+        data['background_image_origin'] = imgOrig;
+        data['background_video_origin'] = vidOrig;
+
+        if (colorValue != null) {
+          data['background_color'] = colorValue;
+        } else {
+          data['background_color'] = existing['background_color'];
+        }
       } else {
-        // 没有现有设置，直接使用提供的值
-        data['background_image_path'] = imagePath;
+        int? imgOrig;
+        int? vidOrig;
+        if (imagePath != null) {
+          data['background_image_path'] = imagePath;
+          data['background_video_path'] = null;
+          imgOrig = imageOrigin?.dbValue;
+          vidOrig = null;
+        } else if (videoPath != null) {
+          data['background_video_path'] = videoPath;
+          data['background_image_path'] = null;
+          vidOrig = videoOrigin?.dbValue;
+          imgOrig = null;
+        } else {
+          data['background_image_path'] = null;
+          data['background_video_path'] = null;
+          imgOrig = null;
+          vidOrig = null;
+        }
+        data['background_image_origin'] = imgOrig;
+        data['background_video_origin'] = vidOrig;
         data['background_color'] = colorValue;
       }
 
@@ -1091,7 +1425,7 @@ class _CoverPageState extends State<CoverPage> with WidgetsBindingObserver {
       }
 
       Logger.i(
-        '已保存封面设置: 图片路径=${data['background_image_path'] ?? "无"}, 颜色=${data['background_color'] ?? "无"}',
+        '已保存封面设置: 图片=${data['background_image_path'] ?? "无"}, 视频=${data['background_video_path'] ?? "无"}, 颜色=${data['background_color'] ?? "无"}',
       );
     } catch (e) {
       Logger.e('保存封面设置时出错', e);
@@ -1126,6 +1460,18 @@ class _CoverPageState extends State<CoverPage> with WidgetsBindingObserver {
 
     if (shouldClear) {
       try {
+        final appDir = (await getApplicationDocumentsDirectory()).path;
+        await deleteBackgroundPhysicalFileIfAllowed(
+          _backgroundImage?.path,
+          _coverBgImageOrigin,
+          appDir,
+        );
+        await deleteBackgroundPhysicalFileIfAllowed(
+          _backgroundVideo?.path,
+          _coverBgVideoOrigin,
+          appDir,
+        );
+
         // 获取数据库实例
         DatabaseService dbHelper = _databaseService;
         Database db = await dbHelper.database;
@@ -1141,6 +1487,9 @@ class _CoverPageState extends State<CoverPage> with WidgetsBindingObserver {
         if (tables.isNotEmpty) {
           await db.update('cover_settings', {
             'background_image_path': null,
+            'background_video_path': null,
+            'background_image_origin': null,
+            'background_video_origin': null,
             'background_color': null,
           }, where: 'id = 1');
         }
@@ -1166,7 +1515,10 @@ class _CoverPageState extends State<CoverPage> with WidgetsBindingObserver {
         // 更新UI
         setState(() {
           _backgroundImage = null;
-          _backgroundColor = Colors.grey[200]!;
+          _backgroundVideo = null;
+          _coverBgImageOrigin = null;
+          _coverBgVideoOrigin = null;
+          _backgroundColor = Colors.white;
           _hasCustomBackgroundColor = false;
           _textBoxes.clear();
         });
