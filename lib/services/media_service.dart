@@ -3,6 +3,7 @@
 
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'logger.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -59,8 +60,9 @@ class MediaService {
     }
   }
 
-  /// 请求必要权限
+  /// 请求必要权限（后台 Isolate 无 Activity 时跳过，见 [FileService] 注释）。
   Future<void> _requestPermissions() async {
+    if (kIsWeb) return;
     final permissions = [
       Permission.storage,
       Permission.camera,
@@ -68,9 +70,21 @@ class MediaService {
     ];
 
     for (final permission in permissions) {
-      final status = await permission.status;
-      if (!status.isGranted) {
-        await permission.request();
+      try {
+        final status = await permission.status;
+        if (!status.isGranted) {
+          await permission.request();
+        }
+      } on PlatformException catch (e) {
+        if (kDebugMode) {
+          Logger.log(
+            'MediaService: 权限 ${permission.toString()} 请求已跳过（无 Activity）: ${e.message}',
+          );
+        }
+      } catch (e) {
+        if (kDebugMode) {
+          Logger.log('MediaService: 权限检查已跳过: $e');
+        }
       }
     }
   }

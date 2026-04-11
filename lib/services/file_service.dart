@@ -4,6 +4,7 @@
 import 'dart:io';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'logger.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -57,11 +58,28 @@ class FileService {
     }
   }
 
-  /// 请求存储权限
+  /// 请求存储权限（仅在前台、存在 [Activity] 时有效）。
+  ///
+  /// `flutter_background_service` 等后台 Isolate 中无 Activity，
+  /// [Permission.storage] 会抛出 `Unable to detect current Android Activity`；
+  /// 应用沙箱目录 [getApplicationDocumentsDirectory] 等不依赖该权限，此处捕获后仍视为初始化成功。
   Future<void> _requestStoragePermission() async {
-    final status = await Permission.storage.status;
-    if (!status.isGranted) {
-      await Permission.storage.request();
+    if (kIsWeb) return;
+    try {
+      final status = await Permission.storage.status;
+      if (!status.isGranted) {
+        await Permission.storage.request();
+      }
+    } on PlatformException catch (e) {
+      if (kDebugMode) {
+        Logger.log(
+          'FileService: 存储权限请求已跳过（无 Android Activity，常见于后台服务）: ${e.message}',
+        );
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        Logger.log('FileService: 存储权限检查已跳过: $e');
+      }
     }
   }
 
