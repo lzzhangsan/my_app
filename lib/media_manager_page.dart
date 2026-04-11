@@ -2292,14 +2292,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           return;
         }
 
-        final updatedItem = MediaItem(
-          id: item.id,
-          name: newName,
-          path: item.path,
-          type: item.type,
-          directory: item.directory,
-          dateAdded: item.dateAdded,
-        );
+        final updatedItem = item.copyWith(name: newName);
         await _databaseService.updateMediaItem(updatedItem.toMap());
         await _loadMediaItems();
         if (mounted) {}
@@ -2560,14 +2553,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     );
 
     try {
-      final updatedItem = MediaItem(
-        id: item.id,
-        name: item.name,
-        path: item.path,
-        type: item.type,
-        directory: targetDirectory,
-        dateAdded: item.dateAdded,
-      );
+      final updatedItem = item.copyWith(directory: targetDirectory);
       await _databaseService.updateMediaItem(updatedItem.toMap());
 
       if (mounted) {
@@ -2678,14 +2664,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     try {
       for (var id in idsToMove) {
         final item = _mediaItems.firstWhere((item) => item.id == id);
-        final updatedItem = MediaItem(
-          id: item.id,
-          name: item.name,
-          path: item.path,
-          type: item.type,
-          directory: targetDirectory,
-          dateAdded: item.dateAdded,
-        );
+        final updatedItem = item.copyWith(directory: targetDirectory);
         await _databaseService.updateMediaItem(updatedItem.toMap());
       }
 
