@@ -24,6 +24,18 @@ class VideoPlayerWidget extends StatefulWidget {
   /// 非 null 时在文档栏套用媒体页已保存的缩放/平移/旋转（只读）。
   final VideoViewParams? viewParams;
 
+  /// 顺序模式断点续播：初始化后 seek 到此（通常为「上次退出位置 − 5 秒」）。
+  final Duration? initialSeekPosition;
+
+  /// 为 true 时：若整段时长不足 5 秒则触发 [onSequentialResumeTooShort]，不开始播放。
+  final bool sequentialResumeActive;
+
+  /// 见 [sequentialResumeActive]。
+  final VoidCallback? onSequentialResumeTooShort;
+
+  /// 顺序模式定时回写进度（毫秒），供退出/杀进程后续播。
+  final void Function(int positionMs, int durationMs)? onProgressForResumeSave;
+
   VideoPlayerWidget({
     required this.file,
     this.looping = false,
@@ -32,6 +44,10 @@ class VideoPlayerWidget extends StatefulWidget {
     this.onVideoError,
     this.fit = BoxFit.contain,
     this.viewParams,
+    this.initialSeekPosition,
+    this.sequentialResumeActive = false,
+    this.onSequentialResumeTooShort,
+    this.onProgressForResumeSave,
     super.key,
   });
 
@@ -51,6 +67,9 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   bool _isEnded = false;
   bool _hasError = false;
   Timer? _progressTimer;
+  Timer? _resumeSaveTimer;
+  /// 顺序续播：总长不足 5 秒，已通知外层切下一条。
+  bool _skipResumeShort = false;
 
   @override
   void initState() {
@@ -72,8 +91,28 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
 
     _controller
         .initialize()
-        .then((_) {
+        .then((_) async {
           if (!mounted) return;
+
+          final Duration dur = _controller.value.duration;
+          if (widget.sequentialResumeActive &&
+              dur < const Duration(seconds: 5)) {
+            _controller.removeListener(_videoListener);
+            await _controller.pause();
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) widget.onSequentialResumeTooShort?.call();
+            });
+            if (mounted) {
+              setState(() => _skipResumeShort = true);
+            }
+            return;
+          }
+
+          if (widget.initialSeekPosition != null &&
+              widget.initialSeekPosition! > Duration.zero) {
+            await _controller.seekTo(widget.initialSeekPosition!);
+            if (!mounted) return;
+          }
 
           // 文档编辑区嵌入：有 VideoControlsOverlay 外部底栏，不显示 Chewie 自带控制层。
           final bool embedInDocumentEditor = widget.viewParams != null;
@@ -142,6 +181,19 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
           ) {
             if (mounted) setState(() {});
           });
+
+          if (widget.onProgressForResumeSave != null) {
+            _resumeSaveTimer?.cancel();
+            _resumeSaveTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+              if (!mounted) return;
+              final v = _controller.value;
+              if (!v.isInitialized || v.duration <= Duration.zero) return;
+              widget.onProgressForResumeSave!(
+                v.position.inMilliseconds,
+                v.duration.inMilliseconds,
+              );
+            });
+          }
         })
         .catchError((error) {
           _handleError(error.toString());
@@ -210,8 +262,19 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   @override
   void dispose() {
     Logger.d('销毁视频播放器: ${widget.file.path}');
+    _resumeSaveTimer?.cancel();
     _progressTimer?.cancel();
+    if (!_skipResumeShort &&
+        widget.onProgressForResumeSave != null &&
+        _controller.value.isInitialized &&
+        _controller.value.duration > Duration.zero) {
+      widget.onProgressForResumeSave!(
+        _controller.value.position.inMilliseconds,
+        _controller.value.duration.inMilliseconds,
+      );
+    }
     _chewieController?.dispose();
+    _controller.removeListener(_videoListener);
     _controller.pause();
     _controller.dispose();
     // Expando entries are automatically removed when objects are GC'd, no explicit removal needed
@@ -224,15 +287,19 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     final fileOrLoopChanged =
         oldWidget.file.path != widget.file.path ||
         oldWidget.looping != widget.looping ||
-        oldWidget.forceManualLoop != widget.forceManualLoop;
+        oldWidget.forceManualLoop != widget.forceManualLoop ||
+        oldWidget.initialSeekPosition != widget.initialSeekPosition ||
+        oldWidget.sequentialResumeActive != widget.sequentialResumeActive;
     if (fileOrLoopChanged) {
       Logger.d('视频播放器更新: ${oldWidget.file.path} -> ${widget.file.path}');
+      _resumeSaveTimer?.cancel();
       _progressTimer?.cancel();
       _chewieController?.dispose();
       _controller.pause();
       _controller.dispose();
       _isEnded = false;
       _hasError = false;
+      _skipResumeShort = false;
       _initializeController();
     } else if (oldWidget.viewParams != widget.viewParams) {
       setState(() {});
@@ -252,6 +319,10 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
           ],
         ),
       );
+    }
+
+    if (_skipResumeShort) {
+      return const SizedBox.shrink();
     }
 
     if (_hasError) {

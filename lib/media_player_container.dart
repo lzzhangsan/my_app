@@ -15,6 +15,7 @@ import 'models/media_item.dart'; // 添加MediaItem类的导入
 import 'services/logger.dart';
 import 'media_player_settings.dart';
 import 'media_source_favorite_filter.dart';
+import 'video_sequential_resume_prefs.dart';
 import 'widgets/ken_burns_image_display.dart';
 import 'widgets/zoom_pan_edge_image_display.dart';
 import 'widgets/fit_width_blur_static_image.dart';
@@ -36,7 +37,8 @@ class MediaPlayerContainer extends StatefulWidget {
   MediaPlayerContainerState createState() => MediaPlayerContainerState();
 }
 
-class MediaPlayerContainerState extends State<MediaPlayerContainer> {
+class MediaPlayerContainerState extends State<MediaPlayerContainer>
+    with WidgetsBindingObserver {
   MediaMode _mediaMode = MediaMode.none;
   Timer? _mediaTimer;
   List<Map<String, dynamic>> _mediaList = [];
@@ -84,8 +86,60 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _databaseService = getService<DatabaseService>();
     _loadSelectedDirectory();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      _flushSequentialVideoResumeProgress();
+    }
+  }
+
+  /// 顺序模式下前进游标（视频在「开始播放」时不再调用，仅在片尾/跳过/错误后调用）。
+  void _advanceSequentialPlaybackCursor() {
+    if (_playbackOrder != MediaPlaybackOrder.sequential || _mediaList.isEmpty) {
+      return;
+    }
+    _sequentialIndex = (_sequentialIndex + 1) % _mediaList.length;
+    unawaited(_persistSequentialIndex());
+  }
+
+  void _videoResumeSnapshotSave(String id, int positionMs, int durationMs) {
+    if (id.isEmpty || durationMs <= 0) return;
+    if (positionMs >= durationMs - 600) {
+      unawaited(_clearVideoResumeForId(id));
+      return;
+    }
+    unawaited(_writeVideoResumeForId(id, positionMs));
+  }
+
+  Future<void> _writeVideoResumeForId(String id, int ms) async {
+    final prefs = await SharedPreferences.getInstance();
+    await writeVideoResumePositionMs(prefs, id, ms);
+  }
+
+  Future<void> _clearVideoResumeForId(String id) async {
+    final prefs = await SharedPreferences.getInstance();
+    await clearVideoResumePositionMs(prefs, id);
+  }
+
+  void _flushSequentialVideoResumeProgress() {
+    if (_playbackOrder != MediaPlaybackOrder.sequential) return;
+    final id = _currentPlayingMedia?['id']?.toString();
+    if (id == null || id.isEmpty) return;
+    final c = _currentVideoWidget?.controller;
+    if (c == null || !c.value.isInitialized || c.value.duration <= Duration.zero) {
+      return;
+    }
+    _videoResumeSnapshotSave(
+      id,
+      c.value.position.inMilliseconds,
+      c.value.duration.inMilliseconds,
+    );
   }
 
   Future<void> _loadSelectedDirectory() async {
@@ -262,6 +316,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
 
   void stopMedia() {
     Logger.d('stopMedia called');
+    // 底栏长按红色播放键：视为迫不得已关掉当前图/视频，写断点（视频）且不前进游标，下次单击/双击应续播。
     stop();
   }
 
@@ -270,7 +325,25 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
     playAuto();
   }
 
+  /// 顺序模式下：仅当**视频正在播放**时，底栏单击/双击红色键才视为「进手动/自动并切下一条」。
+  /// 长按已停、暂停、或从后台回来后再点播放 → 不调用本方法，走续播同一条。
+  void _sequentialToolbarPlayExplicitNextVideoIfPlaying() {
+    if (_playbackOrder != MediaPlaybackOrder.sequential) return;
+    final cur = _currentPlayingMedia;
+    if (cur == null) return;
+    if (DatabaseService.mediaTypeIndex(cur) != 1) return;
+    final c = _currentVideoWidget?.controller;
+    if (c == null || !c.value.isInitialized) return;
+    if (!c.value.isPlaying) return;
+    final id = cur['id']?.toString();
+    if (id != null && id.isNotEmpty) {
+      unawaited(_clearVideoResumeForId(id));
+    }
+    _advanceSequentialPlaybackCursor();
+  }
+
   void playManual() {
+    _sequentialToolbarPlayExplicitNextVideoIfPlaying();
     setState(() {
       _mediaMode = MediaMode.manual;
     });
@@ -278,6 +351,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
   }
 
   void playAuto() {
+    _sequentialToolbarPlayExplicitNextVideoIfPlaying();
     setState(() {
       _mediaMode = MediaMode.auto;
     });
@@ -285,6 +359,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
   }
 
   void stop() {
+    _flushSequentialVideoResumeProgress();
     setState(() {
       _mediaMode = MediaMode.none;
       _mediaWidget = null;
@@ -301,6 +376,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
   }
 
   void pausePlaybackForExternalPreview() {
+    _flushSequentialVideoResumeProgress();
     _mediaTimer?.cancel();
     _mediaTimer = null;
     _currentVideoWidget?.controller?.pause();
@@ -394,13 +470,62 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
     }
 
     if (typeIdx == 1) {
+      final bool sequential =
+          _playbackOrder == MediaPlaybackOrder.sequential;
+      final String vid = currentId;
+      Duration? initialSeek;
+      var seqResumeActive = false;
+      if (sequential && vid.isNotEmpty) {
+        final prefs = await SharedPreferences.getInstance();
+        final saved = await readVideoResumePositionMs(prefs, vid);
+        if (saved != null && saved > 0) {
+          initialSeek = Duration(milliseconds: max(0, saved - 5000));
+          seqResumeActive = true;
+        }
+      }
+      final int reloadVideoSession = _mediaSessionId;
+      if (!mounted) return;
       setState(() {
         _currentVideoWidget = VideoPlayerWidget(
           key: ValueKey('vp_${refreshedMap['path']}_$_playbackNonce'),
           file: mediaFile,
           viewParams: VideoViewParams.fromMediaMap(refreshedMap),
-          onVideoEnd: null,
-          onVideoError: null,
+          initialSeekPosition: initialSeek,
+          sequentialResumeActive: seqResumeActive,
+          onSequentialResumeTooShort:
+              seqResumeActive
+                  ? () {
+                    if (!mounted) return;
+                    unawaited(_clearVideoResumeForId(vid));
+                    _advanceSequentialPlaybackCursor();
+                    unawaited(_showNextMedia());
+                  }
+                  : null,
+          onProgressForResumeSave:
+              sequential && vid.isNotEmpty
+                  ? (pos, dur) => _videoResumeSnapshotSave(vid, pos, dur)
+                  : null,
+          onVideoEnd: () {
+            if (_mediaSessionId != reloadVideoSession) return;
+            if (vid.isNotEmpty && sequential) {
+              unawaited(_clearVideoResumeForId(vid));
+            }
+            if (sequential) {
+              _advanceSequentialPlaybackCursor();
+            }
+            if (_mediaMode != MediaMode.auto) return;
+            unawaited(_showNextMedia());
+          },
+          onVideoError:
+              _mediaMode == MediaMode.auto
+                  ? () {
+                    if (_mediaSessionId != reloadVideoSession) return;
+                    if (sequential) {
+                      _advanceSequentialPlaybackCursor();
+                    }
+                    unawaited(_showNextMedia());
+                  }
+                  : null,
           looping: false,
           forceManualLoop: _mediaMode == MediaMode.manual,
         );
@@ -563,18 +688,10 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
         _mediaSessionId++;
         final int sessionThisMedia = _mediaSessionId;
 
-        void advanceSequentialCursor() {
-          if (_playbackOrder == MediaPlaybackOrder.sequential &&
-              _mediaList.isNotEmpty) {
-            _sequentialIndex = (_sequentialIndex + 1) % _mediaList.length;
-            unawaited(_persistSequentialIndex());
-          }
-        }
-
         // 成功获取到文件，显示相应媒体
         final int typeIdx = DatabaseService.mediaTypeIndex(nextMedia);
         if (typeIdx == 0) {
-          advanceSequentialCursor();
+          _advanceSequentialPlaybackCursor();
           // 图片
           if (_imageMode == MediaImageDisplayMode.kenBurns) {
             setState(() {
@@ -654,24 +771,64 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
 
           return;
         } else if (typeIdx == 1) {
-          advanceSequentialCursor();
-          // 视频（_playbackNonce 已在上方递增）
+          final bool sequential =
+              _playbackOrder == MediaPlaybackOrder.sequential;
+          if (!sequential) {
+            _advanceSequentialPlaybackCursor();
+          }
+          final String vid = nextMedia['id']?.toString() ?? '';
+          Duration? initialSeek;
+          var seqResumeActive = false;
+          if (sequential && vid.isNotEmpty) {
+            final prefs = await SharedPreferences.getInstance();
+            final saved = await readVideoResumePositionMs(prefs, vid);
+            if (saved != null && saved > 0) {
+              initialSeek = Duration(
+                milliseconds: max(0, saved - 5000),
+              );
+              seqResumeActive = true;
+            }
+          }
+          if (!mounted) return;
           setState(() {
             _currentVideoWidget = VideoPlayerWidget(
               key: ValueKey('vp_${nextMedia['path']}_$_playbackNonce'),
               file: File(nextMedia['path']!),
               viewParams: VideoViewParams.fromMediaMap(nextMedia),
+              initialSeekPosition: initialSeek,
+              sequentialResumeActive: seqResumeActive,
+              onSequentialResumeTooShort:
+                  seqResumeActive
+                      ? () {
+                        if (!mounted) return;
+                        unawaited(_clearVideoResumeForId(vid));
+                        _advanceSequentialPlaybackCursor();
+                        unawaited(_showNextMedia());
+                      }
+                      : null,
+              onProgressForResumeSave:
+                  sequential && vid.isNotEmpty
+                      ? (pos, dur) => _videoResumeSnapshotSave(vid, pos, dur)
+                      : null,
               onVideoEnd: () {
-                if (_mediaMode != MediaMode.auto) return;
                 if (sessionThisMedia != _mediaSessionId) return;
+                if (vid.isNotEmpty && sequential) {
+                  unawaited(_clearVideoResumeForId(vid));
+                }
+                if (sequential) {
+                  _advanceSequentialPlaybackCursor();
+                }
+                if (_mediaMode != MediaMode.auto) return;
                 unawaited(_showNextMedia());
               },
               onVideoError:
                   _mediaMode == MediaMode.auto
                       ? () {
                         Logger.w('视频解码/播放失败，自动尝试下一条');
-                        if (_mediaMode != MediaMode.auto) return;
                         if (sessionThisMedia != _mediaSessionId) return;
+                        if (sequential) {
+                          _advanceSequentialPlaybackCursor();
+                        }
                         unawaited(_showNextMedia());
                       }
                       : null,
@@ -846,6 +1003,8 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _flushSequentialVideoResumeProgress();
     _mediaTimer?.cancel();
     super.dispose();
   }
@@ -1205,7 +1364,10 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
   /// 需要从展示列表中移除该项并自动播放下一个，与媒体页面的删除/收藏/移动行为一致。
   void removeCurrentAndPlayNext() {
     if (_currentPlayingMedia == null) return;
-    final String currentId = _currentPlayingMedia!['id'];
+    final String currentId = _currentPlayingMedia!['id']?.toString() ?? '';
+    if (currentId.isNotEmpty) {
+      unawaited(_clearVideoResumeForId(currentId));
+    }
     final int currentIndex = _mediaList.indexWhere(
       (media) => media['id'] == currentId,
     );
