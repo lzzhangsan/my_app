@@ -3300,6 +3300,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     final isSystemFolder = item.id == 'recycle_bin' || item.id == 'favorites';
     bool isSelected = _selectedItems.contains(item.id);
     bool isLastViewed = item.id == _lastViewedMediaId;
+    final showFavThumbnailBadge =
+        item.isFavorite &&
+        (item.type == MediaType.image || item.type == MediaType.video);
 
     return GestureDetector(
       key: ValueKey(item.id),
@@ -3382,14 +3385,19 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                   child: Container(
                     width: 28,
                     height: 28,
-                    decoration: const BoxDecoration(
-                      color: Colors.black45,
+                    decoration: BoxDecoration(
+                      color:
+                          showFavThumbnailBadge
+                              ? Colors.pink.withValues(alpha: 0.4)
+                              : Colors.black45,
                       shape: BoxShape.circle,
                     ),
                     child: PopupMenuButton<String>(
                       padding: EdgeInsets.zero,
-                      icon: const Icon(
-                        Icons.more_vert,
+                      icon: Icon(
+                        showFavThumbnailBadge
+                            ? Icons.favorite
+                            : Icons.more_vert,
                         size: 20,
                         color: Colors.white,
                       ),

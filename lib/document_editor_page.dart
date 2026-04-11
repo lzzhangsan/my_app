@@ -3148,7 +3148,6 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
       final mediaPlayerState = _mediaPlayerKey.currentState;
       if (mediaPlayerState == null) return;
 
-      // 获取当前播放的媒体项
       final currentMedia = await mediaPlayerState.getCurrentMedia();
       if (currentMedia == null) {
         ScaffoldMessenger.of(
@@ -3156,44 +3155,19 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
         ).showSnackBar(const SnackBar(content: Text('没有正在播放的媒体')));
         return;
       }
-
-      // 确保收藏文件夹存在
-      const favoritesFolderId = 'favorites';
-      final dbHelper = _databaseService;
-
-      // 检查收藏文件夹是否存在
-      final favoritesFolder = await dbHelper.getMediaItemById(
-        favoritesFolderId,
-      );
-      if (favoritesFolder == null) {
-        // 创建收藏文件夹
-        await dbHelper.insertMediaItem({
-          'id': favoritesFolderId,
-          'name': '收藏夹',
-          'path': '',
-          'type': MediaType.folder.index,
-          'directory': 'root',
-          'date_added': DateTime.now().toIso8601String(),
-        });
+      if (currentMedia.type != MediaType.image &&
+          currentMedia.type != MediaType.video) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('仅支持图片或视频')));
+        return;
       }
 
-      // 移动媒体到收藏文件夹
-      final updatedMedia = {
-        'id': currentMedia.id,
-        'name': currentMedia.name,
-        'path': currentMedia.path,
-        'type': currentMedia.type.index,
-        'directory': favoritesFolderId,
-        'date_added': currentMedia.dateAdded.toIso8601String(),
-      };
-
-      final result = await dbHelper.updateMediaItem(updatedMedia);
-      if (result <= 0) {
-        throw Exception('收藏失败');
-      }
+      // 文档页不展示收藏态：只负责「未收藏则标星」，已收藏则不改库，均切到下一条（与媒体预览的切换式收藏不同）。
+      await _databaseService.ensureMediaItemFavorite(currentMedia.id);
 
       if (mounted) {
-        _mediaPlayerKey.currentState?.removeCurrentAndPlayNext();
+        await mediaPlayerState.refreshMediaListAndAdvanceToNext();
       }
     } catch (e) {
       if (mounted) {

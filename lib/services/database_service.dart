@@ -1094,6 +1094,11 @@ class DatabaseService {
             ELSE 5 
           END ASC, 
           CASE 
+            WHEN id = 'recycle_bin' OR id = 'favorites' THEN 0
+            WHEN type = $imageTypeIndex OR type = $videoTypeIndex THEN COALESCE(is_favorite, 0)
+            ELSE 0
+          END DESC,
+          CASE 
             WHEN id = 'recycle_bin' OR id = 'favorites' THEN 0 
             ELSE datetime(date_added) 
           END DESC
@@ -1533,6 +1538,78 @@ class DatabaseService {
   }
 
   /// 根据ID获取媒体项目
+  /// 切换图/视频的星标：不改动 [directory]；标星后更新 [date_added] 以排在本目录同类项最前。
+  /// 返回切换后的星标状态（true=已标星）。
+  Future<bool> toggleMediaItemFavorite(String id) async {
+    final row = await getMediaItemById(id);
+    if (row == null) {
+      throw Exception('媒体不存在');
+    }
+    final t = mediaTypeIndex(row);
+    if (t != 0 && t != 1) {
+      throw Exception('仅支持图片或视频');
+    }
+    final dir = row['directory']?.toString() ?? '';
+    if (dir == 'recycle_bin') {
+      throw Exception('回收站中无法标星');
+    }
+    final db = await database;
+    final wasFav = ((row['is_favorite'] as int?) ?? 0) == 1;
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    if (wasFav) {
+      await db.update(
+        'media_items',
+        {'is_favorite': 0, 'updated_at': nowMs},
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+      return false;
+    }
+    await db.update(
+      'media_items',
+      {
+        'is_favorite': 1,
+        'date_added': DateTime.now().toIso8601String(),
+        'updated_at': nowMs,
+      },
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+    return true;
+  }
+
+  /// 仅标星、不取消：已标星则 no-op（用于文档编辑等无法看到收藏态的入口）。
+  /// 校验规则与 [toggleMediaItemFavorite] 一致。
+  Future<void> ensureMediaItemFavorite(String id) async {
+    final row = await getMediaItemById(id);
+    if (row == null) {
+      throw Exception('媒体不存在');
+    }
+    final t = mediaTypeIndex(row);
+    if (t != 0 && t != 1) {
+      throw Exception('仅支持图片或视频');
+    }
+    final dir = row['directory']?.toString() ?? '';
+    if (dir == 'recycle_bin') {
+      throw Exception('回收站中无法标星');
+    }
+    final wasFav = ((row['is_favorite'] as int?) ?? 0) == 1;
+    if (wasFav) return;
+
+    final db = await database;
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    await db.update(
+      'media_items',
+      {
+        'is_favorite': 1,
+        'date_added': DateTime.now().toIso8601String(),
+        'updated_at': nowMs,
+      },
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
   Future<Map<String, dynamic>?> getMediaItemById(String id) async {
     try {
       final db = await database;

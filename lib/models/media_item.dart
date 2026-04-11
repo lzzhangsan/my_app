@@ -27,6 +27,9 @@ class MediaItem {
   /// 视频视窗变换（仅 type 为视频时有效）。
   final VideoViewParams videoViewParams;
 
+  /// 星标收藏（仅图/视频；不移动目录，仅排序靠前 + UI 标识）。
+  final bool isFavorite;
+
   MediaItem({
     required this.id,
     required this.name,
@@ -37,6 +40,7 @@ class MediaItem {
     this.kenBurnsCenterX,
     this.kenBurnsCenterY,
     this.videoViewParams = const VideoViewParams(),
+    this.isFavorite = false,
   });
 
   /// 从 Map 构造 MediaItem，用于从数据库读取数据
@@ -55,6 +59,7 @@ class MediaItem {
           map['date_added'] as String? ?? DateTime.now().toIso8601String(),
         ),
         videoViewParams: const VideoViewParams(),
+        isFavorite: false,
       );
     }
 
@@ -64,6 +69,12 @@ class MediaItem {
         typeIndex < MediaType.values.length
             ? typeIndex
             : 0; // 如果索引越界，默认使用image类型
+
+    final favRaw = map['is_favorite'];
+    final isFav =
+        favRaw == true ||
+        favRaw == 1 ||
+        (favRaw is num && favRaw != 0);
 
     return MediaItem(
       id: id,
@@ -77,6 +88,7 @@ class MediaItem {
       kenBurnsCenterX: _readKenBurnsCoord(map['ken_burns_center_x']),
       kenBurnsCenterY: _readKenBurnsCoord(map['ken_burns_center_y']),
       videoViewParams: VideoViewParams.fromMediaMap(map),
+      isFavorite: isFav,
     );
   }
 
@@ -93,6 +105,7 @@ class MediaItem {
     if (kenBurnsCenterX != null) 'ken_burns_center_x': kenBurnsCenterX,
     if (kenBurnsCenterY != null) 'ken_burns_center_y': kenBurnsCenterY,
     if (!videoViewParams.isDefault) ...videoViewParams.toDbUpdateMap(),
+    'is_favorite': isFavorite ? 1 : 0,
   };
 
   MediaItem copyWith({
@@ -105,6 +118,7 @@ class MediaItem {
     double? kenBurnsCenterX,
     double? kenBurnsCenterY,
     VideoViewParams? videoViewParams,
+    bool? isFavorite,
     bool clearKenBurnsCenter = false,
     bool clearVideoViewParams = false,
   }) {
@@ -127,6 +141,7 @@ class MediaItem {
           clearVideoViewParams
               ? const VideoViewParams()
               : (videoViewParams ?? this.videoViewParams),
+      isFavorite: isFavorite ?? this.isFavorite,
     );
   }
 }

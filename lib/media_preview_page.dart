@@ -1431,11 +1431,30 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
-                  if (!_isStandaloneBackgroundMode)
+                  if (!_isStandaloneBackgroundMode &&
+                      _currentIndex >= 0 &&
+                      _currentIndex < widget.mediaItems.length &&
+                      (widget.mediaItems[_currentIndex].type ==
+                              MediaType.image ||
+                          widget.mediaItems[_currentIndex].type ==
+                              MediaType.video) &&
+                      !_isCurrentInRecycleBin)
                     _buildActionButton(
-                      icon: Icons.favorite_border,
-                      tooltip: '收藏',
-                      onPressed: _addToFavorites,
+                      icon:
+                          widget.mediaItems[_currentIndex].isFavorite
+                              ? Icons.favorite
+                              : Icons.favorite_border,
+                      tooltip:
+                          widget.mediaItems[_currentIndex].isFavorite
+                              ? '取消收藏'
+                              : '收藏',
+                      onPressed: _toggleFavorite,
+                      iconColor:
+                          widget.mediaItems[_currentIndex].isFavorite
+                              ? Colors.pink.withValues(alpha: 0.4)
+                              : null,
+                      useIconShadow:
+                          !widget.mediaItems[_currentIndex].isFavorite,
                     ),
                   if (!_isStandaloneBackgroundMode) const SizedBox(height: 8),
                   if (!_isStandaloneBackgroundMode)
@@ -1488,45 +1507,33 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     );
   }
 
-  // 添加到收藏夹
-  Future<void> _addToFavorites() async {
+  /// 星标收藏：不移动目录，仅更新排序与缩略图标识。
+  Future<void> _toggleFavorite() async {
+    if (_currentIndex < 0 || _currentIndex >= widget.mediaItems.length) {
+      return;
+    }
     final item = widget.mediaItems[_currentIndex];
     try {
-      // 更新媒体项到收藏夹目录
-      final updatedItem = item.copyWith(directory: 'favorites');
-
-      final result = await _dbService.updateMediaItem(updatedItem.toMap());
-      if (result <= 0) {
-        throw Exception('添加到收藏夹失败');
-      }
-
-      if (!mounted) return;
-      _disposeAllVideoControllers();
-      final nextIndex =
-          _currentIndex >= widget.mediaItems.length - 1
-              ? widget.mediaItems.length - 2
-              : _currentIndex;
-      _skipNextPageChanged = true;
+      await _dbService.toggleMediaItemFavorite(item.id);
+      final row = await _dbService.getMediaItemById(item.id);
+      if (!mounted || row == null) return;
+      final n = widget.mediaItems.length;
+      final from = _currentIndex;
       setState(() {
-        widget.mediaItems.removeAt(_currentIndex);
-        if (widget.mediaItems.isEmpty) {
-          Navigator.of(context).pop(true);
-          return;
-        }
-        _currentIndex = nextIndex;
-        _pageController.jumpToPage(_currentIndex);
+        widget.mediaItems[from] = MediaItem.fromMap(row);
       });
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && widget.mediaItems.isNotEmpty) {
-          _pageController.jumpToPage(_currentIndex);
-          _autoPlayCurrentVideo();
-        }
-      });
+      if (n > 1) {
+        final next = (from + 1) % n;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          _pageController.jumpToPage(next);
+        });
+      }
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text('添加到收藏夹失败: $e')));
+      ).showSnackBar(SnackBar(content: Text('收藏操作失败: $e')));
     }
   }
 
@@ -1596,7 +1603,10 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     required IconData icon,
     required String tooltip,
     required VoidCallback onPressed,
+    Color? iconColor,
+    bool useIconShadow = true,
   }) {
+    final color = iconColor ?? Colors.white;
     return Material(
       color: Colors.transparent,
       child: InkWell(
@@ -1613,9 +1623,9 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
             ),
             child: Icon(
               icon,
-              color: Colors.white,
+              color: color,
               size: 24,
-              shadows: FloatingUiShadows.whiteIcon,
+              shadows: useIconShadow ? FloatingUiShadows.whiteIcon : null,
             ),
           ),
         ),

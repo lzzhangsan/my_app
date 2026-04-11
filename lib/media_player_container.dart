@@ -139,7 +139,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
     Logger.i('Saved selected directory: $directory');
   }
 
-  Future<void> _loadMediaList() async {
+  Future<void> _loadMediaList({bool restartPlaybackIfActive = true}) async {
     setState(() {
       _mediaList = []; // 先清空列表，避免在加载过程中显示旧的媒体
     });
@@ -170,7 +170,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
           _mediaWidget = Center(child: Text('该目录中没有媒体文件'));
           _currentPlayingMedia = null;
         });
-      } else if (_mediaMode != MediaMode.none) {
+      } else if (_mediaMode != MediaMode.none && restartPlaybackIfActive) {
         // 如果之前在播放，重新开始播放
         _showNextMedia();
       }
@@ -1130,6 +1130,95 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
   Future<void> refreshMediaList() async {
     Logger.d('刷新媒体列表...');
     await _loadMediaList();
+  }
+
+  /// 标星/排序后刷新列表，但不打断当前正在展示的媒体。
+  Future<void> refreshMediaListPreservingCurrent() async {
+    final currentId = _currentPlayingMedia?['id']?.toString();
+    final wasActive = _mediaMode != MediaMode.none;
+    await _loadMediaList(restartPlaybackIfActive: false);
+    if (!mounted) return;
+    if (!wasActive || currentId == null || currentId.isEmpty) return;
+    final idx = _mediaList.indexWhere((m) => m['id']?.toString() == currentId);
+    if (idx < 0) {
+      stop();
+      return;
+    }
+    _currentPlayingMedia = Map<String, dynamic>.from(_mediaList[idx]);
+    await reloadCurrentMediaFromDatabase();
+  }
+
+  /// 收藏/标星后自动播放下一条。
+  ///
+  /// **顺序模式**：与媒体预览页一致——在**刷新前的播放列表**上取 `(当前下标 + 1) % 长度`（循环到首条），
+  /// 再在刷新数据库、顺序重排后按 **id** 定位该条播放；这样既避免用「新列表里的下标+1」误跳，
+  /// 又与预览里 `jumpToPage((from + 1) % n)` 的「下一条」定义相同。
+  ///
+  /// **随机模式**：刷新列表后仍按原有随机逻辑切下一条。
+  Future<void> refreshMediaListAndAdvanceToNext() async {
+    final currentId = _currentPlayingMedia?['id']?.toString();
+    final wasActive = _mediaMode != MediaMode.none;
+    if (!wasActive || currentId == null || currentId.isEmpty) return;
+
+    String? successorId;
+    if (_playbackOrder == MediaPlaybackOrder.sequential &&
+        _mediaList.isNotEmpty) {
+      final oldIds =
+          _mediaList
+              .map((m) => m['id']?.toString() ?? '')
+              .where((s) => s.isNotEmpty)
+              .toList();
+      final curIdx = oldIds.indexOf(currentId);
+      // 与 media_preview_page：`(from + 1) % n`，含末项回到第一项。
+      if (curIdx >= 0 && oldIds.length > 1) {
+        successorId = oldIds[(curIdx + 1) % oldIds.length];
+      }
+    }
+
+    await _loadMediaList(restartPlaybackIfActive: false);
+    if (!mounted) return;
+    if (_mediaList.isEmpty) {
+      stop();
+      return;
+    }
+
+    if (_playbackOrder == MediaPlaybackOrder.sequential) {
+      if (successorId != null) {
+        final nextIdx = _mediaList.indexWhere(
+          (m) => m['id']?.toString() == successorId,
+        );
+        if (nextIdx >= 0) {
+          _sequentialIndex = nextIdx;
+          await _persistSequentialIndex();
+          await _showNextMedia();
+          return;
+        }
+      }
+      // 仅一条、找不到目标 id 等：只刷新当前条与游标。
+      final idx = _mediaList.indexWhere((m) => m['id']?.toString() == currentId);
+      if (idx < 0) {
+        stop();
+        return;
+      }
+      _sequentialIndex = idx;
+      await _persistSequentialIndex();
+      _currentPlayingMedia = Map<String, dynamic>.from(_mediaList[idx]);
+      await reloadCurrentMediaFromDatabase();
+      return;
+    }
+
+    // 随机模式
+    final idx = _mediaList.indexWhere((m) => m['id']?.toString() == currentId);
+    if (idx < 0) {
+      stop();
+      return;
+    }
+    if (_mediaList.length == 1) {
+      _currentPlayingMedia = Map<String, dynamic>.from(_mediaList[0]);
+      await reloadCurrentMediaFromDatabase();
+      return;
+    }
+    await _showNextMedia();
   }
 
   @override
