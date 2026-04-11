@@ -14,6 +14,8 @@ class GlobalToolBar extends StatefulWidget {
   final VoidCallback? onMediaMove;
   final VoidCallback? onMediaDelete;
   final VoidCallback? onMediaFavorite;
+  final VoidCallback? onMediaPreviewAdjust;
+
   /// 红色播放键三连击：打开媒体播放设置（停留时间、展现方式、随机/顺序）
   final VoidCallback? onMediaSettings;
   const GlobalToolBar({
@@ -30,6 +32,7 @@ class GlobalToolBar extends StatefulWidget {
     this.onMediaMove,
     this.onMediaDelete,
     this.onMediaFavorite,
+    this.onMediaPreviewAdjust,
     this.onMediaSettings,
   });
 
@@ -42,16 +45,22 @@ class _GlobalToolBarState extends State<GlobalToolBar> {
   Timer? _tapTimer;
   int _playTapCount = 0;
   Timer? _playTapSettleTimer;
+  int _settingsTapCount = 0;
+  Timer? _settingsTapSettleTimer;
+
   /// 播放键：最后一次点击后等待此时长再判定 1/2/3 击，避免三击过程中先触发单击、双击。
   static const Duration _playMultiTapWindow = Duration(milliseconds: 420);
-  static const Duration _tapTimeout = Duration(milliseconds: 600); // 左侧新建键三连击检测时间窗口
+  static const Duration _settingsMultiTapWindow = Duration(milliseconds: 420);
+  static const Duration _tapTimeout = Duration(
+    milliseconds: 600,
+  ); // 左侧新建键三连击检测时间窗口
 
   void _handleAddButtonTap() {
     _tapCount++;
-    
+
     // 取消之前的定时器
     _tapTimer?.cancel();
-    
+
     if (_tapCount == 1) {
       // 第一次点击，开始计时
       _tapTimer = Timer(_tapTimeout, () {
@@ -102,6 +111,28 @@ class _GlobalToolBarState extends State<GlobalToolBar> {
     widget.onMediaStop?.call();
   }
 
+  void _handleSettingsButtonTap() {
+    _settingsTapCount++;
+    _settingsTapSettleTimer?.cancel();
+    _settingsTapSettleTimer = Timer(_settingsMultiTapWindow, () {
+      final c = _settingsTapCount;
+      _settingsTapCount = 0;
+      if (c >= 3) {
+        widget.onMediaPreviewAdjust?.call();
+      } else if (c == 2) {
+        widget.onMediaDelete?.call();
+      } else if (c == 1) {
+        widget.onMediaFavorite?.call();
+      }
+    });
+  }
+
+  void _handleSettingsButtonLongPress() {
+    _settingsTapSettleTimer?.cancel();
+    _settingsTapCount = 0;
+    widget.onMediaMove?.call();
+  }
+
   void _handleAddButtonLongPress() {
     // 取消点击计时器
     _tapTimer?.cancel();
@@ -116,8 +147,10 @@ class _GlobalToolBarState extends State<GlobalToolBar> {
   void dispose() {
     _tapTimer?.cancel();
     _playTapSettleTimer?.cancel();
+    _settingsTapSettleTimer?.cancel();
     super.dispose();
   }
+
   @override
   Widget build(BuildContext context) {
     return Padding(
@@ -131,11 +164,7 @@ class _GlobalToolBarState extends State<GlobalToolBar> {
             GestureDetector(
               onTap: _handleAddButtonTap,
               onLongPress: _handleAddButtonLongPress,
-              child: Icon(
-                Icons.note_add,
-                color: Colors.blueAccent,
-                size: 31.2,
-              ),
+              child: Icon(Icons.note_add, color: Colors.blueAccent, size: 31.2),
             ),
             IconButton(
               icon: Icon(
@@ -165,22 +194,10 @@ class _GlobalToolBarState extends State<GlobalToolBar> {
               ),
             ),
             GestureDetector(
-              onTap: () {
-                if (widget.onMediaFavorite != null) widget.onMediaFavorite!();
-              },
-              onDoubleTap: () {
-                if (widget.onMediaDelete != null) widget.onMediaDelete!();
-              },
-              onLongPress: () {
-                if (widget.onMediaMove != null) widget.onMediaMove!();
-              },
-              child: Icon(
-                Icons.settings,
-                color: Colors.green,
-                size: 31.2,
-              ),
+              onTap: _handleSettingsButtonTap,
+              onLongPress: _handleSettingsButtonLongPress,
+              child: Icon(Icons.settings, color: Colors.green, size: 31.2),
             ),
-
           ],
         ),
       ),

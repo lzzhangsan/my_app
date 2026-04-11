@@ -50,6 +50,8 @@ class DatabaseService {
 
   static const String _videoViewStagingJsonFileName =
       'media_view_params_staging.json';
+  static const String _backgroundFileViewParamsTable =
+      'background_file_view_params';
 
   /// 初始化数据库服务
   Future<void> initialize() async {
@@ -107,6 +109,7 @@ class DatabaseService {
       // 部分环境未走 onUpgrade 或旧表缺少列：补全渐进放大中心点字段
       await _ensureMediaItemsKenBurnsColumns(_database!);
       await _ensureMediaItemsVideoViewColumns(_database!);
+      await _ensureBackgroundFileViewParamsTable(_database!);
 
       _initCompleter.complete(_database!);
       _isInitialized = true;
@@ -373,6 +376,7 @@ class DatabaseService {
 
       // 创建索引以提高查询性能
       await _createIndexes(txn);
+      await _ensureBackgroundFileViewParamsTable(txn);
     });
   }
 
@@ -411,6 +415,47 @@ class DatabaseService {
         asset_id TEXT PRIMARY KEY
       )
     ''');
+  }
+
+  Future<void> _ensureBackgroundFileViewParamsTable(DatabaseExecutor db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS $_backgroundFileViewParamsTable(
+        path TEXT PRIMARY KEY,
+        normalized_path TEXT,
+        slash_path TEXT,
+        file_hash TEXT,
+        video_view_scale REAL DEFAULT 1,
+        video_view_tx REAL DEFAULT 0,
+        video_view_ty REAL DEFAULT 0,
+        video_view_rot INTEGER DEFAULT 0,
+        video_view_basis_w REAL,
+        video_view_basis_h REAL,
+        video_view_anchor_x REAL,
+        video_view_anchor_y REAL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    ''');
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_background_file_view_params_norm
+      ON $_backgroundFileViewParamsTable(normalized_path)
+    ''');
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_background_file_view_params_slash
+      ON $_backgroundFileViewParamsTable(slash_path)
+    ''');
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_background_file_view_params_hash
+      ON $_backgroundFileViewParamsTable(file_hash)
+    ''');
+  }
+
+  Future<String?> _computeFileHashIfExists(String pathStr) async {
+    final file = File(pathStr);
+    if (!await file.exists()) return null;
+    final digest = await md5.bind(file.openRead()).first;
+    final hash = digest.toString();
+    return hash.isEmpty ? null : hash;
   }
 
   /// 数据库升级
@@ -1220,6 +1265,7 @@ class DatabaseService {
     if (pathStr.isEmpty) return const VideoViewParams();
     try {
       final db = await database;
+      await _ensureBackgroundFileViewParamsTable(db);
       final normPath = p.normalize(pathStr);
       final slashPath = normPath.replaceAll('\\', '/');
       final byPath = await db.rawQuery(
@@ -1245,11 +1291,25 @@ class DatabaseService {
       if (byPath.isNotEmpty) {
         return VideoViewParams.fromMediaMap(byPath.first);
       }
-      final file = File(pathStr);
-      if (!await file.exists()) return const VideoViewParams();
-      final digest = await md5.bind(file.openRead()).first;
-      final hash = digest.toString();
-      if (hash.isEmpty) return const VideoViewParams();
+      final standaloneByPath = await db.rawQuery(
+        '''
+        SELECT video_view_scale, video_view_tx, video_view_ty, video_view_rot,
+               video_view_basis_w, video_view_basis_h,
+               video_view_anchor_x, video_view_anchor_y
+        FROM $_backgroundFileViewParamsTable
+        WHERE path = ?
+           OR normalized_path = ?
+           OR slash_path = ?
+        ORDER BY COALESCE(updated_at, 0) DESC
+        LIMIT 1
+        ''',
+        [normPath, normPath, slashPath],
+      );
+      if (standaloneByPath.isNotEmpty) {
+        return VideoViewParams.fromMediaMap(standaloneByPath.first);
+      }
+      final hash = await _computeFileHashIfExists(pathStr);
+      if (hash == null) return const VideoViewParams();
       final byHash = await db.rawQuery(
         '''
         SELECT video_view_scale, video_view_tx, video_view_ty, video_view_rot,
@@ -1273,6 +1333,21 @@ class DatabaseService {
       );
       if (byHash.isNotEmpty) {
         return VideoViewParams.fromMediaMap(byHash.first);
+      }
+      final standaloneByHash = await db.rawQuery(
+        '''
+        SELECT video_view_scale, video_view_tx, video_view_ty, video_view_rot,
+               video_view_basis_w, video_view_basis_h,
+               video_view_anchor_x, video_view_anchor_y
+        FROM $_backgroundFileViewParamsTable
+        WHERE file_hash = ?
+        ORDER BY COALESCE(updated_at, 0) DESC
+        LIMIT 1
+        ''',
+        [hash],
+      );
+      if (standaloneByHash.isNotEmpty) {
+        return VideoViewParams.fromMediaMap(standaloneByHash.first);
       }
     } catch (e) {
       if (kDebugMode) {
@@ -1378,6 +1453,125 @@ class DatabaseService {
       return null;
     } catch (e, stackTrace) {
       _handleError('根据ID获取媒体项失败', e, stackTrace);
+      rethrow;
+    }
+  }
+
+  Future<Map<String, dynamic>?> getMediaItemByFilePath(String pathStr) async {
+    if (pathStr.isEmpty) return null;
+    try {
+      final db = await database;
+      final normPath = p.normalize(pathStr);
+      final slashPath = normPath.replaceAll('\\', '/');
+      final byPath = await db.rawQuery(
+        '''
+        SELECT *
+        FROM media_items
+        WHERE path = ?
+           OR path = ?
+           OR REPLACE(path, '\\\\', '/') = ?
+        ORDER BY
+          CASE
+            WHEN path = ? THEN 0
+            WHEN path = ? THEN 1
+            ELSE 2
+          END,
+          COALESCE(updated_at, 0) DESC
+        LIMIT 1
+        ''',
+        [pathStr, normPath, slashPath, pathStr, normPath],
+      );
+      if (byPath.isNotEmpty) {
+        return byPath.first;
+      }
+
+      final file = File(pathStr);
+      if (!await file.exists()) return null;
+      final digest = await md5.bind(file.openRead()).first;
+      final hash = digest.toString();
+      if (hash.isEmpty) return null;
+      final byHash = await db.rawQuery(
+        '''
+        SELECT *
+        FROM media_items
+        WHERE file_hash = ?
+        ORDER BY
+          CASE
+            WHEN ABS(COALESCE(video_view_scale, 1) - 1.0) > 0.0001
+              OR ABS(COALESCE(video_view_tx, 0)) > 0.0001
+              OR ABS(COALESCE(video_view_ty, 0)) > 0.0001
+              OR COALESCE(video_view_rot, 0) != 0
+            THEN 0
+            ELSE 1
+          END,
+          COALESCE(updated_at, 0) DESC
+        LIMIT 1
+        ''',
+        [hash],
+      );
+      if (byHash.isNotEmpty) {
+        return byHash.first;
+      }
+      return null;
+    } catch (e, stackTrace) {
+      _handleError('根据文件路径获取媒体项失败', e, stackTrace);
+      return null;
+    }
+  }
+
+  Future<void> upsertVideoViewParamsForFilePath(
+    String pathStr,
+    VideoViewParams params,
+  ) async {
+    if (pathStr.isEmpty) return;
+    try {
+      final db = await database;
+      await _ensureBackgroundFileViewParamsTable(db);
+      final normPath = p.normalize(pathStr);
+      final slashPath = normPath.replaceAll('\\', '/');
+      final hash = await _computeFileHashIfExists(pathStr);
+      final now = DateTime.now().millisecondsSinceEpoch;
+      await db.delete(
+        _backgroundFileViewParamsTable,
+        where: 'path = ? OR normalized_path = ? OR slash_path = ?',
+        whereArgs: [normPath, normPath, slashPath],
+      );
+      await db.insert(
+        _backgroundFileViewParamsTable,
+        {
+          'path': normPath,
+          'normalized_path': normPath,
+          'slash_path': slashPath,
+          'file_hash': hash,
+          ...params.toDbUpdateMap(),
+          'created_at': now,
+          'updated_at': now,
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    } catch (e, stackTrace) {
+      _handleError('按背景图路径保存显示参数失败', e, stackTrace);
+      rethrow;
+    }
+  }
+
+  Future<void> clearVideoViewParamsForFilePath(String pathStr) async {
+    if (pathStr.isEmpty) return;
+    try {
+      final db = await database;
+      await _ensureBackgroundFileViewParamsTable(db);
+      final normPath = p.normalize(pathStr);
+      final slashPath = normPath.replaceAll('\\', '/');
+      final hash = await _computeFileHashIfExists(pathStr);
+      await db.delete(
+        _backgroundFileViewParamsTable,
+        where:
+            'path = ? OR normalized_path = ? OR slash_path = ?'
+            '${hash == null ? '' : ' OR file_hash = ?'}',
+        whereArgs: [normPath, normPath, slashPath, if (hash != null) hash],
+      );
+    } catch (e, stackTrace) {
+      _handleError('按背景图路径清除显示参数失败', e, stackTrace);
       rethrow;
     }
   }

@@ -32,11 +32,13 @@ class MediaPreviewPage extends StatefulWidget {
   final List<MediaItem> mediaItems;
   final int initialIndex;
   final bool openedFromRecycleBin;
+  final String? standaloneBackgroundFilePath;
 
   const MediaPreviewPage({
     required this.mediaItems,
     required this.initialIndex,
     this.openedFromRecycleBin = false,
+    this.standaloneBackgroundFilePath,
     super.key,
   });
 
@@ -78,6 +80,8 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
   Future<void> _pendingViewPersist = Future<void>.value();
   bool _allowPreviewPop = false;
   bool _isFlushingBeforePop = false;
+  bool get _isStandaloneBackgroundMode =>
+      (widget.standaloneBackgroundFilePath ?? '').isNotEmpty;
 
   bool get _isCurrentInRecycleBin {
     if (_currentIndex < 0 || _currentIndex >= widget.mediaItems.length) {
@@ -142,22 +146,26 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
 
   Future<void> _resetMediaPresentationToPristine(MediaItem item) async {
     try {
-      const clearedView = VideoViewParams();
-      _dbService.stageVideoViewParamsForDisk(item.id, clearedView);
-      await _dbService.updateMediaItem({
-        'id': item.id,
-        'ken_burns_center_x': null,
-        'ken_burns_center_y': null,
-        'video_view_scale': 1.0,
-        'video_view_tx': 0.0,
-        'video_view_ty': 0.0,
-        'video_view_rot': 0,
-        'video_view_basis_w': null,
-        'video_view_basis_h': null,
-        'video_view_anchor_x': null,
-        'video_view_anchor_y': null,
-        'updated_at': DateTime.now().millisecondsSinceEpoch,
-      });
+      if (_isStandaloneBackgroundMode) {
+        await _dbService.clearVideoViewParamsForFilePath(item.path);
+      } else {
+        const clearedView = VideoViewParams();
+        _dbService.stageVideoViewParamsForDisk(item.id, clearedView);
+        await _dbService.updateMediaItem({
+          'id': item.id,
+          'ken_burns_center_x': null,
+          'ken_burns_center_y': null,
+          'video_view_scale': 1.0,
+          'video_view_tx': 0.0,
+          'video_view_ty': 0.0,
+          'video_view_rot': 0,
+          'video_view_basis_w': null,
+          'video_view_basis_h': null,
+          'video_view_anchor_x': null,
+          'video_view_anchor_y': null,
+          'updated_at': DateTime.now().millisecondsSinceEpoch,
+        });
+      }
       if (!mounted) return;
       final idx = widget.mediaItems.indexWhere((e) => e.id == item.id);
       if (idx < 0) return;
@@ -204,6 +212,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
   }
 
   void _schedulePersistKenBurnsCenter(MediaItem item, double nx, double ny) {
+    if (_isStandaloneBackgroundMode) return;
     if (_shouldIgnoreCenterTap(item)) return;
     _pendingCenterCommitTimers[item.id]?.cancel();
     _pendingCenterCommitTimers[item.id] = Timer(
@@ -221,6 +230,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     double nx,
     double ny,
   ) {
+    if (_isStandaloneBackgroundMode) return;
     if (_shouldIgnoreCenterTap(item)) return;
     _pendingCenterCommitTimers[item.id]?.cancel();
     _pendingCenterCommitTimers[item.id] = Timer(
@@ -319,7 +329,6 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     MediaItem item,
     VideoViewParams p,
   ) async {
-    _dbService.stageVideoViewParamsForDisk(item.id, p);
     final idx = widget.mediaItems.indexWhere((e) => e.id == item.id);
     if (idx >= 0 && widget.mediaItems[idx].videoViewParams != p && mounted) {
       setState(() {
@@ -329,11 +338,16 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
       });
     }
     try {
-      await _dbService.updateMediaItem({
-        'id': item.id,
-        ...p.toDbUpdateMap(),
-        'updated_at': DateTime.now().millisecondsSinceEpoch,
-      });
+      if (_isStandaloneBackgroundMode) {
+        await _dbService.upsertVideoViewParamsForFilePath(item.path, p);
+      } else {
+        _dbService.stageVideoViewParamsForDisk(item.id, p);
+        await _dbService.updateMediaItem({
+          'id': item.id,
+          ...p.toDbUpdateMap(),
+          'updated_at': DateTime.now().millisecondsSinceEpoch,
+        });
+      }
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1074,7 +1088,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
           fitContainInViewport: sideways,
           zoomCenterX: item.kenBurnsCenterX,
           zoomCenterY: item.kenBurnsCenterY,
-          enableDoubleTapToSetZoomCenter: true,
+          enableDoubleTapToSetZoomCenter: !_isStandaloneBackgroundMode,
           onZoomCenterSet: (nx, ny) async {
             _schedulePersistKenBurnsCenter(item, nx, ny);
           },
@@ -1120,7 +1134,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
             fitContainInViewport: sideways,
             zoomCenterX: item.kenBurnsCenterX,
             zoomCenterY: item.kenBurnsCenterY,
-            enableDoubleTapToSetZoomCenter: true,
+            enableDoubleTapToSetZoomCenter: !_isStandaloneBackgroundMode,
             onZoomCenterSet: (nx, ny) async {
               _schedulePersistKenBurnsCenter(item, nx, ny);
             },
@@ -1417,27 +1431,30 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
-                  _buildActionButton(
-                    icon: Icons.favorite_border,
-                    tooltip: '收藏',
-                    onPressed: _addToFavorites,
-                  ),
-                  const SizedBox(height: 8),
-                  _buildActionButton(
-                    icon: Icons.delete_outline,
-                    tooltip: _isCurrentInRecycleBin ? '彻底删除' : '删除',
-                    onPressed:
-                        _isCurrentInRecycleBin
-                            ? _deleteCurrentMediaItem
-                            : _moveToTrash,
-                  ),
-                  const SizedBox(height: 8),
-                  _buildActionButton(
-                    icon: Icons.drive_file_move_outline,
-                    tooltip: '移动',
-                    onPressed: _moveCurrentMediaItem,
-                  ),
-                  const SizedBox(height: 8),
+                  if (!_isStandaloneBackgroundMode)
+                    _buildActionButton(
+                      icon: Icons.favorite_border,
+                      tooltip: '收藏',
+                      onPressed: _addToFavorites,
+                    ),
+                  if (!_isStandaloneBackgroundMode) const SizedBox(height: 8),
+                  if (!_isStandaloneBackgroundMode)
+                    _buildActionButton(
+                      icon: Icons.delete_outline,
+                      tooltip: _isCurrentInRecycleBin ? '彻底删除' : '删除',
+                      onPressed:
+                          _isCurrentInRecycleBin
+                              ? _deleteCurrentMediaItem
+                              : _moveToTrash,
+                    ),
+                  if (!_isStandaloneBackgroundMode) const SizedBox(height: 8),
+                  if (!_isStandaloneBackgroundMode)
+                    _buildActionButton(
+                      icon: Icons.drive_file_move_outline,
+                      tooltip: '移动',
+                      onPressed: _moveCurrentMediaItem,
+                    ),
+                  if (!_isStandaloneBackgroundMode) const SizedBox(height: 8),
                   _buildActionButton(
                     icon:
                         _transformOnlyMode

@@ -10,6 +10,7 @@ import 'resizable_image_box.dart';
 import 'resizable_audio_box.dart';
 import 'global_tool_bar.dart' as toolBar;
 import 'media_player_container.dart';
+import 'media_preview_page.dart';
 import 'video_controls_overlay.dart';
 import 'widgets/video_player_widget.dart';
 import 'widgets/flippable_canvas_widget.dart'; // 新增：导入画布组件
@@ -27,6 +28,7 @@ import 'performance_monitor_page.dart';
 import 'widgets/stored_view_image_layer.dart';
 import 'widgets/floating_ui_shadows.dart';
 import 'widgets/safe_modal_sheet_body.dart';
+import 'models/media_item.dart';
 
 class DocumentEditorPage extends StatefulWidget {
   final String documentName;
@@ -72,6 +74,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
   String? _recordingAudioBoxId;
   bool _isSaving = false; // 添加保存状态标志，防止重复保存
   late final DatabaseService _databaseService;
+  int _backgroundViewRefreshTick = 0;
 
   @override
   void initState() {
@@ -1947,6 +1950,15 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
                 ),
                 if (_backgroundImage != null)
                   ListTile(
+                    leading: Icon(Icons.tune),
+                    title: Text('调整背景图片'),
+                    onTap: () {
+                      Navigator.pop(context);
+                      _openBackgroundImagePreviewEditor();
+                    },
+                  ),
+                if (_backgroundImage != null)
+                  ListTile(
                     leading: Icon(Icons.delete),
                     title: Text('删除背景图片'),
                     onTap: () {
@@ -2169,7 +2181,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
                   // 背景图片层（底层）：复用媒体页为该文件保存的缩放/平移/旋转
                   if (_backgroundImage != null)
                     Positioned.fill(
-                      key: ValueKey('background_image_container'),
+                      key: ValueKey(
+                        'background_image_container_$_backgroundViewRefreshTick',
+                      ),
                       child: StoredViewImageLayer(file: _backgroundImage!),
                     ),
                   // 背景颜色层（上层）
@@ -2488,6 +2502,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
                 onMediaMove: _handleMediaMove,
                 onMediaDelete: _handleMediaDelete,
                 onMediaFavorite: _handleMediaFavorite,
+                onMediaPreviewAdjust: _openCurrentMediaPreviewEditor,
                 onMediaSettings:
                     () =>
                         _mediaPlayerKey.currentState?.showMediaPlayerSettings(),
@@ -2551,7 +2566,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
                       child: Text(
                         '图片框设置',
                         style: TextStyle(
-                            fontSize: 16, fontWeight: FontWeight.bold),
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                     ),
                   ),
@@ -2938,6 +2955,69 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
         ).showSnackBar(SnackBar(content: Text('收藏失败: $e')));
       }
     }
+  }
+
+  Future<void> _openCurrentMediaPreviewEditor() async {
+    final mediaPlayerState = _mediaPlayerKey.currentState;
+    if (mediaPlayerState == null) return;
+
+    final currentMedia = await mediaPlayerState.getCurrentMedia();
+    if (currentMedia == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('当前没有正在展示的媒体')));
+      return;
+    }
+
+    mediaPlayerState.pausePlaybackForExternalPreview();
+
+    await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+        builder:
+            (context) =>
+                MediaPreviewPage(mediaItems: [currentMedia], initialIndex: 0),
+      ),
+    );
+
+    if (!mounted) return;
+    await mediaPlayerState.reloadCurrentMediaFromDatabase();
+  }
+
+  Future<void> _openBackgroundImagePreviewEditor() async {
+    final bg = _backgroundImage;
+    if (bg == null) return;
+    final mediaMap = await _databaseService.getMediaItemByFilePath(bg.path);
+    final previewItem =
+        mediaMap != null
+            ? MediaItem.fromMap(mediaMap)
+            : MediaItem.fromMap({
+              'id': 'background_preview_temp',
+              'name':
+                  bg.uri.pathSegments.isNotEmpty
+                      ? bg.uri.pathSegments.last
+                      : '????',
+              'path': bg.path,
+              'type': 0,
+              'directory': '__background_preview__',
+              'date_added': DateTime.now().toIso8601String(),
+            });
+    await Navigator.push<void>(
+      context,
+      MaterialPageRoute(
+        builder:
+            (context) => MediaPreviewPage(
+              mediaItems: [previewItem],
+              initialIndex: 0,
+              standaloneBackgroundFilePath: mediaMap == null ? bg.path : null,
+            ),
+      ),
+    );
+    if (!mounted) return;
+    setState(() {
+      _backgroundViewRefreshTick++;
+    });
   }
 
   Future<dynamic> _showImageSourceSelectionDialog() async {

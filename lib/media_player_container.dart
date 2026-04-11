@@ -258,6 +258,115 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
     return MediaItem.fromMap(Map<String, dynamic>.from(_currentPlayingMedia!));
   }
 
+  void pausePlaybackForExternalPreview() {
+    _mediaTimer?.cancel();
+    _mediaTimer = null;
+    _currentVideoWidget?.controller?.pause();
+  }
+
+  Future<void> reloadCurrentMediaFromDatabase() async {
+    if (_currentPlayingMedia == null) return;
+    final currentId = _currentPlayingMedia!['id']?.toString();
+    if (currentId == null || currentId.isEmpty) return;
+
+    final refreshed = await _databaseService.getMediaItemById(currentId);
+    if (refreshed == null) {
+      if (!mounted) return;
+      stop();
+      return;
+    }
+
+    final refreshedMap = Map<String, dynamic>.from(refreshed);
+    await _databaseService.tryRepairMediaItemPath(refreshedMap);
+    final mediaIndex = _mediaList.indexWhere(
+      (media) => media['id']?.toString() == currentId,
+    );
+    if (mediaIndex < 0) return;
+
+    final pathStr = refreshedMap['path']?.toString() ?? '';
+    if (pathStr.isEmpty || !await File(pathStr).exists()) {
+      if (!mounted) return;
+      stop();
+      return;
+    }
+
+    _mediaList[mediaIndex] = refreshedMap;
+    _currentPlayingMedia = refreshedMap;
+    _playbackNonce++;
+
+    final int typeIdx = DatabaseService.mediaTypeIndex(refreshedMap);
+    final mediaFile = File(pathStr);
+
+    if (!mounted) return;
+    if (typeIdx == 0) {
+      final sideways =
+          VideoViewParams.fromMediaMap(refreshedMap).quarterTurns % 2 == 1;
+      setState(() {
+        _currentVideoWidget = null;
+        if (_imageMode == MediaImageDisplayMode.kenBurns) {
+          _mediaWidget = _wrapImageWithStoredView(
+            _buildKenBurnsForPlaying(refreshedMap, mediaFile, _mediaSessionId),
+            refreshedMap,
+          );
+        } else if (_imageMode == MediaImageDisplayMode.zoomPanEdge) {
+          _mediaWidget = _wrapImageWithStoredView(
+            ZoomPanEdgeImageDisplay(
+              key: ValueKey(
+                '${refreshedMap['path']}_zpan_$_mediaMode'
+                '_${_imagePanRoamCoverage.toStringAsFixed(2)}'
+                '_${_letterboxFill.index}'
+                '_rot${VideoViewParams.fromMediaMap(refreshedMap).quarterTurns % 4}'
+                '_n$_playbackNonce',
+              ),
+              imageFile: mediaFile,
+              totalDuration: _imageDuration,
+              maxScale: _zoomMax,
+              clockwise: _panClockwise,
+              panPathCoverage: _imagePanRoamCoverage,
+              letterboxFill: _letterboxFill,
+              fitContainInViewport: sideways,
+              loop: _mediaMode == MediaMode.manual,
+              onAnimationComplete: null,
+            ),
+            refreshedMap,
+          );
+        } else {
+          _mediaWidget = _wrapImageWithStoredView(
+            FitWidthBlurStaticImage(
+              key: ValueKey(
+                'fw_${refreshedMap['path']}_rot${VideoViewParams.fromMediaMap(refreshedMap).quarterTurns % 4}_n$_playbackNonce',
+              ),
+              file: mediaFile,
+              letterboxFill: _letterboxFill,
+              fitContainInViewport: sideways,
+              zoomCenterX:
+                  (refreshedMap['ken_burns_center_x'] as num?)?.toDouble(),
+              zoomCenterY:
+                  (refreshedMap['ken_burns_center_y'] as num?)?.toDouble(),
+            ),
+            refreshedMap,
+          );
+        }
+      });
+      return;
+    }
+
+    if (typeIdx == 1) {
+      setState(() {
+        _currentVideoWidget = VideoPlayerWidget(
+          key: ValueKey('vp_${refreshedMap['path']}_$_playbackNonce'),
+          file: mediaFile,
+          viewParams: VideoViewParams.fromMediaMap(refreshedMap),
+          onVideoEnd: null,
+          onVideoError: null,
+          looping: false,
+          forceManualLoop: _mediaMode == MediaMode.manual,
+        );
+        _mediaWidget = _currentVideoWidget;
+      });
+    }
+  }
+
   // 获取当前的VideoPlayerWidget实例
   VideoPlayerWidget? getCurrentVideoWidget() {
     return _currentVideoWidget;

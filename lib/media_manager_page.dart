@@ -3013,6 +3013,11 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     const double crossAxisSpacing = _gridCrossAxisSpacing;
     const double mainAxisSpacing = _gridMainAxisSpacing;
     const double padding = _gridPadding;
+    final bottomSafeInset = MediaQuery.viewPaddingOf(context).bottom;
+    final bottomOverlayHeight =
+        _selectedItems.isNotEmpty ? 56.0 : (_isMultiSelectMode ? 72.0 : 0.0);
+    final bottomContentPadding =
+        padding + bottomSafeInset + bottomOverlayHeight + 12;
 
     return Listener(
       behavior: HitTestBehavior.translucent,
@@ -3148,7 +3153,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
               left: padding,
               right: padding,
               top: padding,
-              bottom: padding + (_selectedItems.isNotEmpty ? 56 : 0),
+              bottom: bottomContentPadding,
             ),
             gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
               crossAxisCount: crossAxisCount,
@@ -4334,36 +4339,37 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      builder: (context) => SafeModalSheetScrollable(
-        children: [
-          ListTile(
-            leading: const Icon(Icons.select_all),
-            title: const Text('全选'),
-            onTap: () {
-              Navigator.pop(context);
-              _selectAll();
-            },
+      builder:
+          (context) => SafeModalSheetScrollable(
+            children: [
+              ListTile(
+                leading: const Icon(Icons.select_all),
+                title: const Text('全选'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _selectAll();
+                },
+              ),
+              const Divider(height: 1),
+              ListTile(
+                leading: const Icon(Icons.move_to_inbox),
+                title: const Text('移动到'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _showMoveDialog();
+                },
+              ),
+              const Divider(height: 1),
+              ListTile(
+                leading: const Icon(Icons.delete, color: Colors.red),
+                title: const Text('删除', style: TextStyle(color: Colors.red)),
+                onTap: () {
+                  Navigator.pop(context);
+                  _deleteSelectedItems();
+                },
+              ),
+            ],
           ),
-          const Divider(height: 1),
-          ListTile(
-            leading: const Icon(Icons.move_to_inbox),
-            title: const Text('移动到'),
-            onTap: () {
-              Navigator.pop(context);
-              _showMoveDialog();
-            },
-          ),
-          const Divider(height: 1),
-          ListTile(
-            leading: const Icon(Icons.delete, color: Colors.red),
-            title: const Text('删除', style: TextStyle(color: Colors.red)),
-            onTap: () {
-              Navigator.pop(context);
-              _deleteSelectedItems();
-            },
-          ),
-        ],
-      ),
     );
   }
 
@@ -4564,109 +4570,109 @@ class _MediaManagerPageState extends State<MediaManagerPage>
               top: false,
               minimum: const EdgeInsets.only(bottom: 8),
               child: ConstrainedBox(
-              constraints: const BoxConstraints(maxHeight: 460),
-              child: Container(
-                width: dialogWidth,
-                padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.only(top: 4, bottom: 12),
-                      child: SizedBox(
-                        height: 48,
-                        child: Stack(
-                          clipBehavior: Clip.none,
-                          alignment: Alignment.center,
-                          children: [
-                            const Center(
-                              child: Text(
-                                '媒体管理选项',
-                                style: TextStyle(
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.bold,
+                constraints: const BoxConstraints(maxHeight: 460),
+                child: Container(
+                  width: dialogWidth,
+                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4, bottom: 12),
+                        child: SizedBox(
+                          height: 48,
+                          child: Stack(
+                            clipBehavior: Clip.none,
+                            alignment: Alignment.center,
+                            children: [
+                              const Center(
+                                child: Text(
+                                  '媒体管理选项',
+                                  style: TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.bold,
+                                  ),
                                 ),
                               ),
-                            ),
-                            Positioned(
-                              right: 0,
-                              top: 0,
-                              bottom: 0,
-                              child: Center(
-                                child: Switch(
-                                  value: _autoImportSilentMode,
-                                  onChanged: (v) async {
-                                    setState(() => _autoImportSilentMode = v);
-                                    setModalState(() {});
-                                    await _saveSettings();
-                                  },
+                              Positioned(
+                                right: 0,
+                                top: 0,
+                                bottom: 0,
+                                child: Center(
+                                  child: Switch(
+                                    value: _autoImportSilentMode,
+                                    onChanged: (v) async {
+                                      setState(() => _autoImportSilentMode = v);
+                                      setModalState(() {});
+                                      await _saveSettings();
+                                    },
+                                  ),
                                 ),
                               ),
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
                       ),
-                    ),
-                    const Divider(height: 1),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 4),
-                      child: GridView.builder(
-                        shrinkWrap: true,
-                        physics: const NeverScrollableScrollPhysics(),
-                        gridDelegate:
-                            const SliverGridDelegateWithFixedCrossAxisCount(
-                              crossAxisCount: 2,
-                              childAspectRatio: 3.5,
-                              crossAxisSpacing: 6,
-                              mainAxisSpacing: 4,
-                            ),
-                        itemCount: options.length,
-                        itemBuilder: (context, index) {
-                          final option = options[index];
-                          return GestureDetector(
-                            onTap: option['onTap'] as void Function(),
-                            child: Container(
-                              decoration: BoxDecoration(
-                                color: Colors.grey[100],
-                                borderRadius: BorderRadius.circular(8),
+                      const Divider(height: 1),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 4),
+                        child: GridView.builder(
+                          shrinkWrap: true,
+                          physics: const NeverScrollableScrollPhysics(),
+                          gridDelegate:
+                              const SliverGridDelegateWithFixedCrossAxisCount(
+                                crossAxisCount: 2,
+                                childAspectRatio: 3.5,
+                                crossAxisSpacing: 6,
+                                mainAxisSpacing: 4,
                               ),
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 8,
-                                vertical: 4,
-                              ),
-                              child: Row(
-                                children: [
-                                  Icon(
-                                    option['icon'] as IconData,
-                                    size: 20,
-                                    color: option['color'] as Color,
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: Text(
-                                      option['title'] as String,
-                                      style: TextStyle(
-                                        fontSize: 13,
-                                        color:
-                                            option['color'] == Colors.red
-                                                ? Colors.red
-                                                : Colors.black,
-                                      ),
-                                      overflow: TextOverflow.ellipsis,
-                                      maxLines: 1,
+                          itemCount: options.length,
+                          itemBuilder: (context, index) {
+                            final option = options[index];
+                            return GestureDetector(
+                              onTap: option['onTap'] as void Function(),
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  color: Colors.grey[100],
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 4,
+                                ),
+                                child: Row(
+                                  children: [
+                                    Icon(
+                                      option['icon'] as IconData,
+                                      size: 20,
+                                      color: option['color'] as Color,
                                     ),
-                                  ),
-                                ],
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: Text(
+                                        option['title'] as String,
+                                        style: TextStyle(
+                                          fontSize: 13,
+                                          color:
+                                              option['color'] == Colors.red
+                                                  ? Colors.red
+                                                  : Colors.black,
+                                        ),
+                                        overflow: TextOverflow.ellipsis,
+                                        maxLines: 1,
+                                      ),
+                                    ),
+                                  ],
+                                ),
                               ),
-                            ),
-                          );
-                        },
+                            );
+                          },
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
-            ),
             );
           },
         );
@@ -6684,10 +6690,18 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
   /// 无边透明顶栏：清爽深灰/黑字与图标，无阴影；窄屏右侧可横滑避免溢出
   Widget _buildMediaFloatingTopBar() {
-    const Color fg = Color(0xE6000000);
+    const Color fg = Colors.white;
+    const iconShadows = [
+      Shadow(color: Colors.black54, blurRadius: 6, offset: Offset(0, 2)),
+    ];
     final pad = MediaQuery.paddingOf(context);
-    const ts = TextStyle(fontSize: 20, fontWeight: FontWeight.w500, color: fg);
-    const countStyle = TextStyle(fontSize: 11, color: fg);
+    const ts = TextStyle(
+      fontSize: 20,
+      fontWeight: FontWeight.w500,
+      color: fg,
+      shadows: iconShadows,
+    );
+    const countStyle = TextStyle(fontSize: 11, color: fg, shadows: iconShadows);
 
     final bool showRootTitle =
         !Navigator.of(context).canPop() && _currentDirectory == 'root';
@@ -6703,14 +6717,14 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     Widget leadingSlot;
     if (Navigator.of(context).canPop()) {
       leadingSlot = IconButton(
-        icon: const Icon(Icons.arrow_back, color: fg),
+        icon: const Icon(Icons.arrow_back, color: fg, shadows: iconShadows),
         onPressed: () => Navigator.of(context).pop(),
         tooltip: '返回',
         style: iconBtnStyle,
       );
     } else if (_currentDirectory != 'root') {
       leadingSlot = IconButton(
-        icon: const Icon(Icons.arrow_upward, color: fg),
+        icon: const Icon(Icons.arrow_upward, color: fg, shadows: iconShadows),
         onPressed: _navigateUp,
         tooltip: '返回上级',
         style: iconBtnStyle,
@@ -6724,7 +6738,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(Icons.image, size: 18, color: fg),
+          const Icon(Icons.image, size: 18, color: fg, shadows: iconShadows),
           const SizedBox(width: 2),
           Text(
             '$_imageCount',
@@ -6734,7 +6748,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
             ),
           ),
           const SizedBox(width: 8),
-          const Icon(Icons.videocam, size: 18, color: fg),
+          const Icon(Icons.videocam, size: 18, color: fg, shadows: iconShadows),
           const SizedBox(width: 2),
           Text(
             '$_videoCount',
@@ -6768,6 +6782,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                     Icons.delete_forever,
                     size: 24,
                     color: Colors.redAccent,
+                    shadows: iconShadows,
                   ),
                   onPressed: _clearRecycleBin,
                   tooltip: '清空回收站',
@@ -6794,31 +6809,52 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                         _mediaVisible ? Icons.visibility : Icons.visibility_off,
                         size: 18,
                         color: fg,
+                        shadows: iconShadows,
                       ),
                       onPressed: _toggleMediaVisibility,
                       tooltip: '切换媒体可见性',
                       style: iconBtnStyle,
                     ),
                     IconButton(
-                      icon: const Icon(Icons.storage, size: 18, color: fg),
+                      icon: const Icon(
+                        Icons.storage,
+                        size: 18,
+                        color: fg,
+                        shadows: iconShadows,
+                      ),
                       onPressed: _showStorageManagement,
                       tooltip: '存储管理',
                       style: iconBtnStyle,
                     ),
                     IconButton(
-                      icon: const Icon(Icons.settings, size: 18, color: fg),
+                      icon: const Icon(
+                        Icons.settings,
+                        size: 18,
+                        color: fg,
+                        shadows: iconShadows,
+                      ),
                       onPressed: _showSettingsMenu,
                       tooltip: '设置',
                       style: iconBtnStyle,
                     ),
                     IconButton(
-                      icon: const Icon(Icons.refresh, size: 18, color: fg),
+                      icon: const Icon(
+                        Icons.refresh,
+                        size: 18,
+                        color: fg,
+                        shadows: iconShadows,
+                      ),
                       onPressed: () => unawaited(_refreshMediaAndThumbnails()),
                       tooltip: '刷新',
                       style: iconBtnStyle,
                     ),
                     IconButton(
-                      icon: const Icon(Icons.find_replace, size: 18, color: fg),
+                      icon: const Icon(
+                        Icons.find_replace,
+                        size: 18,
+                        color: fg,
+                        shadows: iconShadows,
+                      ),
                       onPressed: _deduplicateCurrentFolder,
                       tooltip: '当前目录查重',
                       style: iconBtnStyle,

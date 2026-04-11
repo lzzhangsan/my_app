@@ -31,6 +31,8 @@ import 'utils/safe_path_utils.dart';
 import 'utils/app_storage_paths.dart';
 import 'services/test_data_generator_service.dart';
 import 'widgets/floating_ui_shadows.dart';
+import 'media_preview_page.dart';
+import 'models/media_item.dart';
 
 // 全局函数：显示进度条弹窗，支持取消操作
 void showProgressDialog(
@@ -42,31 +44,34 @@ void showProgressDialog(
   showDialog(
     context: context,
     barrierDismissible: barrierDismissible,
-    builder: (context) => AlertDialog(
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          ValueListenableBuilder<double>(
-            valueListenable: progress,
-            builder: (context, value, child) =>
-                LinearProgressIndicator(value: value),
-          ),
-          const SizedBox(height: 8),
-          ValueListenableBuilder<String>(
-            valueListenable: message,
-            builder: (context, value, child) => Text(value),
-          ),
-        ],
-      ),
-      actions: barrierDismissible
-          ? [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: Text('取消'),
+    builder:
+        (context) => AlertDialog(
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ValueListenableBuilder<double>(
+                valueListenable: progress,
+                builder:
+                    (context, value, child) =>
+                        LinearProgressIndicator(value: value),
               ),
-            ]
-          : null,
-    ),
+              const SizedBox(height: 8),
+              ValueListenableBuilder<String>(
+                valueListenable: message,
+                builder: (context, value, child) => Text(value),
+              ),
+            ],
+          ),
+          actions:
+              barrierDismissible
+                  ? [
+                    TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: Text('取消'),
+                    ),
+                  ]
+                  : null,
+        ),
   );
 }
 
@@ -95,6 +100,7 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
   // 新增：日记本背景图片和颜色
   File? _diaryBgImage;
   Color? _diaryBgColor;
+  int _backgroundViewRefreshTick = 0;
 
   @override
   void initState() {
@@ -184,6 +190,43 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
     await getService<DatabaseService>().deleteDiaryBackgroundImage();
     setState(() {
       _diaryBgImage = null;
+    });
+  }
+
+  Future<void> _openBackgroundImagePreviewEditor() async {
+    final bg = _diaryBgImage;
+    if (bg == null) return;
+    final mediaMap = await getService<DatabaseService>().getMediaItemByFilePath(
+      bg.path,
+    );
+    final previewItem =
+        mediaMap != null
+            ? MediaItem.fromMap(mediaMap)
+            : MediaItem.fromMap({
+              'id': 'background_preview_temp',
+              'name':
+                  bg.uri.pathSegments.isNotEmpty
+                      ? bg.uri.pathSegments.last
+                      : '????',
+              'path': bg.path,
+              'type': 0,
+              'directory': '__background_preview__',
+              'date_added': DateTime.now().toIso8601String(),
+            });
+    await Navigator.push<void>(
+      context,
+      MaterialPageRoute(
+        builder:
+            (context) => MediaPreviewPage(
+              mediaItems: [previewItem],
+              initialIndex: 0,
+              standaloneBackgroundFilePath: mediaMap == null ? bg.path : null,
+            ),
+      ),
+    );
+    if (!mounted) return;
+    setState(() {
+      _backgroundViewRefreshTick++;
     });
   }
 
@@ -298,9 +341,10 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
   }
 
   List<DiaryEntry> get _entriesForSelectedDate {
-    final filtered = _showFavoritesOnly
-        ? _entries.where((e) => e.isFavorite).toList()
-        : _entries;
+    final filtered =
+        _showFavoritesOnly
+            ? _entries.where((e) => e.isFavorite).toList()
+            : _entries;
     return filtered..sort((a, b) => b.date.compareTo(a.date));
   }
 
@@ -368,20 +412,21 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
   void _deleteEntry(DiaryEntry entry) async {
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('确认删除'),
-        content: const Text('确定要删除这条日记吗？此操作无法撤销。'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('取消'),
+      builder:
+          (context) => AlertDialog(
+            title: const Text('确认删除'),
+            content: const Text('确定要删除这条日记吗？此操作无法撤销。'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(false),
+                child: const Text('取消'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(true),
+                child: const Text('删除', style: TextStyle(color: Colors.red)),
+              ),
+            ],
           ),
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('删除', style: TextStyle(color: Colors.red)),
-          ),
-        ],
-      ),
     );
 
     if (confirmed == true) {
@@ -407,132 +452,147 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
-      builder: (context) => SafeModalSheetScrollable(
-        children: [
-          ListTile(
-            leading: Icon(Icons.image),
-            title: Text('设置背景图片'),
-            onTap: () async {
-              Navigator.pop(context);
-              await _pickDiaryBackgroundImage();
-            },
+      builder:
+          (context) => SafeModalSheetScrollable(
+            children: [
+              ListTile(
+                leading: Icon(Icons.image),
+                title: Text('设置背景图片'),
+                onTap: () async {
+                  Navigator.pop(context);
+                  await _pickDiaryBackgroundImage();
+                },
+              ),
+              Divider(height: 1),
+              ListTile(
+                leading: Icon(Icons.color_lens),
+                title: Text('设置背景颜色'),
+                onTap: () async {
+                  Navigator.pop(context);
+                  await _pickDiaryBackgroundColor();
+                },
+              ),
+              if (_diaryBgImage != null) ...[
+                Divider(height: 1),
+                ListTile(
+                  leading: Icon(Icons.tune),
+                  title: Text('调整背景图片'),
+                  onTap: () async {
+                    Navigator.pop(context);
+                    await _openBackgroundImagePreviewEditor();
+                  },
+                ),
+                Divider(height: 1),
+                ListTile(
+                  leading: Icon(Icons.delete, color: Colors.red),
+                  title: Text('清除背景图片'),
+                  onTap: () async {
+                    Navigator.pop(context);
+                    await _removeDiaryBackgroundImage();
+                  },
+                ),
+              ],
+              Divider(height: 1),
+              ListTile(
+                leading: Icon(Icons.upload_file),
+                title: Text('导出日记本数据'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _exportDiaryData();
+                },
+              ),
+              Divider(height: 1),
+              ListTile(
+                leading: Icon(Icons.download_rounded),
+                title: Text('导入日记本数据'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _importDiaryData();
+                },
+              ),
+              Divider(height: 1),
+              ListTile(
+                leading: Icon(Icons.science, color: Colors.orange),
+                title: Text('生成测试数据'),
+                subtitle: Text('用于验证导出/导入性能'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _showGenerateTestDataDialog();
+                },
+              ),
+            ],
           ),
-          Divider(height: 1),
-          ListTile(
-            leading: Icon(Icons.color_lens),
-            title: Text('设置背景颜色'),
-            onTap: () async {
-              Navigator.pop(context);
-              await _pickDiaryBackgroundColor();
-            },
-          ),
-          if (_diaryBgImage != null) ...[
-            Divider(height: 1),
-            ListTile(
-              leading: Icon(Icons.delete, color: Colors.red),
-              title: Text('清除背景图片'),
-              onTap: () async {
-                Navigator.pop(context);
-                await _removeDiaryBackgroundImage();
-              },
-            ),
-          ],
-          Divider(height: 1),
-          ListTile(
-            leading: Icon(Icons.upload_file),
-            title: Text('导出日记本数据'),
-            onTap: () {
-              Navigator.pop(context);
-              _exportDiaryData();
-            },
-          ),
-          Divider(height: 1),
-          ListTile(
-            leading: Icon(Icons.download_rounded),
-            title: Text('导入日记本数据'),
-            onTap: () {
-              Navigator.pop(context);
-              _importDiaryData();
-            },
-          ),
-          Divider(height: 1),
-          ListTile(
-            leading: Icon(Icons.science, color: Colors.orange),
-            title: Text('生成测试数据'),
-            subtitle: Text('用于验证导出/导入性能'),
-            onTap: () {
-              Navigator.pop(context);
-              _showGenerateTestDataDialog();
-            },
-          ),
-        ],
-      ),
     );
   }
 
   Future<void> _showGenerateTestDataDialog() async {
     final scale = await showDialog<TestDataScale>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text('选择测试数据规模'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: TestDataScale.diaryScales.map((s) {
-            final suffix = s.formulaDiary.substring(s.label.length) +
-                (s.isPeakTarget ? '（需数分钟）' : '');
-            return ListTile(
-              dense: true,
-              title: RichText(
-                text: TextSpan(
-                  style: TextStyle(
-                    color: Theme.of(ctx).brightness == Brightness.dark
-                        ? Colors.white
-                        : Colors.black87,
-                    fontSize: 14,
-                  ),
-                  children: [
-                    TextSpan(
-                      text: s.label,
-                      style: TextStyle(
-                        color: Colors.blue,
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
+      builder:
+          (ctx) => AlertDialog(
+            title: Text('选择测试数据规模'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children:
+                  TestDataScale.diaryScales.map((s) {
+                    final suffix =
+                        s.formulaDiary.substring(s.label.length) +
+                        (s.isPeakTarget ? '（需数分钟）' : '');
+                    return ListTile(
+                      dense: true,
+                      title: RichText(
+                        text: TextSpan(
+                          style: TextStyle(
+                            color:
+                                Theme.of(ctx).brightness == Brightness.dark
+                                    ? Colors.white
+                                    : Colors.black87,
+                            fontSize: 14,
+                          ),
+                          children: [
+                            TextSpan(
+                              text: s.label,
+                              style: TextStyle(
+                                color: Colors.blue,
+                                fontSize: 16,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            TextSpan(text: suffix),
+                          ],
+                        ),
                       ),
-                    ),
-                    TextSpan(text: suffix),
-                  ],
-                ),
+                      onTap: () => Navigator.pop(ctx, s),
+                    );
+                  }).toList(),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: Text('取消'),
               ),
-              onTap: () => Navigator.pop(ctx, s),
-            );
-          }).toList(),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: Text('取消'),
+            ],
           ),
-        ],
-      ),
     );
     if (scale == null || !mounted) return;
     if (scale.isPeakTarget) {
       final confirm = await showDialog<bool>(
         context: context,
-        builder: (ctx) => AlertDialog(
-          title: Text('确认峰值测试'),
-          content: Text('将生成约 10GB 测试数据，预计耗时数分钟。\n请确保设备有足够存储空间。\n\n继续？'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: Text('取消'),
+        builder:
+            (ctx) => AlertDialog(
+              title: Text('确认峰值测试'),
+              content: Text('将生成约 10GB 测试数据，预计耗时数分钟。\n请确保设备有足够存储空间。\n\n继续？'),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: Text('取消'),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  child: Text('继续'),
+                ),
+              ],
             ),
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: Text('继续'),
-            ),
-          ],
-        ),
       );
       if (confirm != true || !mounted) return;
     }
@@ -540,19 +600,20 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            CircularProgressIndicator(),
-            SizedBox(height: 16),
-            ValueListenableBuilder<String>(
-              valueListenable: progress,
-              builder: (_, v, __) => Text(v),
+      builder:
+          (ctx) => AlertDialog(
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(height: 16),
+                ValueListenableBuilder<String>(
+                  valueListenable: progress,
+                  builder: (_, v, __) => Text(v),
+                ),
+              ],
             ),
-          ],
-        ),
-      ),
+          ),
     );
     try {
       final result = await TestDataGeneratorService().generateDiaryTestData(
@@ -660,7 +721,14 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
         children: [
           // 第一层：背景图片层（最底层）
           if (_diaryBgImage != null)
-            Positioned.fill(child: StoredViewImageLayer(file: _diaryBgImage!)),
+            Positioned.fill(
+              child: StoredViewImageLayer(
+                key: ValueKey(
+                  'diary_bg_${_diaryBgImage!.path}_$_backgroundViewRefreshTick',
+                ),
+                file: _diaryBgImage!,
+              ),
+            ),
           // 第二层：背景颜色层（在背景图片之上）
           if (_diaryBgColor != null) Container(color: _diaryBgColor),
           // 主内容层
@@ -679,9 +747,10 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
                   },
                   child: AnimatedCrossFade(
                     duration: const Duration(milliseconds: 250),
-                    crossFadeState: _calendarExpanded
-                        ? CrossFadeState.showFirst
-                        : CrossFadeState.showSecond,
+                    crossFadeState:
+                        _calendarExpanded
+                            ? CrossFadeState.showFirst
+                            : CrossFadeState.showSecond,
                     firstChild: _buildCalendar(full: true),
                     secondChild: _buildCalendar(full: false),
                   ),
@@ -790,24 +859,26 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
                       tooltip: '上一年',
                       onPressed: () {
                         setState(
-                          () => _selectedDate = DateTime(
-                            _selectedDate.year - 1,
-                            _selectedDate.month,
-                            1,
-                          ),
+                          () =>
+                              _selectedDate = DateTime(
+                                _selectedDate.year - 1,
+                                _selectedDate.month,
+                                1,
+                              ),
                         );
                         _refreshCalendarDots();
                       },
                     ),
                     IconButton(
                       icon: const Icon(Icons.chevron_left),
-                      onPressed: () => _onDateSelected(
-                        DateTime(
-                          _selectedDate.year,
-                          _selectedDate.month - 1,
-                          1,
-                        ),
-                      ),
+                      onPressed:
+                          () => _onDateSelected(
+                            DateTime(
+                              _selectedDate.year,
+                              _selectedDate.month - 1,
+                              1,
+                            ),
+                          ),
                     ),
                   ],
                 ),
@@ -824,24 +895,26 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
                   children: [
                     IconButton(
                       icon: const Icon(Icons.chevron_right),
-                      onPressed: () => _onDateSelected(
-                        DateTime(
-                          _selectedDate.year,
-                          _selectedDate.month + 1,
-                          1,
-                        ),
-                      ),
+                      onPressed:
+                          () => _onDateSelected(
+                            DateTime(
+                              _selectedDate.year,
+                              _selectedDate.month + 1,
+                              1,
+                            ),
+                          ),
                     ),
                     IconButton(
                       icon: Icon(Icons.keyboard_double_arrow_right, size: 28),
                       tooltip: '下一年',
                       onPressed: () {
                         setState(
-                          () => _selectedDate = DateTime(
-                            _selectedDate.year + 1,
-                            _selectedDate.month,
-                            1,
-                          ),
+                          () =>
+                              _selectedDate = DateTime(
+                                _selectedDate.year + 1,
+                                _selectedDate.month,
+                                1,
+                              ),
                         );
                         _refreshCalendarDots();
                       },
@@ -887,9 +960,12 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
                     child: Container(
                       margin: const EdgeInsets.all(1),
                       decoration: BoxDecoration(
-                        color: isSelected
-                            ? Colors.blueAccent
-                            : (hasEntry ? Colors.blue.withOpacity(0.2) : null),
+                        color:
+                            isSelected
+                                ? Colors.blueAccent
+                                : (hasEntry
+                                    ? Colors.blue.withOpacity(0.2)
+                                    : null),
                         borderRadius: BorderRadius.circular(6),
                       ),
                       child: Center(
@@ -898,9 +974,10 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
                           style: TextStyle(
                             fontSize: 14,
                             color: isSelected ? Colors.white : Colors.black87,
-                            fontWeight: isSelected
-                                ? FontWeight.bold
-                                : FontWeight.normal,
+                            fontWeight:
+                                isSelected
+                                    ? FontWeight.bold
+                                    : FontWeight.normal,
                           ),
                         ),
                       ),
@@ -919,9 +996,10 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
                     weekday,
                     style: TextStyle(
                       color: isCurrentWeekday ? Colors.blue : Colors.black87,
-                      fontWeight: isCurrentWeekday
-                          ? FontWeight.bold
-                          : FontWeight.normal,
+                      fontWeight:
+                          isCurrentWeekday
+                              ? FontWeight.bold
+                              : FontWeight.normal,
                       fontSize: isCurrentWeekday ? 16 : 14,
                     ),
                   );
@@ -960,13 +1038,14 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
               child: TextButton.icon(
                 onPressed:
                     _isLoadingMore ? null : () => _loadEntries(append: true),
-                icon: _isLoadingMore
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.add_circle_outline),
+                icon:
+                    _isLoadingMore
+                        ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                        : const Icon(Icons.add_circle_outline),
                 label: Text(_isLoadingMore ? '加载中...' : '加载更多'),
               ),
             ),
@@ -1047,8 +1126,9 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
           width: 48,
           height: 48,
           fit: BoxFit.cover,
-          errorBuilder: (context, error, stackTrace) =>
-              Icon(Icons.broken_image, size: 40),
+          errorBuilder:
+              (context, error, stackTrace) =>
+                  Icon(Icons.broken_image, size: 40),
         ),
       );
     }
@@ -1071,8 +1151,9 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
               width: 48,
               height: 48,
               fit: BoxFit.cover,
-              errorBuilder: (context, error, stackTrace) =>
-                  Icon(Icons.videocam, size: 40),
+              errorBuilder:
+                  (context, error, stackTrace) =>
+                      Icon(Icons.videocam, size: 40),
             ),
           );
         }
@@ -1119,7 +1200,8 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
       message.value = '正在获取日记数据...';
       final dbSvc = getService<DatabaseService>();
       final db = await dbSvc.database;
-      final int totalCount = Sqflite.firstIntValue(
+      final int totalCount =
+          Sqflite.firstIntValue(
             await db.rawQuery('SELECT COUNT(*) FROM diary_entries'),
           ) ??
           0;
@@ -1471,9 +1553,10 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
 
       // 4. 获取永久媒体目录（路径重映射需要）
       final permanentMediaDir = await _getPermanentMediaDirectory();
-      final chunk0Exists = await File(
-        path.join(tempImportDir.path, 'diary_data_0.json'),
-      ).exists();
+      final chunk0Exists =
+          await File(
+            path.join(tempImportDir.path, 'diary_data_0.json'),
+          ).exists();
       final legacyExists =
           await File(path.join(tempImportDir.path, 'diary_data.json')).exists();
       if (!chunk0Exists && !legacyExists) {
@@ -1622,10 +1705,12 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
             parseBufferIdx = 0;
           }
           if (parseBufferIdx >= parseBuffer.length) break;
-          for (int i = 0;
-              i < dbBatchSize - batch.length &&
-                  parseBufferIdx < parseBuffer.length;
-              i++) {
+          for (
+            int i = 0;
+            i < dbBatchSize - batch.length &&
+                parseBufferIdx < parseBuffer.length;
+            i++
+          ) {
             batch.add(parseBuffer[parseBufferIdx++]);
           }
         }
@@ -1640,8 +1725,9 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
       if (await settingsFile.exists()) {
         message.value = '正在恢复日记本设置...';
         try {
-          final settingsJson = jsonDecode(await settingsFile.readAsString())
-              as Map<String, dynamic>;
+          final settingsJson =
+              jsonDecode(await settingsFile.readAsString())
+                  as Map<String, dynamic>;
           final bgColor = settingsJson['background_color'] as int?;
           final bgImageRel = settingsJson['background_image_file'] as String?;
           String? newBgImagePath;
@@ -1953,9 +2039,9 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
             brightness: Brightness.light,
           ),
           textTheme: Theme.of(context).textTheme.apply(
-                bodyColor: const Color(0xFF212121),
-                displayColor: const Color(0xFF212121),
-              ),
+            bodyColor: const Color(0xFF212121),
+            displayColor: const Color(0xFF212121),
+          ),
         ),
         child: AnnotatedRegion<SystemUiOverlayStyle>(
           value: SystemUiOverlayStyle.dark,
@@ -1964,461 +2050,485 @@ class _DiaryEditPageState extends State<DiaryEditPage> {
             body: Stack(
               children: [
                 Positioned.fill(
-                  child: _isLoading
-                      ? const Center(child: CircularProgressIndicator())
-                      : SingleChildScrollView(
-                          padding: EdgeInsets.fromLTRB(
-                            18,
-                            topInset + 8,
-                            18,
-                            8,
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              TextField(
-                                controller: _contentController,
-                                maxLines: null,
-                                style: TextStyle(fontSize: 18),
-                                decoration: InputDecoration(
-                                  hintText: '记录今日',
-                                  border: InputBorder.none,
-                                  enabledBorder: UnderlineInputBorder(
-                                    borderSide: BorderSide(
-                                      color: Colors.grey.withOpacity(0.5),
-                                      width: 1.0,
+                  child:
+                      _isLoading
+                          ? const Center(child: CircularProgressIndicator())
+                          : SingleChildScrollView(
+                            padding: EdgeInsets.fromLTRB(
+                              18,
+                              topInset + 8,
+                              18,
+                              8,
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                TextField(
+                                  controller: _contentController,
+                                  maxLines: null,
+                                  style: TextStyle(fontSize: 18),
+                                  decoration: InputDecoration(
+                                    hintText: '记录今日',
+                                    border: InputBorder.none,
+                                    enabledBorder: UnderlineInputBorder(
+                                      borderSide: BorderSide(
+                                        color: Colors.grey.withOpacity(0.5),
+                                        width: 1.0,
+                                      ),
+                                    ),
+                                    focusedBorder: UnderlineInputBorder(
+                                      borderSide: BorderSide(
+                                        color: Colors.blue.withOpacity(0.7),
+                                        width: 1.5,
+                                      ),
                                     ),
                                   ),
-                                  focusedBorder: UnderlineInputBorder(
-                                    borderSide: BorderSide(
-                                      color: Colors.blue.withOpacity(0.7),
-                                      width: 1.5,
-                                    ),
-                                  ),
+                                  onChanged: (_) async {
+                                    await _autoSave();
+                                  },
                                 ),
-                                onChanged: (_) async {
-                                  await _autoSave();
-                                },
-                              ),
-                              SizedBox(height: 12),
-                              // 图片+视频混合九宫格
-                              Wrap(
-                                spacing: 8,
-                                runSpacing: 8,
-                                children: [
-                                  ..._imagePaths.asMap().entries.map(
-                                        (e) => Stack(
-                                          children: [
-                                            GestureDetector(
-                                              onTap: () => showDialog(
-                                                context: context,
-                                                builder: (_) =>
-                                                    MediaPreviewDialog(
-                                                  mediaPaths: [
-                                                    ..._imagePaths,
-                                                    ..._videoPaths,
-                                                  ],
-                                                  initialIndex: e.key,
-                                                  isVideo: false,
-                                                  onDelete: (idx) {
-                                                    if (idx <
-                                                        _imagePaths.length) {
-                                                      _removeImage(idx);
-                                                    } else {
-                                                      _removeVideo(
-                                                        idx -
-                                                            _imagePaths.length,
-                                                      );
-                                                    }
-                                                    Navigator.of(
-                                                      context,
-                                                    ).pop();
-                                                  },
-                                                ),
-                                              ),
-                                              child: ClipRRect(
-                                                borderRadius:
-                                                    BorderRadius.circular(10),
-                                                child: _buildImageThumbnail(
-                                                  e.value,
-                                                  90,
-                                                  90,
-                                                ),
-                                              ),
-                                            ),
-                                            Positioned(
-                                              right: 0,
-                                              top: 0,
-                                              child: GestureDetector(
-                                                onTap: () =>
-                                                    _removeImage(e.key),
-                                                child: Container(
-                                                  padding: const EdgeInsets.all(
-                                                    4,
-                                                  ),
-                                                  decoration:
-                                                      const BoxDecoration(
-                                                    color: Colors.black54,
-                                                    shape: BoxShape.circle,
-                                                  ),
-                                                  child: const Icon(
-                                                    Icons.close,
-                                                    color: Colors.white,
-                                                    size: 14,
-                                                  ),
-                                                ),
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                  ..._videoPaths.asMap().entries.map(
-                                        (e) => Stack(
-                                          children: [
-                                            GestureDetector(
-                                              onTap: () => showDialog(
-                                                context: context,
-                                                builder: (_) =>
-                                                    MediaPreviewDialog(
-                                                  mediaPaths: [
-                                                    ..._imagePaths,
-                                                    ..._videoPaths,
-                                                  ],
-                                                  initialIndex:
-                                                      _imagePaths.length +
-                                                          e.key,
-                                                  isVideo: true,
-                                                  onDelete: (idx) {
-                                                    if (idx <
-                                                        _imagePaths.length) {
-                                                      _removeImage(idx);
-                                                    } else {
-                                                      _removeVideo(
-                                                        idx -
-                                                            _imagePaths.length,
-                                                      );
-                                                    }
-                                                    Navigator.of(
-                                                      context,
-                                                    ).pop();
-                                                  },
-                                                ),
-                                              ),
-                                              child: SizedBox(
-                                                width: 90,
-                                                height: 90,
-                                                child: _buildVideoThumbnail(
-                                                  _videoPaths[e.key],
-                                                  e.key,
-                                                ),
-                                              ),
-                                            ),
-                                            Positioned(
-                                              right: 0,
-                                              top: 0,
-                                              child: GestureDetector(
-                                                onTap: () =>
-                                                    _removeVideo(e.key),
-                                                child: Container(
-                                                  padding: const EdgeInsets.all(
-                                                    4,
-                                                  ),
-                                                  decoration:
-                                                      const BoxDecoration(
-                                                    color: Colors.black54,
-                                                    shape: BoxShape.circle,
-                                                  ),
-                                                  child: const Icon(
-                                                    Icons.close,
-                                                    color: Colors.white,
-                                                    size: 14,
-                                                  ),
-                                                ),
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                  Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      GestureDetector(
-                                        onTap: _pickImage,
-                                        child: Container(
-                                          width: 90,
-                                          height: 90,
-                                          decoration: BoxDecoration(
-                                            color: Colors.grey[200],
-                                            borderRadius:
-                                                BorderRadius.circular(10),
-                                          ),
-                                          child: const Icon(
-                                            Icons.add_photo_alternate,
-                                            size: 32,
-                                            color: Colors.grey,
-                                          ),
-                                        ),
-                                      ),
-                                      const SizedBox(width: 8),
-                                      GestureDetector(
-                                        onTap: _pickVideo,
-                                        child: Container(
-                                          width: 90,
-                                          height: 90,
-                                          decoration: BoxDecoration(
-                                            color: Colors.grey[200],
-                                            borderRadius:
-                                                BorderRadius.circular(10),
-                                          ),
-                                          child: const Icon(
-                                            Icons.video_call,
-                                            size: 32,
-                                            color: Colors.grey,
-                                          ),
-                                        ),
-                                      ),
-                                      const SizedBox(width: 8),
-                                      GestureDetector(
-                                        onTap: _addAudioBox,
-                                        child: Container(
-                                          width: 90,
-                                          height: 90,
-                                          decoration: BoxDecoration(
-                                            color: Colors.grey[200],
-                                            borderRadius:
-                                                BorderRadius.circular(10),
-                                          ),
-                                          child: const Icon(
-                                            Icons.mic,
-                                            size: 32,
-                                            color: Colors.grey,
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ],
-                              ),
-                              if (_audioPaths.isNotEmpty) ...[
-                                SizedBox(height: 16),
-                                // 语音
-                                SizedBox(height: 8),
+                                SizedBox(height: 12),
+                                // 图片+视频混合九宫格
                                 Wrap(
                                   spacing: 8,
                                   runSpacing: 8,
                                   children: [
-                                    ..._audioPaths.asMap().entries.map((
-                                      entry,
-                                    ) {
-                                      final idx = entry.key;
-                                      final path = entry.value;
-                                      return SizedBox(
-                                        width: MediaQuery.of(
-                                                  context,
-                                                ).size.width /
-                                                5 -
-                                            24,
-                                        child: ResizableAudioBox(
-                                          audioPath: path,
-                                          onIsRecording: (isRec) {},
-                                          onSettingsPressed: () {
-                                            showModalBottomSheet(
-                                              context: context,
-                                              isScrollControlled: true,
-                                              builder: (ctx) =>
-                                                  SafeModalSheetScrollable(
-                                                children: [
-                                                  ListTile(
-                                                    leading: Icon(Icons.mic),
-                                                    title: Text('录制新语音'),
-                                                    onTap: () {
-                                                      Navigator.pop(ctx);
-                                                      _updateAudioPath(
-                                                        idx,
-                                                        '',
-                                                      );
-                                                    },
-                                                  ),
-                                                  Divider(height: 1),
-                                                  ListTile(
-                                                    leading: Icon(Icons.delete),
-                                                    title: Text('删除语音框'),
-                                                    onTap: () {
-                                                      Navigator.pop(ctx);
-                                                      _removeAudioBox(idx);
-                                                    },
-                                                  ),
-                                                ],
+                                    ..._imagePaths.asMap().entries.map(
+                                      (e) => Stack(
+                                        children: [
+                                          GestureDetector(
+                                            onTap:
+                                                () => showDialog(
+                                                  context: context,
+                                                  builder:
+                                                      (_) => MediaPreviewDialog(
+                                                        mediaPaths: [
+                                                          ..._imagePaths,
+                                                          ..._videoPaths,
+                                                        ],
+                                                        initialIndex: e.key,
+                                                        isVideo: false,
+                                                        onDelete: (idx) {
+                                                          if (idx <
+                                                              _imagePaths
+                                                                  .length) {
+                                                            _removeImage(idx);
+                                                          } else {
+                                                            _removeVideo(
+                                                              idx -
+                                                                  _imagePaths
+                                                                      .length,
+                                                            );
+                                                          }
+                                                          Navigator.of(
+                                                            context,
+                                                          ).pop();
+                                                        },
+                                                      ),
+                                                ),
+                                            child: ClipRRect(
+                                              borderRadius:
+                                                  BorderRadius.circular(10),
+                                              child: _buildImageThumbnail(
+                                                e.value,
+                                                90,
+                                                90,
                                               ),
-                                            );
-                                          },
-                                          onPathUpdated: (newPath) async {
-                                            _updateAudioPath(idx, newPath);
-                                            await _autoSave();
-                                          },
+                                            ),
+                                          ),
+                                          Positioned(
+                                            right: 0,
+                                            top: 0,
+                                            child: GestureDetector(
+                                              onTap: () => _removeImage(e.key),
+                                              child: Container(
+                                                padding: const EdgeInsets.all(
+                                                  4,
+                                                ),
+                                                decoration: const BoxDecoration(
+                                                  color: Colors.black54,
+                                                  shape: BoxShape.circle,
+                                                ),
+                                                child: const Icon(
+                                                  Icons.close,
+                                                  color: Colors.white,
+                                                  size: 14,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    ..._videoPaths.asMap().entries.map(
+                                      (e) => Stack(
+                                        children: [
+                                          GestureDetector(
+                                            onTap:
+                                                () => showDialog(
+                                                  context: context,
+                                                  builder:
+                                                      (_) => MediaPreviewDialog(
+                                                        mediaPaths: [
+                                                          ..._imagePaths,
+                                                          ..._videoPaths,
+                                                        ],
+                                                        initialIndex:
+                                                            _imagePaths.length +
+                                                            e.key,
+                                                        isVideo: true,
+                                                        onDelete: (idx) {
+                                                          if (idx <
+                                                              _imagePaths
+                                                                  .length) {
+                                                            _removeImage(idx);
+                                                          } else {
+                                                            _removeVideo(
+                                                              idx -
+                                                                  _imagePaths
+                                                                      .length,
+                                                            );
+                                                          }
+                                                          Navigator.of(
+                                                            context,
+                                                          ).pop();
+                                                        },
+                                                      ),
+                                                ),
+                                            child: SizedBox(
+                                              width: 90,
+                                              height: 90,
+                                              child: _buildVideoThumbnail(
+                                                _videoPaths[e.key],
+                                                e.key,
+                                              ),
+                                            ),
+                                          ),
+                                          Positioned(
+                                            right: 0,
+                                            top: 0,
+                                            child: GestureDetector(
+                                              onTap: () => _removeVideo(e.key),
+                                              child: Container(
+                                                padding: const EdgeInsets.all(
+                                                  4,
+                                                ),
+                                                decoration: const BoxDecoration(
+                                                  color: Colors.black54,
+                                                  shape: BoxShape.circle,
+                                                ),
+                                                child: const Icon(
+                                                  Icons.close,
+                                                  color: Colors.white,
+                                                  size: 14,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        GestureDetector(
+                                          onTap: _pickImage,
+                                          child: Container(
+                                            width: 90,
+                                            height: 90,
+                                            decoration: BoxDecoration(
+                                              color: Colors.grey[200],
+                                              borderRadius:
+                                                  BorderRadius.circular(10),
+                                            ),
+                                            child: const Icon(
+                                              Icons.add_photo_alternate,
+                                              size: 32,
+                                              color: Colors.grey,
+                                            ),
+                                          ),
                                         ),
-                                      );
-                                    }),
+                                        const SizedBox(width: 8),
+                                        GestureDetector(
+                                          onTap: _pickVideo,
+                                          child: Container(
+                                            width: 90,
+                                            height: 90,
+                                            decoration: BoxDecoration(
+                                              color: Colors.grey[200],
+                                              borderRadius:
+                                                  BorderRadius.circular(10),
+                                            ),
+                                            child: const Icon(
+                                              Icons.video_call,
+                                              size: 32,
+                                              color: Colors.grey,
+                                            ),
+                                          ),
+                                        ),
+                                        const SizedBox(width: 8),
+                                        GestureDetector(
+                                          onTap: _addAudioBox,
+                                          child: Container(
+                                            width: 90,
+                                            height: 90,
+                                            decoration: BoxDecoration(
+                                              color: Colors.grey[200],
+                                              borderRadius:
+                                                  BorderRadius.circular(10),
+                                            ),
+                                            child: const Icon(
+                                              Icons.mic,
+                                              size: 32,
+                                              color: Colors.grey,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
                                   ],
                                 ),
+                                if (_audioPaths.isNotEmpty) ...[
+                                  SizedBox(height: 16),
+                                  // 语音
+                                  SizedBox(height: 8),
+                                  Wrap(
+                                    spacing: 8,
+                                    runSpacing: 8,
+                                    children: [
+                                      ..._audioPaths.asMap().entries.map((
+                                        entry,
+                                      ) {
+                                        final idx = entry.key;
+                                        final path = entry.value;
+                                        return SizedBox(
+                                          width:
+                                              MediaQuery.of(
+                                                    context,
+                                                  ).size.width /
+                                                  5 -
+                                              24,
+                                          child: ResizableAudioBox(
+                                            audioPath: path,
+                                            onIsRecording: (isRec) {},
+                                            onSettingsPressed: () {
+                                              showModalBottomSheet(
+                                                context: context,
+                                                isScrollControlled: true,
+                                                builder:
+                                                    (
+                                                      ctx,
+                                                    ) => SafeModalSheetScrollable(
+                                                      children: [
+                                                        ListTile(
+                                                          leading: Icon(
+                                                            Icons.mic,
+                                                          ),
+                                                          title: Text('录制新语音'),
+                                                          onTap: () {
+                                                            Navigator.pop(ctx);
+                                                            _updateAudioPath(
+                                                              idx,
+                                                              '',
+                                                            );
+                                                          },
+                                                        ),
+                                                        Divider(height: 1),
+                                                        ListTile(
+                                                          leading: Icon(
+                                                            Icons.delete,
+                                                          ),
+                                                          title: Text('删除语音框'),
+                                                          onTap: () {
+                                                            Navigator.pop(ctx);
+                                                            _removeAudioBox(
+                                                              idx,
+                                                            );
+                                                          },
+                                                        ),
+                                                      ],
+                                                    ),
+                                              );
+                                            },
+                                            onPathUpdated: (newPath) async {
+                                              _updateAudioPath(idx, newPath);
+                                              await _autoSave();
+                                            },
+                                          ),
+                                        );
+                                      }),
+                                    ],
+                                  ),
+                                ],
+                                SizedBox(height: 16),
+                                // 天气和心情下拉选择
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: DropdownButtonFormField<String>(
+                                        value: _mood,
+                                        decoration: InputDecoration(
+                                          labelText: '今天的心情',
+                                          prefixIcon:
+                                              _mood != null
+                                                  ? SvgPicture.asset(
+                                                    _moodSvgOptions.firstWhere(
+                                                      (e) =>
+                                                          e['label'] == _mood,
+                                                    )['icon'],
+                                                    width: 20,
+                                                    height: 20,
+                                                  )
+                                                  : null,
+                                          border: OutlineInputBorder(),
+                                          contentPadding:
+                                              const EdgeInsets.symmetric(
+                                                horizontal: 8,
+                                                vertical: 4,
+                                              ),
+                                        ),
+                                        isExpanded: true,
+                                        selectedItemBuilder:
+                                            (context) =>
+                                                _moodSvgOptions
+                                                    .map(
+                                                      (opt) => Center(
+                                                        child: SvgPicture.asset(
+                                                          opt['icon'],
+                                                          width: 22,
+                                                          height: 22,
+                                                        ),
+                                                      ),
+                                                    )
+                                                    .toList(),
+                                        items:
+                                            _moodSvgOptions
+                                                .map(
+                                                  (opt) =>
+                                                      DropdownMenuItem<String>(
+                                                        value: opt['label'],
+                                                        child: Row(
+                                                          children: [
+                                                            SvgPicture.asset(
+                                                              opt['icon'],
+                                                              width: 24,
+                                                              height: 24,
+                                                            ),
+                                                            SizedBox(width: 8),
+                                                            Text(opt['label']),
+                                                          ],
+                                                        ),
+                                                      ),
+                                                )
+                                                .toList(),
+                                        onChanged: (val) async {
+                                          setState(() {
+                                            _mood = val;
+                                          });
+                                          await _autoSave();
+                                        },
+                                      ),
+                                    ),
+                                    SizedBox(width: 16),
+                                    Expanded(
+                                      child: DropdownButtonFormField<String>(
+                                        value: _weather,
+                                        decoration: InputDecoration(
+                                          labelText: '今天的天气',
+                                          prefixIcon:
+                                              _weather != null
+                                                  ? SvgPicture.asset(
+                                                    _weatherSvgOptions
+                                                        .firstWhere(
+                                                          (e) =>
+                                                              e['label'] ==
+                                                              _weather,
+                                                        )['icon'],
+                                                    width: 20,
+                                                    height: 20,
+                                                  )
+                                                  : null,
+                                          border: OutlineInputBorder(),
+                                          contentPadding:
+                                              const EdgeInsets.symmetric(
+                                                horizontal: 8,
+                                                vertical: 4,
+                                              ),
+                                        ),
+                                        isExpanded: true,
+                                        selectedItemBuilder:
+                                            (context) =>
+                                                _weatherSvgOptions
+                                                    .map(
+                                                      (opt) => Center(
+                                                        child: SvgPicture.asset(
+                                                          opt['icon'],
+                                                          width: 22,
+                                                          height: 22,
+                                                        ),
+                                                      ),
+                                                    )
+                                                    .toList(),
+                                        items:
+                                            _weatherSvgOptions
+                                                .map(
+                                                  (opt) =>
+                                                      DropdownMenuItem<String>(
+                                                        value: opt['label'],
+                                                        child: Row(
+                                                          children: [
+                                                            SvgPicture.asset(
+                                                              opt['icon'],
+                                                              width: 24,
+                                                              height: 24,
+                                                            ),
+                                                            SizedBox(width: 8),
+                                                            Text(opt['label']),
+                                                          ],
+                                                        ),
+                                                      ),
+                                                )
+                                                .toList(),
+                                        onChanged: (val) async {
+                                          setState(() {
+                                            _weather = val;
+                                          });
+                                          await _autoSave();
+                                        },
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                SizedBox(height: 16),
+                                // 地点
+                                Row(
+                                  children: [
+                                    const Icon(
+                                      Icons.location_on_outlined,
+                                      color: Colors.grey,
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: TextField(
+                                        controller: _locationController,
+                                        decoration: const InputDecoration(
+                                          hintText: '请输入地点',
+                                          border: InputBorder.none,
+                                        ),
+                                        onChanged: (val) async {
+                                          setState(() {
+                                            _location = val;
+                                          });
+                                          await _autoSave();
+                                        },
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                SizedBox(height: 24),
                               ],
-                              SizedBox(height: 16),
-                              // 天气和心情下拉选择
-                              Row(
-                                children: [
-                                  Expanded(
-                                    child: DropdownButtonFormField<String>(
-                                      value: _mood,
-                                      decoration: InputDecoration(
-                                        labelText: '今天的心情',
-                                        prefixIcon: _mood != null
-                                            ? SvgPicture.asset(
-                                                _moodSvgOptions.firstWhere(
-                                                  (e) => e['label'] == _mood,
-                                                )['icon'],
-                                                width: 20,
-                                                height: 20,
-                                              )
-                                            : null,
-                                        border: OutlineInputBorder(),
-                                        contentPadding:
-                                            const EdgeInsets.symmetric(
-                                          horizontal: 8,
-                                          vertical: 4,
-                                        ),
-                                      ),
-                                      isExpanded: true,
-                                      selectedItemBuilder: (context) =>
-                                          _moodSvgOptions
-                                              .map(
-                                                (opt) => Center(
-                                                  child: SvgPicture.asset(
-                                                    opt['icon'],
-                                                    width: 22,
-                                                    height: 22,
-                                                  ),
-                                                ),
-                                              )
-                                              .toList(),
-                                      items: _moodSvgOptions
-                                          .map(
-                                            (opt) => DropdownMenuItem<String>(
-                                              value: opt['label'],
-                                              child: Row(
-                                                children: [
-                                                  SvgPicture.asset(
-                                                    opt['icon'],
-                                                    width: 24,
-                                                    height: 24,
-                                                  ),
-                                                  SizedBox(width: 8),
-                                                  Text(opt['label']),
-                                                ],
-                                              ),
-                                            ),
-                                          )
-                                          .toList(),
-                                      onChanged: (val) async {
-                                        setState(() {
-                                          _mood = val;
-                                        });
-                                        await _autoSave();
-                                      },
-                                    ),
-                                  ),
-                                  SizedBox(width: 16),
-                                  Expanded(
-                                    child: DropdownButtonFormField<String>(
-                                      value: _weather,
-                                      decoration: InputDecoration(
-                                        labelText: '今天的天气',
-                                        prefixIcon: _weather != null
-                                            ? SvgPicture.asset(
-                                                _weatherSvgOptions.firstWhere(
-                                                  (e) => e['label'] == _weather,
-                                                )['icon'],
-                                                width: 20,
-                                                height: 20,
-                                              )
-                                            : null,
-                                        border: OutlineInputBorder(),
-                                        contentPadding:
-                                            const EdgeInsets.symmetric(
-                                          horizontal: 8,
-                                          vertical: 4,
-                                        ),
-                                      ),
-                                      isExpanded: true,
-                                      selectedItemBuilder: (context) =>
-                                          _weatherSvgOptions
-                                              .map(
-                                                (opt) => Center(
-                                                  child: SvgPicture.asset(
-                                                    opt['icon'],
-                                                    width: 22,
-                                                    height: 22,
-                                                  ),
-                                                ),
-                                              )
-                                              .toList(),
-                                      items: _weatherSvgOptions
-                                          .map(
-                                            (opt) => DropdownMenuItem<String>(
-                                              value: opt['label'],
-                                              child: Row(
-                                                children: [
-                                                  SvgPicture.asset(
-                                                    opt['icon'],
-                                                    width: 24,
-                                                    height: 24,
-                                                  ),
-                                                  SizedBox(width: 8),
-                                                  Text(opt['label']),
-                                                ],
-                                              ),
-                                            ),
-                                          )
-                                          .toList(),
-                                      onChanged: (val) async {
-                                        setState(() {
-                                          _weather = val;
-                                        });
-                                        await _autoSave();
-                                      },
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              SizedBox(height: 16),
-                              // 地点
-                              Row(
-                                children: [
-                                  const Icon(
-                                    Icons.location_on_outlined,
-                                    color: Colors.grey,
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: TextField(
-                                      controller: _locationController,
-                                      decoration: const InputDecoration(
-                                        hintText: '请输入地点',
-                                        border: InputBorder.none,
-                                      ),
-                                      onChanged: (val) async {
-                                        setState(() {
-                                          _location = val;
-                                        });
-                                        await _autoSave();
-                                      },
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              SizedBox(height: 24),
-                            ],
+                            ),
                           ),
-                        ),
                 ),
                 _buildDiaryEditFloatingTopBar(),
               ],

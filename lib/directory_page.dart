@@ -21,6 +21,8 @@ import 'utils/export_import_error_utils.dart';
 import 'widgets/stored_view_image_layer.dart';
 import 'widgets/floating_ui_shadows.dart';
 import 'widgets/safe_modal_sheet_body.dart';
+import 'media_preview_page.dart';
+import 'models/media_item.dart';
 
 class DirectoryPage extends StatefulWidget {
   final Function(String) onDocumentOpen;
@@ -41,12 +43,13 @@ class _DirectoryPageState extends State<DirectoryPage>
   ) {
     DirectoryItem? current = folders.firstWhere(
       (f) => f.name == targetFolderName,
-      orElse: () => DirectoryItem(
-        name: '',
-        type: ItemType.folder,
-        order: 0,
-        isTemplate: false,
-      ),
+      orElse:
+          () => DirectoryItem(
+            name: '',
+            type: ItemType.folder,
+            order: 0,
+            isTemplate: false,
+          ),
     );
     while (current != null && current.name != '') {
       if (current.name == folderName) return true;
@@ -54,12 +57,13 @@ class _DirectoryPageState extends State<DirectoryPage>
       if (parentName == '') break;
       current = folders.firstWhere(
         (f) => f.name == parentName,
-        orElse: () => DirectoryItem(
-          name: '',
-          type: ItemType.folder,
-          order: 0,
-          isTemplate: false,
-        ),
+        orElse:
+            () => DirectoryItem(
+              name: '',
+              type: ItemType.folder,
+              order: 0,
+              isTemplate: false,
+            ),
       );
     }
     return false;
@@ -69,16 +73,17 @@ class _DirectoryPageState extends State<DirectoryPage>
     if (!mounted || !kIsWeb) return; // Also check kIsWeb to be sure
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text('功能提示'),
-        content: Text('此功能在Web版本中当前不可用或受限。'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: Text('确定'),
+      builder:
+          (context) => AlertDialog(
+            title: Text('功能提示'),
+            content: Text('此功能在Web版本中当前不可用或受限。'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: Text('确定'),
+              ),
+            ],
           ),
-        ],
-      ),
     );
   }
 
@@ -86,6 +91,7 @@ class _DirectoryPageState extends State<DirectoryPage>
   String? _currentParentFolder;
   File? _backgroundImage;
   Color? _backgroundColor;
+  int _backgroundViewRefreshTick = 0;
   List<Map<String, dynamic>> _templateDocuments = [];
   String? _lastCreatedItemName;
   ItemType? _lastCreatedItemType;
@@ -285,11 +291,12 @@ class _DirectoryPageState extends State<DirectoryPage>
       if (item.type == ItemType.folder) {
         final folder = folders.firstWhere(
           (f) => f['name'] == item.name,
-          orElse: () => <String, dynamic>{
-            'id': '',
-            'parent_folder': null,
-            'name': '',
-          },
+          orElse:
+              () => <String, dynamic>{
+                'id': '',
+                'parent_folder': null,
+                'name': '',
+              },
         );
         if (folder['id'] != '') {
           excludeIds.add(folder['id'] as String);
@@ -656,6 +663,43 @@ class _DirectoryPageState extends State<DirectoryPage>
   }
 
   /// 保存背景颜色到数据库
+  Future<void> _openBackgroundImagePreviewEditor() async {
+    final bg = _backgroundImage;
+    if (bg == null) return;
+    final mediaMap = await getService<DatabaseService>().getMediaItemByFilePath(
+      bg.path,
+    );
+    final previewItem =
+        mediaMap != null
+            ? MediaItem.fromMap(mediaMap)
+            : MediaItem.fromMap({
+              'id': 'background_preview_temp',
+              'name':
+                  bg.uri.pathSegments.isNotEmpty
+                      ? bg.uri.pathSegments.last
+                      : '????',
+              'path': bg.path,
+              'type': 0,
+              'directory': '__background_preview__',
+              'date_added': DateTime.now().toIso8601String(),
+            });
+    await Navigator.push<void>(
+      context,
+      MaterialPageRoute(
+        builder:
+            (context) => MediaPreviewPage(
+              mediaItems: [previewItem],
+              initialIndex: 0,
+              standaloneBackgroundFilePath: mediaMap == null ? bg.path : null,
+            ),
+      ),
+    );
+    if (!mounted) return;
+    setState(() {
+      _backgroundViewRefreshTick++;
+    });
+  }
+
   Future<void> _saveBackgroundColor(Color color) async {
     try {
       await getService<DatabaseService>().insertOrUpdateDirectorySettings(
@@ -844,8 +888,8 @@ class _DirectoryPageState extends State<DirectoryPage>
   Future<String?> _getParentFolder(String folderName) async {
     try {
       // getFolderByName returns Map<String, dynamic>? not List<Map<String, dynamic>>
-      Map<String, dynamic>? folderData =
-          await getService<DatabaseService>().getFolderByName(folderName);
+      Map<String, dynamic>? folderData = await getService<DatabaseService>()
+          .getFolderByName(folderName);
       if (folderData != null && folderData.containsKey('parentFolder')) {
         return folderData['parentFolder'] as String?;
       }
@@ -983,15 +1027,16 @@ class _DirectoryPageState extends State<DirectoryPage>
         showDialog(
           context: context,
           barrierDismissible: false,
-          builder: (context) => const AlertDialog(
-            content: Row(
-              children: [
-                CircularProgressIndicator(),
-                SizedBox(width: 20),
-                Text('正在导入文档...'),
-              ],
-            ),
-          ),
+          builder:
+              (context) => const AlertDialog(
+                content: Row(
+                  children: [
+                    CircularProgressIndicator(),
+                    SizedBox(width: 20),
+                    Text('正在导入文档...'),
+                  ],
+                ),
+              ),
         );
 
         List<String> successFiles = [];
@@ -1305,8 +1350,8 @@ class _DirectoryPageState extends State<DirectoryPage>
     if (folder['parent_folder'] == null) return folder['name'] as String;
     final parent = allFolders.firstWhere(
       (f) => f['id'] == folder['parent_folder'],
-      orElse: () =>
-          <String, dynamic>{'name': '', 'parent_folder': null, 'id': ''},
+      orElse:
+          () => <String, dynamic>{'name': '', 'parent_folder': null, 'id': ''},
     );
     if (parent['name'] == '') return folder['name'] as String;
     return _getFolderFullPath(parent, allFolders) +
@@ -1342,13 +1387,14 @@ class _DirectoryPageState extends State<DirectoryPage>
       final folders =
           await getService<DatabaseService>().getAllDirectoryFolders();
       // 排除指定id的文件夹
-      final availableFolders = folders
-          .where(
-            (folder) =>
-                excludeFolderIds == null ||
-                !excludeFolderIds.contains(folder['id']),
-          )
-          .toList();
+      final availableFolders =
+          folders
+              .where(
+                (folder) =>
+                    excludeFolderIds == null ||
+                    !excludeFolderIds.contains(folder['id']),
+              )
+              .toList();
       if (availableFolders.isEmpty && !showRoot) {
         if (mounted) {
           ScaffoldMessenger.of(
@@ -1358,9 +1404,10 @@ class _DirectoryPageState extends State<DirectoryPage>
         return null;
       }
       // 生成路径映射
-      final folderPaths = availableFolders
-          .map((folder) => _getFolderFullPath(folder, folders))
-          .toList();
+      final folderPaths =
+          availableFolders
+              .map((folder) => _getFolderFullPath(folder, folders))
+              .toList();
       String? selectedFolder;
       await showDialog<void>(
         context: context,
@@ -1422,11 +1469,12 @@ class _DirectoryPageState extends State<DirectoryPage>
       final folders = await dbService.getAllDirectoryFolders();
       final currentFolder = folders.firstWhere(
         (f) => f['name'] == folderName,
-        orElse: () => <String, dynamic>{
-          'id': '',
-          'parent_folder': null,
-          'name': '',
-        },
+        orElse:
+            () => <String, dynamic>{
+              'id': '',
+              'parent_folder': null,
+              'name': '',
+            },
       );
       if (currentFolder['id'] == '') return;
       // 递归排除自身和所有子文件夹
@@ -1539,18 +1587,20 @@ class _DirectoryPageState extends State<DirectoryPage>
       Map<String, dynamic>? currentFolderData = await dbService.getFolderByName(
         folderName,
       );
-      String? parentFolderName = (currentFolderData != null &&
-              currentFolderData.containsKey('parent_folder'))
-          ? currentFolderData['parent_folder'] as String?
-          : null;
+      String? parentFolderName =
+          (currentFolderData != null &&
+                  currentFolderData.containsKey('parent_folder'))
+              ? currentFolderData['parent_folder'] as String?
+              : null;
 
       while (parentFolderName != null) {
         currentPath = '$parentFolderName/$currentPath';
         currentFolderData = await dbService.getFolderByName(parentFolderName);
-        parentFolderName = (currentFolderData != null &&
-                currentFolderData.containsKey('parent_folder'))
-            ? currentFolderData['parent_folder'] as String?
-            : null;
+        parentFolderName =
+            (currentFolderData != null &&
+                    currentFolderData.containsKey('parent_folder'))
+                ? currentFolderData['parent_folder'] as String?
+                : null;
       }
 
       return currentPath;
@@ -1662,10 +1712,11 @@ class _DirectoryPageState extends State<DirectoryPage>
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => DocumentEditorPage(
-          documentName: documentName,
-          onSave: (updatedTextBoxes) {},
-        ),
+        builder:
+            (context) => DocumentEditorPage(
+              documentName: documentName,
+              onSave: (updatedTextBoxes) {},
+            ),
       ),
     ).then((_) {
       Logger.log('从文档编辑页面返回');
@@ -1907,75 +1958,84 @@ class _DirectoryPageState extends State<DirectoryPage>
                 controller: scrollController,
                 child: Wrap(
                   children: [
-                  ListTile(
-                    leading: Icon(Icons.image),
-                    title: Text('设置背景图片'),
-                    onTap: () {
-                      Navigator.pop(context);
-                      _pickBackgroundImage();
-                    },
-                  ),
-                  ListTile(
-                    leading: Icon(Icons.color_lens),
-                    title: Text('设置背景颜色'),
-                    onTap: () {
-                      Navigator.pop(context);
-                      _pickBackgroundColor();
-                    },
-                  ),
-                  if (_backgroundImage != null)
                     ListTile(
-                      leading: Icon(Icons.delete),
-                      title: Text('删除背景图片'),
+                      leading: Icon(Icons.image),
+                      title: Text('设置背景图片'),
                       onTap: () {
                         Navigator.pop(context);
-                        _removeBackgroundImage();
+                        _pickBackgroundImage();
                       },
                     ),
-                  Divider(),
-                  ListTile(
-                    leading: Icon(Icons.backup),
-                    title: Text('导出目录数据'),
-                    onTap: () {
-                      Navigator.pop(context);
-                      _exportDirectoryData();
-                    },
-                  ),
-                  ListTile(
-                    leading: Icon(Icons.restore),
-                    title: Text('导入目录数据'),
-                    onTap: () {
-                      Navigator.pop(context);
-                      _importDirectoryData();
-                    },
-                  ),
-                  Divider(),
-                  ListTile(
-                    leading: Icon(Icons.health_and_safety),
-                    title: Text('检查数据完整性'),
-                    onTap: () {
-                      Navigator.pop(context);
-                      _checkDataIntegrity();
-                    },
-                  ),
-                  ListTile(
-                    leading: Icon(Icons.build),
-                    title: Text('修复数据问题'),
-                    onTap: () {
-                      Navigator.pop(context);
-                      _repairDataIntegrity();
-                    },
-                  ),
-                  ListTile(
-                    leading: Icon(Icons.science, color: Colors.orange),
-                    title: Text('生成测试数据'),
-                    subtitle: Text('用于验证导出/导入性能'),
-                    onTap: () {
-                      Navigator.pop(context);
-                      _showGenerateTestDataDialog();
-                    },
-                  ),
-                ],
+                    ListTile(
+                      leading: Icon(Icons.color_lens),
+                      title: Text('设置背景颜色'),
+                      onTap: () {
+                        Navigator.pop(context);
+                        _pickBackgroundColor();
+                      },
+                    ),
+                    if (_backgroundImage != null)
+                      ListTile(
+                        leading: Icon(Icons.tune),
+                        title: Text('调整背景图片'),
+                        onTap: () {
+                          Navigator.pop(context);
+                          _openBackgroundImagePreviewEditor();
+                        },
+                      ),
+                    if (_backgroundImage != null)
+                      ListTile(
+                        leading: Icon(Icons.delete),
+                        title: Text('删除背景图片'),
+                        onTap: () {
+                          Navigator.pop(context);
+                          _removeBackgroundImage();
+                        },
+                      ),
+                    Divider(),
+                    ListTile(
+                      leading: Icon(Icons.backup),
+                      title: Text('导出目录数据'),
+                      onTap: () {
+                        Navigator.pop(context);
+                        _exportDirectoryData();
+                      },
+                    ),
+                    ListTile(
+                      leading: Icon(Icons.restore),
+                      title: Text('导入目录数据'),
+                      onTap: () {
+                        Navigator.pop(context);
+                        _importDirectoryData();
+                      },
+                    ),
+                    Divider(),
+                    ListTile(
+                      leading: Icon(Icons.health_and_safety),
+                      title: Text('检查数据完整性'),
+                      onTap: () {
+                        Navigator.pop(context);
+                        _checkDataIntegrity();
+                      },
+                    ),
+                    ListTile(
+                      leading: Icon(Icons.build),
+                      title: Text('修复数据问题'),
+                      onTap: () {
+                        Navigator.pop(context);
+                        _repairDataIntegrity();
+                      },
+                    ),
+                    ListTile(
+                      leading: Icon(Icons.science, color: Colors.orange),
+                      title: Text('生成测试数据'),
+                      subtitle: Text('用于验证导出/导入性能'),
+                      onTap: () {
+                        Navigator.pop(context);
+                        _showGenerateTestDataDialog();
+                      },
+                    ),
+                  ],
                 ),
               ),
             );
@@ -1988,66 +2048,71 @@ class _DirectoryPageState extends State<DirectoryPage>
   Future<void> _showGenerateTestDataDialog() async {
     final scale = await showDialog<TestDataScale>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text('选择测试数据规模'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: TestDataScale.directoryScales.map((s) {
-            final suffix = s.formulaDir.substring(s.label.length) +
-                (s.isPeakTarget ? '（需数分钟）' : '');
-            return ListTile(
-              dense: true,
-              title: RichText(
-                text: TextSpan(
-                  style: TextStyle(
-                    color: Theme.of(ctx).brightness == Brightness.dark
-                        ? Colors.white
-                        : Colors.black87,
-                    fontSize: 14,
-                  ),
-                  children: [
-                    TextSpan(
-                      text: s.label,
-                      style: TextStyle(
-                        color: Colors.blue,
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
+      builder:
+          (ctx) => AlertDialog(
+            title: Text('选择测试数据规模'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children:
+                  TestDataScale.directoryScales.map((s) {
+                    final suffix =
+                        s.formulaDir.substring(s.label.length) +
+                        (s.isPeakTarget ? '（需数分钟）' : '');
+                    return ListTile(
+                      dense: true,
+                      title: RichText(
+                        text: TextSpan(
+                          style: TextStyle(
+                            color:
+                                Theme.of(ctx).brightness == Brightness.dark
+                                    ? Colors.white
+                                    : Colors.black87,
+                            fontSize: 14,
+                          ),
+                          children: [
+                            TextSpan(
+                              text: s.label,
+                              style: TextStyle(
+                                color: Colors.blue,
+                                fontSize: 16,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            TextSpan(text: suffix),
+                          ],
+                        ),
                       ),
-                    ),
-                    TextSpan(text: suffix),
-                  ],
-                ),
+                      onTap: () => Navigator.pop(ctx, s),
+                    );
+                  }).toList(),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: Text('取消'),
               ),
-              onTap: () => Navigator.pop(ctx, s),
-            );
-          }).toList(),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: Text('取消'),
+            ],
           ),
-        ],
-      ),
     );
     if (scale == null || !mounted) return;
     if (scale.isPeakTarget) {
       final confirm = await showDialog<bool>(
         context: context,
-        builder: (ctx) => AlertDialog(
-          title: Text('确认峰值测试'),
-          content: Text('将生成约 10GB 测试数据，预计耗时数分钟。\n请确保设备有足够存储空间。\n\n继续？'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: Text('取消'),
+        builder:
+            (ctx) => AlertDialog(
+              title: Text('确认峰值测试'),
+              content: Text('将生成约 10GB 测试数据，预计耗时数分钟。\n请确保设备有足够存储空间。\n\n继续？'),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: Text('取消'),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  child: Text('继续'),
+                ),
+              ],
             ),
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: Text('继续'),
-            ),
-          ],
-        ),
       );
       if (confirm != true || !mounted) return;
     }
@@ -2055,19 +2120,20 @@ class _DirectoryPageState extends State<DirectoryPage>
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            CircularProgressIndicator(),
-            SizedBox(height: 16),
-            ValueListenableBuilder<String>(
-              valueListenable: progress,
-              builder: (_, v, __) => Text(v),
+      builder:
+          (ctx) => AlertDialog(
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(height: 16),
+                ValueListenableBuilder<String>(
+                  valueListenable: progress,
+                  builder: (_, v, __) => Text(v),
+                ),
+              ],
             ),
-          ],
-        ),
-      ),
+          ),
     );
     try {
       final result = await TestDataGeneratorService().generateDirectoryTestData(
@@ -2114,31 +2180,32 @@ class _DirectoryPageState extends State<DirectoryPage>
 
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text('选择模板'),
-        content: SizedBox(
-          width: double.maxFinite,
-          child: ListView.builder(
-            shrinkWrap: true,
-            itemCount: _templateDocuments.length,
-            itemBuilder: (context, index) {
-              return ListTile(
-                title: Text(_templateDocuments[index]['name']),
-                leading: Icon(Icons.star, color: Colors.amber),
-                onTap: () {
-                  Navigator.pop(context, _templateDocuments[index]['name']);
+      builder:
+          (context) => AlertDialog(
+            title: Text('选择模板'),
+            content: SizedBox(
+              width: double.maxFinite,
+              child: ListView.builder(
+                shrinkWrap: true,
+                itemCount: _templateDocuments.length,
+                itemBuilder: (context, index) {
+                  return ListTile(
+                    title: Text(_templateDocuments[index]['name']),
+                    leading: Icon(Icons.star, color: Colors.amber),
+                    onTap: () {
+                      Navigator.pop(context, _templateDocuments[index]['name']);
+                    },
+                  );
                 },
-              );
-            },
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: Text('取消'),
+              ),
+            ],
           ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text('取消'),
-          ),
-        ],
-      ),
     ).then((templateName) async {
       if (templateName != null && mounted) {
         await _createDocumentFromTemplate(templateName);
@@ -2154,12 +2221,12 @@ class _DirectoryPageState extends State<DirectoryPage>
       // For now, we assume the service might further refine the name if there's a conflict.
 
       // createDocumentFromTemplate now returns Future<String> and expects parentFolder as a named argument.
-      String newDocName =
-          await getService<DatabaseService>().createDocumentFromTemplate(
-        templateName,
-        newName,
-        parentFolder: _currentParentFolder,
-      );
+      String newDocName = await getService<DatabaseService>()
+          .createDocumentFromTemplate(
+            templateName,
+            newName,
+            parentFolder: _currentParentFolder,
+          );
 
       if (mounted) {
         await _loadData();
@@ -2295,23 +2362,24 @@ class _DirectoryPageState extends State<DirectoryPage>
       showDialog(
         context: context,
         barrierDismissible: false,
-        builder: (context) => const AlertDialog(
-          content: Row(
-            children: [
-              CircularProgressIndicator(),
-              SizedBox(width: 20),
-              Text('正在准备导出...'),
-            ],
-          ),
-        ),
+        builder:
+            (context) => const AlertDialog(
+              content: Row(
+                children: [
+                  CircularProgressIndicator(),
+                  SizedBox(width: 20),
+                  Text('正在准备导出...'),
+                ],
+              ),
+            ),
       );
       // 1. 收集所有选中文档的导出路径
       List<String> exportPaths = [];
       for (var item in _selectedItems) {
         if (item.type == ItemType.document) {
           try {
-            String exportPath =
-                await getService<DatabaseService>().exportDocument(item.name);
+            String exportPath = await getService<DatabaseService>()
+                .exportDocument(item.name);
             if (await File(exportPath).exists()) {
               exportPaths.add(exportPath);
             }
@@ -2365,25 +2433,26 @@ class _DirectoryPageState extends State<DirectoryPage>
       showDialog(
         context: context,
         barrierDismissible: false,
-        builder: (context) => AlertDialog(
-          content: ValueListenableBuilder<String>(
-            valueListenable: progressNotifier,
-            builder: (context, progress, child) {
-              return Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const CircularProgressIndicator(),
-                  const SizedBox(height: 20),
-                  Text(
-                    progress,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(fontSize: 14),
-                  ),
-                ],
-              );
-            },
-          ),
-        ),
+        builder:
+            (context) => AlertDialog(
+              content: ValueListenableBuilder<String>(
+                valueListenable: progressNotifier,
+                builder: (context, progress, child) {
+                  return Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const CircularProgressIndicator(),
+                      const SizedBox(height: 20),
+                      Text(
+                        progress,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(fontSize: 14),
+                      ),
+                    ],
+                  );
+                },
+              ),
+            ),
       );
 
       // 导出到默认目录（Downloads/外部存储），不写入 backups
@@ -2432,20 +2501,21 @@ class _DirectoryPageState extends State<DirectoryPage>
       // 显示警告对话框
       bool? confirm = await showDialog<bool>(
         context: context,
-        builder: (context) => AlertDialog(
-          title: Text('警告'),
-          content: Text('导入新目录数据将会清空当前所有数据，确定要继续吗？'),
-          actions: [
-            TextButton(
-              child: Text('取消'),
-              onPressed: () => Navigator.of(context).pop(false),
+        builder:
+            (context) => AlertDialog(
+              title: Text('警告'),
+              content: Text('导入新目录数据将会清空当前所有数据，确定要继续吗？'),
+              actions: [
+                TextButton(
+                  child: Text('取消'),
+                  onPressed: () => Navigator.of(context).pop(false),
+                ),
+                TextButton(
+                  child: Text('确定'),
+                  onPressed: () => Navigator.of(context).pop(true),
+                ),
+              ],
             ),
-            TextButton(
-              child: Text('确定'),
-              onPressed: () => Navigator.of(context).pop(true),
-            ),
-          ],
-        ),
       );
 
       if (confirm != true) return;
@@ -2466,25 +2536,26 @@ class _DirectoryPageState extends State<DirectoryPage>
         showDialog(
           context: context,
           barrierDismissible: false,
-          builder: (context) => AlertDialog(
-            content: ValueListenableBuilder<String>(
-              valueListenable: progressNotifier,
-              builder: (context, progress, child) {
-                return Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const CircularProgressIndicator(),
-                    const SizedBox(height: 20),
-                    Text(
-                      progress,
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(fontSize: 14),
-                    ),
-                  ],
-                );
-              },
-            ),
-          ),
+          builder:
+              (context) => AlertDialog(
+                content: ValueListenableBuilder<String>(
+                  valueListenable: progressNotifier,
+                  builder: (context, progress, child) {
+                    return Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const CircularProgressIndicator(),
+                        const SizedBox(height: 20),
+                        Text(
+                          progress,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(fontSize: 14),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+              ),
         );
 
         await getService<DatabaseService>().importDirectoryData(
@@ -2533,68 +2604,70 @@ class _DirectoryPageState extends State<DirectoryPage>
         final diaryEntryCount = report['diaryEntryCount'] as int? ?? 0;
         showDialog(
           context: context,
-          builder: (ctx) => AlertDialog(
-            title: const Row(
-              children: [
-                Icon(Icons.check_circle, color: Colors.green, size: 28),
-                SizedBox(width: 8),
-                Text('检查完成'),
-              ],
-            ),
-            content: Text(
-              '数据完整性检查通过，未发现问题。\n\n'
-              '目录：$folderCount 个文件夹，$documentCount 个文档\n'
-              '媒体：$mediaItemCount 项\n'
-              '日记：$diaryEntryCount 条',
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('确定'),
+          builder:
+              (ctx) => AlertDialog(
+                title: const Row(
+                  children: [
+                    Icon(Icons.check_circle, color: Colors.green, size: 28),
+                    SizedBox(width: 8),
+                    Text('检查完成'),
+                  ],
+                ),
+                content: Text(
+                  '数据完整性检查通过，未发现问题。\n\n'
+                  '目录：$folderCount 个文件夹，$documentCount 个文档\n'
+                  '媒体：$mediaItemCount 项\n'
+                  '日记：$diaryEntryCount 条',
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    child: const Text('确定'),
+                  ),
+                ],
               ),
-            ],
-          ),
         );
       } else {
         showDialog(
           context: context,
-          builder: (ctx) => AlertDialog(
-            title: const Text('发现数据完整性问题'),
-            content: SingleChildScrollView(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text('发现 ${report['issues'].length} 个问题:'),
-                  const SizedBox(height: 8),
-                  ...(report['issues'] as List)
-                      .map(
-                        (issue) => Padding(
-                          padding: const EdgeInsets.only(bottom: 4),
-                          child: Text(
-                            '• $issue',
-                            style: const TextStyle(fontSize: 12),
-                          ),
-                        ),
-                      )
-                      .toList(),
+          builder:
+              (ctx) => AlertDialog(
+                title: const Text('发现数据完整性问题'),
+                content: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text('发现 ${report['issues'].length} 个问题:'),
+                      const SizedBox(height: 8),
+                      ...(report['issues'] as List)
+                          .map(
+                            (issue) => Padding(
+                              padding: const EdgeInsets.only(bottom: 4),
+                              child: Text(
+                                '• $issue',
+                                style: const TextStyle(fontSize: 12),
+                              ),
+                            ),
+                          )
+                          .toList(),
+                    ],
+                  ),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    child: const Text('关闭'),
+                  ),
+                  TextButton(
+                    onPressed: () {
+                      Navigator.pop(ctx);
+                      _repairDataIntegrity();
+                    },
+                    child: const Text('修复问题'),
+                  ),
                 ],
               ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('关闭'),
-              ),
-              TextButton(
-                onPressed: () {
-                  Navigator.pop(ctx);
-                  _repairDataIntegrity();
-                },
-                child: const Text('修复问题'),
-              ),
-            ],
-          ),
         );
       }
     } catch (e) {
@@ -2738,7 +2811,12 @@ class _DirectoryPageState extends State<DirectoryPage>
             // 第一层：背景图片层（最底层），复用媒体页视窗参数
             if (_backgroundImage != null)
               Positioned.fill(
-                child: StoredViewImageLayer(file: _backgroundImage!),
+                child: StoredViewImageLayer(
+                  key: ValueKey(
+                    'dir_bg_${_backgroundImage!.path}_$_backgroundViewRefreshTick',
+                  ),
+                  file: _backgroundImage!,
+                ),
               ),
 
             // 第二层：背景颜色层（在背景图片之上）
@@ -2747,240 +2825,60 @@ class _DirectoryPageState extends State<DirectoryPage>
             // 第三层：内容层
             Positioned.fill(
               child: Container(
-                child: _items.isEmpty
-                    ? Padding(
-                        padding: EdgeInsets.only(top: contentTop),
-                        child: Center(
-                          child: Text(
-                            '没有文件夹或文档\n点击右上角的 + 按钮添加',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              fontSize: 18,
-                              color: Colors.grey,
+                child:
+                    _items.isEmpty
+                        ? Padding(
+                          padding: EdgeInsets.only(top: contentTop),
+                          child: Center(
+                            child: Text(
+                              '没有文件夹或文档\n点击右上角的 + 按钮添加',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                fontSize: 18,
+                                color: Colors.grey,
+                              ),
                             ),
                           ),
-                        ),
-                      )
-                    : ReorderableListView.builder(
-                        onReorder: _isMultiSelectMode
-                            ? (oldIndex, newIndex) {}
-                            : _onReorder,
-                        padding: EdgeInsets.fromLTRB(
-                          0,
-                          contentTop + 4.0,
-                          0,
-                          4.0,
-                        ),
-                        itemCount: _items.length,
-                        buildDefaultDragHandles: false,
-                        itemBuilder: (context, index) {
-                          final item = _items[index];
-                          bool isHighlighted =
-                              _lastCreatedItemName == item.name &&
-                                  _lastCreatedItemType == item.type &&
-                                  _isHighlightingNewItem;
+                        )
+                        : ReorderableListView.builder(
+                          onReorder:
+                              _isMultiSelectMode
+                                  ? (oldIndex, newIndex) {}
+                                  : _onReorder,
+                          padding: EdgeInsets.fromLTRB(
+                            0,
+                            contentTop + 4.0,
+                            0,
+                            4.0,
+                          ),
+                          itemCount: _items.length,
+                          buildDefaultDragHandles: false,
+                          itemBuilder: (context, index) {
+                            final item = _items[index];
+                            bool isHighlighted =
+                                _lastCreatedItemName == item.name &&
+                                _lastCreatedItemType == item.type &&
+                                _isHighlightingNewItem;
 
-                          Widget buildListItem(
-                            DirectoryItem item,
-                            int index,
-                            bool isHighlighted,
-                          ) {
-                            final itemFeedback = Material(
-                              elevation: 4.0,
-                              child: Container(
-                                padding: EdgeInsets.all(8.0),
-                                decoration: BoxDecoration(
-                                  color: Colors.white,
-                                  borderRadius: BorderRadius.circular(4.0),
-                                ),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    if (_isMultiSelectMode)
-                                      Padding(
-                                        padding: EdgeInsets.only(right: 8.0),
-                                        child: Icon(
-                                          item.isSelected
-                                              ? Icons.check_box
-                                              : Icons.check_box_outline_blank,
-                                          color: Colors.blue,
-                                          size: 24,
-                                        ),
-                                      ),
-                                    Icon(
-                                      item.type == ItemType.folder
-                                          ? Icons.folder
-                                          : Icons.description,
-                                      size: 40,
-                                      color: item.type == ItemType.folder
-                                          ? Color(0xFFFFCA28)
-                                          : Color(0xFF4CAF50),
-                                    ),
-                                    SizedBox(width: 8.0),
-                                    Text(
-                                      item.name,
-                                      style: TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            );
-
-                            Widget buildIcon() {
-                              if (item.type == ItemType.folder) {
-                                return DragTarget<DirectoryItem>(
-                                  onWillAccept: (draggedItem) {
-                                    if (draggedItem == null) return false;
-                                    if (draggedItem.type == ItemType.folder &&
-                                        draggedItem.name == item.name)
-                                      return false;
-                                    if (draggedItem.type == ItemType.folder) {
-                                      final folders = _items
-                                          .where(
-                                            (i) => i.type == ItemType.folder,
-                                          )
-                                          .toList();
-                                      bool isChild = _isChildFolder(
-                                        draggedItem.name,
-                                        item.name,
-                                        folders,
-                                      );
-                                      if (isChild) return false;
-                                    }
-                                    return true;
-                                  },
-                                  onAccept: (
-                                    DirectoryItem draggedItem,
-                                  ) async {
-                                    if (draggedItem.type == ItemType.document) {
-                                      await getService<DatabaseService>()
-                                          .updateDocumentParentFolder(
-                                        draggedItem.name,
-                                        item.name,
-                                      );
-                                    } else if (draggedItem.type ==
-                                        ItemType.folder) {
-                                      await getService<DatabaseService>()
-                                          .updateFolderParentFolder(
-                                        draggedItem.name,
-                                        item.name,
-                                      );
-                                    }
-                                    if (mounted) {
-                                      await _loadData();
-                                    }
-                                  },
-                                  builder: (
-                                    context,
-                                    candidateItems,
-                                    rejectedItems,
-                                  ) {
-                                    return Draggable<DirectoryItem>(
-                                      data: item,
-                                      feedback: Material(
-                                        elevation: 8.0,
-                                        color: Colors.transparent,
-                                        child: Icon(
-                                          Icons.folder,
-                                          size: 56,
-                                          color: Colors.blueAccent,
-                                          shadows: [
-                                            Shadow(
-                                              color: Colors.black26,
-                                              blurRadius: 8,
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                      childWhenDragging: Opacity(
-                                        opacity: 0.3,
-                                        child: Icon(
-                                          Icons.folder,
-                                          size: 40,
-                                          color: Colors.amber,
-                                        ),
-                                      ),
-                                      child: AnimatedContainer(
-                                        duration: Duration(milliseconds: 150),
-                                        decoration: BoxDecoration(
-                                          color: candidateItems.isNotEmpty
-                                              ? Colors.blue.withOpacity(
-                                                  0.2,
-                                                )
-                                              : null,
-                                          border: candidateItems.isNotEmpty
-                                              ? Border.all(
-                                                  color: Colors.blue,
-                                                  width: 2,
-                                                )
-                                              : null,
-                                          borderRadius: BorderRadius.circular(
-                                            4.0,
-                                          ),
-                                        ),
-                                        child: Icon(
-                                          Icons.folder,
-                                          size: 40,
-                                          color: Colors.amber,
-                                        ),
-                                      ),
-                                    );
-                                  },
-                                );
-                              } else {
-                                return Draggable<DirectoryItem>(
-                                  data: item,
-                                  feedback: Material(
-                                    elevation: 8.0,
-                                    color: Colors.transparent,
-                                    child: Icon(
-                                      Icons.description,
-                                      size: 56,
-                                      color: Colors.green,
-                                      shadows: [
-                                        Shadow(
-                                          color: Colors.black26,
-                                          blurRadius: 8,
-                                        ),
-                                      ],
-                                    ),
+                            Widget buildListItem(
+                              DirectoryItem item,
+                              int index,
+                              bool isHighlighted,
+                            ) {
+                              final itemFeedback = Material(
+                                elevation: 4.0,
+                                child: Container(
+                                  padding: EdgeInsets.all(8.0),
+                                  decoration: BoxDecoration(
+                                    color: Colors.white,
+                                    borderRadius: BorderRadius.circular(4.0),
                                   ),
-                                  childWhenDragging: Opacity(
-                                    opacity: 0.3,
-                                    child: Icon(
-                                      Icons.description,
-                                      size: 40,
-                                      color: Color(0xFF4CAF50),
-                                    ),
-                                  ),
-                                  child: Icon(
-                                    Icons.description,
-                                    size: 40,
-                                    color: Color(0xFF4CAF50),
-                                  ),
-                                );
-                              }
-                            }
-
-                            return Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                ListTile(
-                                  contentPadding: EdgeInsets.symmetric(
-                                    horizontal: 16.0,
-                                    vertical: 0.0,
-                                  ),
-                                  dense: false,
-                                  leading: Row(
+                                  child: Row(
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
                                       if (_isMultiSelectMode)
                                         Padding(
-                                          padding: EdgeInsets.only(
-                                            right: 8.0,
-                                          ),
+                                          padding: EdgeInsets.only(right: 8.0),
                                           child: Icon(
                                             item.isSelected
                                                 ? Icons.check_box
@@ -2989,73 +2887,265 @@ class _DirectoryPageState extends State<DirectoryPage>
                                             size: 24,
                                           ),
                                         ),
-                                      buildIcon(),
-                                      if (item.isTemplate)
-                                        Padding(
-                                          padding: EdgeInsets.only(left: 4.0),
-                                          child: Icon(
-                                            Icons.star,
-                                            color: Colors.amber,
-                                            size: 16,
-                                          ),
+                                      Icon(
+                                        item.type == ItemType.folder
+                                            ? Icons.folder
+                                            : Icons.description,
+                                        size: 40,
+                                        color:
+                                            item.type == ItemType.folder
+                                                ? Color(0xFFFFCA28)
+                                                : Color(0xFF4CAF50),
+                                      ),
+                                      SizedBox(width: 8.0),
+                                      Text(
+                                        item.name,
+                                        style: TextStyle(
+                                          fontWeight: FontWeight.bold,
                                         ),
+                                      ),
                                     ],
                                   ),
-                                  title: Text(
-                                    item.name,
-                                    style: TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                      color: item.type == ItemType.folder
-                                          ? Colors.blueAccent
-                                          : Colors.green,
-                                    ),
-                                  ),
-                                  trailing: ReorderableDragStartListener(
-                                    index: index,
-                                    child: Icon(
-                                      Icons.drag_handle,
-                                      color: Colors.grey,
-                                    ),
-                                  ),
-                                  onTap: () {
-                                    if (_isMultiSelectMode) {
-                                      _toggleItemSelection(item);
-                                    } else {
-                                      if (item.type == ItemType.folder) {
-                                        _openFolder(item.name);
-                                      } else {
-                                        _openDocument(item.name);
-                                      }
-                                    }
-                                  },
-                                  onLongPress: () {
-                                    if (item.type == ItemType.folder) {
-                                      _showFolderOptions(item.name);
-                                    } else {
-                                      _showDocumentOptions(item.name);
-                                    }
-                                  },
-                                  tileColor: isHighlighted
-                                      ? Colors.blue.withOpacity(0.2)
-                                      : item.isSelected && _isMultiSelectMode
-                                          ? Colors.blue.withOpacity(0.1)
-                                          : null,
-                                  selectedTileColor: Colors.blue.withOpacity(
-                                    0.15,
-                                  ),
-                                  selected: item.isSelected,
                                 ),
-                                Divider(height: 5.0),
-                              ],
-                            );
-                          }
+                              );
 
-                          return Container(
-                            key: ValueKey('${item.type}_${item.name}'),
-                            child: buildListItem(item, index, isHighlighted),
-                          );
-                        },
-                      ),
+                              Widget buildIcon() {
+                                if (item.type == ItemType.folder) {
+                                  return DragTarget<DirectoryItem>(
+                                    onWillAccept: (draggedItem) {
+                                      if (draggedItem == null) return false;
+                                      if (draggedItem.type == ItemType.folder &&
+                                          draggedItem.name == item.name)
+                                        return false;
+                                      if (draggedItem.type == ItemType.folder) {
+                                        final folders =
+                                            _items
+                                                .where(
+                                                  (i) =>
+                                                      i.type == ItemType.folder,
+                                                )
+                                                .toList();
+                                        bool isChild = _isChildFolder(
+                                          draggedItem.name,
+                                          item.name,
+                                          folders,
+                                        );
+                                        if (isChild) return false;
+                                      }
+                                      return true;
+                                    },
+                                    onAccept: (
+                                      DirectoryItem draggedItem,
+                                    ) async {
+                                      if (draggedItem.type ==
+                                          ItemType.document) {
+                                        await getService<DatabaseService>()
+                                            .updateDocumentParentFolder(
+                                              draggedItem.name,
+                                              item.name,
+                                            );
+                                      } else if (draggedItem.type ==
+                                          ItemType.folder) {
+                                        await getService<DatabaseService>()
+                                            .updateFolderParentFolder(
+                                              draggedItem.name,
+                                              item.name,
+                                            );
+                                      }
+                                      if (mounted) {
+                                        await _loadData();
+                                      }
+                                    },
+                                    builder: (
+                                      context,
+                                      candidateItems,
+                                      rejectedItems,
+                                    ) {
+                                      return Draggable<DirectoryItem>(
+                                        data: item,
+                                        feedback: Material(
+                                          elevation: 8.0,
+                                          color: Colors.transparent,
+                                          child: Icon(
+                                            Icons.folder,
+                                            size: 56,
+                                            color: Colors.blueAccent,
+                                            shadows: [
+                                              Shadow(
+                                                color: Colors.black26,
+                                                blurRadius: 8,
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                        childWhenDragging: Opacity(
+                                          opacity: 0.3,
+                                          child: Icon(
+                                            Icons.folder,
+                                            size: 40,
+                                            color: Colors.amber,
+                                          ),
+                                        ),
+                                        child: AnimatedContainer(
+                                          duration: Duration(milliseconds: 150),
+                                          decoration: BoxDecoration(
+                                            color:
+                                                candidateItems.isNotEmpty
+                                                    ? Colors.blue.withOpacity(
+                                                      0.2,
+                                                    )
+                                                    : null,
+                                            border:
+                                                candidateItems.isNotEmpty
+                                                    ? Border.all(
+                                                      color: Colors.blue,
+                                                      width: 2,
+                                                    )
+                                                    : null,
+                                            borderRadius: BorderRadius.circular(
+                                              4.0,
+                                            ),
+                                          ),
+                                          child: Icon(
+                                            Icons.folder,
+                                            size: 40,
+                                            color: Colors.amber,
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                  );
+                                } else {
+                                  return Draggable<DirectoryItem>(
+                                    data: item,
+                                    feedback: Material(
+                                      elevation: 8.0,
+                                      color: Colors.transparent,
+                                      child: Icon(
+                                        Icons.description,
+                                        size: 56,
+                                        color: Colors.green,
+                                        shadows: [
+                                          Shadow(
+                                            color: Colors.black26,
+                                            blurRadius: 8,
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    childWhenDragging: Opacity(
+                                      opacity: 0.3,
+                                      child: Icon(
+                                        Icons.description,
+                                        size: 40,
+                                        color: Color(0xFF4CAF50),
+                                      ),
+                                    ),
+                                    child: Icon(
+                                      Icons.description,
+                                      size: 40,
+                                      color: Color(0xFF4CAF50),
+                                    ),
+                                  );
+                                }
+                              }
+
+                              return Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  ListTile(
+                                    contentPadding: EdgeInsets.symmetric(
+                                      horizontal: 16.0,
+                                      vertical: 0.0,
+                                    ),
+                                    dense: false,
+                                    leading: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        if (_isMultiSelectMode)
+                                          Padding(
+                                            padding: EdgeInsets.only(
+                                              right: 8.0,
+                                            ),
+                                            child: Icon(
+                                              item.isSelected
+                                                  ? Icons.check_box
+                                                  : Icons
+                                                      .check_box_outline_blank,
+                                              color: Colors.blue,
+                                              size: 24,
+                                            ),
+                                          ),
+                                        buildIcon(),
+                                        if (item.isTemplate)
+                                          Padding(
+                                            padding: EdgeInsets.only(left: 4.0),
+                                            child: Icon(
+                                              Icons.star,
+                                              color: Colors.amber,
+                                              size: 16,
+                                            ),
+                                          ),
+                                      ],
+                                    ),
+                                    title: Text(
+                                      item.name,
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        color:
+                                            item.type == ItemType.folder
+                                                ? Colors.blueAccent
+                                                : Colors.green,
+                                      ),
+                                    ),
+                                    trailing: ReorderableDragStartListener(
+                                      index: index,
+                                      child: Icon(
+                                        Icons.drag_handle,
+                                        color: Colors.grey,
+                                      ),
+                                    ),
+                                    onTap: () {
+                                      if (_isMultiSelectMode) {
+                                        _toggleItemSelection(item);
+                                      } else {
+                                        if (item.type == ItemType.folder) {
+                                          _openFolder(item.name);
+                                        } else {
+                                          _openDocument(item.name);
+                                        }
+                                      }
+                                    },
+                                    onLongPress: () {
+                                      if (item.type == ItemType.folder) {
+                                        _showFolderOptions(item.name);
+                                      } else {
+                                        _showDocumentOptions(item.name);
+                                      }
+                                    },
+                                    tileColor:
+                                        isHighlighted
+                                            ? Colors.blue.withOpacity(0.2)
+                                            : item.isSelected &&
+                                                _isMultiSelectMode
+                                            ? Colors.blue.withOpacity(0.1)
+                                            : null,
+                                    selectedTileColor: Colors.blue.withOpacity(
+                                      0.15,
+                                    ),
+                                    selected: item.isSelected,
+                                  ),
+                                  Divider(height: 5.0),
+                                ],
+                              );
+                            }
+
+                            return Container(
+                              key: ValueKey('${item.type}_${item.name}'),
+                              child: buildListItem(item, index, isHighlighted),
+                            );
+                          },
+                        ),
               ),
             ),
             if (_isMultiSelectMode && _selectedItems.isNotEmpty)
@@ -3094,8 +3184,8 @@ class _DirectoryPageState extends State<DirectoryPage>
   Future<void> _copyFolder(String folderName) async {
     try {
       // 调用数据层复制，并保持在当前父级下创建副本
-      final String newFolderName =
-          await getService<DatabaseService>().copyFolder(folderName);
+      final String newFolderName = await getService<DatabaseService>()
+          .copyFolder(folderName);
       if (mounted) {
         await _loadData();
         _highlightNewItem(newFolderName, ItemType.folder);
