@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'widgets/image_layout_utils.dart' show ImageLetterboxFill;
+import 'media_source_favorite_filter.dart';
 
 /// 媒体栏随机/顺序播放
 enum MediaPlaybackOrder {
@@ -75,6 +76,8 @@ Future<Map<String, dynamic>> buildMediaSettingsExportMap(
   };
   final sd = prefs.getString('selected_media_directory');
   if (sd != null) m['selected_media_directory'] = sd;
+  final ff = prefs.getString(kMediaSourceFavoriteFilterPrefsKey);
+  if (ff != null) m[kMediaSourceFavoriteFilterPrefsKey] = ff;
   final dur = prefs.getInt(MediaPlayerPrefsKeys.imageDurationMs);
   if (dur != null) m[MediaPlayerPrefsKeys.imageDurationMs] = dur;
   final mode = prefs.getInt(MediaPlayerPrefsKeys.imageDisplayMode);
@@ -106,6 +109,10 @@ Future<void> applyMediaSettingsImportMap(
   final sel = json['selected_media_directory'];
   if (sel is String && sel.isNotEmpty) {
     await prefs.setString('selected_media_directory', sel);
+  }
+  final ff = json[kMediaSourceFavoriteFilterPrefsKey];
+  if (ff is String && ff.isNotEmpty) {
+    await prefs.setString(kMediaSourceFavoriteFilterPrefsKey, ff);
   }
   int? asInt(dynamic v) => v is num ? v.toInt() : null;
   final dur = asInt(json[MediaPlayerPrefsKeys.imageDurationMs]);

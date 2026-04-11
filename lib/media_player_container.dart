@@ -14,6 +14,7 @@ import 'media_selection_dialog.dart'; // 导入媒体选择对话框
 import 'models/media_item.dart'; // 添加MediaItem类的导入
 import 'services/logger.dart';
 import 'media_player_settings.dart';
+import 'media_source_favorite_filter.dart';
 import 'widgets/ken_burns_image_display.dart';
 import 'widgets/zoom_pan_edge_image_display.dart';
 import 'widgets/fit_width_blur_static_image.dart';
@@ -43,6 +44,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
   Widget? _mediaWidget;
   VideoPlayerWidget? _currentVideoWidget; // 保存当前的VideoPlayerWidget实例
   String? _selectedDirectory;
+  MediaSourceFavoriteFilter _favoriteFilter = MediaSourceFavoriteFilter.all;
   late final DatabaseService _databaseService;
   Map<String, dynamic>? _currentPlayingMedia; // 添加当前正在播放的媒体项
 
@@ -66,7 +68,8 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
 
   String _sequentialIndexPrefsKey() {
     final d = _selectedDirectory ?? 'root';
-    return 'media_player_seq_idx_${Uri.encodeComponent(d)}';
+    final f = _favoriteFilter.storageValue;
+    return 'media_player_seq_idx_${Uri.encodeComponent(d)}_${Uri.encodeComponent(f)}';
   }
 
   Future<void> _persistSequentialIndex() async {
@@ -91,6 +94,9 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
     setState(() {
       _selectedDirectory =
           prefs.getString('selected_media_directory') ?? 'root';
+      _favoriteFilter = parseMediaSourceFavoriteFilter(
+        prefs.getString(kMediaSourceFavoriteFilterPrefsKey),
+      );
       _imageDuration = settings.imageDuration;
       _imageMode = settings.imageMode;
       _zoomMax = settings.zoomMaxScale;
@@ -98,7 +104,9 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
       _panClockwise = settings.panClockwise;
       _imagePanRoamCoverage = settings.imagePanRoamCoverage;
       _letterboxFill = settings.letterboxFill;
-      Logger.i('Loaded selected directory: $_selectedDirectory');
+      Logger.i(
+        'Loaded media source: dir=$_selectedDirectory, scope=${_favoriteFilter.storageValue}',
+      );
     });
     await _loadMediaList(); // 确保加载目录后立即加载媒体列表
   }
@@ -133,10 +141,19 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
     );
   }
 
-  Future<void> _saveSelectedDirectory(String directory) async {
+  Future<void> _saveMediaSourceSelection(
+    String directory,
+    MediaSourceFavoriteFilter filter,
+  ) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('selected_media_directory', directory);
-    Logger.i('Saved selected directory: $directory');
+    await prefs.setString(
+      kMediaSourceFavoriteFilterPrefsKey,
+      filter.storageValue,
+    );
+    Logger.i(
+      'Saved media source: directory=$directory, scope=${filter.storageValue}',
+    );
   }
 
   Future<void> _loadMediaList({bool restartPlaybackIfActive = true}) async {
@@ -165,9 +182,20 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
         }
       });
       if (_mediaList.isEmpty) {
-        Logger.w('目录 $_selectedDirectory 中没有找到媒体文件');
+        Logger.w(
+          '目录 $_selectedDirectory、范围 ${_favoriteFilter.displayLabel} 下没有可用媒体',
+        );
         setState(() {
-          _mediaWidget = Center(child: Text('该目录中没有媒体文件'));
+          _mediaWidget = Center(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text(
+                '当前来源（${_selectedDirectory == 'root' ? '整个媒体库' : '文件夹'}）下，'
+                '${_favoriteFilter.displayLabel}中没有可播放的图片或视频',
+                textAlign: TextAlign.center,
+              ),
+            ),
+          );
           _currentPlayingMedia = null;
         });
       } else if (_mediaMode != MediaMode.none && restartPlaybackIfActive) {
@@ -184,8 +212,8 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
 
       Logger.i(
         _selectedDirectory == 'root'
-            ? '加载整个媒体库（与媒体库网格顺序一致）'
-            : '加载目录 $_selectedDirectory 下的文件（与媒体库网格顺序一致）',
+            ? '加载整个媒体库（与媒体库网格顺序一致），范围: ${_favoriteFilter.displayLabel}'
+            : '加载目录 $_selectedDirectory 下的文件（与媒体库网格顺序一致），范围: ${_favoriteFilter.displayLabel}',
       );
 
       final raw = await _databaseService.getMediaFilesInGridOrder(
@@ -193,6 +221,14 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
       );
 
       for (final item in raw) {
+        if (_favoriteFilter == MediaSourceFavoriteFilter.favoriteOnly &&
+            !mediaRowIsFavorite(item)) {
+          continue;
+        }
+        if (_favoriteFilter == MediaSourceFavoriteFilter.notFavoriteOnly &&
+            mediaRowIsFavorite(item)) {
+          continue;
+        }
         final mutable = Map<String, dynamic>.from(item);
         await _databaseService.tryRepairMediaItemPath(mutable);
         final String pathStr = mutable['path']?.toString() ?? '';
@@ -716,27 +752,96 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
           (BuildContext dialogContext) => MediaSelectionDialog(
             selectedDirectory: _selectedDirectory, // 传入当前选中的目录
             onDirectorySelected: (directory) async {
-              if (directory != _selectedDirectory) {
-                setState(() {
-                  _selectedDirectory = directory;
-                  _currentPlayingMedia = null; // 选择新的媒体源时重置当前播放
-                  _mediaWidget = null; // 清除当前显示的媒体
-                  _currentVideoWidget = null;
-                  _mediaMode = MediaMode.none; // 停止播放模式
-                  _mediaTimer?.cancel(); // 取消自动播放定时器
-                });
-
-                await _saveSelectedDirectory(directory);
-                await _loadMediaList(); // 重新加载媒体列表
-                Logger.i('已选择目录并加载新的媒体列表: $directory');
-              }
-              // 选择完成后关闭对话框
               Navigator.of(dialogContext).pop();
+              if (!mounted) return;
+
+              final scope = await _showFavoriteScopeDialog();
+              if (!mounted || scope == null) return;
+
+              final changed =
+                  directory != _selectedDirectory || scope != _favoriteFilter;
+              if (!changed) return;
+
+              setState(() {
+                _selectedDirectory = directory;
+                _favoriteFilter = scope;
+                _currentPlayingMedia = null;
+                _mediaWidget = null;
+                _currentVideoWidget = null;
+                _mediaMode = MediaMode.none;
+                _mediaTimer?.cancel();
+              });
+
+              await _saveMediaSourceSelection(directory, scope);
+              await _loadMediaList();
+              Logger.i(
+                '已选择媒体来源: $directory，范围: ${scope.displayLabel}',
+              );
             },
           ),
     ).then((_) {
       Logger.d('Dialog closed');
     });
+  }
+
+  /// 选定目录/整个媒体库后，再选「全部 / 已收藏 / 未收藏」。
+  Future<MediaSourceFavoriteFilter?> _showFavoriteScopeDialog() {
+    return showDialog<MediaSourceFavoriteFilter>(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          title: const Text('选择媒体范围'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.perm_media_outlined),
+                  title: Text(MediaSourceFavoriteFilter.all.displayLabel),
+                  subtitle: const Text('包含当前来源下全部图片与视频'),
+                  onTap:
+                      () => Navigator.of(ctx).pop(
+                        MediaSourceFavoriteFilter.all,
+                      ),
+                ),
+                ListTile(
+                  leading: Icon(
+                    Icons.favorite,
+                    color: Colors.pink.withValues(alpha: 0.85),
+                  ),
+                  title: Text(
+                    MediaSourceFavoriteFilter.favoriteOnly.displayLabel,
+                  ),
+                  subtitle: const Text('仅播放或展示已星标收藏的项'),
+                  onTap:
+                      () => Navigator.of(ctx).pop(
+                        MediaSourceFavoriteFilter.favoriteOnly,
+                      ),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.favorite_border),
+                  title: Text(
+                    MediaSourceFavoriteFilter.notFavoriteOnly.displayLabel,
+                  ),
+                  subtitle: const Text('排除已星标收藏的项'),
+                  onTap:
+                      () => Navigator.of(ctx).pop(
+                        MediaSourceFavoriteFilter.notFavoriteOnly,
+                      ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('取消'),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   @override
