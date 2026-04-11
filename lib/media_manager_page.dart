@@ -616,6 +616,16 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   /// 导入完成时间，导入后 30 秒内不触发自动清理，避免大量缩略图生成时的误判
   DateTime? _lastImportCompletedAt;
 
+  /// 略缩图顶栏「设置」：单击延迟打开菜单，与快速双击切换收藏区分。
+  Timer? _settingsIconSingleTapTimer;
+  DateTime? _settingsIconLastTapTime;
+
+  /// 略缩图卡片右上角圆形菜单（爱心/三点）：单击延迟弹出菜单，快速双击切换收藏。
+  Timer? _thumbCornerMenuSingleTapTimer;
+  MediaItem? _thumbCornerMenuPendingItem;
+  DateTime? _thumbCornerMenuLastTapTime;
+  BuildContext? _thumbCornerMenuAnchorContext;
+
   /// 启动时的媒体ID快照，仅用于自动导入逻辑
   Set<String> _initialAssetIds = {};
 
@@ -693,6 +703,8 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     _gridScrollController.removeListener(_handleGridScroll);
     _gridScrollController.dispose();
     _cleanupTimer?.cancel(); // Cancel the cleanup timer
+    _settingsIconSingleTapTimer?.cancel();
+    _thumbCornerMenuSingleTapTimer?.cancel();
     while (_thumbnailWaitQueue.isNotEmpty) {
       final c = _thumbnailWaitQueue.removeAt(0);
       if (!c.isCompleted) c.complete();
@@ -3382,78 +3394,35 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                 Positioned(
                   top: 0,
                   right: 0,
-                  child: Container(
-                    width: 28,
-                    height: 28,
-                    decoration: BoxDecoration(
-                      color:
-                          showFavThumbnailBadge
-                              ? Colors.pink.withValues(alpha: 0.4)
-                              : Colors.black45,
-                      shape: BoxShape.circle,
-                    ),
-                    child: PopupMenuButton<String>(
-                      padding: EdgeInsets.zero,
-                      icon: Icon(
-                        showFavThumbnailBadge
-                            ? Icons.favorite
-                            : Icons.more_vert,
-                        size: 20,
-                        color: Colors.white,
-                      ),
-                      onSelected: (value) {
-                        if (value == 'delete') {
-                          _deleteMediaItem(item);
-                        } else if (value == 'move') {
-                          _showMoveDialog(item: item);
-                        } else if (value == 'rename') {
-                          _renameMediaItem(item);
-                        } else if (value == 'multi_select') {
-                          _toggleMultiSelectMode();
-                        } else if (value == 'select_all') {
-                          _selectAll();
-                        } else if (value == 'export') {
-                          _exportMediaItem(item);
-                        } else if (value == 'properties') {
-                          _showMediaItemProperties(item);
-                        }
-                      },
-                      itemBuilder:
-                          (context) => [
-                            const PopupMenuItem(
-                              value: 'rename',
-                              child: Text('重命名'),
+                  child: Builder(
+                    builder: (anchorCtx) {
+                      return Material(
+                        color: Colors.transparent,
+                        child: InkWell(
+                          customBorder: const CircleBorder(),
+                          onTap: () => _onThumbnailCornerTap(item, anchorCtx),
+                          child: Container(
+                            width: 28,
+                            height: 28,
+                            alignment: Alignment.center,
+                            decoration: BoxDecoration(
+                              color:
+                                  showFavThumbnailBadge
+                                      ? Colors.pink.withValues(alpha: 0.4)
+                                      : Colors.black45,
+                              shape: BoxShape.circle,
                             ),
-                            const PopupMenuItem(
-                              value: 'properties',
-                              child: Text('属性'),
+                            child: Icon(
+                              showFavThumbnailBadge
+                                  ? Icons.favorite
+                                  : Icons.more_vert,
+                              size: 20,
+                              color: Colors.white,
                             ),
-                            const PopupMenuItem(
-                              value: 'move',
-                              child: Text('移动到'),
-                            ),
-                            if (item.type != MediaType.folder)
-                              const PopupMenuItem(
-                                value: 'export',
-                                child: Text('导出'),
-                              ),
-                            const PopupMenuItem(
-                              value: 'delete',
-                              child: Text(
-                                '删除',
-                                style: TextStyle(color: Colors.red),
-                              ),
-                            ),
-                            const PopupMenuItem(
-                              value: 'multi_select',
-                              child: Text('多选'),
-                            ),
-                            const PopupMenuItem(
-                              value: 'select_all',
-                              child: Text('全选'),
-                            ),
-                          ],
-                    ),
+                          ),
+                        ),
+                      );
+                    },
                   ),
                 ),
             ],
@@ -6688,6 +6657,243 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     );
   }
 
+  /// 略缩图顶栏齿轮：单击延迟打开设置菜单；约 320ms 内再点一次视为双击，在多选且已勾选时批量切换收藏。
+  void _onSettingsGearTapForSingleOrDouble() {
+    final now = DateTime.now();
+    if (_settingsIconLastTapTime != null &&
+        now.difference(_settingsIconLastTapTime!) <=
+            const Duration(milliseconds: 320)) {
+      _settingsIconSingleTapTimer?.cancel();
+      _settingsIconSingleTapTimer = null;
+      _settingsIconLastTapTime = null;
+      unawaited(_toggleFavoriteFromSettingsDoubleTap());
+      return;
+    }
+    _settingsIconLastTapTime = now;
+    _settingsIconSingleTapTimer?.cancel();
+    _settingsIconSingleTapTimer = Timer(const Duration(milliseconds: 360), () {
+      _settingsIconSingleTapTimer = null;
+      _settingsIconLastTapTime = null;
+      if (mounted) _showSettingsMenu();
+    });
+  }
+
+  /// 双击顶栏齿轮：仅在「多选模式且已勾选媒体（含全选）」时，对所选图/视频逐条切换收藏。
+  Future<void> _toggleFavoriteFromSettingsDoubleTap() async {
+    if (_currentDirectory == 'recycle_bin') {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('回收站中的媒体无法标星收藏')),
+        );
+      }
+      return;
+    }
+
+    if (!_isMultiSelectMode) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              '请先长按略缩图进入多选，勾选或使用底部「全选」，再快速连点两次齿轮',
+            ),
+          ),
+        );
+      }
+      return;
+    }
+
+    if (_selectedItems.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              '请勾选要切换收藏的略缩图，或使用底部「全选」，再快速连点两次齿轮',
+            ),
+          ),
+        );
+      }
+      return;
+    }
+
+    final List<String> ids =
+        _selectedItems
+            .where((id) => id != 'recycle_bin' && id != 'favorites')
+            .toList();
+
+    int ok = 0;
+    String? lastError;
+    for (final id in ids) {
+      final idx = _mediaItems.indexWhere((e) => e.id == id);
+      if (idx < 0) {
+        lastError = '当前列表中找不到该媒体';
+        continue;
+      }
+      final item = _mediaItems[idx];
+      if (item.type != MediaType.image && item.type != MediaType.video) {
+        continue;
+      }
+      try {
+        await _databaseService.toggleMediaItemFavorite(id);
+        ok++;
+      } catch (e) {
+        lastError = e.toString();
+      }
+    }
+
+    if (!mounted) return;
+    if (ok > 0) {
+      await _loadMediaItems();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(ok > 1 ? '已切换 $ok 个媒体的收藏状态' : '已切换收藏状态'),
+        ),
+      );
+    } else {
+      final bool missingInGrid = ids.any(
+        (id) => _mediaItems.indexWhere((e) => e.id == id) < 0,
+      );
+      final String msg =
+          missingInGrid
+              ? '所选条目在当前列表中不存在，请刷新后重试'
+              : (lastError != null
+                  ? '收藏失败: $lastError'
+                  : '所选中没有可对图/视频标星的项（文件夹等已跳过）');
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(msg)));
+    }
+  }
+
+  List<PopupMenuEntry<String>> _thumbnailOverflowMenuEntries(MediaItem item) {
+    return [
+      const PopupMenuItem(value: 'rename', child: Text('重命名')),
+      const PopupMenuItem(value: 'properties', child: Text('属性')),
+      const PopupMenuItem(value: 'move', child: Text('移动到')),
+      if (item.type != MediaType.folder)
+        const PopupMenuItem(value: 'export', child: Text('导出')),
+      const PopupMenuItem(
+        value: 'delete',
+        child: Text('删除', style: TextStyle(color: Colors.red)),
+      ),
+      const PopupMenuItem(value: 'multi_select', child: Text('多选')),
+      const PopupMenuItem(value: 'select_all', child: Text('全选')),
+    ];
+  }
+
+  void _handleThumbnailOverflowMenuResult(String? value, MediaItem item) {
+    if (value == null) return;
+    if (value == 'delete') {
+      _deleteMediaItem(item);
+    } else if (value == 'move') {
+      _showMoveDialog(item: item);
+    } else if (value == 'rename') {
+      _renameMediaItem(item);
+    } else if (value == 'multi_select') {
+      _toggleMultiSelectMode();
+    } else if (value == 'select_all') {
+      _selectAll();
+    } else if (value == 'export') {
+      _exportMediaItem(item);
+    } else if (value == 'properties') {
+      _showMediaItemProperties(item);
+    }
+  }
+
+  Future<void> _showThumbnailOverflowMenu(
+    BuildContext anchorContext,
+    MediaItem item,
+  ) async {
+    final overlay = Overlay.maybeOf(anchorContext);
+    if (overlay == null) return;
+    final box = anchorContext.findRenderObject() as RenderBox?;
+    final overlayBox = overlay.context.findRenderObject() as RenderBox?;
+    if (box == null || overlayBox == null || !box.hasSize) return;
+    final topLeft = box.localToGlobal(Offset.zero, ancestor: overlayBox);
+    final position = RelativeRect.fromRect(
+      Rect.fromLTWH(
+        topLeft.dx,
+        topLeft.dy,
+        box.size.width,
+        box.size.height,
+      ),
+      Offset.zero & overlayBox.size,
+    );
+    final choice = await showMenu<String>(
+      context: anchorContext,
+      position: position,
+      items: _thumbnailOverflowMenuEntries(item),
+    );
+    if (!mounted) return;
+    _handleThumbnailOverflowMenuResult(choice, item);
+  }
+
+  /// 略缩图右上角爱心/三点：快速双击切换收藏；单击约 360ms 后弹出原溢出菜单。
+  void _onThumbnailCornerTap(MediaItem item, BuildContext anchorContext) {
+    final now = DateTime.now();
+    final pending = _thumbCornerMenuPendingItem;
+    if (pending != null &&
+        pending.id == item.id &&
+        _thumbCornerMenuLastTapTime != null &&
+        now.difference(_thumbCornerMenuLastTapTime!) <=
+            const Duration(milliseconds: 320)) {
+      _thumbCornerMenuSingleTapTimer?.cancel();
+      _thumbCornerMenuSingleTapTimer = null;
+      _thumbCornerMenuPendingItem = null;
+      _thumbCornerMenuLastTapTime = null;
+      _thumbCornerMenuAnchorContext = null;
+      unawaited(_toggleFavoriteForThumbnailItem(item));
+      return;
+    }
+    if (pending != null && pending.id != item.id) {
+      _thumbCornerMenuSingleTapTimer?.cancel();
+    }
+    _thumbCornerMenuPendingItem = item;
+    _thumbCornerMenuLastTapTime = now;
+    _thumbCornerMenuAnchorContext = anchorContext;
+    _thumbCornerMenuSingleTapTimer?.cancel();
+    _thumbCornerMenuSingleTapTimer = Timer(const Duration(milliseconds: 360), () {
+      final ctx = _thumbCornerMenuAnchorContext;
+      final it = _thumbCornerMenuPendingItem;
+      _thumbCornerMenuSingleTapTimer = null;
+      _thumbCornerMenuPendingItem = null;
+      _thumbCornerMenuLastTapTime = null;
+      _thumbCornerMenuAnchorContext = null;
+      if (!mounted || ctx == null || !ctx.mounted || it == null) return;
+      unawaited(_showThumbnailOverflowMenu(ctx, it));
+    });
+  }
+
+  Future<void> _toggleFavoriteForThumbnailItem(MediaItem item) async {
+    if (_currentDirectory == 'recycle_bin') {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('回收站中的媒体无法标星收藏')),
+        );
+      }
+      return;
+    }
+    if (item.type != MediaType.image && item.type != MediaType.video) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('文件夹无法标星收藏')),
+        );
+      }
+      return;
+    }
+    try {
+      await _databaseService.toggleMediaItemFavorite(item.id);
+      if (!mounted) return;
+      await _loadMediaItems();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('收藏失败: $e')),
+        );
+      }
+    }
+  }
+
   /// 显示存储管理页面
   void _showStorageManagement() {
     Navigator.push(
@@ -6833,8 +7039,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                         size: 18,
                         color: fg,
                       ),
-                      onPressed: _showSettingsMenu,
-                      tooltip: '设置',
+                      onPressed: _onSettingsGearTapForSingleOrDouble,
+                      tooltip:
+                          '设置（多选并勾选后，连点两次齿轮可批量切换收藏）',
                       style: iconBtnStyle,
                     ),
                     IconButton(
