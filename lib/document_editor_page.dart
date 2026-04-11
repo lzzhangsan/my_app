@@ -2173,7 +2173,6 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
                   ListTile(
                     leading: Icon(Icons.layers_clear),
                     title: Text('清空背景图/视频'),
-                    subtitle: Text('仅移除背景图与视频，保留背景色；未设背景色时为白底'),
                     onTap: () {
                       Navigator.pop(context);
                       _clearAllBackgroundToBlank();
@@ -2387,45 +2386,59 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
             value: SystemUiOverlayStyle.light,
             child: Scaffold(
               extendBody: true,
+              resizeToAvoidBottomInset: false,
               backgroundColor: Colors.transparent,
               body: Stack(
                 key: ValueKey('main_stack'),
                 children: [
-                  // 背景图/视频（底层）：复用媒体页视窗参数
-                  if (_backgroundVideo != null)
-                    Positioned.fill(
-                      key: ValueKey(
-                        'background_video_container_$_backgroundViewRefreshTick',
-                      ),
-                      child: StoredViewVideoBackgroundLayer(
-                        file: _backgroundVideo!,
-                        pauseWhenNotifier: _foregroundMediaObscuresBackground,
-                      ),
-                    )
-                  else if (_backgroundImage != null)
-                    Positioned.fill(
-                      key: ValueKey(
-                        'background_image_container_$_backgroundViewRefreshTick',
-                      ),
-                      child: StoredViewImageLayer(file: _backgroundImage!),
+                  // 背景与右下角媒体浮层：不受输入法 viewInsets 影响，避免比例/位置随键盘变化
+                  MediaQuery(
+                    data: MediaQuery.of(context).copyWith(
+                      viewInsets: EdgeInsets.zero,
                     ),
-                  // 背景颜色层（上层；有图/视频时默认全透明，不挡底图）
-                  Container(
-                    key: ValueKey('background_color_container'),
-                    decoration: BoxDecoration(
-                      color: backgroundTintLayerColor(
-                        stored: _backgroundColor,
-                        hasBackgroundMedia:
-                            _backgroundImage != null || _backgroundVideo != null,
-                        fallbackWhenNoMedia: Colors.white,
-                      ),
-                    ),
-                  ),
-                  Positioned.fill(
-                    child: MediaPlayerContainer(
-                      key: _mediaPlayerKey,
-                      syncForegroundObscuringBackground:
-                          _foregroundMediaObscuresBackground,
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        if (_backgroundVideo != null)
+                          Positioned.fill(
+                            key: ValueKey(
+                              'background_video_container_$_backgroundViewRefreshTick',
+                            ),
+                            child: StoredViewVideoBackgroundLayer(
+                              file: _backgroundVideo!,
+                              pauseWhenNotifier:
+                                  _foregroundMediaObscuresBackground,
+                            ),
+                          )
+                        else if (_backgroundImage != null)
+                          Positioned.fill(
+                            key: ValueKey(
+                              'background_image_container_$_backgroundViewRefreshTick',
+                            ),
+                            child: StoredViewImageLayer(
+                              file: _backgroundImage!,
+                            ),
+                          ),
+                        Container(
+                          key: ValueKey('background_color_container'),
+                          decoration: BoxDecoration(
+                            color: backgroundTintLayerColor(
+                              stored: _backgroundColor,
+                              hasBackgroundMedia:
+                                  _backgroundImage != null ||
+                                  _backgroundVideo != null,
+                              fallbackWhenNoMedia: Colors.white,
+                            ),
+                          ),
+                        ),
+                        Positioned.fill(
+                          child: MediaPlayerContainer(
+                            key: _mediaPlayerKey,
+                            syncForegroundObscuringBackground:
+                                _foregroundMediaObscuresBackground,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                   SingleChildScrollView(

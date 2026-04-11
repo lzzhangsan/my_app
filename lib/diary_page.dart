@@ -37,6 +37,7 @@ import 'utils/background_media_preview.dart';
 import 'utils/background_layer_defaults.dart';
 import 'utils/background_physical_file.dart';
 import 'models/background_media_origin.dart';
+import 'app_route_observer.dart';
 
 // 全局函数：显示进度条弹窗，支持取消操作
 void showProgressDialog(
@@ -86,7 +87,8 @@ class DiaryPage extends StatefulWidget {
   State<DiaryPage> createState() => _DiaryPageState();
 }
 
-class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
+class _DiaryPageState extends State<DiaryPage>
+    with WidgetsBindingObserver, RouteAware {
   final DiaryService _diaryService = DiaryService();
   List<DiaryEntry> _entries = [];
   List<DateTime> _datesWithEntries = []; // 当前月有日记的日期，用于日历圆点（轻量）
@@ -108,6 +110,9 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
   BackgroundMediaOrigin? _diaryBgVideoOrigin;
   Color? _diaryBgColor;
   int _backgroundViewRefreshTick = 0;
+  /// push 日记编辑页等子路由时为 true，暂停主页背景视频与声音。
+  final ValueNotifier<bool> _pauseDiaryMainBgVideoForChildRoute =
+      ValueNotifier<bool>(false);
 
   @override
   void initState() {
@@ -119,10 +124,31 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    appRouteObserver.unsubscribe(this);
+    _pauseDiaryMainBgVideoForChildRoute.dispose();
     WidgetsBinding.instance.removeObserver(this);
     _persistDiarySettings();
     _searchDebounce?.cancel();
     super.dispose();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final route = ModalRoute.of(context);
+    if (route != null) {
+      appRouteObserver.subscribe(this, route);
+    }
+  }
+
+  @override
+  void didPushNext() {
+    _pauseDiaryMainBgVideoForChildRoute.value = true;
+  }
+
+  @override
+  void didPopNext() {
+    _pauseDiaryMainBgVideoForChildRoute.value = false;
   }
 
   @override
@@ -606,7 +632,6 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
                 ListTile(
                   leading: Icon(Icons.layers_clear),
                   title: Text('清空背景图/视频'),
-                  subtitle: Text('仅移除背景图与视频，保留背景色；未设背景色时为白底'),
                   onTap: () async {
                     Navigator.pop(context);
                     await _clearDiaryBackgroundToBlank();
@@ -848,6 +873,7 @@ class _DiaryPageState extends State<DiaryPage> with WidgetsBindingObserver {
                   'diary_bgv_${_diaryBgVideo!.path}_$_backgroundViewRefreshTick',
                 ),
                 file: _diaryBgVideo!,
+                pauseWhenNotifier: _pauseDiaryMainBgVideoForChildRoute,
               ),
             )
           else if (_diaryBgImage != null)

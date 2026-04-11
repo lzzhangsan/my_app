@@ -2182,7 +2182,6 @@ class _DirectoryPageState extends State<DirectoryPage>
                       ListTile(
                         leading: Icon(Icons.layers_clear),
                         title: Text('清空背景图/视频'),
-                        subtitle: Text('仅移除背景图与视频，保留背景色；未设背景色时为白底'),
                         onTap: () async {
                           Navigator.pop(context);
                           await _clearDirectoryBackgroundToBlank();

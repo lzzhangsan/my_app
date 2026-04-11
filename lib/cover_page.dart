@@ -1106,7 +1106,6 @@ class _CoverPageState extends State<CoverPage> with WidgetsBindingObserver {
                     icon: Icons.layers_clear,
                     iconColor: Colors.blueGrey,
                     title: '清空背景图/视频',
-                    subtitle: '仅移除图/视频，保留背景色；未设背景色时为白底',
                     onTap: () {
                       Navigator.pop(context);
                       _clearCoverBackgroundOnly();
