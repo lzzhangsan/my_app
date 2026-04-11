@@ -27,6 +27,7 @@ import 'widgets/floating_ui_shadows.dart';
 import 'widgets/safe_modal_sheet_body.dart';
 import 'models/media_type.dart';
 import 'utils/background_media_preview.dart';
+import 'app_route_observer.dart';
 
 class DirectoryPage extends StatefulWidget {
   final Function(String) onDocumentOpen;
@@ -38,7 +39,7 @@ class DirectoryPage extends StatefulWidget {
 }
 
 class _DirectoryPageState extends State<DirectoryPage>
-    with WidgetsBindingObserver {
+    with WidgetsBindingObserver, RouteAware {
   // 判断folderName是否是targetFolderName的子文件夹
   bool _isChildFolder(
     String folderName,
@@ -99,6 +100,9 @@ class _DirectoryPageState extends State<DirectoryPage>
   BackgroundMediaOrigin? _backgroundVideoOrigin;
   Color? _backgroundColor;
   int _backgroundViewRefreshTick = 0;
+  /// Navigator 上 push 了子页面（如文档编辑）时为 true，暂停目录背景视频与声音。
+  final ValueNotifier<bool> _pauseDirectoryBgVideoForChildRoute =
+      ValueNotifier<bool>(false);
   List<Map<String, dynamic>> _templateDocuments = [];
   String? _lastCreatedItemName;
   ItemType? _lastCreatedItemType;
@@ -156,6 +160,8 @@ class _DirectoryPageState extends State<DirectoryPage>
   @override
   void dispose() {
     _saveCurrentBackgroundState();
+    appRouteObserver.unsubscribe(this);
+    _pauseDirectoryBgVideoForChildRoute.dispose();
     WidgetsBinding.instance.removeObserver(this);
     _highlightTimer?.cancel();
     super.dispose();
@@ -164,6 +170,10 @@ class _DirectoryPageState extends State<DirectoryPage>
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    final route = ModalRoute.of(context);
+    if (route != null) {
+      appRouteObserver.subscribe(this, route);
+    }
     _loadBackgroundSettings();
   }
 
@@ -187,14 +197,15 @@ class _DirectoryPageState extends State<DirectoryPage>
   void didPushNext() {
     Logger.log('DirectoryPage被覆盖 - 保存当前状态');
     _saveCurrentBackgroundState();
+    _pauseDirectoryBgVideoForChildRoute.value = true;
   }
 
   @override
   void didPopNext() {
     Logger.log('DirectoryPage重新显示 - 重新加载设置');
+    _pauseDirectoryBgVideoForChildRoute.value = false;
     Logger.log('当前文件夹: $_currentParentFolder, 文件夹栈: $_folderStack');
     if (mounted) {
-      // 重新加载数据，这会自动加载背景设置
       _loadData();
     }
   }
@@ -3036,6 +3047,7 @@ class _DirectoryPageState extends State<DirectoryPage>
                     'dir_bgv_${_backgroundVideo!.path}_$_backgroundViewRefreshTick',
                   ),
                   file: _backgroundVideo!,
+                  pauseWhenNotifier: _pauseDirectoryBgVideoForChildRoute,
                 ),
               )
             else if (_backgroundImage != null)

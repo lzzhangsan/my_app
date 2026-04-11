@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 
@@ -9,15 +10,22 @@ import '../services/database_service.dart';
 import 'video_interactive_surface.dart';
 
 /// 背景视频层：套用 [getVideoViewParamsForMediaFilePath]，只读 [VideoInteractiveSurface]，循环播放。
+///
+/// [pauseWhenRouteNotCurrent]：为 true 时，当前 [ModalRoute] 被上层路由盖住（如从目录 push 文档）则暂停，返回后自动恢复。
+/// [pauseWhenNotifier]：为 true 时暂停（如文档内右下角浮层正在展示图/视频），为 false 时恢复。
 class StoredViewVideoBackgroundLayer extends StatefulWidget {
   const StoredViewVideoBackgroundLayer({
     super.key,
     required this.file,
     this.useScreenSizeForNormalization = false,
+    this.pauseWhenRouteNotCurrent = false,
+    this.pauseWhenNotifier,
   });
 
   final File file;
   final bool useScreenSizeForNormalization;
+  final bool pauseWhenRouteNotCurrent;
+  final ValueListenable<bool>? pauseWhenNotifier;
 
   @override
   State<StoredViewVideoBackgroundLayer> createState() =>
@@ -30,21 +38,33 @@ class _StoredViewVideoBackgroundLayerState
   Future<VideoViewParams>? _paramsFuture;
   Object? _initError;
 
+  void _onPauseSignalsChanged() {
+    if (!mounted) return;
+    _applyPlaybackPolicy();
+  }
+
   @override
   void initState() {
     super.initState();
     _paramsFuture = _loadParams();
     _initController();
+    widget.pauseWhenNotifier?.addListener(_onPauseSignalsChanged);
   }
 
   @override
   void didUpdateWidget(covariant StoredViewVideoBackgroundLayer oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.pauseWhenNotifier != widget.pauseWhenNotifier) {
+      oldWidget.pauseWhenNotifier?.removeListener(_onPauseSignalsChanged);
+      widget.pauseWhenNotifier?.addListener(_onPauseSignalsChanged);
+    }
     if (oldWidget.file.path != widget.file.path) {
       _controller?.dispose();
       _controller = null;
       _paramsFuture = _loadParams();
       _initController();
+    } else {
+      _applyPlaybackPolicy();
     }
   }
 
@@ -59,7 +79,6 @@ class _StoredViewVideoBackgroundLayerState
       final c = VideoPlayerController.file(widget.file);
       await c.initialize();
       await c.setLooping(true);
-      await c.play();
       if (!mounted) {
         await c.dispose();
         return;
@@ -68,6 +87,7 @@ class _StoredViewVideoBackgroundLayerState
         _controller = c;
         _initError = null;
       });
+      _applyPlaybackPolicy();
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -77,8 +97,35 @@ class _StoredViewVideoBackgroundLayerState
     }
   }
 
+  void _applyPlaybackPolicy() {
+    final c = _controller;
+    if (c == null || !c.value.isInitialized) return;
+
+    var shouldPause = false;
+    if (widget.pauseWhenRouteNotCurrent) {
+      final route = ModalRoute.of(context);
+      if (route != null && !route.isCurrent) {
+        shouldPause = true;
+      }
+    }
+    if (widget.pauseWhenNotifier?.value == true) {
+      shouldPause = true;
+    }
+
+    if (shouldPause) {
+      if (c.value.isPlaying) {
+        c.pause();
+      }
+    } else {
+      if (!c.value.isPlaying) {
+        c.play();
+      }
+    }
+  }
+
   @override
   void dispose() {
+    widget.pauseWhenNotifier?.removeListener(_onPauseSignalsChanged);
     _controller?.dispose();
     super.dispose();
   }

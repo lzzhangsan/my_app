@@ -17,6 +17,7 @@ import 'diary_page.dart';
 import 'services/database_service.dart';
 import 'services/error_service.dart';
 import 'services/logger.dart';
+import 'app_route_observer.dart';
 
 // 添加全局 navigatorKey
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
@@ -94,6 +95,7 @@ class MyApp extends StatelessWidget {
         ),
       ),
       navigatorKey: navigatorKey,
+      navigatorObservers: [appRouteObserver],
       debugShowCheckedModeBanner: false,
       home: MainScreen(),
     );

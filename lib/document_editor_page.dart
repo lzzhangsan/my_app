@@ -65,6 +65,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
   double _scrollPercentage = 0.0;
   final GlobalKey<MediaPlayerContainerState> _mediaPlayerKey =
       GlobalKey<MediaPlayerContainerState>();
+  /// 右下角浮层正在展示图/视频时为 true，用于暂停底层背景视频。
+  final ValueNotifier<bool> _foregroundMediaObscuresBackground =
+      ValueNotifier<bool>(false);
   File? _backgroundImage;
   File? _backgroundVideo;
   BackgroundMediaOrigin? _backgroundImageOrigin;
@@ -2041,6 +2044,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
     _debounceTimer?.cancel();
     _canvasHistoryDebounce?.cancel();
     _scrollController.dispose();
+    _foregroundMediaObscuresBackground.dispose();
     super.dispose();
   }
 
@@ -2395,6 +2399,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
                       ),
                       child: StoredViewVideoBackgroundLayer(
                         file: _backgroundVideo!,
+                        pauseWhenNotifier: _foregroundMediaObscuresBackground,
                       ),
                     )
                   else if (_backgroundImage != null)
@@ -2417,7 +2422,11 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
                     ),
                   ),
                   Positioned.fill(
-                    child: MediaPlayerContainer(key: _mediaPlayerKey),
+                    child: MediaPlayerContainer(
+                      key: _mediaPlayerKey,
+                      syncForegroundObscuringBackground:
+                          _foregroundMediaObscuresBackground,
+                    ),
                   ),
                   SingleChildScrollView(
                     key: ValueKey('content_scroll_view'),

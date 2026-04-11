@@ -23,7 +23,13 @@ import 'widgets/image_layout_utils.dart' show ImageLetterboxFill;
 enum MediaMode { none, manual, auto }
 
 class MediaPlayerContainer extends StatefulWidget {
-  const MediaPlayerContainer({super.key});
+  const MediaPlayerContainer({
+    super.key,
+    this.syncForegroundObscuringBackground,
+  });
+
+  /// 与文档页背景视频联动：有浮层图/视频时为 true，关闭浮层后为 false。
+  final ValueNotifier<bool>? syncForegroundObscuringBackground;
 
   @override
   MediaPlayerContainerState createState() => MediaPlayerContainerState();
@@ -1128,6 +1134,19 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer> {
 
   @override
   Widget build(BuildContext context) {
+    final sync = widget.syncForegroundObscuringBackground;
+    if (sync != null) {
+      final obscuring = _mediaMode != MediaMode.none && _mediaWidget != null;
+      if (sync.value != obscuring) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          final o = _mediaMode != MediaMode.none && _mediaWidget != null;
+          if (sync.value != o) {
+            sync.value = o;
+          }
+        });
+      }
+    }
     return _mediaWidget != null
         ? SizedBox.expand(child: _mediaWidget!)
         : Container();
