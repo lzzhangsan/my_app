@@ -3150,7 +3150,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
       }
 
       if (mounted) {
-        _mediaPlayerKey.currentState?.removeCurrentAndPlayNext();
+        await _mediaPlayerKey.currentState?.removeCurrentAndPlayNext();
       }
     } catch (e) {
       if (mounted) {

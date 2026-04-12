@@ -1332,8 +1332,23 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
       final String mediaName = _currentPlayingMedia!['name'];
       final String mediaPath = _currentPlayingMedia!['path'];
       final int currentIndex = _mediaList.indexWhere(
-        (media) => media['id'] == mediaId,
+        (media) => media['id']?.toString() == mediaId,
       );
+
+      String? successorId;
+      if (_playbackOrder == MediaPlaybackOrder.sequential &&
+          _mediaList.length > 1 &&
+          currentIndex >= 0) {
+        final oldIds =
+            _mediaList
+                .map((m) => m['id']?.toString() ?? '')
+                .where((s) => s.isNotEmpty)
+                .toList();
+        final curIdx = oldIds.indexOf(mediaId);
+        if (curIdx >= 0) {
+          successorId = oldIds[(curIdx + 1) % oldIds.length];
+        }
+      }
 
       // 先删除数据库记录
       await _databaseService.deleteMediaItem(mediaId);
@@ -1355,7 +1370,24 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
         setState(() {
           _mediaList.removeAt(currentIndex);
         });
-        _adjustSequentialAfterRemove(removedIndex: currentIndex);
+        if (_mediaList.isEmpty) {
+          _sequentialIndex = 0;
+          await _persistSequentialIndex();
+        } else if (_playbackOrder == MediaPlaybackOrder.sequential) {
+          if (successorId != null) {
+            final nextIdx = _mediaList.indexWhere(
+              (m) => m['id']?.toString() == successorId,
+            );
+            if (nextIdx >= 0) {
+              _sequentialIndex = nextIdx;
+              await _persistSequentialIndex();
+            } else {
+              _adjustSequentialAfterRemove(removedIndex: currentIndex);
+            }
+          } else {
+            _adjustSequentialAfterRemove(removedIndex: currentIndex);
+          }
+        }
       }
 
       if (!context.mounted) return false;
@@ -1368,8 +1400,9 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
 
       // 如果删除的是当前播放的媒体，立即播放下一个
       if (_currentPlayingMedia != null &&
-          _currentPlayingMedia!['id'] == mediaId) {
-        _showNextMedia();
+          _currentPlayingMedia!['id']?.toString() == mediaId) {
+        _showNextMediaInProgress = false;
+        await _showNextMedia();
       }
 
       return true;
@@ -1383,30 +1416,70 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
   }
 
   /// 从当前列表中移除当前播放的媒体并切换到下一个。
-  /// 用于文档编辑界面等场景：外部已更新数据库（如移动到回收站/收藏夹）后，
-  /// 需要从展示列表中移除该项并自动播放下一个，与媒体页面的删除/收藏/移动行为一致。
-  void removeCurrentAndPlayNext() {
+  /// 用于文档编辑界面等场景：外部已更新数据库（如移动到回收站）后，
+  /// 从内存列表去掉该项并自动播放下一条。
+  ///
+  /// **顺序模式**下与 [refreshMediaListAndAdvanceToNext]（单击收藏）一致：在移除前的列表上
+  /// 取「当前下一条」的 id，移除后将 [_sequentialIndex] 设为该条在新列表中的下标，避免与
+  /// 仅依赖 [_adjustSequentialAfterRemove] 时出现偏差。
+  ///
+  /// 另：若此时仍有未结束的 [_showNextMedia]（例如卡在 `await`），其 [ _showNextMediaInProgress ]
+  /// 会阻止新的切换；此处会清零该标志以便用户操作（删除/回收）能立刻生效。
+  Future<void> removeCurrentAndPlayNext() async {
     if (_currentPlayingMedia == null) return;
     final String currentId = _currentPlayingMedia!['id']?.toString() ?? '';
     if (currentId.isNotEmpty) {
       unawaited(_clearVideoResumeForId(currentId));
     }
+
+    String? successorId;
+    if (_playbackOrder == MediaPlaybackOrder.sequential &&
+        _mediaList.length > 1) {
+      final oldIds =
+          _mediaList
+              .map((m) => m['id']?.toString() ?? '')
+              .where((s) => s.isNotEmpty)
+              .toList();
+      final curIdx = oldIds.indexOf(currentId);
+      if (curIdx >= 0) {
+        successorId = oldIds[(curIdx + 1) % oldIds.length];
+      }
+    }
+
     final int currentIndex = _mediaList.indexWhere(
-      (media) => media['id'] == currentId,
+      (media) => media['id']?.toString() == currentId,
     );
     if (currentIndex == -1) return;
 
     setState(() {
       _mediaList.removeAt(currentIndex);
     });
-    _adjustSequentialAfterRemove(removedIndex: currentIndex);
 
     if (_mediaList.isEmpty) {
+      _sequentialIndex = 0;
+      await _persistSequentialIndex();
       stop();
       return;
     }
 
-    _showNextMedia();
+    if (_playbackOrder == MediaPlaybackOrder.sequential) {
+      if (successorId != null) {
+        final nextIdx = _mediaList.indexWhere(
+          (m) => m['id']?.toString() == successorId,
+        );
+        if (nextIdx >= 0) {
+          _sequentialIndex = nextIdx;
+          await _persistSequentialIndex();
+        } else {
+          _adjustSequentialAfterRemove(removedIndex: currentIndex);
+        }
+      } else {
+        _adjustSequentialAfterRemove(removedIndex: currentIndex);
+      }
+    }
+
+    _showNextMediaInProgress = false;
+    await _showNextMedia();
   }
 
   // 辅助方法：显示消息
