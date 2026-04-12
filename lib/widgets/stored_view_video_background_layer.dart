@@ -7,6 +7,7 @@ import 'package:video_player/video_player.dart';
 import '../core/service_locator.dart';
 import '../models/video_view_params.dart';
 import '../services/database_service.dart';
+import '../utils/background_video_volume_prefs.dart';
 import 'video_interactive_surface.dart';
 
 /// 背景视频层：套用 [getVideoViewParamsForMediaFilePath]，只读 [VideoInteractiveSurface]，循环播放。
@@ -79,6 +80,12 @@ class _StoredViewVideoBackgroundLayerState
       final c = VideoPlayerController.file(widget.file);
       await c.initialize();
       await c.setLooping(true);
+      final memVol = BackgroundVideoVolumePrefs.tryMemoryVolumeForPath(
+        widget.file.path,
+      );
+      final double vol =
+          memVol ?? await BackgroundVideoVolumePrefs.volumeForPath(widget.file.path);
+      await c.setVolume(vol);
       if (!mounted) {
         await c.dispose();
         return;

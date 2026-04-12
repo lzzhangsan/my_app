@@ -25,6 +25,7 @@ import 'models/video_view_params.dart';
 import 'widgets/video_interactive_surface.dart';
 import 'widgets/image_interactive_surface.dart';
 import 'widgets/floating_ui_shadows.dart';
+import 'utils/background_video_volume_prefs.dart';
 
 enum MediaMode { none, manual, auto }
 
@@ -43,12 +44,17 @@ class MediaPreviewPage extends StatefulWidget {
   /// 非 null 时：进入全屏调整页后从该时间点续播（文档编辑栏浮层视频）；退出时通过 [MediaPreviewPagePopResult] 回传进度。
   final Duration? initialResumeVideoPosition;
 
+  /// 背景调整入口传入的本地文件路径。与 [mediaItems] 中来自媒体库的 `path` 可能不同（同文件不同路径），
+  /// 音量须与该路径一致，否则返回后 [StoredViewVideoBackgroundLayer] 读不到静音设置。
+  final String? volumePersistencePath;
+
   const MediaPreviewPage({
     required this.mediaItems,
     required this.initialIndex,
     this.openedFromRecycleBin = false,
     this.standaloneBackgroundFilePath,
     this.initialResumeVideoPosition,
+    this.volumePersistencePath,
     super.key,
   });
 
@@ -85,6 +91,10 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
   int _activePreviewPointers = 0;
   bool _transformOnlyMode = false;
 
+  /// 背景视频音量：避免每帧写盘，仅在 [VideoPlayerValue.volume] 变化时持久化。
+  final Map<int, double> _lastKnownVolumeForPrefs = {};
+  final Map<int, void Function()> _bgVolumePersistListeners = {};
+
   final Map<String, Timer> _pendingCenterCommitTimers = {};
   DateTime? _ignoreCenterTapUntil;
   Future<void> _pendingViewPersist = Future<void>.value();
@@ -95,6 +105,16 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
 
   bool get _documentEmbeddedResumeMode =>
       widget.initialResumeVideoPosition != null;
+
+  /// 背景视频音量读写键：优先 [volumePersistencePath]（与封面/目录等页 [File.path] 一致）。
+  String _volumePrefsKeyForIndex(int index) {
+    final override = widget.volumePersistencePath;
+    if (override != null && override.isNotEmpty) return override;
+    if (index >= 0 && index < widget.mediaItems.length) {
+      return widget.mediaItems[index].path;
+    }
+    return '';
+  }
 
   Duration? _videoPositionForDocumentResumePop() {
     if (!_documentEmbeddedResumeMode) return null;
@@ -152,6 +172,12 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
 
   @override
   void dispose() {
+    for (final idx in _videoControllers.keys.toList()) {
+      _persistBackgroundVideoVolumeAt(idx);
+    }
+    for (final e in _videoControllers.entries.toList()) {
+      _detachBgVolumePersistListener(e.key, e.value);
+    }
     unawaited(_dbService.flushStagedVideoViewParamsToDisk());
     _removeVideoCompleteListener();
     _pageController.dispose();
@@ -579,6 +605,14 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
           }
         }
 
+        final volKey = _volumePrefsKeyForIndex(index);
+        final bgVol = volKey.isEmpty
+            ? 1.0
+            : await BackgroundVideoVolumePrefs.volumeForPath(volKey);
+        await controller.setVolume(bgVol);
+        _lastKnownVolumeForPrefs[index] = bgVol;
+        _attachBgVolumePersistListener(index, controller, item, volKey);
+
         // 自动播放当前视频
         final bool shouldAutoPlay = index == _currentIndex;
 
@@ -664,7 +698,55 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     }
   }
 
+  void _attachBgVolumePersistListener(
+    int index,
+    VideoPlayerController controller,
+    MediaItem item,
+    String volumePrefsPath,
+  ) {
+    if (item.type != MediaType.video) return;
+    if (volumePrefsPath.isEmpty) return;
+    void listener() {
+      if (!controller.value.isInitialized) return;
+      final v = controller.value.volume;
+      final last = _lastKnownVolumeForPrefs[index];
+      if (last != null && (v - last).abs() < 1e-5) return;
+      _lastKnownVolumeForPrefs[index] = v;
+      unawaited(BackgroundVideoVolumePrefs.setVolumeForPath(volumePrefsPath, v));
+    }
+
+    _bgVolumePersistListeners[index] = listener;
+    controller.addListener(listener);
+  }
+
+  void _detachBgVolumePersistListener(int index, VideoPlayerController controller) {
+    final fn = _bgVolumePersistListeners.remove(index);
+    if (fn != null) {
+      controller.removeListener(fn);
+    }
+    _lastKnownVolumeForPrefs.remove(index);
+  }
+
+  void _persistBackgroundVideoVolumeAt(int index) {
+    final c = _videoControllers[index];
+    if (c == null || !c.value.isInitialized) return;
+    if (index < 0 || index >= widget.mediaItems.length) return;
+    final mediaItem = widget.mediaItems[index];
+    if (mediaItem.type != MediaType.video) return;
+    final volKey = _volumePrefsKeyForIndex(index);
+    if (volKey.isEmpty) return;
+    unawaited(
+      BackgroundVideoVolumePrefs.setVolumeForPath(volKey, c.value.volume),
+    );
+  }
+
   void _disposeVideoControllerAt(int index) {
+    final c = _videoControllers[index];
+    if (c != null) {
+      _persistBackgroundVideoVolumeAt(index);
+      _detachBgVolumePersistListener(index, c);
+    }
+
     if (_videoControllers.containsKey(index)) {
       _videoControllers[index]?.pause();
     }

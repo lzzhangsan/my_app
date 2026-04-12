@@ -41,6 +41,7 @@ Future<void> pushBackgroundMediaAdjustPage(
         mediaItems: [previewItem],
         initialIndex: 0,
         standaloneBackgroundFilePath: mediaMap == null ? file.path : null,
+        volumePersistencePath: file.path,
       ),
     ),
   );
