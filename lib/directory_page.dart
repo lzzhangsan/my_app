@@ -25,6 +25,7 @@ import 'widgets/stored_view_image_layer.dart';
 import 'widgets/stored_view_video_background_layer.dart';
 import 'widgets/floating_ui_shadows.dart';
 import 'widgets/safe_modal_sheet_body.dart';
+import 'widgets/directory_last_visited_frame.dart';
 import 'models/media_type.dart';
 import 'utils/background_media_preview.dart';
 import 'app_route_observer.dart';
@@ -108,6 +109,9 @@ class _DirectoryPageState extends State<DirectoryPage>
   ItemType? _lastCreatedItemType;
   Timer? _highlightTimer;
   bool _isHighlightingNewItem = false;
+  /// 从子文件夹返回或从文档编辑返回后，在当前列表中标示该项（与媒体页预览返回的蓝框一致）。
+  String? _lastVisitedItemName;
+  ItemType? _lastVisitedItemType;
   bool _isMultiSelectMode = false;
   final List<DirectoryItem> _selectedItems = [];
   List<String> _folderStack = [];
@@ -870,12 +874,22 @@ class _DirectoryPageState extends State<DirectoryPage>
     }
   }
 
-  Future<void> _loadData() async {
+  /// [setLastVisitedName] / [setLastVisitedType]：与列表刷新同一帧写入，避免异步 [setState] 覆盖「上次访问」高亮。
+  /// [clearLastVisited]：进入子文件夹等场景清空标记。
+  Future<void> _loadData({
+    String? setLastVisitedName,
+    ItemType? setLastVisitedType,
+    bool clearLastVisited = false,
+  }) async {
     if (kIsWeb) {
       Logger.log("Web environment: Skipping data load from database.");
       if (mounted) {
         setState(() {
           _items = [];
+          if (clearLastVisited) {
+            _lastVisitedItemName = null;
+            _lastVisitedItemType = null;
+          }
         });
       }
       return;
@@ -901,7 +915,7 @@ class _DirectoryPageState extends State<DirectoryPage>
           Logger.log('加载文件夹: ${folder['name']}, 顺序: ${folder['order_index']}');
           directoryItems.add(
             DirectoryItem(
-              name: folder['name'],
+              name: folder['name'].toString().trim(),
               type: ItemType.folder,
               order: folder['order_index'] ?? 0,
               isTemplate: false,
@@ -928,7 +942,7 @@ class _DirectoryPageState extends State<DirectoryPage>
           );
           directoryItems.add(
             DirectoryItem(
-              name: document['name'],
+              name: document['name'].toString().trim(),
               type: ItemType.document,
               order: document['order_index'] ?? 0,
               isTemplate: document['is_template'] == 1,
@@ -946,6 +960,15 @@ class _DirectoryPageState extends State<DirectoryPage>
       if (mounted) {
         setState(() {
           _items = directoryItems;
+          if (clearLastVisited) {
+            _lastVisitedItemName = null;
+            _lastVisitedItemType = null;
+          } else if (setLastVisitedName != null &&
+              setLastVisitedName.trim().isNotEmpty &&
+              setLastVisitedType != null) {
+            _lastVisitedItemName = setLastVisitedName.trim();
+            _lastVisitedItemType = setLastVisitedType;
+          }
         });
       }
 
@@ -980,13 +1003,14 @@ class _DirectoryPageState extends State<DirectoryPage>
           item.isSelected = false;
         }
       });
-      // 加载数据时会自动加载背景设置
-      _loadData();
+      // 与列表同一帧清空「上次访问」，避免仅 setState 后异步 load 覆盖高亮状态
+      unawaited(_loadData(clearLastVisited: true));
     }
   }
 
-  void _goBack() {
+  Future<void> _goBack() async {
     if (_folderStack.isNotEmpty) {
+      final String exitedFolder = (_currentParentFolder ?? '').trim();
       setState(() {
         _currentParentFolder = _folderStack.removeLast();
         _isMultiSelectMode = false;
@@ -995,11 +1019,14 @@ class _DirectoryPageState extends State<DirectoryPage>
           item.isSelected = false;
         }
       });
-      // 加载数据时会自动加载背景设置
-      _loadData();
+      await _loadData(
+        setLastVisitedName: exitedFolder.isNotEmpty ? exitedFolder : null,
+        setLastVisitedType: exitedFolder.isNotEmpty ? ItemType.folder : null,
+      );
       return;
     }
     // 栈为空时才回到根目录
+    final String exitedToRoot = (_currentParentFolder ?? '').trim();
     setState(() {
       _currentParentFolder = null;
       _folderStack.clear();
@@ -1009,8 +1036,10 @@ class _DirectoryPageState extends State<DirectoryPage>
         item.isSelected = false;
       }
     });
-    // 加载数据时会自动加载背景设置
-    _loadData();
+    await _loadData(
+      setLastVisitedName: exitedToRoot.isNotEmpty ? exitedToRoot : null,
+      setLastVisitedType: exitedToRoot.isNotEmpty ? ItemType.folder : null,
+    );
   }
 
   Future<String?> _getParentFolder(String folderName) async {
@@ -1837,6 +1866,13 @@ class _DirectoryPageState extends State<DirectoryPage>
   }
 
   void _openDocument(String documentName) {
+    final trimmed = documentName.trim();
+    if (mounted) {
+      setState(() {
+        _lastVisitedItemName = null;
+        _lastVisitedItemType = null;
+      });
+    }
     Navigator.push(
       context,
       MaterialPageRoute(
@@ -1846,12 +1882,14 @@ class _DirectoryPageState extends State<DirectoryPage>
               onSave: (updatedTextBoxes) {},
             ),
       ),
-    ).then((_) {
+    ).then((_) async {
       Logger.log('从文档编辑页面返回');
-      if (mounted) {
-        _loadBackgroundSettings();
-        _loadData();
-      }
+      if (!mounted) return;
+      await _loadBackgroundSettings();
+      await _loadData(
+        setLastVisitedName: trimmed.isNotEmpty ? trimmed : null,
+        setLastVisitedType: ItemType.document,
+      );
     });
   }
 
@@ -2948,7 +2986,9 @@ class _DirectoryPageState extends State<DirectoryPage>
               if (_currentParentFolder != null)
                 IconButton(
                   icon: Icon(Icons.arrow_back, color: ic, shadows: sh),
-                  onPressed: _goBack,
+                  onPressed: () {
+                    unawaited(_goBack());
+                  },
                 )
               else
                 const SizedBox(width: 8),
@@ -3106,11 +3146,17 @@ class _DirectoryPageState extends State<DirectoryPage>
                                 _lastCreatedItemName == item.name &&
                                 _lastCreatedItemType == item.type &&
                                 _isHighlightingNewItem;
+                            final bool isLastVisited =
+                                _lastVisitedItemName != null &&
+                                _lastVisitedItemType == item.type &&
+                                item.name.trim() ==
+                                    _lastVisitedItemName!.trim();
 
                             Widget buildListItem(
                               DirectoryItem item,
                               int index,
                               bool isHighlighted,
+                              bool isLastVisited,
                             ) {
                               final itemFeedback = Material(
                                 elevation: 4.0,
@@ -3300,7 +3346,11 @@ class _DirectoryPageState extends State<DirectoryPage>
                               return Column(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
-                                  ListTile(
+                                  DirectoryLastVisitedFrame(
+                                    active: isLastVisited,
+                                    child: Material(
+                                      color: Colors.transparent,
+                                      child: ListTile(
                                     contentPadding: EdgeInsets.symmetric(
                                       horizontal: 16.0,
                                       vertical: 0.0,
@@ -3381,6 +3431,8 @@ class _DirectoryPageState extends State<DirectoryPage>
                                       0.15,
                                     ),
                                     selected: item.isSelected,
+                                      ),
+                                    ),
                                   ),
                                   Divider(height: 5.0),
                                 ],
@@ -3389,7 +3441,12 @@ class _DirectoryPageState extends State<DirectoryPage>
 
                             return Container(
                               key: ValueKey('${item.type}_${item.name}'),
-                              child: buildListItem(item, index, isHighlighted),
+                              child: buildListItem(
+                                item,
+                                index,
+                                isHighlighted,
+                                isLastVisited,
+                              ),
                             );
                           },
                         ),
