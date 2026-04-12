@@ -2,9 +2,11 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
-/// 上次访问高亮：黄 → 天蓝渐变描边 + 仅向外柔光；中间不铺色，由 [child] 填满，不遮挡标题。
+/// 上次访问高亮：与列表「整行」圆角描边重合；黄 → 天蓝渐变 + 外发光；中间不铺色。
 ///
-/// 框宽取 [屏幕宽度 × 0.9 + 约 4mm] 与当前行宽的较小者并水平居中；高度在满行基础上减去约 4mm 并垂直居中。
+/// [child] 须为 [ListTile] + `Divider(height: [_dividerHeight])` 的 [Column]。
+/// 竖直方向按 Material [Divider] 的规则：分隔线在 `Divider` 高度内居中，故描边整体
+/// 上移半格分隔高度，使上下边与两条灰线对齐。
 class DirectoryLastVisitedFrame extends StatelessWidget {
   const DirectoryLastVisitedFrame({
     super.key,
@@ -16,196 +18,36 @@ class DirectoryLastVisitedFrame extends StatelessWidget {
   final Widget child;
 
   static const double _stroke = 8.0 / 3.0;
-  static const double _radius = 12.0;
-  /// 相对屏幕逻辑宽度；实际绘制宽度不超过当前列表行宽。
-  static const double _frameWidthOfScreen = 0.9;
-  /// 垂直占满行高，避免与图标、拖柄上下「交错」。
-  static const double _frameHeightFactor = 1.0;
-  /// 将毫米近似为逻辑像素（按当前屏宽与常见可内容区宽度推算，约 4mm 级调整）。
-  static double _mmToLogicalPixels(BuildContext context, double mm) {
-    if (mm <= 0) return 0;
-    final w = MediaQuery.sizeOf(context).width;
-    const assumedContentWidthMm = 68.0;
-    return mm * w / assumedContentWidthMm;
-  }
+  static const double _radius = 10.0;
+  /// 须与目录页列表项 `Divider(height: …)` 一致。
+  static const double _dividerHeight = 5.0;
 
   @override
   Widget build(BuildContext context) {
     if (!active) return child;
-    final screenW = MediaQuery.sizeOf(context).width;
-    final delta4mm = _mmToLogicalPixels(context, 4.0);
-    final desiredFrameW = screenW * _frameWidthOfScreen + delta4mm;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(0, 4, 0, 5),
-      child: Stack(
-        clipBehavior: Clip.none,
-        fit: StackFit.passthrough,
-        children: [
-          Positioned.fill(
-            child: IgnorePointer(
-              child: CustomPaint(
-                painter: _GlowRingPainter(
-                  stroke: _stroke,
-                  borderRadius: _radius,
-                  desiredFrameWidth: desiredFrameW,
-                  heightFactor: _frameHeightFactor,
-                  heightSubtractLogical: delta4mm,
-                ),
-              ),
-            ),
-          ),
-          Positioned.fill(
-            child: IgnorePointer(
-              child: CustomPaint(
-                painter: _GradientRingPainter(
-                  stroke: _stroke,
-                  borderRadius: _radius,
-                  desiredFrameWidth: desiredFrameW,
-                  heightFactor: _frameHeightFactor,
-                  heightSubtractLogical: delta4mm,
-                ),
-              ),
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.all(_stroke),
-            child: child,
-          ),
-        ],
+    return CustomPaint(
+      foregroundPainter: _DirectoryRowBorderPainter(
+        stroke: _stroke,
+        borderRadius: _radius,
+        dividerHalfHeight: _dividerHeight / 2.0,
       ),
+      child: child,
     );
   }
 }
 
-Rect _frameOuterRect(
-  Size canvasSize,
-  double desiredFrameWidth,
-  double heightFactor,
-  double heightSubtractLogical,
-) {
-  if (canvasSize.width <= 0 || canvasSize.height <= 0) {
-    return Rect.zero;
-  }
-  final fw = math.min(desiredFrameWidth, canvasSize.width);
-  final rawH =
-      canvasSize.height * heightFactor.clamp(0.0, 1.0) - heightSubtractLogical;
-  const minOuterH = 8.0;
-  final fh = rawH.clamp(minOuterH, canvasSize.height);
-  final left = (canvasSize.width - fw) / 2;
-  final top = (canvasSize.height - fh) / 2;
-  return Rect.fromLTWH(left, top, fw, fh);
-}
-
-Path _buildRingPath(
-  Size canvasSize,
-  double stroke,
-  double borderRadius,
-  double desiredFrameWidth,
-  double heightFactor,
-  double heightSubtractLogical,
-) {
-  final outerRect = _frameOuterRect(
-    canvasSize,
-    desiredFrameWidth,
-    heightFactor,
-    heightSubtractLogical,
-  );
-  if (outerRect.width <= 0 || outerRect.height <= 0) {
-    return Path();
-  }
-  final cornerR = borderRadius.clamp(0.0, outerRect.shortestSide / 2);
-  final outer = RRect.fromRectAndRadius(outerRect, Radius.circular(cornerR));
-  final innerR = (cornerR - stroke).clamp(0.0, cornerR);
-  final innerW = (outerRect.width - 2 * stroke).clamp(0.0, double.infinity);
-  final innerH = (outerRect.height - 2 * stroke).clamp(0.0, double.infinity);
-  final inner = RRect.fromRectAndRadius(
-    Rect.fromLTWH(
-      outerRect.left + stroke,
-      outerRect.top + stroke,
-      innerW,
-      innerH,
-    ),
-    Radius.circular(innerR),
-  );
-  return Path()
-    ..addRRect(outer)
-    ..addRRect(inner)
-    ..fillType = PathFillType.evenOdd;
-}
-
-/// 沿环形的柔光，[BlurStyle.outer] 尽量不把光渗进内容区。
-class _GlowRingPainter extends CustomPainter {
-  _GlowRingPainter({
+/// 圆角矩形描边（渐变）+ 外发光，画在子组件之上，仅盖住边缘若干像素。
+class _DirectoryRowBorderPainter extends CustomPainter {
+  _DirectoryRowBorderPainter({
     required this.stroke,
     required this.borderRadius,
-    required this.desiredFrameWidth,
-    required this.heightFactor,
-    required this.heightSubtractLogical,
+    required this.dividerHalfHeight,
   });
 
   final double stroke;
   final double borderRadius;
-  final double desiredFrameWidth;
-  final double heightFactor;
-  final double heightSubtractLogical;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    if (size.width <= 0 || size.height <= 0) return;
-    final rect = _frameOuterRect(
-      size,
-      desiredFrameWidth,
-      heightFactor,
-      heightSubtractLogical,
-    );
-    final path = _buildRingPath(
-      size,
-      stroke,
-      borderRadius,
-      desiredFrameWidth,
-      heightFactor,
-      heightSubtractLogical,
-    );
-    final paint = Paint()
-      ..style = PaintingStyle.fill
-      ..isAntiAlias = true
-      ..shader = LinearGradient(
-        begin: Alignment.topLeft,
-        end: Alignment.bottomRight,
-        colors: [
-          const Color(0xFFFFF176).withValues(alpha: 0.32),
-          const Color(0xFF80DEEA).withValues(alpha: 0.38),
-        ],
-      ).createShader(rect.inflate(stroke))
-      ..maskFilter = const MaskFilter.blur(BlurStyle.outer, 6);
-    canvas.drawPath(path, paint);
-  }
-
-  @override
-  bool shouldRepaint(covariant _GlowRingPainter oldDelegate) {
-    return oldDelegate.stroke != stroke ||
-        oldDelegate.borderRadius != borderRadius ||
-        oldDelegate.desiredFrameWidth != desiredFrameWidth ||
-        oldDelegate.heightFactor != heightFactor ||
-        oldDelegate.heightSubtractLogical != heightSubtractLogical;
-  }
-}
-
-/// 黄 → 天蓝 渐变线框（环形填充）。
-class _GradientRingPainter extends CustomPainter {
-  _GradientRingPainter({
-    required this.stroke,
-    required this.borderRadius,
-    required this.desiredFrameWidth,
-    required this.heightFactor,
-    required this.heightSubtractLogical,
-  });
-
-  final double stroke;
-  final double borderRadius;
-  final double desiredFrameWidth;
-  final double heightFactor;
-  final double heightSubtractLogical;
+  /// [Divider] 高度的一半：灰线在区块竖直中心，与子组件顶边相差此值。
+  final double dividerHalfHeight;
 
   static final _borderGradient = LinearGradient(
     begin: Alignment.topLeft,
@@ -222,33 +64,62 @@ class _GradientRingPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     if (size.width <= 0 || size.height <= 0) return;
-    final rect = _frameOuterRect(
-      size,
-      desiredFrameWidth,
-      heightFactor,
-      heightSubtractLogical,
+
+    final halfStroke = stroke / 2;
+    canvas.save();
+    // 上移半格 Divider：顶边对齐上一行分隔线中心，底边对齐本行分隔线中心
+    canvas.translate(0, -dividerHalfHeight);
+
+    final rect = Rect.fromLTWH(
+      halfStroke,
+      0,
+      size.width - stroke,
+      size.height,
     );
-    final path = _buildRingPath(
-      size,
-      stroke,
+    if (rect.width <= 0 || rect.height <= 0) {
+      canvas.restore();
+      return;
+    }
+
+    final r = math.min(
       borderRadius,
-      desiredFrameWidth,
-      heightFactor,
-      heightSubtractLogical,
-    );
-    final paint = Paint()
-      ..style = PaintingStyle.fill
+      math.min(rect.width, rect.height) / 2 - 0.001,
+    ).clamp(0.0, borderRadius);
+    final rr = RRect.fromRectAndRadius(rect, Radius.circular(r));
+
+    final shaderRect = Rect.fromLTWH(0, -dividerHalfHeight, size.width, size.height);
+
+    // 外发光（沿描边向外）
+    final glowPaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = stroke + 5
       ..isAntiAlias = true
-      ..shader = _borderGradient.createShader(rect.inflate(stroke));
-    canvas.drawPath(path, paint);
+      ..shader = LinearGradient(
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+        colors: [
+          const Color(0xFFFFF176).withValues(alpha: 0.22),
+          const Color(0xFF80DEEA).withValues(alpha: 0.28),
+        ],
+      ).createShader(shaderRect)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.outer, 5);
+    canvas.drawRRect(rr, glowPaint);
+
+    // 清晰渐变描边
+    final linePaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = stroke
+      ..isAntiAlias = true
+      ..shader = _borderGradient.createShader(shaderRect);
+    canvas.drawRRect(rr, linePaint);
+
+    canvas.restore();
   }
 
   @override
-  bool shouldRepaint(covariant _GradientRingPainter oldDelegate) {
+  bool shouldRepaint(covariant _DirectoryRowBorderPainter oldDelegate) {
     return oldDelegate.stroke != stroke ||
         oldDelegate.borderRadius != borderRadius ||
-        oldDelegate.desiredFrameWidth != desiredFrameWidth ||
-        oldDelegate.heightFactor != heightFactor ||
-        oldDelegate.heightSubtractLogical != heightSubtractLogical;
+        oldDelegate.dividerHalfHeight != dividerHalfHeight;
   }
 }

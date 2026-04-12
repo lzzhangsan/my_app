@@ -3343,12 +3343,13 @@ class _DirectoryPageState extends State<DirectoryPage>
                                 }
                               }
 
-                              return Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  DirectoryLastVisitedFrame(
-                                    active: isLastVisited,
-                                    child: Material(
+                              return DirectoryLastVisitedFrame(
+                                active: isLastVisited,
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                                  children: [
+                                    Material(
                                       color: Colors.transparent,
                                       child: ListTile(
                                     contentPadding: EdgeInsets.symmetric(
@@ -3433,9 +3434,9 @@ class _DirectoryPageState extends State<DirectoryPage>
                                     selected: item.isSelected,
                                       ),
                                     ),
-                                  ),
-                                  Divider(height: 5.0),
-                                ],
+                                    Divider(height: 5.0),
+                                  ],
+                                ),
                               );
                             }
 
