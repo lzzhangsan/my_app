@@ -375,6 +375,17 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
     return MediaItem.fromMap(Map<String, dynamic>.from(_currentPlayingMedia!));
   }
 
+  /// 当前浮层视频播放进度（非视频或未初始化时为 null）。供进入全屏调整页续播使用。
+  Duration? getCurrentVideoPlaybackPosition() {
+    if (_currentPlayingMedia == null) return null;
+    if (DatabaseService.mediaTypeIndex(_currentPlayingMedia!) != 1) {
+      return null;
+    }
+    final c = _currentVideoWidget?.controller;
+    if (c == null || !c.value.isInitialized) return null;
+    return c.value.position;
+  }
+
   void pausePlaybackForExternalPreview() {
     _flushSequentialVideoResumeProgress();
     _mediaTimer?.cancel();
@@ -382,7 +393,9 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
     _currentVideoWidget?.controller?.pause();
   }
 
-  Future<void> reloadCurrentMediaFromDatabase() async {
+  Future<void> reloadCurrentMediaFromDatabase({
+    Duration? preferResumeVideoPosition,
+  }) async {
     if (_currentPlayingMedia == null) return;
     final currentId = _currentPlayingMedia!['id']?.toString();
     if (currentId == null || currentId.isEmpty) return;
@@ -475,7 +488,11 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
       final String vid = currentId;
       Duration? initialSeek;
       var seqResumeActive = false;
-      if (sequential && vid.isNotEmpty) {
+      final prefer = preferResumeVideoPosition;
+      if (prefer != null && prefer > Duration.zero) {
+        initialSeek = prefer;
+        seqResumeActive = false;
+      } else if (sequential && vid.isNotEmpty) {
         final prefs = await SharedPreferences.getInstance();
         final saved = await readVideoResumePositionMs(prefs, vid);
         if (saved != null && saved > 0) {

@@ -110,7 +110,12 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
 
           if (widget.initialSeekPosition != null &&
               widget.initialSeekPosition! > Duration.zero) {
-            await _controller.seekTo(widget.initialSeekPosition!);
+            var t = widget.initialSeekPosition!;
+            if (dur > Duration.zero && t >= dur) {
+              t = dur - const Duration(milliseconds: 50);
+            }
+            if (t < Duration.zero) t = Duration.zero;
+            await _controller.seekTo(t);
             if (!mounted) return;
           }
 

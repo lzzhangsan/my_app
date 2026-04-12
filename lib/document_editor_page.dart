@@ -3211,17 +3211,32 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
 
     mediaPlayerState.pausePlaybackForExternalPreview();
 
-    await Navigator.push<bool>(
+    final Duration? resumeIntoPreview =
+        currentMedia.type == MediaType.video
+            ? (mediaPlayerState.getCurrentVideoPlaybackPosition() ??
+                Duration.zero)
+            : null;
+
+    final popResult = await Navigator.push<Object?>(
       context,
-      MaterialPageRoute(
+      MaterialPageRoute<Object?>(
         builder:
-            (context) =>
-                MediaPreviewPage(mediaItems: [currentMedia], initialIndex: 0),
+            (context) => MediaPreviewPage(
+              mediaItems: [currentMedia],
+              initialIndex: 0,
+              initialResumeVideoPosition: resumeIntoPreview,
+            ),
       ),
     );
 
     if (!mounted) return;
-    await mediaPlayerState.reloadCurrentMediaFromDatabase();
+    final Duration? resumeAfter =
+        popResult is MediaPreviewPagePopResult
+            ? popResult.resumeVideoPosition
+            : null;
+    await mediaPlayerState.reloadCurrentMediaFromDatabase(
+      preferResumeVideoPosition: resumeAfter,
+    );
   }
 
   Future<void> _openBackgroundImagePreviewEditor() async {

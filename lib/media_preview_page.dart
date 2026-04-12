@@ -28,17 +28,27 @@ import 'widgets/floating_ui_shadows.dart';
 
 enum MediaMode { none, manual, auto }
 
+/// [Navigator.pop] 返回值：从文档编辑栏「调整当前视频」返回时携带续播时间。
+class MediaPreviewPagePopResult {
+  final Duration? resumeVideoPosition;
+  const MediaPreviewPagePopResult({this.resumeVideoPosition});
+}
+
 class MediaPreviewPage extends StatefulWidget {
   final List<MediaItem> mediaItems;
   final int initialIndex;
   final bool openedFromRecycleBin;
   final String? standaloneBackgroundFilePath;
 
+  /// 非 null 时：进入全屏调整页后从该时间点续播（文档编辑栏浮层视频）；退出时通过 [MediaPreviewPagePopResult] 回传进度。
+  final Duration? initialResumeVideoPosition;
+
   const MediaPreviewPage({
     required this.mediaItems,
     required this.initialIndex,
     this.openedFromRecycleBin = false,
     this.standaloneBackgroundFilePath,
+    this.initialResumeVideoPosition,
     super.key,
   });
 
@@ -82,6 +92,34 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
   bool _isFlushingBeforePop = false;
   bool get _isStandaloneBackgroundMode =>
       (widget.standaloneBackgroundFilePath ?? '').isNotEmpty;
+
+  bool get _documentEmbeddedResumeMode =>
+      widget.initialResumeVideoPosition != null;
+
+  Duration? _videoPositionForDocumentResumePop() {
+    if (!_documentEmbeddedResumeMode) return null;
+    if (_currentIndex < 0 || _currentIndex >= widget.mediaItems.length) {
+      return null;
+    }
+    if (widget.mediaItems[_currentIndex].type != MediaType.video) return null;
+    final c = _videoControllers[_currentIndex];
+    if (c == null || !c.value.isInitialized) return null;
+    return c.value.position;
+  }
+
+  /// [shouldReloadListHint] 为 false 时与非文档模式下系统返回键一致（结果为 null）。
+  void _popMediaPreview({bool shouldReloadListHint = true}) {
+    if (!mounted) return;
+    if (_documentEmbeddedResumeMode) {
+      Navigator.of(context).pop(
+        MediaPreviewPagePopResult(
+          resumeVideoPosition: _videoPositionForDocumentResumePop(),
+        ),
+      );
+    } else {
+      Navigator.of(context).pop(shouldReloadListHint ? true : null);
+    }
+  }
 
   bool get _isCurrentInRecycleBin {
     if (_currentIndex < 0 || _currentIndex >= widget.mediaItems.length) {
@@ -526,6 +564,21 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
           return;
         }
 
+        if (widget.initialResumeVideoPosition != null &&
+            index == widget.initialIndex &&
+            widget.initialResumeVideoPosition! > Duration.zero) {
+          var pos = widget.initialResumeVideoPosition!;
+          final dur = controller.value.duration;
+          if (dur > Duration.zero) {
+            if (pos >= dur) {
+              pos = dur - const Duration(milliseconds: 50);
+            }
+            if (pos < Duration.zero) pos = Duration.zero;
+            await controller.seekTo(pos);
+            if (!mounted) return;
+          }
+        }
+
         // 自动播放当前视频
         final bool shouldAutoPlay = index == _currentIndex;
 
@@ -759,7 +812,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
       // 判断是否还有媒体项
       if (widget.mediaItems.length <= 1) {
         // 如果当前是最后一个媒体项，则关闭预览页面
-        Navigator.of(context).pop(true); // 返回true表示有更改发生
+        _popMediaPreview(shouldReloadListHint: true);
         return;
       }
 
@@ -979,7 +1032,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
       setState(() {
         widget.mediaItems.removeAt(_currentIndex);
         if (widget.mediaItems.isEmpty) {
-          Navigator.of(context).pop(true);
+          _popMediaPreview(shouldReloadListHint: true);
           return;
         }
         _currentIndex = nextIndex;
@@ -1254,7 +1307,13 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     final bool pageSwipeLocked =
         _transformOnlyMode || _activePreviewPointers >= 2;
     return PopScope(
-      canPop: _activePreviewPointers == 0,
+      canPop: false,
+      onPopInvokedWithResult: (bool didPop, dynamic result) {
+        if (didPop) return;
+        if (_activePreviewPointers != 0) return;
+        if (!mounted) return;
+        _popMediaPreview(shouldReloadListHint: false);
+      },
       child: Scaffold(
         // 与「透明留白」配合：上下未铺满处透出黑底，白色顶栏图标可见；图片区仍由内容层绘制。
         backgroundColor: Colors.black,
@@ -1344,7 +1403,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
                         color: Colors.white,
                         shadows: FloatingUiShadows.whiteIcon,
                       ),
-                      onPressed: () => Navigator.of(context).pop(true),
+                      onPressed: () => _popMediaPreview(shouldReloadListHint: true),
                     ),
                     const SizedBox(width: 16),
                     IconButton(
@@ -1579,7 +1638,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
       setState(() {
         widget.mediaItems.removeAt(_currentIndex);
         if (widget.mediaItems.isEmpty) {
-          Navigator.of(context).pop(true);
+          _popMediaPreview(shouldReloadListHint: true);
           return;
         }
         _currentIndex = nextIndex;
