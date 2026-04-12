@@ -1912,6 +1912,61 @@ class DatabaseService {
     }
   }
 
+  /// 将导出包中该文件的显示与收藏相关字段合并到已有 [media_items] 行（用于文件夹导入遇哈希重复时保留 ZIP 内效果）。
+  static const List<String> _mediaDisplayMergeKeys = [
+    'is_favorite',
+    'ken_burns_center_x',
+    'ken_burns_center_y',
+    'video_view_scale',
+    'video_view_tx',
+    'video_view_ty',
+    'video_view_rot',
+    'video_view_basis_w',
+    'video_view_basis_h',
+    'video_view_anchor_x',
+    'video_view_anchor_y',
+  ];
+
+  Future<void> mergeMediaItemDisplayFieldsFromExport(
+    String id,
+    Map<String, dynamic> exportedRow,
+  ) async {
+    if (exportedRow.isEmpty) return;
+    final update = <String, dynamic>{};
+    for (final k in _mediaDisplayMergeKeys) {
+      if (!exportedRow.containsKey(k)) continue;
+      final v = exportedRow[k];
+      if (v == null) continue;
+      if (k == 'is_favorite') {
+        if (v is bool) {
+          update[k] = v ? 1 : 0;
+        } else if (v is num) {
+          update[k] = v.toInt();
+        } else {
+          update[k] = v;
+        }
+      } else if (k == 'video_view_rot' && v is num) {
+        update[k] = v.toInt();
+      } else {
+        update[k] = v;
+      }
+    }
+    if (update.isEmpty) return;
+    try {
+      final db = await database;
+      update['updated_at'] = DateTime.now().millisecondsSinceEpoch;
+      await db.update(
+        'media_items',
+        update,
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+    } catch (e, stackTrace) {
+      _handleError('合并媒体显示/收藏字段失败', e, stackTrace);
+      rethrow;
+    }
+  }
+
   /// 更新媒体项哈希值
   Future<void> updateMediaItemHash(String id, String fileHash) async {
     try {
@@ -2334,9 +2389,19 @@ class DatabaseService {
       List<Map<String, dynamic>> directorySettingsToExport = [];
       for (var settings in directorySettings) {
         Map<String, dynamic> settingsCopy = Map<String, dynamic>.from(settings);
-        String? backgroundImagePath = settings['background_image_path'];
+        final String rowId = '${settings['id'] ?? 0}';
+
+        String? backgroundImagePath =
+            settings['background_image_path']?.toString();
         if (backgroundImagePath != null && backgroundImagePath.isNotEmpty) {
-          String fileName = p.basename(backgroundImagePath);
+          final String ext = p.extension(backgroundImagePath);
+          final String originalFileName = p.basenameWithoutExtension(
+            backgroundImagePath,
+          );
+          final String fileName = safeFileName(
+            '${rowId}_$originalFileName',
+            ext,
+          );
           settingsCopy['backgroundImageFileName'] = fileName;
 
           File imageFile = File(backgroundImagePath);
@@ -2354,6 +2419,52 @@ class DatabaseService {
             Logger.log('警告：目录背景图片不存在: $backgroundImagePath');
           }
         }
+
+        String? backgroundVideoPath =
+            settings['background_video_path']?.toString();
+        if (backgroundVideoPath != null && backgroundVideoPath.isNotEmpty) {
+          final String ext = p.extension(backgroundVideoPath);
+          final String originalFileName = p.basenameWithoutExtension(
+            backgroundVideoPath,
+          );
+          final String fileName = safeFileName(
+            '${rowId}_vid_$originalFileName',
+            ext,
+          );
+          settingsCopy['backgroundVideoFileName'] = fileName;
+          final File videoFile = File(backgroundVideoPath);
+          if (await videoFile.exists()) {
+            final String relativePath = 'background_videos/$fileName';
+            await Directory(
+              '$tempDirPath/background_videos',
+            ).create(recursive: true);
+            await copyFileWithStreaming(
+              videoFile,
+              '$tempDirPath/$relativePath',
+            );
+            Logger.log('已导出目录背景视频: $relativePath');
+          } else {
+            Logger.log('警告：目录背景视频不存在: $backgroundVideoPath');
+          }
+        }
+
+        if (backgroundImagePath != null && backgroundImagePath.isNotEmpty) {
+          final vp = await getVideoViewParamsForMediaFilePath(
+            backgroundImagePath,
+          );
+          if (!vp.isDefault) {
+            settingsCopy['exported_background_image_view'] = vp.toJsonStaging();
+          }
+        }
+        if (backgroundVideoPath != null && backgroundVideoPath.isNotEmpty) {
+          final vp = await getVideoViewParamsForMediaFilePath(
+            backgroundVideoPath,
+          );
+          if (!vp.isDefault) {
+            settingsCopy['exported_background_video_view'] = vp.toJsonStaging();
+          }
+        }
+
         directorySettingsToExport.add(settingsCopy);
       }
       if (directorySettingsToExport.isNotEmpty) {
@@ -2370,9 +2481,21 @@ class DatabaseService {
       List<Map<String, dynamic>> documentSettingsToExport = [];
       for (var settings in documentSettings) {
         Map<String, dynamic> settingsCopy = Map<String, dynamic>.from(settings);
-        String? backgroundImagePath = settings['background_image_path'];
+        final String docKey =
+            settings['document_id']?.toString().replaceAll(RegExp(r'[^A-Za-z0-9_]'), '_') ??
+            'doc';
+
+        String? backgroundImagePath =
+            settings['background_image_path']?.toString();
         if (backgroundImagePath != null && backgroundImagePath.isNotEmpty) {
-          String fileName = p.basename(backgroundImagePath);
+          final String ext = p.extension(backgroundImagePath);
+          final String originalFileName = p.basenameWithoutExtension(
+            backgroundImagePath,
+          );
+          final String fileName = safeFileName(
+            '${docKey}_$originalFileName',
+            ext,
+          );
           settingsCopy['backgroundImageFileName'] = fileName;
 
           File imageFile = File(backgroundImagePath);
@@ -2390,6 +2513,52 @@ class DatabaseService {
             Logger.log('警告：文档背景图片不存在: $backgroundImagePath');
           }
         }
+
+        String? backgroundVideoPath =
+            settings['background_video_path']?.toString();
+        if (backgroundVideoPath != null && backgroundVideoPath.isNotEmpty) {
+          final String ext = p.extension(backgroundVideoPath);
+          final String originalFileName = p.basenameWithoutExtension(
+            backgroundVideoPath,
+          );
+          final String fileName = safeFileName(
+            '${docKey}_vid_$originalFileName',
+            ext,
+          );
+          settingsCopy['backgroundVideoFileName'] = fileName;
+          final File videoFile = File(backgroundVideoPath);
+          if (await videoFile.exists()) {
+            final String relativePath = 'background_videos/$fileName';
+            await Directory(
+              '$tempDirPath/background_videos',
+            ).create(recursive: true);
+            await copyFileWithStreaming(
+              videoFile,
+              '$tempDirPath/$relativePath',
+            );
+            Logger.log('已导出文档背景视频: $relativePath');
+          } else {
+            Logger.log('警告：文档背景视频不存在: $backgroundVideoPath');
+          }
+        }
+
+        if (backgroundImagePath != null && backgroundImagePath.isNotEmpty) {
+          final vp = await getVideoViewParamsForMediaFilePath(
+            backgroundImagePath,
+          );
+          if (!vp.isDefault) {
+            settingsCopy['exported_background_image_view'] = vp.toJsonStaging();
+          }
+        }
+        if (backgroundVideoPath != null && backgroundVideoPath.isNotEmpty) {
+          final vp = await getVideoViewParamsForMediaFilePath(
+            backgroundVideoPath,
+          );
+          if (!vp.isDefault) {
+            settingsCopy['exported_background_video_view'] = vp.toJsonStaging();
+          }
+        }
+
         documentSettingsToExport.add(settingsCopy);
       }
       if (documentSettingsToExport.isNotEmpty) {
@@ -2668,6 +2837,9 @@ class DatabaseService {
       final String backgroundImagesPath = '${appDocDir.path}/background_images';
       await Directory(backgroundImagesPath).create(recursive: true);
 
+      final String backgroundVideosPath = '${appDocDir.path}/background_videos';
+      await Directory(backgroundVideosPath).create(recursive: true);
+
       // 准备图片目录
       final String imagesDirPath = '${appDocDir.path}/images';
       await Directory(imagesDirPath).create(recursive: true);
@@ -2681,6 +2853,8 @@ class DatabaseService {
       // 事务有时会因并发/时序出现 "no current transaction" COMMIT 错误，重试可恢复
       const maxAttempts = 3;
       for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+        final List<({String path, VideoViewParams params})>
+        pendingBackgroundViewRestores = [];
         try {
           // 简化版事务：直接清空并重填
           await db.transaction((txn) async {
@@ -2769,23 +2943,76 @@ class DatabaseService {
                       newRow['audio_path'] = null;
                     }
                     newRow.remove('audioFileName');
-                  } else if ((tableName == 'directory_settings' ||
-                          tableName == 'document_settings') &&
-                      newRow.containsKey('backgroundImageFileName')) {
-                    final fileName = newRow['backgroundImageFileName'];
-                    final newPath = p.join(backgroundImagesPath, fileName);
-                    final tempPath = p.join(
-                      tempDirPath,
-                      'background_images',
-                      fileName,
-                    );
-                    if (await File(tempPath).exists()) {
-                      await copyFileWithStreaming(File(tempPath), newPath);
-                      newRow['background_image_path'] = newPath;
-                    } else {
-                      newRow['background_image_path'] = null;
+                  } else if (tableName == 'directory_settings' ||
+                      tableName == 'document_settings') {
+                    Map<String, dynamic>? imgViewJson;
+                    Map<String, dynamic>? vidViewJson;
+                    final rawImgView = newRow['exported_background_image_view'];
+                    if (rawImgView is Map) {
+                      imgViewJson = Map<String, dynamic>.from(rawImgView);
                     }
-                    newRow.remove('backgroundImageFileName');
+                    final rawVidView = newRow['exported_background_video_view'];
+                    if (rawVidView is Map) {
+                      vidViewJson = Map<String, dynamic>.from(rawVidView);
+                    }
+                    newRow.remove('exported_background_image_view');
+                    newRow.remove('exported_background_video_view');
+
+                    if (newRow.containsKey('backgroundImageFileName')) {
+                      final fileName = newRow['backgroundImageFileName'];
+                      final newPath = p.join(backgroundImagesPath, fileName);
+                      final tempPath = p.join(
+                        tempDirPath,
+                        'background_images',
+                        fileName,
+                      );
+                      if (await File(tempPath).exists()) {
+                        await copyFileWithStreaming(File(tempPath), newPath);
+                        newRow['background_image_path'] = newPath;
+                      } else {
+                        newRow['background_image_path'] = null;
+                      }
+                      newRow.remove('backgroundImageFileName');
+                    }
+
+                    if (newRow.containsKey('backgroundVideoFileName')) {
+                      final fileName = newRow['backgroundVideoFileName'];
+                      final newPath = p.join(backgroundVideosPath, fileName);
+                      final tempPath = p.join(
+                        tempDirPath,
+                        'background_videos',
+                        fileName,
+                      );
+                      if (await File(tempPath).exists()) {
+                        await Directory(
+                          backgroundVideosPath,
+                        ).create(recursive: true);
+                        await copyFileWithStreaming(File(tempPath), newPath);
+                        newRow['background_video_path'] = newPath;
+                      } else {
+                        newRow['background_video_path'] = null;
+                      }
+                      newRow.remove('backgroundVideoFileName');
+                    }
+
+                    final imgP = newRow['background_image_path'] as String?;
+                    if (imgViewJson != null &&
+                        imgP != null &&
+                        imgP.isNotEmpty) {
+                      pendingBackgroundViewRestores.add((
+                        path: imgP,
+                        params: VideoViewParams.fromJsonStaging(imgViewJson),
+                      ));
+                    }
+                    final vidP = newRow['background_video_path'] as String?;
+                    if (vidViewJson != null &&
+                        vidP != null &&
+                        vidP.isNotEmpty) {
+                      pendingBackgroundViewRestores.add((
+                        path: vidP,
+                        params: VideoViewParams.fromJsonStaging(vidViewJson),
+                      ));
+                    }
                   }
                   if (tableName == 'text_boxes') {
                     if (newRow.containsKey('textSegments') &&
@@ -2848,6 +3075,12 @@ class DatabaseService {
               }
             }
           });
+          for (final item in pendingBackgroundViewRestores) {
+            await upsertVideoViewParamsForFilePath(item.path, item.params);
+          }
+          Logger.log(
+            '[导入] 已恢复 ${pendingBackgroundViewRestores.length} 条背景取景参数',
+          );
           break;
         } on DatabaseException catch (e) {
           final msg = e.toString();
@@ -3623,16 +3856,35 @@ class DatabaseService {
 
       // 画布无需复制文件，只需原样写入（已在 documentData 初始化）
 
-      // 处理文档设置和背景图片
+      // 处理文档设置和背景图片/视频（与目录整包导出字段一致，便于取景参数可移植）
+      String safeDocExportFileName(String base, String ext) {
+        String name = base.replaceAll(RegExp(r'[^A-Za-z0-9_]'), '_');
+        if (name.length > 80) name = name.substring(0, 80);
+        return name + ext;
+      }
+
+      String docKey = documentId.toString().replaceAll(
+        RegExp(r'[^A-Za-z0-9_]'),
+        '_',
+      );
+      if (docKey.length > 40) docKey = docKey.substring(0, 40);
+
       List<Map<String, dynamic>> documentSettingsToExport = [];
       for (var settings in documentData['document_settings']!) {
         Map<String, dynamic> settingsCopy = Map<String, dynamic>.from(settings);
-        String? backgroundImagePath = settings['background_image_path'];
+        String? backgroundImagePath =
+            settings['background_image_path']?.toString();
         if (backgroundImagePath != null && backgroundImagePath.isNotEmpty) {
-          String fileName = p.basename(backgroundImagePath);
+          final String ext = p.extension(backgroundImagePath);
+          final String originalFileName = p.basenameWithoutExtension(
+            backgroundImagePath,
+          );
+          final String fileName = safeDocExportFileName(
+            '${docKey}_$originalFileName',
+            ext,
+          );
           settingsCopy['backgroundImageFileName'] = fileName;
 
-          // 复制背景图片
           File imageFile = File(backgroundImagePath);
           if (await imageFile.exists()) {
             String relativePath = 'background_images/$fileName';
@@ -3645,6 +3897,49 @@ class DatabaseService {
             Logger.log('警告：背景图片不存在: $backgroundImagePath');
           }
         }
+
+        String? backgroundVideoPath =
+            settings['background_video_path']?.toString();
+        if (backgroundVideoPath != null && backgroundVideoPath.isNotEmpty) {
+          final String ext = p.extension(backgroundVideoPath);
+          final String originalFileName = p.basenameWithoutExtension(
+            backgroundVideoPath,
+          );
+          final String fileName = safeDocExportFileName(
+            '${docKey}_vid_$originalFileName',
+            ext,
+          );
+          settingsCopy['backgroundVideoFileName'] = fileName;
+          final File videoFile = File(backgroundVideoPath);
+          if (await videoFile.exists()) {
+            final String relativePath = 'background_videos/$fileName';
+            await Directory(
+              '$tempDirPath/background_videos',
+            ).create(recursive: true);
+            await videoFile.copy('$tempDirPath/$relativePath');
+            Logger.log('已导出背景视频: $relativePath');
+          } else {
+            Logger.log('警告：背景视频不存在: $backgroundVideoPath');
+          }
+        }
+
+        if (backgroundImagePath != null && backgroundImagePath.isNotEmpty) {
+          final vp = await getVideoViewParamsForMediaFilePath(
+            backgroundImagePath,
+          );
+          if (!vp.isDefault) {
+            settingsCopy['exported_background_image_view'] = vp.toJsonStaging();
+          }
+        }
+        if (backgroundVideoPath != null && backgroundVideoPath.isNotEmpty) {
+          final vp = await getVideoViewParamsForMediaFilePath(
+            backgroundVideoPath,
+          );
+          if (!vp.isDefault) {
+            settingsCopy['exported_background_video_view'] = vp.toJsonStaging();
+          }
+        }
+
         documentSettingsToExport.add(settingsCopy);
       }
       documentData['document_settings'] = documentSettingsToExport;
@@ -3730,6 +4025,9 @@ class DatabaseService {
       final Map<String, dynamic> importData = jsonDecode(jsonContent);
 
       final db = await database;
+
+      final List<({String path, VideoViewParams params})>
+      pendingDocBackgroundViewRestores = [];
 
       await db.transaction((txn) async {
         // 处理文档数据
@@ -4027,17 +4325,33 @@ class DatabaseService {
         }
         Logger.log('已导入 ${canvases.length} 个画布');
 
-        // 处理文档设置和背景图片
+        // 处理文档设置和背景图片/视频
         List<dynamic> documentSettings = importData['document_settings'] ?? [];
+        final String bgVideosDir = '${appDocDir.path}/background_videos';
+        await Directory(bgVideosDir).create(recursive: true);
         for (var settings in documentSettings) {
           Map<String, dynamic> settingsData = Map<String, dynamic>.from(
             settings,
           );
           settingsData['document_id'] = newDocumentId;
-          // 移除错误的id字段
           settingsData.remove('id');
 
-          // 处理背景图片
+          Map<String, dynamic>? imgViewJson;
+          Map<String, dynamic>? vidViewJson;
+          final rawImgView = settingsData['exported_background_image_view'];
+          if (rawImgView is Map) {
+            imgViewJson = Map<String, dynamic>.from(rawImgView);
+          }
+          final rawVidView = settingsData['exported_background_video_view'];
+          if (rawVidView is Map) {
+            vidViewJson = Map<String, dynamic>.from(rawVidView);
+          }
+          settingsData.remove('exported_background_image_view');
+          settingsData.remove('exported_background_video_view');
+
+          settingsData['background_image_path'] = null;
+          settingsData['background_video_path'] = null;
+
           String? backgroundImageFileName =
               settingsData['backgroundImageFileName'];
           if (backgroundImageFileName != null &&
@@ -4054,13 +4368,53 @@ class DatabaseService {
               Logger.log('已导入背景图片: $backgroundImageFileName -> $targetPath');
             }
           }
-
-          // 移除临时字段
           settingsData.remove('backgroundImageFileName');
+
+          String? backgroundVideoFileName =
+              settingsData['backgroundVideoFileName'];
+          if (backgroundVideoFileName != null &&
+              backgroundVideoFileName.isNotEmpty) {
+            final String sourcePath =
+                '$tempDirPath/background_videos/$backgroundVideoFileName';
+            final File sourceFile = File(sourcePath);
+            if (await sourceFile.exists()) {
+              final String targetPath =
+                  '$bgVideosDir/${newDocumentId}_$backgroundVideoFileName';
+              await sourceFile.copy(targetPath);
+              settingsData['background_video_path'] = targetPath;
+              Logger.log('已导入背景视频: $backgroundVideoFileName -> $targetPath');
+            }
+          }
+          settingsData.remove('backgroundVideoFileName');
+
+          final imgP = settingsData['background_image_path'] as String?;
+          if (imgViewJson != null && imgP != null && imgP.isNotEmpty) {
+            pendingDocBackgroundViewRestores.add((
+              path: imgP,
+              params: VideoViewParams.fromJsonStaging(imgViewJson),
+            ));
+          }
+          final vidP = settingsData['background_video_path'] as String?;
+          if (vidViewJson != null && vidP != null && vidP.isNotEmpty) {
+            pendingDocBackgroundViewRestores.add((
+              path: vidP,
+              params: VideoViewParams.fromJsonStaging(vidViewJson),
+            ));
+          }
+
           await txn.insert('document_settings', settingsData);
         }
         Logger.log('已导入 ${documentSettings.length} 个文档设置');
       });
+
+      for (final item in pendingDocBackgroundViewRestores) {
+        await upsertVideoViewParamsForFilePath(item.path, item.params);
+      }
+      if (pendingDocBackgroundViewRestores.isNotEmpty) {
+        Logger.log(
+          '[导入文档] 已恢复 ${pendingDocBackgroundViewRestores.length} 条背景取景参数',
+        );
+      }
 
       // 清理临时目录
       await tempDir.delete(recursive: true);

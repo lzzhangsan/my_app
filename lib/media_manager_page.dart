@@ -5840,9 +5840,12 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         );
         if (duplicate != null) {
           // 原样导入：将重复项从其他位置移入本文件夹，保证导出多少导入多少
-          await _databaseService.updateMediaItemDirectory(
-            duplicate['id'] as String,
-            newFolderId,
+          final String dupId = duplicate['id'] as String;
+          await _databaseService.updateMediaItemDirectory(dupId, newFolderId);
+          // 压缩包内的缩放/平移/旋转/收藏/Ken Burns 中心等应覆盖库内旧记录（否则重复项仍保留旧机效果）
+          await _databaseService.mergeMediaItemDisplayFieldsFromExport(
+            dupId,
+            item,
           );
           importedCount++;
           continue;
