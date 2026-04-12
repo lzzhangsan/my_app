@@ -36,6 +36,9 @@ class VideoPlayerWidget extends StatefulWidget {
   /// 顺序模式定时回写进度（毫秒），供退出/杀进程后续播。
   final void Function(int positionMs, int durationMs)? onProgressForResumeSave;
 
+  /// 文档编辑页媒体栏：为 true 时强制静音（与全屏预览、背景视频音量无关）。
+  final bool documentMediaBarMuted;
+
   VideoPlayerWidget({
     required this.file,
     this.looping = false,
@@ -48,6 +51,7 @@ class VideoPlayerWidget extends StatefulWidget {
     this.sequentialResumeActive = false,
     this.onSequentialResumeTooShort,
     this.onProgressForResumeSave,
+    this.documentMediaBarMuted = false,
     super.key,
   });
 
@@ -176,6 +180,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
           setState(() {});
           _controller.play();
           _controller.setLooping(widget.looping);
+          unawaited(_applyDocumentBarVolume());
 
           Logger.i(
             '[播放器] 初始化成功, isInitialized: ${_controller.value.isInitialized}, isPlaying: ${_controller.value.isPlaying}',
@@ -205,6 +210,13 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
         });
 
     _controller.addListener(_videoListener);
+  }
+
+  Future<void> _applyDocumentBarVolume() async {
+    if (!_controller.value.isInitialized) return;
+    await _controller.setVolume(
+      widget.documentMediaBarMuted ? 0.0 : 1.0,
+    );
   }
 
   void _videoListener() {
@@ -306,6 +318,8 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
       _hasError = false;
       _skipResumeShort = false;
       _initializeController();
+    } else if (oldWidget.documentMediaBarMuted != widget.documentMediaBarMuted) {
+      unawaited(_applyDocumentBarVolume());
     } else if (oldWidget.viewParams != widget.viewParams) {
       setState(() {});
     }

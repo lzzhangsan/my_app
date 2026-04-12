@@ -57,6 +57,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
   bool _panClockwise = true;
   double _imagePanRoamCoverage = 0.28;
   ImageLetterboxFill _letterboxFill = ImageLetterboxFill.transparent;
+  bool _foregroundVideoMuted = false;
   int _sequentialIndex = 0;
 
   /// 每次成功切到下一条媒体递增，避免同一视频再次播放时 ValueKey 不变导致 onVideoEnd 永不触发。
@@ -158,6 +159,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
       _panClockwise = settings.panClockwise;
       _imagePanRoamCoverage = settings.imagePanRoamCoverage;
       _letterboxFill = settings.letterboxFill;
+      _foregroundVideoMuted = settings.foregroundVideoMuted;
       Logger.i(
         'Loaded media source: dir=$_selectedDirectory, scope=${_favoriteFilter.storageValue}',
       );
@@ -176,6 +178,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
         panClockwise: _panClockwise,
         imagePanRoamCoverage: _imagePanRoamCoverage,
         letterboxFill: _letterboxFill,
+        foregroundVideoMuted: _foregroundVideoMuted,
       ),
       onSettingsChanged: (snap) async {
         final orderChanged = snap.playbackOrder != _playbackOrder;
@@ -187,6 +190,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
           _panClockwise = snap.panClockwise;
           _imagePanRoamCoverage = snap.imagePanRoamCoverage;
           _letterboxFill = snap.letterboxFill;
+          _foregroundVideoMuted = snap.foregroundVideoMuted;
         });
         if (orderChanged) {
           await _loadMediaList();
@@ -507,6 +511,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
           key: ValueKey('vp_${refreshedMap['path']}_$_playbackNonce'),
           file: mediaFile,
           viewParams: VideoViewParams.fromMediaMap(refreshedMap),
+          documentMediaBarMuted: _foregroundVideoMuted,
           initialSeekPosition: initialSeek,
           sequentialResumeActive: seqResumeActive,
           onSequentialResumeTooShort:
@@ -812,6 +817,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
               key: ValueKey('vp_${nextMedia['path']}_$_playbackNonce'),
               file: File(nextMedia['path']!),
               viewParams: VideoViewParams.fromMediaMap(nextMedia),
+              documentMediaBarMuted: _foregroundVideoMuted,
               initialSeekPosition: initialSeek,
               sequentialResumeActive: seqResumeActive,
               onSequentialResumeTooShort:

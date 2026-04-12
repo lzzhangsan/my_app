@@ -22,7 +22,7 @@ import '../utils/app_storage_paths.dart';
 import '../utils/background_physical_file.dart';
 import '../models/background_media_origin.dart';
 import '../models/video_view_params.dart';
-import '../media_playback_portable_prefs.dart';
+import '../media_player_settings.dart';
 import '../video_sequential_resume_prefs.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:crypto/crypto.dart';
@@ -2570,17 +2570,11 @@ class DatabaseService {
 
       try {
         final prefs = await SharedPreferences.getInstance();
-        final playInts = collectPlaybackStateIntPrefs(prefs);
-        if (playInts.isNotEmpty) {
+        final portable = buildDirectoryPortablePrefsExportMap(prefs);
+        if (shouldExportDirectoryPortablePrefs(portable)) {
           await File(
             '$dirDataPath/portable_prefs.json',
-          ).writeAsString(
-            jsonEncode({
-              'format_version': 1,
-              'playback_state_ints': playInts,
-            }),
-            encoding: utf8,
-          );
+          ).writeAsString(jsonEncode(portable), encoding: utf8);
         }
       } catch (e) {
         Logger.log('[导出] 写入 portable_prefs.json 失败（已跳过）: $e');
@@ -3104,8 +3098,10 @@ class DatabaseService {
               jsonDecode(await portablePrefsFile.readAsString())
                   as Map<String, dynamic>;
           final prefs = await SharedPreferences.getInstance();
-          await mergePlaybackStateIntPrefs(prefs, raw);
-          Logger.log('[导入] 已恢复 portable_prefs.json 中的播放游标/续播位置');
+          await applyDirectoryPortablePrefsImportMap(prefs, raw);
+          Logger.log(
+            '[导入] 已恢复 portable_prefs.json（播放游标/续播、文档栏视频静音、背景视频音量）',
+          );
         } catch (e) {
           Logger.log('[导入] portable_prefs.json 恢复失败（已跳过）: $e');
         }

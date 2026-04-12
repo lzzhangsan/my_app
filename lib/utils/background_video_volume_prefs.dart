@@ -68,4 +68,9 @@ class BackgroundVideoVolumePrefs {
       await prefs.setDouble(key, v);
     }
   }
+
+  /// 从备份恢复 SharedPreferences 后调用，避免内存缓存与磁盘不一致。
+  static void clearMemoryCacheAfterImport() {
+    _memoryVolumeByCanonPath.clear();
+  }
 }

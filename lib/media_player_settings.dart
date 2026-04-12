@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'widgets/image_layout_utils.dart' show ImageLetterboxFill;
 import 'media_playback_portable_prefs.dart';
 import 'media_source_favorite_filter.dart';
+import 'utils/background_video_volume_prefs.dart';
 
 /// 媒体栏随机/顺序播放
 enum MediaPlaybackOrder {
@@ -34,7 +35,13 @@ class MediaPlayerPrefsKeys {
       'media_player_image_pan_roam_coverage_pct';
   /// 图片未铺满屏幕时，上下（或左右）留白的填充方式。
   static const String imageLetterboxFill = 'media_player_image_letterbox_fill';
+
+  /// 文档编辑页右下角媒体栏：视频是否全局静音（与背景视频逐文件音量独立）。
+  static const String foregroundVideoMuted = 'media_player_foreground_video_muted';
 }
+
+/// SharedPreferences 中背景视频音量条目前缀（与 [BackgroundVideoVolumePrefs] 写入的键一致）。
+const String kBackgroundVideoVolumePrefsKeyPrefix = 'bg_vid_vol_v1_';
 
 Future<MediaPlayerSettingsSnapshot> loadMediaPlayerSettings(
   SharedPreferences prefs,
@@ -54,6 +61,8 @@ Future<MediaPlayerSettingsSnapshot> loadMediaPlayerSettings(
   final roamCov = roamPct / 100.0;
   final letterboxIndex =
       (prefs.getInt(MediaPlayerPrefsKeys.imageLetterboxFill) ?? 1).clamp(0, 3);
+  final fgMuted =
+      prefs.getBool(MediaPlayerPrefsKeys.foregroundVideoMuted) ?? false;
 
   return MediaPlayerSettingsSnapshot(
     imageDuration: Duration(milliseconds: ms),
@@ -63,6 +72,7 @@ Future<MediaPlayerSettingsSnapshot> loadMediaPlayerSettings(
     panClockwise: panCw,
     imagePanRoamCoverage: roamCov,
     letterboxFill: ImageLetterboxFill.values[letterboxIndex],
+    foregroundVideoMuted: fgMuted,
   );
 }
 
@@ -96,6 +106,18 @@ Future<Map<String, dynamic>> buildMediaSettingsExportMap(
   }
   final lb = prefs.getInt(MediaPlayerPrefsKeys.imageLetterboxFill);
   if (lb != null) m[MediaPlayerPrefsKeys.imageLetterboxFill] = lb;
+
+  m[MediaPlayerPrefsKeys.foregroundVideoMuted] =
+      prefs.getBool(MediaPlayerPrefsKeys.foregroundVideoMuted) ?? false;
+
+  final bgVol = <String, double>{};
+  for (final k in prefs.getKeys()) {
+    if (k.startsWith(kBackgroundVideoVolumePrefsKeyPrefix)) {
+      final v = prefs.getDouble(k);
+      if (v != null) bgVol[k] = v;
+    }
+  }
+  if (bgVol.isNotEmpty) m['background_video_volumes'] = bgVol;
 
   final playInts = collectPlaybackStateIntPrefs(prefs);
   if (playInts.isNotEmpty) {
@@ -147,7 +169,77 @@ Future<void> applyMediaSettingsImportMap(
     await prefs.setInt(MediaPlayerPrefsKeys.imageLetterboxFill, lb);
   }
 
+  final fgMuted = json[MediaPlayerPrefsKeys.foregroundVideoMuted];
+  if (fgMuted is bool) {
+    await prefs.setBool(MediaPlayerPrefsKeys.foregroundVideoMuted, fgMuted);
+  }
+
+  final bgVol = json['background_video_volumes'];
+  if (bgVol is Map) {
+    for (final e in bgVol.entries) {
+      final k = e.key.toString();
+      if (!k.startsWith(kBackgroundVideoVolumePrefsKeyPrefix)) continue;
+      if (e.value is num) {
+        await prefs.setDouble(k, (e.value as num).toDouble());
+      }
+    }
+    BackgroundVideoVolumePrefs.clearMemoryCacheAfterImport();
+  }
+
   await mergePlaybackStateIntPrefs(prefs, json);
+}
+
+/// 目录备份 ZIP 内 `portable_prefs.json`（v2）：顺序游标/续播、文档媒体栏视频静音、背景视频逐文件音量。
+Map<String, dynamic> buildDirectoryPortablePrefsExportMap(
+  SharedPreferences prefs,
+) {
+  final m = <String, dynamic>{'format_version': 2};
+  final playInts = collectPlaybackStateIntPrefs(prefs);
+  if (playInts.isNotEmpty) m['playback_state_ints'] = playInts;
+  m[MediaPlayerPrefsKeys.foregroundVideoMuted] =
+      prefs.getBool(MediaPlayerPrefsKeys.foregroundVideoMuted) ?? false;
+  final bgVol = <String, double>{};
+  for (final k in prefs.getKeys()) {
+    if (k.startsWith(kBackgroundVideoVolumePrefsKeyPrefix)) {
+      final v = prefs.getDouble(k);
+      if (v != null) bgVol[k] = v;
+    }
+  }
+  if (bgVol.isNotEmpty) m['background_video_volumes'] = bgVol;
+  return m;
+}
+
+/// 若无可迁移的播放状态、无背景音量记录且文档栏未静音，则跳过写入 `portable_prefs.json`。
+bool shouldExportDirectoryPortablePrefs(Map<String, dynamic> m) {
+  final pi = m['playback_state_ints'];
+  if (pi is Map && pi.isNotEmpty) return true;
+  final bg = m['background_video_volumes'];
+  if (bg is Map && bg.isNotEmpty) return true;
+  if (m[MediaPlayerPrefsKeys.foregroundVideoMuted] == true) return true;
+  return false;
+}
+
+/// 从目录备份中的 `portable_prefs.json` 合并写入（兼容 v1 仅含 `playback_state_ints`）。
+Future<void> applyDirectoryPortablePrefsImportMap(
+  SharedPreferences prefs,
+  Map<String, dynamic> raw,
+) async {
+  await mergePlaybackStateIntPrefs(prefs, raw);
+  final fgMuted = raw[MediaPlayerPrefsKeys.foregroundVideoMuted];
+  if (fgMuted is bool) {
+    await prefs.setBool(MediaPlayerPrefsKeys.foregroundVideoMuted, fgMuted);
+  }
+  final bgVol = raw['background_video_volumes'];
+  if (bgVol is Map) {
+    for (final e in bgVol.entries) {
+      final k = e.key.toString();
+      if (!k.startsWith(kBackgroundVideoVolumePrefsKeyPrefix)) continue;
+      if (e.value is num) {
+        await prefs.setDouble(k, (e.value as num).toDouble());
+      }
+    }
+    BackgroundVideoVolumePrefs.clearMemoryCacheAfterImport();
+  }
 }
 
 Future<void> saveMediaPlayerSettings(
@@ -179,6 +271,10 @@ Future<void> saveMediaPlayerSettings(
     MediaPlayerPrefsKeys.imageLetterboxFill,
     s.letterboxFill.index,
   );
+  await prefs.setBool(
+    MediaPlayerPrefsKeys.foregroundVideoMuted,
+    s.foregroundVideoMuted,
+  );
 }
 
 class MediaPlayerSettingsSnapshot {
@@ -190,6 +286,7 @@ class MediaPlayerSettingsSnapshot {
     this.panClockwise = true,
     this.imagePanRoamCoverage = 0.28,
     this.letterboxFill = ImageLetterboxFill.transparent,
+    this.foregroundVideoMuted = false,
   });
 
   final Duration imageDuration;
@@ -202,6 +299,8 @@ class MediaPlayerSettingsSnapshot {
   final double imagePanRoamCoverage;
   /// 图片未铺满屏幕时，留白区域填充（与文档媒体栏、媒体预览共用）。
   final ImageLetterboxFill letterboxFill;
+  /// 文档内媒体栏播放视频时是否一律静音。
+  final bool foregroundVideoMuted;
 }
 
 /// 底部红键三连击打开：调整自动连播图片停留时间、展现方式、随机/顺序
@@ -246,6 +345,7 @@ class _MediaPlayerSettingsDialogBodyState
   late bool _panClockwise;
   late double _panRoamCoverage;
   late ImageLetterboxFill _letterboxFill;
+  late bool _foregroundVideoMuted;
 
   String? _secondsError;
   Timer? _secondsDebounce;
@@ -264,6 +364,7 @@ class _MediaPlayerSettingsDialogBodyState
     _panClockwise = widget.initial.panClockwise;
     _panRoamCoverage = widget.initial.imagePanRoamCoverage.clamp(0.10, 1.0);
     _letterboxFill = widget.initial.letterboxFill;
+    _foregroundVideoMuted = widget.initial.foregroundVideoMuted;
   }
 
   @override
@@ -289,6 +390,7 @@ class _MediaPlayerSettingsDialogBodyState
       panClockwise: _panClockwise,
       imagePanRoamCoverage: _panRoamCoverage,
       letterboxFill: _letterboxFill,
+      foregroundVideoMuted: _foregroundVideoMuted,
     );
   }
 
@@ -342,6 +444,7 @@ class _MediaPlayerSettingsDialogBodyState
       panClockwise: _panClockwise,
       imagePanRoamCoverage: _panRoamCoverage,
       letterboxFill: _letterboxFill,
+      foregroundVideoMuted: _foregroundVideoMuted,
     );
     await saveMediaPlayerSettings(prefs, snap);
     if (!mounted) return;
@@ -388,6 +491,21 @@ class _MediaPlayerSettingsDialogBodyState
               },
             ),
             const SizedBox(height: 12),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('文档内视频声音'),
+              subtitle: Text(
+                _foregroundVideoMuted
+                    ? '已静音：媒体栏播放视频时不发声（与封面/目录等背景视频音量无关）'
+                    : '开启：媒体栏播放视频时正常出声',
+              ),
+              value: !_foregroundVideoMuted,
+              onChanged: (on) {
+                setState(() => _foregroundVideoMuted = !on);
+                unawaited(_persistAndNotify());
+              },
+            ),
+            const SizedBox(height: 8),
             Text('上下留白区域', style: Theme.of(context).textTheme.titleSmall),
             Text(
               '图片较矮或较窄未铺满屏幕时，周围区域的底纹。默认「透明」时透出页面底色（媒体全屏预览为黑底）；「浅灰」为中性纯色底。',

@@ -79,6 +79,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
   bool _panClockwise = true;
   double _imagePanRoamCoverage = 0.28;
   ImageLetterboxFill _letterboxFill = ImageLetterboxFill.transparent;
+  bool _foregroundVideoMuted = false;
 
   /// 双击更新渐进放大中心后递增，强制 Ken Burns 立即重播。
   int _kenBurnsReplayTick = 0;
@@ -500,6 +501,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
       _panClockwise = s.panClockwise;
       _imagePanRoamCoverage = s.imagePanRoamCoverage;
       _letterboxFill = s.letterboxFill;
+      _foregroundVideoMuted = s.foregroundVideoMuted;
     });
   }
 
@@ -514,6 +516,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
         panClockwise: _panClockwise,
         imagePanRoamCoverage: _imagePanRoamCoverage,
         letterboxFill: _letterboxFill,
+        foregroundVideoMuted: _foregroundVideoMuted,
       ),
       onSettingsChanged: (snap) async {
         if (!mounted) return;
@@ -525,6 +528,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
           _panClockwise = snap.panClockwise;
           _imagePanRoamCoverage = snap.imagePanRoamCoverage;
           _letterboxFill = snap.letterboxFill;
+          _foregroundVideoMuted = snap.foregroundVideoMuted;
           if (snap.imageMode != MediaImageDisplayMode.fitWidth) {
             _staticKenBurnsDemo = false;
             _staticDemoItemId = null;
