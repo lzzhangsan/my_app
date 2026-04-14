@@ -387,6 +387,84 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     }
   }
 
+  Size _basisSizeForQuarterTurns(Size viewport, int quarterTurns) {
+    final q = quarterTurns % 4;
+    if (q == 1 || q == 3) {
+      return Size(viewport.height, viewport.width);
+    }
+    return viewport;
+  }
+
+  Future<void> _applyVerticalFillPreset(
+    MediaItem item,
+    int index,
+    Size viewport,
+  ) async {
+    if (viewport.width <= 1 || viewport.height <= 1) return;
+    try {
+      final q = item.videoViewParams.quarterTurns % 4;
+      final basis = _basisSizeForQuarterTurns(viewport, q);
+      double? baseDisplayHeight;
+
+      if (item.type == MediaType.image) {
+        final imageSize = await measureImageFileSize(File(item.path));
+        final sideways = q == 1 || q == 3;
+        final baseDisplay =
+            sideways
+                ? containDisplaySize(imageSize, viewport.width, viewport.height)
+                : fitWidthDisplaySize(imageSize, viewport.width);
+        baseDisplayHeight = baseDisplay.height;
+      } else if (item.type == MediaType.video) {
+        final controller = _videoControllers[index];
+        if (controller == null || !controller.value.isInitialized) return;
+        final videoSize = controller.value.size;
+        if (videoSize.width <= 1 || videoSize.height <= 1) return;
+        final baseDisplay = containDisplaySize(
+          videoSize,
+          viewport.width,
+          viewport.height,
+        );
+        baseDisplayHeight = baseDisplay.height;
+      } else {
+        return;
+      }
+
+      if (baseDisplayHeight == null || baseDisplayHeight <= 1) return;
+      final targetScale = (viewport.height / baseDisplayHeight).clamp(1.0, 6.0);
+
+      final target = VideoViewParams(
+        scale: targetScale,
+        txNorm: 0.0,
+        tyNorm: 0.0,
+        quarterTurns: q,
+        basisW: basis.width,
+        basisH: basis.height,
+      );
+
+      await _persistMediaViewParams(item, target);
+      if (!mounted) return;
+      final messenger = ScaffoldMessenger.of(context);
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('已一键设为纵向铺满（横向居中），并自动保存'),
+          duration: Duration(milliseconds: 1800),
+          behavior: SnackBarBehavior.floating,
+          margin: EdgeInsets.fromLTRB(16, 0, 16, 20),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('设置纵向铺满失败: $e'),
+          behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+        ),
+      );
+    }
+  }
+
   /// 静态预览：双击后保存中心并进入一轮 Ken Burns 演示（与渐进放大模式参数一致）。
   */
 
@@ -418,6 +496,84 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('保存显示方式失败: $e'),
+          behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+        ),
+      );
+    }
+  }
+
+  Size _basisSizeForQuarterTurns(Size viewport, int quarterTurns) {
+    final q = quarterTurns % 4;
+    if (q == 1 || q == 3) {
+      return Size(viewport.height, viewport.width);
+    }
+    return viewport;
+  }
+
+  Future<void> _applyVerticalFillPreset(
+    MediaItem item,
+    int index,
+    Size viewport,
+  ) async {
+    if (viewport.width <= 1 || viewport.height <= 1) return;
+    try {
+      final q = item.videoViewParams.quarterTurns % 4;
+      final basis = _basisSizeForQuarterTurns(viewport, q);
+      double? baseDisplayHeight;
+
+      if (item.type == MediaType.image) {
+        final imageSize = await measureImageFileSize(File(item.path));
+        final sideways = q == 1 || q == 3;
+        final baseDisplay =
+            sideways
+                ? containDisplaySize(imageSize, viewport.width, viewport.height)
+                : fitWidthDisplaySize(imageSize, viewport.width);
+        baseDisplayHeight = baseDisplay.height;
+      } else if (item.type == MediaType.video) {
+        final controller = _videoControllers[index];
+        if (controller == null || !controller.value.isInitialized) return;
+        final videoSize = controller.value.size;
+        if (videoSize.width <= 1 || videoSize.height <= 1) return;
+        final baseDisplay = containDisplaySize(
+          videoSize,
+          viewport.width,
+          viewport.height,
+        );
+        baseDisplayHeight = baseDisplay.height;
+      } else {
+        return;
+      }
+
+      if (baseDisplayHeight == null || baseDisplayHeight <= 1) return;
+      final targetScale = (viewport.height / baseDisplayHeight).clamp(1.0, 6.0);
+
+      final target = VideoViewParams(
+        scale: targetScale,
+        txNorm: 0.0,
+        tyNorm: 0.0,
+        quarterTurns: q,
+        basisW: basis.width,
+        basisH: basis.height,
+      );
+
+      await _persistMediaViewParams(item, target);
+      if (!mounted) return;
+      final messenger = ScaffoldMessenger.of(context);
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('已一键设为纵向铺满（横向居中），并自动保存'),
+          duration: Duration(milliseconds: 1800),
+          behavior: SnackBarBehavior.floating,
+          margin: EdgeInsets.fromLTRB(16, 0, 16, 20),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('设置纵向铺满失败: $e'),
           behavior: SnackBarBehavior.floating,
           margin: const EdgeInsets.fromLTRB(16, 0, 16, 20),
         ),
@@ -1465,9 +1621,30 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
                 },
                 itemBuilder: (context, index) {
                   final item = widget.mediaItems[index];
-                  return item.type == MediaType.video
-                      ? _buildVideoPreview(item, index)
-                      : _buildImagePreview(item);
+                  return LayoutBuilder(
+                    builder: (context, constraints) {
+                      final mediaChild =
+                          item.type == MediaType.video
+                              ? _buildVideoPreview(item, index)
+                              : _buildImagePreview(item);
+                      return GestureDetector(
+                        behavior: HitTestBehavior.translucent,
+                        onLongPress: () {
+                          unawaited(
+                            _applyVerticalFillPreset(
+                              item,
+                              index,
+                              Size(
+                                constraints.maxWidth,
+                                constraints.maxHeight,
+                              ),
+                            ),
+                          );
+                        },
+                        child: mediaChild,
+                      );
+                    },
+                  );
                 },
               ),
             ),
