@@ -2027,6 +2027,7 @@ class _BrowserPageState extends State<BrowserPage>
       _loadCommonWebsites();
     }
 
+    final bottomSafeInset = MediaQuery.of(context).padding.bottom;
     return Stack(
       children: [
         Column(
@@ -2034,7 +2035,12 @@ class _BrowserPageState extends State<BrowserPage>
             // 移除了顶部工具栏
             Expanded(
               child: ReorderableGridView.builder(
-                padding: const EdgeInsets.all(16.0),
+                padding: EdgeInsets.fromLTRB(
+                  16.0,
+                  16.0,
+                  16.0,
+                  16.0 + bottomSafeInset + 8.0,
+                ),
                 gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                   crossAxisCount: 3,
                   childAspectRatio: 1.0,
