@@ -3,6 +3,8 @@ enum MediaSourceFavoriteFilter {
   all,
   favoriteOnly,
   notFavoriteOnly,
+  videoOnly,
+  imageOnly,
 }
 
 const String kMediaSourceFavoriteFilterPrefsKey = 'media_source_favorite_filter';
@@ -13,12 +15,16 @@ extension MediaSourceFavoriteFilterStorage on MediaSourceFavoriteFilter {
     MediaSourceFavoriteFilter.all => 'all',
     MediaSourceFavoriteFilter.favoriteOnly => 'favorite',
     MediaSourceFavoriteFilter.notFavoriteOnly => 'not_favorite',
+    MediaSourceFavoriteFilter.videoOnly => 'video_only',
+    MediaSourceFavoriteFilter.imageOnly => 'image_only',
   };
 
   String get displayLabel => switch (this) {
     MediaSourceFavoriteFilter.all => '全部媒体',
     MediaSourceFavoriteFilter.favoriteOnly => '已收藏媒体',
     MediaSourceFavoriteFilter.notFavoriteOnly => '未收藏媒体',
+    MediaSourceFavoriteFilter.videoOnly => '仅视频',
+    MediaSourceFavoriteFilter.imageOnly => '仅图片',
   };
 }
 
@@ -28,6 +34,10 @@ MediaSourceFavoriteFilter parseMediaSourceFavoriteFilter(String? raw) {
       return MediaSourceFavoriteFilter.favoriteOnly;
     case 'not_favorite':
       return MediaSourceFavoriteFilter.notFavoriteOnly;
+    case 'video_only':
+      return MediaSourceFavoriteFilter.videoOnly;
+    case 'image_only':
+      return MediaSourceFavoriteFilter.imageOnly;
     default:
       return MediaSourceFavoriteFilter.all;
   }

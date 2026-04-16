@@ -75,6 +75,18 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
     return 'media_player_seq_idx_${Uri.encodeComponent(d)}_${Uri.encodeComponent(f)}';
   }
 
+  String _scopePrefsKeyForDirectory(String directory) {
+    return '${kMediaSourceFavoriteFilterPrefsKey}_${Uri.encodeComponent(directory)}';
+  }
+
+  Future<MediaSourceFavoriteFilter> _loadScopeForDirectory(
+    String directory,
+  ) async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_scopePrefsKeyForDirectory(directory));
+    return parseMediaSourceFavoriteFilter(raw);
+  }
+
   Future<void> _persistSequentialIndex() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -209,6 +221,10 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
       kMediaSourceFavoriteFilterPrefsKey,
       filter.storageValue,
     );
+    await prefs.setString(
+      _scopePrefsKeyForDirectory(directory),
+      filter.storageValue,
+    );
     Logger.i(
       'Saved media source: directory=$directory, scope=${filter.storageValue}',
     );
@@ -285,6 +301,15 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
         }
         if (_favoriteFilter == MediaSourceFavoriteFilter.notFavoriteOnly &&
             mediaRowIsFavorite(item)) {
+          continue;
+        }
+        final typeIdx = DatabaseService.mediaTypeIndex(item);
+        if (_favoriteFilter == MediaSourceFavoriteFilter.videoOnly &&
+            typeIdx != 1) {
+          continue;
+        }
+        if (_favoriteFilter == MediaSourceFavoriteFilter.imageOnly &&
+            typeIdx != 0) {
           continue;
         }
         final mutable = Map<String, dynamic>.from(item);
@@ -935,7 +960,10 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
               Navigator.of(dialogContext).pop();
               if (!mounted) return;
 
-              final scope = await _showFavoriteScopeDialog();
+              final presetScope = await _loadScopeForDirectory(directory);
+              final scope = await _showFavoriteScopeDialog(
+                initialScope: presetScope,
+              );
               if (!mounted || scope == null) return;
 
               final changed =
@@ -965,10 +993,31 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
   }
 
   /// 选定目录/整个媒体库后，再选「全部 / 已收藏 / 未收藏」。
-  Future<MediaSourceFavoriteFilter?> _showFavoriteScopeDialog() {
+  Future<MediaSourceFavoriteFilter?> _showFavoriteScopeDialog({
+    MediaSourceFavoriteFilter? initialScope,
+  }) {
     return showDialog<MediaSourceFavoriteFilter>(
       context: context,
       builder: (ctx) {
+        final selected = initialScope ?? _favoriteFilter;
+        Widget buildScopeTile({
+          required IconData icon,
+          Color? iconColor,
+          required MediaSourceFavoriteFilter value,
+          required String subtitle,
+        }) {
+          final isSelected = selected == value;
+          return ListTile(
+            leading: Icon(icon, color: iconColor),
+            title: Text(value.displayLabel),
+            subtitle: Text(subtitle),
+            selected: isSelected,
+            trailing:
+                isSelected ? const Icon(Icons.check_circle, color: Colors.blue) : null,
+            onTap: () => Navigator.of(ctx).pop(value),
+          );
+        }
+
         return AlertDialog(
           title: const Text('选择媒体范围'),
           content: SingleChildScrollView(
@@ -976,39 +1025,31 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                ListTile(
-                  leading: const Icon(Icons.perm_media_outlined),
-                  title: Text(MediaSourceFavoriteFilter.all.displayLabel),
-                  subtitle: const Text('包含当前来源下全部图片与视频'),
-                  onTap:
-                      () => Navigator.of(ctx).pop(
-                        MediaSourceFavoriteFilter.all,
-                      ),
+                buildScopeTile(
+                  icon: Icons.perm_media_outlined,
+                  value: MediaSourceFavoriteFilter.all,
+                  subtitle: '包含当前来源下全部图片与视频',
                 ),
-                ListTile(
-                  leading: Icon(
-                    Icons.favorite,
-                    color: Colors.pink.withValues(alpha: 0.85),
-                  ),
-                  title: Text(
-                    MediaSourceFavoriteFilter.favoriteOnly.displayLabel,
-                  ),
-                  subtitle: const Text('仅播放或展示已星标收藏的项'),
-                  onTap:
-                      () => Navigator.of(ctx).pop(
-                        MediaSourceFavoriteFilter.favoriteOnly,
-                      ),
+                buildScopeTile(
+                  icon: Icons.favorite,
+                  iconColor: Colors.pink.withValues(alpha: 0.85),
+                  value: MediaSourceFavoriteFilter.favoriteOnly,
+                  subtitle: '仅播放或展示已星标收藏的项',
                 ),
-                ListTile(
-                  leading: const Icon(Icons.favorite_border),
-                  title: Text(
-                    MediaSourceFavoriteFilter.notFavoriteOnly.displayLabel,
-                  ),
-                  subtitle: const Text('排除已星标收藏的项'),
-                  onTap:
-                      () => Navigator.of(ctx).pop(
-                        MediaSourceFavoriteFilter.notFavoriteOnly,
-                      ),
+                buildScopeTile(
+                  icon: Icons.favorite_border,
+                  value: MediaSourceFavoriteFilter.notFavoriteOnly,
+                  subtitle: '排除已星标收藏的项',
+                ),
+                buildScopeTile(
+                  icon: Icons.ondemand_video,
+                  value: MediaSourceFavoriteFilter.videoOnly,
+                  subtitle: '仅播放或展示视频',
+                ),
+                buildScopeTile(
+                  icon: Icons.image_outlined,
+                  value: MediaSourceFavoriteFilter.imageOnly,
+                  subtitle: '仅播放或展示图片',
                 ),
               ],
             ),
