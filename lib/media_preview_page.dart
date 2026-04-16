@@ -488,6 +488,8 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
         await _dbService.updateMediaItem({
           'id': item.id,
           ...p.toDbUpdateMap(),
+          if (p.anchorXNorm == null) 'video_view_anchor_x': null,
+          if (p.anchorYNorm == null) 'video_view_anchor_y': null,
           'updated_at': DateTime.now().millisecondsSinceEpoch,
         });
       }
@@ -574,6 +576,100 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('设置纵向铺满失败: $e'),
+          behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+        ),
+      );
+    }
+  }
+
+  Future<void> _applyFitWidthVerticalAlignPreset(
+    MediaItem item,
+    int index,
+    Size viewport, {
+    required bool alignTop,
+  }) async {
+    if (viewport.width <= 1 || viewport.height <= 1) return;
+    try {
+      final q = item.videoViewParams.quarterTurns % 4;
+      final basis = _basisSizeForQuarterTurns(viewport, q);
+      double? baseDisplayWidth;
+      double? baseDisplayHeight;
+
+      if (item.type == MediaType.image) {
+        final imageSize = await measureImageFileSize(File(item.path));
+        final sideways = q == 1 || q == 3;
+        final baseDisplay =
+            sideways
+                ? containDisplaySize(imageSize, viewport.width, viewport.height)
+                : fitWidthDisplaySize(imageSize, viewport.width);
+        baseDisplayWidth = baseDisplay.width;
+        baseDisplayHeight = baseDisplay.height;
+      } else if (item.type == MediaType.video) {
+        final controller = _videoControllers[index];
+        if (controller == null || !controller.value.isInitialized) return;
+        final videoSize = controller.value.size;
+        if (videoSize.width <= 1 || videoSize.height <= 1) return;
+        final baseDisplay = containDisplaySize(
+          videoSize,
+          viewport.width,
+          viewport.height,
+        );
+        baseDisplayWidth = baseDisplay.width;
+        baseDisplayHeight = baseDisplay.height;
+      } else {
+        return;
+      }
+
+      if (baseDisplayWidth == null ||
+          baseDisplayWidth <= 1 ||
+          baseDisplayHeight == null ||
+          baseDisplayHeight <= 1) {
+        return;
+      }
+      final targetScale = (viewport.width / baseDisplayWidth).clamp(1.0, 6.0);
+      final scaledDisplayHeight = baseDisplayHeight * targetScale;
+      final double shiftY;
+      if (scaledDisplayHeight >= viewport.height) {
+        final overflowY = (scaledDisplayHeight - viewport.height) / 2;
+        shiftY = alignTop ? overflowY : -overflowY;
+      } else {
+        final gapY = (viewport.height - scaledDisplayHeight) / 2;
+        shiftY = alignTop ? -gapY : gapY;
+      }
+      final anchorYNorm = basis.height > 1 ? (shiftY / basis.height) : 0.0;
+      final target = VideoViewParams(
+        scale: targetScale,
+        txNorm: 0.0,
+        tyNorm: 0.0,
+        quarterTurns: q,
+        basisW: basis.width,
+        basisH: basis.height,
+        anchorXNorm: 0.0,
+        anchorYNorm: anchorYNorm,
+      );
+
+      await _persistMediaViewParams(item, target);
+      if (!mounted) return;
+      final messenger = ScaffoldMessenger.of(context);
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            alignTop
+                ? '已一键设为横向铺满并置顶，并自动保存'
+                : '已一键设为横向铺满并置底，并自动保存',
+          ),
+          duration: const Duration(milliseconds: 1800),
+          behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(alignTop ? '设置横向铺满置顶失败: $e' : '设置横向铺满置底失败: $e'),
           behavior: SnackBarBehavior.floating,
           margin: const EdgeInsets.fromLTRB(16, 0, 16, 20),
         ),
@@ -1353,7 +1449,7 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     );
   }
 
-  Widget _buildImagePreview(MediaItem item) {
+  Widget _buildImagePreview(MediaItem item, Size viewportSize) {
     final file = File(item.path);
     final loopAnim = _mediaMode != MediaMode.auto;
     final sideways = item.videoViewParams.quarterTurns % 2 == 1;
@@ -1452,12 +1548,30 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
       // 否则退出再进入会因基准不一致出现系统性偏移（常见左上）。
       useScreenSizeForNormalization: false,
       onTripleTapReset: () => _onTripleTapResetGesture(item),
+      onSingleFingerSwipeUp:
+          () => unawaited(
+            _applyFitWidthVerticalAlignPreset(
+              item,
+              _currentIndex,
+              viewportSize,
+              alignTop: true,
+            ),
+          ),
+      onSingleFingerSwipeDown:
+          () => unawaited(
+            _applyFitWidthVerticalAlignPreset(
+              item,
+              _currentIndex,
+              viewportSize,
+              alignTop: false,
+            ),
+          ),
       onChanged: (p) => _persistMediaViewParams(item, p),
       child: inner,
     );
   }
 
-  Widget _buildVideoPreview(MediaItem item, int index) {
+  Widget _buildVideoPreview(MediaItem item, int index, Size viewportSize) {
     if (!_videoControllers.containsKey(index) ||
         !_chewieControllers.containsKey(index)) {
       // 视频控制器尚未初始化，显示加载中
@@ -1512,6 +1626,24 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
               // 否则退出再进入会因基准不一致出现系统性偏移（常见左上）。
               useScreenSizeForNormalization: false,
               onTripleTapReset: () => _onTripleTapResetGesture(item),
+              onSingleFingerSwipeUp:
+                  () => unawaited(
+                    _applyFitWidthVerticalAlignPreset(
+                      item,
+                      index,
+                      viewportSize,
+                      alignTop: true,
+                    ),
+                  ),
+              onSingleFingerSwipeDown:
+                  () => unawaited(
+                    _applyFitWidthVerticalAlignPreset(
+                      item,
+                      index,
+                      viewportSize,
+                      alignTop: false,
+                    ),
+                  ),
               onChanged: (p) => _persistMediaViewParams(item, p),
             ),
             const Positioned(
@@ -1625,8 +1757,21 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
                     builder: (context, constraints) {
                       final mediaChild =
                           item.type == MediaType.video
-                              ? _buildVideoPreview(item, index)
-                              : _buildImagePreview(item);
+                              ? _buildVideoPreview(
+                                item,
+                                index,
+                                Size(
+                                  constraints.maxWidth,
+                                  constraints.maxHeight,
+                                ),
+                              )
+                              : _buildImagePreview(
+                                item,
+                                Size(
+                                  constraints.maxWidth,
+                                  constraints.maxHeight,
+                                ),
+                              );
                       return GestureDetector(
                         behavior: HitTestBehavior.translucent,
                         onLongPress: () {

@@ -17,6 +17,8 @@ class VideoInteractiveSurface extends StatefulWidget {
     this.singleFingerPanEnabled = false,
     this.onChanged,
     this.onTripleTapReset,
+    this.onSingleFingerSwipeUp,
+    this.onSingleFingerSwipeDown,
     this.useScreenSizeForNormalization = false,
     this.persistNonce = 0,
   });
@@ -28,6 +30,8 @@ class VideoInteractiveSurface extends StatefulWidget {
   final bool singleFingerPanEnabled;
   final ValueChanged<VideoViewParams>? onChanged;
   final VoidCallback? onTripleTapReset;
+  final VoidCallback? onSingleFingerSwipeUp;
+  final VoidCallback? onSingleFingerSwipeDown;
   final bool useScreenSizeForNormalization;
 
   /// 父组件递增此值时，立即将当前矩阵写入 [onChanged]。
@@ -156,7 +160,9 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
 
   void _applyInitial(double vw, double vh) {
     var p = widget.initial.remappedToViewport(_ivPanBasisW, _ivPanBasisH);
-    if (p.isLikelyIdentityTransform) {
+    if (p.isLikelyIdentityTransform &&
+        p.anchorXNorm == null &&
+        p.anchorYNorm == null) {
       p = const VideoViewParams();
     }
     _lastAppliedBasisW = _ivPanBasisW;
@@ -432,8 +438,33 @@ class _VideoInteractiveSurfaceState extends State<VideoInteractiveSurface> {
         _emitChanged(force: true);
       }
     }
+    var handledSwipePreset = false;
+    if (soloStroke && _singlePointerDownPos != null && _strokePoints.length >= 2) {
+      final start = _singlePointerDownPos!;
+      final end = _strokePoints.last;
+      final dx = end.dx - start.dx;
+      final dy = end.dy - start.dy;
+      final absDx = dx.abs();
+      final absDy = dy.abs();
+      if (absDy >= 90 && absDy >= absDx * 1.35) {
+        if (dy <= -90) {
+          widget.onSingleFingerSwipeUp?.call();
+          handledSwipePreset = true;
+          _tapCount = 0;
+          _lastTapAt = null;
+        } else if (dy >= 90) {
+          widget.onSingleFingerSwipeDown?.call();
+          handledSwipePreset = true;
+          _tapCount = 0;
+          _lastTapAt = null;
+        }
+      }
+    }
     final downAt = _singlePointerDownAt;
-    if (soloStroke && !_singlePointerMovedTooFar && downAt != null) {
+    if (!handledSwipePreset &&
+        soloStroke &&
+        !_singlePointerMovedTooFar &&
+        downAt != null) {
       final now = DateTime.now();
       if (_lastTapAt == null ||
           now.difference(_lastTapAt!) > const Duration(milliseconds: 700)) {
