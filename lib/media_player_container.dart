@@ -1084,6 +1084,8 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
       // 显示移动对话框
       final List<Map<String, dynamic>> availableFolders =
           await _getAllAvailableFolders();
+      final String currentDirectory =
+          _currentPlayingMedia!['directory']?.toString() ?? 'root';
 
       if (!context.mounted) return false;
 
@@ -1091,13 +1093,19 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
         context: context,
         builder:
             (context) => AlertDialog(
-              backgroundColor: Colors.white.withAlpha(
-                (0.6 * 255).round(),
-              ), // 增加透明度（使用 withAlpha 以避免弃用警告）
+              // 仅 20% 透明（80% 不透明），避免背景过度透出导致文字难读。
+              backgroundColor: Colors.white.withAlpha((0.8 * 255).round()),
               title: Container(
                 padding: EdgeInsets.zero,
                 height: 30,
-                child: const Text('移动到', style: TextStyle(fontSize: 14)),
+                child: Text(
+                  '移动到',
+                  style: TextStyle(
+                    fontSize: 16.8,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.black.withValues(alpha: 0.8),
+                  ),
+                ),
               ),
               titlePadding: const EdgeInsets.only(left: 12, top: 8, bottom: 0),
               contentPadding: const EdgeInsets.symmetric(
@@ -1107,59 +1115,67 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
               content: SizedBox(
                 width: MediaQuery.of(context).size.width * 0.9, // 加宽面板
                 height: MediaQuery.of(context).size.height * 0.7, // 加高面板
-                child: Wrap(
-                  spacing: 4, // 水平间距
-                  runSpacing: 2, // 垂直间距
-                  children: [
-                    // 根目录选项
-                    SizedBox(
-                      width:
-                          (MediaQuery.of(context).size.width * 0.9 - 20) /
-                          2, // 计算每个项的宽度
-                      height: 32, // 固定高度
-                      child: ListTile(
-                        dense: true,
-                        visualDensity: VisualDensity(
-                          horizontal: 0,
-                          vertical: -4,
-                        ), // 进一步压缩
-                        contentPadding: EdgeInsets.symmetric(horizontal: 4),
-                        title: const Text(
-                          '根目录',
-                          style: TextStyle(fontSize: 13),
-                        ),
-                        onTap: () => Navigator.of(context).pop('root'),
-                      ),
-                    ),
-                    // 其他文件夹选项
-                    ...availableFolders.map((folder) {
-                      return SizedBox(
-                        width:
-                            (MediaQuery.of(context).size.width * 0.9 - 20) /
-                            2, // 计算每个项的宽度
-                        height: 32, // 固定高度
-                        child: ListTile(
+                child: Scrollbar(
+                  thumbVisibility: true,
+                  child: ListView(
+                    children: [
+                      if (currentDirectory != 'root')
+                        ListTile(
                           dense: true,
-                          visualDensity: VisualDensity(
+                          visualDensity: const VisualDensity(
                             horizontal: 0,
-                            vertical: -4,
-                          ), // 进一步压缩
-                          contentPadding: EdgeInsets.symmetric(horizontal: 4),
+                            vertical: -3,
+                          ),
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                          title: Text(
+                            '根目录',
+                            style: TextStyle(
+                              fontSize: 15.6,
+                              fontWeight: FontWeight.w700,
+                              color: Colors.black.withValues(alpha: 0.8),
+                            ),
+                          ),
+                          onTap: () => Navigator.of(context).pop('root'),
+                        ),
+                      ...availableFolders.where((folder) {
+                        final id = folder['id']?.toString() ?? '';
+                        return id.isNotEmpty && id != currentDirectory;
+                      }).map((folder) {
+                        return ListTile(
+                          dense: true,
+                          visualDensity: const VisualDensity(
+                            horizontal: 0,
+                            vertical: -3,
+                          ),
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                          ),
                           title: Text(
                             folder['name'],
-                            style: const TextStyle(fontSize: 13),
+                            style: TextStyle(
+                              fontSize: 15.6,
+                              fontWeight: FontWeight.w700,
+                              color: Colors.black.withValues(alpha: 0.8),
+                            ),
                           ),
                           onTap: () => Navigator.of(context).pop(folder['id']),
-                        ),
-                      );
-                    }),
-                  ],
+                        );
+                      }),
+                    ],
+                  ),
                 ),
               ),
               actions: [
                 TextButton(
                   onPressed: () => Navigator.of(context).pop(null),
-                  child: const Text('取消', style: TextStyle(fontSize: 13)),
+                  child: Text(
+                    '取消',
+                    style: TextStyle(
+                      fontSize: 15.6,
+                      fontWeight: FontWeight.w700,
+                      color: Colors.black.withValues(alpha: 0.8),
+                    ),
+                  ),
                 ),
               ],
             ),
