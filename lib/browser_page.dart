@@ -1746,6 +1746,7 @@ class _BrowserPageState extends State<BrowserPage>
       function isApiUrl(url) {
         if (!url) return false;
         if (url.startsWith('blob:') || url.startsWith('data:')) return false;
+        if (isAdUrl(url)) return true; // 广告也视为不可直接作为媒体
         const lower = url.toLowerCase();
         try {
           const u = new URL(url);
@@ -1766,6 +1767,19 @@ class _BrowserPageState extends State<BrowserPage>
           if (looksLikeApi) return true;
         } catch (e) {}
         return false;
+      }
+
+      function isAdUrl(url) {
+        if (!url) return false;
+        const lower = url.toLowerCase();
+        const adPatterns = [
+          'doubleclick.net', 'googleads', 'googlesyndication', 'adsystem', 'adservice', 'adnxs',
+          'openx.net', 'rubiconproject', 'pubmatic', 'taboola', 'outbrain', 'criteo', 'amazon-adsystem',
+          '/ads/', '/ad/', '/adv/', 'pixel.', 'analytics.', 'tracking', 'telemetry',
+          'prebid', 'header-bidding', 'banner', 'sponsor', 'promo', 'advertising',
+          'vast', 'vpaid', 'mraid', 'popunder', 'popup', 'interstitial'
+        ];
+        return adPatterns.some(p => lower.includes(p));
       }
 
       // 增强的媒体URL检测 - 优先扩展名，避免误判 API
@@ -2453,13 +2467,39 @@ class _BrowserPageState extends State<BrowserPage>
         const tagName = (target.tagName || '').toLowerCase();
         const videoEl = tagName === 'video' ? target : (target.querySelector && target.querySelector('video'));
         if (videoEl && window.MediaInterceptor && window.MediaInterceptor.interceptedRequests) {
+          // 补充扫描性能条目，防止 Hook 遗漏（例如缓存命中或某些特殊的加载方式）
+          try {
+            performance.getEntriesByType('resource').forEach(entry => {
+              const u = entry.name;
+              if (u && !isApiUrl(u) && !isAdUrl(u) && (u.includes('.m3u8') || u.includes('.m3u') || u.includes('.mp4') || u.includes('.webm') || u.includes('.ts'))) {
+                if (!window.MediaInterceptor.interceptedRequests.has(u)) {
+                  window.MediaInterceptor.interceptedRequests.set(u, { method: 'GET', timestamp: Date.now(), type: 'performance', contentType: '' });
+                }
+              }
+            });
+          } catch (e) {}
+
           const now = Date.now();
           let best = null, bestTime = 0;
           for (const [u, info] of window.MediaInterceptor.interceptedRequests) {
-            if (!u || (now - info.timestamp) > 90000) continue;
+            if (!u || (now - info.timestamp) > 1800000) continue; // 延长到30分钟，防止长视频下载时找不到地址
+            if (isAdUrl(u)) continue; // 严格过滤广告
+
             const ct = (info.contentType || '').toLowerCase();
-            if ((ct.startsWith('video/') || ct.includes('mpegurl') || ct.includes('m3u8') || /\\.(mp4|webm|m3u8)(\\?|\$)/.test(u)) && !isApiUrl(u) && info.timestamp > bestTime) {
-              bestTime = info.timestamp; best = u;
+            const isStream = (ct.startsWith('video/') || ct.includes('mpegurl') || ct.includes('m3u8') || /\\.(mp4|webm|m3u8)(\\?|\$)/.test(u)) && !isApiUrl(u);
+            
+            if (isStream) {
+              // 优先级策略：
+              // 1. 如果有当前视频的时长信息，且大于 60s，优先选它（通常广告 < 60s）
+              // 2. 否则选时间戳最新的（假设用户正在看的就是最新加载的）
+              const videoDuration = videoEl.duration || 0;
+              if (videoDuration > 60 && !isAdUrl(u)) {
+                // 如果能确定是长视频，直接锁定
+                best = u; break; 
+              }
+              if (info.timestamp > bestTime) {
+                bestTime = info.timestamp; best = u;
+              }
             }
           }
           if (best) interceptedStreamUrl = best;
@@ -2577,7 +2617,7 @@ class _BrowserPageState extends State<BrowserPage>
             const now = Date.now();
             let bestUrl = null, bestTime = 0;
             for (const [u, info] of window.MediaInterceptor.interceptedRequests) {
-              if (!u || (now - info.timestamp) > 120000) continue;
+              if (!u || (now - info.timestamp) > 1800000) continue; // 延长到30分钟
               const ct = (info.contentType || '').toLowerCase();
               const isVideo = ct.startsWith('video/') || ct.includes('mpegurl') || ct.includes('m3u8') || isMediaUrl(u);
               if (isVideo && !isApiUrl(u) && info.timestamp > bestTime) {

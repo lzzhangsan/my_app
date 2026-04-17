@@ -19,6 +19,7 @@ class MediaSnifferJs {
       function isApiUrl(url) {
         if (!url) return false;
         if (url.startsWith('blob:') || url.startsWith('data:')) return false;
+        if (isAdUrl(url)) return true;
         const lower = url.toLowerCase();
         try {
           const u = new URL(url);
@@ -41,13 +42,26 @@ class MediaSnifferJs {
         return false;
       }
 
+      function isAdUrl(url) {
+        if (!url) return false;
+        const lower = url.toLowerCase();
+        const adPatterns = [
+          'doubleclick.net', 'googleads', 'googlesyndication', 'adsystem', 'adservice', 'adnxs',
+          'openx.net', 'rubiconproject', 'pubmatic', 'taboola', 'outbrain', 'criteo', 'amazon-adsystem',
+          '/ads/', '/ad/', '/adv/', 'pixel.', 'analytics.', 'tracking', 'telemetry',
+          'prebid', 'header-bidding', 'banner', 'sponsor', 'promo', 'advertising',
+          'vast', 'vpaid', 'mraid', 'popunder', 'popup', 'interstitial'
+        ];
+        return adPatterns.some(p => lower.includes(p));
+      }
+
       function isMediaUrl(url) {
         if (!url) return false;
         if (isApiUrl(url)) return false;
-        const mediaExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg', '.mp4', '.webm', '.mov', '.m3u8', '.ts', '.mp3', '.m4a'];
+        const mediaExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg', '.mp4', '.webm', '.mov', '.m3u8', '.ts', '.mp3', '.m4a', '.m4s', '.flv', '.mkv', '.avi'];
         const lowerUrl = url.toLowerCase();
         if (mediaExtensions.some(ext => lowerUrl.includes(ext))) return true;
-        const trustedPatterns = ['/cdn.', '/static/', '/assets/', '/uploads/', '/media/', '/images/', '/videos/', '/stream', 'youtube.com', 'youtu.be'];
+        const trustedPatterns = ['/cdn.', '/static/', '/assets/', '/uploads/', '/media/', '/images/', '/videos/', '/stream', '/get_file/', 'youtube.com', 'youtu.be', 'googlevideo.com', 'videoplayback'];
         if (trustedPatterns.some(p => lowerUrl.includes(p))) return true;
         return false;
       }
@@ -148,6 +162,50 @@ class MediaSnifferJs {
         if (!url) return;
         if (!markMediaUrlProcessing(url)) return;
         
+        // 尝试从拦截器获取最实时的 HLS/视频地址
+        let interceptedStreamUrl = null;
+        if (window.MediaInterceptor && window.MediaInterceptor.interceptedRequests) {
+          // 补充扫描性能条目
+          try {
+            performance.getEntriesByType('resource').forEach(entry => {
+              const u = entry.name;
+              if (u && !isApiUrl(u) && !isAdUrl(u) && (u.includes('.m3u8') || u.includes('.m3u') || u.includes('.mp4') || u.includes('.webm') || u.includes('.ts'))) {
+                if (!window.MediaInterceptor.interceptedRequests.has(u)) {
+                  window.MediaInterceptor.interceptedRequests.set(u, { method: 'GET', timestamp: Date.now(), type: 'performance', contentType: '' });
+                }
+              }
+            });
+          } catch (e) {}
+
+          const now = Date.now();
+          let best = null, bestTime = 0;
+          const videoEl = target.tagName === 'VIDEO' ? target : target.querySelector('video');
+
+          for (const [u, info] of window.MediaInterceptor.interceptedRequests) {
+            if (!u || (now - info.timestamp) > 1800000) continue; 
+            if (isAdUrl(u)) continue; // 严格过滤广告
+
+            const ct = (info.contentType || '').toLowerCase();
+            const isStream = (ct.startsWith('video/') || ct.includes('mpegurl') || ct.includes('m3u8') || /\\.(mp4|webm|m3u8)(\\?|\$)/.test(u)) && !isApiUrl(u);
+            
+            if (isStream) {
+              // 优先级策略：
+              // 1. 如果有当前视频的时长信息，且大于 60s，优先选它（通常广告 < 60s）
+              if (videoEl && videoEl.duration > 60) {
+                best = u; break; 
+              }
+              if (info.timestamp > bestTime) {
+                bestTime = info.timestamp; best = u;
+              }
+            }
+          }
+          if (best) interceptedStreamUrl = best;
+        }
+
+        if (interceptedStreamUrl && isBlobUrl(url)) {
+          url = interceptedStreamUrl; // 优先使用拦截到的 HLS 地址，而不是 blob
+        }
+
         if (isBlobUrl(url)) {
           const resolved = await resolveBlobUrl(url, 'video');
           if (resolved) {
