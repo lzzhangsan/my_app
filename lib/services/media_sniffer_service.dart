@@ -586,7 +586,9 @@ class MediaSnifferService {
     if (lowercaseUrl.contains('.mp4') || lowercaseUrl.contains('.avi') ||
         lowercaseUrl.contains('.mov') || lowercaseUrl.contains('.wmv') ||
         lowercaseUrl.contains('.flv') || lowercaseUrl.contains('.mkv') ||
-        lowercaseUrl.contains('.webm') || lowercaseUrl.contains('.m4v')) {
+        lowercaseUrl.contains('.webm') || lowercaseUrl.contains('.m4v') ||
+        lowercaseUrl.contains('.m3u8') || lowercaseUrl.contains('.m3u') ||
+        lowercaseUrl.contains('.ts')) {
       return MediaType.video;
     }
     
