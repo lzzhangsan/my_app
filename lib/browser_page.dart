@@ -551,8 +551,9 @@ class _BrowserPageState extends State<BrowserPage>
   }
 
   String _fmtFavoriteDate(String iso) {
+    if (iso.isEmpty) return '未知';
     final dt = DateTime.tryParse(iso);
-    if (dt == null) return '未知时间';
+    if (dt == null) return iso.length > 10 ? iso.substring(0, 10) : iso;
     final y = dt.year.toString().padLeft(4, '0');
     final m = dt.month.toString().padLeft(2, '0');
     final d = dt.day.toString().padLeft(2, '0');
@@ -789,27 +790,45 @@ class _BrowserPageState extends State<BrowserPage>
                 ),
                 const Divider(height: 1),
                 Expanded(
-                  child: ListView.builder(
+                  child: ReorderableListView.builder(
                     itemCount: favorites.length,
+                    onReorder: (oldIdx, newIdx) async {
+                      if (oldIdx < newIdx) newIdx -= 1;
+                      final item = favorites.removeAt(oldIdx);
+                      favorites.insert(newIdx, item);
+                      await _saveSharedFavoriteVideos(favorites);
+                      setSheetState(() {});
+                    },
                     itemBuilder: (c, i) {
                       final it = favorites[i];
+                      final isPinned = it['pinned'] == true;
                       final pageUrl = (it['pageUrl'] ?? '').toString();
                       final title = (it['customName'] ?? '').toString().trim().isNotEmpty
                           ? (it['customName'] ?? '').toString().trim()
                           : (it['title'] ?? '').toString().trim();
                       final downloaded = _isFavoriteLikelyDownloaded(it);
-                      final favoritedAt = (it['favoritedAt'] ?? '').toString();
+                      final favoritedAt = (it['favoritedAt'] ?? it['favorited_at'] ?? it['updatedAt'] ?? it['date_added'] ?? it['dateAdded'] ?? '').toString();
                       final downloadedAt = (it['downloadedAt'] ?? '').toString();
                       final pos = (it['positionSec'] as num?)?.toDouble() ?? 0.0;
                       final dur = (it['durationSec'] as num?)?.toDouble() ?? 0.0;
                       return ListTile(
-                        leading: downloaded
-                            ? const Icon(Icons.download_done_rounded, color: Colors.green)
-                            : null,
-                        title: Text(title.isNotEmpty ? title : pageUrl, maxLines: 1),
+                        key: ValueKey('fav_${it['videoUrl']}_$i'),
+                        leading: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (isPinned)
+                              const Icon(Icons.push_pin, color: Colors.orange, size: 16),
+                            if (isPinned) const SizedBox(width: 4),
+                            if (downloaded)
+                              const Icon(Icons.download_done_rounded, color: Colors.green)
+                            else
+                              const Icon(Icons.video_library_outlined, color: Colors.grey),
+                          ],
+                        ),
+                        title: Text(title.isNotEmpty ? title : pageUrl, maxLines: 2, overflow: TextOverflow.ellipsis),
                         subtitle: Text(
-                          '${_fmtSec(pos)} / ${_fmtSec(dur)} · 收藏于 ${_fmtFavoriteDate(favoritedAt)}${downloaded ? ' · 已下载${downloadedAt.isNotEmpty ? '(${_fmtFavoriteDate(downloadedAt)})' : ''}' : ''}',
-                          maxLines: 1,
+                          '${_fmtSec(pos)} / ${_fmtSec(dur)} · ${_fmtFavoriteDate(favoritedAt)}${downloaded ? ' · 已下载' : ''}',
+                          style: TextStyle(color: Colors.grey[600], fontSize: 11),
                         ),
                         onTap: () {
                           Navigator.of(sheetCtx).pop();
@@ -818,7 +837,17 @@ class _BrowserPageState extends State<BrowserPage>
                         trailing: PopupMenuButton<String>(
                           onSelected: (v) {
                             unawaited(() async {
-                              if (v == 'download') {
+                              if (v == 'pin') {
+                                final currentPinned = it['pinned'] == true;
+                                it['pinned'] = !currentPinned;
+                                // 如果是置顶，移到最前面（在现有置顶之后，或最前面）
+                                if (it['pinned'] == true) {
+                                  favorites.removeAt(i);
+                                  favorites.insert(0, it);
+                                }
+                                await _saveSharedFavoriteVideos(favorites);
+                                setSheetState(() {});
+                              } else if (v == 'download') {
                                 final ok = await _downloadOneFavorite(
                                   item: it,
                                   showResultHint: true,
@@ -846,10 +875,14 @@ class _BrowserPageState extends State<BrowserPage>
                               }
                             }());
                           },
-                          itemBuilder: (_) => const [
-                            PopupMenuItem(value: 'download', child: Text('下载到媒体库')),
-                            PopupMenuItem(value: 'rename', child: Text('重命名')),
-                            PopupMenuItem(value: 'delete', child: Text('删除收藏')),
+                          itemBuilder: (_) => [
+                            PopupMenuItem(
+                              value: 'pin',
+                              child: Text(it['pinned'] == true ? '取消置顶' : '置顶视频'),
+                            ),
+                            const PopupMenuItem(value: 'download', child: Text('下载到媒体库')),
+                            const PopupMenuItem(value: 'rename', child: Text('重命名')),
+                            const PopupMenuItem(value: 'delete', child: Text('删除收藏')),
                           ],
                         ),
                       );
