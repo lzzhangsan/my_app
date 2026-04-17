@@ -1071,13 +1071,29 @@ class _BrowserPageState extends State<BrowserPage>
     bool showResultHint = false,
     void Function(String failureType)? onFailureType,
   }) async {
+    return _downloadMediaRobustly(
+      item: item,
+      showResultHint: showResultHint,
+      showModalDialog: true, // 收藏栏下载，显示强提示弹窗
+      onFailureType: onFailureType,
+    );
+  }
+
+  /// 稳健下载媒体：具备多候选重试、自动嗅探补偿和全局进度对话框。
+  /// 用于收藏栏下载和网页长按下载，解决 XVideo 等站点直接下载 Blob 导致的断流或文件残缺问题。
+  Future<bool> _downloadMediaRobustly({
+    required Map<String, dynamic> item,
+    bool showResultHint = false,
+    bool showModalDialog = false, // 是否显示全局阻塞式进度弹窗
+    void Function(String failureType)? onFailureType,
+  }) async {
     if (await _favoriteExistsInLibrary(item)) {
       await _markFavoriteDownloaded(item, downloaded: true);
       onFailureType?.call('already_in_library');
       if (showResultHint && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('该收藏视频已在媒体库中，已为你标记为已下载'),
+            content: Text('该媒体已在媒体库中，已为你标记为已下载'),
             duration: Duration(milliseconds: 1300),
           ),
         );
@@ -1095,7 +1111,7 @@ class _BrowserPageState extends State<BrowserPage>
       if (showResultHint && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('该收藏缺少可下载的视频直链，请先在网页播放后再收藏'),
+            content: Text('该媒体缺少可下载的直链，请先在网页播放后再尝试'),
             duration: Duration(milliseconds: 1500),
           ),
         );
@@ -1105,12 +1121,12 @@ class _BrowserPageState extends State<BrowserPage>
     final progress = ValueNotifier<double?>(null);
     final detailNotifier = ValueNotifier<String>('准备下载...');
     var shownDialog = false;
-    if (showResultHint && mounted) {
+    if (showModalDialog && mounted) {
       shownDialog = true;
       showGeneralDialog<void>(
         context: context,
         barrierDismissible: false,
-        barrierLabel: 'single_favorite_download',
+        barrierLabel: 'robust_media_download',
         barrierColor: Colors.black.withValues(alpha: 0.15),
         transitionDuration: const Duration(milliseconds: 120),
         pageBuilder:
@@ -1160,7 +1176,7 @@ class _BrowserPageState extends State<BrowserPage>
                     ),
                     const SizedBox(height: 10),
                     const Text(
-                      '正在下载收藏视频...',
+                      '正在下载媒体文件...',
                       style: TextStyle(
                         color: Colors.white,
                         fontSize: 13,
@@ -1204,7 +1220,7 @@ class _BrowserPageState extends State<BrowserPage>
     detailNotifier.value = '已获取下载地址，准备开始...';
     if (_favoriteDownloadDiagnosticsEnabled) {
       Logger.log(
-        '[收藏下载诊断] 开始: 候选总数=${attempts.length}, pageUrl=${pageUrl.isEmpty ? "-" : pageUrl}, videoUrl=${videoUrl.isEmpty ? "-" : videoUrl}',
+        '[稳健下载诊断] 开始: 候选总数=${attempts.length}, pageUrl=${pageUrl.isEmpty ? "-" : pageUrl}, videoUrl=${videoUrl.isEmpty ? "-" : videoUrl}',
       );
     }
     var ok = false;
@@ -1232,7 +1248,7 @@ class _BrowserPageState extends State<BrowserPage>
       lastFailureType = failureType;
       if (_favoriteDownloadDiagnosticsEnabled) {
         Logger.log(
-          '[收藏下载诊断] 尝试#${i + 1}/${attempts.length}: ${ok ? "成功" : "失败"} | failureType=${ok ? "none" : failureType} | elapsedMs=${sw.elapsedMilliseconds} | url=${attempts[i]}',
+          '[稳健下载诊断] 尝试#${i + 1}/${attempts.length}: ${ok ? "成功" : "失败"} | failureType=${ok ? "none" : failureType} | elapsedMs=${sw.elapsedMilliseconds} | url=${attempts[i]}',
         );
       }
       if (ok) {
@@ -1275,7 +1291,7 @@ class _BrowserPageState extends State<BrowserPage>
           lastFailureType = failureType;
           if (_favoriteDownloadDiagnosticsEnabled) {
             Logger.log(
-              '[收藏下载诊断] 二次嗅探尝试#${i + 1}/${secondAttempts.length}: ${ok ? "成功" : "失败"} | failureType=${ok ? "none" : failureType} | elapsedMs=${sw.elapsedMilliseconds} | url=${secondAttempts[i]}',
+              '[稳健下载诊断] 二次嗅探尝试#${i + 1}/${secondAttempts.length}: ${ok ? "成功" : "失败"} | failureType=${ok ? "none" : failureType} | elapsedMs=${sw.elapsedMilliseconds} | url=${secondAttempts[i]}',
             );
           }
           if (ok) {
@@ -1288,7 +1304,7 @@ class _BrowserPageState extends State<BrowserPage>
     }
     if (_favoriteDownloadDiagnosticsEnabled) {
       Logger.log(
-        '[收藏下载诊断] 结束: ${ok ? "成功" : "失败"} | 命中候选=${ok ? successIndex : 0}',
+        '[稳健下载诊断] 结束: ${ok ? "成功" : "失败"} | 命中候选=${ok ? successIndex : 0}',
       );
     }
     if (_downloadTasks.length > taskLenBefore) {
@@ -2661,6 +2677,30 @@ class _BrowserPageState extends State<BrowserPage>
           e.preventDefault();
           return;
         }
+        
+        // 收集候选 URL（与收藏逻辑一致）
+        const cands = [];
+        const seen = new Set();
+        const push = (u) => {
+          if (!u || typeof u !== 'string') return;
+          let s = u.trim();
+          if (!s) return;
+          if (!s.startsWith('http://') && !s.startsWith('https://')) {
+            try { s = new URL(s, location.href).toString(); } catch (_) {}
+          }
+          if (!s || seen.has(s) || isApiUrl(s)) return;
+          seen.add(s);
+          cands.push(s);
+        };
+        push(url);
+        if (interceptedStreamUrl) push(interceptedStreamUrl);
+        if (videoEl) {
+          try {
+            const srcs = Array.from(videoEl.querySelectorAll('source')).map(s => s.src || s.getAttribute('src'));
+            for (const s of srcs) push(s || '');
+          } catch (_) {}
+        }
+
         if (tryBlobOrDataUrl(url, mediaType)) {
           e.preventDefault();
           return;
@@ -2671,9 +2711,12 @@ class _BrowserPageState extends State<BrowserPage>
           mediaType: mediaType,
           url: url,
           isBase64: false,
-          action: 'download'
+          action: 'download',
+          pageUrl: location.href || '',
+          title: document.title || '',
+          candidates: cands
         }));
-        updateFeedbackStatus('正在保存…', null);
+        updateFeedbackStatus('正在稳健保存…', null);
         e.preventDefault();
       }
 
@@ -2844,6 +2887,31 @@ class _BrowserPageState extends State<BrowserPage>
         return;
       }
       if (action != 'download') return;
+
+      // 如果是视频下载，且不是 Base64（Base64 通常是 Canvas/Recorder 生成的小文件），
+      // 则强制使用稳健下载逻辑，以解决 Blob 断流或残缺问题。
+      if (mediaType == 'video' && !isBase64) {
+        final pageUrl = (data['pageUrl'] ?? '').toString().trim();
+        final title = (data['title'] ?? '').toString().trim();
+        final candidateUrls = <String>[];
+        if (candidateValue is List) {
+          for (final e in candidateValue) {
+            if (e is String && e.trim().isNotEmpty) {
+              candidateUrls.add(_toAbsoluteUrl(e.trim()));
+            }
+          }
+        }
+        await _downloadMediaRobustly(
+          item: {
+            'pageUrl': pageUrl.isNotEmpty ? pageUrl : _currentUrl,
+            'videoUrl': _toAbsoluteUrl(urlValue),
+            'title': title,
+            'candidateUrls': candidateUrls,
+          },
+          showResultHint: true,
+        );
+        return;
+      }
 
       // Base64 不参与去重；HTTP(S) URL 带 TTL，避免 finally 未执行时永久无法重下同一链接。
       var didRegisterMediaUrl = false;
@@ -5424,31 +5492,6 @@ class _BrowserPageState extends State<BrowserPage>
                 height: MediaQuery.of(context).size.height * 0.5,
                 child: Column(
                   children: [
-                    ListTile(
-                      leading: const Icon(
-                        Icons.content_copy,
-                        color: Colors.blue,
-                      ),
-                      title: const Text('复制当前网址'),
-                      onTap: () {
-                        final url =
-                            _urlController.text.trim().isNotEmpty
-                                ? _urlController.text.trim()
-                                : _currentUrl;
-                        if (url.isNotEmpty) {
-                          Clipboard.setData(ClipboardData(text: url));
-                          if (context.mounted) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                content: Text('当前网址已复制到剪贴板'),
-                                duration: Duration(seconds: 1),
-                              ),
-                            );
-                          }
-                        }
-                      },
-                    ),
-                    const Divider(height: 1),
                     Expanded(
                       child: ReorderableListView.builder(
                         itemCount: _bookmarks.length,
@@ -5801,6 +5844,38 @@ class _BrowserPageState extends State<BrowserPage>
               onPressed: _showBookmarks,
               tooltip: '显示书签',
             ),
+            if (!_showHomePage)
+              IconButton(
+                icon: const Icon(Icons.content_copy),
+                onPressed: () async {
+                  // 优先从 WebView 控制器获取最实时的 URL，以应对单页面应用或复杂跳转
+                  String? realTimeUrl;
+                  if (_controller != null) {
+                    final uri = await _controller!.getUrl();
+                    realTimeUrl = uri?.toString();
+                  }
+
+                  final url =
+                      (realTimeUrl != null && realTimeUrl.isNotEmpty)
+                          ? realTimeUrl
+                          : (_urlController.text.trim().isNotEmpty
+                              ? _urlController.text.trim()
+                              : _currentUrl);
+
+                  if (url.isNotEmpty) {
+                    await Clipboard.setData(ClipboardData(text: url));
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('当前网址已复制到剪贴板'),
+                          duration: Duration(seconds: 1),
+                        ),
+                      );
+                    }
+                  }
+                },
+                tooltip: '复制当前网址',
+              ),
             if (!_showHomePage)
               IconButton(
                 icon: const Icon(Icons.bookmark_add),
