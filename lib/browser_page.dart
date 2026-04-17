@@ -233,9 +233,13 @@ class _BrowserPageState extends State<BrowserPage>
   static const int _maxDisplayTasks = 8;
   bool _downloadPanelExpanded = false;
   Offset? _downloadPanelPosition;
+  Timer? _favoriteProgressSyncTimer;
 
   // 1. 新增历史记录变量
   List<Map<String, dynamic>> _history = [];
+  static const String _kSharedFavoriteVideosPrefsKey =
+      'doc_web_video_favorites_v1';
+  static const bool _favoriteDownloadDiagnosticsEnabled = true;
 
   /// 长按下载：直链失败后 canvas/base64 可能晚到，用定时器合并为「仅一条」失败提示。
   Timer? _mediaDownloadFailHintTimer;
@@ -383,6 +387,10 @@ class _BrowserPageState extends State<BrowserPage>
     _loadCommonWebsites();
     _loadHistory();
     _loadVideoSourceUrlMap();
+    _favoriteProgressSyncTimer = Timer.periodic(
+      const Duration(seconds: 3),
+      (_) => unawaited(_syncCurrentFavoriteProgress()),
+    );
   }
 
   @override
@@ -413,6 +421,1048 @@ class _BrowserPageState extends State<BrowserPage>
         ..addAll(decoded.map((k, v) => MapEntry(k.toString(), v.toString())));
     } catch (e) {
       debugPrint('加载视频来源映射失败: $e');
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> _loadSharedFavoriteVideos() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_kSharedFavoriteVideosPrefsKey);
+    if (raw == null || raw.trim().isEmpty) return <Map<String, dynamic>>[];
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! List) return <Map<String, dynamic>>[];
+      final list = decoded
+          .whereType<Map>()
+          .map((e) => Map<String, dynamic>.from(e))
+          .where((e) => (e['pageUrl'] ?? '').toString().trim().isNotEmpty)
+          .toList();
+      return _normalizeSharedFavorites(list);
+    } catch (_) {
+      return <Map<String, dynamic>>[];
+    }
+  }
+
+  Future<void> _saveSharedFavoriteVideos(List<Map<String, dynamic>> items) async {
+    final prefs = await SharedPreferences.getInstance();
+    final normalized = _normalizeSharedFavorites(
+      items.map((e) => Map<String, dynamic>.from(e)).toList(),
+    );
+    await prefs.setString(_kSharedFavoriteVideosPrefsKey, jsonEncode(normalized));
+  }
+
+  List<Map<String, dynamic>> _normalizeSharedFavorites(
+    List<Map<String, dynamic>> raw,
+  ) {
+    final nowIso = DateTime.now().toIso8601String();
+    for (int i = 0; i < raw.length; i++) {
+      final row = raw[i];
+      row['customName'] = (row['customName'] ?? '').toString();
+      row['pinned'] = row['pinned'] == true;
+      row['favoritedAt'] =
+          (row['favoritedAt'] ?? row['updatedAt'] ?? nowIso).toString();
+      row['sortOrder'] = (row['sortOrder'] as num?)?.toInt() ?? i;
+      row['downloaded'] = row['downloaded'] == true;
+      row['downloadedAt'] = (row['downloadedAt'] ?? '').toString();
+    }
+    raw.sort((a, b) {
+      final pa = a['pinned'] == true ? 1 : 0;
+      final pb = b['pinned'] == true ? 1 : 0;
+      if (pa != pb) return pb - pa;
+      final sa = (a['sortOrder'] as num?)?.toInt() ?? 0;
+      final sb = (b['sortOrder'] as num?)?.toInt() ?? 0;
+      if (sa != sb) return sa.compareTo(sb);
+      final ta = DateTime.tryParse((a['favoritedAt'] ?? '').toString());
+      final tb = DateTime.tryParse((b['favoritedAt'] ?? '').toString());
+      return (tb ?? DateTime.fromMillisecondsSinceEpoch(0)).compareTo(
+        ta ?? DateTime.fromMillisecondsSinceEpoch(0),
+      );
+    });
+    return raw;
+  }
+
+  bool _isFavoriteLikelyDownloaded(Map<String, dynamic> item) {
+    if (item['downloaded'] == true) return true;
+    final urls = <String>[
+      (item['videoUrl'] ?? '').toString().trim(),
+      (item['pageUrl'] ?? '').toString().trim(),
+    ];
+    final candidateRaw = item['candidateUrls'];
+    if (candidateRaw is List) {
+      for (final e in candidateRaw) {
+        if (e is String && e.trim().isNotEmpty) {
+          urls.add(e.trim());
+        }
+      }
+    }
+    for (final u in urls) {
+      if (u.isEmpty) continue;
+      final norm = _normalizeVideoSourceUrl(u);
+      if (_videoSourceUrlToMediaId.containsKey(norm)) return true;
+    }
+    return false;
+  }
+
+  Future<bool> _favoriteExistsInLibrary(Map<String, dynamic> item) async {
+    final urls = <String>[
+      (item['videoUrl'] ?? '').toString().trim(),
+      (item['pageUrl'] ?? '').toString().trim(),
+    ];
+    final candidateRaw = item['candidateUrls'];
+    if (candidateRaw is List) {
+      for (final e in candidateRaw) {
+        if (e is String && e.trim().isNotEmpty) {
+          urls.add(e.trim());
+        }
+      }
+    }
+    for (final u in urls) {
+      if (u.isEmpty) continue;
+      final existing = await _findExistingVideoBeforeDownload(u);
+      if (existing != null) return true;
+    }
+    return false;
+  }
+
+  Future<void> _markFavoriteDownloaded(
+    Map<String, dynamic> item, {
+    bool downloaded = true,
+  }) async {
+    final pageUrl = (item['pageUrl'] ?? '').toString().trim();
+    final videoUrl = (item['videoUrl'] ?? '').toString().trim();
+    if (pageUrl.isEmpty && videoUrl.isEmpty) return;
+    final list = List<Map<String, dynamic>>.from(await _loadSharedFavoriteVideos());
+    final nowIso = DateTime.now().toIso8601String();
+    var changed = false;
+    for (final row in list) {
+      final p = (row['pageUrl'] ?? '').toString().trim();
+      final v = (row['videoUrl'] ?? '').toString().trim();
+      if ((videoUrl.isNotEmpty && v == videoUrl) ||
+          (pageUrl.isNotEmpty && p == pageUrl)) {
+        row['downloaded'] = downloaded;
+        row['downloadedAt'] = downloaded ? nowIso : '';
+        row['updatedAt'] = nowIso;
+        changed = true;
+        break;
+      }
+    }
+    if (changed) {
+      await _saveSharedFavoriteVideos(list);
+    }
+  }
+
+  String _fmtFavoriteDate(String iso) {
+    final dt = DateTime.tryParse(iso);
+    if (dt == null) return '未知时间';
+    final y = dt.year.toString().padLeft(4, '0');
+    final m = dt.month.toString().padLeft(2, '0');
+    final d = dt.day.toString().padLeft(2, '0');
+    final hh = dt.hour.toString().padLeft(2, '0');
+    final mm = dt.minute.toString().padLeft(2, '0');
+    return '$y-$m-$d $hh:$mm';
+  }
+
+  Future<String?> _promptRenameFavorite({
+    required BuildContext context,
+    required String initialText,
+  }) async {
+    final ctl = TextEditingController(text: initialText);
+    return showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('重命名收藏'),
+        content: TextField(
+          controller: ctl,
+          maxLines: 1,
+          autofocus: true,
+          decoration: const InputDecoration(hintText: '输入新名称'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(ctl.text.trim()),
+            child: const Text('确定'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _syncCurrentFavoriteProgress() async {
+    if (_showHomePage || _controller == null) return;
+    final pageUrl = _currentUrl.trim();
+    if (pageUrl.isEmpty) return;
+    try {
+      final raw = await _controller!.evaluateJavascript(
+        source: '''
+(() => {
+  try {
+    const videos = Array.from(document.querySelectorAll('video'));
+    if (!videos.length) return { hasVideo: false };
+    const vw = Math.max(1, window.innerWidth || 1);
+    const vh = Math.max(1, window.innerHeight || 1);
+    const cx = vw / 2;
+    const cy = vh / 2;
+    const area = (r) => Math.max(0, r.width) * Math.max(0, r.height);
+    const dist = (r) => {
+      const x = (r.left + r.right) / 2;
+      const y = (r.top + r.bottom) / 2;
+      return Math.sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy));
+    };
+    let best = null;
+    let bestScore = -1e18;
+    for (const v of videos) {
+      const r = v.getBoundingClientRect();
+      const d = Number(v.duration || 0);
+      const p = Number(v.currentTime || 0);
+      const src = String(v.currentSrc || v.src || '');
+      let s = area(r) * 0.7;
+      if (!v.paused && !v.ended) s += 1000000;
+      if (p > 0.4) s += 160000;
+      s += Math.max(0, 220000 - dist(r) * 380);
+      if (isFinite(d) && d > 0) s += Math.min(d, 2400) * 300;
+      if (src.includes('.m3u8') || src.includes('.mp4') || src.includes('.webm')) s += 100000;
+      if (s > bestScore) {
+        bestScore = s;
+        best = { src, d, p };
+      }
+    }
+    if (!best) return { hasVideo: false };
+    return {
+      hasVideo: true,
+      pageUrl: location.href || '',
+      videoUrl: best.src || '',
+      positionSec: isFinite(best.p) ? best.p : 0,
+      durationSec: isFinite(best.d) ? best.d : 0,
+      title: (document.title || '').trim(),
+    };
+  } catch (_) {
+    return { hasVideo: false };
+  }
+})();
+''',
+      );
+      if (raw is! Map || raw['hasVideo'] != true) return;
+      final page = (raw['pageUrl'] ?? pageUrl).toString().trim();
+      final video = (raw['videoUrl'] ?? '').toString().trim();
+      final pos = (raw['positionSec'] as num?)?.toDouble() ?? 0.0;
+      final dur = (raw['durationSec'] as num?)?.toDouble() ?? 0.0;
+      if (page.isEmpty || pos < 0) return;
+      final list = List<Map<String, dynamic>>.from(await _loadSharedFavoriteVideos());
+      var changed = false;
+      for (int i = 0; i < list.length; i++) {
+        final p = (list[i]['pageUrl'] ?? '').toString().trim();
+        final v = (list[i]['videoUrl'] ?? '').toString().trim();
+        final matchByVideo = video.isNotEmpty && v.isNotEmpty && v == video;
+        final matchByPage = p == page;
+        if (!(matchByVideo || matchByPage)) continue;
+        list[i]['positionSec'] = pos;
+        list[i]['durationSec'] = dur;
+        list[i]['updatedAt'] = DateTime.now().toIso8601String();
+        if (video.isNotEmpty) list[i]['videoUrl'] = video;
+        final t = (raw['title'] ?? '').toString().trim();
+        if (t.isNotEmpty) list[i]['title'] = t;
+        changed = true;
+        break;
+      }
+      if (changed) await _saveSharedFavoriteVideos(list);
+    } catch (_) {}
+  }
+
+  Future<void> _addSharedFavoriteFromBrowser({
+    required String pageUrl,
+    required String videoUrl,
+    required String title,
+    required double positionSec,
+    required double durationSec,
+    List<String>? candidateUrls,
+  }) async {
+    if (pageUrl.trim().isEmpty) return;
+    final list = List<Map<String, dynamic>>.from(await _loadSharedFavoriteVideos());
+    final normPage = pageUrl.trim();
+    final normVideo = videoUrl.trim();
+    list.removeWhere((e) {
+      final p = (e['pageUrl'] ?? '').toString().trim();
+      final v = (e['videoUrl'] ?? '').toString().trim();
+      return (normVideo.isNotEmpty && v == normVideo) || p == normPage;
+    });
+    list.insert(0, {
+      'pageUrl': normPage,
+      'videoUrl': normVideo,
+      'title': title.trim(),
+      'customName': '',
+      'positionSec': positionSec,
+      'durationSec': durationSec,
+      'updatedAt': DateTime.now().toIso8601String(),
+      'favoritedAt': DateTime.now().toIso8601String(),
+      'pinned': false,
+      'sortOrder': 0,
+      'isFavorite': true,
+      'downloaded': false,
+      'downloadedAt': '',
+      if (candidateUrls != null && candidateUrls.isNotEmpty)
+        'candidateUrls': candidateUrls.take(24).toList(),
+    });
+    await _saveSharedFavoriteVideos(list);
+  }
+
+  String _fmtSec(double sec) {
+    final s = sec.isFinite ? sec.round().clamp(0, 360000) : 0;
+    final mm = (s ~/ 60).toString().padLeft(2, '0');
+    final ss = (s % 60).toString().padLeft(2, '0');
+    return '$mm:$ss';
+  }
+
+  Future<void> _showSharedFavoriteVideosSheet() async {
+    final favorites = List<Map<String, dynamic>>.from(
+      await _loadSharedFavoriteVideos(),
+    );
+    if (!mounted) return;
+    if (favorites.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('暂无收藏视频记录')),
+      );
+      return;
+    }
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (sheetCtx) => StatefulBuilder(
+        builder: (ctx, setSheetState) => SafeArea(
+          child: SizedBox(
+            height: MediaQuery.of(ctx).size.height * 0.82,
+            child: Column(
+              children: [
+                ListTile(
+                  dense: true,
+                  title: const Text('收藏视频'),
+                  subtitle: Text('共${favorites.length}条'),
+                  trailing: TextButton.icon(
+                    onPressed: () => unawaited(
+                      _downloadFavoritesBatch(
+                        List<Map<String, dynamic>>.from(favorites),
+                      ),
+                    ),
+                    icon: const Icon(Icons.download_for_offline_outlined),
+                    label: const Text('一键下载全部'),
+                  ),
+                ),
+                const Divider(height: 1),
+                Expanded(
+                  child: ListView.builder(
+                    itemCount: favorites.length,
+                    itemBuilder: (c, i) {
+                      final it = favorites[i];
+                      final pageUrl = (it['pageUrl'] ?? '').toString();
+                      final title = (it['customName'] ?? '').toString().trim().isNotEmpty
+                          ? (it['customName'] ?? '').toString().trim()
+                          : (it['title'] ?? '').toString().trim();
+                      final downloaded = _isFavoriteLikelyDownloaded(it);
+                      final favoritedAt = (it['favoritedAt'] ?? '').toString();
+                      final downloadedAt = (it['downloadedAt'] ?? '').toString();
+                      final pos = (it['positionSec'] as num?)?.toDouble() ?? 0.0;
+                      final dur = (it['durationSec'] as num?)?.toDouble() ?? 0.0;
+                      return ListTile(
+                        leading: downloaded
+                            ? const Icon(Icons.download_done_rounded, color: Colors.green)
+                            : null,
+                        title: Text(title.isNotEmpty ? title : pageUrl, maxLines: 1),
+                        subtitle: Text(
+                          '${_fmtSec(pos)} / ${_fmtSec(dur)} · 收藏于 ${_fmtFavoriteDate(favoritedAt)}${downloaded ? ' · 已下载${downloadedAt.isNotEmpty ? '(${_fmtFavoriteDate(downloadedAt)})' : ''}' : ''}',
+                          maxLines: 1,
+                        ),
+                        onTap: () {
+                          Navigator.of(sheetCtx).pop();
+                          _openFavoriteInBrowser(Map<String, dynamic>.from(it));
+                        },
+                        trailing: PopupMenuButton<String>(
+                          onSelected: (v) {
+                            unawaited(() async {
+                              if (v == 'download') {
+                                final ok = await _downloadOneFavorite(
+                                  item: it,
+                                  showResultHint: true,
+                                );
+                                if (ok) {
+                                  it['downloaded'] = true;
+                                  it['downloadedAt'] = DateTime.now().toIso8601String();
+                                  await _saveSharedFavoriteVideos(favorites);
+                                  setSheetState(() {});
+                                }
+                              } else if (v == 'rename') {
+                                final renamed = await _promptRenameFavorite(
+                                  context: context,
+                                  initialText: title.isNotEmpty ? title : pageUrl,
+                                );
+                                if (renamed != null) {
+                                  it['customName'] = renamed;
+                                  await _saveSharedFavoriteVideos(favorites);
+                                  setSheetState(() {});
+                                }
+                              } else if (v == 'delete') {
+                                favorites.removeAt(i);
+                                await _saveSharedFavoriteVideos(favorites);
+                                setSheetState(() {});
+                              }
+                            }());
+                          },
+                          itemBuilder: (_) => const [
+                            PopupMenuItem(value: 'download', child: Text('下载到媒体库')),
+                            PopupMenuItem(value: 'rename', child: Text('重命名')),
+                            PopupMenuItem(value: 'delete', child: Text('删除收藏')),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _openFavoriteInBrowser(Map<String, dynamic> item) {
+    final pageUrl = (item['pageUrl'] ?? '').toString().trim();
+    final videoUrl = (item['videoUrl'] ?? '').toString().trim();
+    final target = pageUrl.isNotEmpty ? pageUrl : (videoUrl.isNotEmpty ? videoUrl : '');
+    if (target.isEmpty) return;
+    _loadUrl(target);
+  }
+
+  bool _isLikelyDirectMediaUrl(String url) {
+    final u = url.trim().toLowerCase();
+    if (u.isEmpty) return false;
+    if (!(u.startsWith('http://') || u.startsWith('https://'))) return false;
+    if (u.startsWith('blob:') || u.startsWith('data:')) return false;
+    return u.contains('.m3u8') ||
+        u.contains('.mp4') ||
+        u.contains('.webm') ||
+        u.contains('.mov') ||
+        u.contains('/hls/') ||
+        u.contains('/manifest') ||
+        u.contains('/stream');
+  }
+
+  Future<String?> _resolveFavoriteDownloadUrl({
+    required String pageUrl,
+    required String videoUrl,
+  }) async {
+    if (_isLikelyDirectMediaUrl(videoUrl)) return videoUrl;
+    if (_isLikelyDirectMediaUrl(pageUrl)) return pageUrl;
+    if (pageUrl.isEmpty ||
+        !(pageUrl.startsWith('http://') || pageUrl.startsWith('https://'))) {
+      return null;
+    }
+    try {
+      final networkService = NetworkService();
+      await networkService.initialize();
+      final resp = await networkService.dio.get<String>(
+        pageUrl,
+        options: Options(
+          responseType: ResponseType.plain,
+          headers: {
+            'User-Agent':
+                'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+            'Accept':
+                'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          },
+        ),
+      );
+      final html = resp.data ?? '';
+      if (html.isEmpty) return null;
+      final baseUri = Uri.tryParse(pageUrl);
+      if (baseUri == null) return null;
+      final candidates = <String>{};
+      final re = RegExp(
+        r"""https?:\/\/[^"'\s<>]+?(?:\.m3u8|\.mp4|\.webm|\.mov)(?:\?[^"'\s<>]*)?""",
+        caseSensitive: false,
+      );
+      for (final m in re.allMatches(html)) {
+        final v = m.group(0)?.trim();
+        if (v != null && v.isNotEmpty && _isLikelyDirectMediaUrl(v)) {
+          candidates.add(v);
+        }
+      }
+      final relRe = RegExp(
+        r"""["']([^"']+?(?:\.m3u8|\.mp4|\.webm|\.mov)(?:\?[^"']*)?)["']""",
+        caseSensitive: false,
+      );
+      for (final m in relRe.allMatches(html)) {
+        final rel = m.group(1)?.trim();
+        if (rel == null || rel.isEmpty) continue;
+        final abs = baseUri.resolve(rel).toString();
+        if (_isLikelyDirectMediaUrl(abs)) {
+          candidates.add(abs);
+        }
+      }
+      final scriptRe = RegExp(
+        r"""setVideoUrl(?:High|Low|HLS)\(['"]([^'"]+)['"]\)""",
+        caseSensitive: false,
+      );
+      for (final m in scriptRe.allMatches(html)) {
+        final v = m.group(1)?.trim();
+        if (v != null && v.isNotEmpty) {
+          final abs = baseUri.resolve(v).toString();
+          if (_isLikelyDirectMediaUrl(abs)) {
+            candidates.add(abs);
+          }
+        }
+      }
+      if (candidates.isEmpty) return null;
+      final primary = videoUrl.isNotEmpty ? videoUrl : pageUrl;
+      return _chooseBestFavoriteVideoUrl(primary, candidates.toList());
+    } catch (_) {
+      return null;
+    }
+  }
+
+  bool _isXVideoLikeHost(String url) {
+    final s = url.toLowerCase();
+    return s.contains('xvideos.') ||
+        s.contains('xvideos-cdn') ||
+        s.contains('xv-vod') ||
+        s.contains('xhcdn');
+  }
+
+  bool _looksLikePreviewClipUrl(String u) {
+    final s = u.toLowerCase();
+    const hints = [
+      'preview',
+      'sample',
+      'trailer',
+      'teaser',
+      'thumb',
+      'poster',
+      'storyboard',
+      'sprite',
+      'clip',
+      'snippet',
+      'init.',
+      '/init',
+      '.m4s',
+      '/seg',
+      '/chunk',
+      '/fragment',
+    ];
+    return hints.any(s.contains);
+  }
+
+  int _scoreFavoriteVideoUrl(String url) {
+    final s = url.toLowerCase();
+    var score = 0;
+    if (s.contains('.m3u8') || s.contains('.m3u')) score += 1800;
+    if (s.contains('mpegurl') || s.contains('/hls/') || s.contains('/playlist')) {
+      score += 1200;
+    }
+    if (s.contains('.mp4')) score += 900;
+    if (s.contains('.webm')) score += 450;
+    if (_isXVideoLikeHost(s)) score += 500;
+    if (s.contains('setvideourlhigh') || s.contains('high')) score += 220;
+    if (_looksLikePreviewClipUrl(s)) score -= 1200;
+    return score;
+  }
+
+  List<String> _buildFavoriteAttempts(String primary, List<String> candidates) {
+    final merged = <String>[];
+    final seen = <String>{};
+    void push(String? u) {
+      if (u == null) return;
+      final s = u.trim();
+      if (s.isEmpty) return;
+      final abs = _toAbsoluteUrl(s);
+      if (abs.isEmpty || seen.contains(abs)) return;
+      seen.add(abs);
+      merged.add(abs);
+    }
+
+    push(primary);
+    for (final c in candidates) {
+      push(c);
+    }
+    merged.sort((a, b) => _scoreFavoriteVideoUrl(b).compareTo(_scoreFavoriteVideoUrl(a)));
+    return merged;
+  }
+
+  String _chooseBestFavoriteVideoUrl(String primary, List<String> candidates) {
+    final attempts = _buildFavoriteAttempts(primary, candidates);
+    return attempts.isEmpty ? primary : attempts.first;
+  }
+
+  Future<List<String>> _resniffFavoriteCandidatesFromSourcePage(
+    String pageUrl,
+  ) async {
+    if (pageUrl.isEmpty ||
+        !(pageUrl.startsWith('http://') || pageUrl.startsWith('https://'))) {
+      return const <String>[];
+    }
+    try {
+      final networkService = NetworkService();
+      await networkService.initialize();
+      final resp = await networkService.dio.get<String>(
+        pageUrl,
+        options: Options(
+          responseType: ResponseType.plain,
+          headers: {
+            'User-Agent':
+                'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+            'Accept':
+                'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Referer': pageUrl,
+          },
+        ),
+      );
+      final html = resp.data ?? '';
+      if (html.isEmpty) return const <String>[];
+      final baseUri = Uri.tryParse(pageUrl);
+      if (baseUri == null) return const <String>[];
+      final out = <String>{};
+      void addCandidate(String? raw) {
+        if (raw == null) return;
+        final s = raw.trim();
+        if (s.isEmpty) return;
+        final abs = baseUri.resolve(s).toString();
+        if (_isLikelyDirectMediaUrl(abs)) out.add(abs);
+      }
+
+      final genericDirect = RegExp(
+        r"""https?:\/\/[^"'\s<>]+?(?:\.m3u8|\.mp4|\.webm|\.mov)(?:\?[^"'\s<>]*)?""",
+        caseSensitive: false,
+      );
+      for (final m in genericDirect.allMatches(html)) {
+        addCandidate(m.group(0));
+      }
+
+      final xvideoJs = RegExp(
+        r"""setVideoUrl(?:High|Low|HLS)\(['"]([^'"]+)['"]\)""",
+        caseSensitive: false,
+      );
+      for (final m in xvideoJs.allMatches(html)) {
+        addCandidate(m.group(1));
+      }
+
+      final schemaVideo = RegExp(
+        r'''"contentUrl"\s*:\s*"([^"]+)"''',
+        caseSensitive: false,
+      );
+      for (final m in schemaVideo.allMatches(html)) {
+        addCandidate(m.group(1));
+      }
+
+      final dataSrc = RegExp(
+        r'''(?:data-src|src)\s*=\s*["']([^"']+\.(?:m3u8|mp4|webm|mov)(?:\?[^"']*)?)["']''',
+        caseSensitive: false,
+      );
+      for (final m in dataSrc.allMatches(html)) {
+        addCandidate(m.group(1));
+      }
+      return out.toList();
+    } catch (_) {
+      return const <String>[];
+    }
+  }
+
+  Future<bool> _downloadOneFavorite({
+    required Map<String, dynamic> item,
+    bool showResultHint = false,
+    void Function(String failureType)? onFailureType,
+  }) async {
+    if (await _favoriteExistsInLibrary(item)) {
+      await _markFavoriteDownloaded(item, downloaded: true);
+      onFailureType?.call('already_in_library');
+      if (showResultHint && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('该收藏视频已在媒体库中，已为你标记为已下载'),
+            duration: Duration(milliseconds: 1300),
+          ),
+        );
+      }
+      return true;
+    }
+    final pageUrl = (item['pageUrl'] ?? '').toString().trim();
+    final videoUrl = (item['videoUrl'] ?? '').toString().trim();
+    final downloadUrl = await _resolveFavoriteDownloadUrl(
+      pageUrl: pageUrl,
+      videoUrl: videoUrl,
+    );
+    if (downloadUrl == null || downloadUrl.isEmpty) {
+      onFailureType?.call('no_direct_url');
+      if (showResultHint && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('该收藏缺少可下载的视频直链，请先在网页播放后再收藏'),
+            duration: Duration(milliseconds: 1500),
+          ),
+        );
+      }
+      return false;
+    }
+    final progress = ValueNotifier<double?>(null);
+    final detailNotifier = ValueNotifier<String>('准备下载...');
+    var shownDialog = false;
+    if (showResultHint && mounted) {
+      shownDialog = true;
+      showGeneralDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        barrierLabel: 'single_favorite_download',
+        barrierColor: Colors.black.withValues(alpha: 0.15),
+        transitionDuration: const Duration(milliseconds: 120),
+        pageBuilder:
+            (_, __, ___) => Center(
+              child: Container(
+                width: 220,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 14,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.72),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    ValueListenableBuilder<double?>(
+                      valueListenable: progress,
+                      builder: (_, p, __) {
+                        if (p == null) {
+                          return const SizedBox(
+                            width: 28,
+                            height: 28,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 3,
+                              valueColor: AlwaysStoppedAnimation<Color>(
+                                Colors.greenAccent,
+                              ),
+                              backgroundColor: Colors.white24,
+                            ),
+                          );
+                        }
+                        return SizedBox(
+                          width: 30,
+                          height: 30,
+                          child: CircularProgressIndicator(
+                            value: p.clamp(0.0, 1.0),
+                            strokeWidth: 3,
+                            valueColor: const AlwaysStoppedAnimation<Color>(
+                              Colors.greenAccent,
+                            ),
+                            backgroundColor: Colors.white24,
+                          ),
+                        );
+                      },
+                    ),
+                    const SizedBox(height: 10),
+                    const Text(
+                      '正在下载收藏视频...',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    ValueListenableBuilder<String>(
+                      valueListenable: detailNotifier,
+                      builder:
+                          (_, t, __) => Text(
+                            t,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: Colors.white70,
+                              fontSize: 11,
+                            ),
+                          ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+      );
+    }
+    final taskLenBefore = _downloadTasks.length;
+    final candidateRaw = item['candidateUrls'];
+    final candidateUrls = <String>[];
+    if (candidateRaw is List) {
+      for (final e in candidateRaw) {
+        if (e is String && e.trim().isNotEmpty) {
+          candidateUrls.add(e.trim());
+        }
+      }
+    }
+    final attempts = _buildFavoriteAttempts(
+      downloadUrl,
+      candidateUrls.where(_isLikelyDirectMediaUrl).toList(),
+    );
+    detailNotifier.value = '已获取下载地址，准备开始...';
+    if (_favoriteDownloadDiagnosticsEnabled) {
+      Logger.log(
+        '[收藏下载诊断] 开始: 候选总数=${attempts.length}, pageUrl=${pageUrl.isEmpty ? "-" : pageUrl}, videoUrl=${videoUrl.isEmpty ? "-" : videoUrl}',
+      );
+    }
+    var ok = false;
+    int successIndex = -1;
+    var lastFailureType = 'unknown';
+    for (int i = 0; i < attempts.length; i++) {
+      final sw = Stopwatch()..start();
+      var failureType = 'unknown';
+      progress.value = null;
+      detailNotifier.value = '候选 ${i + 1}/${attempts.length}：正在连接...';
+      ok = await _performBackgroundDownload(
+        attempts[i],
+        MediaType.video,
+        skipFailurePrompt: i < attempts.length - 1,
+        onFailureType: (t) => failureType = t,
+        timeout: const Duration(minutes: 3),
+        onProgress: (fraction, {String? detail}) {
+          progress.value = fraction.clamp(0.0, 1.0);
+          if (detail != null && detail.trim().isNotEmpty) {
+            detailNotifier.value = '候选 ${i + 1}/${attempts.length}：$detail';
+          }
+        },
+      );
+      sw.stop();
+      lastFailureType = failureType;
+      if (_favoriteDownloadDiagnosticsEnabled) {
+        Logger.log(
+          '[收藏下载诊断] 尝试#${i + 1}/${attempts.length}: ${ok ? "成功" : "失败"} | failureType=${ok ? "none" : failureType} | elapsedMs=${sw.elapsedMilliseconds} | url=${attempts[i]}',
+        );
+      }
+      if (ok) {
+        successIndex = i + 1;
+        break;
+      }
+    }
+    if (!ok && pageUrl.startsWith('http')) {
+      detailNotifier.value = '第3步：重新打开源页并二次嗅探...';
+      final resniffCandidates = await _resniffFavoriteCandidatesFromSourcePage(
+        pageUrl,
+      );
+      if (resniffCandidates.isNotEmpty) {
+        final tried = attempts.toSet();
+        final secondAttempts = _buildFavoriteAttempts(
+          downloadUrl,
+          [...candidateUrls, ...resniffCandidates],
+        ).where((u) => !tried.contains(u)).toList();
+        for (int i = 0; i < secondAttempts.length; i++) {
+          final sw = Stopwatch()..start();
+          var failureType = 'unknown';
+          progress.value = null;
+          detailNotifier.value =
+              '二次嗅探候选 ${i + 1}/${secondAttempts.length}：正在连接...';
+          ok = await _performBackgroundDownload(
+            secondAttempts[i],
+            MediaType.video,
+            skipFailurePrompt: i < secondAttempts.length - 1,
+            onFailureType: (t) => failureType = t,
+            timeout: const Duration(minutes: 3),
+            onProgress: (fraction, {String? detail}) {
+              progress.value = fraction.clamp(0.0, 1.0);
+              if (detail != null && detail.trim().isNotEmpty) {
+                detailNotifier.value =
+                    '二次嗅探候选 ${i + 1}/${secondAttempts.length}：$detail';
+              }
+            },
+          );
+          sw.stop();
+          lastFailureType = failureType;
+          if (_favoriteDownloadDiagnosticsEnabled) {
+            Logger.log(
+              '[收藏下载诊断] 二次嗅探尝试#${i + 1}/${secondAttempts.length}: ${ok ? "成功" : "失败"} | failureType=${ok ? "none" : failureType} | elapsedMs=${sw.elapsedMilliseconds} | url=${secondAttempts[i]}',
+            );
+          }
+          if (ok) {
+            break;
+          }
+        }
+      } else {
+        lastFailureType = 'resniff_no_candidate';
+      }
+    }
+    if (_favoriteDownloadDiagnosticsEnabled) {
+      Logger.log(
+        '[收藏下载诊断] 结束: ${ok ? "成功" : "失败"} | 命中候选=${ok ? successIndex : 0}',
+      );
+    }
+    if (_downloadTasks.length > taskLenBefore) {
+      final last = _downloadTasks.last;
+      final p = (last['progress'] as num?)?.toDouble();
+      progress.value = p == null ? null : p.clamp(0.0, 1.0);
+      final d = (last['progressDetail'] ?? '').toString();
+      detailNotifier.value = d.isNotEmpty ? d : (ok ? '下载完成，正在入库...' : '下载失败');
+    }
+    progress.value = 1.0;
+    detailNotifier.value = ok ? '已保存到媒体库' : '下载失败';
+    await Future<void>.delayed(const Duration(milliseconds: 180));
+    if (shownDialog && mounted) {
+      final nav = Navigator.of(context, rootNavigator: true);
+      if (nav.canPop()) nav.pop();
+    }
+    progress.dispose();
+    detailNotifier.dispose();
+    if (!ok) {
+      onFailureType?.call(lastFailureType);
+    }
+    if (ok && lastFailureType != 'already_downloading') {
+      await _markFavoriteDownloaded(item, downloaded: true);
+    }
+    if (showResultHint && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(ok ? '已加入下载：$downloadUrl' : '下载失败，请稍后重试'),
+          duration: const Duration(milliseconds: 1200),
+        ),
+      );
+    }
+    return ok;
+  }
+
+  bool _isRetryableFavoriteFailure(String failureType) {
+    return failureType == 'timeout' ||
+        failureType == 'connection_error' ||
+        failureType == 'dio_error' ||
+        failureType == 'http_5xx';
+  }
+
+  Future<void> _downloadFavoritesBatch(List<Map<String, dynamic>> items) async {
+    if (items.isEmpty || !mounted) return;
+    final progress = ValueNotifier<double>(0.0);
+    final progressText = ValueNotifier<String>('0 / ${items.length}');
+    var success = 0;
+    var failed = 0;
+    var skipped = 0;
+    var retried = 0;
+    final retryQueue = <Map<String, dynamic>>[];
+    if (mounted) {
+      showGeneralDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        barrierLabel: 'batch_download_favorites',
+        barrierColor: Colors.black.withValues(alpha: 0.16),
+        transitionDuration: const Duration(milliseconds: 120),
+        pageBuilder:
+            (_, __, ___) => Center(
+              child: Container(
+                width: 250,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 14,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.74),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text(
+                      '正在批量下载收藏视频',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    ValueListenableBuilder<double>(
+                      valueListenable: progress,
+                      builder:
+                          (_, p, __) => LinearProgressIndicator(
+                            value: p.clamp(0.0, 1.0),
+                            minHeight: 6,
+                            color: Colors.greenAccent,
+                            backgroundColor: Colors.white24,
+                          ),
+                    ),
+                    const SizedBox(height: 10),
+                    ValueListenableBuilder<String>(
+                      valueListenable: progressText,
+                      builder:
+                          (_, txt, __) => Text(
+                            txt,
+                            style: const TextStyle(
+                              color: Colors.white70,
+                              fontSize: 12,
+                            ),
+                          ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+      );
+    }
+    try {
+      for (int i = 0; i < items.length; i++) {
+        progressText.value = '第1轮 ${i + 1} / ${items.length}';
+        if (_isFavoriteLikelyDownloaded(items[i])) {
+          skipped++;
+          progress.value = ((i + 1) / items.length) * 0.75;
+          continue;
+        }
+        var failureType = 'unknown';
+        final ok = await _downloadOneFavorite(
+          item: items[i],
+          showResultHint: false,
+          onFailureType: (t) => failureType = t,
+        );
+        if (ok) {
+          success++;
+        } else {
+          failed++;
+          if (_isRetryableFavoriteFailure(failureType)) {
+            retryQueue.add(Map<String, dynamic>.from(items[i]));
+          }
+        }
+        progress.value = ((i + 1) / items.length) * 0.75;
+      }
+      if (retryQueue.isNotEmpty) {
+        for (int j = 0; j < retryQueue.length; j++) {
+          progressText.value = '第2轮重试 ${j + 1} / ${retryQueue.length}';
+          retried++;
+          await Future<void>.delayed(const Duration(milliseconds: 320));
+          final ok = await _downloadOneFavorite(
+            item: retryQueue[j],
+            showResultHint: false,
+          );
+          if (ok) {
+            success++;
+            failed--;
+          }
+          progress.value = 0.75 + ((j + 1) / retryQueue.length) * 0.25;
+        }
+      }
+    } finally {
+      progress.value = 1.0;
+      await Future<void>.delayed(const Duration(milliseconds: 180));
+      if (mounted && Navigator.of(context).canPop()) {
+        Navigator.of(context).pop();
+      }
+      progress.dispose();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('批量下载完成：成功 $success 条，失败 $failed 条，跳过 $skipped 条'),
+            duration: const Duration(milliseconds: 1500),
+          ),
+        );
+        if (retried > 0) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('二轮重试已执行：$retried 条（仅超时/网络类失败）'),
+              duration: const Duration(milliseconds: 1300),
+            ),
+          );
+        }
+      }
+      progressText.dispose();
     }
   }
 
@@ -1002,6 +2052,10 @@ class _BrowserPageState extends State<BrowserPage>
       let pressTimer;
       let pressedElement = null;
       let feedbackElement = null;
+      let favTapCount = 0;
+      let favLastTapAt = 0;
+      let favLastX = 0;
+      let favLastY = 0;
 
       function createFeedbackElement(touchX, touchY) {
         removeFeedbackElement();
@@ -1193,6 +2247,88 @@ class _BrowserPageState extends State<BrowserPage>
 
       document.addEventListener('touchend', function(e) {
         clearTimeout(pressTimer);
+        try {
+          const t = Date.now();
+          const touch = (e.changedTouches && e.changedTouches[0]) ? e.changedTouches[0] : null;
+          const x = touch ? touch.clientX : 0;
+          const y = touch ? touch.clientY : 0;
+          const dt = t - favLastTapAt;
+          const moved = Math.abs(x - favLastX) > 36 || Math.abs(y - favLastY) > 36;
+          if (dt > 40 && dt < 420 && !moved) favTapCount += 1;
+          else favTapCount = 1;
+          favLastTapAt = t;
+          favLastX = x;
+          favLastY = y;
+          if (favTapCount >= 3) {
+            favTapCount = 0;
+            const videos = Array.from(document.querySelectorAll('video'));
+            if (videos.length) {
+              const vw = Math.max(1, window.innerWidth || 1);
+              const vh = Math.max(1, window.innerHeight || 1);
+              const cx = vw / 2, cy = vh / 2;
+              const area = (r) => Math.max(0, r.width) * Math.max(0, r.height);
+              const dist = (r) => {
+                const x0 = (r.left + r.right) / 2;
+                const y0 = (r.top + r.bottom) / 2;
+                return Math.sqrt((x0 - cx) * (x0 - cx) + (y0 - cy) * (y0 - cy));
+              };
+              let pick = null;
+              let best = -1e18;
+              for (const v of videos) {
+                const r = v.getBoundingClientRect();
+                const d = Number(v.duration || 0);
+                const p = Number(v.currentTime || 0);
+                const src = String(v.currentSrc || v.src || '');
+                let s = area(r) * 0.7;
+                if (!v.paused && !v.ended) s += 1200000;
+                if (p > 0.4) s += 220000;
+                s += Math.max(0, 250000 - dist(r) * 420);
+                if (isFinite(d) && d > 0) {
+                  s += Math.min(d, 1800) * 350;
+                  if (d < 7) s -= 900000;
+                  else if (d < 15) s -= 260000;
+                }
+                if (src.includes('.m3u8') || src.includes('.mp4') || src.includes('.webm')) s += 120000;
+                if (s > best) { best = s; pick = v; }
+              }
+              if (pick) {
+                const src = String(pick.currentSrc || pick.src || '');
+                const d = Number(pick.duration || 0);
+                const p = Number(pick.currentTime || 0);
+                const cands = [];
+                const seen = new Set();
+                const push = (u) => {
+                  if (!u || typeof u !== 'string') return;
+                  let s = u.trim();
+                  if (!s) return;
+                  if (!s.startsWith('http://') && !s.startsWith('https://')) {
+                    try { s = new URL(s, location.href).toString(); } catch (_) {}
+                  }
+                  if (!s || seen.has(s) || isApiUrl(s)) return;
+                  seen.add(s);
+                  cands.push(s);
+                };
+                push(src);
+                try {
+                  const srcs = Array.from(pick.querySelectorAll('source')).map(s => s.src || s.getAttribute('src'));
+                  for (const s of srcs) push(s || '');
+                } catch (_) {}
+                Flutter.postMessage(JSON.stringify({
+                  type: 'media',
+                  action: 'favorite',
+                  mediaType: 'video',
+                  url: src,
+                  pageUrl: location.href || '',
+                  title: document.title || '',
+                  positionSec: isFinite(p) ? p : 0,
+                  durationSec: isFinite(d) ? d : 0,
+                  candidates: cands
+                }));
+                updateFeedbackStatus('已收藏当前视频', true);
+              }
+            }
+          }
+        } catch (_) {}
         if (!pressedElement) removeFeedbackElement();
         pressedElement = null;
       }, true);
@@ -1662,6 +2798,7 @@ class _BrowserPageState extends State<BrowserPage>
       final dynamic urlValue = data['url'];
       final bool isBase64 = data['isBase64'] ?? false;
       final String? action = data['action'];
+      final dynamic candidateValue = data['candidates'];
       final String mediaType =
           data['mediaType'] ??
           (_guessMimeType(
@@ -1675,6 +2812,37 @@ class _BrowserPageState extends State<BrowserPage>
                   : 'audio'));
 
       if (urlValue is! String) return;
+      if (action == 'favorite') {
+        final pageUrl = (data['pageUrl'] ?? '').toString().trim();
+        final title = (data['title'] ?? '').toString().trim();
+        final positionSec = (data['positionSec'] as num?)?.toDouble() ?? 0.0;
+        final durationSec = (data['durationSec'] as num?)?.toDouble() ?? 0.0;
+        final candidateUrls = <String>[];
+        if (candidateValue is List) {
+          for (final e in candidateValue) {
+            if (e is String && e.trim().isNotEmpty) {
+              candidateUrls.add(_toAbsoluteUrl(e.trim()));
+            }
+          }
+        }
+        await _addSharedFavoriteFromBrowser(
+          pageUrl: pageUrl.isNotEmpty ? pageUrl : _currentUrl,
+          videoUrl: _toAbsoluteUrl(urlValue),
+          title: title,
+          positionSec: positionSec,
+          durationSec: durationSec,
+          candidateUrls: candidateUrls,
+        );
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('已收藏当前视频'),
+              duration: Duration(milliseconds: 1200),
+            ),
+          );
+        }
+        return;
+      }
       if (action != 'download') return;
 
       // Base64 不参与去重；HTTP(S) URL 带 TTL，避免 finally 未执行时永久无法重下同一链接。
@@ -1996,6 +3164,53 @@ class _BrowserPageState extends State<BrowserPage>
 
       setState(() => _showHomePage = true);
       widget.onBrowserHomePageChanged?.call(_showHomePage);
+    }
+  }
+
+  bool _isBlankHistoryUrl(String? u) {
+    if (u == null || u.trim().isEmpty) return true;
+    final s = u.trim().toLowerCase();
+    return s == 'about:blank' ||
+        s.startsWith('about:blank#') ||
+        s == 'about://blank' ||
+        s.startsWith('about:srcdoc');
+  }
+
+  Future<void> _performWebGoBack() async {
+    final c = _controller;
+    if (c == null || _showHomePage) return;
+    if (!await c.canGoBack()) {
+      await _goToHomePage();
+      return;
+    }
+    await c.goBack();
+    await Future<void>.delayed(const Duration(milliseconds: 40));
+    for (var i = 0; i < 28; i++) {
+      final u = (await c.getUrl())?.toString() ?? '';
+      if (!_isBlankHistoryUrl(u)) return;
+      if (!await c.canGoBack()) {
+        await _goToHomePage();
+        return;
+      }
+      await c.goBack();
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+    }
+    final last = (await c.getUrl())?.toString() ?? '';
+    if (_isBlankHistoryUrl(last)) await _goToHomePage();
+  }
+
+  Future<void> _performWebGoForward() async {
+    final c = _controller;
+    if (c == null || _showHomePage) return;
+    if (!await c.canGoForward()) return;
+    await c.goForward();
+    await Future<void>.delayed(const Duration(milliseconds: 40));
+    for (var i = 0; i < 28; i++) {
+      final u = (await c.getUrl())?.toString() ?? '';
+      if (!_isBlankHistoryUrl(u)) return;
+      if (!await c.canGoForward()) return;
+      await c.goForward();
+      await Future<void>.delayed(const Duration(milliseconds: 40));
     }
   }
 
@@ -2811,7 +4026,19 @@ class _BrowserPageState extends State<BrowserPage>
   String _getStrippedMediaUrl(String url) {
     final uri = Uri.tryParse(url);
     if (uri == null) return url;
-    return uri.origin + uri.path;
+    if (uri.hasScheme && (uri.scheme == 'http' || uri.scheme == 'https')) {
+      return uri.origin + uri.path;
+    }
+    return url;
+  }
+
+  String? _safeHttpOrigin(String rawUrl) {
+    final uri = Uri.tryParse(rawUrl);
+    if (uri == null) return null;
+    if (uri.hasScheme && (uri.scheme == 'http' || uri.scheme == 'https')) {
+      return uri.origin;
+    }
+    return null;
   }
 
   /// 根据 URL 和当前页面返回合适的 Referer，用于绕过反盗链
@@ -2834,6 +4061,19 @@ class _BrowserPageState extends State<BrowserPage>
     if (lower.contains('zhihu.com')) return 'https://www.zhihu.com';
     if (lower.contains('weibo.com') || lower.contains('sinaimg.cn'))
       return 'https://weibo.com';
+    if (lower.contains('xvideos.') ||
+        lower.contains('xvideos-cdn') ||
+        lower.contains('xv-vod') ||
+        lower.contains('xnxx.')) {
+      final page =
+          _urlController.text.trim().isNotEmpty
+              ? _urlController.text.trim()
+              : _currentUrl;
+      if (page.startsWith('http') && page.toLowerCase().contains('xvideos.')) {
+        return page;
+      }
+      return 'https://www.xvideos.com';
+    }
     if (lower.contains('xcdn') ||
         lower.contains('cdn1.') ||
         lower.contains('cdn101')) {
@@ -2848,7 +4088,7 @@ class _BrowserPageState extends State<BrowserPage>
             ? _urlController.text.trim()
             : _currentUrl;
     if (pageUrl.startsWith('http')) return pageUrl;
-    return Uri.tryParse(pageUrl)?.origin ?? 'https://www.google.com';
+    return _safeHttpOrigin(pageUrl) ?? 'https://www.google.com';
   }
 
   /// 403 时尝试的 Referer 列表（按优先级）
@@ -2867,6 +4107,11 @@ class _BrowserPageState extends State<BrowserPage>
       } catch (_) {}
     }
     candidates.add(_getMediaReferer(mediaUrl));
+    if (_isXVideoLikeHost(mediaUrl) || page.toLowerCase().contains('xvideos.')) {
+      candidates.add('https://www.xvideos.com');
+      candidates.add('https://www.xvideos.com/');
+      candidates.add('https://www.xvideos.com/video');
+    }
     return candidates.toSet().toList();
   }
 
@@ -4507,25 +5752,23 @@ class _BrowserPageState extends State<BrowserPage>
     super.build(context);
     return WillPopScope(
       onWillPop: () async {
-        if (!_showHomePage && _controller != null) {
-          if (await _controller!.canGoBack()) {
-            _controller!.goBack();
-            return false;
-          } else {
-            _goToHomePage();
-            return false;
-          }
-        }
-        return true;
+        if (_showHomePage || _controller == null) return true;
+        await _performWebGoBack();
+        return false;
       },
       child: Scaffold(
         key: _scaffoldKey,
         appBar: AppBar(
           titleSpacing: 0,
           title: _showHomePage ? const Text('浏览器') : const SizedBox.shrink(),
+          leadingWidth: _showHomePage ? 56 : null,
           leading:
               _showHomePage
-                  ? null
+                  ? IconButton(
+                    icon: const Icon(Icons.favorite_border),
+                    onPressed: _showSharedFavoriteVideosSheet,
+                    tooltip: '收藏视频',
+                  )
                   : IconButton(
                     icon: const Icon(Icons.home),
                     onPressed: _goToHomePage,
@@ -4598,20 +5841,12 @@ class _BrowserPageState extends State<BrowserPage>
                         children: [
                           IconButton(
                             icon: const Icon(Icons.arrow_back),
-                            onPressed: () async {
-                              if (_controller != null &&
-                                  await _controller!.canGoBack())
-                                _controller!.goBack();
-                            },
+                            onPressed: () => unawaited(_performWebGoBack()),
                             tooltip: '后退',
                           ),
                           IconButton(
                             icon: const Icon(Icons.arrow_forward),
-                            onPressed: () async {
-                              if (_controller != null &&
-                                  await _controller!.canGoForward())
-                                _controller!.goForward();
-                            },
+                            onPressed: () => unawaited(_performWebGoForward()),
                             tooltip: '前进',
                           ),
                           IconButton(
@@ -4994,6 +6229,7 @@ class _BrowserPageState extends State<BrowserPage>
   void dispose() {
     _urlController.dispose();
     _downloadTasksNotifier.dispose();
+    _favoriteProgressSyncTimer?.cancel();
     // Fire-and-forget saves to avoid awaiting in dispose
     Future.microtask(() async {
       try {
@@ -5018,9 +6254,13 @@ class _BrowserPageState extends State<BrowserPage>
     String url,
     MediaType mediaType, {
     bool skipFailurePrompt = false,
+    void Function(String failureType)? onFailureType,
+    Duration? timeout,
+    DownloadProgressCallback? onProgress,
   }) async {
     // 仅下载图片和视频，不下载语音/音频
     if (mediaType == MediaType.audio) {
+      onFailureType?.call('unsupported_audio');
       if (mounted) {
         ScaffoldMessenger.of(
           context,
@@ -5029,7 +6269,13 @@ class _BrowserPageState extends State<BrowserPage>
       return false;
     }
     final absoluteUrl = _toAbsoluteUrl(url);
+    if (_downloadingUrls.contains(absoluteUrl)) {
+      onFailureType?.call('already_downloading');
+      onProgress?.call(0.0, detail: '同一链接已在下载中');
+      return true;
+    }
     if (_isApiEndpointUrl(absoluteUrl)) {
+      onFailureType?.call('api_endpoint_filtered');
       debugPrint('跳过 API 接口 URL（非媒体文件）: ');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -5044,6 +6290,16 @@ class _BrowserPageState extends State<BrowserPage>
     _downloadingUrls.add(absoluteUrl);
     final taskId = const Uuid().v4();
     final cancelToken = CancelToken();
+    var timedOut = false;
+    Timer? timeoutTimer;
+    if (timeout != null) {
+      timeoutTimer = Timer(timeout, () {
+        timedOut = true;
+        if (!cancelToken.isCancelled) {
+          cancelToken.cancel('timeout');
+        }
+      });
+    }
     if (mounted) _addDownloadTask(taskId, absoluteUrl, mediaType, cancelToken);
 
     File? downloadedFile;
@@ -5055,6 +6311,7 @@ class _BrowserPageState extends State<BrowserPage>
         mediaType,
         cancelToken: cancelToken,
         onProgress: (p, {detail}) {
+          onProgress?.call(p, detail: detail);
           if (mounted)
             _updateDownloadTask(
               taskId,
@@ -5095,6 +6352,7 @@ class _BrowserPageState extends State<BrowserPage>
         }
         return true;
       } else {
+        onFailureType?.call('empty_download_result');
         if (mounted && !skipFailurePrompt) {
           _updateDownloadTask(taskId, status: 'failed', progressDetail: '');
           ScaffoldMessenger.of(context).showSnackBar(
@@ -5114,9 +6372,44 @@ class _BrowserPageState extends State<BrowserPage>
       }
     } on DioException catch (e) {
       if (e.type == DioExceptionType.cancel) {
-        debugPrint('用户暂停下载: ');
+        if (timedOut) {
+          onFailureType?.call('timeout');
+          debugPrint('下载超时，已取消: ');
+          if (mounted) {
+            _updateDownloadTask(taskId, status: 'failed', progressDetail: '下载超时已取消');
+            if (!skipFailurePrompt) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('下载超时，已自动取消，请重试或更换清晰度/链接'),
+                  duration: Duration(milliseconds: 1800),
+                ),
+              );
+            }
+          }
+        } else {
+          onFailureType?.call('cancelled');
+          debugPrint('用户暂停下载: ');
+        }
         return false;
       }
+      var type = 'dio_error';
+      final code = e.response?.statusCode ?? 0;
+      if (code == 403) {
+        type = 'http_403';
+      } else if (code == 401) {
+        type = 'http_401';
+      } else if (code == 404) {
+        type = 'http_404';
+      } else if (code >= 500 && code < 600) {
+        type = 'http_5xx';
+      } else if (e.type == DioExceptionType.connectionTimeout ||
+          e.type == DioExceptionType.receiveTimeout ||
+          e.type == DioExceptionType.sendTimeout) {
+        type = 'timeout';
+      } else if (e.type == DioExceptionType.connectionError) {
+        type = 'connection_error';
+      }
+      onFailureType?.call(type);
       debugPrint('后台下载出错: , 错误: ');
       if (mounted && !skipFailurePrompt) {
         _updateDownloadTask(taskId, status: 'failed', progressDetail: '');
@@ -5131,6 +6424,16 @@ class _BrowserPageState extends State<BrowserPage>
       }
       return false;
     } catch (e, st) {
+      var type = 'exception';
+      final msg = e.toString().toLowerCase();
+      if (msg.contains('m3u8')) {
+        type = 'm3u8_parse_or_download';
+      } else if (msg.contains('origin is only applicable')) {
+        type = 'invalid_origin';
+      } else if (msg.contains('bad state')) {
+        type = 'bad_state';
+      }
+      onFailureType?.call(type);
       debugPrint('后台下载出错: , 错误: \n');
       final duplicateRow =
           e is _ExistingMediaDuplicateException ? e.existingRow : null;
@@ -5160,6 +6463,7 @@ class _BrowserPageState extends State<BrowserPage>
       }
       return false;
     } finally {
+      timeoutTimer?.cancel();
       _downloadingUrls.remove(absoluteUrl);
     }
   }
