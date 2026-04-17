@@ -739,14 +739,52 @@ class _BrowserPageState extends State<BrowserPage>
                   dense: true,
                   title: const Text('收藏视频'),
                   subtitle: Text('共${favorites.length}条'),
-                  trailing: TextButton.icon(
-                    onPressed: () => unawaited(
-                      _downloadFavoritesBatch(
-                        List<Map<String, dynamic>>.from(favorites),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      TextButton.icon(
+                        onPressed: () async {
+                          final shouldClear = await showDialog<bool>(
+                            context: context,
+                            builder: (ctx) => AlertDialog(
+                              title: const Text('确认清空'),
+                              content: Text('确定要删除全部 ${favorites.length} 条收藏视频记录吗？'),
+                              actions: [
+                                TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+                                TextButton(
+                                  onPressed: () => Navigator.pop(ctx, true),
+                                  style: TextButton.styleFrom(foregroundColor: Colors.red),
+                                  child: const Text('全部删除'),
+                                ),
+                              ],
+                            ),
+                          ) ?? false;
+                          if (shouldClear) {
+                            favorites.clear();
+                            await _saveSharedFavoriteVideos(favorites);
+                            setSheetState(() {});
+                            if (favorites.isEmpty && mounted) {
+                              Navigator.of(sheetCtx).pop();
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(content: Text('收藏记录已清空')),
+                              );
+                            }
+                          }
+                        },
+                        icon: const Icon(Icons.delete_sweep_outlined, color: Colors.red),
+                        label: const Text('一键清空', style: TextStyle(color: Colors.red)),
                       ),
-                    ),
-                    icon: const Icon(Icons.download_for_offline_outlined),
-                    label: const Text('一键下载全部'),
+                      const SizedBox(width: 8),
+                      TextButton.icon(
+                        onPressed: () => unawaited(
+                          _downloadFavoritesBatch(
+                            List<Map<String, dynamic>>.from(favorites),
+                          ),
+                        ),
+                        icon: const Icon(Icons.download_for_offline_outlined),
+                        label: const Text('一键下载全部'),
+                      ),
+                    ],
                   ),
                 ),
                 const Divider(height: 1),
@@ -1069,12 +1107,13 @@ class _BrowserPageState extends State<BrowserPage>
   Future<bool> _downloadOneFavorite({
     required Map<String, dynamic> item,
     bool showResultHint = false,
+    bool showModalDialog = true,
     void Function(String failureType)? onFailureType,
   }) async {
     return _downloadMediaRobustly(
       item: item,
       showResultHint: showResultHint,
-      showModalDialog: true, // 收藏栏下载，显示强提示弹窗
+      showModalDialog: showModalDialog, // 允许外部控制是否显示弹窗
       onFailureType: onFailureType,
     );
   }
@@ -1123,6 +1162,7 @@ class _BrowserPageState extends State<BrowserPage>
     var shownDialog = false;
     if (showModalDialog && mounted) {
       shownDialog = true;
+      final mediaName = item['title'] ?? item['name'] ?? '未知媒体';
       showGeneralDialog<void>(
         context: context,
         barrierDismissible: false,
@@ -1132,7 +1172,7 @@ class _BrowserPageState extends State<BrowserPage>
         pageBuilder:
             (_, __, ___) => Center(
               child: Container(
-                width: 220,
+                width: 240,
                 padding: const EdgeInsets.symmetric(
                   horizontal: 14,
                   vertical: 14,
@@ -1175,9 +1215,11 @@ class _BrowserPageState extends State<BrowserPage>
                       },
                     ),
                     const SizedBox(height: 10),
-                    const Text(
-                      '正在下载媒体文件...',
-                      style: TextStyle(
+                    Text(
+                      '正在下载：$mediaName',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
                         color: Colors.white,
                         fontSize: 13,
                         fontWeight: FontWeight.w600,
@@ -1403,6 +1445,8 @@ class _BrowserPageState extends State<BrowserPage>
                       builder:
                           (_, txt, __) => Text(
                             txt,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
                               color: Colors.white70,
                               fontSize: 12,
@@ -1417,16 +1461,20 @@ class _BrowserPageState extends State<BrowserPage>
     }
     try {
       for (int i = 0; i < items.length; i++) {
-        progressText.value = '第1轮 ${i + 1} / ${items.length}';
-        if (_isFavoriteLikelyDownloaded(items[i])) {
+        final currentItem = items[i];
+        final currentName = currentItem['title'] ?? currentItem['name'] ?? '未知媒体';
+        progressText.value = '正在下载(${i + 1}/${items.length})：$currentName';
+        
+        if (_isFavoriteLikelyDownloaded(currentItem)) {
           skipped++;
           progress.value = ((i + 1) / items.length) * 0.75;
           continue;
         }
         var failureType = 'unknown';
         final ok = await _downloadOneFavorite(
-          item: items[i],
+          item: currentItem,
           showResultHint: false,
+          showModalDialog: false, // 批量下载时，不显示单个文件的弹窗
           onFailureType: (t) => failureType = t,
         );
         if (ok) {
@@ -1434,19 +1482,23 @@ class _BrowserPageState extends State<BrowserPage>
         } else {
           failed++;
           if (_isRetryableFavoriteFailure(failureType)) {
-            retryQueue.add(Map<String, dynamic>.from(items[i]));
+            retryQueue.add(Map<String, dynamic>.from(currentItem));
           }
         }
         progress.value = ((i + 1) / items.length) * 0.75;
       }
       if (retryQueue.isNotEmpty) {
         for (int j = 0; j < retryQueue.length; j++) {
-          progressText.value = '第2轮重试 ${j + 1} / ${retryQueue.length}';
+          final currentItem = retryQueue[j];
+          final currentName = currentItem['title'] ?? currentItem['name'] ?? '未知媒体';
+          progressText.value = '重试(${j + 1}/${retryQueue.length})：$currentName';
+          
           retried++;
           await Future<void>.delayed(const Duration(milliseconds: 320));
           final ok = await _downloadOneFavorite(
-            item: retryQueue[j],
+            item: currentItem,
             showResultHint: false,
+            showModalDialog: false, // 重试时同样不显示单个文件弹窗
           );
           if (ok) {
             success++;
@@ -6741,7 +6793,7 @@ class _BrowserPageState extends State<BrowserPage>
                 ListTile(
                   leading: const Icon(Icons.upload_file),
                   title: const Text('导出浏览器数据'),
-                  subtitle: const Text('导出书签和常用网站'),
+                  subtitle: const Text('导出书签、常用网站和收藏视频'),
                   onTap: () {
                     Navigator.pop(context);
                     _exportBrowserData();
@@ -6750,7 +6802,7 @@ class _BrowserPageState extends State<BrowserPage>
                 ListTile(
                   leading: const Icon(Icons.download),
                   title: const Text('导入浏览器数据'),
-                  subtitle: const Text('导入书签和常用网站'),
+                  subtitle: const Text('导入书签、常用网站和收藏视频'),
                   onTap: () {
                     Navigator.pop(context);
                     _importBrowserData();
@@ -6816,8 +6868,9 @@ class _BrowserPageState extends State<BrowserPage>
       final Map<String, dynamic> browserData = {
         'bookmarks': _bookmarks,
         'common_websites': _commonWebsites,
+        'favorite_videos': await _loadSharedFavoriteVideos(), // 包含收藏视频数据
         'export_time': DateTime.now().toIso8601String(),
-        'version': '1.0',
+        'version': '1.1',
       };
 
       currentPhase = '创建数据文件';
@@ -7033,6 +7086,14 @@ class _BrowserPageState extends State<BrowserPage>
             }
           });
           await _saveCommonWebsites();
+        }
+
+        // 导入收藏视频
+        if (browserData['favorite_videos'] != null) {
+          final List<dynamic> favData = browserData['favorite_videos'];
+          final List<Map<String, dynamic>> favList =
+              favData.map((item) => Map<String, dynamic>.from(item)).toList();
+          await _saveSharedFavoriteVideos(favList);
         }
 
         progressNotifier.value = '导入完成！';
