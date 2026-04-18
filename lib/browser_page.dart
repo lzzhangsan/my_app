@@ -761,13 +761,18 @@ class _BrowserPageState extends State<BrowserPage>
                             ),
                           ) ?? false;
                           if (shouldClear) {
-                            favorites.clear();
+                            final pinnedCount = favorites.where((e) => e['pinned'] == true).length;
+                            favorites.removeWhere((e) => e['pinned'] != true);
                             await _saveSharedFavoriteVideos(favorites);
                             setSheetState(() {});
                             if (favorites.isEmpty && mounted) {
                               Navigator.of(sheetCtx).pop();
                               ScaffoldMessenger.of(context).showSnackBar(
                                 const SnackBar(content: Text('收藏记录已清空')),
+                              );
+                            } else if (mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text('非置顶内容已清空，保留了 $pinnedCount 条置顶视频')),
                               );
                             }
                           }
@@ -3728,10 +3733,15 @@ class _BrowserPageState extends State<BrowserPage>
           children: [
             Icon(iconData, size: 40, color: Colors.blue),
             const SizedBox(height: 8),
-            Text(
-              website['name'],
-              style: const TextStyle(fontSize: 16),
-              textAlign: TextAlign.center,
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4.0),
+              child: Text(
+                website['name'],
+                style: const TextStyle(fontSize: 14), // 稍微调小字号以适应更多文字
+                textAlign: TextAlign.center,
+                maxLines: 2, // 最多显示两行
+                overflow: TextOverflow.ellipsis, // 超出部分显示省略号
+              ),
             ),
           ],
         ),
