@@ -3031,13 +3031,31 @@ class _BrowserPageState extends State<BrowserPage>
             }
           }
         }
+        
+        final itemMap = {
+          'pageUrl': pageUrl.isNotEmpty ? pageUrl : _currentUrl,
+          'videoUrl': _toAbsoluteUrl(urlValue),
+          'title': title,
+          'candidateUrls': candidateUrls,
+        };
+
+        // 查重：如果媒体库已存在，则弹出提示并终止下载
+        if (await _favoriteExistsInLibrary(itemMap)) {
+          final existing = await _findExistingVideoBeforeDownload(_toAbsoluteUrl(urlValue));
+          if (existing != null) {
+            await _showVideoDuplicateSnackBar(existing);
+          } else {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('媒体库中已存在相同视频'), duration: Duration(seconds: 2)),
+              );
+            }
+          }
+          return;
+        }
+
         await _downloadMediaRobustly(
-          item: {
-            'pageUrl': pageUrl.isNotEmpty ? pageUrl : _currentUrl,
-            'videoUrl': _toAbsoluteUrl(urlValue),
-            'title': title,
-            'candidateUrls': candidateUrls,
-          },
+          item: itemMap,
           showResultHint: true,
         );
         return;
