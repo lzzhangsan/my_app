@@ -1082,6 +1082,7 @@ class _ResizableAndConfigurableTextBoxState
         borderRadius: BorderRadius.vertical(top: Radius.circular(10)),
       ),
       builder: (BuildContext context) {
+        final sheetContext = context;
         return GestureDetector(
           onTap: () {},
           behavior: HitTestBehavior.opaque,
@@ -1093,7 +1094,7 @@ class _ResizableAndConfigurableTextBoxState
               child: StatefulBuilder(
                 builder: (BuildContext context, StateSetter setModalState) {
                   return SingleChildScrollView(
-                    child: _buildTextBoxSettings(setModalState),
+                    child: _buildTextBoxSettings(setModalState, sheetContext),
                   );
                 },
               ),
@@ -1115,7 +1116,7 @@ class _ResizableAndConfigurableTextBoxState
   }
 
   // 文本框设置面板
-  Widget _buildTextBoxSettings(StateSetter setModalState) {
+  Widget _buildTextBoxSettings(StateSetter setModalState, BuildContext sheetContext) {
     return ClipRRect(
       borderRadius: BorderRadius.vertical(top: Radius.circular(10)),
       child: BackdropFilter(
@@ -1168,7 +1169,7 @@ class _ResizableAndConfigurableTextBoxState
                     _buildAlignmentButton(Icons.format_align_right, TextAlign.right),
                   ],
                   InkWell(
-                    onTap: () => Navigator.of(context).pop(),
+                    onTap: () => Navigator.of(sheetContext).pop(),
                     borderRadius: BorderRadius.circular(4),
                     child: Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -1306,7 +1307,10 @@ class _ResizableAndConfigurableTextBoxState
                   ),
                   IconButton(
                     icon: Icon(Icons.delete, color: Colors.red),
-                    onPressed: widget.onDeleteCurrent,
+                    onPressed: () {
+                      Navigator.of(sheetContext).pop();
+                      Future.microtask(widget.onDeleteCurrent);
+                    },
                     iconSize: 18,
                     padding: EdgeInsets.all(2),
                     constraints: BoxConstraints(minWidth: 28, minHeight: 28),
