@@ -550,6 +550,72 @@ class _BrowserPageState extends State<BrowserPage>
     }
   }
 
+  String _normalizeUrlForKey(String url) {
+    final u = Uri.tryParse(url.trim());
+    if (u == null) return url.trim();
+    final filtered = <String, dynamic>{};
+    for (final e in u.queryParameters.entries) {
+      final k = e.key.toLowerCase();
+      if (k.startsWith('utm_')) continue;
+      if (k == 'fbclid' ||
+          k == 'gclid' ||
+          k == 'igshid' ||
+          k == 'spm' ||
+          k == 'spm_id_from' ||
+          k == 'from' ||
+          k == 'source' ||
+          k == 'ref' ||
+          k == 'ref_src' ||
+          k == 'referrer' ||
+          k == 'session' ||
+          k == 'sid') {
+        continue;
+      }
+      filtered[e.key] = e.value;
+    }
+    final next = u.replace(fragment: '', queryParameters: filtered.isEmpty ? null : filtered);
+    return next.toString();
+  }
+
+  bool _isLikelyAdUrl(String url) {
+    final s = url.toLowerCase();
+    const patterns = [
+      'doubleclick.net',
+      'googleads',
+      'googlesyndication',
+      'adsystem',
+      'adservice',
+      'adnxs',
+      'openx.net',
+      'rubiconproject',
+      'pubmatic',
+      'taboola',
+      'outbrain',
+      'criteo',
+      'amazon-adsystem',
+      '/ads/',
+      '/ad/',
+      '/adv/',
+      'pixel.',
+      'analytics.',
+      'tracking',
+      'telemetry',
+      'prebid',
+      'header-bidding',
+      'banner',
+      'sponsor',
+      'promo',
+      'advertising',
+      'vast',
+      'vpaid',
+      'mraid',
+      'popunder',
+      'popup',
+      'interstitial',
+    ];
+    return patterns.any(s.contains);
+  }
+
   String _fmtFavoriteDate(String iso) {
     if (iso.isEmpty) return '未知';
     final dt = DateTime.tryParse(iso);
@@ -684,14 +750,24 @@ class _BrowserPageState extends State<BrowserPage>
     final list = List<Map<String, dynamic>>.from(await _loadSharedFavoriteVideos());
     final normPage = pageUrl.trim();
     final normVideo = videoUrl.trim();
+    final pageKey = _normalizeUrlForKey(normPage);
+    final videoKey = normVideo.isEmpty ? '' : _normalizeUrlForKey(normVideo);
     list.removeWhere((e) {
       final p = (e['pageUrl'] ?? '').toString().trim();
       final v = (e['videoUrl'] ?? '').toString().trim();
-      return (normVideo.isNotEmpty && v == normVideo) || p == normPage;
+      final pKey = (e['pageKey'] ?? '').toString().trim().isNotEmpty
+          ? (e['pageKey'] ?? '').toString().trim()
+          : _normalizeUrlForKey(p);
+      final vKey = (e['videoKey'] ?? '').toString().trim().isNotEmpty
+          ? (e['videoKey'] ?? '').toString().trim()
+          : _normalizeUrlForKey(v);
+      return (videoKey.isNotEmpty && vKey == videoKey) || (pageKey.isNotEmpty && pKey == pageKey);
     });
     list.insert(0, {
       'pageUrl': normPage,
       'videoUrl': normVideo,
+      'pageKey': pageKey,
+      'videoKey': videoKey,
       'title': title.trim(),
       'customName': '',
       'positionSec': positionSec,
@@ -2412,9 +2488,43 @@ class _BrowserPageState extends State<BrowserPage>
                 if (s > best) { best = s; pick = v; }
               }
               if (pick) {
-                const src = String(pick.currentSrc || pick.src || '');
+                const rawSrc = String(pick.currentSrc || pick.src || '');
                 const d = Number(pick.duration || 0);
                 const p = Number(pick.currentTime || 0);
+                const looksPreview = (u) => {
+                  if (!u) return false;
+                  const s = String(u).toLowerCase();
+                  const hints = ['preview','sample','trailer','teaser','thumb','poster','storyboard','sprite','clip','snippet','init.','/init','.m4s','/seg','/chunk','/fragment'];
+                  return hints.some(h => s.includes(h));
+                };
+                let bestUrl = '';
+                if (window.MediaInterceptor && window.MediaInterceptor.interceptedRequests) {
+                  const now = Date.now();
+                  let bestScore = -1;
+                  for (const [u, info] of window.MediaInterceptor.interceptedRequests) {
+                    if (!u) continue;
+                    if ((now - info.timestamp) > 1800000) continue;
+                    if (isApiUrl(u) || isAdUrl(u)) continue;
+                    const lower = String(u).toLowerCase();
+                    const hasMediaHint = lower.includes('.m3u8') || lower.includes('.m3u') || lower.includes('.mp4') || lower.includes('.webm') || lower.includes('.ts') || lower.includes('mpegurl');
+                    if (!hasMediaHint) continue;
+                    if (looksPreview(lower)) continue;
+                    let bonus = 0;
+                    if (lower.includes('.m3u8') || lower.includes('.m3u') || lower.includes('mpegurl')) bonus += 1000000000;
+                    else if (lower.includes('.ts')) bonus += 500000000;
+                    else if (lower.includes('.mp4') || lower.includes('.webm')) bonus += 200000000;
+                    const score = (info.timestamp || 0) + bonus;
+                    if (score > bestScore) {
+                      bestScore = score;
+                      bestUrl = u;
+                    }
+                  }
+                }
+                const finalUrl = (bestUrl && !isApiUrl(bestUrl) && !isAdUrl(bestUrl)) ? bestUrl : rawSrc;
+                if (!finalUrl || isBlobUrl(finalUrl) || isApiUrl(finalUrl) || isAdUrl(finalUrl)) {
+                  updateFeedbackStatus('请先播放后再收藏', false);
+                  return;
+                }
                 const cands = [];
                 const seen = new Set();
                 const push = (u) => {
@@ -2424,20 +2534,36 @@ class _BrowserPageState extends State<BrowserPage>
                   if (!s.startsWith('http://') && !s.startsWith('https://')) {
                     try { s = new URL(s, location.href).toString(); } catch (_) {}
                   }
-                  if (!s || seen.has(s) || isApiUrl(s)) return;
+                  if (!s || seen.has(s) || isApiUrl(s) || isAdUrl(s) || looksPreview(s)) return;
                   seen.add(s);
                   cands.push(s);
                 };
-                push(src);
+                push(finalUrl);
+                push(rawSrc);
                 try {
                   const srcs = Array.from(pick.querySelectorAll('source')).map(s => s.src || s.getAttribute('src'));
                   for (const s of srcs) push(s || '');
                 } catch (_) {}
+                if (window.MediaInterceptor && window.MediaInterceptor.interceptedRequests) {
+                  const now = Date.now();
+                  let added = 0;
+                  for (const [u, info] of window.MediaInterceptor.interceptedRequests) {
+                    if (added >= 8) break;
+                    if (!u) continue;
+                    if ((now - info.timestamp) > 1800000) continue;
+                    if (isApiUrl(u) || isAdUrl(u) || looksPreview(u)) continue;
+                    const lower = String(u).toLowerCase();
+                    const hasMediaHint = lower.includes('.m3u8') || lower.includes('.m3u') || lower.includes('.mp4') || lower.includes('.webm') || lower.includes('.ts') || lower.includes('mpegurl');
+                    if (!hasMediaHint) continue;
+                    push(u);
+                    added += 1;
+                  }
+                }
                 Flutter.postMessage(JSON.stringify({
                   type: 'media',
                   action: 'favorite',
                   mediaType: 'video',
-                  url: src,
+                  url: finalUrl,
                   pageUrl: location.href || '',
                   title: document.title || '',
                   positionSec: isFinite(p) ? p : 0,
@@ -2998,9 +3124,59 @@ class _BrowserPageState extends State<BrowserPage>
             }
           }
         }
+        final normalizedVideoUrl = _toAbsoluteUrl(urlValue);
+        if (normalizedVideoUrl.isNotEmpty &&
+            (_isLikelyAdUrl(normalizedVideoUrl) ||
+                _looksLikePreviewClipUrl(normalizedVideoUrl))) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('检测到广告/预览片段，未加入收藏'),
+                duration: Duration(milliseconds: 1200),
+              ),
+            );
+          }
+          return;
+        }
+        final pageKey = _normalizeUrlForKey(
+          (pageUrl.isNotEmpty ? pageUrl : _currentUrl).trim(),
+        );
+        final videoKey =
+            normalizedVideoUrl.isEmpty ? '' : _normalizeUrlForKey(normalizedVideoUrl);
+        final exists = (await _loadSharedFavoriteVideos()).any((row) {
+          final pk = (row['pageKey'] ?? '').toString().trim().isNotEmpty
+              ? (row['pageKey'] ?? '').toString().trim()
+              : _normalizeUrlForKey((row['pageUrl'] ?? '').toString());
+          final vk = (row['videoKey'] ?? '').toString().trim().isNotEmpty
+              ? (row['videoKey'] ?? '').toString().trim()
+              : _normalizeUrlForKey((row['videoUrl'] ?? '').toString());
+          if (videoKey.isNotEmpty && vk == videoKey) return true;
+          if (pageKey.isNotEmpty && pk == pageKey) return true;
+          return false;
+        });
+        if (exists) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('请勿重复收藏'),
+                duration: Duration(milliseconds: 1000),
+              ),
+            );
+          }
+          final ctrl = _controller;
+          if (ctrl != null) {
+            unawaited(
+              ctrl.evaluateJavascript(
+                source:
+                    "typeof updateFeedbackStatus === 'function' && updateFeedbackStatus('请勿重复收藏', false);",
+              ),
+            );
+          }
+          return;
+        }
         await _addSharedFavoriteFromBrowser(
           pageUrl: pageUrl.isNotEmpty ? pageUrl : _currentUrl,
-          videoUrl: _toAbsoluteUrl(urlValue),
+          videoUrl: normalizedVideoUrl,
           title: title,
           positionSec: positionSec,
           durationSec: durationSec,
