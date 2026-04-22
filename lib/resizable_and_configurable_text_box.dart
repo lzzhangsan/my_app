@@ -476,6 +476,7 @@ class _CursorHandleOverlayState extends State<_CursorHandleOverlay> {
 }
 
 class ResizableAndConfigurableTextBox extends StatefulWidget {
+  final String textBoxId;
   final Size initialSize;
   final String initialText;
   final CustomTextStyle initialTextStyle;
@@ -483,6 +484,8 @@ class ResizableAndConfigurableTextBox extends StatefulWidget {
   final Function(Size, String, CustomTextStyle, List<TextSegment>) onSave;
   final Function() onDeleteCurrent;
   final Function() onDuplicateCurrent;
+  final Map<String, double>? Function(String textBoxId)? getAboveTextBoxLayout;
+  final void Function(String textBoxId, Offset position)? onRequestPosition;
   // 如果此文本框是处于画布上（需要显示移动/复制到另一面的功能）
   final bool isOnCanvas;
   // 将此文本框移动到画布另一面（通常会改变所属页面/层）
@@ -498,6 +501,7 @@ class ResizableAndConfigurableTextBox extends StatefulWidget {
 
   const ResizableAndConfigurableTextBox({
     super.key,
+    required this.textBoxId,
     required this.initialSize,
     required this.initialText,
     required this.initialTextStyle,
@@ -505,6 +509,8 @@ class ResizableAndConfigurableTextBox extends StatefulWidget {
     required this.onSave,
     required this.onDeleteCurrent,
     required this.onDuplicateCurrent,
+    this.getAboveTextBoxLayout,
+    this.onRequestPosition,
     this.isOnCanvas = false,
     this.onMoveToOtherSide,
     this.onCopyToOtherSide,
@@ -864,28 +870,7 @@ class _ResizableAndConfigurableTextBoxState
     });
   }
 
-  double _estimateMaxFontSizeInDocument(double fallback) {
-    try {
-      final delta = _quillController.document.toDelta();
-      var maxSize = fallback;
-      for (final op in delta.toList()) {
-        if (!op.isInsert) continue;
-        final attrs = op.attributes;
-        if (attrs == null || attrs.isEmpty) continue;
-        final sizeVal = attrs['size'];
-        if (sizeVal == null) continue;
-        final parsed = double.tryParse(sizeVal.toString());
-        if (parsed != null && parsed.isFinite && parsed > maxSize) {
-          maxSize = parsed;
-        }
-      }
-      return maxSize;
-    } catch (_) {
-      return fallback;
-    }
-  }
-
-  void _autoFitHeightToText() {
+  void _autoFitHeightToText({double? widthOverride}) {
     final docText = _quillController.document.toPlainText();
     if (docText.isEmpty) return;
     var measureText = docText;
@@ -894,7 +879,9 @@ class _ResizableAndConfigurableTextBoxState
     }
     if (measureText.trim().isEmpty) return;
 
-    final availableWidth = (_size.width - 10).clamp(1.0, double.infinity);
+    final widthToUse =
+        (widthOverride ?? _size.width).clamp(_minWidth, double.infinity);
+    final availableWidth = (widthToUse - 10).clamp(1.0, double.infinity);
 
     final painter = TextPainter(
       text: TextSpan(
@@ -911,9 +898,10 @@ class _ResizableAndConfigurableTextBoxState
       maxLines: null,
     )..layout(maxWidth: availableWidth);
 
-    final targetHeight = (painter.height + 10).clamp(_minHeight, double.infinity);
+    final targetHeight =
+        (painter.height + 12.5).clamp(_minHeight, double.infinity);
     setState(() {
-      _size = Size(_size.width, targetHeight);
+      _size = Size(widthToUse, targetHeight);
     });
     _saveChanges();
   }
@@ -1232,7 +1220,19 @@ class _ResizableAndConfigurableTextBoxState
                     icon: const Icon(Icons.fit_screen, color: Colors.blue),
                     onPressed: () {
                       HapticFeedback.selectionClick();
-                      _autoFitHeightToText();
+                      final layout =
+                          widget.getAboveTextBoxLayout?.call(widget.textBoxId);
+                      final aboveX = layout?['x'];
+                      final aboveBottomY = layout?['bottomY'];
+                      final aboveWidth = layout?['width'];
+                      if (aboveX != null && aboveBottomY != null) {
+                        final spacing = 2.5 * 3.779527559;
+                        widget.onRequestPosition?.call(
+                          widget.textBoxId,
+                          Offset(aboveX, aboveBottomY + spacing),
+                        );
+                      }
+                      _autoFitHeightToText(widthOverride: aboveWidth);
                       setModalState(() {});
                     },
                     iconSize: 24,

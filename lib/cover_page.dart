@@ -649,6 +649,7 @@ class _CoverPageState extends State<CoverPage> with WidgetsBindingObserver {
           _saveContent();
         },
         child: ResizableAndConfigurableTextBox(
+          textBoxId: data['id'],
           initialSize: Size(data['width'], data['height']),
           initialText: data['text'],
           initialTextStyle: customTextStyle,

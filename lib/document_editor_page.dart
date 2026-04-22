@@ -894,7 +894,10 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
       setState(() {
         var uuid = Uuid();
         double positionX = 0.0;
-        double positionY = 0.0;
+        final scrollOffset = _scrollController.hasClients
+            ? _scrollController.offset
+            : _currentScrollOffset;
+        double positionY = scrollOffset + (20.0 * 3.779527559);
         if (_textBoxes.isNotEmpty) {
           List<Map<String, dynamic>> textBoxesCopy = List.from(_textBoxes);
           Map<String, dynamic> bottomMostTextBox = textBoxesCopy.reduce((
@@ -1222,6 +1225,46 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
         _contentChanged = true;
       }
     });
+  }
+
+  Map<String, double>? _getAboveTextBoxLayout(String id) {
+    final currentIndex = _textBoxes.indexWhere((e) => e['id'] == id);
+    if (currentIndex == -1) return null;
+    final current = _textBoxes[currentIndex];
+    final currentTop = (current['positionY'] as num?)?.toDouble() ?? 0.0;
+    final currentX = (current['positionX'] as num?)?.toDouble() ?? 0.0;
+
+    Map<String, dynamic>? best;
+    double bestBottom = double.negativeInfinity;
+    double bestAbsDx = double.infinity;
+
+    for (final box in _textBoxes) {
+      if (box['id'] == id) continue;
+      final x = (box['positionX'] as num?)?.toDouble() ?? 0.0;
+      final y = (box['positionY'] as num?)?.toDouble() ?? 0.0;
+      final w = (box['width'] as num?)?.toDouble() ?? 0.0;
+      final h = (box['height'] as num?)?.toDouble() ?? 0.0;
+      final bottom = y + h;
+      if (bottom > currentTop + 0.01) continue;
+      final absDx = (x - currentX).abs();
+      if (bottom > bestBottom + 0.01 ||
+          ((bottom - bestBottom).abs() <= 0.01 && absDx < bestAbsDx)) {
+        best = box;
+        bestBottom = bottom;
+        bestAbsDx = absDx;
+      }
+    }
+
+    if (best == null) return null;
+    final bestX = (best['positionX'] as num?)?.toDouble() ?? 0.0;
+    final bestY = (best['positionY'] as num?)?.toDouble() ?? 0.0;
+    final bestW = (best['width'] as num?)?.toDouble() ?? 0.0;
+    final bestH = (best['height'] as num?)?.toDouble() ?? 0.0;
+    return {
+      'x': bestX,
+      'width': bestW,
+      'bottomY': bestY + bestH,
+    };
   }
 
   void _updateTextBox(
@@ -2980,6 +3023,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
     }
 
     return ResizableAndConfigurableTextBox(
+      textBoxId: data['id'],
       initialSize: Size(
         (data['width'] as num?)?.toDouble() ?? 200.0,
         (data['height'] as num?)?.toDouble() ?? 100.0,
@@ -2987,6 +3031,13 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
       initialText: data['text']?.toString() ?? '',
       initialTextStyle: customTextStyle,
       initialTextSegments: initialSegments,
+      getAboveTextBoxLayout: _getAboveTextBoxLayout,
+      onRequestPosition: (textBoxId, position) {
+        Future.microtask(() {
+          _updateTextBoxPosition(textBoxId, position);
+          _reassociateContentWithCanvas(textBoxId, 'text');
+        });
+      },
       onSave: (size, text, textStyle, textSegments) {
         Future.microtask(() {
           _updateTextBox(data['id'], size, text, textStyle, textSegments);
