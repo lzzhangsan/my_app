@@ -833,6 +833,37 @@ class _ResizableAndConfigurableTextBoxState
     }
   }
 
+  void _selectCurrentLine() {
+    final docText = _quillController.document.toPlainText();
+    if (docText.isEmpty) return;
+    final sel = _quillController.selection;
+    final maxOffset = (docText.length - 1).clamp(0, docText.length);
+    final caret = sel.extentOffset.clamp(0, maxOffset);
+
+    final prevNewline = docText.lastIndexOf('\n', (caret - 1).clamp(0, maxOffset));
+    final start = prevNewline == -1 ? 0 : prevNewline + 1;
+
+    final nextNewline = docText.indexOf('\n', caret);
+    final end = nextNewline == -1 ? docText.length : nextNewline;
+
+    if (end <= start) {
+      _quillController.updateSelection(
+        TextSelection.collapsed(offset: start),
+        quill.ChangeSource.local,
+      );
+      return;
+    }
+
+    _quillController.updateSelection(
+      TextSelection(baseOffset: start, extentOffset: end),
+      quill.ChangeSource.local,
+    );
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _editorKey.currentState?.showToolbar();
+    });
+  }
+
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
@@ -1733,6 +1764,15 @@ class _ResizableAndConfigurableTextBoxState
                                     SelectionChangedCause.toolbar,
                                   )
                               : null,
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.wrap_text, size: 18),
+                          tooltip: '选择本行',
+                          splashRadius: 18,
+                          onPressed: () {
+                            HapticFeedback.selectionClick();
+                            _selectCurrentLine();
+                          },
                         ),
                         const SizedBox(width: 4),
                         IconButton(
