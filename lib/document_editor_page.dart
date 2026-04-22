@@ -1279,6 +1279,123 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
     return maxWidth > 0.0 ? maxWidth : null;
   }
 
+  double _estimateTextBoxHeightForPlainText(
+    String text,
+    double width,
+    double fontSize,
+    bool isItalic,
+    TextAlign textAlign,
+  ) {
+    var measureText = text.replaceAll('\r\n', '\n');
+    if (measureText.endsWith('\n')) {
+      measureText = measureText.substring(0, measureText.length - 1);
+    }
+    if (measureText.trim().isEmpty) return 25.0;
+    final availableWidth = (width - 10).clamp(1.0, double.infinity);
+    final painter = TextPainter(
+      text: TextSpan(
+        text: measureText,
+        style: TextStyle(
+          fontSize: fontSize,
+          fontWeight: FontWeight.normal,
+          fontStyle: isItalic ? FontStyle.italic : FontStyle.normal,
+          height: 1.23,
+        ),
+      ),
+      textAlign: textAlign,
+      textDirection: TextDirection.ltr,
+      maxLines: null,
+    )..layout(maxWidth: availableWidth);
+    return (painter.height + 12.5).clamp(25.0, double.infinity);
+  }
+
+  void _splitTextBoxIntoMultiple(String textBoxId, List<String> chunks) {
+    if (chunks.isEmpty) return;
+    final srcIndex = _textBoxes.indexWhere((e) => e['id'] == textBoxId);
+    if (srcIndex == -1) return;
+    final src = _textBoxes[srcIndex];
+    final x = (src['positionX'] as num?)?.toDouble() ?? 0.0;
+    final y = (src['positionY'] as num?)?.toDouble() ?? 0.0;
+    final w = (src['width'] as num?)?.toDouble() ?? 200.0;
+    final h = (src['height'] as num?)?.toDouble() ?? 100.0;
+    final fontSize = (src['fontSize'] as num?)?.toDouble() ?? 16.0;
+    final fontColor = (src['fontColor'] as int?) ?? Colors.black.value;
+    final fontWeight = (src['fontWeight'] as int?) ?? FontWeight.normal.index;
+    final isItalic = (src['isItalic'] as int?) == 1;
+    final backgroundColor = src['backgroundColor'] as int?;
+    final textAlignIndex = (src['textAlign'] as int?) ?? TextAlign.left.index;
+    final textAlign = TextAlign.values[textAlignIndex];
+    final spacing = 2.5 * 3.779527559;
+    final srcBottom = y + h;
+
+    final estimatedHeights =
+        chunks
+            .map(
+              (t) =>
+                  _estimateTextBoxHeightForPlainText(t, w, fontSize, isItalic, textAlign),
+            )
+            .toList();
+    double pushDown = 0.0;
+    for (final eh in estimatedHeights) {
+      pushDown += spacing + eh;
+    }
+
+    setState(() {
+      for (final box in _textBoxes) {
+        if (box['id'] == textBoxId) continue;
+        final by = (box['positionY'] as num?)?.toDouble() ?? 0.0;
+        if (by >= srcBottom - 0.01) {
+          box['positionY'] = by + pushDown;
+        }
+      }
+      for (final box in _imageBoxes) {
+        final by = (box['positionY'] as num?)?.toDouble() ?? 0.0;
+        if (by >= srcBottom - 0.01) {
+          box['positionY'] = by + pushDown;
+        }
+      }
+      for (final box in _audioBoxes) {
+        final by = (box['positionY'] as num?)?.toDouble() ?? 0.0;
+        if (by >= srcBottom - 0.01) {
+          box['positionY'] = by + pushDown;
+        }
+      }
+      for (final canvas in _canvases) {
+        if (canvas.positionY >= srcBottom - 0.01) {
+          canvas.positionY += pushDown;
+        }
+      }
+
+      var curY = srcBottom + spacing;
+      final uuid = Uuid();
+      for (int i = 0; i < chunks.length; i++) {
+        final id = uuid.v4();
+        final newHeight = estimatedHeights[i];
+        final newTextBox = <String, dynamic>{
+          'id': id,
+          'documentName': widget.documentName,
+          'positionX': x,
+          'positionY': curY,
+          'width': w,
+          'height': newHeight,
+          'text': chunks[i],
+          'fontSize': fontSize,
+          'fontColor': fontColor,
+          'fontWeight': fontWeight,
+          'isItalic': isItalic ? 1 : 0,
+          'backgroundColor': backgroundColor,
+          'textAlign': textAlign.index,
+        };
+        _textBoxes.add(newTextBox);
+        _associateContentWithCanvas(id, x, curY, 'text');
+        curY += newHeight + spacing;
+      }
+      _contentChanged = true;
+    });
+    _debouncedSave();
+    _saveStateToHistory();
+  }
+
   void _updateTextBox(
     String id,
     Size size,
@@ -3045,6 +3162,11 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
       initialTextSegments: initialSegments,
       getAboveTextBoxLayout: _getAboveTextBoxLayout,
       getDocumentWidestTextBoxWidth: _getWidestTextBoxWidth,
+      onRequestSplitIntoTextBoxes: (textBoxId, chunks) {
+        Future.microtask(() {
+          _splitTextBoxIntoMultiple(textBoxId, chunks);
+        });
+      },
       onRequestPosition: (textBoxId, position) {
         Future.microtask(() {
           _updateTextBoxPosition(textBoxId, position);

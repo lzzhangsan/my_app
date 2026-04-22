@@ -487,6 +487,8 @@ class ResizableAndConfigurableTextBox extends StatefulWidget {
   final Map<String, double>? Function(String textBoxId)? getAboveTextBoxLayout;
   final double? Function()? getDocumentWidestTextBoxWidth;
   final void Function(String textBoxId, Offset position)? onRequestPosition;
+  final void Function(String textBoxId, List<String> chunks)?
+  onRequestSplitIntoTextBoxes;
   // 如果此文本框是处于画布上（需要显示移动/复制到另一面的功能）
   final bool isOnCanvas;
   // 将此文本框移动到画布另一面（通常会改变所属页面/层）
@@ -513,6 +515,7 @@ class ResizableAndConfigurableTextBox extends StatefulWidget {
     this.getAboveTextBoxLayout,
     this.getDocumentWidestTextBoxWidth,
     this.onRequestPosition,
+    this.onRequestSplitIntoTextBoxes,
     this.isOnCanvas = false,
     this.onMoveToOtherSide,
     this.onCopyToOtherSide,
@@ -527,6 +530,8 @@ class ResizableAndConfigurableTextBox extends StatefulWidget {
 
 class _ResizableAndConfigurableTextBoxState
     extends State<ResizableAndConfigurableTextBox> with WidgetsBindingObserver {
+  static const int _maxCharsPerBox = 4000;
+  static const int _largePasteThreshold = 8000;
   late Size _size;
   late CustomTextStyle _textStyle;
   late quill.QuillController _quillController;
@@ -551,6 +556,68 @@ class _ResizableAndConfigurableTextBoxState
   final GlobalKey<quill.EditorState> _editorKey = GlobalKey<quill.EditorState>();
   final GlobalKey _cursorHandleStackKey = GlobalKey();
   bool _caretReportScheduled = false;
+
+  List<String> _splitPlainTextIntoChunks(String text, int maxChars) {
+    final t = text.replaceAll('\r\n', '\n');
+    if (t.isEmpty) return const [];
+    final chunks = <String>[];
+    int i = 0;
+    while (i < t.length) {
+      final maxEnd = (i + maxChars).clamp(i, t.length);
+      if (maxEnd == t.length) {
+        final part = t.substring(i);
+        if (part.isNotEmpty) chunks.add(part);
+        break;
+      }
+      final window = t.substring(i, maxEnd);
+      int cut = window.lastIndexOf('\n');
+      if (cut < (maxChars * 0.5).floor()) {
+        cut = window.lastIndexOf('。');
+      }
+      if (cut < (maxChars * 0.5).floor()) {
+        cut = window.lastIndexOf('！');
+      }
+      if (cut < (maxChars * 0.5).floor()) {
+        cut = window.lastIndexOf('？');
+      }
+      if (cut < (maxChars * 0.5).floor()) {
+        cut = -1;
+      }
+      final end = cut == -1 ? maxEnd : i + cut + 1;
+      final part = t.substring(i, end);
+      if (part.isNotEmpty) chunks.add(part);
+      i = end;
+    }
+    return chunks;
+  }
+
+  bool _trySplitLargePastePlainText(String? clipboardText) {
+    if (clipboardText == null) return false;
+    final normalized = clipboardText;
+    if (normalized.length < _largePasteThreshold) return false;
+    final chunks = _splitPlainTextIntoChunks(normalized, _maxCharsPerBox);
+    if (chunks.length <= 1) return false;
+
+    final targetWidth = widget.getDocumentWidestTextBoxWidth?.call() ?? _size.width;
+    final first = chunks.first;
+    final rest = chunks.sublist(1);
+    final docLen = _quillController.document.length;
+    _quillController.toggledStyle = const quill.Style();
+    try {
+      _isPastingRichDelta = true;
+      _quillController.replaceText(
+        0,
+        docLen,
+        first,
+        TextSelection.collapsed(offset: first.length.clamp(0, first.length)),
+      );
+    } finally {
+      _isPastingRichDelta = false;
+    }
+    _autoFitHeightToText(widthOverride: targetWidth);
+    widget.onRequestSplitIntoTextBoxes?.call(widget.textBoxId, rest);
+    return true;
+  }
 
   void _armImePasteGuard(int start, int insertedLength) {
     _imePasteGuardStart = start;
@@ -714,6 +781,9 @@ class _ResizableAndConfigurableTextBoxState
             final clipboardData =
                 await Clipboard.getData(Clipboard.kTextPlain);
             final clipboardText = clipboardData?.text;
+            if (_trySplitLargePastePlainText(clipboardText)) {
+              return true;
+            }
             final d = _quillClipboardStore.tryGetDelta(clipboardText);
             Delta? delta = (d != null && d is Delta) ? d : null;
             if (delta == null &&
@@ -778,6 +848,15 @@ class _ResizableAndConfigurableTextBoxState
     final clipboardData =
         await Clipboard.getData(Clipboard.kTextPlain);
     final clipboardText = clipboardData?.text;
+    if (_trySplitLargePastePlainText(clipboardText)) {
+      state.hideToolbar();
+      SchedulerBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          state.bringIntoView(TextPosition(offset: _quillController.selection.extentOffset));
+        }
+      });
+      return;
+    }
     final d = _quillClipboardStore.tryGetDelta(clipboardText);
     Delta? delta = (d != null && d is Delta) ? d : null;
     if (delta == null &&
