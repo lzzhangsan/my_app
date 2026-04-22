@@ -864,6 +864,60 @@ class _ResizableAndConfigurableTextBoxState
     });
   }
 
+  double _estimateMaxFontSizeInDocument(double fallback) {
+    try {
+      final delta = _quillController.document.toDelta();
+      var maxSize = fallback;
+      for (final op in delta.toList()) {
+        if (!op.isInsert) continue;
+        final attrs = op.attributes;
+        if (attrs == null || attrs.isEmpty) continue;
+        final sizeVal = attrs['size'];
+        if (sizeVal == null) continue;
+        final parsed = double.tryParse(sizeVal.toString());
+        if (parsed != null && parsed.isFinite && parsed > maxSize) {
+          maxSize = parsed;
+        }
+      }
+      return maxSize;
+    } catch (_) {
+      return fallback;
+    }
+  }
+
+  void _autoFitHeightToText() {
+    final docText = _quillController.document.toPlainText();
+    if (docText.isEmpty) return;
+    var measureText = docText;
+    if (measureText.endsWith('\n')) {
+      measureText = measureText.substring(0, measureText.length - 1);
+    }
+    if (measureText.trim().isEmpty) return;
+
+    final availableWidth = (_size.width - 10).clamp(1.0, double.infinity);
+
+    final painter = TextPainter(
+      text: TextSpan(
+        text: measureText,
+        style: TextStyle(
+          fontSize: _textStyle.fontSize,
+          fontWeight: FontWeight.normal,
+          fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
+          height: 1.23,
+        ),
+      ),
+      textAlign: _textStyle.textAlign,
+      textDirection: TextDirection.ltr,
+      maxLines: null,
+    )..layout(maxWidth: availableWidth);
+
+    final targetHeight = (painter.height + 10).clamp(_minHeight, double.infinity);
+    setState(() {
+      _size = Size(_size.width, targetHeight);
+    });
+    _saveChanges();
+  }
+
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
@@ -1174,6 +1228,18 @@ class _ResizableAndConfigurableTextBoxState
                   mainAxisSize: MainAxisSize.min,
                   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                   children: [
+                  IconButton(
+                    icon: const Icon(Icons.fit_screen, color: Colors.blue),
+                    onPressed: () {
+                      HapticFeedback.selectionClick();
+                      _autoFitHeightToText();
+                      setModalState(() {});
+                    },
+                    iconSize: 24,
+                    padding: const EdgeInsets.all(4),
+                    constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
+                    tooltip: '文本框适应文字',
+                  ),
                   if (widget.isOnCanvas) ...[
                     _buildAlignmentButton(Icons.format_align_left, TextAlign.left, isLarge: true),
                     _buildAlignmentButton(Icons.format_align_center, TextAlign.center, isLarge: true),

@@ -115,6 +115,7 @@ class DatabaseService {
 
       // 检查document_settings表是否存在position_locked字段
       await _ensurePositionLockedColumn();
+      await _ensureLastScrollOffsetColumn();
 
       // 部分环境未走 onUpgrade 或旧表缺少列：补全渐进放大中心点字段
       await _ensureMediaItemsKenBurnsColumns(_database!);
@@ -324,6 +325,7 @@ class DatabaseService {
           background_color INTEGER,
           text_enhance_mode INTEGER DEFAULT 0,
           position_locked INTEGER DEFAULT 1,
+          last_scroll_offset REAL DEFAULT 0,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL,
           FOREIGN KEY (document_id) REFERENCES documents (id) ON DELETE CASCADE
@@ -754,6 +756,45 @@ class DatabaseService {
         Logger.log('❌ [DB] 检查或添加position_locked字段失败: $e');
       }
       // 不抛出异常，避免影响数据库初始化
+    }
+  }
+
+  Future<void> _ensureLastScrollOffsetColumn() async {
+    try {
+      final columns = await _database!.rawQuery(
+        "PRAGMA table_info(document_settings)",
+      );
+      var hasLastScrollOffset = false;
+      for (final column in columns) {
+        if (column['name'] == 'last_scroll_offset') {
+          hasLastScrollOffset = true;
+          break;
+        }
+      }
+
+      if (!hasLastScrollOffset) {
+        if (kDebugMode) {
+          Logger.log(
+            '🔧 [DB] document_settings表缺少last_scroll_offset字段，正在添加...',
+          );
+        }
+        await _database!.execute(
+          'ALTER TABLE document_settings ADD COLUMN last_scroll_offset REAL DEFAULT 0',
+        );
+        if (kDebugMode) {
+          Logger.log(
+            '✅ [DB] 已成功添加last_scroll_offset字段到document_settings表',
+          );
+        }
+      } else {
+        if (kDebugMode) {
+          Logger.log('✅ [DB] document_settings表已存在last_scroll_offset字段');
+        }
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        Logger.log('❌ [DB] 检查或添加last_scroll_offset字段失败: $e');
+      }
     }
   }
 
@@ -6172,6 +6213,7 @@ class DatabaseService {
     int? colorValue,
     bool? textEnhanceMode,
     bool? positionLocked,
+    double? lastScrollOffset,
     /// 为 true 时按传入的 [imagePath]/[videoPath]（可为 null）整体写入背景媒体，用于生命周期保存。
     bool commitBackgroundMedia = false,
     BackgroundMediaOrigin? backgroundImageOrigin,
@@ -6261,6 +6303,8 @@ class DatabaseService {
             positionLocked != null
                 ? (positionLocked ? 1 : 0)
                 : existing['position_locked'];
+        settingsData['last_scroll_offset'] =
+            lastScrollOffset ?? existing['last_scroll_offset'] ?? 0.0;
         // 保留原有的created_at字段
         settingsData['created_at'] = existing['created_at'];
         Logger.log(
@@ -6303,6 +6347,7 @@ class DatabaseService {
             textEnhanceMode != null ? (textEnhanceMode ? 1 : 0) : 1;
         settingsData['position_locked'] =
             positionLocked != null ? (positionLocked ? 1 : 0) : 1;
+        settingsData['last_scroll_offset'] = lastScrollOffset ?? 0.0;
         settingsData['created_at'] = DateTime.now().millisecondsSinceEpoch;
         Logger.log(
           '🔧 [DB] 创建新设置 - text_enhance_mode: ${settingsData['text_enhance_mode']}, position_locked: ${settingsData['position_locked']}',

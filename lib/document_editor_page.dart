@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:uuid/uuid.dart';
 import 'core/service_locator.dart';
@@ -63,6 +64,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
   late ScrollController _scrollController;
   double _currentScrollOffset = 0.0;
   double _scrollPercentage = 0.0;
+  double? _pendingRestoreScrollOffset;
+  bool _didRestoreScrollOffset = false;
+  int _restoreScrollAttempt = 0;
   final GlobalKey<MediaPlayerContainerState> _mediaPlayerKey =
       GlobalKey<MediaPlayerContainerState>();
   /// 右下角浮层正在展示图/视频时为 true，用于暂停底层背景视频。
@@ -134,6 +138,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
         colorValue: _backgroundColor?.value,
         textEnhanceMode: _textEnhanceMode,
         positionLocked: _isPositionLocked,
+        lastScrollOffset: _scrollController.hasClients
+            ? _scrollController.offset
+            : _currentScrollOffset,
         commitBackgroundMedia: true,
         backgroundImageOrigin: _backgroundImageOrigin,
         backgroundVideoOrigin: _backgroundVideoOrigin,
@@ -196,6 +203,8 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
         String? imagePath = settings['background_image_path'] as String?;
         String? videoPath = settings['background_video_path'] as String?;
         int? colorValue = settings['background_color'];
+        _pendingRestoreScrollOffset =
+            (settings['last_scroll_offset'] as num?)?.toDouble() ?? 0.0;
         // 强制设置为true，确保所有文档都默认启用这两个功能
         bool textEnhanceMode = true;
         bool positionLocked = true;
@@ -289,6 +298,40 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
         _isLoading = false;
       });
     }
+  }
+
+  void _scheduleRestoreScrollOffsetIfNeeded() {
+    if (_didRestoreScrollOffset) return;
+    final target = _pendingRestoreScrollOffset;
+    if (target == null || target <= 0) return;
+    if (!mounted) return;
+    SchedulerBinding.instance.addPostFrameCallback((_) => _tryRestoreScrollOffset());
+  }
+
+  void _tryRestoreScrollOffset() {
+    if (!mounted || _didRestoreScrollOffset) return;
+    final target = _pendingRestoreScrollOffset;
+    if (target == null || target <= 0) {
+      _didRestoreScrollOffset = true;
+      return;
+    }
+    if (!_scrollController.hasClients) {
+      _retryRestoreScrollOffset();
+      return;
+    }
+    final maxScroll = _scrollController.position.maxScrollExtent;
+    final clamped = target.clamp(0.0, maxScroll);
+    _scrollController.jumpTo(clamped);
+    _didRestoreScrollOffset = true;
+  }
+
+  void _retryRestoreScrollOffset() {
+    _restoreScrollAttempt++;
+    if (_restoreScrollAttempt >= 12) {
+      _didRestoreScrollOffset = true;
+      return;
+    }
+    SchedulerBinding.instance.addPostFrameCallback((_) => _tryRestoreScrollOffset());
   }
 
   Future<void> _pickBackgroundImage() async {
@@ -690,6 +733,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
         _isLoading = false;
       });
       Logger.log('✅ UI状态更新完成');
+      _scheduleRestoreScrollOffsetIfNeeded();
 
       Logger.log('🔄 正在添加历史记录...');
       try {
@@ -2050,6 +2094,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
       colorValue: _backgroundColor?.value,
       textEnhanceMode: _textEnhanceMode,
       positionLocked: _isPositionLocked,
+      lastScrollOffset: _scrollController.hasClients
+          ? _scrollController.offset
+          : _currentScrollOffset,
       commitBackgroundMedia: true,
       backgroundImageOrigin: _backgroundImageOrigin,
       backgroundVideoOrigin: _backgroundVideoOrigin,
