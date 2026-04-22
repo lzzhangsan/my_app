@@ -1267,6 +1267,18 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
     };
   }
 
+  double? _getWidestTextBoxWidth() {
+    if (_textBoxes.isEmpty) return null;
+    double maxWidth = 0.0;
+    for (final box in _textBoxes) {
+      final w = (box['width'] as num?)?.toDouble();
+      if (w != null && w > maxWidth) {
+        maxWidth = w;
+      }
+    }
+    return maxWidth > 0.0 ? maxWidth : null;
+  }
+
   void _updateTextBox(
     String id,
     Size size,
@@ -3032,6 +3044,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
       initialTextStyle: customTextStyle,
       initialTextSegments: initialSegments,
       getAboveTextBoxLayout: _getAboveTextBoxLayout,
+      getDocumentWidestTextBoxWidth: _getWidestTextBoxWidth,
       onRequestPosition: (textBoxId, position) {
         Future.microtask(() {
           _updateTextBoxPosition(textBoxId, position);

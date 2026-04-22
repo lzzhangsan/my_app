@@ -485,6 +485,7 @@ class ResizableAndConfigurableTextBox extends StatefulWidget {
   final Function() onDeleteCurrent;
   final Function() onDuplicateCurrent;
   final Map<String, double>? Function(String textBoxId)? getAboveTextBoxLayout;
+  final double? Function()? getDocumentWidestTextBoxWidth;
   final void Function(String textBoxId, Offset position)? onRequestPosition;
   // 如果此文本框是处于画布上（需要显示移动/复制到另一面的功能）
   final bool isOnCanvas;
@@ -510,6 +511,7 @@ class ResizableAndConfigurableTextBox extends StatefulWidget {
     required this.onDeleteCurrent,
     required this.onDuplicateCurrent,
     this.getAboveTextBoxLayout,
+    this.getDocumentWidestTextBoxWidth,
     this.onRequestPosition,
     this.isOnCanvas = false,
     this.onMoveToOtherSide,
@@ -1232,7 +1234,9 @@ class _ResizableAndConfigurableTextBoxState
                           Offset(aboveX, aboveBottomY + spacing),
                         );
                       }
-                      _autoFitHeightToText(widthOverride: aboveWidth);
+                      final widestWidth = widget.getDocumentWidestTextBoxWidth?.call();
+                      final targetWidth = widestWidth ?? aboveWidth;
+                      _autoFitHeightToText(widthOverride: targetWidth);
                       setModalState(() {});
                     },
                     iconSize: 24,
