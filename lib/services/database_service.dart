@@ -4872,11 +4872,15 @@ class DatabaseService {
       // 预复制背景图片（事务外）
       Map<String, dynamic>? newSettings;
       if (docSettings.isNotEmpty) {
-        newSettings = Map<String, dynamic>.from(docSettings.first);
-        newSettings!.remove('id');
-        newSettings!['document_id'] = newDocId;
-        newSettings!.remove('document_name');
-        String? originalBackgroundPath = newSettings!['background_image_path'];
+        final settings = Map<String, dynamic>.from(docSettings.first);
+        settings.remove('id');
+        settings['document_id'] = newDocId;
+        settings.remove('document_name');
+        if (settings.containsKey('last_scroll_offset')) {
+          settings['last_scroll_offset'] = 0.0;
+        }
+        newSettings = settings;
+        String? originalBackgroundPath = settings['background_image_path'];
         if (originalBackgroundPath != null &&
             originalBackgroundPath.isNotEmpty) {
           try {
@@ -4895,16 +4899,16 @@ class DatabaseService {
                 '${const Uuid().v4()}$ext',
               );
               await originalFile.copy(newBackgroundPath);
-              newSettings!['background_image_path'] = newBackgroundPath;
+              settings['background_image_path'] = newBackgroundPath;
               Logger.log(
                 '从模板复制背景图片: $originalBackgroundPath -> $newBackgroundPath',
               );
             } else {
-              newSettings!['background_image_path'] = null;
+              settings['background_image_path'] = null;
             }
           } catch (e) {
             Logger.log('复制模板背景图片时出错: $e');
-            newSettings!['background_image_path'] = null;
+            settings['background_image_path'] = null;
           }
         }
       }

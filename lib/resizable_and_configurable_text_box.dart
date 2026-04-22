@@ -619,6 +619,60 @@ class _ResizableAndConfigurableTextBoxState
     return true;
   }
 
+  double _measureSingleLineWrappedWidth(String text) {
+    final t = text.replaceAll('\r\n', '\n');
+    if (t.trim().isEmpty) return _size.width;
+    final painter = TextPainter(
+      text: TextSpan(
+        text: t,
+        style: TextStyle(
+          fontSize: _textStyle.fontSize,
+          fontWeight: FontWeight.normal,
+          fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
+          height: 1.23,
+        ),
+      ),
+      textAlign: _textStyle.textAlign,
+      textDirection: TextDirection.ltr,
+      maxLines: 1,
+      ellipsis: null,
+    )..layout(maxWidth: 100000);
+    const overlayRightReserve = 15.0;
+    return (painter.width + 10 + overlayRightReserve).clamp(
+      _minWidth,
+      double.infinity,
+    );
+  }
+
+  bool _isSingleVisualLineAtWidth(String text, double width) {
+    final t = text.replaceAll('\r\n', '\n');
+    if (t.trim().isEmpty) return true;
+    final availableWidth = (width - 10).clamp(1.0, double.infinity);
+    final painter = TextPainter(
+      text: TextSpan(
+        text: t,
+        style: TextStyle(
+          fontSize: _textStyle.fontSize,
+          fontWeight: FontWeight.normal,
+          fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
+          height: 1.23,
+        ),
+      ),
+      textAlign: _textStyle.textAlign,
+      textDirection: TextDirection.ltr,
+      maxLines: null,
+    )..layout(maxWidth: availableWidth);
+    return painter.computeLineMetrics().length <= 1;
+  }
+
+  void _applyWidthOnly(double width) {
+    final w = width.clamp(_minWidth, double.infinity);
+    setState(() {
+      _size = Size(w, _size.height);
+    });
+    _saveChanges();
+  }
+
   void _armImePasteGuard(int start, int insertedLength) {
     _imePasteGuardStart = start;
     _imePasteGuardEnd = start + (insertedLength < 0 ? 0 : insertedLength);
@@ -1314,7 +1368,25 @@ class _ResizableAndConfigurableTextBoxState
                         );
                       }
                       final widestWidth = widget.getDocumentWidestTextBoxWidth?.call();
-                      final targetWidth = widestWidth ?? aboveWidth;
+                      final plain =
+                          _quillController.document.toPlainText().replaceAll('\r\n', '\n');
+                      var measure = plain;
+                      if (measure.endsWith('\n')) {
+                        measure = measure.substring(0, measure.length - 1);
+                      }
+                      if (measure.trim().isEmpty) {
+                        final targetWidth = widestWidth ?? aboveWidth ?? _size.width;
+                        _applyWidthOnly(targetWidth);
+                        setModalState(() {});
+                        return;
+                      }
+                      final hasExplicitNewLine = measure.contains('\n');
+                      final isSingleVisualLine =
+                          !hasExplicitNewLine &&
+                          _isSingleVisualLineAtWidth(measure, _size.width);
+                      final targetWidth = isSingleVisualLine
+                          ? _measureSingleLineWrappedWidth(measure)
+                          : (widestWidth ?? aboveWidth);
                       _autoFitHeightToText(widthOverride: targetWidth);
                       setModalState(() {});
                     },
