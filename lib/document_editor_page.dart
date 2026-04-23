@@ -50,7 +50,7 @@ class DocumentEditorPage extends StatefulWidget {
 }
 
 class _DocumentEditorPageState extends State<DocumentEditorPage>
-    with WidgetsBindingObserver {
+    with WidgetsBindingObserver, TickerProviderStateMixin {
   List<Map<String, dynamic>> _textBoxes = [];
   List<Map<String, dynamic>> _imageBoxes = [];
   List<Map<String, dynamic>> _audioBoxes = [];
@@ -83,10 +83,12 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
   Timer? _autoSaveTimer;
   Timer? _debounceTimer; // 防抖定时器
   Timer? _canvasHistoryDebounce; // 画布操作历史防抖，避免拖拽/缩放时产生大量记录
-  Timer? _autoScrollTimer;
-  DateTime? _autoScrollLastTick;
+  Ticker? _autoScrollTicker;
+  Duration? _autoScrollLastElapsed;
   bool _autoScrollEnabled = false;
   double _autoScrollSpeed = 40.0;
+  double _autoScrollSpeedSmoothed = 40.0;
+  late final TextEditingController _autoScrollSpeedController;
   bool _contentChanged = false;
   bool _textEnhanceMode = true;
   bool _isPositionLocked = true;
@@ -100,6 +102,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _databaseService = getService<DatabaseService>();
+    _autoScrollSpeedSmoothed = _autoScrollSpeed;
+    _autoScrollSpeedController =
+        TextEditingController(text: _autoScrollSpeed.toStringAsFixed(0));
     _scrollController =
         ScrollController()..addListener(() {
           setState(() {
@@ -2285,8 +2290,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
     _autoSaveTimer?.cancel();
     _debounceTimer?.cancel();
     _canvasHistoryDebounce?.cancel();
-    _stopAutoScrollTimer();
+    _stopAutoScrollTicker();
     _scrollController.dispose();
+    _autoScrollSpeedController.dispose();
     _foregroundMediaObscuresBackground.dispose();
     super.dispose();
   }
@@ -2338,31 +2344,33 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
     }
   }
 
-  void _stopAutoScrollTimer() {
-    _autoScrollTimer?.cancel();
-    _autoScrollTimer = null;
-    _autoScrollLastTick = null;
+  void _stopAutoScrollTicker() {
+    _autoScrollTicker?.stop();
+    _autoScrollLastElapsed = null;
   }
 
   void _startAutoScroll() {
-    _stopAutoScrollTimer();
-    _autoScrollLastTick = DateTime.now();
-    _autoScrollTimer = Timer.periodic(const Duration(milliseconds: 16), (t) {
-      if (!mounted || !_scrollController.hasClients) return;
-      final last = _autoScrollLastTick;
-      if (last == null) {
-        _autoScrollLastTick = DateTime.now();
+    _stopAutoScrollTicker();
+    _autoScrollLastElapsed = null;
+    _autoScrollSpeedSmoothed = _autoScrollSpeed;
+    _autoScrollTicker ??= createTicker((elapsed) {
+      if (!mounted || !_autoScrollEnabled) return;
+      if (!_scrollController.hasClients) {
+        _autoScrollLastElapsed = elapsed;
         return;
       }
-      final now = DateTime.now();
-      final dt = now.difference(last).inMicroseconds / 1000000.0;
-      _autoScrollLastTick = now;
+      final last = _autoScrollLastElapsed;
+      _autoScrollLastElapsed = elapsed;
+      if (last == null) return;
+
+      final dt = (elapsed - last).inMicroseconds / 1000000.0;
+      final stableDt = dt.clamp(0.0, 0.05);
 
       final pos = _scrollController.position;
-      final current = _scrollController.offset;
+      final current = pos.pixels;
       final remaining = pos.maxScrollExtent - current;
       if (remaining <= 0.5) {
-        _stopAutoScrollTimer();
+        _stopAutoScrollTicker();
         if (mounted) {
           setState(() {
             _autoScrollEnabled = false;
@@ -2377,14 +2385,19 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
         return;
       }
 
-      final speed = _autoScrollSpeed;
+      final tau = 0.18;
+      final alpha = stableDt <= 0 ? 1.0 : (1.0 - math.exp(-stableDt / tau));
+      _autoScrollSpeedSmoothed +=
+          (_autoScrollSpeed - _autoScrollSpeedSmoothed) * alpha;
+      final speed = _autoScrollSpeedSmoothed;
       if (speed <= 0) return;
-      final target =
-          (current + speed * dt).clamp(pos.minScrollExtent, pos.maxScrollExtent);
+      final target = (current + speed * stableDt)
+          .clamp(pos.minScrollExtent, pos.maxScrollExtent);
       if (target != current) {
         _scrollController.jumpTo(target);
       }
     });
+    _autoScrollTicker!.start();
   }
 
   void _setAutoScrollEnabled(bool enabled) {
@@ -2395,7 +2408,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
     if (enabled) {
       _startAutoScroll();
     } else {
-      _stopAutoScrollTimer();
+      _stopAutoScrollTicker();
     }
   }
 
@@ -2407,7 +2420,8 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
       builder: (context) {
         return StatefulBuilder(
           builder: (context, setSheetState) {
-            final bottomInset = MediaQuery.of(context).padding.bottom;
+            final mq = MediaQuery.of(context);
+            final bottomInset = mq.padding.bottom + mq.viewInsets.bottom;
             return SafeArea(
               top: false,
               child: SingleChildScrollView(
@@ -2507,21 +2521,75 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
                             const Text('速度'),
                             const SizedBox(width: 10),
                             Expanded(
-                              child: Slider(
-                                min: 10,
-                                max: 300,
-                                value: _autoScrollSpeed.clamp(10, 300),
-                                onChanged: (v) {
-                                  _autoScrollSpeed = v;
-                                  setSheetState(() {});
-                                },
-                              ),
-                            ),
-                            SizedBox(
-                              width: 80,
-                              child: Text(
-                                '${_autoScrollSpeed.toStringAsFixed(0)} px/秒',
-                                textAlign: TextAlign.right,
+                              child: Align(
+                                alignment: Alignment.centerRight,
+                                child: SizedBox(
+                                  width: 140,
+                                  child: TextField(
+                                    controller: _autoScrollSpeedController,
+                                    keyboardType: TextInputType.number,
+                                    inputFormatters: [
+                                      FilteringTextInputFormatter.digitsOnly,
+                                    ],
+                                    decoration: const InputDecoration(
+                                      isDense: true,
+                                      border: OutlineInputBorder(),
+                                      contentPadding: EdgeInsets.symmetric(
+                                        horizontal: 10,
+                                        vertical: 10,
+                                      ),
+                                      hintText: '10-300',
+                                      suffixText: 'px/秒',
+                                    ),
+                                    textAlign: TextAlign.right,
+                                    onTap: () {
+                                      _autoScrollSpeedController.selection =
+                                          TextSelection(
+                                            baseOffset: 0,
+                                            extentOffset:
+                                                _autoScrollSpeedController
+                                                    .text
+                                                    .length,
+                                          );
+                                    },
+                                    onChanged: (raw) {
+                                      final n = int.tryParse(raw.trim());
+                                      if (n == null) return;
+                                      final clamped =
+                                          n.clamp(10, 300).toDouble();
+                                      if (_autoScrollSpeed != clamped) {
+                                        _autoScrollSpeed = clamped;
+                                        if (!_autoScrollEnabled) {
+                                          _autoScrollSpeedSmoothed = clamped;
+                                        }
+                                        setSheetState(() {});
+                                      }
+                                    },
+                                    onSubmitted: (raw) {
+                                      final n = int.tryParse(raw.trim());
+                                      final clamped =
+                                          (n ?? _autoScrollSpeed.round())
+                                              .clamp(10, 300);
+                                      final normalized = clamped.toString();
+                                      _autoScrollSpeed = clamped.toDouble();
+                                      if (!_autoScrollEnabled) {
+                                        _autoScrollSpeedSmoothed =
+                                            _autoScrollSpeed;
+                                      }
+                                      _autoScrollSpeedController.value =
+                                          _autoScrollSpeedController.value
+                                              .copyWith(
+                                                text: normalized,
+                                                selection:
+                                                    TextSelection.collapsed(
+                                                      offset:
+                                                          normalized.length,
+                                                    ),
+                                              );
+                                      setSheetState(() {});
+                                    },
+                                  ),
+                                ),
                               ),
                             ),
                           ],

@@ -376,7 +376,8 @@ class _CursorHandleOverlay extends StatefulWidget {
 }
 
 class _CursorHandleOverlayState extends State<_CursorHandleOverlay> {
-  Offset? _handlePosition;
+  OverlayEntry? _overlayEntry;
+  Offset? _globalTopLeft;
   double _lineHeight = 20.0;
 
   void _updatePosition() {
@@ -385,12 +386,45 @@ class _CursorHandleOverlayState extends State<_CursorHandleOverlay> {
     SchedulerBinding.instance.addPostFrameCallback((_) => _computePositionAfterLayout());
   }
 
+  void _ensureOverlay() {
+    if (_overlayEntry != null) return;
+    final overlay = Overlay.of(context, rootOverlay: true);
+    if (overlay == null) return;
+
+    _overlayEntry = OverlayEntry(
+      builder: (context) {
+        if (_globalTopLeft == null) return const SizedBox.shrink();
+        const handleSize = 22.0;
+        return Positioned(
+          left: _globalTopLeft!.dx,
+          top: _globalTopLeft!.dy,
+          child: Material(
+            color: Colors.transparent,
+            child: GestureDetector(
+              onTap: widget.onTap,
+              behavior: HitTestBehavior.translucent,
+              child: SizedBox(
+                width: handleSize,
+                height: handleSize,
+                child: MaterialTextSelectionControls().buildHandle(
+                  context,
+                  TextSelectionHandleType.collapsed,
+                  _lineHeight,
+                  widget.onTap,
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+    overlay.insert(_overlayEntry!);
+  }
+
   void _computePositionAfterLayout() {
     if (!mounted) return;
     final state = widget.editorKey.currentState;
-    final stackContext = widget.stackKey.currentContext;
-    if (state == null || stackContext == null) return;
-    if (widget.editorKey.currentContext == null) return;
+    if (state == null) return;
 
     final selection = widget.quillController.selection;
     if (!selection.isCollapsed) return;
@@ -403,17 +437,31 @@ class _CursorHandleOverlayState extends State<_CursorHandleOverlay> {
 
       final renderBox = renderEditor as RenderBox;
       final globalBottomCenter = renderBox.localToGlobal(caretRect.bottomCenter);
-      final stackBox = stackContext.findRenderObject() as RenderBox?;
-      if (stackBox == null) return;
 
-      final localPos = stackBox.globalToLocal(globalBottomCenter);
+      const handleSize = 22.0;
       const belowOffset = 2.0;
-      final newPos = Offset(localPos.dx, localPos.dy + belowOffset);
+      const margin = 6.0;
 
-      if (_handlePosition == null ||
-          (_handlePosition!.dx - newPos.dx).abs() > 0.5 ||
-          (_handlePosition!.dy - newPos.dy).abs() > 0.5) {
-        if (mounted) setState(() => _handlePosition = newPos);
+      final mq = MediaQuery.of(context);
+      final safeTop = mq.padding.top + margin;
+      final safeLeft = margin;
+      final safeRight = mq.size.width - margin - handleSize;
+      final clampRight = safeRight < safeLeft ? safeLeft : safeRight;
+
+      final unclampedLeft = globalBottomCenter.dx - handleSize / 2;
+      final unclampedTop = globalBottomCenter.dy + belowOffset;
+      final clampedLeft = unclampedLeft.clamp(safeLeft, clampRight);
+      final clampedTop = unclampedTop < safeTop ? safeTop : unclampedTop;
+      final newTopLeft = Offset(
+        (clampedLeft as num).toDouble(),
+        (clampedTop as num).toDouble(),
+      );
+
+      if (_globalTopLeft == null ||
+          (_globalTopLeft!.dx - newTopLeft.dx).abs() > 0.5 ||
+          (_globalTopLeft!.dy - newTopLeft.dy).abs() > 0.5) {
+        _globalTopLeft = newTopLeft;
+        _overlayEntry?.markNeedsBuild();
       }
     } catch (_) {
       // 布局尚未就绪或 render 对象不可用时忽略
@@ -424,7 +472,11 @@ class _CursorHandleOverlayState extends State<_CursorHandleOverlay> {
   void initState() {
     super.initState();
     widget.quillController.addListener(_updatePosition);
-    _updatePosition();
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _ensureOverlay();
+      _updatePosition();
+    });
   }
 
   @override
@@ -434,44 +486,24 @@ class _CursorHandleOverlayState extends State<_CursorHandleOverlay> {
       oldWidget.quillController.removeListener(_updatePosition);
       widget.quillController.addListener(_updatePosition);
     }
-    _updatePosition();
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _ensureOverlay();
+      _updatePosition();
+    });
   }
 
   @override
   void dispose() {
     widget.quillController.removeListener(_updatePosition);
+    _overlayEntry?.remove();
+    _overlayEntry = null;
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_handlePosition == null) return const SizedBox.shrink();
-
-    const handleSize = 22.0;
-    final left = _handlePosition!.dx - handleSize / 2;
-    final top = _handlePosition!.dy;
-
-    return Positioned(
-      left: left,
-      top: top,
-      child: Material(
-        color: Colors.transparent,
-        child: GestureDetector(
-          onTap: widget.onTap,
-          behavior: HitTestBehavior.translucent,
-          child: SizedBox(
-            width: handleSize,
-            height: handleSize,
-            child: MaterialTextSelectionControls().buildHandle(
-              context,
-              TextSelectionHandleType.collapsed,
-              _lineHeight,
-              widget.onTap,
-            ),
-          ),
-        ),
-      ),
-    );
+    return const SizedBox.shrink();
   }
 }
 
