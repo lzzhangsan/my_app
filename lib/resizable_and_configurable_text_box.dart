@@ -1422,12 +1422,16 @@ class _ResizableAndConfigurableTextBoxState
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  return SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(minWidth: constraints.maxWidth),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                        children: [
                   IconButton(
                     icon: const Icon(Icons.fit_screen, color: Colors.blue),
                     onPressed: () {
@@ -1497,23 +1501,19 @@ class _ResizableAndConfigurableTextBoxState
                     _buildAlignmentButton(Icons.format_align_center, TextAlign.center),
                     _buildAlignmentButton(Icons.format_align_right, TextAlign.right),
                   ],
-                  InkWell(
-                    onTap: () => Navigator.of(sheetContext).pop(),
-                    borderRadius: BorderRadius.circular(4),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.check, size: 18, color: Colors.blue.shade700),
-                          SizedBox(width: 4),
-                          Text('完成', style: TextStyle(fontSize: 14, color: Colors.blue.shade700)),
+                  IconButton(
+                    icon: Icon(Icons.check, color: Colors.blue.shade700),
+                    onPressed: () => Navigator.of(sheetContext).pop(),
+                    iconSize: 24,
+                    padding: const EdgeInsets.all(4),
+                    constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
+                    tooltip: '完成',
+                  ),
                         ],
                       ),
                     ),
-                  ),
-                ],
-                ),
+                  );
+                },
               ),
               Divider(height: 8),
               Row(
