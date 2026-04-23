@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:isolate';
-import 'dart:math' show min, max;
+import 'dart:math' show min;
 import 'dart:typed_data';
 import 'package:dio/dio.dart';
 import 'package:dio/io.dart';
@@ -14,7 +14,6 @@ import 'package:crypto/crypto.dart';
 
 import '../models/media_type.dart';
 import 'database_service.dart';
-import 'network_service.dart';
 import 'logger.dart';
 import '../core/service_locator.dart';
 
@@ -65,7 +64,7 @@ class MediaDownloadService {
     );
     (dio.httpClientAdapter as IOHttpClientAdapter).createHttpClient = () {
       final client = HttpClient();
-      client.badCertificateCallback = (_, __, ___) => true;
+      client.badCertificateCallback = (cert, host, port) => true;
       if (forVideoDownload) {
         client.maxConnectionsPerHost = _kHlsMaxConnectionsPerHost;
         client.idleTimeout = const Duration(seconds: 90);
@@ -265,13 +264,20 @@ class MediaDownloadService {
 
   Uint8List _hlsIvFromSeq(int seq) {
     final iv = Uint8List(16);
-    for (var i = 0; i < 4; i++) iv[15 - i] = (seq >> (i * 8)) & 0xff;
+    for (var i = 0; i < 4; i++) {
+      iv[15 - i] = (seq >> (i * 8)) & 0xff;
+    }
     return iv;
   }
 
   Uint8List _hexToBytes(String hex) {
     final bytes = Uint8List(hex.length ~/ 2);
-    for (var i = 0; i < bytes.length; i++) bytes[i] = int.parse(hex.substring(i * 2, i * 2 + 2), radix: 16);
+    for (var i = 0; i < bytes.length; i++) {
+      bytes[i] = int.parse(
+        hex.substring(i * 2, i * 2 + 2),
+        radix: 16,
+      );
+    }
     return bytes;
   }
 
@@ -377,10 +383,10 @@ class MediaDownloadService {
 
   Future<Map<String, dynamic>> saveToMediaLibrary(File file, MediaType mediaType, {String? name}) async {
     final fileName = name ?? p.basename(file.path);
-    final md5Sum = await calculateMd5(file);
+    final fileHash = await calculateMd5(file);
     
     // 检查重复
-    final existing = await _databaseService.getMediaItemByMd5(md5Sum);
+    final existing = await _databaseService.findDuplicateMediaItem(fileHash, fileName);
     if (existing != null) return existing;
 
     final item = {
@@ -388,7 +394,7 @@ class MediaDownloadService {
       'name': fileName,
       'path': file.path,
       'type': mediaType.index,
-      'md5': md5Sum,
+      'file_hash': fileHash,
       'date_added': DateTime.now().toIso8601String(),
       'directory': 'root',
     };

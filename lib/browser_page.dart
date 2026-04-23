@@ -5773,7 +5773,7 @@ class _BrowserPageState extends State<BrowserPage>
                     );
 
                     setState(
-                      () => _bookmarks.add({
+                      () => _bookmarks.insert(0, {
                         'name': nameController.text,
                         'url': url,
                       }),

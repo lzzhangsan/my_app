@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:uuid/uuid.dart';
@@ -82,6 +83,10 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
   Timer? _autoSaveTimer;
   Timer? _debounceTimer; // 防抖定时器
   Timer? _canvasHistoryDebounce; // 画布操作历史防抖，避免拖拽/缩放时产生大量记录
+  Timer? _autoScrollTimer;
+  DateTime? _autoScrollLastTick;
+  bool _autoScrollEnabled = false;
+  double _autoScrollSpeed = 40.0;
   bool _contentChanged = false;
   bool _textEnhanceMode = true;
   bool _isPositionLocked = true;
@@ -2280,6 +2285,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
     _autoSaveTimer?.cancel();
     _debounceTimer?.cancel();
     _canvasHistoryDebounce?.cancel();
+    _stopAutoScrollTimer();
     _scrollController.dispose();
     _foregroundMediaObscuresBackground.dispose();
     super.dispose();
@@ -2332,108 +2338,216 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
     }
   }
 
+  void _stopAutoScrollTimer() {
+    _autoScrollTimer?.cancel();
+    _autoScrollTimer = null;
+    _autoScrollLastTick = null;
+  }
+
+  void _startAutoScroll() {
+    _stopAutoScrollTimer();
+    _autoScrollLastTick = DateTime.now();
+    _autoScrollTimer = Timer.periodic(const Duration(milliseconds: 16), (t) {
+      if (!mounted || !_scrollController.hasClients) return;
+      final last = _autoScrollLastTick;
+      if (last == null) {
+        _autoScrollLastTick = DateTime.now();
+        return;
+      }
+      final now = DateTime.now();
+      final dt = now.difference(last).inMicroseconds / 1000000.0;
+      _autoScrollLastTick = now;
+
+      final pos = _scrollController.position;
+      final current = _scrollController.offset;
+      final remaining = pos.maxScrollExtent - current;
+      if (remaining <= 0.5) {
+        _stopAutoScrollTimer();
+        if (mounted) {
+          setState(() {
+            _autoScrollEnabled = false;
+          });
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('已到达底部，自动滚动已停止'),
+              duration: Duration(seconds: 1),
+            ),
+          );
+        }
+        return;
+      }
+
+      final speed = _autoScrollSpeed;
+      if (speed <= 0) return;
+      final target =
+          (current + speed * dt).clamp(pos.minScrollExtent, pos.maxScrollExtent);
+      if (target != current) {
+        _scrollController.jumpTo(target);
+      }
+    });
+  }
+
+  void _setAutoScrollEnabled(bool enabled) {
+    if (_autoScrollEnabled == enabled) return;
+    setState(() {
+      _autoScrollEnabled = enabled;
+    });
+    if (enabled) {
+      _startAutoScroll();
+    } else {
+      _stopAutoScrollTimer();
+    }
+  }
+
   void _showSettingsMenu() {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       useSafeArea: true,
       builder: (context) {
-        final bottomInset = MediaQuery.of(context).padding.bottom;
-        return SafeArea(
-          top: false,
-          child: SingleChildScrollView(
-            padding: EdgeInsets.only(bottom: bottomInset + 12),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                ListTile(
-                  leading: Icon(Icons.image),
-                  title: Text('设置背景图片'),
-                  onTap: () {
-                    Navigator.pop(context);
-                    _pickBackgroundImage();
-                  },
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            final bottomInset = MediaQuery.of(context).padding.bottom;
+            return SafeArea(
+              top: false,
+              child: SingleChildScrollView(
+                padding: EdgeInsets.only(bottom: bottomInset + 12),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    ListTile(
+                      leading: Icon(Icons.image),
+                      title: Text('设置背景图片'),
+                      onTap: () {
+                        Navigator.pop(context);
+                        _pickBackgroundImage();
+                      },
+                    ),
+                    ListTile(
+                      leading: Icon(Icons.videocam),
+                      title: Text('设置背景视频'),
+                      onTap: () {
+                        Navigator.pop(context);
+                        _pickBackgroundVideo();
+                      },
+                    ),
+                    ListTile(
+                      leading: Icon(Icons.format_color_fill),
+                      title: Text('设置背景颜色'),
+                      onTap: () {
+                        Navigator.pop(context);
+                        _pickBackgroundColor();
+                      },
+                    ),
+                    if (_backgroundImage != null)
+                      ListTile(
+                        leading: Icon(Icons.tune),
+                        title: Text('调整背景图片'),
+                        onTap: () {
+                          Navigator.pop(context);
+                          _openBackgroundImagePreviewEditor();
+                        },
+                      ),
+                    if (_backgroundVideo != null)
+                      ListTile(
+                        leading: Icon(Icons.tune),
+                        title: Text('调整背景视频'),
+                        onTap: () {
+                          Navigator.pop(context);
+                          _openBackgroundVideoPreviewEditor();
+                        },
+                      ),
+                    if (_backgroundImage != null)
+                      ListTile(
+                        leading: Icon(Icons.delete),
+                        title: Text('删除背景图片'),
+                        onTap: () {
+                          Navigator.pop(context);
+                          _removeBackgroundImage();
+                        },
+                      ),
+                    if (_backgroundVideo != null)
+                      ListTile(
+                        leading: Icon(Icons.delete),
+                        title: Text('删除背景视频'),
+                        onTap: () {
+                          Navigator.pop(context);
+                          _removeBackgroundVideo();
+                        },
+                      ),
+                    if (_backgroundImage != null || _backgroundVideo != null)
+                      ListTile(
+                        leading: Icon(Icons.layers_clear),
+                        title: Text('清空背景图/视频'),
+                        onTap: () {
+                          Navigator.pop(context);
+                          _clearAllBackgroundToBlank();
+                        },
+                      ),
+                    ListTile(
+                      leading: Icon(Icons.keyboard_double_arrow_down),
+                      title: Text('自动上滚'),
+                      trailing: Switch(
+                        value: _autoScrollEnabled,
+                        onChanged: (v) {
+                          _setAutoScrollEnabled(v);
+                          setSheetState(() {});
+                        },
+                      ),
+                      onTap: () {
+                        _setAutoScrollEnabled(!_autoScrollEnabled);
+                        setSheetState(() {});
+                      },
+                    ),
+                    if (_autoScrollEnabled)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                        child: Row(
+                          children: [
+                            const Text('速度'),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Slider(
+                                min: 10,
+                                max: 300,
+                                value: _autoScrollSpeed.clamp(10, 300),
+                                onChanged: (v) {
+                                  _autoScrollSpeed = v;
+                                  setSheetState(() {});
+                                },
+                              ),
+                            ),
+                            SizedBox(
+                              width: 80,
+                              child: Text(
+                                '${_autoScrollSpeed.toStringAsFixed(0)} px/秒',
+                                textAlign: TextAlign.right,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ListTile(
+                      leading: Icon(_isTemplate ? Icons.star : Icons.star_border),
+                      title: Text(_isTemplate ? '取消设为模板' : '设为模板'),
+                      onTap: () {
+                        Navigator.pop(context);
+                        _toggleTemplateStatus();
+                      },
+                    ),
+                    ListTile(
+                      leading: Icon(Icons.folder_open),
+                      title: Text('选择媒体来源'),
+                      onTap: () {
+                        Navigator.pop(context);
+                        _mediaPlayerKey.currentState?.selectMediaSource();
+                      },
+                    ),
+                  ],
                 ),
-                ListTile(
-                  leading: Icon(Icons.videocam),
-                  title: Text('设置背景视频'),
-                  onTap: () {
-                    Navigator.pop(context);
-                    _pickBackgroundVideo();
-                  },
-                ),
-                ListTile(
-                  leading: Icon(Icons.format_color_fill),
-                  title: Text('设置背景颜色'),
-                  onTap: () {
-                    Navigator.pop(context);
-                    _pickBackgroundColor();
-                  },
-                ),
-                if (_backgroundImage != null)
-                  ListTile(
-                    leading: Icon(Icons.tune),
-                    title: Text('调整背景图片'),
-                    onTap: () {
-                      Navigator.pop(context);
-                      _openBackgroundImagePreviewEditor();
-                    },
-                  ),
-                if (_backgroundVideo != null)
-                  ListTile(
-                    leading: Icon(Icons.tune),
-                    title: Text('调整背景视频'),
-                    onTap: () {
-                      Navigator.pop(context);
-                      _openBackgroundVideoPreviewEditor();
-                    },
-                  ),
-                if (_backgroundImage != null)
-                  ListTile(
-                    leading: Icon(Icons.delete),
-                    title: Text('删除背景图片'),
-                    onTap: () {
-                      Navigator.pop(context);
-                      _removeBackgroundImage();
-                    },
-                  ),
-                if (_backgroundVideo != null)
-                  ListTile(
-                    leading: Icon(Icons.delete),
-                    title: Text('删除背景视频'),
-                    onTap: () {
-                      Navigator.pop(context);
-                      _removeBackgroundVideo();
-                    },
-                  ),
-                if (_backgroundImage != null || _backgroundVideo != null)
-                  ListTile(
-                    leading: Icon(Icons.layers_clear),
-                    title: Text('清空背景图/视频'),
-                    onTap: () {
-                      Navigator.pop(context);
-                      _clearAllBackgroundToBlank();
-                    },
-                  ),
-                ListTile(
-                  leading: Icon(_isTemplate ? Icons.star : Icons.star_border),
-                  title: Text(_isTemplate ? '取消设为模板' : '设为模板'),
-                  onTap: () {
-                    Navigator.pop(context);
-                    _toggleTemplateStatus();
-                  },
-                ),
-                ListTile(
-                  leading: Icon(Icons.folder_open),
-                  title: Text('选择媒体来源'),
-                  onTap: () {
-                    Navigator.pop(context);
-                    _mediaPlayerKey.currentState?.selectMediaSource();
-                  },
-                ),
-              ],
-            ),
-          ),
+              ),
+            );
+          },
         );
       },
     );
@@ -2678,14 +2792,26 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
                       ],
                     ),
                   ),
-                  SingleChildScrollView(
-                    key: ValueKey('content_scroll_view'),
-                    controller: _scrollController,
-                    child: SizedBox(
-                      height: totalHeight,
-                      child: Stack(
-                        key: ValueKey('content_stack'),
-                        children: [
+                  NotificationListener<ScrollNotification>(
+                    onNotification: (n) {
+                      if (!_autoScrollEnabled) return false;
+                      if (n is ScrollStartNotification &&
+                          n.dragDetails != null) {
+                        _setAutoScrollEnabled(false);
+                      } else if (n is UserScrollNotification &&
+                          n.direction != ScrollDirection.idle) {
+                        _setAutoScrollEnabled(false);
+                      }
+                      return false;
+                    },
+                    child: SingleChildScrollView(
+                      key: ValueKey('content_scroll_view'),
+                      controller: _scrollController,
+                      child: SizedBox(
+                        height: totalHeight,
+                        child: Stack(
+                          key: ValueKey('content_stack'),
+                          children: [
                           // 新增：画布组件（放在最底层，但在背景之上）
                           ..._canvases.map<Widget>((canvas) {
                             return Positioned(
@@ -2962,7 +3088,8 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
                                   child: child,
                                 );
                               }),
-                        ],
+                          ],
+                        ),
                       ),
                     ),
                   ),

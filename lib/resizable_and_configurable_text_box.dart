@@ -619,19 +619,70 @@ class _ResizableAndConfigurableTextBoxState
     return true;
   }
 
+  double? _parseQuillSizeValue(dynamic v) {
+    if (v == null) return null;
+    if (v is num) return v.toDouble();
+    final s = v.toString().trim();
+    final parsed = double.tryParse(s);
+    if (parsed != null) return parsed;
+    if (s == 'small') return 12.0;
+    if (s == 'large') return 18.0;
+    if (s == 'huge') return 24.0;
+    return null;
+  }
+
+  TextSpan _buildMeasureTextSpanFromDelta(int maxChars) {
+    final base = TextStyle(
+      fontSize: _textStyle.fontSize,
+      fontWeight: FontWeight.normal,
+      fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
+      height: 1.23,
+    );
+    if (maxChars <= 0) return TextSpan(text: '', style: base);
+
+    final children = <InlineSpan>[];
+    int remaining = maxChars;
+    final ops = _quillController.document.toDelta().toList();
+    for (final op in ops) {
+      if (!op.isInsert) continue;
+      if (remaining <= 0) break;
+      final data = op.data;
+      if (data is! String) continue;
+      if (data.isEmpty) continue;
+
+      final take = data.length <= remaining ? data : data.substring(0, remaining);
+      remaining -= take.length;
+
+      final attrs = op.attributes;
+      final size = _parseQuillSizeValue(attrs?['size']) ?? _textStyle.fontSize;
+      final italic = attrs?['italic'] == true;
+      final bold = attrs?['bold'] == true;
+
+      children.add(
+        TextSpan(
+          text: take,
+          style: TextStyle(
+            fontSize: size,
+            fontWeight: bold ? FontWeight.bold : FontWeight.normal,
+            fontStyle: italic ? FontStyle.italic : FontStyle.normal,
+            height: 1.23,
+          ),
+        ),
+      );
+    }
+
+    if (children.isEmpty) {
+      return TextSpan(text: '', style: base);
+    }
+    return TextSpan(children: children, style: base);
+  }
+
   double _measureSingleLineWrappedWidth(String text) {
     final t = text.replaceAll('\r\n', '\n');
     if (t.trim().isEmpty) return _size.width;
+    final span = _buildMeasureTextSpanFromDelta(t.length);
     final painter = TextPainter(
-      text: TextSpan(
-        text: t,
-        style: TextStyle(
-          fontSize: _textStyle.fontSize,
-          fontWeight: FontWeight.normal,
-          fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
-          height: 1.23,
-        ),
-      ),
+      text: span,
       textAlign: _textStyle.textAlign,
       textDirection: TextDirection.ltr,
       maxLines: 1,
@@ -648,16 +699,9 @@ class _ResizableAndConfigurableTextBoxState
     final t = text.replaceAll('\r\n', '\n');
     if (t.trim().isEmpty) return true;
     final availableWidth = (width - 10).clamp(1.0, double.infinity);
+    final span = _buildMeasureTextSpanFromDelta(t.length);
     final painter = TextPainter(
-      text: TextSpan(
-        text: t,
-        style: TextStyle(
-          fontSize: _textStyle.fontSize,
-          fontWeight: FontWeight.normal,
-          fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
-          height: 1.23,
-        ),
-      ),
+      text: span,
       textAlign: _textStyle.textAlign,
       textDirection: TextDirection.ltr,
       maxLines: null,
@@ -1018,23 +1062,24 @@ class _ResizableAndConfigurableTextBoxState
         (widthOverride ?? _size.width).clamp(_minWidth, double.infinity);
     final availableWidth = (widthToUse - 10).clamp(1.0, double.infinity);
 
+    final span = _buildMeasureTextSpanFromDelta(measureText.length);
     final painter = TextPainter(
-      text: TextSpan(
-        text: measureText,
-        style: TextStyle(
-          fontSize: _textStyle.fontSize,
-          fontWeight: FontWeight.normal,
-          fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
-          height: 1.23,
-        ),
-      ),
+      text: span,
       textAlign: _textStyle.textAlign,
       textDirection: TextDirection.ltr,
       maxLines: null,
     )..layout(maxWidth: availableWidth);
 
+    final lines = painter.computeLineMetrics();
+    final lastLineHeight =
+        lines.isNotEmpty ? lines.last.height : painter.preferredLineHeight;
+    const baseVerticalPadding = 10.0;
+    final extraBottomPadding = (lastLineHeight * 0.13).clamp(0.0, 24.0);
     final targetHeight =
-        (painter.height + 12.5).clamp(_minHeight, double.infinity);
+        (painter.height + baseVerticalPadding + extraBottomPadding).clamp(
+          _minHeight,
+          double.infinity,
+        );
     setState(() {
       _size = Size(widthToUse, targetHeight);
     });
@@ -1818,27 +1863,40 @@ class _ResizableAndConfigurableTextBoxState
                 ],
               ),
             ),
-            Positioned(
-              right: -10,
-              top: -12,
-              child: Opacity(
-                opacity: 0.125,
-                child: IconButton(
-                  icon: Icon(Icons.settings, size: 24),
-                  padding: EdgeInsets.all(4),
-                  constraints: BoxConstraints(),
-                  iconSize: 20,
-                  onPressed: () {
-                    FocusManager.instance.primaryFocus?.unfocus();
-                    setState(() {
-                      _showBottomSettings = true;
-                    });
-                    _showSettingsPanel(context);
-                  },
-                  tooltip: '文本框设置',
+            (() {
+              final plain =
+                  _quillController.document.toPlainText().replaceAll('\r\n', '\n');
+              var measure = plain;
+              if (measure.endsWith('\n')) {
+                measure = measure.substring(0, measure.length - 1);
+              }
+              final isSingleLine =
+                  measure.trim().isNotEmpty &&
+                  !measure.contains('\n') &&
+                  _isSingleVisualLineAtWidth(measure, _size.width);
+              return Positioned(
+                left: isSingleLine ? -10 : null,
+                right: isSingleLine ? null : -10,
+                top: -12,
+                child: Opacity(
+                  opacity: 0.125,
+                  child: IconButton(
+                    icon: Icon(Icons.settings, size: 24),
+                    padding: EdgeInsets.all(4),
+                    constraints: BoxConstraints(),
+                    iconSize: 20,
+                    onPressed: () {
+                      FocusManager.instance.primaryFocus?.unfocus();
+                      setState(() {
+                        _showBottomSettings = true;
+                      });
+                      _showSettingsPanel(context);
+                    },
+                    tooltip: '文本框设置',
+                  ),
                 ),
-              ),
-            ),
+              );
+            })(),
             Positioned(
               right: 0,
               bottom: 0,
