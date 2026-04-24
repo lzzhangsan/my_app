@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:my_app/services/network_service.dart';
+import 'package:change_copy/services/network_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
