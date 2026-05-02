@@ -924,6 +924,74 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
               ),
             ),
             actions: [
+              if (dupTotal > 0)
+                TextButton(
+                  onPressed: () async {
+                    Navigator.pop(ctx);
+                    final confirmed = await showDialog<bool>(
+                      context: context,
+                      builder: (c) {
+                        return AlertDialog(
+                          title: const Text('修复重复媒体'),
+                          content: Text(
+                            '检测到 $dupTotal 组重复媒体（按 file_hash）。\n\n'
+                            '将保留每组中更可能是“主副本”的一条记录，删除其余重复记录；随后执行一次“孤立文件清理”以回收重复占用的磁盘文件。\n\n'
+                            '该操作不会清空回收站。',
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(c, false),
+                              child: const Text('取消'),
+                            ),
+                            TextButton(
+                              onPressed: () => Navigator.pop(c, true),
+                              style: TextButton.styleFrom(
+                                foregroundColor: Colors.red,
+                              ),
+                              child: const Text('确定修复'),
+                            ),
+                          ],
+                        );
+                      },
+                    );
+                    if (confirmed != true) return;
+                    setState(() {
+                      _selfCheckRunning = true;
+                    });
+                    try {
+                      final r = await _databaseService.resolveDuplicateMediaItems(
+                        maxGroups: 2000,
+                      );
+                      if (!mounted) return;
+                      final groups = r['groupsResolved'] ?? 0;
+                      final rows = r['mediaRowsDeleted'] ?? 0;
+                      final of = r['orphanFilesDeleted'] ?? 0;
+                      final ob = r['orphanBytesDeleted'] ?? 0;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            '已处理重复媒体：$groups 组，删除记录 $rows 条，回收孤立文件 $of 个（${_formatFileSize(ob)}）',
+                          ),
+                        ),
+                      );
+                    } catch (e) {
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('修复重复媒体失败: $e')),
+                      );
+                    } finally {
+                      if (mounted) {
+                        setState(() {
+                          _selfCheckRunning = false;
+                        });
+                      }
+                      await _loadStorageInfo();
+                      await _runStabilitySelfCheck(deep: true);
+                    }
+                  },
+                  style: TextButton.styleFrom(foregroundColor: Colors.red),
+                  child: const Text('修复重复媒体'),
+                ),
               if (!deep)
                 TextButton(
                   onPressed: () async {

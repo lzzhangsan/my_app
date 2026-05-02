@@ -7590,6 +7590,107 @@ class DatabaseService {
     }
   }
 
+  Future<List<Map<String, dynamic>>> getDuplicateMediaItemsByHash(
+    String fileHash,
+  ) async {
+    final db = await database;
+    if (fileHash.trim().isEmpty) return [];
+    final rows = await db.query(
+      'media_items',
+      columns: [
+        'id',
+        'name',
+        'path',
+        'type',
+        'directory',
+        'date_added',
+        'thumbnail_path',
+        'is_favorite',
+        'file_hash',
+      ],
+      where: 'file_hash = ? AND directory <> ?',
+      whereArgs: [fileHash, 'recycle_bin'],
+    );
+    return rows.map((e) => Map<String, dynamic>.from(e)).toList();
+  }
+
+  Future<Map<String, dynamic>> resolveDuplicateMediaItems({
+    int maxGroups = 50,
+  }) async {
+    final db = await database;
+    final fileCleanupService = getService<FileCleanupService>();
+    final resolvedHashes = <String>[];
+    int deletedMediaRows = 0;
+
+    List<String> duplicateHashes = [];
+    try {
+      final rows = await db.rawQuery('''
+        SELECT file_hash AS hash
+        FROM media_items
+        WHERE file_hash IS NOT NULL AND TRIM(file_hash) <> '' AND directory <> 'recycle_bin'
+        GROUP BY file_hash
+        HAVING COUNT(*) > 1
+        ORDER BY COUNT(*) DESC
+        LIMIT ?
+      ''', [maxGroups]);
+      duplicateHashes =
+          rows.map((r) => r['hash']?.toString() ?? '').where((s) => s.isNotEmpty).toList();
+    } catch (_) {}
+
+    int pickScore(Map<String, dynamic> row) {
+      int score = 0;
+      final dir = row['directory']?.toString() ?? '';
+      final favRaw = row['is_favorite'];
+      final isFav =
+          favRaw == true || favRaw == 1 || (favRaw is num && favRaw != 0);
+      if (isFav) score += 100;
+      if (dir != 'recycle_bin') score += 50;
+      final thumb = row['thumbnail_path']?.toString() ?? '';
+      if (thumb.isNotEmpty) score += 5;
+      final dateAdded = row['date_added']?.toString() ?? '';
+      if (dateAdded.isNotEmpty) score += 1;
+      return score;
+    }
+
+    for (final hash in duplicateHashes) {
+      final items = await getDuplicateMediaItemsByHash(hash);
+      if (items.length <= 1) continue;
+
+      items.sort((a, b) => pickScore(b) - pickScore(a));
+      final keepId = items.first['id']?.toString() ?? '';
+      if (keepId.isEmpty) continue;
+
+      for (final row in items.skip(1)) {
+        final id = row['id']?.toString() ?? '';
+        if (id.isEmpty) continue;
+        try {
+          final n = await deleteMediaItem(id);
+          if (n > 0) deletedMediaRows += n;
+        } catch (_) {}
+      }
+      resolvedHashes.add(hash);
+    }
+
+    int orphanDeletedCount = 0;
+    int orphanDeletedBytes = 0;
+    if (resolvedHashes.isNotEmpty && fileCleanupService.isInitialized) {
+      try {
+        final validPaths = await getAllValidFilePaths();
+        final r = await fileCleanupService.cleanOrphanedFiles(validPaths);
+        orphanDeletedCount = r['count'] ?? 0;
+        orphanDeletedBytes = r['bytes'] ?? 0;
+      } catch (_) {}
+    }
+
+    return {
+      'groupsResolved': resolvedHashes.length,
+      'mediaRowsDeleted': deletedMediaRows,
+      'orphanFilesDeleted': orphanDeletedCount,
+      'orphanBytesDeleted': orphanDeletedBytes,
+      'hashes': resolvedHashes.take(10).toList(),
+    };
+  }
+
   /// 修复数据完整性问题
   Future<void> repairDataIntegrity() async {
     final db = await database;
