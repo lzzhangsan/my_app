@@ -14,6 +14,7 @@ import 'global_tool_bar.dart' as toolBar;
 import 'media_player_container.dart';
 import 'media_preview_page.dart';
 import 'video_controls_overlay.dart';
+import 'models/video_view_params.dart';
 import 'widgets/video_player_widget.dart';
 import 'widgets/flippable_canvas_widget.dart'; // 新增：导入画布组件
 import 'models/flippable_canvas.dart'; // 新增：导入画布模型
@@ -25,8 +26,10 @@ import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 import 'services/image_picker_service.dart';
+import 'models/media_item.dart';
 import 'models/media_type.dart'; // 导入MediaType枚举
 import 'performance_monitor_page.dart';
+import 'widgets/image_layout_utils.dart';
 import 'widgets/stored_view_image_layer.dart';
 import 'widgets/stored_view_video_background_layer.dart';
 import 'widgets/floating_ui_shadows.dart';
@@ -73,6 +76,14 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
   /// 右下角浮层正在展示图/视频时为 true，用于暂停底层背景视频。
   final ValueNotifier<bool> _foregroundMediaObscuresBackground =
       ValueNotifier<bool>(false);
+  final Map<String, bool> _quickVerticalFillByMediaId = {};
+  int _blankAreaTapCount = 0;
+  Timer? _blankAreaTapSettleTimer;
+  static const Duration _blankAreaMultiTapWindow = Duration(milliseconds: 420);
+  int? _blankAreaPointerId;
+  Offset? _blankAreaPointerDownPos;
+  DateTime? _blankAreaPointerDownAt;
+  Offset? _blankAreaLastPos;
   File? _backgroundImage;
   File? _backgroundVideo;
   BackgroundMediaOrigin? _backgroundImageOrigin;
@@ -2290,11 +2301,307 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
     _autoSaveTimer?.cancel();
     _debounceTimer?.cancel();
     _canvasHistoryDebounce?.cancel();
+    _blankAreaTapSettleTimer?.cancel();
     _stopAutoScrollTicker();
     _scrollController.dispose();
     _autoScrollSpeedController.dispose();
     _foregroundMediaObscuresBackground.dispose();
     super.dispose();
+  }
+
+  void _handleBlankAreaTap() {
+    _blankAreaTapCount++;
+    _blankAreaTapSettleTimer?.cancel();
+    _blankAreaTapSettleTimer = Timer(_blankAreaMultiTapWindow, () {
+      final c = _blankAreaTapCount;
+      _blankAreaTapCount = 0;
+      if (c >= 3) {
+        unawaited(_resetCurrentMediaPresentationToPristine());
+        return;
+      }
+      if (c == 2) {
+        unawaited(_toggleCurrentMediaQuickFill());
+      }
+    });
+  }
+
+  void _onBlankAreaPointerDown(PointerDownEvent e) {
+    if (_blankAreaPointerId != null) return;
+    _blankAreaPointerId = e.pointer;
+    _blankAreaPointerDownPos = e.position;
+    _blankAreaLastPos = e.position;
+    _blankAreaPointerDownAt = DateTime.now();
+  }
+
+  void _onBlankAreaPointerMove(PointerMoveEvent e) {
+    if (_blankAreaPointerId != e.pointer) return;
+    _blankAreaLastPos = e.position;
+  }
+
+  void _onBlankAreaPointerCancel(PointerCancelEvent e) {
+    if (_blankAreaPointerId != e.pointer) return;
+    _blankAreaPointerId = null;
+    _blankAreaPointerDownPos = null;
+    _blankAreaPointerDownAt = null;
+    _blankAreaLastPos = null;
+  }
+
+  void _onBlankAreaPointerUp(PointerUpEvent e) {
+    if (_blankAreaPointerId != e.pointer) return;
+    final downPos = _blankAreaPointerDownPos;
+    final downAt = _blankAreaPointerDownAt;
+    final lastPos = _blankAreaLastPos ?? e.position;
+    _blankAreaPointerId = null;
+    _blankAreaPointerDownPos = null;
+    _blankAreaPointerDownAt = null;
+    _blankAreaLastPos = null;
+    if (downPos == null || downAt == null) return;
+    final dtMs = DateTime.now().difference(downAt).inMilliseconds;
+    if (dtMs <= 0 || dtMs > 320) return;
+    final dx = lastPos.dx - downPos.dx;
+    final dy = lastPos.dy - downPos.dy;
+    if (dx.abs() > 90) return;
+    if (dy.abs() < 80) return;
+    if (dy.abs() < dx.abs() * 1.35) return;
+    if (dy < 0) {
+      unawaited(_applyCurrentMediaFitWidthVerticalAlignPreset(alignTop: true));
+    } else {
+      unawaited(_applyCurrentMediaFitWidthVerticalAlignPreset(alignTop: false));
+    }
+  }
+
+  Size _basisSizeForQuarterTurns(Size viewport, int quarterTurns) {
+    final q = quarterTurns % 4;
+    if (q == 1 || q == 3) {
+      return Size(viewport.height, viewport.width);
+    }
+    return viewport;
+  }
+
+  Future<void> _persistCurrentMediaViewParams(
+    MediaItem item,
+    VideoViewParams p,
+  ) async {
+    final player = _mediaPlayerKey.currentState;
+    if (player == null) return;
+    try {
+      _databaseService.stageVideoViewParamsForDisk(item.id, p);
+      await _databaseService.updateMediaItem({
+        'id': item.id,
+        ...p.toDbUpdateMap(),
+        if (p.anchorXNorm == null) 'video_view_anchor_x': null,
+        if (p.anchorYNorm == null) 'video_view_anchor_y': null,
+        'updated_at': DateTime.now().millisecondsSinceEpoch,
+      });
+      await player.reloadCurrentMediaFromDatabase();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('保存媒体显示方式失败: $e')));
+    }
+  }
+
+  Future<void> _applyCurrentMediaVerticalFillPreset() async {
+    final player = _mediaPlayerKey.currentState;
+    if (player == null) return;
+    final item = await player.getCurrentMedia();
+    if (item == null) return;
+    if (item.type != MediaType.image && item.type != MediaType.video) return;
+    final viewport = MediaQuery.of(context).size;
+    if (viewport.width <= 1 || viewport.height <= 1) return;
+    final q = item.videoViewParams.quarterTurns % 4;
+    final basis = _basisSizeForQuarterTurns(viewport, q);
+    double? baseDisplayHeight;
+    if (item.type == MediaType.image) {
+      final imageSize = await measureImageFileSize(File(item.path));
+      final sideways = q == 1 || q == 3;
+      final baseDisplay =
+          sideways
+              ? containDisplaySize(imageSize, viewport.width, viewport.height)
+              : fitWidthDisplaySize(imageSize, viewport.width);
+      baseDisplayHeight = baseDisplay.height;
+    } else {
+      final c = player.getCurrentVideoWidget()?.controller;
+      if (c == null || !c.value.isInitialized) return;
+      final videoSize = c.value.size;
+      if (videoSize.width <= 1 || videoSize.height <= 1) return;
+      final baseDisplay = containDisplaySize(
+        videoSize,
+        viewport.width,
+        viewport.height,
+      );
+      baseDisplayHeight = baseDisplay.height;
+    }
+    if (baseDisplayHeight == null || baseDisplayHeight <= 1) return;
+    final targetScale = (viewport.height / baseDisplayHeight).clamp(1.0, 6.0);
+    final target = VideoViewParams(
+      scale: targetScale,
+      txNorm: 0.0,
+      tyNorm: 0.0,
+      quarterTurns: q,
+      basisW: basis.width,
+      basisH: basis.height,
+    );
+    await _persistCurrentMediaViewParams(item, target);
+    _quickVerticalFillByMediaId[item.id] = true;
+  }
+
+  Future<void> _applyCurrentMediaFitWidthCenterPreset() async {
+    final player = _mediaPlayerKey.currentState;
+    if (player == null) return;
+    final item = await player.getCurrentMedia();
+    if (item == null) return;
+    if (item.type != MediaType.image && item.type != MediaType.video) return;
+    final viewport = MediaQuery.of(context).size;
+    if (viewport.width <= 1 || viewport.height <= 1) return;
+    final q = item.videoViewParams.quarterTurns % 4;
+    final basis = _basisSizeForQuarterTurns(viewport, q);
+    double? baseDisplayWidth;
+    if (item.type == MediaType.image) {
+      final imageSize = await measureImageFileSize(File(item.path));
+      final sideways = q == 1 || q == 3;
+      final baseDisplay =
+          sideways
+              ? containDisplaySize(imageSize, viewport.width, viewport.height)
+              : fitWidthDisplaySize(imageSize, viewport.width);
+      baseDisplayWidth = baseDisplay.width;
+    } else {
+      final c = player.getCurrentVideoWidget()?.controller;
+      if (c == null || !c.value.isInitialized) return;
+      final videoSize = c.value.size;
+      if (videoSize.width <= 1 || videoSize.height <= 1) return;
+      final baseDisplay = containDisplaySize(
+        videoSize,
+        viewport.width,
+        viewport.height,
+      );
+      baseDisplayWidth = baseDisplay.width;
+    }
+    if (baseDisplayWidth == null || baseDisplayWidth <= 1) return;
+    final targetScale = (viewport.width / baseDisplayWidth).clamp(1.0, 6.0);
+    final target = VideoViewParams(
+      scale: targetScale,
+      txNorm: 0.0,
+      tyNorm: 0.0,
+      quarterTurns: q,
+      basisW: basis.width,
+      basisH: basis.height,
+    );
+    await _persistCurrentMediaViewParams(item, target);
+    _quickVerticalFillByMediaId[item.id] = false;
+  }
+
+  Future<void> _applyCurrentMediaFitWidthVerticalAlignPreset({
+    required bool alignTop,
+  }) async {
+    final player = _mediaPlayerKey.currentState;
+    if (player == null) return;
+    final item = await player.getCurrentMedia();
+    if (item == null) return;
+    if (item.type != MediaType.image && item.type != MediaType.video) return;
+    final viewport = MediaQuery.of(context).size;
+    if (viewport.width <= 1 || viewport.height <= 1) return;
+    final q = item.videoViewParams.quarterTurns % 4;
+    final basis = _basisSizeForQuarterTurns(viewport, q);
+    double? baseDisplayWidth;
+    double? baseDisplayHeight;
+    if (item.type == MediaType.image) {
+      final imageSize = await measureImageFileSize(File(item.path));
+      final sideways = q == 1 || q == 3;
+      final baseDisplay =
+          sideways
+              ? containDisplaySize(imageSize, viewport.width, viewport.height)
+              : fitWidthDisplaySize(imageSize, viewport.width);
+      baseDisplayWidth = baseDisplay.width;
+      baseDisplayHeight = baseDisplay.height;
+    } else {
+      final c = player.getCurrentVideoWidget()?.controller;
+      if (c == null || !c.value.isInitialized) return;
+      final videoSize = c.value.size;
+      if (videoSize.width <= 1 || videoSize.height <= 1) return;
+      final baseDisplay = containDisplaySize(
+        videoSize,
+        viewport.width,
+        viewport.height,
+      );
+      baseDisplayWidth = baseDisplay.width;
+      baseDisplayHeight = baseDisplay.height;
+    }
+    if (baseDisplayWidth == null ||
+        baseDisplayWidth <= 1 ||
+        baseDisplayHeight == null ||
+        baseDisplayHeight <= 1) {
+      return;
+    }
+    final targetScale = (viewport.width / baseDisplayWidth).clamp(1.0, 6.0);
+    final scaledDisplayHeight = baseDisplayHeight * targetScale;
+    final double shiftY;
+    if (scaledDisplayHeight >= viewport.height) {
+      final overflowY = (scaledDisplayHeight - viewport.height) / 2;
+      shiftY = alignTop ? overflowY : -overflowY;
+    } else {
+      final gapY = (viewport.height - scaledDisplayHeight) / 2;
+      shiftY = alignTop ? -gapY : gapY;
+    }
+    final anchorYNorm = basis.height > 1 ? (shiftY / basis.height) : 0.0;
+    final target = VideoViewParams(
+      scale: targetScale,
+      txNorm: 0.0,
+      tyNorm: 0.0,
+      quarterTurns: q,
+      basisW: basis.width,
+      basisH: basis.height,
+      anchorXNorm: 0.0,
+      anchorYNorm: anchorYNorm,
+    );
+    await _persistCurrentMediaViewParams(item, target);
+    _quickVerticalFillByMediaId[item.id] = false;
+  }
+
+  Future<void> _toggleCurrentMediaQuickFill() async {
+    final player = _mediaPlayerKey.currentState;
+    if (player == null) return;
+    final item = await player.getCurrentMedia();
+    if (item == null) return;
+    final current = _quickVerticalFillByMediaId[item.id] ?? false;
+    if (current) {
+      await _applyCurrentMediaFitWidthCenterPreset();
+    } else {
+      await _applyCurrentMediaVerticalFillPreset();
+    }
+  }
+
+  Future<void> _resetCurrentMediaPresentationToPristine() async {
+    final player = _mediaPlayerKey.currentState;
+    if (player == null) return;
+    final item = await player.getCurrentMedia();
+    if (item == null) return;
+    try {
+      const clearedView = VideoViewParams();
+      _databaseService.stageVideoViewParamsForDisk(item.id, clearedView);
+      await _databaseService.updateMediaItem({
+        'id': item.id,
+        'ken_burns_center_x': null,
+        'ken_burns_center_y': null,
+        'video_view_scale': 1.0,
+        'video_view_tx': 0.0,
+        'video_view_ty': 0.0,
+        'video_view_rot': 0,
+        'video_view_basis_w': null,
+        'video_view_basis_h': null,
+        'video_view_anchor_x': null,
+        'video_view_anchor_y': null,
+        'updated_at': DateTime.now().millisecondsSinceEpoch,
+      });
+      _quickVerticalFillByMediaId.remove(item.id);
+      await player.reloadCurrentMediaFromDatabase();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('清空展示设置失败: $e')));
+    }
   }
 
   // 页面销毁时的保存方法，不调用setState和UI相关方法
@@ -2880,6 +3187,20 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
                         child: Stack(
                           key: ValueKey('content_stack'),
                           children: [
+                            Positioned.fill(
+                              child: Listener(
+                                behavior: HitTestBehavior.translucent,
+                                onPointerDown: _onBlankAreaPointerDown,
+                                onPointerMove: _onBlankAreaPointerMove,
+                                onPointerUp: _onBlankAreaPointerUp,
+                                onPointerCancel: _onBlankAreaPointerCancel,
+                                child: GestureDetector(
+                                  behavior: HitTestBehavior.translucent,
+                                  onTap: _handleBlankAreaTap,
+                                  child: const SizedBox.expand(),
+                                ),
+                              ),
+                            ),
                           // 新增：画布组件（放在最底层，但在背景之上）
                           ..._canvases.map<Widget>((canvas) {
                             return Positioned(
