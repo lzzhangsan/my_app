@@ -3199,13 +3199,34 @@ class DatabaseService {
   /// 删除文档关联的物理文件（图片、音频、背景图），释放存储空间
   Future<void> _deleteDocumentPhysicalFiles(String documentId) async {
     try {
-      final fileCleanupService = getService<FileCleanupService>();
-      if (!fileCleanupService.isInitialized) return;
+      final payload = await _collectDocumentFilesForDeletion(documentId);
+      await _deleteCollectedDocumentFiles(payload);
+    } catch (e) {
+      if (kDebugMode) Logger.log('_deleteDocumentPhysicalFiles 失败: $e');
+    }
+  }
 
+  Future<({
+    List<String> mediaPaths,
+    List<({String? path, BackgroundMediaOrigin? origin})> backgroundFiles,
+  })> _collectDocumentFilesForDeletion(String documentId) async {
+    final appDir = (await getApplicationDocumentsDirectory()).path;
+    final mediaPaths = <String>[];
+    final backgroundFiles = <({String? path, BackgroundMediaOrigin? origin})>[];
+
+    String toAbsolute(String? pathStr) {
+      if (pathStr == null || pathStr.isEmpty) return '';
+      final s = pathStr.trim();
+      if (s.isEmpty) return '';
+      final abs =
+          s.startsWith('/') || (s.length > 1 && s[1] == ':')
+              ? s
+              : p.join(appDir, s);
+      return p.normalize(p.absolute(abs));
+    }
+
+    try {
       final db = await database;
-      final appDir = (await getApplicationDocumentsDirectory()).path;
-      final pathsToDelete = <String>[];
-
       final imageBoxes = await db.query(
         'image_boxes',
         columns: ['image_path'],
@@ -3213,8 +3234,8 @@ class DatabaseService {
         whereArgs: [documentId],
       );
       for (final row in imageBoxes) {
-        final path = row['image_path']?.toString();
-        if (path != null && path.isNotEmpty) pathsToDelete.add(path);
+        final abs = toAbsolute(row['image_path']?.toString());
+        if (abs.isNotEmpty) mediaPaths.add(abs);
       }
 
       final audioBoxes = await db.query(
@@ -3224,8 +3245,8 @@ class DatabaseService {
         whereArgs: [documentId],
       );
       for (final row in audioBoxes) {
-        final path = row['audio_path']?.toString();
-        if (path != null && path.isNotEmpty) pathsToDelete.add(path);
+        final abs = toAbsolute(row['audio_path']?.toString());
+        if (abs.isNotEmpty) mediaPaths.add(abs);
       }
 
       final settings = await db.query(
@@ -3248,11 +3269,32 @@ class DatabaseService {
         final vo = BackgroundMediaOrigin.fromDbValue(
           row['background_video_origin'] as int?,
         );
-        await deleteBackgroundPhysicalFileIfAllowed(img, io, appDir);
-        await deleteBackgroundPhysicalFileIfAllowed(vid, vo, appDir);
+        backgroundFiles.add((path: img, origin: io));
+        backgroundFiles.add((path: vid, origin: vo));
       }
+    } catch (e) {
+      if (kDebugMode) Logger.log('_collectDocumentFilesForDeletion 失败: $e');
+    }
 
-      for (final filePath in pathsToDelete) {
+    return (mediaPaths: mediaPaths, backgroundFiles: backgroundFiles);
+  }
+
+  Future<void> _deleteCollectedDocumentFiles(
+    ({
+      List<String> mediaPaths,
+      List<({String? path, BackgroundMediaOrigin? origin})> backgroundFiles,
+    }) payload,
+  ) async {
+    try {
+      final fileCleanupService = getService<FileCleanupService>();
+      if (!fileCleanupService.isInitialized) return;
+      final appDir = (await getApplicationDocumentsDirectory()).path;
+      for (final bg in payload.backgroundFiles) {
+        try {
+          await deleteBackgroundPhysicalFileIfAllowed(bg.path, bg.origin, appDir);
+        } catch (_) {}
+      }
+      for (final filePath in payload.mediaPaths) {
         try {
           await fileCleanupService.deleteMediaFileCompletely(filePath);
         } catch (e) {
@@ -3260,7 +3302,7 @@ class DatabaseService {
         }
       }
     } catch (e) {
-      if (kDebugMode) Logger.log('_deleteDocumentPhysicalFiles 失败: $e');
+      if (kDebugMode) Logger.log('_deleteCollectedDocumentFiles 失败: $e');
     }
   }
 
@@ -3302,9 +3344,13 @@ class DatabaseService {
         where: 'name = ?',
         whereArgs: [documentName],
       );
+      ({
+        List<String> mediaPaths,
+        List<({String? path, BackgroundMediaOrigin? origin})> backgroundFiles,
+      })? deletePayload;
       if (documents.isNotEmpty) {
         final documentId = documents.first['id'] as String;
-        await _deleteDocumentPhysicalFiles(documentId);
+        deletePayload = await _collectDocumentFilesForDeletion(documentId);
       }
 
       await db.transaction((txn) async {
@@ -3369,6 +3415,10 @@ class DatabaseService {
           );
         }
       });
+
+      if (deletePayload != null) {
+        await _deleteCollectedDocumentFiles(deletePayload);
+      }
 
       try {
         final fileCleanupService = getService<FileCleanupService>();
@@ -3516,8 +3566,13 @@ class DatabaseService {
 
       final folderId = folderToDelete.first['id'] as String;
       final documentIds = await _collectDocumentIdsInFolder(folderId);
+      final deletePayloads =
+          <({
+            List<String> mediaPaths,
+            List<({String? path, BackgroundMediaOrigin? origin})> backgroundFiles,
+          })>[];
       for (final docId in documentIds) {
-        await _deleteDocumentPhysicalFiles(docId);
+        deletePayloads.add(await _collectDocumentFilesForDeletion(docId));
       }
 
       await db.transaction((txn) async {
@@ -3555,6 +3610,10 @@ class DatabaseService {
           );
         }
       });
+
+      for (final payload in deletePayloads) {
+        await _deleteCollectedDocumentFiles(payload);
+      }
 
       try {
         final fileCleanupService = getService<FileCleanupService>();
@@ -5975,6 +6034,19 @@ class DatabaseService {
   ) async {
     try {
       final db = await database;
+      final appDocDir = (await getApplicationDocumentsDirectory()).path;
+      final deletedPaths = <String>[];
+
+      String toAbsolute(String? pathStr) {
+        if (pathStr == null || pathStr.isEmpty) return '';
+        final s = pathStr.trim();
+        if (s.isEmpty) return '';
+        final abs =
+            s.startsWith('/') || (s.length > 1 && s[1] == ':')
+                ? s
+                : p.join(appDocDir, s);
+        return p.normalize(p.absolute(abs));
+      }
 
       await db.transaction((txn) async {
         // Get document ID
@@ -6010,13 +6082,8 @@ class DatabaseService {
             orElse: () => <String, dynamic>{},
           );
           final path = box['image_path'] ?? box['imagePath'] ?? '';
-          if (path.toString().isNotEmpty) {
-            try {
-              final fcs = getService<FileCleanupService>();
-              if (fcs.isInitialized)
-                await fcs.deleteMediaFileCompletely(path.toString());
-            } catch (_) {}
-          }
+          final abs = toAbsolute(path.toString());
+          if (abs.isNotEmpty) deletedPaths.add(abs);
           await txn.delete(
             'image_boxes',
             where: 'document_id = ? AND id = ?',
@@ -6070,6 +6137,19 @@ class DatabaseService {
           }
         }
       });
+
+      if (deletedPaths.isNotEmpty) {
+        try {
+          final fcs = getService<FileCleanupService>();
+          if (fcs.isInitialized) {
+            for (final filePath in deletedPaths) {
+              try {
+                await fcs.deleteMediaFileCompletely(filePath);
+              } catch (_) {}
+            }
+          }
+        } catch (_) {}
+      }
     } catch (e, stackTrace) {
       _handleError('保存图片框失败', e, stackTrace);
       rethrow;
@@ -6083,6 +6163,19 @@ class DatabaseService {
   ) async {
     try {
       final db = await database;
+      final appDocDir = (await getApplicationDocumentsDirectory()).path;
+      final deletedPaths = <String>[];
+
+      String toAbsolute(String? pathStr) {
+        if (pathStr == null || pathStr.isEmpty) return '';
+        final s = pathStr.trim();
+        if (s.isEmpty) return '';
+        final abs =
+            s.startsWith('/') || (s.length > 1 && s[1] == ':')
+                ? s
+                : p.join(appDocDir, s);
+        return p.normalize(p.absolute(abs));
+      }
 
       await db.transaction((txn) async {
         // Get document ID
@@ -6118,13 +6211,8 @@ class DatabaseService {
             orElse: () => <String, dynamic>{},
           );
           final path = box['audio_path'] ?? box['audioPath'] ?? '';
-          if (path.toString().isNotEmpty) {
-            try {
-              final fcs = getService<FileCleanupService>();
-              if (fcs.isInitialized)
-                await fcs.deleteMediaFileCompletely(path.toString());
-            } catch (_) {}
-          }
+          final abs = toAbsolute(path.toString());
+          if (abs.isNotEmpty) deletedPaths.add(abs);
           await txn.delete(
             'audio_boxes',
             where: 'document_id = ? AND id = ?',
@@ -6178,6 +6266,19 @@ class DatabaseService {
           }
         }
       });
+
+      if (deletedPaths.isNotEmpty) {
+        try {
+          final fcs = getService<FileCleanupService>();
+          if (fcs.isInitialized) {
+            for (final filePath in deletedPaths) {
+              try {
+                await fcs.deleteMediaFileCompletely(filePath);
+              } catch (_) {}
+            }
+          }
+        } catch (_) {}
+      }
     } catch (e, stackTrace) {
       _handleError('保存音频框失败', e, stackTrace);
       rethrow;
