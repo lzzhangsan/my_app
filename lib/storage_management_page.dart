@@ -9,7 +9,8 @@ import '../core/service_locator.dart';
 import '../services/logger.dart';
 import '../services/file_cleanup_service.dart';
 import '../services/database_service.dart';
-import 'dart:io' show Directory, File, Platform;
+import 'dart:io' show Directory, File, FileMode, Platform;
+import 'dart:typed_data';
 import 'package:photo_manager/photo_manager.dart';
 
 class StorageManagementPage extends StatefulWidget {
@@ -762,6 +763,7 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
 
     Map<String, dynamic> result = {};
     try {
+      final ioPrecheck = await _runImportExportPrecheck(deep: deep);
       final sqliteCheck = await _databaseService.sqliteIntegrityCheck(
         quick: !deep,
       );
@@ -799,13 +801,16 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
       final bool stagingOk =
           (staging['parseOk'] == true) && ((staging['unknownIdCount'] ?? 0) == 0);
       final bool duplicatesOk = (duplicateSummary['total'] as int? ?? 0) == 0;
-      final overallOk = sqliteOk && integrityOk && refsOk && stagingOk && duplicatesOk;
+      final bool ioOk = ioPrecheck['ok'] == true;
+      final overallOk =
+          sqliteOk && integrityOk && refsOk && stagingOk && duplicatesOk && ioOk;
       final int totalCount = preview['totalCount'] as int? ?? 0;
       final int totalBytes = preview['totalBytes'] as int? ?? 0;
 
       result = {
         'ok': overallOk,
         'deep': deep,
+        'ioPrecheck': ioPrecheck,
         'sqliteCheck': sqliteCheck,
         'foreignKeyViolations': fkViolations,
         'coreCounts': coreCounts,
@@ -837,6 +842,14 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
           final stagingSize = staging['sizeBytes'] as int? ?? 0;
           final stagingItems = staging['itemCount'] as int? ?? 0;
           final stagingUnknown = staging['unknownIdCount'] as int? ?? 0;
+          final ioOk = ioPrecheck['ok'] == true;
+          final docsWritable = ioPrecheck['docsWritable'] == true;
+          final tempWritable = ioPrecheck['tempWritable'] == true;
+          final extWritable = ioPrecheck['externalWritable'] == true;
+          final backupZipTotal = ioPrecheck['backupZipCount'] as int? ?? 0;
+          final backupZipBad = ioPrecheck['backupZipBadCount'] as int? ?? 0;
+          final exportZipTotal = ioPrecheck['exportZipCount'] as int? ?? 0;
+          final exportZipBad = ioPrecheck['exportZipBadCount'] as int? ?? 0;
           return AlertDialog(
             title: Text(overallOk ? '稳定性自检：通过' : '稳定性自检：发现问题'),
             content: SizedBox(
@@ -853,6 +866,16 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
                         'media_items:${coreCounts['media_items'] ?? 0}',
                         'diary_entries:${coreCounts['diary_entries'] ?? 0}',
                       ].join('  '),
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      '导入/导出预检：${ioOk ? 'OK' : '异常'}'
+                      '（文档${docsWritable ? '可写' : '不可写'} / 临时${tempWritable ? '可写' : '不可写'}'
+                      '${Platform.isAndroid ? ' / 外部${extWritable ? '可写' : '不可写'}' : ''}）',
+                    ),
+                    Text(
+                      '备份ZIP：$backupZipTotal 个（异常 $backupZipBad）'
+                      '${Platform.isAndroid ? '  导出ZIP：$exportZipTotal 个（异常 $exportZipBad）' : ''}',
                     ),
                     const SizedBox(height: 10),
                     Text('SQLite 检查：${sqliteOk ? 'OK' : '异常'}'),
@@ -935,6 +958,132 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
         });
       }
     }
+  }
+
+  Future<Map<String, dynamic>> _runImportExportPrecheck({required bool deep}) async {
+    bool docsWritable = false;
+    bool tempWritable = false;
+    bool externalWritable = false;
+
+    bool backupZipOk = true;
+    int backupZipCount = 0;
+    int backupZipBadCount = 0;
+
+    bool exportZipOk = true;
+    int exportZipCount = 0;
+    int exportZipBadCount = 0;
+
+    Future<bool> canWrite(Directory dir) async {
+      try {
+        if (!await dir.exists()) {
+          await dir.create(recursive: true);
+        }
+        final f = File(
+          '${dir.path}${Platform.pathSeparator}selfcheck_${DateTime.now().millisecondsSinceEpoch}.tmp',
+        );
+        await f.writeAsString('ok', flush: true);
+        await f.delete();
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    Future<bool> looksLikeZip(File f) async {
+      try {
+        final len = await f.length();
+        if (len < 2) return false;
+        final raf = await f.open(mode: FileMode.read);
+        final Uint8List head = await raf.read(4);
+        await raf.close();
+        if (head.length < 2) return false;
+        return head[0] == 0x50 && head[1] == 0x4B;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    try {
+      final docsDir = await getApplicationDocumentsDirectory();
+      docsWritable = await canWrite(docsDir);
+
+      final tempDir = await getTemporaryDirectory();
+      tempWritable = await canWrite(tempDir);
+
+      final backupDir = Directory('${docsDir.path}${Platform.pathSeparator}backups');
+      if (await backupDir.exists()) {
+        final zips = <File>[];
+        await for (final e in backupDir.list()) {
+          if (e is! File) continue;
+          final name = e.path.toLowerCase();
+          if (!name.endsWith('.zip')) continue;
+          zips.add(e);
+        }
+        backupZipCount = zips.length;
+        final max = deep ? zips.length : (zips.length > 30 ? 30 : zips.length);
+        for (int i = 0; i < max; i++) {
+          final ok = await looksLikeZip(zips[i]);
+          if (!ok) {
+            backupZipBadCount++;
+            backupZipOk = false;
+          }
+        }
+      }
+
+      if (Platform.isAndroid) {
+        Directory? extDir;
+        try {
+          extDir = await getExternalStorageDirectory();
+        } catch (_) {}
+        if (extDir != null) {
+          externalWritable = await canWrite(extDir);
+          final zips = <File>[];
+          await for (final e in extDir.list()) {
+            if (e is! File) continue;
+            final lower = e.path.toLowerCase();
+            if (!lower.endsWith('.zip')) continue;
+            final base = lower.split(Platform.pathSeparator).last;
+            const prefixes = [
+              'directory_backup_',
+              'media_backup_',
+              'media_folder_',
+              'browser_backup_',
+              'diary_export_',
+              'exported_docs_',
+            ];
+            if (!prefixes.any(base.startsWith)) continue;
+            zips.add(e);
+          }
+          exportZipCount = zips.length;
+          final max = deep ? zips.length : (zips.length > 30 ? 30 : zips.length);
+          for (int i = 0; i < max; i++) {
+            final ok = await looksLikeZip(zips[i]);
+            if (!ok) {
+              exportZipBadCount++;
+              exportZipOk = false;
+            }
+          }
+        }
+      }
+    } catch (_) {}
+
+    final ok =
+        docsWritable &&
+        tempWritable &&
+        (Platform.isAndroid ? externalWritable : true) &&
+        backupZipOk &&
+        exportZipOk;
+
+    return {
+      'ok': ok,
+      'docsWritable': docsWritable,
+      'tempWritable': tempWritable,
+      'externalWritable': externalWritable,
+      'backupZipCount': backupZipCount,
+      'backupZipBadCount': backupZipBadCount,
+      'exportZipCount': exportZipCount,
+      'exportZipBadCount': exportZipBadCount,
+    };
   }
 
   /// 构建清理按钮
