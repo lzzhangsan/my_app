@@ -47,6 +47,9 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
       getService<FileCleanupService>();
   final DatabaseService _databaseService = getService<DatabaseService>();
 
+  bool _selfCheckRunning = false;
+  Map<String, dynamic>? _selfCheckResult;
+
   @override
   void initState() {
     super.initState();
@@ -700,6 +703,15 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
             ),
             const SizedBox(height: 16),
             _buildCleanupButton(
+              _selfCheckRunning ? '稳定性自检（运行中…）' : '稳定性自检',
+              _selfCheckResult == null
+                  ? '检查数据库一致性、文件引用断链、可清理孤立文件预览'
+                  : _selfCheckResult!['summary']?.toString() ?? '查看上次自检结果',
+              Icons.verified_user,
+              _selfCheckRunning ? () {} : _runStabilitySelfCheck,
+              isPrimary: true,
+            ),
+            _buildCleanupButton(
               '清理临时文件',
               '删除所有临时文件，释放空间',
               Icons.cleaning_services,
@@ -736,12 +748,193 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
               '仅清理临时/缓存/孤立文件，保留可用数据与导出文件',
               Icons.cleaning_services,
               _performFullCleanup,
-              isPrimary: true,
             ),
           ],
         ),
       ),
     );
+  }
+
+  Future<void> _runStabilitySelfCheck({bool deep = false}) async {
+    setState(() {
+      _selfCheckRunning = true;
+    });
+
+    Map<String, dynamic> result = {};
+    try {
+      final sqliteCheck = await _databaseService.sqliteIntegrityCheck(
+        quick: !deep,
+      );
+      final fkViolations = await _databaseService.sqliteForeignKeyViolationCount();
+      final coreCounts = await _databaseService.getCoreTableRowCounts();
+      final duplicateSummary = await _databaseService.findDuplicateMediaItemsSummary();
+      final staging = await _databaseService.getVideoViewStagingJsonStatus();
+      final dataIntegrity = await _databaseService.checkDataIntegrity();
+      final validPaths = await _databaseService.getAllValidFilePaths();
+      final preview = await _fileCleanupService.previewFullStorageCleanup(
+        validPaths,
+      );
+
+      final paths = validPaths.toList();
+      final int maxCheck =
+          deep
+              ? paths.length
+              : (paths.length <= 5000 ? paths.length : (paths.length > 300 ? 300 : paths.length));
+      int missingCount = 0;
+      final sampleMissing = <String>[];
+      for (int i = 0; i < maxCheck; i++) {
+        final p = paths[i];
+        if (p.isEmpty) continue;
+        final ok = await File(p).exists();
+        if (!ok) {
+          missingCount++;
+          if (sampleMissing.length < 20) sampleMissing.add(p);
+        }
+      }
+
+      final bool sqliteOk = sqliteCheck.trim().toLowerCase() == 'ok';
+      final bool integrityOk =
+          (dataIntegrity['isValid'] == true) && (fkViolations == 0);
+      final bool refsOk = missingCount == 0;
+      final bool stagingOk =
+          (staging['parseOk'] == true) && ((staging['unknownIdCount'] ?? 0) == 0);
+      final bool duplicatesOk = (duplicateSummary['total'] as int? ?? 0) == 0;
+      final overallOk = sqliteOk && integrityOk && refsOk && stagingOk && duplicatesOk;
+      final int totalCount = preview['totalCount'] as int? ?? 0;
+      final int totalBytes = preview['totalBytes'] as int? ?? 0;
+
+      result = {
+        'ok': overallOk,
+        'deep': deep,
+        'sqliteCheck': sqliteCheck,
+        'foreignKeyViolations': fkViolations,
+        'coreCounts': coreCounts,
+        'duplicateSummary': duplicateSummary,
+        'staging': staging,
+        'dataIntegrity': dataIntegrity,
+        'validPathCount': validPaths.length,
+        'checkedPathCount': maxCheck,
+        'missingPathCount': missingCount,
+        'missingSamples': sampleMissing,
+        'cleanupPreviewCount': totalCount,
+        'cleanupPreviewBytes': totalBytes,
+        'summary':
+            overallOk
+                ? '通过：核心数据与文件引用正常；可清理项 ${totalCount > 0 ? '$totalCount 个' : '0'}'
+                : '发现问题：建议点开查看详情',
+      };
+
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) {
+          final dupTotal = duplicateSummary['total'] as int? ?? 0;
+          final dupTop =
+              (duplicateSummary['top'] as List<dynamic>? ?? const [])
+                  .whereType<Map<String, dynamic>>()
+                  .toList();
+          final stagingExists = staging['exists'] == true;
+          final stagingSize = staging['sizeBytes'] as int? ?? 0;
+          final stagingItems = staging['itemCount'] as int? ?? 0;
+          final stagingUnknown = staging['unknownIdCount'] as int? ?? 0;
+          return AlertDialog(
+            title: Text(overallOk ? '稳定性自检：通过' : '稳定性自检：发现问题'),
+            content: SizedBox(
+              width: double.maxFinite,
+              child: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('核心表计数：'),
+                    Text(
+                      [
+                        'folders:${coreCounts['folders'] ?? 0}',
+                        'documents:${coreCounts['documents'] ?? 0}',
+                        'media_items:${coreCounts['media_items'] ?? 0}',
+                        'diary_entries:${coreCounts['diary_entries'] ?? 0}',
+                      ].join('  '),
+                    ),
+                    const SizedBox(height: 10),
+                    Text('SQLite 检查：${sqliteOk ? 'OK' : '异常'}'),
+                    if (!sqliteOk) Text(sqliteCheck),
+                    const SizedBox(height: 8),
+                    Text('外键异常：$fkViolations'),
+                    const SizedBox(height: 8),
+                    Text('业务数据完整性：${integrityOk ? 'OK' : '异常'}'),
+                    if (dataIntegrity['issues'] is List &&
+                        (dataIntegrity['issues'] as List).isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Text((dataIntegrity['issues'] as List).take(20).join('\n')),
+                    ],
+                    const SizedBox(height: 8),
+                    Text('媒体重复（按 file_hash）：${dupTotal == 0 ? '0（OK）' : dupTotal.toString()}'),
+                    if (dupTop.isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        dupTop
+                            .map((e) {
+                              final h = e['hash']?.toString() ?? '';
+                              final prefix = h.length <= 8 ? h : h.substring(0, 8);
+                              return '$prefix… ×${e['count']}';
+                            })
+                            .take(12)
+                            .join('\n'),
+                      ),
+                    ],
+                    const SizedBox(height: 8),
+                    Text(
+                      '取景参数暂存：${stagingExists ? '存在' : '无'}，解析 ${stagingOk ? 'OK' : '异常'}'
+                      '${stagingExists ? '（${_formatFileSize(stagingSize)}，$stagingItems 条，未知ID $stagingUnknown）' : ''}',
+                    ),
+                    const SizedBox(height: 8),
+                    Text('引用文件检查：$missingCount/$maxCheck 缺失'),
+                    if (sampleMissing.isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Text(sampleMissing.join('\n')),
+                    ],
+                    const SizedBox(height: 8),
+                    Text(
+                      '可清理预览：${preview['totalCount'] ?? 0} 个，约 ${_formatFileSize(totalBytes)}',
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            actions: [
+              if (!deep)
+                TextButton(
+                  onPressed: () async {
+                    Navigator.pop(ctx);
+                    await _runStabilitySelfCheck(deep: true);
+                  },
+                  child: const Text('深度自检'),
+                ),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('关闭'),
+              ),
+            ],
+          );
+        },
+      );
+    } catch (e) {
+      result = {
+        'ok': false,
+        'summary': '自检失败：$e',
+      };
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('稳定性自检失败: $e')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _selfCheckRunning = false;
+          _selfCheckResult = result;
+        });
+      }
+    }
   }
 
   /// 构建清理按钮

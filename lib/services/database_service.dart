@@ -7407,6 +7407,189 @@ class DatabaseService {
     return report;
   }
 
+  Future<String> sqliteIntegrityCheck({bool quick = true}) async {
+    final db = await database;
+    final pragma = quick ? 'quick_check' : 'integrity_check';
+    final rows = await db.rawQuery('PRAGMA $pragma;');
+    if (rows.isEmpty) return '';
+    final values = <String>[];
+    for (final r in rows) {
+      if (r.isEmpty) continue;
+      final v = r.values.first;
+      if (v == null) continue;
+      final s = v.toString().trim();
+      if (s.isNotEmpty) values.add(s);
+    }
+    return values.join('\n');
+  }
+
+  Future<int> sqliteForeignKeyViolationCount() async {
+    final db = await database;
+    final rows = await db.rawQuery('PRAGMA foreign_key_check;');
+    return rows.length;
+  }
+
+  Future<Map<String, int>> getCoreTableRowCounts() async {
+    final db = await database;
+    final counts = <String, int>{};
+    const tables = [
+      'folders',
+      'documents',
+      'text_boxes',
+      'image_boxes',
+      'audio_boxes',
+      'media_items',
+      'diary_entries',
+      'document_settings',
+    ];
+    for (final t in tables) {
+      try {
+        final exists = await db.rawQuery(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+          [t],
+        );
+        if (exists.isEmpty) continue;
+        final rows = await db.rawQuery('SELECT COUNT(*) AS c FROM $t');
+        final n = rows.isNotEmpty ? (rows.first['c'] as int? ?? 0) : 0;
+        counts[t] = n;
+      } catch (_) {}
+    }
+    return counts;
+  }
+
+  Future<Map<String, dynamic>> getVideoViewStagingJsonStatus() async {
+    final root = _appDocumentsDirectoryPath;
+    if (root == null || root.isEmpty) {
+      return {
+        'exists': false,
+        'sizeBytes': 0,
+        'parseOk': false,
+        'itemCount': 0,
+        'unknownIdCount': 0,
+      };
+    }
+    final file = File(p.join(root, _videoViewStagingJsonFileName));
+    if (!await file.exists()) {
+      return {
+        'exists': false,
+        'sizeBytes': 0,
+        'parseOk': true,
+        'itemCount': 0,
+        'unknownIdCount': 0,
+      };
+    }
+    int size = 0;
+    try {
+      size = await file.length();
+    } catch (_) {}
+    try {
+      final raw = await file.readAsString();
+      if (raw.trim().isEmpty) {
+        return {
+          'exists': true,
+          'sizeBytes': size,
+          'parseOk': true,
+          'itemCount': 0,
+          'unknownIdCount': 0,
+        };
+      }
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map<String, dynamic>) {
+        return {
+          'exists': true,
+          'sizeBytes': size,
+          'parseOk': false,
+          'itemCount': 0,
+          'unknownIdCount': 0,
+        };
+      }
+      final itemsRaw = decoded['items'];
+      if (itemsRaw is! Map) {
+        return {
+          'exists': true,
+          'sizeBytes': size,
+          'parseOk': false,
+          'itemCount': 0,
+          'unknownIdCount': 0,
+        };
+      }
+      final items = Map<String, dynamic>.from(itemsRaw as Map);
+      final ids = items.keys.toList();
+      int unknown = 0;
+      if (ids.isNotEmpty) {
+        final db = await database;
+        const chunk = 900;
+        for (int i = 0; i < ids.length; i += chunk) {
+          final part = ids.sublist(i, (i + chunk).clamp(0, ids.length));
+          final qs = List.filled(part.length, '?').join(',');
+          final rows = await db.rawQuery(
+            'SELECT id FROM media_items WHERE id IN ($qs)',
+            part,
+          );
+          final existing = rows.map((r) => r['id']?.toString() ?? '').toSet();
+          for (final id in part) {
+            if (!existing.contains(id)) unknown++;
+          }
+        }
+      }
+      return {
+        'exists': true,
+        'sizeBytes': size,
+        'parseOk': true,
+        'itemCount': items.length,
+        'unknownIdCount': unknown,
+      };
+    } catch (_) {
+      return {
+        'exists': true,
+        'sizeBytes': size,
+        'parseOk': false,
+        'itemCount': 0,
+        'unknownIdCount': 0,
+      };
+    }
+  }
+
+  Future<Map<String, dynamic>> findDuplicateMediaItemsSummary({
+    int limit = 20,
+  }) async {
+    final db = await database;
+    try {
+      final rows = await db.rawQuery('''
+        SELECT file_hash AS hash, COUNT(*) AS c
+        FROM media_items
+        WHERE file_hash IS NOT NULL AND TRIM(file_hash) <> '' AND directory <> 'recycle_bin'
+        GROUP BY file_hash
+        HAVING c > 1
+        ORDER BY c DESC
+        LIMIT ?
+      ''', [limit]);
+      int total = 0;
+      try {
+        final countRows = await db.rawQuery('''
+          SELECT COUNT(*) AS c FROM (
+            SELECT file_hash
+            FROM media_items
+            WHERE file_hash IS NOT NULL AND TRIM(file_hash) <> '' AND directory <> 'recycle_bin'
+            GROUP BY file_hash
+            HAVING COUNT(*) > 1
+          )
+        ''');
+        total = countRows.isNotEmpty ? (countRows.first['c'] as int? ?? 0) : 0;
+      } catch (_) {}
+      final top = <Map<String, dynamic>>[];
+      for (final r in rows) {
+        final h = r['hash']?.toString() ?? '';
+        final c = r['c'] as int? ?? 0;
+        if (h.isEmpty || c <= 1) continue;
+        top.add({'hash': h, 'count': c});
+      }
+      return {'total': total, 'top': top};
+    } catch (_) {
+      return {'total': 0, 'top': <Map<String, dynamic>>[]};
+    }
+  }
+
   /// 修复数据完整性问题
   Future<void> repairDataIntegrity() async {
     final db = await database;
