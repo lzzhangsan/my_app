@@ -394,12 +394,6 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
         '存在 $cleanupPreviewCount 个可清理项（${_formatFileSize(cleanupPreviewBytes)}），建议清理后再发版。',
       );
     }
-    if (backupZipCount == 0) {
-      warnings.add('尚未发现备份 ZIP 样本，建议在发版前实际跑一次备份并回读验证。');
-    }
-    if (Platform.isAndroid && exportZipCount == 0) {
-      warnings.add('尚未发现导出 ZIP 样本，建议在发版前实际跑一次导出并回读验证。');
-    }
     if (stagingExists && stagingItems > 0 && stagingParseOk && stagingUnknown == 0) {
       warnings.add('仍有 $stagingItems 条取景参数暂存待自然合并，建议重启应用后复检一次。');
     }
