@@ -25,7 +25,6 @@ import 'package:video_thumbnail/video_thumbnail.dart';
 
 import 'core/service_locator.dart';
 import 'services/database_service.dart';
-import 'services/file_cleanup_service.dart';
 import 'models/media_item.dart';
 import 'media_preview_page.dart';
 import 'create_folder_dialog.dart';
@@ -2214,22 +2213,14 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
     if (shouldDelete) {
       try {
-        // 使用文件清理服务彻底删除文件
-        final fileCleanupService = getService<FileCleanupService>();
-        if (fileCleanupService.isInitialized) {
-          await fileCleanupService.deleteMediaFileCompletely(item.path);
-        } else {
-          // 如果清理服务未初始化，使用传统方法删除
-          final file = File(item.path);
-          if (await file.exists()) await file.delete();
-        }
-
-        // 从数据库中删除
-        await _databaseService.deleteMediaItem(item.id);
+        final result = await _databaseService.deleteMediaItemCompletely(
+          item.id,
+        );
 
         await _loadMediaItems();
         _invalidMediaRetryCounts.remove(item.id);
         _invalidMediaRetryCounts.remove(item.id);
+        await _showPartialDeleteWarningIfNeeded(result);
       } catch (e) {
         debugPrint('删除媒体项时出错: $e');
         if (mounted) {
@@ -2239,6 +2230,20 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         }
       }
     }
+  }
+
+  Future<void> _showPartialDeleteWarningIfNeeded(
+    Map<String, dynamic> result,
+  ) async {
+    if (!mounted) return;
+    final attempted = result['fileDeleteAttempted'] as bool? ?? false;
+    final deleted = result['fileDeleted'] as bool? ?? true;
+    if (!attempted || deleted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('记录已删除，但物理文件未能立即清理，可稍后在存储管理中清理孤立文件。'),
+      ),
+    );
   }
 
   Future<void> _renameMediaItem(MediaItem item) async {
@@ -2949,17 +2954,15 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       );
 
       try {
-        final fileCleanupService = getService<FileCleanupService>();
+        int partialFileDeleteFailures = 0;
         for (var id in _selectedItems) {
           final item = _mediaItems.firstWhereOrNull((i) => i.id == id);
           if (item == null) continue;
-          if (fileCleanupService.isInitialized) {
-            await fileCleanupService.deleteMediaFileCompletely(item.path);
-          } else {
-            final file = File(item.path);
-            if (await file.exists()) await file.delete();
+          final result = await _databaseService.deleteMediaItemCompletely(id);
+          if ((result['fileDeleteAttempted'] as bool? ?? false) &&
+              !(result['fileDeleted'] as bool? ?? true)) {
+            partialFileDeleteFailures++;
           }
-          await _databaseService.deleteMediaItem(id);
         }
 
         if (mounted) {
@@ -2970,6 +2973,15 @@ class _MediaManagerPageState extends State<MediaManagerPage>
             _isMultiSelectMode = false;
           });
           widget.onMultiSelectModeChanged?.call(false);
+          if (partialFileDeleteFailures > 0) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  '$partialFileDeleteFailures 个文件记录已删除，但物理文件未能立即清理，可稍后在存储管理中清理孤立文件。',
+                ),
+              ),
+            );
+          }
           await Future<void>.delayed(const Duration(milliseconds: 900));
           await _loadMediaItems();
         }
@@ -3479,7 +3491,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                   return child;
                 },
                 errorBuilder: (context, error, stackTrace) {
-                  _scheduleCleanup(item.id); // 加载失败时安排清理（文件缺失或损坏）
+                  unawaited(
+                    _scheduleCleanupIfFileMissing(item),
+                  ); // 仅在文件确实缺失时才进入自动清理
                   return const Icon(Icons.image, size: 32);
                 },
               ),
@@ -4363,22 +4377,20 @@ class _MediaManagerPageState extends State<MediaManagerPage>
               .map((m) => MediaItem.fromMap(m))
               .where((i) => i.type != MediaType.folder)
               .toList();
-      final fileCleanupService = getService<FileCleanupService>();
       int deletedCount = 0;
+      int partialFileDeleteFailures = 0;
 
       for (final item in items) {
         try {
-          if (fileCleanupService.isInitialized) {
-            await fileCleanupService.deleteMediaFileCompletely(item.path);
-          } else {
-            final file = File(item.path);
-            if (await file.exists()) await file.delete();
-          }
-        } catch (_) {}
-        try {
-          await _databaseService.deleteMediaItem(item.id);
+          final result = await _databaseService.deleteMediaItemCompletely(
+            item.id,
+          );
           deletedCount++;
           _invalidMediaRetryCounts.remove(item.id);
+          if ((result['fileDeleteAttempted'] as bool? ?? false) &&
+              !(result['fileDeleted'] as bool? ?? true)) {
+            partialFileDeleteFailures++;
+          }
         } catch (_) {}
       }
 
@@ -4387,7 +4399,11 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            deletedCount > 0 ? '已清空回收站，彻底删除 $deletedCount 项' : '回收站已是空的',
+            deletedCount <= 0
+                ? '回收站已是空的'
+                : partialFileDeleteFailures > 0
+                ? '已清空回收站，彻底删除 $deletedCount 项；另有 $partialFileDeleteFailures 个物理文件待后续孤立清理'
+                : '已清空回收站，彻底删除 $deletedCount 项',
           ),
         ),
       );
@@ -5163,6 +5179,18 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     });
   }
 
+  Future<void> _scheduleCleanupIfFileMissing(MediaItem item) async {
+    try {
+      if (await File(item.path).exists()) {
+        debugPrint('图片加载失败但源文件仍存在，跳过自动清理: ${item.name}');
+        return;
+      }
+      _scheduleCleanup(item.id);
+    } catch (e) {
+      debugPrint('检查媒体文件是否缺失时出错(${item.id}): $e');
+    }
+  }
+
   // New method to perform the cleanup
   // 图片加载失败：直接删除（多为损坏/垃圾文件）
   // 视频缩略图失败：移至回收站，给用户自行处理或再次尝试的机会
@@ -5219,14 +5247,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   // New method to delete media item silently (without confirmation dialog)
   Future<void> _deleteMediaItemSilently(MediaItem item) async {
     try {
-      final fileCleanupService = getService<FileCleanupService>();
-      if (fileCleanupService.isInitialized) {
-        await fileCleanupService.deleteMediaFileCompletely(item.path);
-      } else {
-        final file = File(item.path);
-        if (await file.exists()) await file.delete();
-      }
-      await _databaseService.deleteMediaItem(item.id);
+      await _databaseService.deleteMediaItemCompletely(item.id);
     } catch (e) {
       debugPrint('静默删除媒体项时出错: ${item.name}, 错误: $e');
       rethrow;

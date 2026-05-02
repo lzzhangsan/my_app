@@ -1812,6 +1812,44 @@ class DatabaseService {
     }
   }
 
+  /// 先删除数据库记录，再清理磁盘文件。
+  ///
+  /// 这样在文件删除失败时，最多残留可回收的孤儿文件，不会留下指向失效路径的坏记录。
+  Future<Map<String, dynamic>> deleteMediaItemCompletely(String id) async {
+    final row = await getMediaItemById(id);
+    final filePath = row?['path']?.toString() ?? '';
+
+    final dbDeleted = await deleteMediaItem(id);
+    bool fileDeleteAttempted = false;
+    bool fileDeleted = true;
+
+    if (dbDeleted > 0 && filePath.isNotEmpty) {
+      fileDeleteAttempted = true;
+      final fileCleanupService = getService<FileCleanupService>();
+      if (fileCleanupService.isInitialized) {
+        fileDeleted = await fileCleanupService.deleteMediaFileCompletely(
+          filePath,
+        );
+      } else {
+        try {
+          final file = File(filePath);
+          if (await file.exists()) {
+            await file.delete();
+          }
+        } catch (_) {
+          fileDeleted = false;
+        }
+      }
+    }
+
+    return {
+      'dbDeleted': dbDeleted > 0,
+      'fileDeleteAttempted': fileDeleteAttempted,
+      'fileDeleted': fileDeleted,
+      'filePath': filePath,
+    };
+  }
+
   /// 在异步写库前同步记下当前取景参数（见 [_stagedVideoViewParamsByMediaId]）。
   void stageVideoViewParamsForDisk(String mediaId, VideoViewParams params) {
     _stagedVideoViewParamsByMediaId[mediaId] = params;
@@ -7688,6 +7726,482 @@ class DatabaseService {
       'orphanFilesDeleted': orphanDeletedCount,
       'orphanBytesDeleted': orphanDeletedBytes,
       'hashes': resolvedHashes.take(10).toList(),
+    };
+  }
+
+  Future<List<Map<String, dynamic>>> describeFilePathReferences(
+    String absPath,
+  ) async {
+    final db = await database;
+    final p0 = absPath.trim();
+    if (p0.isEmpty) return [];
+    final usages = <Map<String, dynamic>>[];
+
+    try {
+      final rows = await db.rawQuery('''
+        SELECT ds.document_id AS document_id,
+               d.name AS document_name,
+               f.name AS folder_name,
+               ds.background_image_path AS img,
+               ds.background_video_path AS vid
+        FROM document_settings ds
+        JOIN documents d ON d.id = ds.document_id
+        LEFT JOIN folders f ON f.id = d.parent_folder
+        WHERE ds.background_image_path = ? OR ds.background_video_path = ?
+      ''', [p0, p0]);
+      for (final r in rows) {
+        final docId = r['document_id']?.toString() ?? '';
+        final docName = r['document_name']?.toString() ?? '';
+        final folderName = r['folder_name']?.toString();
+        final img = r['img']?.toString() ?? '';
+        final vid = r['vid']?.toString() ?? '';
+        if (img == p0) {
+          usages.add({
+            'type': 'document_background_image',
+            'documentId': docId,
+            'documentName': docName,
+            'folderName': folderName,
+          });
+        }
+        if (vid == p0) {
+          usages.add({
+            'type': 'document_background_video',
+            'documentId': docId,
+            'documentName': docName,
+            'folderName': folderName,
+          });
+        }
+      }
+    } catch (_) {}
+
+    try {
+      final rows = await db.rawQuery('''
+        SELECT folder_name AS folder_name, background_image_path AS img, background_video_path AS vid
+        FROM directory_settings
+        WHERE background_image_path = ? OR background_video_path = ?
+      ''', [p0, p0]);
+      for (final r in rows) {
+        final folderName = r['folder_name']?.toString() ?? '';
+        final img = r['img']?.toString() ?? '';
+        final vid = r['vid']?.toString() ?? '';
+        if (img == p0) {
+          usages.add({
+            'type': 'directory_background_image',
+            'folderName': folderName,
+          });
+        }
+        if (vid == p0) {
+          usages.add({
+            'type': 'directory_background_video',
+            'folderName': folderName,
+          });
+        }
+      }
+    } catch (_) {}
+
+    try {
+      final rows = await db.rawQuery('''
+        SELECT background_image_path AS img, background_video_path AS vid
+        FROM diary_settings
+        WHERE background_image_path = ? OR background_video_path = ?
+      ''', [p0, p0]);
+      for (final r in rows) {
+        final img = r['img']?.toString() ?? '';
+        final vid = r['vid']?.toString() ?? '';
+        if (img == p0) usages.add({'type': 'diary_background_image'});
+        if (vid == p0) usages.add({'type': 'diary_background_video'});
+      }
+    } catch (_) {}
+
+    bool hasCoverSettings = false;
+    try {
+      final rows = await db.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='cover_settings'",
+      );
+      hasCoverSettings = rows.isNotEmpty;
+    } catch (_) {}
+    if (hasCoverSettings) {
+      try {
+        final rows = await db.rawQuery('''
+          SELECT background_image_path AS img, background_video_path AS vid
+          FROM cover_settings
+          WHERE background_image_path = ? OR background_video_path = ?
+        ''', [p0, p0]);
+        for (final r in rows) {
+          final img = r['img']?.toString() ?? '';
+          final vid = r['vid']?.toString() ?? '';
+          if (img == p0) usages.add({'type': 'cover_background_image'});
+          if (vid == p0) usages.add({'type': 'cover_background_video'});
+        }
+      } catch (_) {}
+    }
+
+    try {
+      final rows = await db.query(
+        'cover_image',
+        columns: ['id'],
+        where: 'path = ?',
+        whereArgs: [p0],
+      );
+      for (final r in rows) {
+        usages.add({'type': 'cover_image', 'id': r['id']});
+      }
+    } catch (_) {}
+
+    try {
+      final rows = await db.rawQuery('''
+        SELECT ib.id AS box_id, d.id AS document_id, d.name AS document_name, f.name AS folder_name
+        FROM image_boxes ib
+        JOIN documents d ON d.id = ib.document_id
+        LEFT JOIN folders f ON f.id = d.parent_folder
+        WHERE ib.image_path = ?
+      ''', [p0]);
+      for (final r in rows) {
+        usages.add({
+          'type': 'document_image_box',
+          'documentId': r['document_id']?.toString() ?? '',
+          'documentName': r['document_name']?.toString() ?? '',
+          'folderName': r['folder_name']?.toString(),
+          'boxId': r['box_id']?.toString() ?? '',
+        });
+      }
+    } catch (_) {}
+
+    try {
+      final rows = await db.rawQuery('''
+        SELECT ab.id AS box_id, d.id AS document_id, d.name AS document_name, f.name AS folder_name
+        FROM audio_boxes ab
+        JOIN documents d ON d.id = ab.document_id
+        LEFT JOIN folders f ON f.id = d.parent_folder
+        WHERE ab.audio_path = ?
+      ''', [p0]);
+      for (final r in rows) {
+        usages.add({
+          'type': 'document_audio_box',
+          'documentId': r['document_id']?.toString() ?? '',
+          'documentName': r['document_name']?.toString() ?? '',
+          'folderName': r['folder_name']?.toString(),
+          'boxId': r['box_id']?.toString() ?? '',
+        });
+      }
+    } catch (_) {}
+
+    try {
+      final rows = await db.query(
+        'media_items',
+        columns: ['id', 'name', 'type', 'directory', 'path', 'thumbnail_path'],
+        where: 'path = ? OR thumbnail_path = ?',
+        whereArgs: [p0, p0],
+      );
+      for (final r in rows) {
+        final pathV = r['path']?.toString() ?? '';
+        final thumbV = r['thumbnail_path']?.toString() ?? '';
+        if (pathV == p0) {
+          usages.add({
+            'type': 'media_item_file',
+            'mediaId': r['id']?.toString() ?? '',
+            'mediaName': r['name']?.toString() ?? '',
+            'mediaType': r['type'],
+            'directory': r['directory']?.toString() ?? '',
+          });
+        }
+        if (thumbV == p0) {
+          usages.add({
+            'type': 'media_item_thumbnail',
+            'mediaId': r['id']?.toString() ?? '',
+            'mediaName': r['name']?.toString() ?? '',
+            'mediaType': r['type'],
+            'directory': r['directory']?.toString() ?? '',
+          });
+        }
+      }
+    } catch (_) {}
+
+    try {
+      final rows = await db.query(
+        _backgroundFileViewParamsTable,
+        columns: ['path'],
+        where: 'path = ?',
+        whereArgs: [p0],
+      );
+      if (rows.isNotEmpty) usages.add({'type': 'background_file_view_params'});
+    } catch (_) {}
+
+    try {
+      final like = '%$p0%';
+      final rows = await db.rawQuery('''
+        SELECT id, date, image_paths, audio_paths, video_paths
+        FROM diary_entries
+        WHERE (image_paths LIKE ?) OR (audio_paths LIKE ?) OR (video_paths LIKE ?)
+      ''', [like, like, like]);
+      for (final r in rows) {
+        final id = r['id']?.toString() ?? '';
+        final date = r['date']?.toString() ?? '';
+        bool hit = false;
+        for (final k in ['image_paths', 'audio_paths', 'video_paths']) {
+          final raw = r[k]?.toString() ?? '';
+          if (raw.isEmpty || !raw.contains(p0)) continue;
+          try {
+            final decoded = jsonDecode(raw);
+            if (decoded is List) {
+              if (decoded.whereType<String>().contains(p0)) {
+                hit = true;
+              }
+            }
+          } catch (_) {}
+        }
+        if (hit) {
+          usages.add({'type': 'diary_entry_media', 'diaryId': id, 'date': date});
+        }
+      }
+    } catch (_) {}
+
+    return usages;
+  }
+
+  Future<List<Map<String, dynamic>>> describeMissingFileReferences(
+    List<String> missingPaths,
+  ) async {
+    final seen = <String>{};
+    final out = <Map<String, dynamic>>[];
+    for (final p0 in missingPaths) {
+      final p = p0.trim();
+      if (p.isEmpty) continue;
+      if (!seen.add(p)) continue;
+      final usages = await describeFilePathReferences(p);
+      bool repairable = usages.any((u) {
+        final t = u['type']?.toString() ?? '';
+        return t == 'document_background_image' ||
+            t == 'document_background_video' ||
+            t == 'directory_background_image' ||
+            t == 'directory_background_video' ||
+            t == 'diary_background_image' ||
+            t == 'diary_background_video' ||
+            t == 'cover_background_image' ||
+            t == 'cover_background_video' ||
+            t == 'cover_image' ||
+            t == 'background_file_view_params' ||
+            t == 'diary_entry_media';
+      });
+      out.add({'path': p, 'usages': usages, 'repairable': repairable});
+    }
+    return out;
+  }
+
+  Future<Map<String, dynamic>> repairMissingFileReferences(
+    List<String> missingPaths,
+  ) async {
+    final db = await database;
+    final unique = <String>{};
+    final paths = <String>[];
+    for (final p0 in missingPaths) {
+      final p = p0.trim();
+      if (p.isEmpty) continue;
+      if (unique.add(p)) paths.add(p);
+    }
+    if (paths.isEmpty) {
+      return {
+        'fixed': 0,
+        'unfixed': 0,
+        'fixedByType': <String, int>{},
+      };
+    }
+
+    int fixed = 0;
+    final fixedByType = <String, int>{};
+    final fixedPaths = <String>{};
+    bool bump(String k, int n) {
+      if (n <= 0) return false;
+      fixed += n;
+      fixedByType[k] = (fixedByType[k] ?? 0) + n;
+      return true;
+    }
+
+    bool hasCoverSettings = false;
+    try {
+      final rows = await db.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='cover_settings'",
+      );
+      hasCoverSettings = rows.isNotEmpty;
+    } catch (_) {}
+
+    final now = DateTime.now().millisecondsSinceEpoch;
+
+    await db.transaction((txn) async {
+      for (final p in paths) {
+        bool touched = false;
+        try {
+          final n = await txn.update(
+            'document_settings',
+            {
+              'background_image_path': null,
+              'background_image_origin': null,
+              'updated_at': now,
+            },
+            where: 'background_image_path = ?',
+            whereArgs: [p],
+          );
+          touched = bump('document_background_image', n) || touched;
+        } catch (_) {}
+        try {
+          final n = await txn.update(
+            'document_settings',
+            {
+              'background_video_path': null,
+              'background_video_origin': null,
+              'updated_at': now,
+            },
+            where: 'background_video_path = ?',
+            whereArgs: [p],
+          );
+          touched = bump('document_background_video', n) || touched;
+        } catch (_) {}
+
+        try {
+          final n = await txn.update(
+            'directory_settings',
+            {
+              'background_image_path': null,
+              'background_image_origin': null,
+              'updated_at': now,
+            },
+            where: 'background_image_path = ?',
+            whereArgs: [p],
+          );
+          touched = bump('directory_background_image', n) || touched;
+        } catch (_) {}
+        try {
+          final n = await txn.update(
+            'directory_settings',
+            {
+              'background_video_path': null,
+              'background_video_origin': null,
+              'updated_at': now,
+            },
+            where: 'background_video_path = ?',
+            whereArgs: [p],
+          );
+          touched = bump('directory_background_video', n) || touched;
+        } catch (_) {}
+
+        try {
+          final n = await txn.update(
+            'diary_settings',
+            {
+              'background_image_path': null,
+              'background_image_origin': null,
+              'updated_at': now,
+            },
+            where: 'background_image_path = ?',
+            whereArgs: [p],
+          );
+          touched = bump('diary_background_image', n) || touched;
+        } catch (_) {}
+        try {
+          final n = await txn.update(
+            'diary_settings',
+            {
+              'background_video_path': null,
+              'background_video_origin': null,
+              'updated_at': now,
+            },
+            where: 'background_video_path = ?',
+            whereArgs: [p],
+          );
+          touched = bump('diary_background_video', n) || touched;
+        } catch (_) {}
+
+        if (hasCoverSettings) {
+          try {
+            final n = await txn.update(
+              'cover_settings',
+              {
+                'background_image_path': null,
+                'background_image_origin': null,
+              },
+              where: 'background_image_path = ?',
+              whereArgs: [p],
+            );
+            touched = bump('cover_background_image', n) || touched;
+          } catch (_) {}
+          try {
+            final n = await txn.update(
+              'cover_settings',
+              {
+                'background_video_path': null,
+                'background_video_origin': null,
+              },
+              where: 'background_video_path = ?',
+              whereArgs: [p],
+            );
+            touched = bump('cover_background_video', n) || touched;
+          } catch (_) {}
+        }
+
+        try {
+          final n = await txn.delete(
+            'cover_image',
+            where: 'path = ?',
+            whereArgs: [p],
+          );
+          touched = bump('cover_image', n) || touched;
+        } catch (_) {}
+
+        try {
+          final n = await txn.delete(
+            _backgroundFileViewParamsTable,
+            where: 'path = ?',
+            whereArgs: [p],
+          );
+          touched = bump('background_file_view_params', n) || touched;
+        } catch (_) {}
+
+        try {
+          final like = '%$p%';
+          final rows = await txn.rawQuery('''
+            SELECT id, image_paths, audio_paths, video_paths
+            FROM diary_entries
+            WHERE (image_paths LIKE ?) OR (audio_paths LIKE ?) OR (video_paths LIKE ?)
+          ''', [like, like, like]);
+          for (final r in rows) {
+            final id = r['id']?.toString() ?? '';
+            if (id.isEmpty) continue;
+            Map<String, dynamic> next = {};
+            for (final k in ['image_paths', 'audio_paths', 'video_paths']) {
+              final raw = r[k]?.toString() ?? '';
+              if (raw.isEmpty || !raw.contains(p)) continue;
+              try {
+                final decoded = jsonDecode(raw);
+                if (decoded is List) {
+                  final list = decoded.whereType<String>().toList();
+                  final before = list.length;
+                  list.removeWhere((e) => e == p);
+                  if (list.length != before) {
+                    next[k] = list.isEmpty ? null : jsonEncode(list);
+                  }
+                }
+              } catch (_) {}
+            }
+            if (next.isEmpty) continue;
+            await txn.update(
+              'diary_entries',
+              next,
+              where: 'id = ?',
+              whereArgs: [id],
+            );
+            touched = bump('diary_entry_media', 1) || touched;
+          }
+        } catch (_) {}
+        if (touched) fixedPaths.add(p);
+      }
+    });
+
+    return {
+      'fixed': fixed,
+      'fixedPathCount': fixedPaths.length,
+      'pathCount': paths.length,
+      'unfixedPathCount': (paths.length - fixedPaths.length).clamp(0, paths.length),
+      'fixedByType': fixedByType,
     };
   }
 

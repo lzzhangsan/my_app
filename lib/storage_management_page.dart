@@ -4,7 +4,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:archive/archive_io.dart';
 import 'package:path_provider/path_provider.dart';
+import 'cover_page.dart';
+import 'diary_page.dart';
+import 'directory_page.dart';
+import 'document_editor_page.dart';
 import '../core/service_locator.dart';
 import '../services/logger.dart';
 import '../services/file_cleanup_service.dart';
@@ -21,6 +26,7 @@ class StorageManagementPage extends StatefulWidget {
 }
 
 class _StorageManagementPageState extends State<StorageManagementPage> {
+  static const int _selfCheckUiVersion = 2;
   bool _isLoading = true;
   int _totalStorageUsage = 0;
   int _documentsSize = 0;
@@ -228,6 +234,203 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
     if (bytes < 1024 * 1024 * 1024)
       return '${(bytes / (1024 * 1024)).toStringAsFixed(1)}MB';
     return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)}GB';
+  }
+
+  Color _selfCheckColor(bool ok) {
+    return ok ? Colors.green.shade700 : Colors.red.shade700;
+  }
+
+  TextStyle _selfCheckTextStyle(bool ok, {bool bold = false}) {
+    return TextStyle(
+      color: _selfCheckColor(ok),
+      fontWeight: bold ? FontWeight.w700 : FontWeight.normal,
+    );
+  }
+
+  Widget _selfCheckLine(
+    String label,
+    bool ok,
+    String okText,
+    String badText, {
+    bool bold = false,
+  }) {
+    return Text(
+      '$label${ok ? okText : badText}',
+      style: _selfCheckTextStyle(ok, bold: bold),
+    );
+  }
+
+  Future<Map<String, dynamic>> _inspectZipArchive(File file) async {
+    final path = file.path;
+    final name = path.split(Platform.pathSeparator).last;
+    int sizeBytes = 0;
+    InputFileStream? inputStream;
+    try {
+      sizeBytes = await file.length();
+      if (sizeBytes < 4) {
+        return {
+          'ok': false,
+          'path': path,
+          'name': name,
+          'sizeBytes': sizeBytes,
+          'entryCount': 0,
+          'jsonEntryCount': 0,
+          'reason': '文件过小，不像有效 ZIP',
+        };
+      }
+      inputStream = InputFileStream(path);
+      final archive = ZipDecoder().decodeStream(inputStream);
+      final fileEntries = archive.files.where((e) => e.isFile).toList();
+      final jsonEntries =
+          fileEntries
+              .where((e) => e.name.toLowerCase().endsWith('.json'))
+              .toList();
+      final ok = fileEntries.isNotEmpty && jsonEntries.isNotEmpty;
+      return {
+        'ok': ok,
+        'path': path,
+        'name': name,
+        'sizeBytes': sizeBytes,
+        'entryCount': fileEntries.length,
+        'jsonEntryCount': jsonEntries.length,
+        'reason': ok ? '' : 'ZIP 可读取，但缺少有效文件条目或关键 JSON',
+      };
+    } catch (e) {
+      return {
+        'ok': false,
+        'path': path,
+        'name': name,
+        'sizeBytes': sizeBytes,
+        'entryCount': 0,
+        'jsonEntryCount': 0,
+        'reason': e.toString(),
+      };
+    } finally {
+      try {
+        inputStream?.close();
+      } catch (_) {}
+    }
+  }
+
+  Map<String, dynamic> _buildReleaseReadinessReport({
+    required bool deep,
+    required bool sqliteOk,
+    required int fkViolations,
+    required Map<String, dynamic> dataIntegrity,
+    required int validPathCount,
+    required int checkedPathCount,
+    required int missingCount,
+    required Map<String, dynamic> duplicateSummary,
+    required Map<String, dynamic> staging,
+    required Map<String, dynamic> ioPrecheck,
+    required int cleanupPreviewCount,
+    required int cleanupPreviewBytes,
+  }) {
+    final blockers = <String>[];
+    final warnings = <String>[];
+
+    final bool checkedAllRefs =
+        validPathCount == 0 || checkedPathCount >= validPathCount;
+    final int duplicateTotal = duplicateSummary['total'] as int? ?? 0;
+    final bool docsWritable = ioPrecheck['docsWritable'] == true;
+    final bool tempWritable = ioPrecheck['tempWritable'] == true;
+    final bool extWritable = ioPrecheck['externalWritable'] == true;
+    final int backupZipCount = ioPrecheck['backupZipCount'] as int? ?? 0;
+    final int backupZipBadCount = ioPrecheck['backupZipBadCount'] as int? ?? 0;
+    final int exportZipCount = ioPrecheck['exportZipCount'] as int? ?? 0;
+    final int exportZipBadCount = ioPrecheck['exportZipBadCount'] as int? ?? 0;
+    final bool stagingExists = staging['exists'] == true;
+    final bool stagingParseOk = staging['parseOk'] == true;
+    final int stagingUnknown = staging['unknownIdCount'] as int? ?? 0;
+    final int stagingItems = staging['itemCount'] as int? ?? 0;
+    final bool dataIntegrityOk = dataIntegrity['isValid'] == true;
+    final issues =
+        (dataIntegrity['issues'] as List<dynamic>? ?? const [])
+            .map((e) => e.toString())
+            .toList();
+
+    if (!deep) {
+      blockers.add('当前不是发布级全量自检，结果不能作为正式版 APK 发布依据。');
+    }
+    if (!checkedAllRefs) {
+      blockers.add('文件引用只检查了 $checkedPathCount/$validPathCount，未完成全量扫描。');
+    }
+    if (!sqliteOk) {
+      blockers.add('SQLite 完整性检查异常。');
+    }
+    if (fkViolations > 0) {
+      blockers.add('发现 $fkViolations 个外键异常。');
+    }
+    if (!dataIntegrityOk) {
+      blockers.add('业务数据完整性检查发现 ${issues.length} 项问题。');
+    }
+    if (missingCount > 0) {
+      blockers.add('发现 $missingCount 个失效文件引用。');
+    }
+    if (duplicateTotal > 0) {
+      blockers.add('发现 $duplicateTotal 组重复媒体；按产品要求，正式版前应只保留一份。');
+    }
+    if (!stagingParseOk || stagingUnknown > 0) {
+      blockers.add('媒体取景参数暂存文件异常，存在未解析或未知媒体 ID。');
+    }
+    if (!docsWritable) {
+      blockers.add('应用文档目录不可写。');
+    }
+    if (!tempWritable) {
+      blockers.add('临时目录不可写。');
+    }
+    if (Platform.isAndroid && !extWritable) {
+      blockers.add('Android 外部存储不可写，导出/备份能力异常。');
+    }
+    if (backupZipBadCount > 0) {
+      blockers.add('发现 $backupZipBadCount 个损坏或不可读取的备份 ZIP。');
+    }
+    if (Platform.isAndroid && exportZipBadCount > 0) {
+      blockers.add('发现 $exportZipBadCount 个损坏或不可读取的导出 ZIP。');
+    }
+
+    if (cleanupPreviewCount > 0) {
+      warnings.add(
+        '存在 $cleanupPreviewCount 个可清理项（${_formatFileSize(cleanupPreviewBytes)}），建议清理后再发版。',
+      );
+    }
+    if (backupZipCount == 0) {
+      warnings.add('尚未发现备份 ZIP 样本，建议在发版前实际跑一次备份并回读验证。');
+    }
+    if (Platform.isAndroid && exportZipCount == 0) {
+      warnings.add('尚未发现导出 ZIP 样本，建议在发版前实际跑一次导出并回读验证。');
+    }
+    if (stagingExists && stagingItems > 0 && stagingParseOk && stagingUnknown == 0) {
+      warnings.add('仍有 $stagingItems 条取景参数暂存待自然合并，建议重启应用后复检一次。');
+    }
+
+    final bool releaseReady = blockers.isEmpty;
+    final String verdict =
+        releaseReady
+            ? (warnings.isEmpty ? 'ready' : 'ready_with_warnings')
+            : 'blocked';
+    final String title =
+        verdict == 'ready'
+            ? '可以生成正式版 APK'
+            : verdict == 'ready_with_warnings'
+            ? '基本可生成正式版 APK'
+            : '暂不可以生成正式版 APK';
+    final String summary =
+        verdict == 'ready'
+            ? '通过：当前数据状态和关键存储能力满足正式版发布门槛。'
+            : verdict == 'ready_with_warnings'
+            ? '通过但有提醒：当前没有阻断发布的问题，但建议先处理提醒项。'
+            : '未通过：存在会影响正式版发布的阻断问题，需先修复。';
+
+    return {
+      'releaseReady': releaseReady,
+      'verdict': verdict,
+      'title': title,
+      'summary': summary,
+      'blockers': blockers,
+      'warnings': warnings,
+      'checkedAllRefs': checkedAllRefs,
+    };
   }
 
   /// 清理临时文件
@@ -704,12 +907,12 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
             ),
             const SizedBox(height: 16),
             _buildCleanupButton(
-              _selfCheckRunning ? '稳定性自检（运行中…）' : '稳定性自检',
+              _selfCheckRunning ? '发布级自检（运行中…）' : '发布级自检',
               _selfCheckResult == null
-                  ? '检查数据库一致性、文件引用断链、可清理孤立文件预览'
+                  ? '全量检查数据库、文件引用、重复媒体、备份可恢复性，并给出是否可生成正式版 APK 的结论'
                   : _selfCheckResult!['summary']?.toString() ?? '查看上次自检结果',
               Icons.verified_user,
-              _selfCheckRunning ? () {} : _runStabilitySelfCheck,
+              _selfCheckRunning ? () {} : _runReleaseGateCheck,
               isPrimary: true,
             ),
             _buildCleanupButton(
@@ -778,6 +981,7 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
       );
 
       final paths = validPaths.toList();
+      final missingPaths = <String>[];
       final int maxCheck =
           deep
               ? paths.length
@@ -790,9 +994,20 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
         final ok = await File(p).exists();
         if (!ok) {
           missingCount++;
+          missingPaths.add(p);
           if (sampleMissing.length < 20) sampleMissing.add(p);
         }
       }
+
+      final isFullScan = maxCheck == paths.length;
+      final detailPaths =
+          (isFullScan && missingPaths.length <= 60)
+              ? missingPaths
+              : missingPaths.take(20).toList();
+      final missingDetails =
+          detailPaths.isEmpty
+              ? const <Map<String, dynamic>>[]
+              : await _databaseService.describeMissingFileReferences(detailPaths);
 
       final bool sqliteOk = sqliteCheck.trim().toLowerCase() == 'ok';
       final bool integrityOk =
@@ -819,8 +1034,11 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
         'dataIntegrity': dataIntegrity,
         'validPathCount': validPaths.length,
         'checkedPathCount': maxCheck,
+        'isFullScan': isFullScan,
         'missingPathCount': missingCount,
         'missingSamples': sampleMissing,
+        'missingDetails': missingDetails,
+        'missingPaths': isFullScan ? missingPaths : const <String>[],
         'cleanupPreviewCount': totalCount,
         'cleanupPreviewBytes': totalBytes,
         'summary':
@@ -850,6 +1068,113 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
           final backupZipBad = ioPrecheck['backupZipBadCount'] as int? ?? 0;
           final exportZipTotal = ioPrecheck['exportZipCount'] as int? ?? 0;
           final exportZipBad = ioPrecheck['exportZipBadCount'] as int? ?? 0;
+          final missingDetails =
+              (result['missingDetails'] as List<dynamic>? ?? const [])
+                  .whereType<Map<String, dynamic>>()
+                  .toList();
+          final missingPaths =
+              (result['missingPaths'] as List<dynamic>? ?? const [])
+                  .map((e) => e.toString())
+                  .where((e) => e.trim().isNotEmpty)
+                  .toList();
+          final isFullScan = result['isFullScan'] == true;
+
+          String _basename(String p) {
+            final s = p.trim();
+            if (s.isEmpty) return '';
+            final i1 = s.lastIndexOf('/');
+            final i2 = s.lastIndexOf('\\');
+            final i = i1 > i2 ? i1 : i2;
+            return i >= 0 ? s.substring(i + 1) : s;
+          }
+
+          String _usageLabel(Map<String, dynamic> u) {
+            final t = u['type']?.toString() ?? '';
+            if (t == 'document_background_image' || t == 'document_background_video') {
+              final doc = u['documentName']?.toString() ?? '';
+              final folder = u['folderName']?.toString();
+              final kind = t == 'document_background_image' ? '背景图片' : '背景视频';
+              final prefix = folder == null || folder.isEmpty ? '' : '（$folder）';
+              return '文档$prefix《$doc》$kind';
+            }
+            if (t == 'directory_background_image' || t == 'directory_background_video') {
+              final folder = u['folderName']?.toString() ?? '';
+              final kind = t == 'directory_background_image' ? '背景图片' : '背景视频';
+              return '目录「${folder.isEmpty ? '根目录' : folder}」$kind';
+            }
+            if (t == 'diary_background_image' || t == 'diary_background_video') {
+              return t == 'diary_background_image' ? '日记本背景图片' : '日记本背景视频';
+            }
+            if (t == 'cover_background_image' || t == 'cover_background_video') {
+              return t == 'cover_background_image' ? '封面背景图片' : '封面背景视频';
+            }
+            if (t == 'cover_image') return '封面图片';
+            if (t == 'background_file_view_params') return '背景取景参数缓存';
+            if (t == 'document_image_box') {
+              final doc = u['documentName']?.toString() ?? '';
+              final folder = u['folderName']?.toString();
+              final prefix = folder == null || folder.isEmpty ? '' : '（$folder）';
+              return '文档$prefix《$doc》图片框内容';
+            }
+            if (t == 'document_audio_box') {
+              final doc = u['documentName']?.toString() ?? '';
+              final folder = u['folderName']?.toString();
+              final prefix = folder == null || folder.isEmpty ? '' : '（$folder）';
+              return '文档$prefix《$doc》音频框内容';
+            }
+            if (t == 'media_item_file' || t == 'media_item_thumbnail') {
+              final name = u['mediaName']?.toString() ?? '';
+              final kind = t == 'media_item_file' ? '媒体文件' : '媒体缩略图';
+              return '媒体库「$name」$kind';
+            }
+            if (t == 'diary_entry_media') {
+              final date = u['date']?.toString() ?? '';
+              return '日记条目（$date）内嵌媒体';
+            }
+            return t.isEmpty ? '未知引用' : t;
+          }
+
+          Future<void> _openDocumentByName(String name) async {
+            final trimmed = name.trim();
+            if (trimmed.isEmpty) return;
+            await Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (c) => DocumentEditorPage(
+                  documentName: trimmed,
+                  onSave: (updatedTextBoxes) {},
+                ),
+              ),
+            );
+          }
+
+          Future<void> _openDirectoryPage() async {
+            await Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (c) => DirectoryPage(
+                  onDocumentOpen: (doc) async {
+                    await _openDocumentByName(doc);
+                  },
+                ),
+              ),
+            );
+          }
+
+          Future<void> _openDiaryPage() async {
+            await Navigator.push(
+              context,
+              MaterialPageRoute(builder: (c) => const DiaryPage()),
+            );
+          }
+
+          Future<void> _openCoverPage() async {
+            await Navigator.push(
+              context,
+              MaterialPageRoute(builder: (c) => const CoverPage()),
+            );
+          }
+
           return AlertDialog(
             title: Text(overallOk ? '稳定性自检：通过' : '稳定性自检：发现问题'),
             content: SizedBox(
@@ -858,6 +1183,8 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    Text('自检模块版本：$_selfCheckUiVersion'),
+                    const SizedBox(height: 10),
                     Text('核心表计数：'),
                     Text(
                       [
@@ -910,8 +1237,139 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
                       '${stagingExists ? '（${_formatFileSize(stagingSize)}，$stagingItems 条，未知ID $stagingUnknown）' : ''}',
                     ),
                     const SizedBox(height: 8),
-                    Text('引用文件检查：$missingCount/$maxCheck 缺失'),
-                    if (sampleMissing.isNotEmpty) ...[
+                    Text(
+                      '引用文件检查：$missingCount/$maxCheck 缺失'
+                      '${result['isFullScan'] == true ? '（全量）' : '（抽样）'}',
+                    ),
+                    if (missingDetails.isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Text('缺失引用定位：'),
+                      const SizedBox(height: 4),
+                      ...missingDetails.take(12).map((d) {
+                        final p = d['path']?.toString() ?? '';
+                        final usages =
+                            (d['usages'] as List<dynamic>? ?? const [])
+                                .whereType<Map<String, dynamic>>()
+                                .toList();
+                        final repairable = d['repairable'] == true;
+                        final lines =
+                            usages.isEmpty
+                                ? ['未能定位到具体来源（可能来自旧数据残留）']
+                                : usages.map(_usageLabel).toList();
+                        final docUsage =
+                            usages.firstWhere(
+                              (u) =>
+                                  (u['type']?.toString() ?? '')
+                                      .startsWith('document_'),
+                              orElse: () => const {},
+                            );
+                        final docName = docUsage['documentName']?.toString() ?? '';
+                        final hasDir = usages.any((u) {
+                          final t = u['type']?.toString() ?? '';
+                          return t.startsWith('directory_');
+                        });
+                        final hasDiary = usages.any((u) {
+                          final t = u['type']?.toString() ?? '';
+                          return t.startsWith('diary_');
+                        });
+                        final hasCover = usages.any((u) {
+                          final t = u['type']?.toString() ?? '';
+                          return t.startsWith('cover_');
+                        });
+
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            border: Border.all(color: Colors.black12),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                lines.take(3).join('\n'),
+                                style: const TextStyle(fontSize: 13),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                _basename(p).isEmpty ? p : _basename(p),
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.black54,
+                                ),
+                              ),
+                              const SizedBox(height: 6),
+                              Wrap(
+                                spacing: 8,
+                                runSpacing: 4,
+                                children: [
+                                  TextButton(
+                                    onPressed: () async {
+                                      await Clipboard.setData(
+                                        ClipboardData(
+                                          text:
+                                              usages.isEmpty
+                                                  ? p
+                                                  : lines.join('\n'),
+                                        ),
+                                      );
+                                      if (!mounted) return;
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        const SnackBar(content: Text('已复制定位信息')),
+                                      );
+                                    },
+                                    child: const Text('复制定位'),
+                                  ),
+                                  if (docName.isNotEmpty)
+                                    TextButton(
+                                      onPressed: () async {
+                                        Navigator.pop(ctx);
+                                        await _openDocumentByName(docName);
+                                      },
+                                      child: const Text('打开文档'),
+                                    ),
+                                  if (hasDir)
+                                    TextButton(
+                                      onPressed: () async {
+                                        Navigator.pop(ctx);
+                                        await _openDirectoryPage();
+                                      },
+                                      child: const Text('打开目录'),
+                                    ),
+                                  if (hasDiary)
+                                    TextButton(
+                                      onPressed: () async {
+                                        Navigator.pop(ctx);
+                                        await _openDiaryPage();
+                                      },
+                                      child: const Text('打开日记'),
+                                    ),
+                                  if (hasCover)
+                                    TextButton(
+                                      onPressed: () async {
+                                        Navigator.pop(ctx);
+                                        await _openCoverPage();
+                                      },
+                                      child: const Text('打开封面'),
+                                    ),
+                                  if (!repairable)
+                                    const Text(
+                                      '需手动处理',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: Colors.red,
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        );
+                      }),
+                      if (missingDetails.length > 12)
+                        Text('… 还有 ${missingDetails.length - 12} 项（仅展示部分）'),
+                    ] else if (sampleMissing.isNotEmpty) ...[
                       const SizedBox(height: 6),
                       Text(sampleMissing.join('\n')),
                     ],
@@ -924,6 +1382,74 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
               ),
             ),
             actions: [
+              if (missingCount > 0 && isFullScan && missingPaths.isNotEmpty)
+                TextButton(
+                  onPressed: () async {
+                    Navigator.pop(ctx);
+                    final confirmed = await showDialog<bool>(
+                      context: context,
+                      builder: (c) {
+                        return AlertDialog(
+                          title: const Text('修复缺失文件引用'),
+                          content: Text(
+                            '检测到 $missingCount 个缺失引用。\n\n'
+                            '将清除“背景/封面/设置/取景缓存/日记条目列表”等可安全修复的引用；\n'
+                            '不会自动删除文档图片框/音频框/媒体库条目这类内容数据。\n\n'
+                            '修复后会自动重新跑一次深度自检。',
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(c, false),
+                              child: const Text('取消'),
+                            ),
+                            TextButton(
+                              onPressed: () => Navigator.pop(c, true),
+                              style: TextButton.styleFrom(
+                                foregroundColor: Colors.red,
+                              ),
+                              child: const Text('确定修复'),
+                            ),
+                          ],
+                        );
+                      },
+                    );
+                    if (confirmed != true) return;
+                    setState(() {
+                      _selfCheckRunning = true;
+                    });
+                    try {
+                      final r =
+                          await _databaseService.repairMissingFileReferences(
+                        missingPaths,
+                      );
+                      if (!mounted) return;
+                      final fixedPaths = r['fixedPathCount'] ?? 0;
+                      final totalPaths = r['pathCount'] ?? 0;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            '已修复缺失引用：$fixedPaths/$totalPaths 条路径（可安全修复项）',
+                          ),
+                        ),
+                      );
+                    } catch (e) {
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('修复缺失引用失败: $e')),
+                      );
+                    } finally {
+                      if (mounted) {
+                        setState(() {
+                          _selfCheckRunning = false;
+                        });
+                      }
+                      await _loadStorageInfo();
+                      await _runStabilitySelfCheck(deep: true);
+                    }
+                  },
+                  style: TextButton.styleFrom(foregroundColor: Colors.red),
+                  child: const Text('修复缺失引用'),
+                ),
               if (dupTotal > 0)
                 TextButton(
                   onPressed: () async {
@@ -1028,6 +1554,695 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
     }
   }
 
+  Future<void> _runReleaseGateCheck() async {
+    setState(() {
+      _selfCheckRunning = true;
+    });
+
+    Map<String, dynamic> result = {};
+    try {
+      const bool deep = true;
+      final ioPrecheck = await _runImportExportPrecheck(deep: deep);
+      final sqliteCheck = await _databaseService.sqliteIntegrityCheck(
+        quick: false,
+      );
+      final fkViolations =
+          await _databaseService.sqliteForeignKeyViolationCount();
+      final coreCounts = await _databaseService.getCoreTableRowCounts();
+      final duplicateSummary =
+          await _databaseService.findDuplicateMediaItemsSummary();
+      final staging = await _databaseService.getVideoViewStagingJsonStatus();
+      final dataIntegrity = await _databaseService.checkDataIntegrity();
+      final validPaths = await _databaseService.getAllValidFilePaths();
+      final preview = await _fileCleanupService.previewFullStorageCleanup(
+        validPaths,
+      );
+
+      int missingCount = 0;
+      final sampleMissing = <String>[];
+      final missingPaths = <String>[];
+      for (final p in validPaths) {
+        if (p.isEmpty) continue;
+        final ok = await File(p).exists();
+        if (!ok) {
+          missingCount++;
+          missingPaths.add(p);
+          if (sampleMissing.length < 20) sampleMissing.add(p);
+        }
+      }
+
+      final detailPaths =
+          missingPaths.length <= 60 ? missingPaths : missingPaths.take(20).toList();
+      final missingDetails =
+          detailPaths.isEmpty
+              ? const <Map<String, dynamic>>[]
+              : await _databaseService.describeMissingFileReferences(detailPaths);
+
+      final bool sqliteOk = sqliteCheck.trim().toLowerCase() == 'ok';
+      final int totalCount = preview['totalCount'] as int? ?? 0;
+      final int totalBytes = preview['totalBytes'] as int? ?? 0;
+      final releaseReport = _buildReleaseReadinessReport(
+        deep: true,
+        sqliteOk: sqliteOk,
+        fkViolations: fkViolations,
+        dataIntegrity: dataIntegrity,
+        validPathCount: validPaths.length,
+        checkedPathCount: validPaths.length,
+        missingCount: missingCount,
+        duplicateSummary: duplicateSummary,
+        staging: staging,
+        ioPrecheck: ioPrecheck,
+        cleanupPreviewCount: totalCount,
+        cleanupPreviewBytes: totalBytes,
+      );
+      final blockers =
+          (releaseReport['blockers'] as List<dynamic>? ?? const [])
+              .map((e) => e.toString())
+              .toList();
+      final warnings =
+          (releaseReport['warnings'] as List<dynamic>? ?? const [])
+              .map((e) => e.toString())
+              .toList();
+
+      result = {
+        'ok': releaseReport['releaseReady'] == true,
+        'summary': releaseReport['summary'],
+        'releaseReport': releaseReport,
+        'missingPathCount': missingCount,
+        'missingDetails': missingDetails,
+        'missingPaths': missingPaths,
+        'cleanupPreviewCount': totalCount,
+        'cleanupPreviewBytes': totalBytes,
+      };
+
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) {
+          final dupTotal = duplicateSummary['total'] as int? ?? 0;
+          final dupTop =
+              (duplicateSummary['top'] as List<dynamic>? ?? const [])
+                  .whereType<Map<String, dynamic>>()
+                  .toList();
+          final stagingExists = staging['exists'] == true;
+          final stagingSize = staging['sizeBytes'] as int? ?? 0;
+          final stagingItems = staging['itemCount'] as int? ?? 0;
+          final stagingUnknown = staging['unknownIdCount'] as int? ?? 0;
+          final stagingOk =
+              (staging['parseOk'] == true) && (stagingUnknown == 0);
+          final integrityOk =
+              (dataIntegrity['isValid'] == true) && (fkViolations == 0);
+          final ioOk = ioPrecheck['ok'] == true;
+          final docsWritable = ioPrecheck['docsWritable'] == true;
+          final tempWritable = ioPrecheck['tempWritable'] == true;
+          final extWritable = ioPrecheck['externalWritable'] == true;
+          final backupZipTotal = ioPrecheck['backupZipCount'] as int? ?? 0;
+          final backupZipBad = ioPrecheck['backupZipBadCount'] as int? ?? 0;
+          final exportZipTotal = ioPrecheck['exportZipCount'] as int? ?? 0;
+          final exportZipBad = ioPrecheck['exportZipBadCount'] as int? ?? 0;
+          final backupZipChecked =
+              ioPrecheck['backupZipCheckedCount'] as int? ?? 0;
+          final exportZipChecked =
+              ioPrecheck['exportZipCheckedCount'] as int? ?? 0;
+          final badBackupZips =
+              (ioPrecheck['badBackupZipSamples'] as List<dynamic>? ?? const [])
+                  .map((e) => e.toString())
+                  .toList();
+          final badExportZips =
+              (ioPrecheck['badExportZipSamples'] as List<dynamic>? ?? const [])
+                  .map((e) => e.toString())
+                  .toList();
+          final String verdictTitle =
+              releaseReport['title']?.toString() ?? '发布级自检';
+          final String verdictSummary =
+              releaseReport['summary']?.toString() ?? '请查看详细结果。';
+          final missingDetails =
+              (result['missingDetails'] as List<dynamic>? ?? const [])
+                  .whereType<Map<String, dynamic>>()
+                  .toList();
+          final missingPaths =
+              (result['missingPaths'] as List<dynamic>? ?? const [])
+                  .map((e) => e.toString())
+                  .where((e) => e.trim().isNotEmpty)
+                  .toList();
+
+          String _basename(String p) {
+            final s = p.trim();
+            if (s.isEmpty) return '';
+            final i1 = s.lastIndexOf('/');
+            final i2 = s.lastIndexOf('\\');
+            final i = i1 > i2 ? i1 : i2;
+            return i >= 0 ? s.substring(i + 1) : s;
+          }
+
+          String _usageLabel(Map<String, dynamic> u) {
+            final t = u['type']?.toString() ?? '';
+            if (t == 'document_background_image' || t == 'document_background_video') {
+              final doc = u['documentName']?.toString() ?? '';
+              final folder = u['folderName']?.toString();
+              final kind = t == 'document_background_image' ? '背景图片' : '背景视频';
+              final prefix = folder == null || folder.isEmpty ? '' : '（$folder）';
+              return '文档$prefix《$doc》$kind';
+            }
+            if (t == 'directory_background_image' || t == 'directory_background_video') {
+              final folder = u['folderName']?.toString() ?? '';
+              final kind = t == 'directory_background_image' ? '背景图片' : '背景视频';
+              return '目录「${folder.isEmpty ? '根目录' : folder}」$kind';
+            }
+            if (t == 'diary_background_image' || t == 'diary_background_video') {
+              return t == 'diary_background_image' ? '日记本背景图片' : '日记本背景视频';
+            }
+            if (t == 'cover_background_image' || t == 'cover_background_video') {
+              return t == 'cover_background_image' ? '封面背景图片' : '封面背景视频';
+            }
+            if (t == 'cover_image') return '封面图片';
+            if (t == 'background_file_view_params') return '背景取景参数缓存';
+            if (t == 'document_image_box') {
+              final doc = u['documentName']?.toString() ?? '';
+              final folder = u['folderName']?.toString();
+              final prefix = folder == null || folder.isEmpty ? '' : '（$folder）';
+              return '文档$prefix《$doc》图片框内容';
+            }
+            if (t == 'document_audio_box') {
+              final doc = u['documentName']?.toString() ?? '';
+              final folder = u['folderName']?.toString();
+              final prefix = folder == null || folder.isEmpty ? '' : '（$folder）';
+              return '文档$prefix《$doc》音频框内容';
+            }
+            if (t == 'media_item_file' || t == 'media_item_thumbnail') {
+              final name = u['mediaName']?.toString() ?? '';
+              final kind = t == 'media_item_file' ? '媒体文件' : '媒体缩略图';
+              return '媒体库「$name」$kind';
+            }
+            if (t == 'diary_entry_media') {
+              final date = u['date']?.toString() ?? '';
+              return '日记条目（$date）内嵌媒体';
+            }
+            return t.isEmpty ? '未知引用' : t;
+          }
+
+          Future<void> _openDocumentByName(String name) async {
+            final trimmed = name.trim();
+            if (trimmed.isEmpty) return;
+            await Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (c) => DocumentEditorPage(
+                  documentName: trimmed,
+                  onSave: (updatedTextBoxes) {},
+                ),
+              ),
+            );
+          }
+
+          Future<void> _openDirectoryPage() async {
+            await Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (c) => DirectoryPage(
+                  onDocumentOpen: (doc) async {
+                    await _openDocumentByName(doc);
+                  },
+                ),
+              ),
+            );
+          }
+
+          Future<void> _openDiaryPage() async {
+            await Navigator.push(
+              context,
+              MaterialPageRoute(builder: (c) => const DiaryPage()),
+            );
+          }
+
+          Future<void> _openCoverPage() async {
+            await Navigator.push(
+              context,
+              MaterialPageRoute(builder: (c) => const CoverPage()),
+            );
+          }
+
+          return AlertDialog(
+            title: Text(verdictTitle),
+            content: SizedBox(
+              width: double.maxFinite,
+              child: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      verdictSummary,
+                      style: TextStyle(
+                        fontWeight: FontWeight.w700,
+                        color:
+                            blockers.isEmpty
+                                ? Colors.green.shade700
+                                : Colors.red.shade700,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    if (blockers.isNotEmpty) ...[
+                      const Text('阻断问题：'),
+                      const SizedBox(height: 6),
+                      Text(blockers.map((e) => '• $e').join('\n')),
+                      const SizedBox(height: 10),
+                    ],
+                    if (warnings.isNotEmpty) ...[
+                      const Text('提醒项：'),
+                      const SizedBox(height: 6),
+                      Text(warnings.map((e) => '• $e').join('\n')),
+                      const SizedBox(height: 10),
+                    ],
+                    const Text('本次模式：发布级全量扫描'),
+                    Text('文件引用检查：${validPaths.length}/${validPaths.length}（全量）'),
+                    const SizedBox(height: 10),
+                    const Text('核心表计数：'),
+                    Text(
+                      [
+                        'folders:${coreCounts['folders'] ?? 0}',
+                        'documents:${coreCounts['documents'] ?? 0}',
+                        'media_items:${coreCounts['media_items'] ?? 0}',
+                        'diary_entries:${coreCounts['diary_entries'] ?? 0}',
+                      ].join('  '),
+                    ),
+                    const SizedBox(height: 10),
+                    _selfCheckLine(
+                      '导入/导出与恢复预检：',
+                      ioOk && docsWritable && tempWritable && (!Platform.isAndroid || extWritable),
+                      'OK（文档${docsWritable ? '可写' : '不可写'} / 临时${tempWritable ? '可写' : '不可写'}${Platform.isAndroid ? ' / 外部${extWritable ? '可写' : '不可写'}' : ''}）',
+                      '异常（文档${docsWritable ? '可写' : '不可写'} / 临时${tempWritable ? '可写' : '不可写'}${Platform.isAndroid ? ' / 外部${extWritable ? '可写' : '不可写'}' : ''}）',
+                      bold: true,
+                    ),
+                    _selfCheckLine(
+                      '备份ZIP：',
+                      backupZipBad == 0,
+                      '$backupZipTotal 个（已校验 $backupZipChecked，异常 $backupZipBad）',
+                      '$backupZipTotal 个（已校验 $backupZipChecked，异常 $backupZipBad）',
+                      bold: true,
+                    ),
+                    if (Platform.isAndroid)
+                      _selfCheckLine(
+                        '导出ZIP：',
+                        exportZipBad == 0,
+                        '$exportZipTotal 个（已校验 $exportZipChecked，异常 $exportZipBad）',
+                        '$exportZipTotal 个（已校验 $exportZipChecked，异常 $exportZipBad）',
+                        bold: true,
+                      ),
+                    if (badBackupZips.isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        badBackupZips.map((e) => '• $e').join('\n'),
+                        style: _selfCheckTextStyle(false),
+                      ),
+                    ],
+                    if (badExportZips.isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        badExportZips.map((e) => '• $e').join('\n'),
+                        style: _selfCheckTextStyle(false),
+                      ),
+                    ],
+                    const SizedBox(height: 10),
+                    _selfCheckLine('SQLite 检查：', sqliteOk, 'OK', '异常', bold: true),
+                    if (!sqliteOk)
+                      Text(sqliteCheck, style: _selfCheckTextStyle(false)),
+                    const SizedBox(height: 8),
+                    _selfCheckLine(
+                      '外键异常：',
+                      fkViolations == 0,
+                      '0',
+                      '$fkViolations',
+                      bold: true,
+                    ),
+                    const SizedBox(height: 8),
+                    _selfCheckLine(
+                      '业务数据完整性：',
+                      integrityOk,
+                      'OK',
+                      '异常',
+                      bold: true,
+                    ),
+                    if (dataIntegrity['issues'] is List &&
+                        (dataIntegrity['issues'] as List).isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        (dataIntegrity['issues'] as List).take(20).join('\n'),
+                        style: _selfCheckTextStyle(false),
+                      ),
+                    ],
+                    const SizedBox(height: 8),
+                    _selfCheckLine(
+                      '重复媒体（按 file_hash）：',
+                      dupTotal == 0,
+                      '0（OK）',
+                      '$dupTotal 组',
+                      bold: true,
+                    ),
+                    if (dupTop.isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        dupTop
+                            .map((e) {
+                              final h = e['hash']?.toString() ?? '';
+                              final prefix =
+                                  h.length <= 8 ? h : h.substring(0, 8);
+                              return '$prefix... x${e['count']}';
+                            })
+                            .take(12)
+                            .join('\n'),
+                        style: _selfCheckTextStyle(false),
+                      ),
+                    ],
+                    const SizedBox(height: 8),
+                    _selfCheckLine(
+                      '取景参数暂存：',
+                      stagingOk,
+                      stagingExists ? '存在，解析 OK' : '无',
+                      stagingExists
+                          ? '存在，解析异常（${_formatFileSize(stagingSize)}，$stagingItems 条，未知ID $stagingUnknown）'
+                          : '无',
+                      bold: true,
+                    ),
+                    const SizedBox(height: 8),
+                    _selfCheckLine(
+                      '引用文件检查：',
+                      missingCount == 0,
+                      '0 缺失',
+                      '$missingCount/${validPaths.length} 缺失',
+                      bold: true,
+                    ),
+                    if (missingDetails.isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      const Text('缺失引用定位：'),
+                      const SizedBox(height: 4),
+                      ...missingDetails.take(12).map((d) {
+                        final p = d['path']?.toString() ?? '';
+                        final usages =
+                            (d['usages'] as List<dynamic>? ?? const [])
+                                .whereType<Map<String, dynamic>>()
+                                .toList();
+                        final repairable = d['repairable'] == true;
+                        final lines =
+                            usages.isEmpty
+                                ? ['未能定位到具体来源（可能来自旧数据残留）']
+                                : usages.map(_usageLabel).toList();
+                        final docUsage =
+                            usages.firstWhere(
+                              (u) =>
+                                  (u['type']?.toString() ?? '')
+                                      .startsWith('document_'),
+                              orElse: () => const {},
+                            );
+                        final docName = docUsage['documentName']?.toString() ?? '';
+                        final hasDir = usages.any((u) {
+                          final t = u['type']?.toString() ?? '';
+                          return t.startsWith('directory_');
+                        });
+                        final hasDiary = usages.any((u) {
+                          final t = u['type']?.toString() ?? '';
+                          return t.startsWith('diary_');
+                        });
+                        final hasCover = usages.any((u) {
+                          final t = u['type']?.toString() ?? '';
+                          return t.startsWith('cover_');
+                        });
+
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            border: Border.all(color: Colors.black12),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                lines.take(3).join('\n'),
+                                style: const TextStyle(fontSize: 13),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                _basename(p).isEmpty ? p : _basename(p),
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.black54,
+                                ),
+                              ),
+                              const SizedBox(height: 6),
+                              Wrap(
+                                spacing: 8,
+                                runSpacing: 4,
+                                children: [
+                                  TextButton(
+                                    onPressed: () async {
+                                      await Clipboard.setData(
+                                        ClipboardData(
+                                          text:
+                                              usages.isEmpty
+                                                  ? p
+                                                  : lines.join('\n'),
+                                        ),
+                                      );
+                                      if (!mounted) return;
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        const SnackBar(content: Text('已复制定位信息')),
+                                      );
+                                    },
+                                    child: const Text('复制定位'),
+                                  ),
+                                  if (docName.isNotEmpty)
+                                    TextButton(
+                                      onPressed: () async {
+                                        Navigator.pop(ctx);
+                                        await _openDocumentByName(docName);
+                                      },
+                                      child: const Text('打开文档'),
+                                    ),
+                                  if (hasDir)
+                                    TextButton(
+                                      onPressed: () async {
+                                        Navigator.pop(ctx);
+                                        await _openDirectoryPage();
+                                      },
+                                      child: const Text('打开目录'),
+                                    ),
+                                  if (hasDiary)
+                                    TextButton(
+                                      onPressed: () async {
+                                        Navigator.pop(ctx);
+                                        await _openDiaryPage();
+                                      },
+                                      child: const Text('打开日记'),
+                                    ),
+                                  if (hasCover)
+                                    TextButton(
+                                      onPressed: () async {
+                                        Navigator.pop(ctx);
+                                        await _openCoverPage();
+                                      },
+                                      child: const Text('打开封面'),
+                                    ),
+                                  if (!repairable)
+                                    const Text(
+                                      '需手动处理',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: Colors.red,
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        );
+                      }),
+                      if (missingDetails.length > 12)
+                        Text('… 还有 ${missingDetails.length - 12} 项（仅展示部分）'),
+                    ] else if (sampleMissing.isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        sampleMissing.join('\n'),
+                        style: _selfCheckTextStyle(false),
+                      ),
+                    ],
+                    const SizedBox(height: 8),
+                    _selfCheckLine(
+                      '可清理预览：',
+                      preview['totalCount'] == 0,
+                      '0 个',
+                      '${preview['totalCount'] ?? 0} 个，约 ${_formatFileSize(totalBytes)}',
+                      bold: true,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            actions: [
+              if (missingCount > 0 && missingPaths.isNotEmpty)
+                TextButton(
+                  onPressed: () async {
+                    Navigator.pop(ctx);
+                    final confirmed = await showDialog<bool>(
+                      context: context,
+                      builder: (c) {
+                        return AlertDialog(
+                          title: const Text('修复缺失文件引用'),
+                          content: Text(
+                            '检测到 $missingCount 个缺失引用。\n\n'
+                            '将清除“背景/封面/设置/取景缓存/日记条目列表”等可安全修复的引用；\n'
+                            '不会自动删除文档图片框/音频框/媒体库条目这类内容数据。\n\n'
+                            '修复后会自动重新跑一次发布级自检。',
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(c, false),
+                              child: const Text('取消'),
+                            ),
+                            TextButton(
+                              onPressed: () => Navigator.pop(c, true),
+                              style: TextButton.styleFrom(
+                                foregroundColor: Colors.red,
+                              ),
+                              child: const Text('确定修复'),
+                            ),
+                          ],
+                        );
+                      },
+                    );
+                    if (confirmed != true) return;
+                    setState(() {
+                      _selfCheckRunning = true;
+                    });
+                    try {
+                      final r =
+                          await _databaseService.repairMissingFileReferences(
+                        missingPaths,
+                      );
+                      if (!mounted) return;
+                      final fixedPaths = r['fixedPathCount'] ?? 0;
+                      final totalPaths = r['pathCount'] ?? 0;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            '已修复缺失引用：$fixedPaths/$totalPaths 条路径（可安全修复项）',
+                          ),
+                        ),
+                      );
+                    } catch (e) {
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('修复缺失引用失败: $e')),
+                      );
+                    } finally {
+                      if (mounted) {
+                        setState(() {
+                          _selfCheckRunning = false;
+                        });
+                      }
+                      await _loadStorageInfo();
+                      await _runReleaseGateCheck();
+                    }
+                  },
+                  style: TextButton.styleFrom(foregroundColor: Colors.red),
+                  child: const Text('修复缺失引用'),
+                ),
+              if (dupTotal > 0)
+                TextButton(
+                  onPressed: () async {
+                    Navigator.pop(ctx);
+                    final confirmed = await showDialog<bool>(
+                      context: context,
+                      builder: (c) {
+                        return AlertDialog(
+                          title: const Text('修复重复媒体'),
+                          content: Text(
+                            '检测到 $dupTotal 组重复媒体（按 file_hash）。\n\n'
+                            '将保留每组中更可能是“主副本”的一条记录，删除其余重复记录；随后执行一次“孤立文件清理”以回收重复占用的磁盘文件。\n\n'
+                            '该操作不会清空回收站。',
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(c, false),
+                              child: const Text('取消'),
+                            ),
+                            TextButton(
+                              onPressed: () => Navigator.pop(c, true),
+                              style: TextButton.styleFrom(
+                                foregroundColor: Colors.red,
+                              ),
+                              child: const Text('确定修复'),
+                            ),
+                          ],
+                        );
+                      },
+                    );
+                    if (confirmed != true) return;
+                    setState(() {
+                      _selfCheckRunning = true;
+                    });
+                    try {
+                      final r = await _databaseService.resolveDuplicateMediaItems(
+                        maxGroups: 2000,
+                      );
+                      if (!mounted) return;
+                      final groups = r['groupsResolved'] ?? 0;
+                      final rows = r['mediaRowsDeleted'] ?? 0;
+                      final of = r['orphanFilesDeleted'] ?? 0;
+                      final ob = r['orphanBytesDeleted'] ?? 0;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            '已处理重复媒体：$groups 组，删除记录 $rows 条，回收孤立文件 $of 个（${_formatFileSize(ob)}）',
+                          ),
+                        ),
+                      );
+                    } catch (e) {
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('修复重复媒体失败: $e')),
+                      );
+                    } finally {
+                      if (mounted) {
+                        setState(() {
+                          _selfCheckRunning = false;
+                        });
+                      }
+                      await _loadStorageInfo();
+                      await _runReleaseGateCheck();
+                    }
+                  },
+                  style: TextButton.styleFrom(foregroundColor: Colors.red),
+                  child: const Text('修复重复媒体'),
+                ),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('关闭'),
+              ),
+            ],
+          );
+        },
+      );
+    } catch (e) {
+      result = {
+        'ok': false,
+        'summary': '发布级自检失败：$e',
+      };
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('发布级自检失败: $e')));
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _selfCheckRunning = false;
+          _selfCheckResult = result;
+        });
+      }
+    }
+  }
+
   Future<Map<String, dynamic>> _runImportExportPrecheck({required bool deep}) async {
     bool docsWritable = false;
     bool tempWritable = false;
@@ -1036,10 +2251,14 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
     bool backupZipOk = true;
     int backupZipCount = 0;
     int backupZipBadCount = 0;
+    int backupZipCheckedCount = 0;
+    final badBackupZipSamples = <String>[];
 
     bool exportZipOk = true;
     int exportZipCount = 0;
     int exportZipBadCount = 0;
+    int exportZipCheckedCount = 0;
+    final badExportZipSamples = <String>[];
 
     Future<bool> canWrite(Directory dir) async {
       try {
@@ -1090,10 +2309,21 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
         backupZipCount = zips.length;
         final max = deep ? zips.length : (zips.length > 30 ? 30 : zips.length);
         for (int i = 0; i < max; i++) {
-          final ok = await looksLikeZip(zips[i]);
+          backupZipCheckedCount++;
+          final looksZip = await looksLikeZip(zips[i]);
+          final inspect = looksZip ? await _inspectZipArchive(zips[i]) : null;
+          final ok = looksZip && (inspect?['ok'] == true);
           if (!ok) {
             backupZipBadCount++;
             backupZipOk = false;
+            if (badBackupZipSamples.length < 8) {
+              final reason =
+                  inspect?['reason']?.toString() ??
+                  '文件头校验失败，不是有效 ZIP';
+              badBackupZipSamples.add(
+                '${zips[i].path.split(Platform.pathSeparator).last}: $reason',
+              );
+            }
           }
         }
       }
@@ -1125,10 +2355,21 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
           exportZipCount = zips.length;
           final max = deep ? zips.length : (zips.length > 30 ? 30 : zips.length);
           for (int i = 0; i < max; i++) {
-            final ok = await looksLikeZip(zips[i]);
+            exportZipCheckedCount++;
+            final looksZip = await looksLikeZip(zips[i]);
+            final inspect = looksZip ? await _inspectZipArchive(zips[i]) : null;
+            final ok = looksZip && (inspect?['ok'] == true);
             if (!ok) {
               exportZipBadCount++;
               exportZipOk = false;
+              if (badExportZipSamples.length < 8) {
+                final reason =
+                    inspect?['reason']?.toString() ??
+                    '文件头校验失败，不是有效 ZIP';
+                badExportZipSamples.add(
+                  '${zips[i].path.split(Platform.pathSeparator).last}: $reason',
+                );
+              }
             }
           }
         }
@@ -1149,8 +2390,12 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
       'externalWritable': externalWritable,
       'backupZipCount': backupZipCount,
       'backupZipBadCount': backupZipBadCount,
+      'backupZipCheckedCount': backupZipCheckedCount,
+      'badBackupZipSamples': badBackupZipSamples,
       'exportZipCount': exportZipCount,
       'exportZipBadCount': exportZipBadCount,
+      'exportZipCheckedCount': exportZipCheckedCount,
+      'badExportZipSamples': badExportZipSamples,
     };
   }
 
