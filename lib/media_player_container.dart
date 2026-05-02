@@ -20,7 +20,12 @@ import 'widgets/ken_burns_image_display.dart';
 import 'widgets/zoom_pan_edge_image_display.dart';
 import 'widgets/fit_width_blur_static_image.dart';
 import 'widgets/image_interactive_surface.dart';
-import 'widgets/image_layout_utils.dart' show ImageLetterboxFill;
+import 'widgets/image_layout_utils.dart'
+    show
+        ImageLetterboxFill,
+        containDisplaySize,
+        fitWidthDisplaySize,
+        measureImageFileSize;
 
 enum MediaMode { none, manual, auto }
 
@@ -461,12 +466,17 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
     if (typeIdx == 0) {
       final sideways =
           VideoViewParams.fromMediaMap(refreshedMap).quarterTurns % 2 == 1;
+      final params = await _docBarDefaultViewParamsForImage(
+        refreshedMap,
+        mediaFile,
+      );
       setState(() {
         _currentVideoWidget = null;
         if (_imageMode == MediaImageDisplayMode.kenBurns) {
           _mediaWidget = _wrapImageWithStoredView(
             _buildKenBurnsForPlaying(refreshedMap, mediaFile, _mediaSessionId),
             refreshedMap,
+            initialOverride: params,
           );
         } else if (_imageMode == MediaImageDisplayMode.zoomPanEdge) {
           _mediaWidget = _wrapImageWithStoredView(
@@ -489,6 +499,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
               onAnimationComplete: null,
             ),
             refreshedMap,
+            initialOverride: params,
           );
         } else {
           _mediaWidget = _wrapImageWithStoredView(
@@ -505,6 +516,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
                   (refreshedMap['ken_burns_center_y'] as num?)?.toDouble(),
             ),
             refreshedMap,
+            initialOverride: params,
           );
         }
       });
@@ -536,6 +548,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
           key: ValueKey('vp_${refreshedMap['path']}_$_playbackNonce'),
           file: mediaFile,
           viewParams: VideoViewParams.fromMediaMap(refreshedMap),
+          defaultVerticalFillWhenPristine: true,
           documentMediaBarMuted: _foregroundVideoMuted,
           initialSeekPosition: initialSeek,
           sequentialResumeActive: seqResumeActive,
@@ -597,9 +610,68 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
         '_n$_playbackNonce';
   }
 
-  /// 与 [VideoPlayerWidget] 一致：套用媒体页已保存的缩放/平移/旋转（只读）。
-  Widget _wrapImageWithStoredView(Widget child, Map<String, dynamic> mediaMap) {
+  bool _isPureDefaultPresentation(Map<String, dynamic> mediaMap) {
     final p = VideoViewParams.fromMediaMap(mediaMap);
+    final bool hasKenBurnsCenter =
+        (mediaMap['ken_burns_center_x'] as num?) != null ||
+        (mediaMap['ken_burns_center_y'] as num?) != null;
+    return p.isLikelyIdentityTransform &&
+        p.basisW == null &&
+        p.basisH == null &&
+        p.anchorXNorm == null &&
+        p.anchorYNorm == null &&
+        !hasKenBurnsCenter;
+  }
+
+  Size _basisSizeForQuarterTurns(Size viewport, int quarterTurns) {
+    final q = quarterTurns % 4;
+    if (q == 1 || q == 3) {
+      return Size(viewport.height, viewport.width);
+    }
+    return viewport;
+  }
+
+  Future<VideoViewParams> _docBarDefaultViewParamsForImage(
+    Map<String, dynamic> mediaMap,
+    File imageFile,
+  ) async {
+    final p = VideoViewParams.fromMediaMap(mediaMap);
+    if (_imageMode != MediaImageDisplayMode.fitWidth) {
+      return p;
+    }
+    if (!_isPureDefaultPresentation(mediaMap)) {
+      return p;
+    }
+    final viewport = MediaQuery.of(context).size;
+    if (viewport.width <= 1 || viewport.height <= 1) return p;
+    final q = p.quarterTurns % 4;
+    if (q != 0) return p;
+    final basis = _basisSizeForQuarterTurns(viewport, q);
+    final imageSize = await measureImageFileSize(imageFile);
+    final sideways = q == 1 || q == 3;
+    final baseDisplay =
+        sideways
+            ? containDisplaySize(imageSize, viewport.width, viewport.height)
+            : fitWidthDisplaySize(imageSize, viewport.width);
+    if (baseDisplay.height <= 1) return p;
+    final targetScale = (viewport.height / baseDisplay.height).clamp(1.0, 6.0);
+    return VideoViewParams(
+      scale: targetScale,
+      txNorm: 0.0,
+      tyNorm: 0.0,
+      quarterTurns: q,
+      basisW: basis.width,
+      basisH: basis.height,
+    );
+  }
+
+  /// 与 [VideoPlayerWidget] 一致：套用媒体页已保存的缩放/平移/旋转（只读）。
+  Widget _wrapImageWithStoredView(
+    Widget child,
+    Map<String, dynamic> mediaMap, {
+    VideoViewParams? initialOverride,
+  }) {
+    final p = initialOverride ?? VideoViewParams.fromMediaMap(mediaMap);
     final id = mediaMap['id'];
     return ImageInteractiveSurface(
       key: ValueKey('img_doc_${id}_${p.hashCode}'),
@@ -741,6 +813,10 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
           _advanceSequentialPlaybackCursor();
           // 图片
           if (_imageMode == MediaImageDisplayMode.kenBurns) {
+            final params = await _docBarDefaultViewParamsForImage(
+              nextMedia,
+              mediaFile,
+            );
             setState(() {
               _mediaWidget = _wrapImageWithStoredView(
                 _buildKenBurnsForPlaying(
@@ -749,11 +825,16 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
                   sessionThisMedia,
                 ),
                 nextMedia,
+                initialOverride: params,
               );
             });
           } else if (_imageMode == MediaImageDisplayMode.zoomPanEdge) {
             final sideways =
                 VideoViewParams.fromMediaMap(nextMedia).quarterTurns % 2 == 1;
+            final params = await _docBarDefaultViewParamsForImage(
+              nextMedia,
+              mediaFile,
+            );
             setState(() {
               _mediaWidget = _wrapImageWithStoredView(
                 ZoomPanEdgeImageDisplay(
@@ -782,11 +863,16 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
                           : null,
                 ),
                 nextMedia,
+                initialOverride: params,
               );
             });
           } else {
             final sideways =
                 VideoViewParams.fromMediaMap(nextMedia).quarterTurns % 2 == 1;
+            final params = await _docBarDefaultViewParamsForImage(
+              nextMedia,
+              mediaFile,
+            );
             setState(() {
               _mediaWidget = _wrapImageWithStoredView(
                 FitWidthBlurStaticImage(
@@ -802,6 +888,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
                       (nextMedia['ken_burns_center_y'] as num?)?.toDouble(),
                 ),
                 nextMedia,
+                initialOverride: params,
               );
             });
 
@@ -842,6 +929,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
               key: ValueKey('vp_${nextMedia['path']}_$_playbackNonce'),
               file: File(nextMedia['path']!),
               viewParams: VideoViewParams.fromMediaMap(nextMedia),
+              defaultVerticalFillWhenPristine: true,
               documentMediaBarMuted: _foregroundVideoMuted,
               initialSeekPosition: initialSeek,
               sequentialResumeActive: seqResumeActive,

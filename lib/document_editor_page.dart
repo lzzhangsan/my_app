@@ -2385,6 +2385,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
     final player = _mediaPlayerKey.currentState;
     if (player == null) return;
     try {
+      final preferResumePos = player.getCurrentVideoPlaybackPosition();
       _databaseService.stageVideoViewParamsForDisk(item.id, p);
       await _databaseService.updateMediaItem({
         'id': item.id,
@@ -2393,7 +2394,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
         if (p.anchorYNorm == null) 'video_view_anchor_y': null,
         'updated_at': DateTime.now().millisecondsSinceEpoch,
       });
-      await player.reloadCurrentMediaFromDatabase();
+      await player.reloadCurrentMediaFromDatabase(
+        preferResumeVideoPosition: preferResumePos,
+      );
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(
@@ -2564,12 +2567,27 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
     if (player == null) return;
     final item = await player.getCurrentMedia();
     if (item == null) return;
-    final current = _quickVerticalFillByMediaId[item.id] ?? false;
+    final current =
+        _quickVerticalFillByMediaId[item.id] ?? _isPureDefaultMediaItem(item);
     if (current) {
       await _applyCurrentMediaFitWidthCenterPreset();
     } else {
       await _applyCurrentMediaVerticalFillPreset();
     }
+  }
+
+  bool _isPureDefaultMediaItem(MediaItem item) {
+    final p = item.videoViewParams;
+    if (item.type != MediaType.image && item.type != MediaType.video) {
+      return false;
+    }
+    final hasKenBurnsCenter = item.kenBurnsCenterX != null || item.kenBurnsCenterY != null;
+    return p.isLikelyIdentityTransform &&
+        p.basisW == null &&
+        p.basisH == null &&
+        p.anchorXNorm == null &&
+        p.anchorYNorm == null &&
+        !hasKenBurnsCenter;
   }
 
   Future<void> _resetCurrentMediaPresentationToPristine() async {
@@ -2578,6 +2596,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
     final item = await player.getCurrentMedia();
     if (item == null) return;
     try {
+      final preferResumePos = player.getCurrentVideoPlaybackPosition();
       const clearedView = VideoViewParams();
       _databaseService.stageVideoViewParamsForDisk(item.id, clearedView);
       await _databaseService.updateMediaItem({
@@ -2595,7 +2614,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
         'updated_at': DateTime.now().millisecondsSinceEpoch,
       });
       _quickVerticalFillByMediaId.remove(item.id);
-      await player.reloadCurrentMediaFromDatabase();
+      await player.reloadCurrentMediaFromDatabase(
+        preferResumeVideoPosition: preferResumePos,
+      );
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(

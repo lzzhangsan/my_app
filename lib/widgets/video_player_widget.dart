@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 import 'dart:io';
 import 'dart:async';
+import 'dart:math' as math;
 import 'package:chewie/chewie.dart';
 import 'package:flutter/services.dart';
 import '../models/video_view_params.dart';
@@ -39,6 +40,8 @@ class VideoPlayerWidget extends StatefulWidget {
   /// 文档编辑页媒体栏：为 true 时强制静音（与全屏预览、背景视频音量无关）。
   final bool documentMediaBarMuted;
 
+  final bool defaultVerticalFillWhenPristine;
+
   VideoPlayerWidget({
     required this.file,
     this.looping = false,
@@ -52,6 +55,7 @@ class VideoPlayerWidget extends StatefulWidget {
     this.onSequentialResumeTooShort,
     this.onProgressForResumeSave,
     this.documentMediaBarMuted = false,
+    this.defaultVerticalFillWhenPristine = false,
     super.key,
   });
 
@@ -372,23 +376,65 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
 
     final vp = widget.viewParams;
     if (vp != null) {
-      return Center(
-        child: Container(
-          color: Colors.transparent,
-          child: SizedBox.expand(
-            child: ChewieFullscreenHost(
-              controller: _chewieController!,
-              child: VideoInteractiveSurface(
-                key: ValueKey('${widget.file.path}_${vp.hashCode}'),
-                videoController: _controller,
-                videoChild: const PlayerWithControls(),
-                initial: vp,
-                editable: false,
-                useScreenSizeForNormalization: false,
+      final bool pristine =
+          vp.isLikelyIdentityTransform &&
+          vp.basisW == null &&
+          vp.basisH == null &&
+          vp.anchorXNorm == null &&
+          vp.anchorYNorm == null;
+      return LayoutBuilder(
+        builder: (context, c) {
+          final viewportW = c.maxWidth;
+          final viewportH = c.maxHeight;
+          var effective = vp;
+          if (widget.defaultVerticalFillWhenPristine &&
+              pristine &&
+              viewportW > 1 &&
+              viewportH > 1) {
+            final q = vp.quarterTurns % 4;
+            if (q == 0) {
+              final videoSize = _controller.value.size;
+              final vw = videoSize.width;
+              final vh = videoSize.height;
+              if (vw > 1 && vh > 1) {
+                final containScale = math.min(viewportW / vw, viewportH / vh);
+                final baseDisplayHeight = vh * containScale;
+                if (baseDisplayHeight > 1) {
+                  final targetScale =
+                      (viewportH / baseDisplayHeight).clamp(1.0, 6.0);
+                  final basisW = q == 1 || q == 3 ? viewportH : viewportW;
+                  final basisH = q == 1 || q == 3 ? viewportW : viewportH;
+                  effective = VideoViewParams(
+                    scale: targetScale,
+                    txNorm: 0.0,
+                    tyNorm: 0.0,
+                    quarterTurns: q,
+                    basisW: basisW,
+                    basisH: basisH,
+                  );
+                }
+              }
+            }
+          }
+          return Center(
+            child: Container(
+              color: Colors.transparent,
+              child: SizedBox.expand(
+                child: ChewieFullscreenHost(
+                  controller: _chewieController!,
+                  child: VideoInteractiveSurface(
+                    key: ValueKey('${widget.file.path}_${effective.hashCode}'),
+                    videoController: _controller,
+                    videoChild: const PlayerWithControls(),
+                    initial: effective,
+                    editable: false,
+                    useScreenSizeForNormalization: false,
+                  ),
+                ),
               ),
             ),
-          ),
-        ),
+          );
+        },
       );
     }
 
