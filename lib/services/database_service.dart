@@ -20,6 +20,7 @@ import '../models/diary_entry.dart';
 import '../utils/safe_path_utils.dart';
 import '../utils/app_storage_paths.dart';
 import '../utils/background_physical_file.dart';
+import '../utils/background_video_volume_prefs.dart';
 import '../models/background_media_origin.dart';
 import '../models/video_view_params.dart';
 import '../media_player_settings.dart';
@@ -123,6 +124,11 @@ class DatabaseService {
       await _ensureBackgroundFileViewParamsTable(_database!);
       await _ensureBackgroundVideoPathColumns(_database!);
       await _ensureBackgroundMediaOriginColumns(_database!);
+      try {
+        await _recoverMediaImportSwapIfNeededOnDb(_database!);
+      } catch (e, stack) {
+        _handleError('媒体导入恢复检查失败（已忽略）', e, stack);
+      }
 
       _initCompleter.complete(_database!);
       _isInitialized = true;
@@ -138,6 +144,106 @@ class DatabaseService {
     } catch (e, stackTrace) {
       _handleError('数据库初始化失败', e, stackTrace);
       _initCompleter.completeError(e);
+      rethrow;
+    }
+  }
+
+  Future<void> replaceMediaItemsPathPrefix({
+    required String oldPrefix,
+    required String newPrefix,
+  }) async {
+    final db = await database;
+    await _replaceMediaItemsPathPrefixOnDb(
+      db,
+      oldPrefix: oldPrefix,
+      newPrefix: newPrefix,
+    );
+  }
+
+  Future<void> _replaceMediaItemsPathPrefixOnDb(
+    Database db, {
+    required String oldPrefix,
+    required String newPrefix,
+  }) async {
+    if (oldPrefix.isEmpty || newPrefix.isEmpty || oldPrefix == newPrefix) return;
+    final oldNorm = p.normalize(oldPrefix);
+    final newNorm = p.normalize(newPrefix);
+    final oldWithSep =
+        oldNorm.endsWith(p.separator) ? oldNorm : '$oldNorm${p.separator}';
+    final newWithSep =
+        newNorm.endsWith(p.separator) ? newNorm : '$newNorm${p.separator}';
+    final likeArg = '$oldWithSep%';
+    final startIndex = oldWithSep.length + 1;
+    await db.transaction((txn) async {
+      await txn.rawUpdate(
+        'UPDATE media_items SET path = ? || substr(path, ?) WHERE path LIKE ?',
+        [newWithSep, startIndex, likeArg],
+      );
+    });
+  }
+
+  Future<void> _recoverMediaImportSwapIfNeededOnDb(Database db) async {
+    final root = _appDocumentsDirectoryPath;
+    if (root == null || root.isEmpty) return;
+    final mediaDirPath = p.join(root, 'media');
+    final mediaNewPath = p.join(root, 'media_new_import');
+    final countNew =
+        Sqflite.firstIntValue(
+          await db.rawQuery(
+            'SELECT COUNT(1) as c FROM media_items WHERE path LIKE ?',
+            ['$mediaNewPath%'],
+          ),
+        ) ??
+        0;
+    if (countNew <= 0) return;
+
+    final mediaDir = Directory(mediaDirPath);
+    final mediaNewDir = Directory(mediaNewPath);
+    final existsMedia = await mediaDir.exists();
+    final existsNew = await mediaNewDir.exists();
+
+    if (existsMedia && !existsNew) {
+      await _replaceMediaItemsPathPrefixOnDb(
+        db,
+        oldPrefix: mediaNewPath,
+        newPrefix: mediaDirPath,
+      );
+      return;
+    }
+
+    final backupDir = Directory(
+      p.join(root, 'media_backup_recover_${DateTime.now().millisecondsSinceEpoch}'),
+    );
+    try {
+      if (existsMedia && existsNew) {
+        await mediaDir.rename(backupDir.path);
+        await mediaNewDir.rename(mediaDirPath);
+        await _replaceMediaItemsPathPrefixOnDb(
+          db,
+          oldPrefix: mediaNewPath,
+          newPrefix: mediaDirPath,
+        );
+        try {
+          if (await backupDir.exists()) {
+            await backupDir.delete(recursive: true);
+          }
+        } catch (_) {}
+        return;
+      }
+      if (!existsMedia && existsNew) {
+        await mediaNewDir.rename(mediaDirPath);
+        await _replaceMediaItemsPathPrefixOnDb(
+          db,
+          oldPrefix: mediaNewPath,
+          newPrefix: mediaDirPath,
+        );
+      }
+    } catch (e) {
+      try {
+        if (!await mediaDir.exists() && await backupDir.exists()) {
+          await backupDir.rename(mediaDirPath);
+        }
+      } catch (_) {}
       rethrow;
     }
   }
@@ -2901,6 +3007,8 @@ class DatabaseService {
             ext,
           );
           settingsCopy['backgroundVideoFileName'] = fileName;
+          settingsCopy['backgroundVideoVolume'] =
+              await BackgroundVideoVolumePrefs.volumeForPath(backgroundVideoPath);
           final File videoFile = File(backgroundVideoPath);
           if (await videoFile.exists()) {
             final String relativePath = 'background_videos/$fileName';
@@ -2995,6 +3103,8 @@ class DatabaseService {
             ext,
           );
           settingsCopy['backgroundVideoFileName'] = fileName;
+          settingsCopy['backgroundVideoVolume'] =
+              await BackgroundVideoVolumePrefs.volumeForPath(backgroundVideoPath);
           final File videoFile = File(backgroundVideoPath);
           if (await videoFile.exists()) {
             final String relativePath = 'background_videos/$fileName';
@@ -3452,10 +3562,18 @@ class DatabaseService {
                         ).create(recursive: true);
                         await copyFileWithStreaming(File(tempPath), newPath);
                         newRow['background_video_path'] = newPath;
+                        final v = newRow['backgroundVideoVolume'];
+                        if (v is num) {
+                          await BackgroundVideoVolumePrefs.setVolumeForPath(
+                            newPath,
+                            v.toDouble(),
+                          );
+                        }
                       } else {
                         newRow['background_video_path'] = null;
                       }
                       newRow.remove('backgroundVideoFileName');
+                      newRow.remove('backgroundVideoVolume');
                     }
 
                     final imgP = newRow['background_image_path'] as String?;

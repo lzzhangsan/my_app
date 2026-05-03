@@ -5363,6 +5363,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       int totalFiles = allMediaItems.length;
       int processedFiles = 0;
       int totalSize = 0;
+      final Map<String, String> fileMapById = {};
+      final Map<String, String> exportNameByHashExt = {};
+      final Set<String> usedExportNames = {};
 
       // 仅当文件数较少时预计算总大小，避免超大库（如7GB）的 O(n) 预扫描导致卡顿
       const int kSkipTotalSizeThreshold = 500;
@@ -5388,10 +5391,29 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           try {
             final mediaFile = File(item['path']);
             if (await mediaFile.exists()) {
-              final fileName = path.basename(item['path']);
-              final relativePath = 'media/$fileName';
+              final ext = path.extension(mediaFile.path);
+              var fileHash = (item['file_hash']?.toString() ?? '').trim();
+              if (fileHash.isEmpty) {
+                fileHash = await _calculateFileHash(mediaFile);
+                if (fileHash.isNotEmpty) {
+                  item['file_hash'] = fileHash;
+                }
+              }
+              final hashKey = '${fileHash.isEmpty ? 'nohash' : fileHash}|$ext';
+              var exportName =
+                  exportNameByHashExt[hashKey] ??
+                  '${fileHash.isEmpty ? const Uuid().v4() : fileHash}$ext';
+              if (usedExportNames.contains(exportName) &&
+                  exportNameByHashExt[hashKey] == null) {
+                exportName =
+                    '${fileHash.isEmpty ? const Uuid().v4() : fileHash}_${processedFiles + 1}$ext';
+              }
+              exportNameByHashExt[hashKey] = exportName;
+              usedExportNames.add(exportName);
+              final id = item['id']?.toString() ?? '';
+              if (id.isNotEmpty) fileMapById[id] = exportName;
 
-              await encoder.addFile(mediaFile, relativePath, level);
+              await encoder.addFile(mediaFile, 'media/$exportName', level);
 
               processedFiles++;
               if (totalSize > 0) {
@@ -5431,6 +5453,20 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       // 4. 导出数据库 - 分块写入避免单一大JSON (5000条/文件)
       currentPhase = '导出数据库';
       message.value = '正在导出数据库...';
+      final manifestMap = <String, dynamic>{
+        'format_version': 2,
+        'type': 'all_media',
+        'file_naming': 'hash',
+        'file_map_by_id': fileMapById,
+      };
+      final manifestBytes = utf8.encode(jsonEncode(manifestMap));
+      encoder.addArchiveFile(
+        ArchiveFile(
+          'media_manifest.json',
+          manifestBytes.length,
+          manifestBytes,
+        ),
+      );
       for (
         int chunkIdx = 0;
         chunkIdx < allMediaItems.length;
@@ -5579,6 +5615,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       int totalFiles = folderMediaItems.length;
       int processedFiles = 0;
       int totalSize = 0;
+      final Map<String, String> fileMapById = {};
+      final Map<String, String> exportNameByHashExt = {};
+      final Set<String> usedExportNames = {};
       const int kSkipTotalSizeThreshold = 500;
       if (totalFiles <= kSkipTotalSizeThreshold) {
         for (final item in folderMediaItems) {
@@ -5597,8 +5636,27 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           try {
             final mediaFile = File(item['path']);
             if (await mediaFile.exists()) {
-              final fileName = path.basename(item['path']);
-              await encoder.addFile(mediaFile, 'media/$fileName', level);
+              final ext = path.extension(mediaFile.path);
+              var fileHash = (item['file_hash']?.toString() ?? '').trim();
+              if (fileHash.isEmpty) {
+                fileHash = await _calculateFileHash(mediaFile);
+                if (fileHash.isNotEmpty) item['file_hash'] = fileHash;
+              }
+              final hashKey = '${fileHash.isEmpty ? 'nohash' : fileHash}|$ext';
+              var exportName =
+                  exportNameByHashExt[hashKey] ??
+                  '${fileHash.isEmpty ? const Uuid().v4() : fileHash}$ext';
+              if (usedExportNames.contains(exportName) &&
+                  exportNameByHashExt[hashKey] == null) {
+                exportName =
+                    '${fileHash.isEmpty ? const Uuid().v4() : fileHash}_${processedFiles + 1}$ext';
+              }
+              exportNameByHashExt[hashKey] = exportName;
+              usedExportNames.add(exportName);
+              final id = item['id']?.toString() ?? '';
+              if (id.isNotEmpty) fileMapById[id] = exportName;
+
+              await encoder.addFile(mediaFile, 'media/$exportName', level);
               processedFiles++;
               if (totalSize > 0) {
                 processedSize += await mediaFile.length();
@@ -5633,7 +5691,13 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
       currentPhase = '导出数据库';
       message.value = '正在导出元数据...';
-      final manifest = {'type': 'folder', 'folder_name': folderName};
+      final manifest = {
+        'format_version': 2,
+        'type': 'folder',
+        'folder_name': folderName,
+        'file_naming': 'hash',
+        'file_map_by_id': fileMapById,
+      };
       encoder.addArchiveFile(
         ArchiveFile(
           'folder_manifest.json',
@@ -5811,6 +5875,13 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       }
 
       final folderName = manifest?['folder_name']?.toString() ?? '导入的文件夹';
+      final Map<String, String> fileMapById =
+          (manifest?['file_map_by_id'] is Map)
+              ? (manifest!['file_map_by_id'] as Map)
+                  .map(
+                    (k, v) => MapEntry(k.toString(), v.toString()),
+                  )
+              : <String, String>{};
       List<dynamic> mediaItemsToImport = [];
       if (await chunk0File.exists()) {
         int chunkIdx = 0;
@@ -5865,12 +5936,14 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         final oldPath = item['path']?.toString();
         if (oldPath == null || oldPath.isEmpty) continue;
 
+        final oldId = item['id']?.toString() ?? '';
         final fileName = path.basename(oldPath);
+        final archiveName = oldId.isNotEmpty ? fileMapById[oldId] : null;
         final sourceFile = File(
-          path.join(tempImportDir.path, 'media', fileName),
+          path.join(tempImportDir.path, 'media', archiveName ?? fileName),
         );
         if (!await sourceFile.exists()) {
-          debugPrint('跳过：文件不存在 $fileName');
+          debugPrint('跳过：文件不存在 ${archiveName ?? fileName}');
           skippedCount++;
           continue;
         }
@@ -6100,15 +6173,35 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       }
 
       // 路径重映射与数据规范化：跨设备导入时 path 需映射到当前设备，并补全必要字段
-      final mediaDirPath = path.join(appDir.path, 'media');
       final now = DateTime.now().millisecondsSinceEpoch;
+      final manifestFile = File(
+        path.join(tempImportDir.path, 'media_manifest.json'),
+      );
+      Map<String, String> fileMapById = {};
+      if (await manifestFile.exists()) {
+        try {
+          final raw = jsonDecode(await manifestFile.readAsString());
+          if (raw is Map<String, dynamic> && raw['file_map_by_id'] is Map) {
+            fileMapById =
+                (raw['file_map_by_id'] as Map)
+                    .map((k, v) => MapEntry(k.toString(), v.toString()));
+          }
+        } catch (e) {
+          debugPrint('读取 media_manifest.json 失败（已忽略，按旧格式导入）: $e');
+        }
+      }
       void remapMediaItemPath(Map<String, dynamic> item) {
         final typeIndex = item['type'] as int? ?? 0;
         if (typeIndex == MediaType.folder.index) return;
         final oldPath = item['path']?.toString();
+        final id = item['id']?.toString() ?? '';
         if (oldPath != null && oldPath.isNotEmpty) {
           final fileName = path.basename(oldPath);
-          item['path'] = path.join(mediaDirPath, fileName);
+          final archiveName = id.isNotEmpty ? fileMapById[id] : null;
+          item['path'] = path.join(
+            path.join(appDir.path, 'media_new_import'),
+            archiveName ?? fileName,
+          );
         }
         item['thumbnail_path'] = null;
         item['created_at'] ??= now;
@@ -6157,16 +6250,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           importBasenames: importBasenames,
           validPathsAbsolute: pathsToPreserve,
         );
-        if (await finalMediaDir.exists()) {
-          await finalMediaDir.delete(recursive: true);
-        }
-        await mediaNewDir.rename(finalMediaDir.path);
       } finally {
-        if (await mediaNewDir.exists()) {
-          try {
-            await mediaNewDir.delete(recursive: true);
-          } catch (_) {}
-        }
       }
       progress.value = 0.9;
 
@@ -6225,7 +6309,36 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       }
       progress.value = 0.95;
 
-      // 8. 刷新界面和设置
+      currentPhase = '切换媒体目录';
+      message.value = '正在切换媒体目录...';
+      final String backupName =
+          'media_backup_${DateTime.now().millisecondsSinceEpoch}_${const Uuid().v4().substring(0, 8)}';
+      final Directory backupDir = Directory(path.join(appDir.path, backupName));
+      try {
+        if (await finalMediaDir.exists()) {
+          await finalMediaDir.rename(backupDir.path);
+        }
+        await mediaNewDir.rename(finalMediaDir.path);
+      } catch (e) {
+        try {
+          if (!await finalMediaDir.exists() && await backupDir.exists()) {
+            await backupDir.rename(finalMediaDir.path);
+          }
+        } catch (_) {}
+        rethrow;
+      }
+      await _databaseService.replaceMediaItemsPathPrefix(
+        oldPrefix: path.join(appDir.path, 'media_new_import'),
+        newPrefix: path.join(appDir.path, 'media'),
+      );
+      try {
+        if (await backupDir.exists()) {
+          await backupDir.delete(recursive: true);
+        }
+      } catch (e) {
+        debugPrint('删除 media 备份目录失败（可忽略）：$e');
+      }
+
       message.value = '导入完成，正在刷新...';
       await _loadSettings();
       _itemsToCleanup.clear();

@@ -36,15 +36,15 @@ class BackgroundVideoVolumePrefs {
     return _memoryVolumeByCanonPath[canon];
   }
 
-  /// 未设置过则视为 1.0（有声）。
+  /// 未设置过则视为 0.0（无声）。
   static Future<double> volumeForPath(String pathStr) async {
-    if (pathStr.isEmpty) return 1.0;
+    if (pathStr.isEmpty) return 0.0;
     final canon = canonicalPath(pathStr);
     final mem = _memoryVolumeByCanonPath[canon];
     if (mem != null) return mem;
 
     final prefs = await SharedPreferences.getInstance();
-    final v = prefs.getDouble(_storageKey(canon)) ?? 1.0;
+    final v = prefs.getDouble(_storageKey(canon)) ?? 0.0;
     _memoryVolumeByCanonPath[canon] = v;
     return v;
   }
@@ -55,14 +55,14 @@ class BackgroundVideoVolumePrefs {
     final canon = canonicalPath(pathStr);
     final v = volume.clamp(0.0, 1.0);
     final key = _storageKey(canon);
-    if ((v - 1.0).abs() < 1e-6) {
+    if (v.abs() < 1e-6) {
       _memoryVolumeByCanonPath.remove(canon);
     } else {
       _memoryVolumeByCanonPath[canon] = v;
     }
 
     final prefs = await SharedPreferences.getInstance();
-    if ((v - 1.0).abs() < 1e-6) {
+    if (v.abs() < 1e-6) {
       await prefs.remove(key);
     } else {
       await prefs.setDouble(key, v);
