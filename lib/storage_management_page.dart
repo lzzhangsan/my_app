@@ -1853,8 +1853,34 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
                       Text(warnings.map((e) => '• $e').join('\n')),
                       const SizedBox(height: 10),
                     ],
+                    if (totalCount > 0) ...[
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton.icon(
+                          onPressed: () async {
+                            Navigator.pop(ctx);
+                            await _performFullCleanup();
+                            await _runReleaseGateCheck();
+                          },
+                          icon: const Icon(Icons.cleaning_services),
+                          label: Text(
+                            '一键完整清理（$totalCount 项，${_formatFileSize(totalBytes)}）',
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                    ],
                     const Text('本次模式：发布级全量扫描'),
-                    Text('文件引用检查：${validPaths.length}/${validPaths.length}（全量）'),
+                    if (validPaths.isEmpty) ...[
+                      const Text('文件引用：0 条（无需检查）'),
+                    ] else ...[
+                      Text('文件引用覆盖：${validPaths.length}/${validPaths.length}（100%，全量）'),
+                      Text(
+                        '文件引用缺失：$missingCount/${validPaths.length}'
+                        '${missingCount == 0 ? '（OK）' : '（异常）'}',
+                        style: _selfCheckTextStyle(missingCount == 0, bold: true),
+                      ),
+                    ],
                     const SizedBox(height: 10),
                     const Text('核心表计数：'),
                     Text(
@@ -1983,10 +2009,10 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
                     ),
                     const SizedBox(height: 8),
                     _selfCheckLine(
-                      '引用文件检查：',
+                      '文件引用缺失：',
                       missingCount == 0,
-                      '0 缺失',
-                      '$missingCount/${validPaths.length} 缺失',
+                      '0/${validPaths.length}',
+                      '$missingCount/${validPaths.length}',
                       bold: true,
                     ),
                     if (missingDetails.isNotEmpty) ...[
