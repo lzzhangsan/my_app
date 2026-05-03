@@ -2187,13 +2187,18 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   }
 
   Future<void> _deleteMediaItem(MediaItem item) async {
+    final isFolder = item.type == MediaType.folder;
     final shouldDelete =
         await showDialog<bool>(
           context: context,
           builder:
               (context) => AlertDialog(
                 title: const Text('删除媒体'),
-                content: Text('确定要删除 "${item.name}" 吗？此操作不可撤销。'),
+                content: Text(
+                  isFolder
+                      ? '确定要删除文件夹 "${item.name}" 及其所有子文件夹与媒体文件吗？此操作不可撤销。'
+                      : '确定要删除 "${item.name}" 吗？此操作不可撤销。',
+                ),
                 actions: [
                   TextButton(
                     onPressed: () => Navigator.of(context).pop(false),
@@ -2213,14 +2218,30 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
     if (shouldDelete) {
       try {
-        final result = await _databaseService.deleteMediaItemCompletely(
-          item.id,
-        );
+        final result =
+            isFolder
+                ? await _databaseService.deleteMediaFolderCompletely(item.id)
+                : await _databaseService.deleteMediaItemCompletely(item.id);
 
         await _loadMediaItems();
         _invalidMediaRetryCounts.remove(item.id);
         _invalidMediaRetryCounts.remove(item.id);
-        await _showPartialDeleteWarningIfNeeded(result);
+        if (isFolder) {
+          final failed = result['fileDeleteFailed'] as int? ?? 0;
+          if (failed > 0 && mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  '$failed 个文件记录已删除，但物理文件未能立即清理，可稍后在存储管理中清理孤立文件。',
+                ),
+              ),
+            );
+          }
+        } else {
+          await _showPartialDeleteWarningIfNeeded(
+            result as Map<String, dynamic>,
+          );
+        }
       } catch (e) {
         debugPrint('删除媒体项时出错: $e');
         if (mounted) {
@@ -2958,10 +2979,15 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         for (var id in _selectedItems) {
           final item = _mediaItems.firstWhereOrNull((i) => i.id == id);
           if (item == null) continue;
-          final result = await _databaseService.deleteMediaItemCompletely(id);
-          if ((result['fileDeleteAttempted'] as bool? ?? false) &&
-              !(result['fileDeleted'] as bool? ?? true)) {
-            partialFileDeleteFailures++;
+          if (item.type == MediaType.folder) {
+            final r = await _databaseService.deleteMediaFolderCompletely(id);
+            partialFileDeleteFailures += r['fileDeleteFailed'] as int? ?? 0;
+          } else {
+            final result = await _databaseService.deleteMediaItemCompletely(id);
+            if ((result['fileDeleteAttempted'] as bool? ?? false) &&
+                !(result['fileDeleted'] as bool? ?? true)) {
+              partialFileDeleteFailures++;
+            }
           }
         }
 

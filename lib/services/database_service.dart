@@ -1817,6 +1817,14 @@ class DatabaseService {
   /// 这样在文件删除失败时，最多残留可回收的孤儿文件，不会留下指向失效路径的坏记录。
   Future<Map<String, dynamic>> deleteMediaItemCompletely(String id) async {
     final row = await getMediaItemById(id);
+    if (row != null) {
+      final t = row['type'];
+      final typeIndex =
+          t is int ? t : (t is num ? t.toInt() : int.tryParse('$t') ?? -1);
+      if (typeIndex == 3) {
+        return deleteMediaFolderCompletely(id);
+      }
+    }
     final filePath = row?['path']?.toString() ?? '';
 
     final dbDeleted = await deleteMediaItem(id);
@@ -1847,6 +1855,243 @@ class DatabaseService {
       'fileDeleteAttempted': fileDeleteAttempted,
       'fileDeleted': fileDeleted,
       'filePath': filePath,
+    };
+  }
+
+  Future<Set<String>> _collectMediaFolderSubtreeIds(String rootFolderId) async {
+    final db = await database;
+    final root = rootFolderId.trim();
+    if (root.isEmpty) return <String>{};
+    final seen = <String>{root};
+    final queue = <String>[root];
+    const chunk = 800;
+
+    while (queue.isNotEmpty) {
+      final part =
+          queue.length <= chunk ? List<String>.from(queue) : queue.sublist(0, chunk);
+      queue.removeRange(0, part.length);
+      final qs = List.filled(part.length, '?').join(',');
+      final rows = await db.rawQuery(
+        'SELECT id FROM media_items WHERE type = 3 AND directory IN ($qs)',
+        part,
+      );
+      for (final r in rows) {
+        final id = r['id']?.toString() ?? '';
+        if (id.isEmpty) continue;
+        if (seen.add(id)) queue.add(id);
+      }
+    }
+    return seen;
+  }
+
+  Future<Map<String, dynamic>> deleteMediaFolderCompletely(String folderId) async {
+    final rootId = folderId.trim();
+    if (rootId.isEmpty) {
+      return {
+        'dbDeleted': false,
+        'folderCount': 0,
+        'mediaCount': 0,
+        'fileDeleteAttempted': 0,
+        'fileDeleted': 0,
+        'fileDeleteFailed': 0,
+      };
+    }
+    if (rootId == 'root' || rootId == 'recycle_bin' || rootId == 'favorites') {
+      throw Exception('系统目录不允许删除');
+    }
+
+    final db = await database;
+    final fileCleanupService = getService<FileCleanupService>();
+    final folderIds = await _collectMediaFolderSubtreeIds(rootId);
+    if (folderIds.isEmpty) {
+      return {
+        'dbDeleted': false,
+        'folderCount': 0,
+        'mediaCount': 0,
+        'fileDeleteAttempted': 0,
+        'fileDeleted': 0,
+        'fileDeleteFailed': 0,
+      };
+    }
+
+    final allRowIds = <String>{};
+    final filePaths = <String>{};
+    const chunk = 800;
+
+    final folderIdList = folderIds.toList();
+    for (int i = 0; i < folderIdList.length; i += chunk) {
+      final part = folderIdList.sublist(i, (i + chunk).clamp(0, folderIdList.length));
+      final qs = List.filled(part.length, '?').join(',');
+      final rows = await db.rawQuery(
+        'SELECT id, type, path FROM media_items WHERE directory IN ($qs)',
+        part,
+      );
+      for (final r in rows) {
+        final id = r['id']?.toString() ?? '';
+        if (id.isEmpty) continue;
+        allRowIds.add(id);
+        final t = r['type'];
+        final typeIndex = t is int ? t : (t is num ? t.toInt() : int.tryParse('$t') ?? -1);
+        final p0 = r['path']?.toString() ?? '';
+        if (typeIndex != 3 && p0.trim().isNotEmpty) filePaths.add(p0);
+      }
+    }
+
+    allRowIds.addAll(folderIds);
+    final deleteIds = allRowIds.toList();
+
+    for (final id in deleteIds) {
+      _stagedVideoViewParamsByMediaId.remove(id);
+    }
+    _syncVideoViewStagingJsonToDiskSync();
+
+    int dbDeletedCount = 0;
+    await db.transaction((txn) async {
+      for (int i = 0; i < deleteIds.length; i += chunk) {
+        final part = deleteIds.sublist(i, (i + chunk).clamp(0, deleteIds.length));
+        final qs = List.filled(part.length, '?').join(',');
+        final n = await txn.delete(
+          'media_items',
+          where: 'id IN ($qs)',
+          whereArgs: part,
+        );
+        dbDeletedCount += n;
+      }
+    });
+
+    unawaited(() async {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        for (final id in deleteIds) {
+          try {
+            await clearVideoResumePositionMs(prefs, id);
+          } catch (_) {}
+        }
+      } catch (_) {}
+    }());
+
+    int attempted = 0;
+    int deleted = 0;
+    int failed = 0;
+    if (filePaths.isNotEmpty) {
+      for (final fp in filePaths) {
+        attempted++;
+        bool ok = true;
+        if (fileCleanupService.isInitialized) {
+          ok = await fileCleanupService.deleteMediaFileCompletely(fp);
+        } else {
+          try {
+            final f = File(fp);
+            if (await f.exists()) await f.delete();
+          } catch (_) {
+            ok = false;
+          }
+        }
+        if (ok) {
+          deleted++;
+        } else {
+          failed++;
+        }
+      }
+    }
+
+    return {
+      'dbDeleted': dbDeletedCount > 0,
+      'folderCount': folderIds.length,
+      'mediaCount': filePaths.length,
+      'fileDeleteAttempted': attempted,
+      'fileDeleted': deleted,
+      'fileDeleteFailed': failed,
+    };
+  }
+
+  Future<int> countOrphanMediaDirectoryItems() async {
+    final db = await database;
+    final rows = await db.rawQuery('''
+      SELECT COUNT(*) AS c
+      FROM media_items
+      WHERE directory NOT IN ('root', 'recycle_bin', 'favorites')
+        AND (directory = '' OR directory NOT IN (SELECT id FROM media_items WHERE type = 3))
+    ''');
+    return rows.isNotEmpty ? (rows.first['c'] as int? ?? 0) : 0;
+  }
+
+  Future<List<Map<String, dynamic>>> getOrphanMediaDirectoryItems({
+    int limit = 20,
+  }) async {
+    final db = await database;
+    final rows = await db.rawQuery('''
+      SELECT id, name, type, directory, path
+      FROM media_items
+      WHERE directory NOT IN ('root', 'recycle_bin', 'favorites')
+        AND (directory = '' OR directory NOT IN (SELECT id FROM media_items WHERE type = 3))
+      ORDER BY datetime(date_added) DESC
+      LIMIT ?
+    ''', [limit]);
+    return rows.map((e) => Map<String, dynamic>.from(e)).toList();
+  }
+
+  Future<Map<String, dynamic>> moveOrphanMediaDirectoryItemsToRecycleBin() async {
+    final db = await database;
+    int moved = 0;
+    await db.transaction((txn) async {
+      moved = await txn.update(
+        'media_items',
+        {'directory': 'recycle_bin', 'updated_at': DateTime.now().millisecondsSinceEpoch},
+        where:
+            "directory NOT IN ('root','recycle_bin','favorites') AND (directory = '' OR directory NOT IN (SELECT id FROM media_items WHERE type = 3))",
+      );
+    });
+    return {'moved': moved};
+  }
+
+  Future<Map<String, dynamic>> deleteOrphanMediaDirectoryItemsCompletely() async {
+    final db = await database;
+    final rows = await db.rawQuery('''
+      SELECT id, name, type, directory, path
+      FROM media_items
+      WHERE directory NOT IN ('root', 'recycle_bin', 'favorites')
+        AND (directory = '' OR directory NOT IN (SELECT id FROM media_items WHERE type = 3))
+    ''');
+    final items = rows.map((e) => Map<String, dynamic>.from(e)).toList();
+    int deletedFolders = 0;
+    int deletedItems = 0;
+    int attempted = 0;
+    int ok = 0;
+    int fail = 0;
+
+    for (final r in items) {
+      final id = r['id']?.toString() ?? '';
+      if (id.isEmpty) continue;
+      final t = r['type'];
+      final typeIndex = t is int ? t : (t is num ? t.toInt() : int.tryParse('$t') ?? -1);
+      if (typeIndex == 3) {
+        final res = await deleteMediaFolderCompletely(id);
+        deletedFolders += (res['folderCount'] as int? ?? 0);
+        deletedItems += (res['mediaCount'] as int? ?? 0);
+        attempted += (res['fileDeleteAttempted'] as int? ?? 0);
+        ok += (res['fileDeleted'] as int? ?? 0);
+        fail += (res['fileDeleteFailed'] as int? ?? 0);
+      } else {
+        final res = await deleteMediaItemCompletely(id);
+        deletedItems += (res['dbDeleted'] == true) ? 1 : 0;
+        if (res['fileDeleteAttempted'] == true) {
+          attempted += 1;
+          if (res['fileDeleted'] == true) {
+            ok += 1;
+          } else {
+            fail += 1;
+          }
+        }
+      }
+    }
+    return {
+      'orphanRows': items.length,
+      'deletedFolders': deletedFolders,
+      'deletedItems': deletedItems,
+      'fileDeleteAttempted': attempted,
+      'fileDeleted': ok,
+      'fileDeleteFailed': fail,
     };
   }
 

@@ -969,6 +969,12 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
       final duplicateSummary = await _databaseService.findDuplicateMediaItemsSummary();
       final staging = await _databaseService.getVideoViewStagingJsonStatus();
       final dataIntegrity = await _databaseService.checkDataIntegrity();
+      final orphanMediaCount =
+          await _databaseService.countOrphanMediaDirectoryItems();
+      final orphanMediaSamples =
+          orphanMediaCount > 0
+              ? await _databaseService.getOrphanMediaDirectoryItems(limit: 12)
+              : const <Map<String, dynamic>>[];
       final validPaths = await _databaseService.getAllValidFilePaths();
       final preview = await _fileCleanupService.previewFullStorageCleanup(
         validPaths,
@@ -1567,6 +1573,12 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
           await _databaseService.findDuplicateMediaItemsSummary();
       final staging = await _databaseService.getVideoViewStagingJsonStatus();
       final dataIntegrity = await _databaseService.checkDataIntegrity();
+      final orphanMediaCount =
+          await _databaseService.countOrphanMediaDirectoryItems();
+      final orphanMediaSamples =
+          orphanMediaCount > 0
+              ? await _databaseService.getOrphanMediaDirectoryItems(limit: 12)
+              : const <Map<String, dynamic>>[];
       final validPaths = await _databaseService.getAllValidFilePaths();
       final preview = await _fileCleanupService.previewFullStorageCleanup(
         validPaths,
@@ -1625,6 +1637,8 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
         'missingPathCount': missingCount,
         'missingDetails': missingDetails,
         'missingPaths': missingPaths,
+        'orphanMediaCount': orphanMediaCount,
+        'orphanMediaSamples': orphanMediaSamples,
         'cleanupPreviewCount': totalCount,
         'cleanupPreviewBytes': totalBytes,
       };
@@ -1678,6 +1692,11 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
               (result['missingPaths'] as List<dynamic>? ?? const [])
                   .map((e) => e.toString())
                   .where((e) => e.trim().isNotEmpty)
+                  .toList();
+          final orphanMediaCount = result['orphanMediaCount'] as int? ?? 0;
+          final orphanMediaSamples =
+              (result['orphanMediaSamples'] as List<dynamic>? ?? const [])
+                  .whereType<Map<String, dynamic>>()
                   .toList();
 
           String _basename(String p) {
@@ -1886,6 +1905,24 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
                     ],
                     const SizedBox(height: 8),
                     _selfCheckLine(
+                      '断链媒体项（父目录不存在）：',
+                      orphanMediaCount == 0,
+                      '0',
+                      '$orphanMediaCount',
+                      bold: true,
+                    ),
+                    if (orphanMediaSamples.isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        orphanMediaSamples
+                            .map((e) => '• ${e['name']}')
+                            .take(10)
+                            .join('\n'),
+                        style: _selfCheckTextStyle(false),
+                      ),
+                    ],
+                    const SizedBox(height: 8),
+                    _selfCheckLine(
                       '重复媒体（按 file_hash）：',
                       dupTotal == 0,
                       '0（OK）',
@@ -2073,6 +2110,128 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
               ),
             ),
             actions: [
+              if (orphanMediaCount > 0)
+                TextButton(
+                  onPressed: () async {
+                    Navigator.pop(ctx);
+                    final confirmed = await showDialog<bool>(
+                      context: context,
+                      builder: (c) {
+                        return AlertDialog(
+                          title: const Text('修复断链媒体项'),
+                          content: Text(
+                            '检测到 $orphanMediaCount 个媒体项的父目录已不存在。\n\n'
+                            '建议方案：将它们移入回收站，便于你在媒体页中可见并决定是否彻底删除。\n\n'
+                            '你也可以选择“彻底删除”以立即释放空间（不可撤销）。',
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(c, false),
+                              child: const Text('取消'),
+                            ),
+                            TextButton(
+                              onPressed: () => Navigator.pop(c, true),
+                              child: const Text('移入回收站'),
+                            ),
+                          ],
+                        );
+                      },
+                    );
+                    if (confirmed != true) return;
+                    setState(() {
+                      _selfCheckRunning = true;
+                    });
+                    try {
+                      final r = await _databaseService
+                          .moveOrphanMediaDirectoryItemsToRecycleBin();
+                      if (!mounted) return;
+                      final moved = r['moved'] ?? 0;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('已将断链媒体移入回收站：$moved 项')),
+                      );
+                    } catch (e) {
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('修复断链媒体失败: $e')),
+                      );
+                    } finally {
+                      if (mounted) {
+                        setState(() {
+                          _selfCheckRunning = false;
+                        });
+                      }
+                      await _loadStorageInfo();
+                      await _runReleaseGateCheck();
+                    }
+                  },
+                  child: const Text('断链移入回收站'),
+                ),
+              if (orphanMediaCount > 0)
+                TextButton(
+                  onPressed: () async {
+                    Navigator.pop(ctx);
+                    final confirmed = await showDialog<bool>(
+                      context: context,
+                      builder: (c) {
+                        return AlertDialog(
+                          title: const Text('彻底删除断链媒体'),
+                          content: Text(
+                            '检测到 $orphanMediaCount 个断链媒体项。\n\n'
+                            '将删除这些媒体项及其磁盘文件，以立即释放空间（不可撤销）。\n'
+                            '若某些文件当下无法删除，后续可用“清理孤立文件”回收残留。',
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(c, false),
+                              child: const Text('取消'),
+                            ),
+                            TextButton(
+                              onPressed: () => Navigator.pop(c, true),
+                              style: TextButton.styleFrom(
+                                foregroundColor: Colors.red,
+                              ),
+                              child: const Text('确定删除'),
+                            ),
+                          ],
+                        );
+                      },
+                    );
+                    if (confirmed != true) return;
+                    setState(() {
+                      _selfCheckRunning = true;
+                    });
+                    try {
+                      final r = await _databaseService
+                          .deleteOrphanMediaDirectoryItemsCompletely();
+                      if (!mounted) return;
+                      final orphanRows = r['orphanRows'] ?? 0;
+                      final fileFailed = r['fileDeleteFailed'] ?? 0;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            '已删除断链媒体：$orphanRows 项'
+                            '${fileFailed > 0 ? '（$fileFailed 个文件未能立即清理）' : ''}',
+                          ),
+                        ),
+                      );
+                    } catch (e) {
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('删除断链媒体失败: $e')),
+                      );
+                    } finally {
+                      if (mounted) {
+                        setState(() {
+                          _selfCheckRunning = false;
+                        });
+                      }
+                      await _loadStorageInfo();
+                      await _runReleaseGateCheck();
+                    }
+                  },
+                  style: TextButton.styleFrom(foregroundColor: Colors.red),
+                  child: const Text('彻底删除断链媒体'),
+                ),
               if (missingCount > 0 && missingPaths.isNotEmpty)
                 TextButton(
                   onPressed: () async {
