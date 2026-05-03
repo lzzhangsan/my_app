@@ -2095,6 +2095,151 @@ class DatabaseService {
     };
   }
 
+  Future<Map<String, dynamic>> repairMissingMediaFiles(
+    List<String> missingPaths,
+  ) async {
+    final unique = <String>{};
+    final targets = <String>[];
+    for (final p0 in missingPaths) {
+      final p = p0.trim();
+      if (p.isEmpty) continue;
+      if (unique.add(p)) targets.add(p);
+    }
+    if (targets.isEmpty) {
+      return {
+        'checked': 0,
+        'repaired': 0,
+        'deletedRows': 0,
+        'unresolved': 0,
+      };
+    }
+
+    int checked = 0;
+    int repaired = 0;
+    int deletedRows = 0;
+    int unresolved = 0;
+
+    for (final p0 in targets) {
+      checked++;
+      try {
+        final row = await getMediaItemByFilePath(p0);
+        if (row == null) {
+          unresolved++;
+          continue;
+        }
+        final id = row['id']?.toString() ?? '';
+        if (id.isEmpty) {
+          unresolved++;
+          continue;
+        }
+
+        final fixedPath = await tryRepairMediaItemPath(row);
+        if (fixedPath != null && fixedPath.isNotEmpty && await File(fixedPath).exists()) {
+          repaired++;
+          continue;
+        }
+
+        final n = await deleteMediaItem(id);
+        if (n > 0) {
+          deletedRows += n;
+        } else {
+          unresolved++;
+        }
+      } catch (_) {
+        unresolved++;
+      }
+    }
+
+    return {
+      'checked': checked,
+      'repaired': repaired,
+      'deletedRows': deletedRows,
+      'unresolved': unresolved,
+    };
+  }
+
+  Future<Map<String, dynamic>> pruneVideoViewStagingJsonIfNeeded() async {
+    final root = _appDocumentsDirectoryPath;
+    if (root == null || root.isEmpty) {
+      return {'exists': false, 'parseOk': false, 'pruned': 0, 'deleted': false};
+    }
+    final file = File(p.join(root, _videoViewStagingJsonFileName));
+    if (!await file.exists()) {
+      return {'exists': false, 'parseOk': true, 'pruned': 0, 'deleted': false};
+    }
+    try {
+      final raw = await file.readAsString();
+      if (raw.trim().isEmpty) {
+        await file.delete();
+        _stagedVideoViewParamsByMediaId.clear();
+        return {'exists': true, 'parseOk': true, 'pruned': 0, 'deleted': true};
+      }
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map<String, dynamic>) {
+        await file.delete();
+        _stagedVideoViewParamsByMediaId.clear();
+        return {'exists': true, 'parseOk': false, 'pruned': 0, 'deleted': true};
+      }
+      final itemsRaw = decoded['items'];
+      if (itemsRaw is! Map) {
+        await file.delete();
+        _stagedVideoViewParamsByMediaId.clear();
+        return {'exists': true, 'parseOk': false, 'pruned': 0, 'deleted': true};
+      }
+      final items = Map<String, dynamic>.from(itemsRaw as Map);
+      final ids = items.keys.map((e) => e.toString()).where((e) => e.isNotEmpty).toList();
+      if (ids.isEmpty) {
+        await file.delete();
+        _stagedVideoViewParamsByMediaId.clear();
+        return {'exists': true, 'parseOk': true, 'pruned': 0, 'deleted': true};
+      }
+      final db = await database;
+      final existing = <String>{};
+      const chunk = 900;
+      for (int i = 0; i < ids.length; i += chunk) {
+        final part = ids.sublist(i, (i + chunk).clamp(0, ids.length));
+        final qs = List.filled(part.length, '?').join(',');
+        final rows = await db.rawQuery(
+          'SELECT id FROM media_items WHERE id IN ($qs)',
+          part,
+        );
+        existing.addAll(rows.map((r) => r['id']?.toString() ?? '').where((s) => s.isNotEmpty));
+      }
+      int pruned = 0;
+      for (final id in ids) {
+        if (!existing.contains(id)) {
+          items.remove(id);
+          pruned++;
+        }
+      }
+      if (items.isEmpty) {
+        await file.delete();
+        _stagedVideoViewParamsByMediaId.clear();
+        return {'exists': true, 'parseOk': true, 'pruned': pruned, 'deleted': true};
+      }
+      final payload = <String, dynamic>{'v': 1, 'items': items};
+      await file.writeAsString(jsonEncode(payload), flush: true);
+      _stagedVideoViewParamsByMediaId
+        ..clear()
+        ..addAll(items.map((k, v) {
+          if (v is Map) {
+            try {
+              final m = Map<String, dynamic>.from(v);
+              return MapEntry(k, VideoViewParams.fromJsonStaging(m));
+            } catch (_) {}
+          }
+          return MapEntry(k, VideoViewParams());
+        }));
+      return {'exists': true, 'parseOk': true, 'pruned': pruned, 'deleted': false};
+    } catch (_) {
+      try {
+        await file.delete();
+      } catch (_) {}
+      _stagedVideoViewParamsByMediaId.clear();
+      return {'exists': true, 'parseOk': false, 'pruned': 0, 'deleted': true};
+    }
+  }
+
   /// 在异步写库前同步记下当前取景参数（见 [_stagedVideoViewParamsByMediaId]）。
   void stageVideoViewParamsForDisk(String mediaId, VideoViewParams params) {
     _stagedVideoViewParamsByMediaId[mediaId] = params;

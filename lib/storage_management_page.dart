@@ -1680,6 +1680,16 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
               (ioPrecheck['badExportZipSamples'] as List<dynamic>? ?? const [])
                   .map((e) => e.toString())
                   .toList();
+          final badBackupZipPaths =
+              (ioPrecheck['badBackupZipPaths'] as List<dynamic>? ?? const [])
+                  .map((e) => e.toString())
+                  .where((e) => e.trim().isNotEmpty)
+                  .toList();
+          final badExportZipPaths =
+              (ioPrecheck['badExportZipPaths'] as List<dynamic>? ?? const [])
+                  .map((e) => e.toString())
+                  .where((e) => e.trim().isNotEmpty)
+                  .toList();
           final String verdictTitle =
               releaseReport['title']?.toString() ?? '发布级自检';
           final String verdictSummary =
@@ -1697,6 +1707,23 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
           final orphanMediaSamples =
               (result['orphanMediaSamples'] as List<dynamic>? ?? const [])
                   .whereType<Map<String, dynamic>>()
+                  .toList();
+
+          final missingMediaPaths =
+              missingDetails
+                  .where((d) {
+                    final usages =
+                        (d['usages'] as List<dynamic>? ?? const [])
+                            .whereType<Map<String, dynamic>>()
+                            .toList();
+                    return usages.any((u) {
+                      final t = u['type']?.toString() ?? '';
+                      return t == 'media_item_file' || t == 'media_item_thumbnail';
+                    });
+                  })
+                  .map((d) => d['path']?.toString() ?? '')
+                  .where((p) => p.trim().isNotEmpty)
+                  .toSet()
                   .toList();
 
           String _basename(String p) {
@@ -2110,6 +2137,121 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
               ),
             ),
             actions: [
+              if (!integrityOk)
+                TextButton(
+                  onPressed: () async {
+                    Navigator.pop(ctx);
+                    final confirmed = await showDialog<bool>(
+                      context: context,
+                      builder: (c) {
+                        return AlertDialog(
+                          title: const Text('一键修复业务数据'),
+                          content: const Text(
+                            '将尝试修复：无效文件夹/文档名称、无效父级引用等。\n\n'
+                            '不会删除你的有效内容数据。\n\n'
+                            '修复后会自动重新跑一次发布级自检。',
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(c, false),
+                              child: const Text('取消'),
+                            ),
+                            TextButton(
+                              onPressed: () => Navigator.pop(c, true),
+                              child: const Text('开始修复'),
+                            ),
+                          ],
+                        );
+                      },
+                    );
+                    if (confirmed != true) return;
+                    setState(() {
+                      _selfCheckRunning = true;
+                    });
+                    try {
+                      await _databaseService.repairDataIntegrity();
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('业务数据修复已完成')),
+                      );
+                    } catch (e) {
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('业务数据修复失败: $e')),
+                      );
+                    } finally {
+                      if (mounted) {
+                        setState(() {
+                          _selfCheckRunning = false;
+                        });
+                      }
+                      await _loadStorageInfo();
+                      await _runReleaseGateCheck();
+                    }
+                  },
+                  child: const Text('一键修复业务数据'),
+                ),
+              if (!stagingOk)
+                TextButton(
+                  onPressed: () async {
+                    Navigator.pop(ctx);
+                    final confirmed = await showDialog<bool>(
+                      context: context,
+                      builder: (c) {
+                        return AlertDialog(
+                          title: const Text('修复取景参数暂存'),
+                          content: const Text(
+                            '将清理/瘦身取景参数暂存文件，移除未知媒体 ID 或无法解析的内容。\n\n'
+                            '修复后会自动重新跑一次发布级自检。',
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(c, false),
+                              child: const Text('取消'),
+                            ),
+                            TextButton(
+                              onPressed: () => Navigator.pop(c, true),
+                              child: const Text('开始修复'),
+                            ),
+                          ],
+                        );
+                      },
+                    );
+                    if (confirmed != true) return;
+                    setState(() {
+                      _selfCheckRunning = true;
+                    });
+                    try {
+                      final r = await _databaseService.pruneVideoViewStagingJsonIfNeeded();
+                      if (!mounted) return;
+                      final pruned = r['pruned'] ?? 0;
+                      final deleted = r['deleted'] == true;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            deleted
+                                ? '取景参数暂存已清理（已删除暂存文件）'
+                                : '取景参数暂存已修复（已移除 $pruned 条无效记录）',
+                          ),
+                        ),
+                      );
+                    } catch (e) {
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('修复取景暂存失败: $e')),
+                      );
+                    } finally {
+                      if (mounted) {
+                        setState(() {
+                          _selfCheckRunning = false;
+                        });
+                      }
+                      await _loadStorageInfo();
+                      await _runReleaseGateCheck();
+                    }
+                  },
+                  child: const Text('修复取景暂存'),
+                ),
               if (orphanMediaCount > 0)
                 TextButton(
                   onPressed: () async {
@@ -2300,6 +2442,180 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
                   style: TextButton.styleFrom(foregroundColor: Colors.red),
                   child: const Text('修复缺失引用'),
                 ),
+              if (missingMediaPaths.isNotEmpty)
+                TextButton(
+                  onPressed: () async {
+                    Navigator.pop(ctx);
+                    final confirmed = await showDialog<bool>(
+                      context: context,
+                      builder: (c) {
+                        return AlertDialog(
+                          title: const Text('修复缺失媒体文件'),
+                          content: Text(
+                            '检测到 ${missingMediaPaths.length} 个缺失媒体文件路径。\n\n'
+                            '将尝试按文件名在应用 media/ 目录中找回并修复路径；\n'
+                            '若无法修复，将删除对应的媒体记录以保证数据一致性（文件本身已不存在）。\n\n'
+                            '修复后会自动重新跑一次发布级自检。',
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(c, false),
+                              child: const Text('取消'),
+                            ),
+                            TextButton(
+                              onPressed: () => Navigator.pop(c, true),
+                              style: TextButton.styleFrom(
+                                foregroundColor: Colors.red,
+                              ),
+                              child: const Text('确定修复'),
+                            ),
+                          ],
+                        );
+                      },
+                    );
+                    if (confirmed != true) return;
+                    setState(() {
+                      _selfCheckRunning = true;
+                    });
+                    try {
+                      final r = await _databaseService.repairMissingMediaFiles(
+                        missingMediaPaths,
+                      );
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            '缺失媒体修复完成：修复 ${r['repaired'] ?? 0}，删除记录 ${r['deletedRows'] ?? 0}，未解决 ${r['unresolved'] ?? 0}',
+                          ),
+                        ),
+                      );
+                    } catch (e) {
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('修复缺失媒体失败: $e')),
+                      );
+                    } finally {
+                      if (mounted) {
+                        setState(() {
+                          _selfCheckRunning = false;
+                        });
+                      }
+                      await _loadStorageInfo();
+                      await _runReleaseGateCheck();
+                    }
+                  },
+                  style: TextButton.styleFrom(foregroundColor: Colors.red),
+                  child: const Text('修复缺失媒体'),
+                ),
+              if ((preview['totalCount'] as int? ?? 0) > 0)
+                TextButton(
+                  onPressed: () async {
+                    Navigator.pop(ctx);
+                    await _performFullCleanup();
+                    await _runReleaseGateCheck();
+                  },
+                  child: const Text('立即完整清理'),
+                ),
+              if (badBackupZipPaths.isNotEmpty)
+                TextButton(
+                  onPressed: () async {
+                    Navigator.pop(ctx);
+                    final confirmed = await showDialog<bool>(
+                      context: context,
+                      builder: (c) {
+                        return AlertDialog(
+                          title: const Text('删除损坏备份ZIP'),
+                          content: Text(
+                            '将删除 ${badBackupZipPaths.length} 个损坏/不可读取的备份 ZIP。\n\n'
+                            '此操作不可撤销。',
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(c, false),
+                              child: const Text('取消'),
+                            ),
+                            TextButton(
+                              onPressed: () => Navigator.pop(c, true),
+                              style: TextButton.styleFrom(
+                                foregroundColor: Colors.red,
+                              ),
+                              child: const Text('确定删除'),
+                            ),
+                          ],
+                        );
+                      },
+                    );
+                    if (confirmed != true) return;
+                    int deleted = 0;
+                    for (final p in badBackupZipPaths) {
+                      try {
+                        final f = File(p);
+                        if (await f.exists()) {
+                          await f.delete();
+                          deleted++;
+                        }
+                      } catch (_) {}
+                    }
+                    if (!mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('已删除损坏备份ZIP：$deleted 个')),
+                    );
+                    await _loadStorageInfo();
+                    await _runReleaseGateCheck();
+                  },
+                  style: TextButton.styleFrom(foregroundColor: Colors.red),
+                  child: const Text('删除损坏备份ZIP'),
+                ),
+              if (badExportZipPaths.isNotEmpty)
+                TextButton(
+                  onPressed: () async {
+                    Navigator.pop(ctx);
+                    final confirmed = await showDialog<bool>(
+                      context: context,
+                      builder: (c) {
+                        return AlertDialog(
+                          title: const Text('删除损坏导出ZIP'),
+                          content: Text(
+                            '将删除 ${badExportZipPaths.length} 个损坏/不可读取的导出 ZIP。\n\n'
+                            '此操作不可撤销。',
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(c, false),
+                              child: const Text('取消'),
+                            ),
+                            TextButton(
+                              onPressed: () => Navigator.pop(c, true),
+                              style: TextButton.styleFrom(
+                                foregroundColor: Colors.red,
+                              ),
+                              child: const Text('确定删除'),
+                            ),
+                          ],
+                        );
+                      },
+                    );
+                    if (confirmed != true) return;
+                    int deleted = 0;
+                    for (final p in badExportZipPaths) {
+                      try {
+                        final f = File(p);
+                        if (await f.exists()) {
+                          await f.delete();
+                          deleted++;
+                        }
+                      } catch (_) {}
+                    }
+                    if (!mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('已删除损坏导出ZIP：$deleted 个')),
+                    );
+                    await _loadStorageInfo();
+                    await _runReleaseGateCheck();
+                  },
+                  style: TextButton.styleFrom(foregroundColor: Colors.red),
+                  child: const Text('删除损坏导出ZIP'),
+                ),
               if (dupTotal > 0)
                 TextButton(
                   onPressed: () async {
@@ -2406,12 +2722,14 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
     int backupZipBadCount = 0;
     int backupZipCheckedCount = 0;
     final badBackupZipSamples = <String>[];
+    final badBackupZipPaths = <String>[];
 
     bool exportZipOk = true;
     int exportZipCount = 0;
     int exportZipBadCount = 0;
     int exportZipCheckedCount = 0;
     final badExportZipSamples = <String>[];
+    final badExportZipPaths = <String>[];
 
     Future<bool> canWrite(Directory dir) async {
       try {
@@ -2477,6 +2795,9 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
                 '${zips[i].path.split(Platform.pathSeparator).last}: $reason',
               );
             }
+            if (badBackupZipPaths.length < 30) {
+              badBackupZipPaths.add(zips[i].path);
+            }
           }
         }
       }
@@ -2523,6 +2844,9 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
                   '${zips[i].path.split(Platform.pathSeparator).last}: $reason',
                 );
               }
+              if (badExportZipPaths.length < 30) {
+                badExportZipPaths.add(zips[i].path);
+              }
             }
           }
         }
@@ -2545,10 +2869,12 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
       'backupZipBadCount': backupZipBadCount,
       'backupZipCheckedCount': backupZipCheckedCount,
       'badBackupZipSamples': badBackupZipSamples,
+      'badBackupZipPaths': badBackupZipPaths,
       'exportZipCount': exportZipCount,
       'exportZipBadCount': exportZipBadCount,
       'exportZipCheckedCount': exportZipCheckedCount,
       'badExportZipSamples': badExportZipSamples,
+      'badExportZipPaths': badExportZipPaths,
     };
   }
 
