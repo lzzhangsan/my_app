@@ -2923,8 +2923,19 @@ class _BrowserPageState extends State<BrowserPage>
           }
           return false;
         }
-        let mediaType = 'video';
         const urlLower = url.toLowerCase();
+        let mediaType = 'video';
+        if (tagName === 'img' || tagName === 'image') {
+          mediaType = 'image';
+        } else if (tagName === 'video') {
+          mediaType = 'video';
+        } else if (/\\.(jpg|jpeg|png|gif|webp|bmp|svg|ico|tiff|tif|heic|heif)(\\?|#|\\\$)/i.test(urlLower)) {
+          mediaType = 'image';
+        } else if (/\\.(m3u8|m3u|mp4|webm|mov|avi|mkv|flv|wmv|ts|m4v|3gp|ogv|f4v)(\\?|#|\\\$)/i.test(urlLower)) {
+          mediaType = 'video';
+        } else if (videoEl && (videoEl.currentSrc || videoEl.src)) {
+          mediaType = 'video';
+        }
         const className = target.className ? target.className.toLowerCase() : '';
         const id = target.id ? target.id.toLowerCase() : '';
 
