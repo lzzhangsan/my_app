@@ -1051,19 +1051,21 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
 
   void _duplicateTextBox(String id) {
     Future.microtask(() {
+      String? newId;
       setState(() {
         int index = _textBoxes.indexWhere((textBox) => textBox['id'] == id);
         if (index != -1) {
           var uuid = Uuid();
+          newId = uuid.v4();
           Map<String, dynamic> original = _textBoxes[index];
           // 复制的文本框出现在原文本框的正下方
-          double positionX = 0.0; // 水平位置：文档最左边
+          double positionX = _asDouble(original['positionX'], 0.0);
           double positionY =
               original['positionY'] +
               original['height'] +
-              9.45; // 垂直位置：原文本框下方加9.45像素间距
+              _defaultVerticalSpacing;
           Map<String, dynamic> newTextBox = {
-            'id': uuid.v4(),
+            'id': newId,
             'documentName': widget.documentName,
             'positionX': positionX,
             'positionY': positionY,
@@ -1081,6 +1083,12 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
           };
           if (_databaseService.validateTextBoxData(newTextBox)) {
             _textBoxes.add(newTextBox);
+            _associateContentWithCanvas(
+              newId!,
+              positionX,
+              positionY,
+              'text',
+            );
             Future.microtask(() {
               _debouncedSave();
             });
@@ -1092,6 +1100,16 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
           }
         }
       });
+
+      final idForLayout = newId;
+      if (idForLayout != null) {
+        Future.microtask(() {
+          _maybeSmartRelayoutAfterBlockChanged(
+            idForLayout,
+            _FlowBlockType.text,
+          );
+        });
+      }
     });
   }
 
@@ -1238,9 +1256,10 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
       final posY =
           (original['positionY'] ?? original['position_y'] ?? 0.0).toDouble();
       final h = (original['height'] ?? 200.0).toDouble();
-      final newPosY = posY + h + 9.45;
+      final newId = uuid.v4();
+      final newPosY = posY + h + _defaultVerticalSpacing;
       final newImageBox = {
-        'id': uuid.v4(),
+        'id': newId,
         'document_id': documentId,
         'documentName': widget.documentName,
         'position_x': posX,
@@ -1253,9 +1272,52 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
         'imagePath': imagePath,
       };
       _imageBoxes.add(newImageBox);
+      _associateContentWithCanvas(newId, posX, newPosY, 'image');
       _contentChanged = true;
       _debouncedSave();
       _saveStateToHistory();
+
+      Future.microtask(() {
+        _maybeSmartRelayoutAfterBlockChanged(newId, _FlowBlockType.image);
+      });
+    });
+  }
+
+  void _duplicateAudioBox(String id) {
+    Future.microtask(() {
+      String? newId;
+      setState(() {
+        final index = _audioBoxes.indexWhere((audioBox) => audioBox['id'] == id);
+        if (index == -1) return;
+        final original = _audioBoxes[index];
+        final uuid = Uuid();
+        newId = uuid.v4();
+        final posX = _asDouble(original['positionX'], 0.0);
+        final posY = _asDouble(original['positionY'], 0.0);
+        final newPosY = posY + 37.3 + _defaultVerticalSpacing;
+        final newAudioBox = <String, dynamic>{
+          'id': newId,
+          'documentName': widget.documentName,
+          'positionX': posX,
+          'positionY': newPosY,
+          'audioPath': original['audioPath'] ?? '',
+        };
+        _audioBoxes.add(newAudioBox);
+        _associateContentWithCanvas(newId!, posX, newPosY, 'audio');
+        _contentChanged = true;
+        _debouncedSave();
+        _saveStateToHistory();
+      });
+
+      final idForLayout = newId;
+      if (idForLayout != null) {
+        Future.microtask(() {
+          _maybeSmartRelayoutAfterBlockChanged(
+            idForLayout,
+            _FlowBlockType.audio,
+          );
+        });
+      }
     });
   }
 
@@ -1471,7 +1533,6 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
     bool changed = false;
     double cursorBottom = anchor.bottom;
     for (final b in below) {
-      if (b.y <= anchor.y + 0.0001) continue;
       final newY = cursorBottom + _defaultVerticalSpacing;
       if ((b.y - newY).abs() > 0.01) {
         b.setY(newY);
@@ -1898,13 +1959,41 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
             ),
             Divider(height: 1),
             ListTile(
+              leading: Icon(Icons.copy, color: Colors.green),
+              title: Text('复制语音框'),
+              onTap: () {
+                Navigator.pop(context);
+                _duplicateAudioBox(id);
+              },
+            ),
+            Divider(height: 1),
+            ListTile(
               leading: Icon(Icons.delete),
               title: Text('删除语音框'),
               onTap: () async {
                 Navigator.pop(context);
                 bool shouldDelete = await _showDeleteConfirmationDialog();
                 if (shouldDelete) {
+                  final idx = _audioBoxes.indexWhere(
+                    (audioBox) => audioBox['id'] == id,
+                  );
+                  final x =
+                      idx == -1
+                          ? 0.0
+                          : _asDouble(_audioBoxes[idx]['positionX'], 0.0);
+                  final y =
+                      idx == -1
+                          ? 0.0
+                          : _asDouble(_audioBoxes[idx]['positionY'], 0.0);
+                  const w = 37.3;
+                  final wasInCanvas = _isContentInAnyCanvas(
+                    id,
+                    _FlowBlockType.audio,
+                  );
                   _deleteAudioBox(id);
+                  if (!wasInCanvas) {
+                    _maybeSmartRelayoutAfterDeletion(Rect.fromLTWH(x, y, w, 1));
+                  }
                   _debouncedSave();
                   _saveStateToHistory();
                 }
@@ -3818,7 +3907,35 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
                     title: Text('删除图片框'),
                     onTap: () {
                       Navigator.pop(context);
+                      final idx = _imageBoxes.indexWhere((b) => b['id'] == id);
+                      final x =
+                          idx == -1
+                              ? 0.0
+                              : _asDouble(
+                                _imageBoxes[idx]['positionX'] ??
+                                    _imageBoxes[idx]['position_x'],
+                                0.0,
+                              );
+                      final y =
+                          idx == -1
+                              ? 0.0
+                              : _asDouble(
+                                _imageBoxes[idx]['positionY'] ??
+                                    _imageBoxes[idx]['position_y'],
+                                0.0,
+                              );
+                      final w =
+                          idx == -1
+                              ? 200.0
+                              : _asDouble(_imageBoxes[idx]['width'], 200.0);
+                      final wasInCanvas = _isContentInAnyCanvas(
+                        id,
+                        _FlowBlockType.image,
+                      );
                       _deleteImageBox(id);
+                      if (!wasInCanvas) {
+                        _maybeSmartRelayoutAfterDeletion(Rect.fromLTWH(x, y, w, 1));
+                      }
                       _debouncedSave();
                       _saveStateToHistory();
                     },

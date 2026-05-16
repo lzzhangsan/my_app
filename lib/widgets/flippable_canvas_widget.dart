@@ -353,10 +353,6 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
                         ),
                       ),
                       Padding(
-                        padding: const EdgeInsets.only(left: 12, top: 4, bottom: 6),
-                        child: Text('范围: 0 ≤ X 且 X+宽 ≤ 屏幕(${screenWidth.toStringAsFixed(0)}) 宽≥50', style: TextStyle(fontSize: 11, color: Colors.grey[600])),
-                      ),
-                      Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.stretch,
