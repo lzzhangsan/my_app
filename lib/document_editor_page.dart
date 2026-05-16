@@ -39,6 +39,30 @@ import 'utils/background_layer_defaults.dart';
 import 'utils/background_physical_file.dart';
 import 'models/background_media_origin.dart';
 
+enum _FlowBlockType { text, image, audio, canvas }
+
+class _FlowBlock {
+  final String id;
+  final _FlowBlockType type;
+  double x;
+  double y;
+  double width;
+  double height;
+  final void Function(double newY) setY;
+
+  _FlowBlock({
+    required this.id,
+    required this.type,
+    required this.x,
+    required this.y,
+    required this.width,
+    required this.height,
+    required this.setY,
+  });
+
+  double get bottom => y + height;
+}
+
 class DocumentEditorPage extends StatefulWidget {
   final String documentName;
   final Function(List<Map<String, dynamic>>) onSave;
@@ -54,6 +78,7 @@ class DocumentEditorPage extends StatefulWidget {
 
 class _DocumentEditorPageState extends State<DocumentEditorPage>
     with WidgetsBindingObserver, TickerProviderStateMixin {
+  static const double _defaultVerticalSpacing = 2.5 * 3.779527559;
   List<Map<String, dynamic>> _textBoxes = [];
   List<Map<String, dynamic>> _imageBoxes = [];
   List<Map<String, dynamic>> _audioBoxes = [];
@@ -99,6 +124,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
   bool _contentChanged = false;
   bool _textEnhanceMode = true;
   bool _isPositionLocked = true;
+  bool _smartLayoutEnabled = false;
   String? _recordingAudioBoxId;
   bool _isSaving = false; // 添加保存状态标志，防止重复保存
   late final DatabaseService _databaseService;
@@ -1244,6 +1270,263 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
     });
   }
 
+  double _asDouble(dynamic v, double fallback) {
+    if (v is num) return v.toDouble();
+    return fallback;
+  }
+
+  bool _isContentInAnyCanvas(String id, _FlowBlockType type) {
+    for (final canvas in _canvases) {
+      switch (type) {
+        case _FlowBlockType.text:
+          if (canvas.containsTextBox(id)) return true;
+          break;
+        case _FlowBlockType.image:
+          if (canvas.containsImageBox(id)) return true;
+          break;
+        case _FlowBlockType.audio:
+          if (canvas.containsAudioBox(id)) return true;
+          break;
+        case _FlowBlockType.canvas:
+          break;
+      }
+    }
+    return false;
+  }
+
+  void _shiftCanvasChildrenY(FlippableCanvas canvas, double deltaY) {
+    final ids = <String>{
+      ...canvas.frontTextBoxIds,
+      ...canvas.backTextBoxIds,
+      ...canvas.frontImageBoxIds,
+      ...canvas.backImageBoxIds,
+      ...canvas.frontAudioBoxIds,
+      ...canvas.backAudioBoxIds,
+    };
+
+    for (final id in ids) {
+      final tIdx = _textBoxes.indexWhere((b) => b['id'] == id);
+      if (tIdx != -1) {
+        final cur = _asDouble(_textBoxes[tIdx]['positionY'], 0.0);
+        _textBoxes[tIdx]['positionY'] = cur + deltaY;
+        continue;
+      }
+      final iIdx = _imageBoxes.indexWhere((b) => b['id'] == id);
+      if (iIdx != -1) {
+        final cur = _asDouble(_imageBoxes[iIdx]['positionY'], 0.0);
+        _imageBoxes[iIdx]['positionY'] = cur + deltaY;
+        if (_imageBoxes[iIdx].containsKey('position_y')) {
+          _imageBoxes[iIdx]['position_y'] = cur + deltaY;
+        }
+        continue;
+      }
+      final aIdx = _audioBoxes.indexWhere((b) => b['id'] == id);
+      if (aIdx != -1) {
+        final cur = _asDouble(_audioBoxes[aIdx]['positionY'], 0.0);
+        _audioBoxes[aIdx]['positionY'] = cur + deltaY;
+        continue;
+      }
+    }
+  }
+
+  List<_FlowBlock> _buildFlowBlocks({Rect? columnHint}) {
+    final blocks = <_FlowBlock>[];
+    final column = columnHint;
+
+    bool inColumn(double x, double w) {
+      if (column == null) return true;
+      final overlap = math.min(x + w, column.left + column.width) -
+          math.max(x, column.left);
+      return overlap > 10.0;
+    }
+
+    for (final box in _textBoxes) {
+      final id = box['id']?.toString();
+      if (id == null) continue;
+      if (_isContentInAnyCanvas(id, _FlowBlockType.text)) continue;
+      final x = _asDouble(box['positionX'], 0.0);
+      final y = _asDouble(box['positionY'], 0.0);
+      final w = _asDouble(box['width'], 200.0);
+      final h = _asDouble(box['height'], 100.0);
+      if (!inColumn(x, w)) continue;
+      blocks.add(
+        _FlowBlock(
+          id: id,
+          type: _FlowBlockType.text,
+          x: x,
+          y: y,
+          width: w,
+          height: h,
+          setY: (newY) {
+            box['positionY'] = newY;
+            if (box.containsKey('position_y')) {
+              box['position_y'] = newY;
+            }
+          },
+        ),
+      );
+    }
+
+    for (final box in _imageBoxes) {
+      final id = box['id']?.toString();
+      if (id == null) continue;
+      if (_isContentInAnyCanvas(id, _FlowBlockType.image)) continue;
+      final x = _asDouble(box['positionX'] ?? box['position_x'], 0.0);
+      final y = _asDouble(box['positionY'] ?? box['position_y'], 0.0);
+      final w = _asDouble(box['width'], 200.0);
+      final h = _asDouble(box['height'], 200.0);
+      if (!inColumn(x, w)) continue;
+      blocks.add(
+        _FlowBlock(
+          id: id,
+          type: _FlowBlockType.image,
+          x: x,
+          y: y,
+          width: w,
+          height: h,
+          setY: (newY) {
+            box['positionY'] = newY;
+            if (box.containsKey('position_y')) {
+              box['position_y'] = newY;
+            }
+          },
+        ),
+      );
+    }
+
+    for (final box in _audioBoxes) {
+      final id = box['id']?.toString();
+      if (id == null) continue;
+      if (_isContentInAnyCanvas(id, _FlowBlockType.audio)) continue;
+      const w = 37.3;
+      const h = 37.3;
+      final x = _asDouble(box['positionX'], 0.0);
+      final y = _asDouble(box['positionY'], 0.0);
+      if (!inColumn(x, w)) continue;
+      blocks.add(
+        _FlowBlock(
+          id: id,
+          type: _FlowBlockType.audio,
+          x: x,
+          y: y,
+          width: w,
+          height: h,
+          setY: (newY) {
+            box['positionY'] = newY;
+          },
+        ),
+      );
+    }
+
+    for (final canvas in _canvases) {
+      final x = canvas.positionX;
+      final y = canvas.positionY;
+      final w = canvas.width;
+      final h = canvas.height;
+      if (!inColumn(x, w)) continue;
+      blocks.add(
+        _FlowBlock(
+          id: canvas.id,
+          type: _FlowBlockType.canvas,
+          x: x,
+          y: y,
+          width: w,
+          height: h,
+          setY: (newY) {
+            final deltaY = newY - canvas.positionY;
+            if (deltaY.abs() <= 0.0001) return;
+            canvas.positionY = newY;
+            _shiftCanvasChildrenY(canvas, deltaY);
+          },
+        ),
+      );
+    }
+
+    blocks.sort((a, b) {
+      final dy = a.y.compareTo(b.y);
+      if (dy != 0) return dy;
+      return a.x.compareTo(b.x);
+    });
+    return blocks;
+  }
+
+  bool _smartRelayoutFromAnchor(
+    _FlowBlock anchor,
+    List<_FlowBlock> blocks,
+  ) {
+    final anchorRight = anchor.x + anchor.width;
+    bool overlaps(_FlowBlock b) {
+      final overlap = math.min(b.x + b.width, anchorRight) - math.max(b.x, anchor.x);
+      return overlap > 10.0;
+    }
+
+    final below =
+        blocks.where((b) => b.id != anchor.id && b.y >= anchor.y - 0.0001 && overlaps(b)).toList();
+    below.sort((a, b) {
+      final dy = a.y.compareTo(b.y);
+      if (dy != 0) return dy;
+      return a.x.compareTo(b.x);
+    });
+
+    bool changed = false;
+    double cursorBottom = anchor.bottom;
+    for (final b in below) {
+      if (b.y <= anchor.y + 0.0001) continue;
+      final newY = cursorBottom + _defaultVerticalSpacing;
+      if ((b.y - newY).abs() > 0.01) {
+        b.setY(newY);
+        b.y = newY;
+        changed = true;
+      }
+      cursorBottom = b.bottom;
+    }
+    return changed;
+  }
+
+  void _maybeSmartRelayoutAfterBlockChanged(String id, _FlowBlockType type) {
+    if (_isPositionLocked) return;
+    if (!_smartLayoutEnabled) return;
+    if (type != _FlowBlockType.canvas && _isContentInAnyCanvas(id, type)) return;
+
+    setState(() {
+      final blocks = _buildFlowBlocks();
+      final anchorIndex =
+          blocks.indexWhere((b) => b.id == id && b.type == type);
+      if (anchorIndex == -1) return;
+      final anchor = blocks[anchorIndex];
+      final changed = _smartRelayoutFromAnchor(anchor, blocks);
+      if (changed) {
+        _contentChanged = true;
+      }
+    });
+  }
+
+  void _maybeSmartRelayoutAfterDeletion(Rect deletedRect) {
+    if (_isPositionLocked) return;
+    if (!_smartLayoutEnabled) return;
+
+    setState(() {
+      final blocks = _buildFlowBlocks(columnHint: deletedRect);
+      if (blocks.isEmpty) return;
+
+      _FlowBlock? anchor;
+      double bestBottom = double.negativeInfinity;
+      for (final b in blocks) {
+        if (b.bottom <= deletedRect.top + 0.01 && b.bottom > bestBottom) {
+          anchor = b;
+          bestBottom = b.bottom;
+        }
+      }
+
+      anchor ??= blocks.first;
+
+      final changed = _smartRelayoutFromAnchor(anchor, blocks);
+      if (changed) {
+        _contentChanged = true;
+      }
+    });
+  }
+
   Map<String, double>? _getAboveTextBoxLayout(String id) {
     final currentIndex = _textBoxes.indexWhere((e) => e['id'] == id);
     if (currentIndex == -1) return null;
@@ -1342,7 +1625,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
     final backgroundColor = src['backgroundColor'] as int?;
     final textAlignIndex = (src['textAlign'] as int?) ?? TextAlign.left.index;
     final textAlign = TextAlign.values[textAlignIndex];
-    final spacing = 2.5 * 3.779527559;
+    final spacing = _defaultVerticalSpacing;
     final srcBottom = y + h;
 
     final estimatedHeights =
@@ -2962,6 +3245,31 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
                 onPressed: _togglePositionLock,
                 tooltip: _isPositionLocked ? '解锁位置' : '锁定位置',
               ),
+              if (!_isPositionLocked)
+                IconButton(
+                  icon: Icon(
+                    _smartLayoutEnabled
+                        ? Icons.auto_fix_high
+                        : Icons.auto_fix_off,
+                    size: 20,
+                    color: _smartLayoutEnabled ? Colors.orangeAccent : Colors.white,
+                    shadows: FloatingUiShadows.whiteIcon,
+                  ),
+                  onPressed: () {
+                    setState(() {
+                      _smartLayoutEnabled = !_smartLayoutEnabled;
+                    });
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          _smartLayoutEnabled ? '已开启智能调整' : '已关闭智能调整',
+                        ),
+                        duration: const Duration(seconds: 2),
+                      ),
+                    );
+                  },
+                  tooltip: _smartLayoutEnabled ? '关闭智能调整' : '开启智能调整',
+                ),
               IconButton(
                 icon: Icon(
                   Icons.settings,
@@ -3115,6 +3423,10 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
                                   _canvasHistoryDebounce = Timer(
                                     const Duration(milliseconds: 400),
                                     () {
+                                      _maybeSmartRelayoutAfterBlockChanged(
+                                        c.id,
+                                        _FlowBlockType.canvas,
+                                      );
                                       _contentChanged = true;
                                       _debouncedSave();
                                       _saveStateToHistory();
@@ -3184,6 +3496,10 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
                                       data['id'],
                                       'image',
                                     );
+                                    _maybeSmartRelayoutAfterBlockChanged(
+                                      data['id'],
+                                      _FlowBlockType.image,
+                                    );
                                     _contentChanged = true;
                                     _debouncedSave();
                                     _saveStateToHistory();
@@ -3205,6 +3521,10 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
                                     },
                                     onResizeEnd: (size) {
                                       _updateImageBox(data['id'], size);
+                                      _maybeSmartRelayoutAfterBlockChanged(
+                                        data['id'],
+                                        _FlowBlockType.image,
+                                      );
                                       _saveStateToHistory();
                                     },
                                     onSettingsPressed:
@@ -3273,6 +3593,10 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
                                       data['id'],
                                       'text',
                                     );
+                                    _maybeSmartRelayoutAfterBlockChanged(
+                                      data['id'],
+                                      _FlowBlockType.text,
+                                    );
                                     _contentChanged = true;
                                     _debouncedSave();
                                     _saveStateToHistory();
@@ -3339,6 +3663,10 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
                                     _reassociateContentWithCanvas(
                                       data['id'],
                                       'audio',
+                                    );
+                                    _maybeSmartRelayoutAfterBlockChanged(
+                                      data['id'],
+                                      _FlowBlockType.audio,
                                     );
                                     if (!_isSaving) {
                                       _debouncedSave();
@@ -3590,13 +3918,25 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
       onSave: (size, text, textStyle, textSegments) {
         Future.microtask(() {
           _updateTextBox(data['id'], size, text, textStyle, textSegments);
+          _maybeSmartRelayoutAfterBlockChanged(data['id'], _FlowBlockType.text);
           _debouncedSave();
           _saveStateToHistory();
         });
       },
       onDeleteCurrent: () {
         Future.microtask(() {
+          final idx = _textBoxes.indexWhere((b) => b['id'] == data['id']);
+          final x = idx == -1 ? 0.0 : _asDouble(_textBoxes[idx]['positionX'], 0.0);
+          final y = idx == -1 ? 0.0 : _asDouble(_textBoxes[idx]['positionY'], 0.0);
+          final w = idx == -1 ? 200.0 : _asDouble(_textBoxes[idx]['width'], 200.0);
+          final wasInCanvas = _isContentInAnyCanvas(
+            data['id'],
+            _FlowBlockType.text,
+          );
           _deleteTextBox(data['id']);
+          if (!wasInCanvas) {
+            _maybeSmartRelayoutAfterDeletion(Rect.fromLTWH(x, y, w, 1));
+          }
           _debouncedSave();
           _saveStateToHistory();
         });
