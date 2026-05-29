@@ -488,7 +488,6 @@ class _BrowserPageState extends State<BrowserPage>
     if (item['downloaded'] == true) return true;
     final urls = <String>[
       (item['videoUrl'] ?? '').toString().trim(),
-      (item['pageUrl'] ?? '').toString().trim(),
     ];
     final candidateRaw = item['candidateUrls'];
     if (candidateRaw is List) {
@@ -509,7 +508,6 @@ class _BrowserPageState extends State<BrowserPage>
   Future<bool> _favoriteExistsInLibrary(Map<String, dynamic> item) async {
     final urls = <String>[
       (item['videoUrl'] ?? '').toString().trim(),
-      (item['pageUrl'] ?? '').toString().trim(),
     ];
     final candidateRaw = item['candidateUrls'];
     if (candidateRaw is List) {
@@ -1683,9 +1681,6 @@ class _BrowserPageState extends State<BrowserPage>
       'x-amz-algorithm',
       'x-amz-expires',
       'x-signature',
-      't',
-      'ts',
-      'timestamp',
     };
     final keptEntries = <MapEntry<String, String>>[];
     for (final e in uri.queryParametersAll.entries) {
@@ -1752,52 +1747,10 @@ class _BrowserPageState extends State<BrowserPage>
     return row;
   }
 
-  Future<Map<String, dynamic>?> _findExistingVideoByNameHint(String url) async {
-    final uri = Uri.tryParse(_toAbsoluteUrl(url));
-    if (uri == null) return null;
-
-    final candidateNames = <String>{};
-    if (uri.pathSegments.isNotEmpty) {
-      final last = Uri.decodeComponent(uri.pathSegments.last).trim();
-      if (last.isNotEmpty) {
-        candidateNames.add(last);
-      }
-    }
-    for (final key in const ['filename', 'file', 'name', 'download']) {
-      final value = uri.queryParameters[key]?.trim();
-      if (value != null && value.isNotEmpty) {
-        candidateNames.add(Uri.decodeComponent(value));
-      }
-    }
-    if (candidateNames.isEmpty) return null;
-
-    final db = await _databaseService.database;
-    for (final fileName in candidateNames) {
-      final rows = await db.query(
-        'media_items',
-        where: 'name = ? AND directory != ?',
-        whereArgs: [fileName, 'recycle_bin'],
-      );
-      for (final row in rows) {
-        if (DatabaseService.mediaTypeIndex(row) != MediaType.video.index) {
-          continue;
-        }
-        final path = row['path']?.toString() ?? '';
-        if (path.isEmpty) continue;
-        if (await File(path).exists()) {
-          return row;
-        }
-      }
-    }
-    return null;
-  }
-
   Future<Map<String, dynamic>?> _findExistingVideoBeforeDownload(
     String url,
   ) async {
-    final bySource = await _findExistingVideoBySourceUrl(url);
-    if (bySource != null) return bySource;
-    return _findExistingVideoByNameHint(url);
+    return _findExistingVideoBySourceUrl(url);
   }
 
   Future<void> _showVideoDuplicateSnackBar(
@@ -5237,6 +5190,17 @@ class _BrowserPageState extends State<BrowserPage>
           );
         }
       }
+      if (mediaType == MediaType.video && extension == '.webm') {
+        final bytes = await file
+            .openRead(0, 512)
+            .fold<List<int>>([], (prev, chunk) => [...prev, ...chunk]);
+        if (size < _kMinBase64VideoBytes || !_isValidWebmBytes(bytes)) {
+          await file.delete();
+          throw Exception(
+            '[下载失败] 下载内容不是有效 WEBM 视频，可能只是网页返回的空视频占位符',
+          );
+        }
+      }
       if (mediaType == MediaType.video &&
           (extension == '.ts' || extension == '.mts')) {
         final bytes = await file
@@ -5720,6 +5684,14 @@ class _BrowserPageState extends State<BrowserPage>
   ) async {
     try {
       final fileName = file.path.split('/').last;
+      if (mediaType == MediaType.video &&
+          p.extension(fileName).toLowerCase() == '.webm' &&
+          await file.length() < _kMinBase64VideoBytes) {
+        try {
+          await file.delete();
+        } catch (_) {}
+        throw Exception('视频数据不完整，未保存到媒体库');
+      }
       final fileHash = await _calculateFileHash(file);
       final duplicate = await _databaseService.findDuplicateMediaItem(
         fileHash,
