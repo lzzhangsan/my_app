@@ -338,9 +338,21 @@ class MediaDownloadService {
     return url;
   }
 
-  String _getFileExtension(String path) {
-    final dot = path.lastIndexOf('.');
-    return dot != -1 ? path.substring(dot) : '';
+  String _getFileExtension(String input) {
+    var value = input.trim();
+    final uri = Uri.tryParse(value);
+    if (uri != null && uri.path.isNotEmpty) {
+      value = uri.path;
+    }
+    final segments =
+        value.split('/').where((segment) => segment.trim().isNotEmpty).toList();
+    if (segments.isNotEmpty) {
+      value = segments.last;
+    }
+    value = value.split('?').first.split('#').first;
+    final extension = p.extension(value).toLowerCase();
+    if (!RegExp(r'^\.[a-z0-9]{1,8}$').hasMatch(extension)) return '';
+    return extension;
   }
 
   String _getExtensionFromMime(String mime, MediaType type) {
@@ -351,12 +363,14 @@ class MediaDownloadService {
   }
 
   String _guessMimeType(String url) {
-    final path = url.toLowerCase();
-    if (path.contains('.jpg') || path.contains('.jpeg')) return 'image/jpeg';
-    if (path.contains('.png')) return 'image/png';
-    if (path.contains('.gif')) return 'image/gif';
-    if (path.contains('.mp4')) return 'video/mp4';
-    if (path.contains('.m3u8')) return 'application/x-mpegURL';
+    final extension = _getFileExtension(url);
+    if (extension == '.jpg' || extension == '.jpeg') return 'image/jpeg';
+    if (extension == '.png') return 'image/png';
+    if (extension == '.gif') return 'image/gif';
+    if (extension == '.webp') return 'image/webp';
+    if (extension == '.mp4') return 'video/mp4';
+    if (extension == '.webm') return 'video/webm';
+    if (extension == '.m3u8') return 'application/x-mpegURL';
     return 'application/octet-stream';
   }
 

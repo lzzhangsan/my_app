@@ -80,6 +80,10 @@ const Duration _kMediaSaveSnackDuration = Duration(seconds: 2);
 /// 同一 HTTP(S) 媒体 URL 在内存中的「占用」超时：超过后允许再次进入下载（防止 finally 未跑导致永久无法重下）
 const Duration _kMediaUrlInFlightTtl = Duration(seconds: 45);
 
+/// MediaRecorder fallback may emit a tiny container with no playable frames when
+/// the page blocks capture. Do not import that as a black, unplayable video.
+const int _kMinBase64VideoBytes = 16 * 1024;
+
 // Top-level function for ZIP encoding to avoid blocking UI
 List<int>? encodeArchive(Archive archive) {
   return ZipEncoder().encode(archive);
@@ -2009,12 +2013,13 @@ class _BrowserPageState extends State<BrowserPage>
         recorder.onstop = () => {
           if (chunks.length === 0) { if (onDone) onDone(false); return; }
           const blob = new Blob(chunks, { type: recorder.mimeType || 'video/webm' });
+          if (blob.size < 16384) { if (onDone) onDone(false); return; }
           const reader = new FileReader();
           reader.onloadend = () => {
             try {
               const b64 = extractBase64FromDataUrl(reader.result);
               if (b64) {
-                Flutter.postMessage(JSON.stringify({ type: 'media', mediaType: 'video', url: b64, isBase64: true, action: 'download' }));
+                Flutter.postMessage(JSON.stringify({ type: 'media', mediaType: 'video', mimeType: blob.type || recorder.mimeType || mime, url: b64, isBase64: true, action: 'download' }));
                 updateFeedbackStatus('已录制保存视频', true);
                 if (onDone) onDone(true);
               } else { if (onDone) onDone(false); }
@@ -3120,6 +3125,8 @@ class _BrowserPageState extends State<BrowserPage>
                   ).startsWith('video/')
                   ? 'video'
                   : 'audio'));
+      final String sourceMimeType =
+          (data['mimeType'] ?? data['mime'] ?? '').toString();
 
       if (urlValue is! String) return;
       if (action == 'favorite') {
@@ -3275,7 +3282,11 @@ class _BrowserPageState extends State<BrowserPage>
             _canvasFallbackSucceeded = true;
             _canvasFallbackCompleter?.complete(true);
           }
-          await _handleBlobUrl(urlValue, mediaType);
+          await _handleBlobUrl(
+            urlValue,
+            mediaType,
+            sourceMimeType: sourceMimeType,
+          );
           return;
         }
 
@@ -3404,13 +3415,19 @@ class _BrowserPageState extends State<BrowserPage>
     }
   }
 
-  Future<void> _handleBlobUrl(String base64Data, String mediaType) async {
+  Future<void> _handleBlobUrl(
+    String base64Data,
+    String mediaType, {
+    String? sourceMimeType,
+  }) async {
     try {
       debugPrint('处理Base64数据以直接保存: $mediaType');
       String raw = base64Data.trim();
+      String dataUrlMime = '';
       if (raw.startsWith('data:')) {
         final base64Idx = raw.indexOf(';base64,');
         if (base64Idx >= 0) {
+          dataUrlMime = raw.substring(5, base64Idx).split(';').first.trim();
           raw = raw.substring(base64Idx + 8);
         } else {
           final commaIdx = raw.indexOf(',');
@@ -3421,6 +3438,7 @@ class _BrowserPageState extends State<BrowserPage>
               );
             return;
           }
+          dataUrlMime = raw.substring(5, commaIdx).split(';').first.trim();
           raw = raw.substring(commaIdx + 1);
         }
       }
@@ -3446,23 +3464,57 @@ class _BrowserPageState extends State<BrowserPage>
           return;
         }
       }
+      final effectiveMime =
+          (sourceMimeType != null && sourceMimeType.trim().isNotEmpty)
+              ? sourceMimeType.trim()
+              : dataUrlMime;
+      final normalizedMediaType = mediaType.toLowerCase().trim();
+      if (normalizedMediaType == 'video') {
+        if (bytes.length < _kMinBase64VideoBytes) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('视频数据不完整，未保存到媒体库'),
+                duration: _kMediaSaveSnackDuration,
+              ),
+            );
+          }
+          return;
+        }
+        if (!_isValidVideoBytes(bytes) && !_isValidWebmBytes(bytes)) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('保存的内容不是有效视频，未保存到媒体库'),
+                duration: _kMediaSaveSnackDuration,
+              ),
+            );
+          }
+          return;
+        }
+      }
       final appDir = await getApplicationDocumentsDirectory();
       final mediaDir = Directory('${appDir.path}/media');
       if (!await mediaDir.exists()) await mediaDir.create(recursive: true);
       final uuid = const Uuid().v4();
-      String extension =
-          mediaType == 'image'
-              ? '.jpg'
-              : (mediaType == 'audio' ? '.webm' : '.mp4');
+      String extension = _extensionForBase64Media(
+        normalizedMediaType,
+        effectiveMime,
+      );
+      if (normalizedMediaType == 'video' && _isValidWebmBytes(bytes)) {
+        extension = '.webm';
+      }
       final filePath = '${mediaDir.path}/$uuid$extension';
       final file = File(filePath);
       await file.writeAsBytes(bytes);
       debugPrint('已从Base64保存文件: $filePath');
       await _saveToMediaLibrary(
         file,
-        mediaType == 'image'
+        normalizedMediaType == 'image'
             ? MediaType.image
-            : (mediaType == 'audio' ? MediaType.audio : MediaType.video),
+            : (normalizedMediaType == 'audio'
+                ? MediaType.audio
+                : MediaType.video),
       );
       _notifyMediaDownloadSaved();
       if (mounted) {
@@ -4385,25 +4437,25 @@ class _BrowserPageState extends State<BrowserPage>
   String _guessMimeType(String url) {
     final uri = Uri.tryParse(url);
     if (uri == null) return 'application/octet-stream';
-    final path = uri.path.toLowerCase();
-    if (path.endsWith('.jpg') || path.endsWith('.jpeg')) return 'image/jpeg';
-    if (path.endsWith('.png')) return 'image/png';
-    if (path.endsWith('.gif')) return 'image/gif';
-    if (path.endsWith('.bmp')) return 'image/bmp';
-    if (path.endsWith('.webp')) return 'image/webp';
-    if (path.endsWith('.mp4')) return 'video/mp4';
-    if (path.endsWith('.avi')) return 'video/x-msvideo';
-    if (path.endsWith('.mov')) return 'video/quicktime';
-    if (path.endsWith('.wmv')) return 'video/x-ms-wmv';
-    if (path.endsWith('.flv')) return 'video/x-flv';
-    if (path.endsWith('.mkv')) return 'video/x-matroska';
-    if (path.endsWith('.webm')) return 'video/webm';
-    if (path.endsWith('.m3u8')) return 'application/x-mpegURL';
-    if (path.endsWith('.mp3')) return 'audio/mpeg';
-    if (path.endsWith('.wav')) return 'audio/wav';
-    if (path.endsWith('.ogg')) return 'audio/ogg';
-    if (path.endsWith('.aac')) return 'audio/aac';
-    if (path.endsWith('.flac')) return 'audio/flac';
+    final extension = _getFileExtension(uri.path);
+    if (extension == '.jpg' || extension == '.jpeg') return 'image/jpeg';
+    if (extension == '.png') return 'image/png';
+    if (extension == '.gif') return 'image/gif';
+    if (extension == '.bmp') return 'image/bmp';
+    if (extension == '.webp') return 'image/webp';
+    if (extension == '.mp4') return 'video/mp4';
+    if (extension == '.avi') return 'video/x-msvideo';
+    if (extension == '.mov') return 'video/quicktime';
+    if (extension == '.wmv') return 'video/x-ms-wmv';
+    if (extension == '.flv') return 'video/x-flv';
+    if (extension == '.mkv') return 'video/x-matroska';
+    if (extension == '.webm') return 'video/webm';
+    if (extension == '.m3u8') return 'application/x-mpegURL';
+    if (extension == '.mp3') return 'audio/mpeg';
+    if (extension == '.wav') return 'audio/wav';
+    if (extension == '.ogg') return 'audio/ogg';
+    if (extension == '.aac') return 'audio/aac';
+    if (extension == '.flac') return 'audio/flac';
     return 'application/octet-stream';
   }
 
@@ -4525,10 +4577,58 @@ class _BrowserPageState extends State<BrowserPage>
 
   bool _isValidVideoBytes(List<int> bytes) {
     if (bytes.length < 8) return false;
-    return bytes[4] == 0x66 &&
-        bytes[5] == 0x74 &&
-        bytes[6] == 0x79 &&
-        bytes[7] == 0x70;
+    final box = String.fromCharCodes(bytes.sublist(4, 8));
+    return box == 'ftyp' ||
+        box == 'styp' ||
+        box == 'moov' ||
+        box == 'moof' ||
+        box == 'mdat';
+  }
+
+  bool _isValidWebmBytes(List<int> bytes) {
+    return bytes.length >= 4 &&
+        bytes[0] == 0x1A &&
+        bytes[1] == 0x45 &&
+        bytes[2] == 0xDF &&
+        bytes[3] == 0xA3;
+  }
+
+  String _extensionForBase64Media(String mediaType, String mimeType) {
+    final mime = mimeType.toLowerCase();
+    if (mediaType == 'image') {
+      if (mime.contains('png')) {
+        return '.png';
+      }
+      if (mime.contains('gif')) {
+        return '.gif';
+      }
+      if (mime.contains('webp')) {
+        return '.webp';
+      }
+      return '.jpg';
+    }
+    if (mediaType == 'audio') {
+      if (mime.contains('mpeg') || mime.contains('mp3')) {
+        return '.mp3';
+      }
+      if (mime.contains('wav')) {
+        return '.wav';
+      }
+      if (mime.contains('ogg')) {
+        return '.ogg';
+      }
+      return '.webm';
+    }
+    if (mime.contains('webm')) {
+      return '.webm';
+    }
+    if (mime.contains('quicktime')) {
+      return '.mov';
+    }
+    if (mime.contains('x-matroska')) {
+      return '.mkv';
+    }
+    return '.mp4';
   }
 
   /// HLS 分片拼接后为 MPEG-TS，与 MP4 头不同；Android ExoPlayer 可播放 `.ts`。
@@ -5597,9 +5697,21 @@ class _BrowserPageState extends State<BrowserPage>
     return Uint8List.fromList(decrypted);
   }
 
-  String _getFileExtension(String path) {
-    final lastDot = path.lastIndexOf('.');
-    return lastDot != -1 ? path.substring(lastDot) : '';
+  String _getFileExtension(String input) {
+    var value = input.trim();
+    final uri = Uri.tryParse(value);
+    if (uri != null && uri.path.isNotEmpty) {
+      value = uri.path;
+    }
+    final segments =
+        value.split('/').where((segment) => segment.trim().isNotEmpty).toList();
+    if (segments.isNotEmpty) {
+      value = segments.last;
+    }
+    value = value.split('?').first.split('#').first;
+    final extension = p.extension(value).toLowerCase();
+    if (!RegExp(r'^\.[a-z0-9]{1,8}$').hasMatch(extension)) return '';
+    return extension;
   }
 
   Future<Map<String, dynamic>> _saveToMediaLibrary(
