@@ -9,10 +9,13 @@ class FlippableCanvasWidget extends StatefulWidget {
   final FlippableCanvas canvas;
   final Function(FlippableCanvas) onCanvasUpdated;
   final VoidCallback? onSettingsPressed;
+
   /// 一键复制：将当前面所有内容复制到另一面
   final VoidCallback? onCopyCurrentSideToOther;
+
   /// 一键移动：将当前面所有内容移动到另一面
   final VoidCallback? onMoveCurrentSideToOther;
+
   /// 一键删除：删除当前面所有内容（不删除画布本身）
   final VoidCallback? onDeleteCurrentSideContent;
   final bool isPositionLocked;
@@ -34,10 +37,11 @@ class FlippableCanvasWidget extends StatefulWidget {
 
 class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
     with TickerProviderStateMixin {
+  static const double _topInteractionSafeArea = 20.0 * 3.779527559;
   late AnimationController _flipController;
   late Animation<double> _flipAnimation;
   bool _isFlipping = false;
-  
+
   // 画布拖拽相关
   bool _isDragging = false;
   Offset _dragStart = Offset.zero;
@@ -49,13 +53,9 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
       duration: const Duration(milliseconds: 600),
       vsync: this,
     );
-    _flipAnimation = Tween<double>(
-      begin: 0.0,
-      end: 1.0,
-    ).animate(CurvedAnimation(
-      parent: _flipController,
-      curve: Curves.easeInOut,
-    ));
+    _flipAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(parent: _flipController, curve: Curves.easeInOut),
+    );
 
     // 如果画布已经是翻转状态，设置动画到最终位置
     if (widget.canvas.isFlipped) {
@@ -84,7 +84,7 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
 
   void _flipCanvas() {
     if (_isFlipping) return;
-    
+
     setState(() {
       _isFlipping = true;
     });
@@ -111,10 +111,18 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
   }
 
   void _showCanvasOptions() {
-    final xController = TextEditingController(text: widget.canvas.positionX.toStringAsFixed(0));
-    final yController = TextEditingController(text: widget.canvas.positionY.toStringAsFixed(0));
-    final wController = TextEditingController(text: widget.canvas.width.toStringAsFixed(0));
-    final hController = TextEditingController(text: widget.canvas.height.toStringAsFixed(0));
+    final xController = TextEditingController(
+      text: widget.canvas.positionX.toStringAsFixed(0),
+    );
+    final yController = TextEditingController(
+      text: widget.canvas.positionY.toStringAsFixed(0),
+    );
+    final wController = TextEditingController(
+      text: widget.canvas.width.toStringAsFixed(0),
+    );
+    final hController = TextEditingController(
+      text: widget.canvas.height.toStringAsFixed(0),
+    );
 
     showModalBottomSheet(
       context: context,
@@ -128,7 +136,13 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
           builder: (context, setModalState) {
             final screenWidth = MediaQuery.of(context).size.width;
 
-            void applyValues({bool updateX = false, bool updateY = false, bool updateW = false, bool updateH = false, bool enforceMin = false}) {
+            void applyValues({
+              bool updateX = false,
+              bool updateY = false,
+              bool updateW = false,
+              bool updateH = false,
+              bool enforceMin = false,
+            }) {
               double x = widget.canvas.positionX;
               double y = widget.canvas.positionY;
               double w = widget.canvas.width;
@@ -189,13 +203,22 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
             }
 
             InputDecoration dec(String label) => InputDecoration(
-                  labelText: label,
-                  isDense: true,
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                );
+              labelText: label,
+              isDense: true,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(6),
+              ),
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 8,
+                vertical: 6,
+              ),
+            );
 
-            Widget miniBtn({required IconData icon, required VoidCallback onTap, required VoidCallback onDouble}) {
+            Widget miniBtn({
+              required IconData icon,
+              required VoidCallback onTap,
+              required VoidCallback onDouble,
+            }) {
               return GestureDetector(
                 onTap: onTap,
                 onDoubleTap: onDouble,
@@ -230,8 +253,13 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
                       decoration: InputDecoration(
                         labelText: label,
                         isDense: true,
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 6,
+                        ),
                       ),
                       onChanged: (_) => onChanged(),
                       onEditingComplete: () {
@@ -266,13 +294,21 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
                         miniBtn(
                           icon: Icons.remove,
                           onTap: onDec,
-                          onDouble: () { for(int i=0;i<10;i++){ onDec(); } },
+                          onDouble: () {
+                            for (int i = 0; i < 10; i++) {
+                              onDec();
+                            }
+                          },
                         ),
                         const SizedBox(width: 6),
                         miniBtn(
                           icon: Icons.add,
                           onTap: onInc,
-                          onDouble: () { for(int i=0;i<10;i++){ onInc(); } },
+                          onDouble: () {
+                            for (int i = 0; i < 10; i++) {
+                              onInc();
+                            }
+                          },
                         ),
                       ],
                     ),
@@ -284,7 +320,9 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
             return Container(
               decoration: BoxDecoration(
                 color: Colors.white.withOpacity(0.95),
-                borderRadius: const BorderRadius.vertical(top: Radius.circular(10)),
+                borderRadius: const BorderRadius.vertical(
+                  top: Radius.circular(10),
+                ),
                 boxShadow: [
                   BoxShadow(
                     color: Colors.black.withOpacity(0.2),
@@ -296,7 +334,8 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
               child: SingleChildScrollView(
                 child: Padding(
                   padding: EdgeInsets.only(
-                    bottom: MediaQuery.of(context).viewInsets.bottom +
+                    bottom:
+                        MediaQuery.of(context).viewInsets.bottom +
                         MediaQuery.of(context).viewPadding.bottom +
                         8,
                   ),
@@ -305,7 +344,13 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
                     children: [
                       const Padding(
                         padding: EdgeInsets.only(top: 10, bottom: 6),
-                        child: Text('画布设置', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+                        child: Text(
+                          '画布设置',
+                          style: TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
                       ),
                       Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 10),
@@ -315,15 +360,47 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
                               controller: xController,
                               label: 'X',
                               onChanged: () => applyValues(updateX: true),
-                              onInc: () { xController.text = ((double.tryParse(xController.text) ?? widget.canvas.positionX) + 1).toInt().toString(); applyValues(updateX: true); },
-                              onDec: () { xController.text = ((double.tryParse(xController.text) ?? widget.canvas.positionX) - 1).toInt().toString(); applyValues(updateX: true); },
+                              onInc: () {
+                                xController.text =
+                                    ((double.tryParse(xController.text) ??
+                                                widget.canvas.positionX) +
+                                            1)
+                                        .toInt()
+                                        .toString();
+                                applyValues(updateX: true);
+                              },
+                              onDec: () {
+                                xController.text =
+                                    ((double.tryParse(xController.text) ??
+                                                widget.canvas.positionX) -
+                                            1)
+                                        .toInt()
+                                        .toString();
+                                applyValues(updateX: true);
+                              },
                             ),
                             compactField(
                               controller: yController,
                               label: 'Y',
                               onChanged: () => applyValues(updateY: true),
-                              onInc: () { yController.text = ((double.tryParse(yController.text) ?? widget.canvas.positionY) + 1).toInt().toString(); applyValues(updateY: true); },
-                              onDec: () { yController.text = ((double.tryParse(yController.text) ?? widget.canvas.positionY) - 1).toInt().toString(); applyValues(updateY: true); },
+                              onInc: () {
+                                yController.text =
+                                    ((double.tryParse(yController.text) ??
+                                                widget.canvas.positionY) +
+                                            1)
+                                        .toInt()
+                                        .toString();
+                                applyValues(updateY: true);
+                              },
+                              onDec: () {
+                                yController.text =
+                                    ((double.tryParse(yController.text) ??
+                                                widget.canvas.positionY) -
+                                            1)
+                                        .toInt()
+                                        .toString();
+                                applyValues(updateY: true);
+                              },
                             ),
                             compactField(
                               controller: wController,
@@ -332,11 +409,21 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
                                 applyValues(updateW: true, enforceMin: false);
                               },
                               onInc: () {
-                                wController.text = ((double.tryParse(wController.text) ?? widget.canvas.width) + 1).toInt().toString();
+                                wController.text =
+                                    ((double.tryParse(wController.text) ??
+                                                widget.canvas.width) +
+                                            1)
+                                        .toInt()
+                                        .toString();
                                 applyValues(updateW: true, enforceMin: true);
                               },
                               onDec: () {
-                                wController.text = ((double.tryParse(wController.text) ?? widget.canvas.width) - 1).toInt().toString();
+                                wController.text =
+                                    ((double.tryParse(wController.text) ??
+                                                widget.canvas.width) -
+                                            1)
+                                        .toInt()
+                                        .toString();
                                 applyValues(updateW: true, enforceMin: true);
                               },
                             ),
@@ -346,35 +433,82 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
                               onChanged: () {
                                 applyValues(updateH: true, enforceMin: false);
                               },
-                              onInc: () { hController.text = ((double.tryParse(hController.text) ?? widget.canvas.height) + 1).toInt().toString(); applyValues(updateH: true, enforceMin: true); },
-                              onDec: () { hController.text = ((double.tryParse(hController.text) ?? widget.canvas.height) - 1).toInt().toString(); applyValues(updateH: true, enforceMin: true); },
+                              onInc: () {
+                                hController.text =
+                                    ((double.tryParse(hController.text) ??
+                                                widget.canvas.height) +
+                                            1)
+                                        .toInt()
+                                        .toString();
+                                applyValues(updateH: true, enforceMin: true);
+                              },
+                              onDec: () {
+                                hController.text =
+                                    ((double.tryParse(hController.text) ??
+                                                widget.canvas.height) -
+                                            1)
+                                        .toInt()
+                                        .toString();
+                                applyValues(updateH: true, enforceMin: true);
+                              },
                             ),
                           ],
                         ),
                       ),
                       Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 4,
+                        ),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
                             Row(
                               children: [
                                 TextButton.icon(
-                                  onPressed: () { Navigator.pop(context); _flipCanvas(); },
-                                  icon: Icon(widget.canvas.isFlipped ? Icons.flip_to_front : Icons.flip_to_back, size: 18, color: Colors.blue),
-                                  label: Text(widget.canvas.isFlipped ? '正面' : '反面'),
+                                  onPressed: () {
+                                    Navigator.pop(context);
+                                    _flipCanvas();
+                                  },
+                                  icon: Icon(
+                                    widget.canvas.isFlipped
+                                        ? Icons.flip_to_front
+                                        : Icons.flip_to_back,
+                                    size: 18,
+                                    color: Colors.blue,
+                                  ),
+                                  label: Text(
+                                    widget.canvas.isFlipped ? '正面' : '反面',
+                                  ),
                                 ),
                                 const SizedBox(width: 8),
                                 Expanded(
                                   child: Text(
                                     '正:${widget.canvas.frontTextBoxIds.length + widget.canvas.frontImageBoxIds.length + widget.canvas.frontAudioBoxIds.length} 反:${widget.canvas.backTextBoxIds.length + widget.canvas.backImageBoxIds.length + widget.canvas.backAudioBoxIds.length}',
-                                    style: TextStyle(fontSize: 12, color: Colors.grey[700]),
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.grey[700],
+                                    ),
                                   ),
                                 ),
                                 TextButton.icon(
-                                  onPressed: () { Navigator.pop(context); if (widget.onSettingsPressed != null) widget.onSettingsPressed!(); },
-                                  icon: const Icon(Icons.delete_forever, size: 18, color: Colors.red),
-                                  label: const Text('删除画布', style: TextStyle(color: Colors.red, fontSize: 12)),
+                                  onPressed: () {
+                                    Navigator.pop(context);
+                                    if (widget.onSettingsPressed != null)
+                                      widget.onSettingsPressed!();
+                                  },
+                                  icon: const Icon(
+                                    Icons.delete_forever,
+                                    size: 18,
+                                    color: Colors.red,
+                                  ),
+                                  label: const Text(
+                                    '删除画布',
+                                    style: TextStyle(
+                                      color: Colors.red,
+                                      fontSize: 12,
+                                    ),
+                                  ),
                                 ),
                               ],
                             ),
@@ -387,8 +521,18 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
                                       Navigator.pop(context);
                                       widget.onCopyCurrentSideToOther?.call();
                                     },
-                                    icon: const Icon(Icons.copy, size: 16, color: Colors.blue),
-                                    label: const Text('一键复制', style: TextStyle(fontSize: 12, color: Colors.blue)),
+                                    icon: const Icon(
+                                      Icons.copy,
+                                      size: 16,
+                                      color: Colors.blue,
+                                    ),
+                                    label: const Text(
+                                      '一键复制',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: Colors.blue,
+                                      ),
+                                    ),
                                   ),
                                 ),
                                 Expanded(
@@ -397,8 +541,18 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
                                       Navigator.pop(context);
                                       widget.onMoveCurrentSideToOther?.call();
                                     },
-                                    icon: const Icon(Icons.drive_file_move, size: 16, color: Colors.orange),
-                                    label: const Text('一键移动', style: TextStyle(fontSize: 12, color: Colors.orange)),
+                                    icon: const Icon(
+                                      Icons.drive_file_move,
+                                      size: 16,
+                                      color: Colors.orange,
+                                    ),
+                                    label: const Text(
+                                      '一键移动',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: Colors.orange,
+                                      ),
+                                    ),
                                   ),
                                 ),
                                 Expanded(
@@ -407,8 +561,18 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
                                       Navigator.pop(context);
                                       widget.onDeleteCurrentSideContent?.call();
                                     },
-                                    icon: const Icon(Icons.delete_outline, size: 16, color: Colors.red),
-                                    label: const Text('一键删除', style: TextStyle(fontSize: 12, color: Colors.red)),
+                                    icon: const Icon(
+                                      Icons.delete_outline,
+                                      size: 16,
+                                      color: Colors.red,
+                                    ),
+                                    label: const Text(
+                                      '一键删除',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: Colors.red,
+                                      ),
+                                    ),
                                   ),
                                 ),
                               ],
@@ -431,24 +595,40 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onPanStart: widget.isPositionLocked ? null : (details) {
-        _isDragging = true;
-        _dragStart = details.globalPosition;
-      },
-      onPanUpdate: widget.isPositionLocked ? null : (details) {
-        if (_isDragging) {
-          final delta = details.globalPosition - _dragStart;
-          widget.canvas.positionX += delta.dx;
-          widget.canvas.positionY += delta.dy;
-          _dragStart = details.globalPosition;
-          final screenWidth = MediaQuery.of(context).size.width;
-          widget.canvas.positionX = widget.canvas.positionX.clamp(0.0, screenWidth - widget.canvas.width);
-          widget.onCanvasUpdated(widget.canvas);
-        }
-      },
-      onPanEnd: widget.isPositionLocked ? null : (details) {
-        _isDragging = false;
-      },
+      onPanStart:
+          widget.isPositionLocked
+              ? null
+              : (details) {
+                _isDragging = true;
+                _dragStart = details.globalPosition;
+              },
+      onPanUpdate:
+          widget.isPositionLocked
+              ? null
+              : (details) {
+                if (_isDragging) {
+                  final delta = details.globalPosition - _dragStart;
+                  widget.canvas.positionX += delta.dx;
+                  widget.canvas.positionY += delta.dy;
+                  _dragStart = details.globalPosition;
+                  final screenWidth = MediaQuery.of(context).size.width;
+                  widget.canvas.positionX = widget.canvas.positionX.clamp(
+                    0.0,
+                    screenWidth - widget.canvas.width,
+                  );
+                  widget.canvas.positionY = widget.canvas.positionY.clamp(
+                    _topInteractionSafeArea,
+                    double.infinity,
+                  );
+                  widget.onCanvasUpdated(widget.canvas);
+                }
+              },
+      onPanEnd:
+          widget.isPositionLocked
+              ? null
+              : (details) {
+                _isDragging = false;
+              },
       onDoubleTap: _flipCanvas,
       onLongPress: _showCanvasOptions,
       child: AnimatedBuilder(
@@ -457,9 +637,10 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
           final isShowingFront = _flipAnimation.value < 0.5;
           return Transform(
             alignment: Alignment.center,
-            transform: Matrix4.identity()
-              ..setEntry(3, 2, 0.001)
-              ..rotateY(_flipAnimation.value * math.pi),
+            transform:
+                Matrix4.identity()
+                  ..setEntry(3, 2, 0.001)
+                  ..rotateY(_flipAnimation.value * math.pi),
             child: _buildCanvasSide(isShowingFront),
           );
         },
@@ -469,7 +650,7 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
 
   Widget _buildCanvasSide(bool isShowingFront) {
     final bool shouldShowFront = isShowingFront == !widget.canvas.isFlipped;
-    
+
     return Container(
       width: widget.canvas.width,
       height: widget.canvas.height,
@@ -495,13 +676,12 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
                 decoration: BoxDecoration(
                   color: Colors.white.withOpacity(0.35),
                   borderRadius: BorderRadius.circular(13),
-                  border: Border.all(color: Colors.white.withOpacity(0.4), width: 0.8),
+                  border: Border.all(
+                    color: Colors.white.withOpacity(0.4),
+                    width: 0.8,
+                  ),
                 ),
-                child: Icon(
-                  Icons.settings,
-                  size: 15,
-                  color: Colors.grey[200],
-                ),
+                child: Icon(Icons.settings, size: 15, color: Colors.grey[200]),
               ),
             ),
           ),
@@ -513,8 +693,10 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
               onPanUpdate: (details) {
                 if (widget.isPositionLocked) return;
                 setState(() {
-                  double newWidth = (widget.canvas.width + details.delta.dx).clamp(50.0, 2000.0);
-                  double newHeight = (widget.canvas.height + details.delta.dy).clamp(50.0, 2000.0);
+                  double newWidth = (widget.canvas.width + details.delta.dx)
+                      .clamp(50.0, 2000.0);
+                  double newHeight = (widget.canvas.height + details.delta.dy)
+                      .clamp(50.0, 2000.0);
                   widget.canvas.width = newWidth;
                   widget.canvas.height = newHeight;
                   widget.onCanvasUpdated(widget.canvas);
@@ -526,7 +708,10 @@ class _FlippableCanvasWidgetState extends State<FlippableCanvasWidget>
                 decoration: BoxDecoration(
                   color: Colors.white.withOpacity(0.30),
                   borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Colors.white.withOpacity(0.45), width: 0.8),
+                  border: Border.all(
+                    color: Colors.white.withOpacity(0.45),
+                    width: 0.8,
+                  ),
                 ),
                 child: Icon(
                   Icons.open_in_full,

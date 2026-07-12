@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 import 'dart:ui' as ui;
 import 'package:uuid/uuid.dart';
 import 'package:flutter_quill/flutter_quill.dart' as quill;
@@ -24,7 +25,8 @@ class _QuillClipboardStore {
   }
 
   Object? tryGetDelta(String? clipboardText) {
-    if (clipboardText == null || _plainText == null || _delta == null) return null;
+    if (clipboardText == null || _plainText == null || _delta == null)
+      return null;
     if (_plainText!.isEmpty) return null;
     final a = _normalizeClipboardText(clipboardText);
     final b = _normalizeClipboardText(_plainText);
@@ -86,16 +88,10 @@ class TextSegment {
   final String text;
   final CustomTextStyle style;
 
-  TextSegment({
-    required this.text,
-    required this.style,
-  });
+  TextSegment({required this.text, required this.style});
 
   Map<String, dynamic> toMap() {
-    return {
-      'text': text,
-      'style': style.toMap(),
-    };
+    return {'text': text, 'style': style.toMap()};
   }
 
   factory TextSegment.fromMap(Map<String, dynamic> map) {
@@ -105,14 +101,8 @@ class TextSegment {
     );
   }
 
-  TextSegment copyWith({
-    String? text,
-    CustomTextStyle? style,
-  }) {
-    return TextSegment(
-      text: text ?? this.text,
-      style: style ?? this.style,
-    );
+  TextSegment copyWith({String? text, CustomTextStyle? style}) {
+    return TextSegment(text: text ?? this.text, style: style ?? this.style);
   }
 }
 
@@ -157,7 +147,8 @@ class CustomTextStyle {
       'fontColor': _getArgb(fontColor),
       'fontWeight': fontWeight.index,
       'isItalic': isItalic,
-      'backgroundColor': backgroundColor != null ? _getArgb(backgroundColor!) : null,
+      'backgroundColor':
+          backgroundColor != null ? _getArgb(backgroundColor!) : null,
       'textAlign': textAlign.index,
     };
   }
@@ -165,10 +156,12 @@ class CustomTextStyle {
   factory CustomTextStyle.fromMap(Map<String, dynamic> map) {
     return CustomTextStyle(
       fontSize: map['fontSize'] ?? 16.0,
-      fontColor: map['fontColor'] != null ? Color(map['fontColor']) : Colors.black,
+      fontColor:
+          map['fontColor'] != null ? Color(map['fontColor']) : Colors.black,
       fontWeight: FontWeight.values[map['fontWeight'] ?? FontWeight.bold.index],
       isItalic: map['isItalic'] ?? false,
-      backgroundColor: map['backgroundColor'] != null ? Color(map['backgroundColor']) : null,
+      backgroundColor:
+          map['backgroundColor'] != null ? Color(map['backgroundColor']) : null,
       textAlign: TextAlign.values[map['textAlign'] ?? 0],
     );
   }
@@ -188,7 +181,9 @@ class CustomTextStyle {
 
 /// TextSegment <-> Quill Delta 转换（用于 flutter_quill 富文本）
 class _QuillDeltaConverter {
-  static List<Map<String, dynamic>> segmentsToDeltaOps(List<TextSegment> segments) {
+  static List<Map<String, dynamic>> segmentsToDeltaOps(
+    List<TextSegment> segments,
+  ) {
     final ops = <Map<String, dynamic>>[];
     for (final seg in segments) {
       if (seg.text.isEmpty) continue;
@@ -199,14 +194,20 @@ class _QuillDeltaConverter {
       if (s.fontWeight == FontWeight.bold) attrs['bold'] = true;
       if (s.isItalic) attrs['italic'] = true;
       if (s.backgroundColor != null) {
-        attrs['background'] = CustomTextStyle._toQuillColorHex(s.backgroundColor!);
+        attrs['background'] = CustomTextStyle._toQuillColorHex(
+          s.backgroundColor!,
+        );
       }
       final insert = seg.text.replaceAll('\n', '\n');
       if (insert.contains('\n')) {
         final parts = insert.split('\n');
         for (var i = 0; i < parts.length; i++) {
           if (parts[i].isNotEmpty) {
-            ops.add({'insert': parts[i], if (attrs.isNotEmpty) 'attributes': Map<String, dynamic>.from(attrs)});
+            ops.add({
+              'insert': parts[i],
+              if (attrs.isNotEmpty)
+                'attributes': Map<String, dynamic>.from(attrs),
+            });
           }
           if (i < parts.length - 1) ops.add({'insert': '\n'});
         }
@@ -218,7 +219,10 @@ class _QuillDeltaConverter {
     return ops;
   }
 
-  static List<TextSegment> deltaOpsToSegments(List<Map<String, dynamic>> ops, CustomTextStyle defaultStyle) {
+  static List<TextSegment> deltaOpsToSegments(
+    List<Map<String, dynamic>> ops,
+    CustomTextStyle defaultStyle,
+  ) {
     final segments = <TextSegment>[];
     CustomTextStyle current = defaultStyle;
     final buf = StringBuffer();
@@ -245,17 +249,23 @@ class _QuillDeltaConverter {
         }
       }
     }
-    if (buf.isNotEmpty) segments.add(TextSegment(text: buf.toString(), style: current));
+    if (buf.isNotEmpty)
+      segments.add(TextSegment(text: buf.toString(), style: current));
     return segments;
   }
 
-  static CustomTextStyle _attrsToCustomStyle(Map<String, dynamic>? attrs, CustomTextStyle defaultStyle) {
+  static CustomTextStyle _attrsToCustomStyle(
+    Map<String, dynamic>? attrs,
+    CustomTextStyle defaultStyle,
+  ) {
     if (attrs == null || attrs.isEmpty) return defaultStyle;
     double fontSize = defaultStyle.fontSize;
     if (attrs['size'] != null) {
       final v = attrs['size'];
-      if (v is num) fontSize = v.toDouble();
-      else if (v is String) fontSize = double.tryParse(v) ?? defaultStyle.fontSize;
+      if (v is num)
+        fontSize = v.toDouble();
+      else if (v is String)
+        fontSize = double.tryParse(v) ?? defaultStyle.fontSize;
     }
     Color fontColor = defaultStyle.fontColor;
     if (attrs['color'] != null) {
@@ -378,12 +388,63 @@ class _CursorHandleOverlay extends StatefulWidget {
 class _CursorHandleOverlayState extends State<_CursorHandleOverlay> {
   OverlayEntry? _overlayEntry;
   Offset? _globalTopLeft;
+  Offset? _dragCaretOffset;
   double _lineHeight = 20.0;
+
+  void _startDragging(DragStartDetails details) {
+    final state = widget.editorKey.currentState;
+    if (state == null) return;
+
+    try {
+      final renderEditor = state.renderEditor;
+      final selection = widget.quillController.selection;
+      final caretRect = renderEditor.getLocalRectForCaret(
+        TextPosition(offset: selection.baseOffset),
+      );
+      final renderBox = renderEditor as RenderBox;
+      final caretGlobal = renderBox.localToGlobal(caretRect.bottomCenter);
+      _dragCaretOffset = caretGlobal - details.globalPosition;
+      HapticFeedback.selectionClick();
+    } catch (_) {
+      _dragCaretOffset = null;
+    }
+  }
+
+  void _dragCaret(DragUpdateDetails details) {
+    final state = widget.editorKey.currentState;
+    if (state == null) return;
+
+    try {
+      final renderEditor = state.renderEditor;
+      final targetGlobal =
+          details.globalPosition +
+          (_dragCaretOffset ?? Offset(0, -_lineHeight));
+      final position = renderEditor.getPositionForOffset(targetGlobal);
+      final maxOffset = widget.quillController.document.length - 1;
+      final offset = position.offset.clamp(0, maxOffset < 0 ? 0 : maxOffset);
+      final nextSelection = TextSelection.collapsed(offset: offset);
+      if (nextSelection != widget.quillController.selection) {
+        widget.quillController.updateSelection(
+          nextSelection,
+          quill.ChangeSource.local,
+        );
+      }
+    } catch (_) {
+      // The editor can briefly be unavailable while the keyboard changes layout.
+    }
+  }
+
+  void _stopDragging(DragEndDetails details) {
+    _dragCaretOffset = null;
+    HapticFeedback.selectionClick();
+  }
 
   void _updatePosition() {
     if (!mounted) return;
     // 必须在布局完成后才能访问 getLocalRectForCaret、localToGlobal 等，否则会触发 debugNeedsLayout 断言
-    SchedulerBinding.instance.addPostFrameCallback((_) => _computePositionAfterLayout());
+    SchedulerBinding.instance.addPostFrameCallback(
+      (_) => _computePositionAfterLayout(),
+    );
   }
 
   void _ensureOverlay() {
@@ -402,6 +463,10 @@ class _CursorHandleOverlayState extends State<_CursorHandleOverlay> {
             color: Colors.transparent,
             child: GestureDetector(
               onTap: widget.onTap,
+              onPanStart: _startDragging,
+              onPanUpdate: _dragCaret,
+              onPanEnd: _stopDragging,
+              onPanCancel: () => _dragCaretOffset = null,
               behavior: HitTestBehavior.translucent,
               child: SizedBox(
                 width: handleSize,
@@ -436,7 +501,9 @@ class _CursorHandleOverlayState extends State<_CursorHandleOverlay> {
       _lineHeight = renderEditor.preferredLineHeight(textPosition);
 
       final renderBox = renderEditor as RenderBox;
-      final globalBottomCenter = renderBox.localToGlobal(caretRect.bottomCenter);
+      final globalBottomCenter = renderBox.localToGlobal(
+        caretRect.bottomCenter,
+      );
 
       const handleSize = 22.0;
       const belowOffset = 2.0;
@@ -561,7 +628,8 @@ class ResizableAndConfigurableTextBox extends StatefulWidget {
 }
 
 class _ResizableAndConfigurableTextBoxState
-    extends State<ResizableAndConfigurableTextBox> with WidgetsBindingObserver {
+    extends State<ResizableAndConfigurableTextBox>
+    with WidgetsBindingObserver {
   static const int _maxCharsPerBox = 4000;
   static const int _largePasteThreshold = 8000;
   late Size _size;
@@ -585,7 +653,8 @@ class _ResizableAndConfigurableTextBoxState
   int _skipAutoStyleStart = -1;
   int _skipAutoStyleEnd = -1;
   bool _isPastingRichDelta = false;
-  final GlobalKey<quill.EditorState> _editorKey = GlobalKey<quill.EditorState>();
+  final GlobalKey<quill.EditorState> _editorKey =
+      GlobalKey<quill.EditorState>();
   final GlobalKey _cursorHandleStackKey = GlobalKey();
   bool _caretReportScheduled = false;
 
@@ -630,7 +699,8 @@ class _ResizableAndConfigurableTextBoxState
     final chunks = _splitPlainTextIntoChunks(normalized, _maxCharsPerBox);
     if (chunks.length <= 1) return false;
 
-    final targetWidth = widget.getDocumentWidestTextBoxWidth?.call() ?? _size.width;
+    final targetWidth =
+        widget.getDocumentWidestTextBoxWidth?.call() ?? _size.width;
     final first = chunks.first;
     final rest = chunks.sublist(1);
     final docLen = _quillController.document.length;
@@ -682,7 +752,8 @@ class _ResizableAndConfigurableTextBoxState
       if (data is! String) continue;
       if (data.isEmpty) continue;
 
-      final take = data.length <= remaining ? data : data.substring(0, remaining);
+      final take =
+          data.length <= remaining ? data : data.substring(0, remaining);
       remaining -= take.length;
 
       final attrs = op.attributes;
@@ -752,13 +823,17 @@ class _ResizableAndConfigurableTextBoxState
   void _armImePasteGuard(int start, int insertedLength) {
     _imePasteGuardStart = start;
     _imePasteGuardEnd = start + (insertedLength < 0 ? 0 : insertedLength);
-    _imePasteGuardUntil = DateTime.now().add(const Duration(milliseconds: 1200));
+    _imePasteGuardUntil = DateTime.now().add(
+      const Duration(milliseconds: 1200),
+    );
   }
 
   void _armAutoStyleSkip(int start, int insertedLength) {
     _skipAutoStyleStart = start;
     _skipAutoStyleEnd = start + (insertedLength < 0 ? 0 : insertedLength);
-    _skipAutoStyleUntil = DateTime.now().add(const Duration(milliseconds: 1200));
+    _skipAutoStyleUntil = DateTime.now().add(
+      const Duration(milliseconds: 1200),
+    );
   }
 
   bool _isInImePasteGuardWindow(int index, int len, String data) {
@@ -844,11 +919,13 @@ class _ResizableAndConfigurableTextBoxState
     _textStyle = widget.initialTextStyle.copyWith(fontWeight: FontWeight.bold);
 
     List<TextSegment> initSegments;
-    if (widget.initialTextSegments != null && widget.initialTextSegments!.isNotEmpty) {
+    if (widget.initialTextSegments != null &&
+        widget.initialTextSegments!.isNotEmpty) {
       final fullText = widget.initialTextSegments!.map((s) => s.text).join();
-      initSegments = fullText == widget.initialText
-          ? List.from(widget.initialTextSegments!)
-          : [TextSegment(text: widget.initialText, style: _textStyle)];
+      initSegments =
+          fullText == widget.initialText
+              ? List.from(widget.initialTextSegments!)
+              : [TextSegment(text: widget.initialText, style: _textStyle)];
     } else {
       initSegments = [TextSegment(text: widget.initialText, style: _textStyle)];
     }
@@ -875,8 +952,11 @@ class _ResizableAndConfigurableTextBoxState
         if (pasteDelta == null) {
           final plain = _quillController.pastePlainText;
           final docText = _quillController.document.toPlainText();
-          final isAtStartOrNewLine = index == 0 ||
-              (index > 0 && index <= docText.length && docText[index - 1] == '\n');
+          final isAtStartOrNewLine =
+              index == 0 ||
+              (index > 0 &&
+                  index <= docText.length &&
+                  docText[index - 1] == '\n');
           if (isAtStartOrNewLine &&
               plain.isNotEmpty &&
               _quillController.pasteDelta.isNotEmpty &&
@@ -888,12 +968,16 @@ class _ResizableAndConfigurableTextBoxState
         if (pasteDelta == null) return true;
         _quillController.toggledStyle = const quill.Style();
         final pastedLen = pasteDelta.operations.fold<int>(
-          0, (sum, op) => sum + (op.length ?? 0),
+          0,
+          (sum, op) => sum + (op.length ?? 0),
         );
         try {
           _isPastingRichDelta = true;
           _quillController.document.replace(index, len, pasteDelta);
-          final newOffset = (index + pastedLen).clamp(0, _quillController.document.length - 1);
+          final newOffset = (index + pastedLen).clamp(
+            0,
+            _quillController.document.length - 1,
+          );
           _quillController.updateSelection(
             TextSelection.collapsed(offset: newOffset),
             quill.ChangeSource.local,
@@ -908,8 +992,7 @@ class _ResizableAndConfigurableTextBoxState
       config: quill.QuillControllerConfig(
         clipboardConfig: quill.QuillClipboardConfig(
           onClipboardPaste: () async {
-            final clipboardData =
-                await Clipboard.getData(Clipboard.kTextPlain);
+            final clipboardData = await Clipboard.getData(Clipboard.kTextPlain);
             final clipboardText = clipboardData?.text;
             if (_trySplitLargePastePlainText(clipboardText)) {
               return true;
@@ -926,7 +1009,8 @@ class _ResizableAndConfigurableTextBoxState
               final sel = _quillController.selection;
               _quillController.toggledStyle = const quill.Style();
               final pastedLen = delta.operations.fold<int>(
-                0, (sum, op) => sum + (op.length ?? 0),
+                0,
+                (sum, op) => sum + (op.length ?? 0),
               );
               try {
                 _isPastingRichDelta = true;
@@ -948,9 +1032,19 @@ class _ResizableAndConfigurableTextBoxState
         ),
       ),
     );
-    if (_textStyle.textAlign != TextAlign.left && _quillController.document.length > 0) {
-      final alignVal = _textStyle.textAlign == TextAlign.center ? 'center' : _textStyle.textAlign == TextAlign.right ? 'right' : 'justify';
-      _quillController.formatText(0, _quillController.document.length, quill.Attribute.clone(quill.Attribute.align, alignVal));
+    if (_textStyle.textAlign != TextAlign.left &&
+        _quillController.document.length > 0) {
+      final alignVal =
+          _textStyle.textAlign == TextAlign.center
+              ? 'center'
+              : _textStyle.textAlign == TextAlign.right
+              ? 'right'
+              : 'justify';
+      _quillController.formatText(
+        0,
+        _quillController.document.length,
+        quill.Attribute.clone(quill.Attribute.align, alignVal),
+      );
     }
     _quillController.addListener(_onQuillChanged);
     _docChangeSub = _quillController.changes.listen(_handleDocChange);
@@ -975,14 +1069,15 @@ class _ResizableAndConfigurableTextBoxState
 
   /// 粘贴时优先使用应用内存储的富文本 Delta，以保留格式（参考 lib-参考粘贴功能）
   Future<void> _onPaste(dynamic state) async {
-    final clipboardData =
-        await Clipboard.getData(Clipboard.kTextPlain);
+    final clipboardData = await Clipboard.getData(Clipboard.kTextPlain);
     final clipboardText = clipboardData?.text;
     if (_trySplitLargePastePlainText(clipboardText)) {
       state.hideToolbar();
       SchedulerBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
-          state.bringIntoView(TextPosition(offset: _quillController.selection.extentOffset));
+          state.bringIntoView(
+            TextPosition(offset: _quillController.selection.extentOffset),
+          );
         }
       });
       return;
@@ -999,7 +1094,8 @@ class _ResizableAndConfigurableTextBoxState
       final sel = _quillController.selection;
       _quillController.toggledStyle = const quill.Style();
       final pastedLen = delta.operations.fold<int>(
-        0, (sum, op) => sum + (op.length ?? 0),
+        0,
+        (sum, op) => sum + (op.length ?? 0),
       );
       try {
         _isPastingRichDelta = true;
@@ -1017,7 +1113,9 @@ class _ResizableAndConfigurableTextBoxState
       state.hideToolbar();
       SchedulerBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
-          state.bringIntoView(TextPosition(offset: _quillController.selection.extentOffset));
+          state.bringIntoView(
+            TextPosition(offset: _quillController.selection.extentOffset),
+          );
         }
       });
     } else {
@@ -1027,7 +1125,10 @@ class _ResizableAndConfigurableTextBoxState
 
   void _debouncedSaveChanges() {
     _saveDebounceTimer?.cancel();
-    _saveDebounceTimer = Timer(const Duration(milliseconds: 1200), _flushSaveDebounce);
+    _saveDebounceTimer = Timer(
+      const Duration(milliseconds: 1200),
+      _flushSaveDebounce,
+    );
   }
 
   void _onQuillChanged() {
@@ -1057,7 +1158,10 @@ class _ResizableAndConfigurableTextBoxState
     final maxOffset = (docText.length - 1).clamp(0, docText.length);
     final caret = sel.extentOffset.clamp(0, maxOffset);
 
-    final prevNewline = docText.lastIndexOf('\n', (caret - 1).clamp(0, maxOffset));
+    final prevNewline = docText.lastIndexOf(
+      '\n',
+      (caret - 1).clamp(0, maxOffset),
+    );
     final start = prevNewline == -1 ? 0 : prevNewline + 1;
 
     final nextNewline = docText.indexOf('\n', caret);
@@ -1090,8 +1194,10 @@ class _ResizableAndConfigurableTextBoxState
     }
     if (measureText.trim().isEmpty) return;
 
-    final widthToUse =
-        (widthOverride ?? _size.width).clamp(_minWidth, double.infinity);
+    final widthToUse = (widthOverride ?? _size.width).clamp(
+      _minWidth,
+      double.infinity,
+    );
     final availableWidth = (widthToUse - 10).clamp(1.0, double.infinity);
 
     final span = _buildMeasureTextSpanFromDelta(measureText.length);
@@ -1107,11 +1213,10 @@ class _ResizableAndConfigurableTextBoxState
         lines.isNotEmpty ? lines.last.height : painter.preferredLineHeight;
     const baseVerticalPadding = 10.0;
     final extraBottomPadding = (lastLineHeight * 0.13).clamp(0.0, 24.0);
-    final targetHeight =
-        (painter.height + baseVerticalPadding + extraBottomPadding).clamp(
-          _minHeight,
-          double.infinity,
-        );
+    final targetHeight = (painter.height +
+            baseVerticalPadding +
+            extraBottomPadding)
+        .clamp(_minHeight, double.infinity);
     setState(() {
       _size = Size(widthToUse, targetHeight);
     });
@@ -1154,13 +1259,19 @@ class _ResizableAndConfigurableTextBoxState
     if (length <= 0) return;
     final docLength = _quillController.document.length;
     if (index < 0 || index >= docLength) return;
-    final clampedLength = (index + length) > docLength ? (docLength - index) : length;
+    final clampedLength =
+        (index + length) > docLength ? (docLength - index) : length;
 
-    final defaultColorHex = CustomTextStyle._toQuillColorHex(_textStyle.fontColor);
+    final defaultColorHex = CustomTextStyle._toQuillColorHex(
+      _textStyle.fontColor,
+    );
     _quillController.formatText(
       index,
       clampedLength,
-      quill.Attribute.clone(quill.Attribute.size, _textStyle.fontSize.toInt().toString()),
+      quill.Attribute.clone(
+        quill.Attribute.size,
+        _textStyle.fontSize.toInt().toString(),
+      ),
     );
     _quillController.formatText(
       index,
@@ -1177,11 +1288,7 @@ class _ResizableAndConfigurableTextBoxState
       clampedLength,
       quill.Attribute.clone(quill.Attribute.italic, null),
     );
-    _quillController.formatText(
-      index,
-      clampedLength,
-      quill.Attribute.bold,
-    );
+    _quillController.formatText(index, clampedLength, quill.Attribute.bold);
   }
 
   /// 是否在行首插入：文档开头或紧跟换行符后。
@@ -1226,7 +1333,8 @@ class _ResizableAndConfigurableTextBoxState
     final skipUntil = _skipAutoStyleUntil;
     if (skipUntil != null && DateTime.now().isBefore(skipUntil)) {
       final insertedEnd = start + insertedLength;
-      final overlap = insertedEnd > _skipAutoStyleStart && start < _skipAutoStyleEnd;
+      final overlap =
+          insertedEnd > _skipAutoStyleStart && start < _skipAutoStyleEnd;
       if (overlap) return;
     }
 
@@ -1257,14 +1365,16 @@ class _ResizableAndConfigurableTextBoxState
   }
 
   void _quillFormatSelection(quill.Attribute? attr) {
-    if (_showBottomSettings) SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
+    if (_showBottomSettings)
+      SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
     _quillController.formatSelection(attr);
     _debouncedSaveChanges();
     _suppressKeyboardAfterFormat();
   }
 
   void _quillFormatWhole(quill.Attribute? attr) {
-    if (_showBottomSettings) SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
+    if (_showBottomSettings)
+      SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
     final len = _quillController.document.length;
     if (len > 0) _quillController.formatText(0, len, attr);
     _debouncedSaveChanges();
@@ -1280,13 +1390,17 @@ class _ResizableAndConfigurableTextBoxState
     int offset = 0;
     for (final op in ops) {
       if (op.isInsert) {
-        final len = op.length ?? (op.data is String ? (op.data as String).length : 1);
+        final len =
+            op.length ?? (op.data is String ? (op.data as String).length : 1);
         if (op.data is String && len > 0) {
           double cur = _textStyle.fontSize;
           final attrs = op.attributes;
           if (attrs != null && attrs['size'] != null) {
             final v = attrs['size'];
-            cur = (v is num) ? v.toDouble() : (double.tryParse(v.toString()) ?? cur);
+            cur =
+                (v is num)
+                    ? v.toDouble()
+                    : (double.tryParse(v.toString()) ?? cur);
           }
           final newSize = (cur + delta).clamp(8.0, double.infinity);
           _quillController.formatText(
@@ -1316,6 +1430,7 @@ class _ResizableAndConfigurableTextBoxState
       SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
       FocusManager.instance.primaryFocus?.unfocus();
     }
+
     hide();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted && _showBottomSettings) hide();
@@ -1349,13 +1464,86 @@ class _ResizableAndConfigurableTextBoxState
     return Color(int.parse(h, radix: 16));
   }
 
+  Future<Color?> _showCustomColorPicker(
+    BuildContext context,
+    Color initialColor,
+  ) {
+    var selectedColor = initialColor;
+    return showDialog<Color>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          contentPadding: const EdgeInsets.all(8),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ColorPicker(
+                pickerColor: selectedColor,
+                onColorChanged: (color) => selectedColor = color,
+                colorPickerWidth: 280,
+                pickerAreaHeightPercent: 0.6,
+                enableAlpha: true,
+                displayThumbColor: true,
+                showLabel: false,
+                paletteType: PaletteType.hsv,
+              ),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextButton(
+                      onPressed: () => Navigator.of(dialogContext).pop(),
+                      child: const Text('取消'),
+                    ),
+                  ),
+                  Expanded(
+                    child: TextButton(
+                      onPressed:
+                          () => Navigator.of(dialogContext).pop(selectedColor),
+                      child: const Text('确定'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  void _applyFontColor(Color color) {
+    final attr = quill.Attribute.clone(
+      quill.Attribute.color,
+      CustomTextStyle._toQuillColorHex(color),
+    );
+    if (_hasSelection) {
+      _quillFormatSelection(attr);
+    } else {
+      _quillFormatWhole(attr);
+    }
+  }
+
+  void _applyTextBackgroundColor(Color color) {
+    final attr = quill.Attribute.clone(
+      quill.Attribute.background,
+      CustomTextStyle._toQuillColorHex(color),
+    );
+    if (_hasSelection) {
+      _quillFormatSelection(attr);
+    } else {
+      _quillFormatWhole(attr);
+    }
+  }
+
   // 显示设置面板
   void _showSettingsPanel(BuildContext context) {
     _hideKeyboard();
     _quillController.readOnly = true;
     _quillController.skipRequestKeyboard = true;
     _keyboardSuppressTimer?.cancel();
-    _keyboardSuppressTimer = Timer.periodic(const Duration(milliseconds: 30), (_) {
+    _keyboardSuppressTimer = Timer.periodic(const Duration(milliseconds: 30), (
+      _,
+    ) {
       if (!mounted || !_showBottomSettings) return;
       _hideKeyboard();
     });
@@ -1372,7 +1560,9 @@ class _ResizableAndConfigurableTextBoxState
           onTap: () {},
           behavior: HitTestBehavior.opaque,
           child: Container(
-            constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.5),
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(context).size.height * 0.5,
+            ),
             child: SafeArea(
               top: false,
               minimum: const EdgeInsets.only(bottom: 8),
@@ -1401,7 +1591,10 @@ class _ResizableAndConfigurableTextBoxState
   }
 
   // 文本框设置面板
-  Widget _buildTextBoxSettings(StateSetter setModalState, BuildContext sheetContext) {
+  Widget _buildTextBoxSettings(
+    StateSetter setModalState,
+    BuildContext sheetContext,
+  ) {
     return ClipRRect(
       borderRadius: BorderRadius.vertical(top: Radius.circular(10)),
       child: BackdropFilter(
@@ -1427,88 +1620,140 @@ class _ResizableAndConfigurableTextBoxState
                   return SingleChildScrollView(
                     scrollDirection: Axis.horizontal,
                     child: ConstrainedBox(
-                      constraints: BoxConstraints(minWidth: constraints.maxWidth),
+                      constraints: BoxConstraints(
+                        minWidth: constraints.maxWidth,
+                      ),
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                         children: [
-                  IconButton(
-                    icon: const Icon(Icons.fit_screen, color: Colors.blue),
-                    onPressed: () {
-                      HapticFeedback.selectionClick();
-                      final layout =
-                          widget.getAboveTextBoxLayout?.call(widget.textBoxId);
-                      final aboveX = layout?['x'];
-                      final aboveBottomY = layout?['bottomY'];
-                      final aboveWidth = layout?['width'];
-                      if (aboveX != null && aboveBottomY != null) {
-                        final spacing = 2.5 * 3.779527559;
-                        widget.onRequestPosition?.call(
-                          widget.textBoxId,
-                          Offset(aboveX, aboveBottomY + spacing),
-                        );
-                      }
-                      final widestWidth = widget.getDocumentWidestTextBoxWidth?.call();
-                      final plain =
-                          _quillController.document.toPlainText().replaceAll('\r\n', '\n');
-                      var measure = plain;
-                      if (measure.endsWith('\n')) {
-                        measure = measure.substring(0, measure.length - 1);
-                      }
-                      if (measure.trim().isEmpty) {
-                        final targetWidth = widestWidth ?? aboveWidth ?? _size.width;
-                        _applyWidthOnly(targetWidth);
-                        setModalState(() {});
-                        return;
-                      }
-                      final hasExplicitNewLine = measure.contains('\n');
-                      final isSingleVisualLine =
-                          !hasExplicitNewLine &&
-                          _isSingleVisualLineAtWidth(measure, _size.width);
-                      final targetWidth = isSingleVisualLine
-                          ? _measureSingleLineWrappedWidth(measure)
-                          : (widestWidth ?? aboveWidth);
-                      _autoFitHeightToText(widthOverride: targetWidth);
-                      setModalState(() {});
-                    },
-                    iconSize: 24,
-                    padding: const EdgeInsets.all(4),
-                    constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
-                    tooltip: '文本框适应文字',
-                  ),
-                  if (widget.isOnCanvas) ...[
-                    _buildAlignmentButton(Icons.format_align_left, TextAlign.left, isLarge: true),
-                    _buildAlignmentButton(Icons.format_align_center, TextAlign.center, isLarge: true),
-                    _buildAlignmentButton(Icons.format_align_right, TextAlign.right, isLarge: true),
-                    IconButton(
-                      icon: Icon(Icons.copy_all, color: Colors.blue),
-                      onPressed: widget.onCopyToOtherSide,
-                      iconSize: 24,
-                      padding: EdgeInsets.all(4),
-                      constraints: BoxConstraints(minWidth: 40, minHeight: 40),
-                      tooltip: '复制到另一面',
-                    ),
-                    IconButton(
-                      icon: Icon(Icons.swap_horiz, color: Colors.blue),
-                      onPressed: widget.onMoveToOtherSide,
-                      iconSize: 24,
-                      padding: EdgeInsets.all(4),
-                      constraints: BoxConstraints(minWidth: 40, minHeight: 40),
-                      tooltip: '移动到另一面',
-                    ),
-                  ] else ...[
-                    _buildAlignmentButton(Icons.format_align_left, TextAlign.left),
-                    _buildAlignmentButton(Icons.format_align_center, TextAlign.center),
-                    _buildAlignmentButton(Icons.format_align_right, TextAlign.right),
-                  ],
-                  IconButton(
-                    icon: Icon(Icons.check, color: Colors.blue.shade700),
-                    onPressed: () => Navigator.of(sheetContext).pop(),
-                    iconSize: 24,
-                    padding: const EdgeInsets.all(4),
-                    constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
-                    tooltip: '完成',
-                  ),
+                          IconButton(
+                            icon: const Icon(
+                              Icons.fit_screen,
+                              color: Colors.blue,
+                            ),
+                            onPressed: () {
+                              HapticFeedback.selectionClick();
+                              final layout = widget.getAboveTextBoxLayout?.call(
+                                widget.textBoxId,
+                              );
+                              final aboveX = layout?['x'];
+                              final aboveBottomY = layout?['bottomY'];
+                              final aboveWidth = layout?['width'];
+                              if (aboveX != null && aboveBottomY != null) {
+                                final spacing = 2.5 * 3.779527559;
+                                widget.onRequestPosition?.call(
+                                  widget.textBoxId,
+                                  Offset(aboveX, aboveBottomY + spacing),
+                                );
+                              }
+                              final widestWidth =
+                                  widget.getDocumentWidestTextBoxWidth?.call();
+                              final plain = _quillController.document
+                                  .toPlainText()
+                                  .replaceAll('\r\n', '\n');
+                              var measure = plain;
+                              if (measure.endsWith('\n')) {
+                                measure = measure.substring(
+                                  0,
+                                  measure.length - 1,
+                                );
+                              }
+                              if (measure.trim().isEmpty) {
+                                final targetWidth =
+                                    widestWidth ?? aboveWidth ?? _size.width;
+                                _applyWidthOnly(targetWidth);
+                                setModalState(() {});
+                                return;
+                              }
+                              final hasExplicitNewLine = measure.contains('\n');
+                              final isSingleVisualLine =
+                                  !hasExplicitNewLine &&
+                                  _isSingleVisualLineAtWidth(
+                                    measure,
+                                    _size.width,
+                                  );
+                              final targetWidth =
+                                  isSingleVisualLine
+                                      ? _measureSingleLineWrappedWidth(measure)
+                                      : (widestWidth ?? aboveWidth);
+                              _autoFitHeightToText(widthOverride: targetWidth);
+                              setModalState(() {});
+                            },
+                            iconSize: 24,
+                            padding: const EdgeInsets.all(4),
+                            constraints: const BoxConstraints(
+                              minWidth: 40,
+                              minHeight: 40,
+                            ),
+                            tooltip: '文本框适应文字',
+                          ),
+                          if (widget.isOnCanvas) ...[
+                            _buildAlignmentButton(
+                              Icons.format_align_left,
+                              TextAlign.left,
+                              isLarge: true,
+                            ),
+                            _buildAlignmentButton(
+                              Icons.format_align_center,
+                              TextAlign.center,
+                              isLarge: true,
+                            ),
+                            _buildAlignmentButton(
+                              Icons.format_align_right,
+                              TextAlign.right,
+                              isLarge: true,
+                            ),
+                            IconButton(
+                              icon: Icon(Icons.copy_all, color: Colors.blue),
+                              onPressed: widget.onCopyToOtherSide,
+                              iconSize: 24,
+                              padding: EdgeInsets.all(4),
+                              constraints: BoxConstraints(
+                                minWidth: 40,
+                                minHeight: 40,
+                              ),
+                              tooltip: '复制到另一面',
+                            ),
+                            IconButton(
+                              icon: Icon(Icons.swap_horiz, color: Colors.blue),
+                              onPressed: widget.onMoveToOtherSide,
+                              iconSize: 24,
+                              padding: EdgeInsets.all(4),
+                              constraints: BoxConstraints(
+                                minWidth: 40,
+                                minHeight: 40,
+                              ),
+                              tooltip: '移动到另一面',
+                            ),
+                          ] else ...[
+                            _buildAlignmentButton(
+                              Icons.format_align_left,
+                              TextAlign.left,
+                            ),
+                            _buildAlignmentButton(
+                              Icons.format_align_center,
+                              TextAlign.center,
+                            ),
+                            _buildAlignmentButton(
+                              Icons.format_align_right,
+                              TextAlign.right,
+                            ),
+                          ],
+                          IconButton(
+                            icon: Icon(
+                              Icons.check,
+                              color: Colors.blue.shade700,
+                            ),
+                            onPressed: () => Navigator.of(sheetContext).pop(),
+                            iconSize: 24,
+                            padding: const EdgeInsets.all(4),
+                            constraints: const BoxConstraints(
+                              minWidth: 40,
+                              minHeight: 40,
+                            ),
+                            tooltip: '完成',
+                          ),
                         ],
                       ),
                     ),
@@ -1525,11 +1770,20 @@ class _ResizableAndConfigurableTextBoxState
                       () {
                         if (_hasSelection) {
                           final style = _quillController.getSelectionStyle();
-                          final sizeVal = style.values.firstWhere((a) => a.key == quill.Attribute.size.key, orElse: () => quill.Attribute.size);
+                          final sizeVal = style.values.firstWhere(
+                            (a) => a.key == quill.Attribute.size.key,
+                            orElse: () => quill.Attribute.size,
+                          );
                           double cur = _textStyle.fontSize;
-                          if (sizeVal.value != null) cur = double.tryParse(sizeVal.value.toString()) ?? cur;
+                          if (sizeVal.value != null)
+                            cur =
+                                double.tryParse(sizeVal.value.toString()) ??
+                                cur;
                           cur = (cur - 2).clamp(8.0, double.infinity);
-                          final attr = quill.Attribute.clone(quill.Attribute.size, cur.toString());
+                          final attr = quill.Attribute.clone(
+                            quill.Attribute.size,
+                            cur.toString(),
+                          );
                           _quillFormatSelection(attr);
                         } else {
                           _quillFormatWholeSizeDelta(-2);
@@ -1548,11 +1802,20 @@ class _ResizableAndConfigurableTextBoxState
                       () {
                         if (_hasSelection) {
                           final style = _quillController.getSelectionStyle();
-                          final sizeVal = style.values.firstWhere((a) => a.key == quill.Attribute.size.key, orElse: () => quill.Attribute.size);
+                          final sizeVal = style.values.firstWhere(
+                            (a) => a.key == quill.Attribute.size.key,
+                            orElse: () => quill.Attribute.size,
+                          );
                           double cur = _textStyle.fontSize;
-                          if (sizeVal.value != null) cur = double.tryParse(sizeVal.value.toString()) ?? cur;
+                          if (sizeVal.value != null)
+                            cur =
+                                double.tryParse(sizeVal.value.toString()) ??
+                                cur;
                           cur = (cur + 2).clamp(8.0, double.infinity);
-                          final attr = quill.Attribute.clone(quill.Attribute.size, cur.toString());
+                          final attr = quill.Attribute.clone(
+                            quill.Attribute.size,
+                            cur.toString(),
+                          );
                           _quillFormatSelection(attr);
                         } else {
                           _quillFormatWholeSizeDelta(2);
@@ -1569,13 +1832,32 @@ class _ResizableAndConfigurableTextBoxState
                     child: _buildToolButton(
                       null,
                       () {
-                        final isBold = _quillController.getSelectionStyle().values.any((a) => a.key == quill.Attribute.bold.key && a.value == true);
-                        final attr = isBold ? quill.Attribute.clone(quill.Attribute.bold, null) : quill.Attribute.bold;
-                        if (_hasSelection) _quillFormatSelection(attr);
-                        else _quillFormatWhole(attr);
+                        final isBold = _quillController
+                            .getSelectionStyle()
+                            .values
+                            .any(
+                              (a) =>
+                                  a.key == quill.Attribute.bold.key &&
+                                  a.value == true,
+                            );
+                        final attr =
+                            isBold
+                                ? quill.Attribute.clone(
+                                  quill.Attribute.bold,
+                                  null,
+                                )
+                                : quill.Attribute.bold;
+                        if (_hasSelection)
+                          _quillFormatSelection(attr);
+                        else
+                          _quillFormatWhole(attr);
                         setModalState(() {});
                       },
-                      _quillController.getSelectionStyle().values.any((a) => a.key == quill.Attribute.bold.key && a.value == true),
+                      _quillController.getSelectionStyle().values.any(
+                        (a) =>
+                            a.key == quill.Attribute.bold.key &&
+                            a.value == true,
+                      ),
                       text: "B",
                       width: 30,
                     ),
@@ -1585,13 +1867,32 @@ class _ResizableAndConfigurableTextBoxState
                     child: _buildToolButton(
                       null,
                       () {
-                        final isItalic = _quillController.getSelectionStyle().values.any((a) => a.key == quill.Attribute.italic.key && a.value == true);
-                        final attr = isItalic ? quill.Attribute.clone(quill.Attribute.italic, null) : quill.Attribute.italic;
-                        if (_hasSelection) _quillFormatSelection(attr);
-                        else _quillFormatWhole(attr);
+                        final isItalic = _quillController
+                            .getSelectionStyle()
+                            .values
+                            .any(
+                              (a) =>
+                                  a.key == quill.Attribute.italic.key &&
+                                  a.value == true,
+                            );
+                        final attr =
+                            isItalic
+                                ? quill.Attribute.clone(
+                                  quill.Attribute.italic,
+                                  null,
+                                )
+                                : quill.Attribute.italic;
+                        if (_hasSelection)
+                          _quillFormatSelection(attr);
+                        else
+                          _quillFormatWhole(attr);
                         setModalState(() {});
                       },
-                      _quillController.getSelectionStyle().values.any((a) => a.key == quill.Attribute.italic.key && a.value == true),
+                      _quillController.getSelectionStyle().values.any(
+                        (a) =>
+                            a.key == quill.Attribute.italic.key &&
+                            a.value == true,
+                      ),
                       text: "I",
                       width: 30,
                       isItalic: true,
@@ -1602,18 +1903,51 @@ class _ResizableAndConfigurableTextBoxState
                     child: _buildToolButton(
                       Icons.format_clear,
                       () {
-                        if (_showBottomSettings) SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
+                        if (_showBottomSettings)
+                          SystemChannels.textInput.invokeMethod<void>(
+                            'TextInput.hide',
+                          );
                         final len = _quillController.document.length;
                         if (len > 0) {
                           final sel = _quillController.selection;
                           final start = _hasSelection ? sel.start : 0;
-                          final length = _hasSelection ? (sel.end - sel.start) : len;
+                          final length =
+                              _hasSelection ? (sel.end - sel.start) : len;
                           if (length > 0) {
-                            _quillController.formatText(start, length, quill.Attribute.clone(quill.Attribute.size, '16'));
-                            _quillController.formatText(start, length, quill.Attribute.clone(quill.Attribute.color, '#FF000000'));
-                            _quillController.formatText(start, length, quill.Attribute.clone(quill.Attribute.background, null));
-                            _quillController.formatText(start, length, quill.Attribute.clone(quill.Attribute.bold, null));
-                            _quillController.formatText(start, length, quill.Attribute.clone(quill.Attribute.italic, null));
+                            _quillController.formatText(
+                              start,
+                              length,
+                              quill.Attribute.clone(quill.Attribute.size, '16'),
+                            );
+                            _quillController.formatText(
+                              start,
+                              length,
+                              quill.Attribute.clone(
+                                quill.Attribute.color,
+                                '#FF000000',
+                              ),
+                            );
+                            _quillController.formatText(
+                              start,
+                              length,
+                              quill.Attribute.clone(
+                                quill.Attribute.background,
+                                null,
+                              ),
+                            );
+                            _quillController.formatText(
+                              start,
+                              length,
+                              quill.Attribute.clone(quill.Attribute.bold, null),
+                            );
+                            _quillController.formatText(
+                              start,
+                              length,
+                              quill.Attribute.clone(
+                                quill.Attribute.italic,
+                                null,
+                              ),
+                            );
                           }
                         }
                         _debouncedSaveChanges();
@@ -1664,11 +1998,10 @@ class _ResizableAndConfigurableTextBoxState
                     Colors.pink,
                   ])
                     Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 4),
+                      padding: EdgeInsets.symmetric(horizontal: 2),
                       child: InkWell(
                         onTap: () {
-                          final attr = quill.Attribute.clone(quill.Attribute.color, CustomTextStyle._toQuillColorHex(color));
-                          if (_hasSelection) _quillFormatSelection(attr); else _quillFormatWhole(attr);
+                          _applyFontColor(color);
                           setModalState(() {});
                         },
                         child: Container(
@@ -1678,15 +2011,75 @@ class _ResizableAndConfigurableTextBoxState
                             color: color,
                             shape: BoxShape.circle,
                             border: Border.all(
-                              color: _compareColors(_getQuillFontColor(), color) ? Colors.blue : Colors.grey.shade300,
-                              width: _compareColors(_getQuillFontColor(), color) ? 2 : 1,
+                              color:
+                                  _compareColors(_getQuillFontColor(), color)
+                                      ? Colors.blue
+                                      : Colors.grey.shade300,
+                              width:
+                                  _compareColors(_getQuillFontColor(), color)
+                                      ? 2
+                                      : 1,
                             ),
-                            boxShadow: _compareColors(_getQuillFontColor(), color) ? [BoxShadow(color: Colors.blue.withOpacity(0.5), blurRadius: 4)] : null,
+                            boxShadow:
+                                _compareColors(_getQuillFontColor(), color)
+                                    ? [
+                                      BoxShadow(
+                                        color: Colors.blue.withOpacity(0.5),
+                                        blurRadius: 4,
+                                      ),
+                                    ]
+                                    : null,
                           ),
-                          child: _compareColors(_getQuillFontColor(), color) ? Icon(Icons.check, color: _getContrastColor(color), size: 12) : null,
+                          child:
+                              _compareColors(_getQuillFontColor(), color)
+                                  ? Icon(
+                                    Icons.check,
+                                    color: _getContrastColor(color),
+                                    size: 12,
+                                  )
+                                  : null,
                         ),
                       ),
                     ),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 2),
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(12),
+                      onTap: () async {
+                        final color = await _showCustomColorPicker(
+                          sheetContext,
+                          _getQuillFontColor(),
+                        );
+                        if (color == null) return;
+                        _applyFontColor(color);
+                        setModalState(() {});
+                      },
+                      child: Container(
+                        width: 24,
+                        height: 24,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          gradient: const SweepGradient(
+                            colors: [
+                              Colors.red,
+                              Colors.yellow,
+                              Colors.green,
+                              Colors.cyan,
+                              Colors.blue,
+                              Colors.purple,
+                              Colors.red,
+                            ],
+                          ),
+                          border: Border.all(color: Colors.white, width: 2),
+                        ),
+                        child: const Icon(
+                          Icons.colorize,
+                          size: 13,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                  ),
                 ],
               ),
               SizedBox(height: 12),
@@ -1694,11 +2087,17 @@ class _ResizableAndConfigurableTextBoxState
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 4),
+                    padding: EdgeInsets.symmetric(horizontal: 2),
                     child: InkWell(
                       onTap: () {
-                        final attr = quill.Attribute.clone(quill.Attribute.background, null);
-                        if (_hasSelection) _quillFormatSelection(attr); else _quillFormatWhole(attr);
+                        final attr = quill.Attribute.clone(
+                          quill.Attribute.background,
+                          null,
+                        );
+                        if (_hasSelection)
+                          _quillFormatSelection(attr);
+                        else
+                          _quillFormatWhole(attr);
                         setModalState(() {});
                       },
                       child: Container(
@@ -1707,17 +2106,46 @@ class _ResizableAndConfigurableTextBoxState
                         decoration: BoxDecoration(
                           borderRadius: BorderRadius.circular(4),
                           border: Border.all(
-                            color: (_getQuillBackgroundColor() == null || _getQuillBackgroundColor() == Colors.transparent) ? Colors.blue : Colors.grey.shade300,
-                            width: (_getQuillBackgroundColor() == null || _getQuillBackgroundColor() == Colors.transparent) ? 2 : 1,
+                            color:
+                                (_getQuillBackgroundColor() == null ||
+                                        _getQuillBackgroundColor() ==
+                                            Colors.transparent)
+                                    ? Colors.blue
+                                    : Colors.grey.shade300,
+                            width:
+                                (_getQuillBackgroundColor() == null ||
+                                        _getQuillBackgroundColor() ==
+                                            Colors.transparent)
+                                    ? 2
+                                    : 1,
                           ),
                           gradient: LinearGradient(
                             colors: [Colors.white, Colors.grey.shade200],
                             begin: Alignment.topLeft,
                             end: Alignment.bottomRight,
                           ),
-                          boxShadow: (_getQuillBackgroundColor() == null || _getQuillBackgroundColor() == Colors.transparent) ? [BoxShadow(color: Colors.blue.withOpacity(0.5), blurRadius: 4)] : null,
+                          boxShadow:
+                              (_getQuillBackgroundColor() == null ||
+                                      _getQuillBackgroundColor() ==
+                                          Colors.transparent)
+                                  ? [
+                                    BoxShadow(
+                                      color: Colors.blue.withOpacity(0.5),
+                                      blurRadius: 4,
+                                    ),
+                                  ]
+                                  : null,
                         ),
-                        child: (_getQuillBackgroundColor() == null || _getQuillBackgroundColor() == Colors.transparent) ? Icon(Icons.check, color: Colors.blue, size: 12) : null,
+                        child:
+                            (_getQuillBackgroundColor() == null ||
+                                    _getQuillBackgroundColor() ==
+                                        Colors.transparent)
+                                ? Icon(
+                                  Icons.check,
+                                  color: Colors.blue,
+                                  size: 12,
+                                )
+                                : null,
                       ),
                     ),
                   ),
@@ -1733,11 +2161,10 @@ class _ResizableAndConfigurableTextBoxState
                     Colors.teal.shade100,
                   ])
                     Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 4),
+                      padding: EdgeInsets.symmetric(horizontal: 2),
                       child: InkWell(
                         onTap: () {
-                          final attr = quill.Attribute.clone(quill.Attribute.background, CustomTextStyle._toQuillColorHex(color));
-                          if (_hasSelection) _quillFormatSelection(attr); else _quillFormatWhole(attr);
+                          _applyTextBackgroundColor(color);
                           setModalState(() {});
                         },
                         child: Container(
@@ -1747,15 +2174,84 @@ class _ResizableAndConfigurableTextBoxState
                             color: color,
                             borderRadius: BorderRadius.circular(4),
                             border: Border.all(
-                              color: _compareColors(_getQuillBackgroundColor(), color) ? Colors.blue : Colors.grey.shade300,
-                              width: _compareColors(_getQuillBackgroundColor(), color) ? 2 : 1,
+                              color:
+                                  _compareColors(
+                                        _getQuillBackgroundColor(),
+                                        color,
+                                      )
+                                      ? Colors.blue
+                                      : Colors.grey.shade300,
+                              width:
+                                  _compareColors(
+                                        _getQuillBackgroundColor(),
+                                        color,
+                                      )
+                                      ? 2
+                                      : 1,
                             ),
-                            boxShadow: _compareColors(_getQuillBackgroundColor(), color) ? [BoxShadow(color: Colors.blue.withOpacity(0.5), blurRadius: 4)] : null,
+                            boxShadow:
+                                _compareColors(
+                                      _getQuillBackgroundColor(),
+                                      color,
+                                    )
+                                    ? [
+                                      BoxShadow(
+                                        color: Colors.blue.withOpacity(0.5),
+                                        blurRadius: 4,
+                                      ),
+                                    ]
+                                    : null,
                           ),
-                          child: _compareColors(_getQuillBackgroundColor(), color) ? Icon(Icons.check, color: Colors.blue, size: 12) : null,
+                          child:
+                              _compareColors(_getQuillBackgroundColor(), color)
+                                  ? Icon(
+                                    Icons.check,
+                                    color: Colors.blue,
+                                    size: 12,
+                                  )
+                                  : null,
                         ),
                       ),
                     ),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 2),
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(4),
+                      onTap: () async {
+                        final color = await _showCustomColorPicker(
+                          sheetContext,
+                          _getQuillBackgroundColor() ?? Colors.yellow.shade100,
+                        );
+                        if (color == null) return;
+                        _applyTextBackgroundColor(color);
+                        setModalState(() {});
+                      },
+                      child: Container(
+                        width: 24,
+                        height: 24,
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(4),
+                          gradient: const SweepGradient(
+                            colors: [
+                              Colors.red,
+                              Colors.yellow,
+                              Colors.green,
+                              Colors.cyan,
+                              Colors.blue,
+                              Colors.purple,
+                              Colors.red,
+                            ],
+                          ),
+                          border: Border.all(color: Colors.white, width: 2),
+                        ),
+                        child: const Icon(
+                          Icons.colorize,
+                          size: 13,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                  ),
                 ],
               ),
               Container(
@@ -1775,7 +2271,15 @@ class _ResizableAndConfigurableTextBoxState
   }
 
   // 构建工具按钮
-  Widget _buildToolButton(IconData? icon, VoidCallback onPressed, bool isActive, {String? text, double width = 32, bool isItalic = false, Color? color}) {
+  Widget _buildToolButton(
+    IconData? icon,
+    VoidCallback onPressed,
+    bool isActive, {
+    String? text,
+    double width = 32,
+    bool isItalic = false,
+    Color? color,
+  }) {
     final Color buttonColor = color ?? (isActive ? Colors.blue : Colors.black);
     final double iconSize = color == Colors.red ? 24 : 20;
 
@@ -1789,21 +2293,24 @@ class _ResizableAndConfigurableTextBoxState
           child: Container(
             height: 32,
             decoration: BoxDecoration(
-              border: isActive ? Border.all(color: Colors.blue, width: 2) : null,
+              border:
+                  isActive ? Border.all(color: Colors.blue, width: 2) : null,
               borderRadius: BorderRadius.circular(4),
             ),
             alignment: Alignment.center,
-            child: text != null
-                ? Text(
-                    text,
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                      fontStyle: isItalic ? FontStyle.italic : FontStyle.normal,
-                      color: buttonColor,
-                    ),
-                  )
-                : Icon(icon, size: iconSize, color: buttonColor),
+            child:
+                text != null
+                    ? Text(
+                      text,
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        fontStyle:
+                            isItalic ? FontStyle.italic : FontStyle.normal,
+                        color: buttonColor,
+                      ),
+                    )
+                    : Icon(icon, size: iconSize, color: buttonColor),
           ),
         ),
       ),
@@ -1811,8 +2318,19 @@ class _ResizableAndConfigurableTextBoxState
   }
 
   // 对齐方式按钮
-  Widget _buildAlignmentButton(IconData icon, TextAlign align, {bool isLarge = false}) {
-    final String alignVal = align == TextAlign.left ? 'left' : align == TextAlign.center ? 'center' : align == TextAlign.right ? 'right' : 'justify';
+  Widget _buildAlignmentButton(
+    IconData icon,
+    TextAlign align, {
+    bool isLarge = false,
+  }) {
+    final String alignVal =
+        align == TextAlign.left
+            ? 'left'
+            : align == TextAlign.center
+            ? 'center'
+            : align == TextAlign.right
+            ? 'right'
+            : 'justify';
     final bool isActive = _textStyle.textAlign == align;
 
     return IconButton(
@@ -1829,8 +2347,8 @@ class _ResizableAndConfigurableTextBoxState
       iconSize: isLarge ? 24 : 20,
       padding: EdgeInsets.all(isLarge ? 4 : 2),
       constraints: BoxConstraints(
-        minWidth: isLarge ? 40 : 32, 
-        minHeight: isLarge ? 40 : 32
+        minWidth: isLarge ? 40 : 32,
+        minHeight: isLarge ? 40 : 32,
       ),
     );
   }
@@ -1842,9 +2360,19 @@ class _ResizableAndConfigurableTextBoxState
 
   @override
   Widget build(BuildContext context) {
+    final plainText = _quillController.document
+        .toPlainText()
+        .replaceAll('\r\n', '\n')
+        .replaceFirst(RegExp(r'\n$'), '');
+    final isSingleLine =
+        !plainText.contains('\n') &&
+        _isSingleVisualLineAtWidth(plainText, _size.width);
+
     return Focus(
       onKeyEvent: (node, event) {
-        return _showBottomSettings ? KeyEventResult.handled : KeyEventResult.ignored;
+        return _showBottomSettings
+            ? KeyEventResult.handled
+            : KeyEventResult.ignored;
       },
       child: GestureDetector(
         onTap: () {
@@ -1895,40 +2423,28 @@ class _ResizableAndConfigurableTextBoxState
                 ],
               ),
             ),
-            (() {
-              final plain =
-                  _quillController.document.toPlainText().replaceAll('\r\n', '\n');
-              var measure = plain;
-              if (measure.endsWith('\n')) {
-                measure = measure.substring(0, measure.length - 1);
-              }
-              final isSingleLine =
-                  measure.trim().isNotEmpty &&
-                  !measure.contains('\n') &&
-                  _isSingleVisualLineAtWidth(measure, _size.width);
-              return Positioned(
-                left: isSingleLine ? -10 : null,
-                right: isSingleLine ? null : -10,
-                top: -12,
-                child: Opacity(
-                  opacity: 0.125,
-                  child: IconButton(
-                    icon: Icon(Icons.settings, size: 24),
-                    padding: EdgeInsets.all(4),
-                    constraints: BoxConstraints(),
-                    iconSize: 20,
-                    onPressed: () {
-                      FocusManager.instance.primaryFocus?.unfocus();
-                      setState(() {
-                        _showBottomSettings = true;
-                      });
-                      _showSettingsPanel(context);
-                    },
-                    tooltip: '文本框设置',
-                  ),
+            Positioned(
+              left: isSingleLine ? -10 : null,
+              right: isSingleLine ? null : -10,
+              top: -12,
+              child: Opacity(
+                opacity: 0.125,
+                child: IconButton(
+                  icon: const Icon(Icons.settings, size: 24),
+                  padding: const EdgeInsets.all(4),
+                  constraints: const BoxConstraints(),
+                  iconSize: 20,
+                  onPressed: () {
+                    FocusManager.instance.primaryFocus?.unfocus();
+                    setState(() {
+                      _showBottomSettings = true;
+                    });
+                    _showSettingsPanel(context);
+                  },
+                  tooltip: '文本框设置',
                 ),
-              );
-            })(),
+              ),
+            ),
             Positioned(
               right: 0,
               bottom: 0,
@@ -1949,11 +2465,7 @@ class _ResizableAndConfigurableTextBoxState
                 },
                 child: Opacity(
                   opacity: 0.25,
-                  child: Icon(
-                    Icons.zoom_out_map,
-                    size: 24,
-                    color: Colors.grey,
-                  ),
+                  child: Icon(Icons.zoom_out_map, size: 24, color: Colors.grey),
                 ),
               ),
             ),
@@ -1970,12 +2482,20 @@ class _ResizableAndConfigurableTextBoxState
   TextStyle _strokeStyleForColor(Color textColor) {
     final strokeColor = _getStrokeColorForText(textColor);
     const offsets = [
-      Offset(-1, -1), Offset(-1, 0), Offset(-1, 1),
-      Offset(0, -1), Offset(0, 1),
-      Offset(1, -1), Offset(1, 0), Offset(1, 1),
+      Offset(-1, -1),
+      Offset(-1, 0),
+      Offset(-1, 1),
+      Offset(0, -1),
+      Offset(0, 1),
+      Offset(1, -1),
+      Offset(1, 0),
+      Offset(1, 1),
     ];
     return TextStyle(
-      shadows: [for (final o in offsets) Shadow(blurRadius: 0, offset: o, color: strokeColor)],
+      shadows: [
+        for (final o in offsets)
+          Shadow(blurRadius: 0, offset: o, color: strokeColor),
+      ],
     );
   }
 
@@ -1985,157 +2505,177 @@ class _ResizableAndConfigurableTextBoxState
       child: ClipRect(
         clipBehavior: Clip.none,
         child: quill.QuillEditor.basic(
-        controller: _quillController,
-        focusNode: _focusNode,
-        scrollController: _textScrollController,
-        config: quill.QuillEditorConfig(
-          editorKey: _editorKey,
-          padding: EdgeInsets.zero,
-          placeholder: '',
-          paintCursorAboveText: true,
-          textSelectionThemeData: const TextSelectionThemeData(
-            cursorColor: Color(0xFF1565C0),
-            selectionColor: Color(0x661565C0),
-          ),
-          quillMagnifierBuilder: (Offset dragPos) => _buildMagnifierAboveText(dragPos),
-          contextMenuBuilder: (menuContext, state) {
-            final anchors = state.contextMenuAnchors;
-            final shifted = TextSelectionToolbarAnchors(
-              primaryAnchor: anchors.primaryAnchor + const Offset(70, 0),
-              secondaryAnchor: anchors.secondaryAnchor != null
-                  ? anchors.secondaryAnchor! + const Offset(70, 0)
-                  : null,
-            );
-            return TextFieldTapRegion(
-              child: AdaptiveTextSelectionToolbar(
-                anchors: shifted,
-                children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 4),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(6),
-                      boxShadow: const [
-                        BoxShadow(
-                          color: Colors.black26,
-                          blurRadius: 4,
-                          offset: Offset(0, 2),
-                        ),
-                      ],
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        IconButton(
-                          icon: const Icon(Icons.content_cut, size: 18),
-                          tooltip: '剪切',
-                          splashRadius: 18,
-                          onPressed: state.cutEnabled
-                              ? () {
-                                  state.cutSelection(
-                                    SelectionChangedCause.toolbar,
-                                  );
-                                  _quillClipboardStore.store(
-                                    _quillController.pastePlainText,
-                                    _quillController.pasteDelta,
-                                  );
-                                }
-                              : null,
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.copy, size: 18),
-                          tooltip: '复制',
-                          splashRadius: 18,
-                          onPressed: state.copyEnabled
-                              ? () {
-                                  state.copySelection(
-                                    SelectionChangedCause.toolbar,
-                                  );
-                                  _quillClipboardStore.store(
-                                    _quillController.pastePlainText,
-                                    _quillController.pasteDelta,
-                                  );
-                                }
-                              : null,
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.paste, size: 18),
-                          tooltip: '粘贴',
-                          splashRadius: 18,
-                          onPressed: state.pasteEnabled
-                              ? () => _onPaste(state)
-                              : null,
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.select_all, size: 18),
-                          tooltip: '全选',
-                          splashRadius: 18,
-                          onPressed: state.selectAllEnabled
-                              ? () => state.selectAll(
-                                    SelectionChangedCause.toolbar,
-                                  )
-                              : null,
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.wrap_text, size: 18),
-                          tooltip: '选择本行',
-                          splashRadius: 18,
-                          onPressed: () {
-                            HapticFeedback.selectionClick();
-                            _selectCurrentLine();
-                          },
-                        ),
-                        const SizedBox(width: 4),
-                        IconButton(
-                          icon: const Icon(Icons.settings, size: 18),
-                          tooltip: '文字设置',
-                          splashRadius: 18,
-                          onPressed: () {
-                            state.hideToolbar();
-                            setState(() {
-                              _showBottomSettings = true;
-                            });
-                            _showSettingsPanel(context);
-                          },
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            );
-          },
-          customStyles: quill.DefaultStyles(
-            paragraph: quill.DefaultTextBlockStyle(
-              TextStyle(
-                fontSize: _textStyle.fontSize,
-                color: _textStyle.fontColor,
-                fontWeight: FontWeight.normal,
-                fontStyle: _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
-                height: 1.23,
-                shadows: [
-                  for (final o in [const Offset(-1,-1), const Offset(-1,0), const Offset(-1,1), const Offset(0,-1), const Offset(0,1), const Offset(1,-1), const Offset(1,0), const Offset(1,1)])
-                    Shadow(blurRadius: 0, offset: o, color: _getStrokeColorForText(_textStyle.fontColor)),
-                ],
-              ),
-              const quill.HorizontalSpacing(0, 0),
-              const quill.VerticalSpacing(0, 0),
-              const quill.VerticalSpacing(0, 0),
-              null,
+          controller: _quillController,
+          focusNode: _focusNode,
+          scrollController: _textScrollController,
+          config: quill.QuillEditorConfig(
+            editorKey: _editorKey,
+            padding: EdgeInsets.zero,
+            placeholder: '',
+            paintCursorAboveText: true,
+            textSelectionThemeData: const TextSelectionThemeData(
+              cursorColor: Color(0xFF1565C0),
+              selectionColor: Color(0x661565C0),
             ),
+            quillMagnifierBuilder:
+                (Offset dragPos) => _buildMagnifierAboveText(dragPos),
+            contextMenuBuilder: (menuContext, state) {
+              final anchors = state.contextMenuAnchors;
+              final shifted = TextSelectionToolbarAnchors(
+                primaryAnchor: anchors.primaryAnchor + const Offset(70, 0),
+                secondaryAnchor:
+                    anchors.secondaryAnchor != null
+                        ? anchors.secondaryAnchor! + const Offset(70, 0)
+                        : null,
+              );
+              return TextFieldTapRegion(
+                child: AdaptiveTextSelectionToolbar(
+                  anchors: shifted,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(6),
+                        boxShadow: const [
+                          BoxShadow(
+                            color: Colors.black26,
+                            blurRadius: 4,
+                            offset: Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          IconButton(
+                            icon: const Icon(Icons.content_cut, size: 18),
+                            tooltip: '剪切',
+                            splashRadius: 18,
+                            onPressed:
+                                state.cutEnabled
+                                    ? () {
+                                      state.cutSelection(
+                                        SelectionChangedCause.toolbar,
+                                      );
+                                      _quillClipboardStore.store(
+                                        _quillController.pastePlainText,
+                                        _quillController.pasteDelta,
+                                      );
+                                    }
+                                    : null,
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.copy, size: 18),
+                            tooltip: '复制',
+                            splashRadius: 18,
+                            onPressed:
+                                state.copyEnabled
+                                    ? () {
+                                      state.copySelection(
+                                        SelectionChangedCause.toolbar,
+                                      );
+                                      _quillClipboardStore.store(
+                                        _quillController.pastePlainText,
+                                        _quillController.pasteDelta,
+                                      );
+                                    }
+                                    : null,
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.paste, size: 18),
+                            tooltip: '粘贴',
+                            splashRadius: 18,
+                            onPressed:
+                                state.pasteEnabled
+                                    ? () => _onPaste(state)
+                                    : null,
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.select_all, size: 18),
+                            tooltip: '全选',
+                            splashRadius: 18,
+                            onPressed:
+                                state.selectAllEnabled
+                                    ? () => state.selectAll(
+                                      SelectionChangedCause.toolbar,
+                                    )
+                                    : null,
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.wrap_text, size: 18),
+                            tooltip: '选择本行',
+                            splashRadius: 18,
+                            onPressed: () {
+                              HapticFeedback.selectionClick();
+                              _selectCurrentLine();
+                            },
+                          ),
+                          const SizedBox(width: 4),
+                          IconButton(
+                            icon: const Icon(Icons.settings, size: 18),
+                            tooltip: '文字设置',
+                            splashRadius: 18,
+                            onPressed: () {
+                              state.hideToolbar();
+                              setState(() {
+                                _showBottomSettings = true;
+                              });
+                              _showSettingsPanel(context);
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            },
+            customStyles: quill.DefaultStyles(
+              paragraph: quill.DefaultTextBlockStyle(
+                TextStyle(
+                  fontSize: _textStyle.fontSize,
+                  color: _textStyle.fontColor,
+                  fontWeight: FontWeight.normal,
+                  fontStyle:
+                      _textStyle.isItalic ? FontStyle.italic : FontStyle.normal,
+                  height: 1.23,
+                  shadows: [
+                    for (final o in [
+                      const Offset(-1, -1),
+                      const Offset(-1, 0),
+                      const Offset(-1, 1),
+                      const Offset(0, -1),
+                      const Offset(0, 1),
+                      const Offset(1, -1),
+                      const Offset(1, 0),
+                      const Offset(1, 1),
+                    ])
+                      Shadow(
+                        blurRadius: 0,
+                        offset: o,
+                        color: _getStrokeColorForText(_textStyle.fontColor),
+                      ),
+                  ],
+                ),
+                const quill.HorizontalSpacing(0, 0),
+                const quill.VerticalSpacing(0, 0),
+                const quill.VerticalSpacing(0, 0),
+                null,
+              ),
+            ),
+            customStyleBuilder: (quill.Attribute attr) {
+              if (attr.key == quill.Attribute.color.key && attr.value != null) {
+                var h = attr.value.toString().replaceFirst('#', '');
+                if (h.length == 6) h = 'ff$h';
+                final c = Color(int.parse(h, radix: 16));
+                return _strokeStyleForColor(c);
+              }
+              return const TextStyle();
+            },
           ),
-          customStyleBuilder: (quill.Attribute attr) {
-            if (attr.key == quill.Attribute.color.key && attr.value != null) {
-              var h = attr.value.toString().replaceFirst('#', '');
-              if (h.length == 6) h = 'ff$h';
-              final c = Color(int.parse(h, radix: 16));
-              return _strokeStyleForColor(c);
-            }
-            return const TextStyle();
-          },
         ),
       ),
-    ),
     );
   }
 

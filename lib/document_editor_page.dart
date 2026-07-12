@@ -79,6 +79,7 @@ class DocumentEditorPage extends StatefulWidget {
 class _DocumentEditorPageState extends State<DocumentEditorPage>
     with WidgetsBindingObserver, TickerProviderStateMixin {
   static const double _defaultVerticalSpacing = 2.5 * 3.779527559;
+  static const double _topInteractionSafeArea = 20.0 * 3.779527559;
   List<Map<String, dynamic>> _textBoxes = [];
   List<Map<String, dynamic>> _imageBoxes = [];
   List<Map<String, dynamic>> _audioBoxes = [];
@@ -98,6 +99,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
   int _restoreScrollAttempt = 0;
   final GlobalKey<MediaPlayerContainerState> _mediaPlayerKey =
       GlobalKey<MediaPlayerContainerState>();
+
   /// 右下角浮层正在展示图/视频时为 true，用于暂停底层背景视频。
   final ValueNotifier<bool> _foregroundMediaObscuresBackground =
       ValueNotifier<bool>(false);
@@ -130,14 +132,51 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
   late final DatabaseService _databaseService;
   int _backgroundViewRefreshTick = 0;
 
+  double _clampDocumentTop(double y) {
+    return y < _topInteractionSafeArea ? _topInteractionSafeArea : y;
+  }
+
+  double _clampDocumentY(double y, double height, double documentHeight) {
+    return y.clamp(
+      _topInteractionSafeArea,
+      math.max(_topInteractionSafeArea, documentHeight - height),
+    );
+  }
+
+  void _applyTopInteractionSafeAreaToLoadedContent() {
+    for (final box in _textBoxes) {
+      final safeY = _clampDocumentTop(_asDouble(box['positionY'], 0.0));
+      box['positionY'] = safeY;
+      if (box.containsKey('position_y')) {
+        box['position_y'] = safeY;
+      }
+    }
+    for (final box in _imageBoxes) {
+      final safeY = _clampDocumentTop(
+        _asDouble(box['positionY'] ?? box['position_y'], 0.0),
+      );
+      box['positionY'] = safeY;
+      if (box.containsKey('position_y')) {
+        box['position_y'] = safeY;
+      }
+    }
+    for (final box in _audioBoxes) {
+      box['positionY'] = _clampDocumentTop(_asDouble(box['positionY'], 0.0));
+    }
+    for (final canvas in _canvases) {
+      canvas.positionY = _clampDocumentTop(canvas.positionY);
+    }
+  }
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _databaseService = getService<DatabaseService>();
     _autoScrollSpeedSmoothed = _autoScrollSpeed;
-    _autoScrollSpeedController =
-        TextEditingController(text: _autoScrollSpeed.toStringAsFixed(0));
+    _autoScrollSpeedController = TextEditingController(
+      text: _autoScrollSpeed.toStringAsFixed(0),
+    );
     _scrollController =
         ScrollController()..addListener(() {
           setState(() {
@@ -181,9 +220,10 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
         colorValue: _backgroundColor?.value,
         textEnhanceMode: _textEnhanceMode,
         positionLocked: _isPositionLocked,
-        lastScrollOffset: _scrollController.hasClients
-            ? _scrollController.offset
-            : _currentScrollOffset,
+        lastScrollOffset:
+            _scrollController.hasClients
+                ? _scrollController.offset
+                : _currentScrollOffset,
         commitBackgroundMedia: true,
         backgroundImageOrigin: _backgroundImageOrigin,
         backgroundVideoOrigin: _backgroundVideoOrigin,
@@ -259,18 +299,14 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
             nextVid = File(videoPath);
           }
         }
-        if (nextVid == null &&
-            imagePath != null &&
-            imagePath.isNotEmpty) {
+        if (nextVid == null && imagePath != null && imagePath.isNotEmpty) {
           if (await File(imagePath).exists()) {
             nextImg = File(imagePath);
           }
         }
 
         final bool orphanBackground =
-            (videoPath != null &&
-                videoPath.isNotEmpty &&
-                nextVid == null) ||
+            (videoPath != null && videoPath.isNotEmpty && nextVid == null) ||
             (imagePath != null &&
                 imagePath.isNotEmpty &&
                 nextImg == null &&
@@ -348,7 +384,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
     final target = _pendingRestoreScrollOffset;
     if (target == null || target <= 0) return;
     if (!mounted) return;
-    SchedulerBinding.instance.addPostFrameCallback((_) => _tryRestoreScrollOffset());
+    SchedulerBinding.instance.addPostFrameCallback(
+      (_) => _tryRestoreScrollOffset(),
+    );
   }
 
   void _tryRestoreScrollOffset() {
@@ -374,7 +412,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
       _didRestoreScrollOffset = true;
       return;
     }
-    SchedulerBinding.instance.addPostFrameCallback((_) => _tryRestoreScrollOffset());
+    SchedulerBinding.instance.addPostFrameCallback(
+      (_) => _tryRestoreScrollOffset(),
+    );
   }
 
   Future<void> _pickBackgroundImage() async {
@@ -487,7 +527,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
       } else {
         final uuid = const Uuid().v4();
         final extension =
-            path.extension(picked.path).isNotEmpty ? path.extension(picked.path) : '.mp4';
+            path.extension(picked.path).isNotEmpty
+                ? path.extension(picked.path)
+                : '.mp4';
         final fileName = '$uuid$extension';
         final destinationPath = '${backgroundDir.path}/$fileName';
         await File(picked.path).copy(destinationPath);
@@ -769,6 +811,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
         _imageBoxes = imageBoxes;
         _audioBoxes = audioBoxes;
         _canvases = canvases; // 新增：设置画布
+        _applyTopInteractionSafeAreaToLoadedContent();
         _deletedTextBoxIds.clear();
         _deletedImageBoxIds.clear();
         _deletedAudioBoxIds.clear();
@@ -884,6 +927,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
     _isSaving = true;
     try {
       Logger.log('正在保存文档内容...');
+      _applyTopInteractionSafeAreaToLoadedContent();
       await _databaseService.saveTextBoxes(
         List<Map<String, dynamic>>.from(_textBoxes),
         widget.documentName,
@@ -937,10 +981,11 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
       setState(() {
         var uuid = Uuid();
         double positionX = 0.0;
-        final scrollOffset = _scrollController.hasClients
-            ? _scrollController.offset
-            : _currentScrollOffset;
-        double positionY = scrollOffset + (20.0 * 3.779527559);
+        final scrollOffset =
+            _scrollController.hasClients
+                ? _scrollController.offset
+                : _currentScrollOffset;
+        double positionY = scrollOffset + _topInteractionSafeArea;
         if (_textBoxes.isNotEmpty) {
           List<Map<String, dynamic>> textBoxesCopy = List.from(_textBoxes);
           Map<String, dynamic> bottomMostTextBox = textBoxesCopy.reduce((
@@ -998,7 +1043,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
     double screenHeight = MediaQuery.of(context).size.height;
     double scrollOffset = _scrollController.offset;
     double positionX = screenWidth / 2 - 100;
-    double positionY = scrollOffset + screenHeight / 2 - 50;
+    double positionY = _clampDocumentTop(scrollOffset + screenHeight / 2 - 50);
 
     String imageBoxId = uuid.v4();
     Map<String, dynamic> imageBox = {
@@ -1083,12 +1128,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
           };
           if (_databaseService.validateTextBoxData(newTextBox)) {
             _textBoxes.add(newTextBox);
-            _associateContentWithCanvas(
-              newId!,
-              positionX,
-              positionY,
-              'text',
-            );
+            _associateContentWithCanvas(newId!, positionX, positionY, 'text');
             Future.microtask(() {
               _debouncedSave();
             });
@@ -1287,7 +1327,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
     Future.microtask(() {
       String? newId;
       setState(() {
-        final index = _audioBoxes.indexWhere((audioBox) => audioBox['id'] == id);
+        final index = _audioBoxes.indexWhere(
+          (audioBox) => audioBox['id'] == id,
+        );
         if (index == -1) return;
         final original = _audioBoxes[index];
         final uuid = Uuid();
@@ -1326,7 +1368,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
       int index = _textBoxes.indexWhere((textBox) => textBox['id'] == id);
       if (index != -1) {
         _textBoxes[index]['positionX'] = position.dx;
-        _textBoxes[index]['positionY'] = position.dy;
+        _textBoxes[index]['positionY'] = _clampDocumentTop(position.dy);
         _contentChanged = true;
       }
     });
@@ -1370,22 +1412,23 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
       final tIdx = _textBoxes.indexWhere((b) => b['id'] == id);
       if (tIdx != -1) {
         final cur = _asDouble(_textBoxes[tIdx]['positionY'], 0.0);
-        _textBoxes[tIdx]['positionY'] = cur + deltaY;
+        _textBoxes[tIdx]['positionY'] = _clampDocumentTop(cur + deltaY);
         continue;
       }
       final iIdx = _imageBoxes.indexWhere((b) => b['id'] == id);
       if (iIdx != -1) {
         final cur = _asDouble(_imageBoxes[iIdx]['positionY'], 0.0);
-        _imageBoxes[iIdx]['positionY'] = cur + deltaY;
+        final safeY = _clampDocumentTop(cur + deltaY);
+        _imageBoxes[iIdx]['positionY'] = safeY;
         if (_imageBoxes[iIdx].containsKey('position_y')) {
-          _imageBoxes[iIdx]['position_y'] = cur + deltaY;
+          _imageBoxes[iIdx]['position_y'] = safeY;
         }
         continue;
       }
       final aIdx = _audioBoxes.indexWhere((b) => b['id'] == id);
       if (aIdx != -1) {
         final cur = _asDouble(_audioBoxes[aIdx]['positionY'], 0.0);
-        _audioBoxes[aIdx]['positionY'] = cur + deltaY;
+        _audioBoxes[aIdx]['positionY'] = _clampDocumentTop(cur + deltaY);
         continue;
       }
     }
@@ -1397,7 +1440,8 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
 
     bool inColumn(double x, double w) {
       if (column == null) return true;
-      final overlap = math.min(x + w, column.left + column.width) -
+      final overlap =
+          math.min(x + w, column.left + column.width) -
           math.max(x, column.left);
       return overlap > 10.0;
     }
@@ -1420,9 +1464,10 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
           width: w,
           height: h,
           setY: (newY) {
-            box['positionY'] = newY;
+            final safeY = _clampDocumentTop(newY);
+            box['positionY'] = safeY;
             if (box.containsKey('position_y')) {
-              box['position_y'] = newY;
+              box['position_y'] = safeY;
             }
           },
         ),
@@ -1447,9 +1492,10 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
           width: w,
           height: h,
           setY: (newY) {
-            box['positionY'] = newY;
+            final safeY = _clampDocumentTop(newY);
+            box['positionY'] = safeY;
             if (box.containsKey('position_y')) {
-              box['position_y'] = newY;
+              box['position_y'] = safeY;
             }
           },
         ),
@@ -1474,7 +1520,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
           width: w,
           height: h,
           setY: (newY) {
-            box['positionY'] = newY;
+            box['positionY'] = _clampDocumentTop(newY);
           },
         ),
       );
@@ -1495,9 +1541,10 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
           width: w,
           height: h,
           setY: (newY) {
-            final deltaY = newY - canvas.positionY;
+            final safeY = _clampDocumentTop(newY);
+            final deltaY = safeY - canvas.positionY;
             if (deltaY.abs() <= 0.0001) return;
-            canvas.positionY = newY;
+            canvas.positionY = safeY;
             _shiftCanvasChildrenY(canvas, deltaY);
           },
         ),
@@ -1512,18 +1559,21 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
     return blocks;
   }
 
-  bool _smartRelayoutFromAnchor(
-    _FlowBlock anchor,
-    List<_FlowBlock> blocks,
-  ) {
+  bool _smartRelayoutFromAnchor(_FlowBlock anchor, List<_FlowBlock> blocks) {
     final anchorRight = anchor.x + anchor.width;
     bool overlaps(_FlowBlock b) {
-      final overlap = math.min(b.x + b.width, anchorRight) - math.max(b.x, anchor.x);
+      final overlap =
+          math.min(b.x + b.width, anchorRight) - math.max(b.x, anchor.x);
       return overlap > 10.0;
     }
 
     final below =
-        blocks.where((b) => b.id != anchor.id && b.y >= anchor.y - 0.0001 && overlaps(b)).toList();
+        blocks
+            .where(
+              (b) =>
+                  b.id != anchor.id && b.y >= anchor.y - 0.0001 && overlaps(b),
+            )
+            .toList();
     below.sort((a, b) {
       final dy = a.y.compareTo(b.y);
       if (dy != 0) return dy;
@@ -1547,12 +1597,14 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
   void _maybeSmartRelayoutAfterBlockChanged(String id, _FlowBlockType type) {
     if (_isPositionLocked) return;
     if (!_smartLayoutEnabled) return;
-    if (type != _FlowBlockType.canvas && _isContentInAnyCanvas(id, type)) return;
+    if (type != _FlowBlockType.canvas && _isContentInAnyCanvas(id, type))
+      return;
 
     setState(() {
       final blocks = _buildFlowBlocks();
-      final anchorIndex =
-          blocks.indexWhere((b) => b.id == id && b.type == type);
+      final anchorIndex = blocks.indexWhere(
+        (b) => b.id == id && b.type == type,
+      );
       if (anchorIndex == -1) return;
       final anchor = blocks[anchorIndex];
       final changed = _smartRelayoutFromAnchor(anchor, blocks);
@@ -1621,11 +1673,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
     final bestY = (best['positionY'] as num?)?.toDouble() ?? 0.0;
     final bestW = (best['width'] as num?)?.toDouble() ?? 0.0;
     final bestH = (best['height'] as num?)?.toDouble() ?? 0.0;
-    return {
-      'x': bestX,
-      'width': bestW,
-      'bottomY': bestY + bestH,
-    };
+    return {'x': bestX, 'width': bestW, 'bottomY': bestY + bestH};
   }
 
   double? _getWidestTextBoxWidth() {
@@ -1692,8 +1740,13 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
     final estimatedHeights =
         chunks
             .map(
-              (t) =>
-                  _estimateTextBoxHeightForPlainText(t, w, fontSize, isItalic, textAlign),
+              (t) => _estimateTextBoxHeightForPlainText(
+                t,
+                w,
+                fontSize,
+                isItalic,
+                textAlign,
+              ),
             )
             .toList();
     double pushDown = 0.0;
@@ -1807,7 +1860,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
       int index = _imageBoxes.indexWhere((imageBox) => imageBox['id'] == id);
       if (index != -1) {
         _imageBoxes[index]['positionX'] = position.dx;
-        _imageBoxes[index]['positionY'] = position.dy;
+        _imageBoxes[index]['positionY'] = _clampDocumentTop(position.dy);
         _contentChanged = true;
       }
     });
@@ -1875,7 +1928,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
       double screenHeight = MediaQuery.of(context).size.height;
       double scrollOffset = _scrollController.offset;
       double positionX = screenWidth / 2 - 28;
-      double positionY = scrollOffset + screenHeight / 2 - 28;
+      double positionY = _clampDocumentTop(
+        scrollOffset + screenHeight / 2 - 28,
+      );
 
       String audioBoxId = uuid.v4();
       Map<String, dynamic> newAudioBox = {
@@ -1909,7 +1964,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
         id: uuid.v4(),
         documentName: widget.documentName,
         positionX: screenWidth / 2 - 150, // 画布默认宽度300，居中显示
-        positionY: scrollOffset + screenHeight / 2 - 100, // 画布默认高度200，居中显示
+        positionY: _clampDocumentTop(
+          scrollOffset + screenHeight / 2 - 100,
+        ), // 画布默认高度200，居中显示
         width: 300.0,
         height: 200.0,
         isFlipped: false,
@@ -1927,7 +1984,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
     if (index != -1) {
       setState(() {
         _audioBoxes[index]['positionX'] = position.dx;
-        _audioBoxes[index]['positionY'] = position.dy;
+        _audioBoxes[index]['positionY'] = _clampDocumentTop(position.dy);
         _contentChanged = true;
       });
     }
@@ -2283,6 +2340,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
 
   // 新增：更新画布
   void _updateCanvas(FlippableCanvas canvas) {
+    canvas.positionY = _clampDocumentTop(canvas.positionY);
     setState(() {
       int index = _canvases.indexWhere((c) => c.id == canvas.id);
       if (index != -1) {
@@ -2602,6 +2660,8 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
                 .toList()
             : [];
 
+    _applyTopInteractionSafeAreaToLoadedContent();
+
     _deletedTextBoxIds = List<String>.from(historyState['deletedTextBoxIds']);
     _deletedImageBoxIds = List<String>.from(historyState['deletedImageBoxIds']);
     _deletedAudioBoxIds =
@@ -2655,9 +2715,10 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
       colorValue: _backgroundColor?.value,
       textEnhanceMode: _textEnhanceMode,
       positionLocked: _isPositionLocked,
-      lastScrollOffset: _scrollController.hasClients
-          ? _scrollController.offset
-          : _currentScrollOffset,
+      lastScrollOffset:
+          _scrollController.hasClients
+              ? _scrollController.offset
+              : _currentScrollOffset,
       commitBackgroundMedia: true,
       backgroundImageOrigin: _backgroundImageOrigin,
       backgroundVideoOrigin: _backgroundVideoOrigin,
@@ -2837,7 +2898,8 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
     if (item.type != MediaType.image && item.type != MediaType.video) {
       return false;
     }
-    final hasKenBurnsCenter = item.kenBurnsCenterX != null || item.kenBurnsCenterY != null;
+    final hasKenBurnsCenter =
+        item.kenBurnsCenterX != null || item.kenBurnsCenterY != null;
     return p.isLikelyIdentityTransform &&
         p.basisW == null &&
         p.basisH == null &&
@@ -2903,6 +2965,7 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
     _isSaving = true;
     try {
       Logger.log('正在保存文档内容...');
+      _applyTopInteractionSafeAreaToLoadedContent();
       await _databaseService.saveTextBoxes(
         List<Map<String, dynamic>>.from(_textBoxes),
         widget.documentName,
@@ -2975,8 +3038,10 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
           (_autoScrollSpeed - _autoScrollSpeedSmoothed) * alpha;
       final speed = _autoScrollSpeedSmoothed;
       if (speed <= 0) return;
-      final target = (current + speed * stableDt)
-          .clamp(pos.minScrollExtent, pos.maxScrollExtent);
+      final target = (current + speed * stableDt).clamp(
+        pos.minScrollExtent,
+        pos.maxScrollExtent,
+      );
       if (target != current) {
         _scrollController.jumpTo(target);
       }
@@ -3127,14 +3192,14 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
                                     ),
                                     textAlign: TextAlign.right,
                                     onTap: () {
-                                      _autoScrollSpeedController.selection =
-                                          TextSelection(
-                                            baseOffset: 0,
-                                            extentOffset:
-                                                _autoScrollSpeedController
-                                                    .text
-                                                    .length,
-                                          );
+                                      _autoScrollSpeedController
+                                          .selection = TextSelection(
+                                        baseOffset: 0,
+                                        extentOffset:
+                                            _autoScrollSpeedController
+                                                .text
+                                                .length,
+                                      );
                                     },
                                     onChanged: (raw) {
                                       final n = int.tryParse(raw.trim());
@@ -3151,25 +3216,24 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
                                     },
                                     onSubmitted: (raw) {
                                       final n = int.tryParse(raw.trim());
-                                      final clamped =
-                                          (n ?? _autoScrollSpeed.round())
-                                              .clamp(10, 300);
+                                      final clamped = (n ??
+                                              _autoScrollSpeed.round())
+                                          .clamp(10, 300);
                                       final normalized = clamped.toString();
                                       _autoScrollSpeed = clamped.toDouble();
                                       if (!_autoScrollEnabled) {
                                         _autoScrollSpeedSmoothed =
                                             _autoScrollSpeed;
                                       }
-                                      _autoScrollSpeedController.value =
-                                          _autoScrollSpeedController.value
-                                              .copyWith(
-                                                text: normalized,
-                                                selection:
-                                                    TextSelection.collapsed(
-                                                      offset:
-                                                          normalized.length,
-                                                    ),
-                                              );
+                                      _autoScrollSpeedController
+                                          .value = _autoScrollSpeedController
+                                          .value
+                                          .copyWith(
+                                            text: normalized,
+                                            selection: TextSelection.collapsed(
+                                              offset: normalized.length,
+                                            ),
+                                          );
                                       setSheetState(() {});
                                     },
                                   ),
@@ -3180,7 +3244,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
                         ),
                       ),
                     ListTile(
-                      leading: Icon(_isTemplate ? Icons.star : Icons.star_border),
+                      leading: Icon(
+                        _isTemplate ? Icons.star : Icons.star_border,
+                      ),
                       title: Text(_isTemplate ? '取消设为模板' : '设为模板'),
                       onTap: () {
                         Navigator.pop(context);
@@ -3341,7 +3407,10 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
                         ? Icons.auto_fix_high
                         : Icons.auto_fix_off,
                     size: 20,
-                    color: _smartLayoutEnabled ? Colors.orangeAccent : Colors.white,
+                    color:
+                        _smartLayoutEnabled
+                            ? Colors.orangeAccent
+                            : Colors.white,
                     shadows: FloatingUiShadows.whiteIcon,
                   ),
                   onPressed: () {
@@ -3421,9 +3490,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
                 children: [
                   // 背景与右下角媒体浮层：不受输入法 viewInsets 影响，避免比例/位置随键盘变化
                   MediaQuery(
-                    data: MediaQuery.of(context).copyWith(
-                      viewInsets: EdgeInsets.zero,
-                    ),
+                    data: MediaQuery.of(
+                      context,
+                    ).copyWith(viewInsets: EdgeInsets.zero),
                     child: Stack(
                       fit: StackFit.expand,
                       children: [
@@ -3496,302 +3565,318 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
                                 child: const SizedBox.expand(),
                               ),
                             ),
-                          // 新增：画布组件（放在最底层，但在背景之上）
-                          ..._canvases.map<Widget>((canvas) {
-                            return Positioned(
-                              key: ValueKey(
-                                'canvas_${canvas.id}_r$_restoreGeneration',
-                              ),
-                              left: canvas.positionX,
-                              top: canvas.positionY,
-                              child: FlippableCanvasWidget(
-                                canvas: canvas,
-                                onCanvasUpdated: (c) {
-                                  _updateCanvas(c);
-                                  _canvasHistoryDebounce?.cancel();
-                                  _canvasHistoryDebounce = Timer(
-                                    const Duration(milliseconds: 400),
-                                    () {
+                            // 新增：画布组件（放在最底层，但在背景之上）
+                            ..._canvases.map<Widget>((canvas) {
+                              return Positioned(
+                                key: ValueKey(
+                                  'canvas_${canvas.id}_r$_restoreGeneration',
+                                ),
+                                left: canvas.positionX,
+                                top: canvas.positionY,
+                                child: FlippableCanvasWidget(
+                                  canvas: canvas,
+                                  onCanvasUpdated: (c) {
+                                    _updateCanvas(c);
+                                    _canvasHistoryDebounce?.cancel();
+                                    _canvasHistoryDebounce = Timer(
+                                      const Duration(milliseconds: 400),
+                                      () {
+                                        _maybeSmartRelayoutAfterBlockChanged(
+                                          c.id,
+                                          _FlowBlockType.canvas,
+                                        );
+                                        _contentChanged = true;
+                                        _debouncedSave();
+                                        _saveStateToHistory();
+                                      },
+                                    );
+                                  },
+                                  onSettingsPressed:
+                                      () => _deleteCanvas(canvas.id),
+                                  onCopyCurrentSideToOther:
+                                      () =>
+                                          _copyCanvasCurrentSideToOther(canvas),
+                                  onMoveCurrentSideToOther:
+                                      () =>
+                                          _moveCanvasCurrentSideToOther(canvas),
+                                  onDeleteCurrentSideContent:
+                                      () => _deleteCanvasCurrentSideContent(
+                                        canvas,
+                                      ),
+                                  isPositionLocked: _isPositionLocked,
+                                ),
+                              );
+                            }),
+                            ...List<Map<String, dynamic>>.from(_imageBoxes)
+                                .where(
+                                  (data) =>
+                                      _shouldShowContent(data['id'], 'image'),
+                                )
+                                .map<Widget>((data) {
+                                  // Determine whether this image belongs to a canvas
+                                  FlippableCanvas? ownerCanvas;
+                                  for (var c in _canvases) {
+                                    if (c.containsImageBox(data['id'])) {
+                                      ownerCanvas = c;
+                                      break;
+                                    }
+                                  }
+                                  // default values
+                                  double left = data['positionX'];
+                                  double top = data['positionY'];
+                                  Widget child = GestureDetector(
+                                    behavior: HitTestBehavior.translucent,
+                                    onPanUpdate: (details) {
+                                      if (_isPositionLocked) return;
+                                      setState(() {
+                                        double newDx =
+                                            data['positionX'] +
+                                            details.delta.dx;
+                                        double newDy =
+                                            data['positionY'] +
+                                            details.delta.dy;
+                                        double documentWidth =
+                                            MediaQuery.of(context).size.width;
+                                        double documentHeight = totalHeight;
+                                        newDx = newDx.clamp(
+                                          0.0,
+                                          documentWidth - data['width'],
+                                        );
+                                        newDy = _clampDocumentY(
+                                          newDy,
+                                          data['height'],
+                                          documentHeight,
+                                        );
+                                        data['positionX'] = newDx;
+                                        data['positionY'] = newDy;
+                                        _updateImageBoxPosition(
+                                          data['id'],
+                                          Offset(newDx, newDy),
+                                        );
+                                      });
+                                    },
+                                    onPanEnd: (_) {
+                                      _reassociateContentWithCanvas(
+                                        data['id'],
+                                        'image',
+                                      );
                                       _maybeSmartRelayoutAfterBlockChanged(
-                                        c.id,
-                                        _FlowBlockType.canvas,
+                                        data['id'],
+                                        _FlowBlockType.image,
                                       );
                                       _contentChanged = true;
                                       _debouncedSave();
                                       _saveStateToHistory();
                                     },
-                                  );
-                                },
-                                onSettingsPressed:
-                                    () => _deleteCanvas(canvas.id),
-                                onCopyCurrentSideToOther:
-                                    () => _copyCanvasCurrentSideToOther(canvas),
-                                onMoveCurrentSideToOther:
-                                    () => _moveCanvasCurrentSideToOther(canvas),
-                                onDeleteCurrentSideContent:
-                                    () =>
-                                        _deleteCanvasCurrentSideContent(canvas),
-                                isPositionLocked: _isPositionLocked,
-                              ),
-                            );
-                          }),
-                          ...List<Map<String, dynamic>>.from(_imageBoxes)
-                              .where(
-                                (data) =>
-                                    _shouldShowContent(data['id'], 'image'),
-                              )
-                              .map<Widget>((data) {
-                                // Determine whether this image belongs to a canvas
-                                FlippableCanvas? ownerCanvas;
-                                for (var c in _canvases) {
-                                  if (c.containsImageBox(data['id'])) {
-                                    ownerCanvas = c;
-                                    break;
-                                  }
-                                }
-                                // default values
-                                double left = data['positionX'];
-                                double top = data['positionY'];
-                                Widget child = GestureDetector(
-                                  behavior: HitTestBehavior.translucent,
-                                  onPanUpdate: (details) {
-                                    if (_isPositionLocked) return;
-                                    setState(() {
-                                      double newDx =
-                                          data['positionX'] + details.delta.dx;
-                                      double newDy =
-                                          data['positionY'] + details.delta.dy;
-                                      double documentWidth =
-                                          MediaQuery.of(context).size.width;
-                                      double documentHeight = totalHeight;
-                                      newDx = newDx.clamp(
-                                        0.0,
-                                        documentWidth - data['width'],
-                                      );
-                                      newDy = newDy.clamp(
-                                        0.0,
-                                        documentHeight - data['height'],
-                                      );
-                                      data['positionX'] = newDx;
-                                      data['positionY'] = newDy;
-                                      _updateImageBoxPosition(
-                                        data['id'],
-                                        Offset(newDx, newDy),
-                                      );
-                                    });
-                                  },
-                                  onPanEnd: (_) {
-                                    _reassociateContentWithCanvas(
-                                      data['id'],
-                                      'image',
-                                    );
-                                    _maybeSmartRelayoutAfterBlockChanged(
-                                      data['id'],
-                                      _FlowBlockType.image,
-                                    );
-                                    _contentChanged = true;
-                                    _debouncedSave();
-                                    _saveStateToHistory();
-                                  },
-                                  child: ResizableImageBox(
-                                    initialSize: Size(
-                                      data['width'],
-                                      data['height'],
+                                    child: ResizableImageBox(
+                                      initialSize: Size(
+                                        data['width'],
+                                        data['height'],
+                                      ),
+                                      imagePath: data['imagePath'],
+                                      isPositionLocked: _isPositionLocked,
+                                      onResize: (size) {
+                                        _updateImageBox(
+                                          data['id'],
+                                          size,
+                                          rebuild: false,
+                                        );
+                                        _debouncedSave();
+                                      },
+                                      onResizeEnd: (size) {
+                                        _updateImageBox(data['id'], size);
+                                        _maybeSmartRelayoutAfterBlockChanged(
+                                          data['id'],
+                                          _FlowBlockType.image,
+                                        );
+                                        _saveStateToHistory();
+                                      },
+                                      onSettingsPressed:
+                                          () =>
+                                              _showImageBoxOptions(data['id']),
                                     ),
-                                    imagePath: data['imagePath'],
-                                    isPositionLocked: _isPositionLocked,
-                                    onResize: (size) {
-                                      _updateImageBox(
-                                        data['id'],
-                                        size,
-                                        rebuild: false,
-                                      );
-                                      _debouncedSave();
+                                  );
+
+                                  // If it belongs to a canvas and that canvas is flipped, compute mirrored transform
+                                  // 保持内容正常方向（不镜像）
+
+                                  return Positioned(
+                                    key: ValueKey(
+                                      'img_${data['id']}_r$_restoreGeneration',
+                                    ),
+                                    left: left,
+                                    top: top,
+                                    child: child,
+                                  );
+                                }),
+                            ...List<Map<String, dynamic>>.from(_textBoxes)
+                                .where(
+                                  (data) =>
+                                      _shouldShowContent(data['id'], 'text'),
+                                )
+                                .map<Widget>((data) {
+                                  FlippableCanvas? ownerCanvas;
+                                  for (var c in _canvases) {
+                                    if (c.containsTextBox(data['id'])) {
+                                      ownerCanvas = c;
+                                      break;
+                                    }
+                                  }
+
+                                  double left = data['positionX'];
+                                  double top = data['positionY'];
+                                  Widget child = GestureDetector(
+                                    behavior: HitTestBehavior.translucent,
+                                    onPanUpdate: (details) {
+                                      if (_isPositionLocked) return;
+                                      setState(() {
+                                        double newDx =
+                                            data['positionX'] +
+                                            details.delta.dx;
+                                        double newDy =
+                                            data['positionY'] +
+                                            details.delta.dy;
+                                        double documentWidth =
+                                            MediaQuery.of(context).size.width;
+                                        double documentHeight = totalHeight;
+                                        newDx = newDx.clamp(
+                                          0.0,
+                                          documentWidth - data['width'],
+                                        );
+                                        newDy = _clampDocumentY(
+                                          newDy,
+                                          data['height'],
+                                          documentHeight,
+                                        );
+                                        data['positionX'] = newDx;
+                                        data['positionY'] = newDy;
+                                        _updateTextBoxPosition(
+                                          data['id'],
+                                          Offset(newDx, newDy),
+                                        );
+                                      });
                                     },
-                                    onResizeEnd: (size) {
-                                      _updateImageBox(data['id'], size);
+                                    onPanEnd: (_) {
+                                      _reassociateContentWithCanvas(
+                                        data['id'],
+                                        'text',
+                                      );
                                       _maybeSmartRelayoutAfterBlockChanged(
                                         data['id'],
-                                        _FlowBlockType.image,
+                                        _FlowBlockType.text,
                                       );
+                                      _contentChanged = true;
+                                      _debouncedSave();
                                       _saveStateToHistory();
                                     },
-                                    onSettingsPressed:
-                                        () => _showImageBoxOptions(data['id']),
-                                  ),
-                                );
+                                    child: _buildTextBox(data),
+                                  );
 
-                                // If it belongs to a canvas and that canvas is flipped, compute mirrored transform
-                                // 保持内容正常方向（不镜像）
+                                  // 保持文本正常方向
 
-                                return Positioned(
-                                  key: ValueKey(
-                                    'img_${data['id']}_r$_restoreGeneration',
-                                  ),
-                                  left: left,
-                                  top: top,
-                                  child: child,
-                                );
-                              }),
-                          ...List<Map<String, dynamic>>.from(_textBoxes)
-                              .where(
-                                (data) =>
-                                    _shouldShowContent(data['id'], 'text'),
-                              )
-                              .map<Widget>((data) {
-                                FlippableCanvas? ownerCanvas;
-                                for (var c in _canvases) {
-                                  if (c.containsTextBox(data['id'])) {
-                                    ownerCanvas = c;
-                                    break;
-                                  }
-                                }
-
-                                double left = data['positionX'];
-                                double top = data['positionY'];
-                                Widget child = GestureDetector(
-                                  behavior: HitTestBehavior.translucent,
-                                  onPanUpdate: (details) {
-                                    if (_isPositionLocked) return;
-                                    setState(() {
-                                      double newDx =
-                                          data['positionX'] + details.delta.dx;
-                                      double newDy =
-                                          data['positionY'] + details.delta.dy;
-                                      double documentWidth =
-                                          MediaQuery.of(context).size.width;
-                                      double documentHeight = totalHeight;
-                                      newDx = newDx.clamp(
-                                        0.0,
-                                        documentWidth - data['width'],
-                                      );
-                                      newDy = newDy.clamp(
-                                        0.0,
-                                        documentHeight - data['height'],
-                                      );
-                                      data['positionX'] = newDx;
-                                      data['positionY'] = newDy;
-                                      _updateTextBoxPosition(
-                                        data['id'],
-                                        Offset(newDx, newDy),
-                                      );
-                                    });
-                                  },
-                                  onPanEnd: (_) {
-                                    _reassociateContentWithCanvas(
-                                      data['id'],
-                                      'text',
-                                    );
-                                    _maybeSmartRelayoutAfterBlockChanged(
-                                      data['id'],
-                                      _FlowBlockType.text,
-                                    );
-                                    _contentChanged = true;
-                                    _debouncedSave();
-                                    _saveStateToHistory();
-                                  },
-                                  child: _buildTextBox(data),
-                                );
-
-                                // 保持文本正常方向
-
-                                return Positioned(
-                                  key: ValueKey(
-                                    'txt_${data['id']}_r$_restoreGeneration',
-                                  ),
-                                  left: left,
-                                  top: top,
-                                  child: child,
-                                );
-                              }),
-                          ..._audioBoxes
-                              .where(
-                                (data) =>
-                                    _shouldShowContent(data['id'], 'audio'),
-                              )
-                              .map<Widget>((data) {
-                                FlippableCanvas? ownerCanvas;
-                                for (var c in _canvases) {
-                                  if (c.containsAudioBox(data['id'])) {
-                                    ownerCanvas = c;
-                                    break;
-                                  }
-                                }
-
-                                double left = data['positionX'];
-                                double top = data['positionY'];
-                                Widget child = GestureDetector(
-                                  behavior: HitTestBehavior.translucent,
-                                  onPanUpdate: (details) {
-                                    if (_isPositionLocked) return;
-                                    setState(() {
-                                      double newDx =
-                                          data['positionX'] + details.delta.dx;
-                                      double newDy =
-                                          data['positionY'] + details.delta.dy;
-                                      double documentWidth =
-                                          MediaQuery.of(context).size.width;
-                                      double documentHeight = totalHeight;
-                                      newDx = newDx.clamp(
-                                        0.0,
-                                        documentWidth - 37.3,
-                                      );
-                                      newDy = newDy.clamp(
-                                        0.0,
-                                        documentHeight - 37.3,
-                                      );
-                                      data['positionX'] = newDx;
-                                      data['positionY'] = newDy;
-                                      _updateAudioBoxPosition(
-                                        data['id'],
-                                        Offset(newDx, newDy),
-                                      );
-                                    });
-                                  },
-                                  onPanEnd: (_) {
-                                    _reassociateContentWithCanvas(
-                                      data['id'],
-                                      'audio',
-                                    );
-                                    _maybeSmartRelayoutAfterBlockChanged(
-                                      data['id'],
-                                      _FlowBlockType.audio,
-                                    );
-                                    if (!_isSaving) {
-                                      _debouncedSave();
+                                  return Positioned(
+                                    key: ValueKey(
+                                      'txt_${data['id']}_r$_restoreGeneration',
+                                    ),
+                                    left: left,
+                                    top: top,
+                                    child: child,
+                                  );
+                                }),
+                            ..._audioBoxes
+                                .where(
+                                  (data) =>
+                                      _shouldShowContent(data['id'], 'audio'),
+                                )
+                                .map<Widget>((data) {
+                                  FlippableCanvas? ownerCanvas;
+                                  for (var c in _canvases) {
+                                    if (c.containsAudioBox(data['id'])) {
+                                      ownerCanvas = c;
+                                      break;
                                     }
-                                    _contentChanged = true;
-                                    _saveStateToHistory();
-                                  },
-                                  child: ResizableAudioBox(
-                                    audioPath: data['audioPath'] ?? '',
-                                    onIsRecording:
-                                        (isRecording) =>
-                                            _handleAudioRecordingState(
-                                              data['id'],
-                                              isRecording,
-                                            ),
-                                    onSettingsPressed:
-                                        () => _showAudioBoxOptions(data['id']),
-                                    onPathUpdated:
-                                        (path) =>
-                                            _updateAudioPath(data['id'], path),
-                                    startRecording:
-                                        _recordingAudioBoxId == data['id'],
-                                  ),
-                                );
+                                  }
 
-                                // 保持音频控件正常方向
+                                  double left = data['positionX'];
+                                  double top = data['positionY'];
+                                  Widget child = GestureDetector(
+                                    behavior: HitTestBehavior.translucent,
+                                    onPanUpdate: (details) {
+                                      if (_isPositionLocked) return;
+                                      setState(() {
+                                        double newDx =
+                                            data['positionX'] +
+                                            details.delta.dx;
+                                        double newDy =
+                                            data['positionY'] +
+                                            details.delta.dy;
+                                        double documentWidth =
+                                            MediaQuery.of(context).size.width;
+                                        double documentHeight = totalHeight;
+                                        newDx = newDx.clamp(
+                                          0.0,
+                                          documentWidth - 37.3,
+                                        );
+                                        newDy = _clampDocumentY(
+                                          newDy,
+                                          37.3,
+                                          documentHeight,
+                                        );
+                                        data['positionX'] = newDx;
+                                        data['positionY'] = newDy;
+                                        _updateAudioBoxPosition(
+                                          data['id'],
+                                          Offset(newDx, newDy),
+                                        );
+                                      });
+                                    },
+                                    onPanEnd: (_) {
+                                      _reassociateContentWithCanvas(
+                                        data['id'],
+                                        'audio',
+                                      );
+                                      _maybeSmartRelayoutAfterBlockChanged(
+                                        data['id'],
+                                        _FlowBlockType.audio,
+                                      );
+                                      if (!_isSaving) {
+                                        _debouncedSave();
+                                      }
+                                      _contentChanged = true;
+                                      _saveStateToHistory();
+                                    },
+                                    child: ResizableAudioBox(
+                                      audioPath: data['audioPath'] ?? '',
+                                      onIsRecording:
+                                          (isRecording) =>
+                                              _handleAudioRecordingState(
+                                                data['id'],
+                                                isRecording,
+                                              ),
+                                      onSettingsPressed:
+                                          () =>
+                                              _showAudioBoxOptions(data['id']),
+                                      onPathUpdated:
+                                          (path) => _updateAudioPath(
+                                            data['id'],
+                                            path,
+                                          ),
+                                      startRecording:
+                                          _recordingAudioBoxId == data['id'],
+                                    ),
+                                  );
 
-                                return Positioned(
-                                  key: ValueKey(
-                                    'aud_${data['id']}_r$_restoreGeneration',
-                                  ),
-                                  left: left,
-                                  top: top,
-                                  child: child,
-                                );
-                              }),
+                                  // 保持音频控件正常方向
+
+                                  return Positioned(
+                                    key: ValueKey(
+                                      'aud_${data['id']}_r$_restoreGeneration',
+                                    ),
+                                    left: left,
+                                    top: top,
+                                    child: child,
+                                  );
+                                }),
                           ],
                         ),
                       ),
@@ -3934,7 +4019,9 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
                       );
                       _deleteImageBox(id);
                       if (!wasInCanvas) {
-                        _maybeSmartRelayoutAfterDeletion(Rect.fromLTWH(x, y, w, 1));
+                        _maybeSmartRelayoutAfterDeletion(
+                          Rect.fromLTWH(x, y, w, 1),
+                        );
                       }
                       _debouncedSave();
                       _saveStateToHistory();
@@ -4043,9 +4130,12 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
       onDeleteCurrent: () {
         Future.microtask(() {
           final idx = _textBoxes.indexWhere((b) => b['id'] == data['id']);
-          final x = idx == -1 ? 0.0 : _asDouble(_textBoxes[idx]['positionX'], 0.0);
-          final y = idx == -1 ? 0.0 : _asDouble(_textBoxes[idx]['positionY'], 0.0);
-          final w = idx == -1 ? 200.0 : _asDouble(_textBoxes[idx]['width'], 200.0);
+          final x =
+              idx == -1 ? 0.0 : _asDouble(_textBoxes[idx]['positionX'], 0.0);
+          final y =
+              idx == -1 ? 0.0 : _asDouble(_textBoxes[idx]['positionY'], 0.0);
+          final w =
+              idx == -1 ? 200.0 : _asDouble(_textBoxes[idx]['width'], 200.0);
           final wasInCanvas = _isContentInAnyCanvas(
             data['id'],
             _FlowBlockType.text,
