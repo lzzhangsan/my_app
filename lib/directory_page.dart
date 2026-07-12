@@ -1115,9 +1115,62 @@ class _DirectoryPageState extends State<DirectoryPage>
                 subtitle: const Text('导出为无分页接缝的连续 PDF'),
                 onTap: () {
                   Navigator.pop(sheetContext);
+                  _showPdfLayoutSheet(documentName);
+                },
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  void _showPdfLayoutSheet(String documentName) {
+    showModalBottomSheet(
+      context: context,
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.fit_screen_outlined),
+                title: const Text('铺满 A4 宽度'),
+                subtitle: const Text('适合直接阅读，内容按整页宽度打印'),
+                onTap: () {
+                  Navigator.pop(sheetContext);
                   _exportVisualDocument(
                     documentName,
                     DocumentVisualExportFormat.pdf,
+                    pdfLayout: DocumentPdfExportLayout.fullWidth,
+                  );
+                },
+              ),
+              const Divider(height: 1),
+              ListTile(
+                leading: const Icon(Icons.view_column_outlined),
+                title: const Text('A4 双栏半宽：左-右顺序'),
+                subtitle: const Text('每页先排左栏，再排同一页右栏'),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  _exportVisualDocument(
+                    documentName,
+                    DocumentVisualExportFormat.pdf,
+                    pdfLayout: DocumentPdfExportLayout.twoColumnLeftRight,
+                  );
+                },
+              ),
+              const Divider(height: 1),
+              ListTile(
+                leading: const Icon(Icons.vertical_split_outlined),
+                title: const Text('A4 双栏半宽：先左后右'),
+                subtitle: const Text('先连续铺满各页左栏，再铺满各页右栏'),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  _exportVisualDocument(
+                    documentName,
+                    DocumentVisualExportFormat.pdf,
+                    pdfLayout: DocumentPdfExportLayout.twoColumnTopBottom,
                   );
                 },
               ),
@@ -1130,8 +1183,9 @@ class _DirectoryPageState extends State<DirectoryPage>
 
   Future<void> _exportVisualDocument(
     String documentName,
-    DocumentVisualExportFormat format,
-  ) async {
+    DocumentVisualExportFormat format, {
+    DocumentPdfExportLayout pdfLayout = DocumentPdfExportLayout.fullWidth,
+  }) async {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -1148,7 +1202,12 @@ class _DirectoryPageState extends State<DirectoryPage>
       final exporter = DocumentVisualExportService(
         getService<DatabaseService>(),
       );
-      final paths = await exporter.export(context, documentName, format);
+      final paths = await exporter.export(
+        context,
+        documentName,
+        format,
+        pdfLayout: pdfLayout,
+      );
       if (!mounted) return;
       final files = paths.map(XFile.new).toList();
       await Share.shareXFiles(

@@ -16,6 +16,40 @@ import 'database_service.dart';
 
 enum DocumentVisualExportFormat { images, pdf }
 
+enum DocumentPdfExportLayout {
+  fullWidth,
+  twoColumnLeftRight,
+  twoColumnTopBottom,
+}
+
+class _PdfImageSlice {
+  const _PdfImageSlice({
+    required this.sourceY,
+    required this.destinationX,
+    required this.width,
+    required this.height,
+  });
+
+  final int sourceY;
+  final int destinationX;
+  final int width;
+  final int height;
+}
+
+class _TwoColumnSlicePlan {
+  const _TwoColumnSlicePlan({
+    required this.leftSourceY,
+    required this.leftHeight,
+    required this.rightSourceY,
+    required this.rightHeight,
+  });
+
+  final int leftSourceY;
+  final int leftHeight;
+  final int rightSourceY;
+  final int rightHeight;
+}
+
 class DocumentVisualExportService {
   DocumentVisualExportService(this._databaseService);
 
@@ -25,8 +59,9 @@ class DocumentVisualExportService {
   Future<List<String>> export(
     BuildContext context,
     String documentName,
-    DocumentVisualExportFormat format,
-  ) async {
+    DocumentVisualExportFormat format, {
+    DocumentPdfExportLayout pdfLayout = DocumentPdfExportLayout.fullWidth,
+  }) async {
     final textBoxes = await _databaseService.getTextBoxesByDocument(
       documentName,
     );
@@ -127,20 +162,214 @@ class DocumentVisualExportService {
     final document = pw.Document();
     final decodedLongImage = image_lib.decodePng(longImage);
     if (decodedLongImage == null) throw StateError('PDF 图像生成失败');
-    final pdfWidth = PdfPageFormat.a4.width;
-    final pdfHeight =
-        pdfWidth * decodedLongImage.height / decodedLongImage.width;
-    final image = pw.MemoryImage(longImage);
+    _addLongImageAsA4Pages(document, decodedLongImage, pdfLayout);
+    final outputPath = path.join(tempDirectory.path, '${safeName}_$stamp.pdf');
+    await File(outputPath).writeAsBytes(await document.save(), flush: true);
+    return [outputPath];
+  }
+
+  void _addLongImageAsA4Pages(
+    pw.Document document,
+    image_lib.Image longImage,
+    DocumentPdfExportLayout layout,
+  ) {
+    final pageFormat = PdfPageFormat.a4.copyWith(
+      marginLeft: 0,
+      marginTop: 0,
+      marginRight: 0,
+      marginBottom: 0,
+    );
+    if (layout == DocumentPdfExportLayout.twoColumnLeftRight ||
+        layout == DocumentPdfExportLayout.twoColumnTopBottom) {
+      _addLongImageAsTwoColumnA4Pages(document, pageFormat, longImage, layout);
+      return;
+    }
+    _addLongImageAsFullWidthA4Pages(document, pageFormat, longImage);
+  }
+
+  void _addLongImageAsFullWidthA4Pages(
+    pw.Document document,
+    PdfPageFormat pageFormat,
+    image_lib.Image longImage,
+  ) {
+    final sliceHeight =
+        (longImage.width * pageFormat.height / pageFormat.width).round();
+    final pageCount = math.max(1, (longImage.height / sliceHeight).ceil());
+
+    for (var page = 0; page < pageCount; page++) {
+      final sourceY = page * sliceHeight;
+      final pageImage = _buildPdfPageImage(
+        width: longImage.width,
+        height: sliceHeight,
+        longImage: longImage,
+        slices: [
+          _PdfImageSlice(
+            sourceY: sourceY,
+            destinationX: 0,
+            width: longImage.width,
+            height: sliceHeight,
+          ),
+        ],
+      );
+      _addImagePage(document, pageFormat, pageImage);
+    }
+  }
+
+  void _addLongImageAsTwoColumnA4Pages(
+    pw.Document document,
+    PdfPageFormat pageFormat,
+    image_lib.Image longImage,
+    DocumentPdfExportLayout layout,
+  ) {
+    final columnWidth = longImage.width;
+    final pageImageWidth = columnWidth * 2;
+    final sliceHeight =
+        (columnWidth * pageFormat.height / (pageFormat.width / 2)).round();
+
+    final isTopBottom = layout == DocumentPdfExportLayout.twoColumnTopBottom;
+    final pageCount =
+        isTopBottom
+            ? _balancedTwoColumnPageCount(longImage.height, sliceHeight)
+            : math.max(1, (longImage.height / (sliceHeight * 2)).ceil());
+    final leftTotalHeight = isTopBottom ? (longImage.height / 2).ceil() : null;
+    final rightTotalHeight =
+        isTopBottom ? longImage.height - leftTotalHeight! : null;
+
+    for (var page = 0; page < pageCount; page++) {
+      final _TwoColumnSlicePlan plan =
+          isTopBottom
+              ? _topBottomSlicePlan(
+                page,
+                sliceHeight,
+                leftTotalHeight!,
+                rightTotalHeight!,
+              )
+              : _leftRightSlicePlan(page, pageCount, sliceHeight, longImage);
+      final pageImage = _buildPdfPageImage(
+        width: pageImageWidth,
+        height: sliceHeight,
+        longImage: longImage,
+        slices: [
+          _PdfImageSlice(
+            sourceY: plan.leftSourceY,
+            destinationX: 0,
+            width: columnWidth,
+            height: plan.leftHeight,
+          ),
+          _PdfImageSlice(
+            sourceY: plan.rightSourceY,
+            destinationX: columnWidth,
+            width: columnWidth,
+            height: plan.rightHeight,
+          ),
+        ],
+      );
+      _addImagePage(document, pageFormat, pageImage);
+    }
+  }
+
+  int _balancedTwoColumnPageCount(int contentHeight, int sliceHeight) {
+    final halfHeight = (contentHeight / 2).ceil();
+    return math.max(1, (halfHeight / sliceHeight).ceil());
+  }
+
+  _TwoColumnSlicePlan _leftRightSlicePlan(
+    int page,
+    int pageCount,
+    int sliceHeight,
+    image_lib.Image longImage,
+  ) {
+    final sourceY = page * sliceHeight * 2;
+    final remainingHeight = longImage.height - sourceY;
+    if (page != pageCount - 1 || remainingHeight >= sliceHeight * 2) {
+      return _TwoColumnSlicePlan(
+        leftSourceY: sourceY,
+        leftHeight: sliceHeight,
+        rightSourceY: sourceY + sliceHeight,
+        rightHeight: sliceHeight,
+      );
+    }
+
+    final leftHeight = (remainingHeight / 2).ceil();
+    return _TwoColumnSlicePlan(
+      leftSourceY: sourceY,
+      leftHeight: leftHeight,
+      rightSourceY: sourceY + leftHeight,
+      rightHeight: remainingHeight - leftHeight,
+    );
+  }
+
+  _TwoColumnSlicePlan _topBottomSlicePlan(
+    int page,
+    int sliceHeight,
+    int leftTotalHeight,
+    int rightTotalHeight,
+  ) {
+    final leftOffset = page * sliceHeight;
+    final rightOffset = page * sliceHeight;
+    final leftHeight = math.min(sliceHeight, leftTotalHeight - leftOffset);
+    final rightHeight = math.min(sliceHeight, rightTotalHeight - rightOffset);
+    return _TwoColumnSlicePlan(
+      leftSourceY: leftOffset,
+      leftHeight: math.max(0, leftHeight),
+      rightSourceY: leftTotalHeight + rightOffset,
+      rightHeight: math.max(0, rightHeight),
+    );
+  }
+
+  image_lib.Image _buildPdfPageImage({
+    required int width,
+    required int height,
+    required image_lib.Image longImage,
+    required List<_PdfImageSlice> slices,
+  }) {
+    final pageImage = image_lib.Image(
+      width: width,
+      height: height,
+      numChannels: 4,
+    );
+    image_lib.fill(pageImage, color: image_lib.ColorRgba8(255, 255, 255, 255));
+
+    for (final sliceInfo in slices) {
+      if (sliceInfo.height <= 0) continue;
+      if (sliceInfo.sourceY >= longImage.height) continue;
+      final copyHeight = math.min(
+        sliceInfo.height,
+        longImage.height - sliceInfo.sourceY,
+      );
+      final slice = image_lib.copyCrop(
+        longImage,
+        x: 0,
+        y: sliceInfo.sourceY,
+        width: sliceInfo.width,
+        height: copyHeight,
+      );
+      image_lib.compositeImage(
+        pageImage,
+        slice,
+        dstX: sliceInfo.destinationX,
+        blend: image_lib.BlendMode.direct,
+      );
+    }
+
+    return pageImage;
+  }
+
+  void _addImagePage(
+    pw.Document document,
+    PdfPageFormat pageFormat,
+    image_lib.Image pageImage,
+  ) {
+    final image = pw.MemoryImage(
+      Uint8List.fromList(image_lib.encodePng(pageImage, level: 6)),
+    );
     document.addPage(
       pw.Page(
-        pageFormat: PdfPageFormat(pdfWidth, pdfHeight, marginAll: 0),
+        pageFormat: pageFormat,
         margin: pw.EdgeInsets.zero,
         build: (_) => pw.Image(image, fit: pw.BoxFit.fill),
       ),
     );
-    final outputPath = path.join(tempDirectory.path, '${safeName}_$stamp.pdf');
-    await File(outputPath).writeAsBytes(await document.save(), flush: true);
-    return [outputPath];
   }
 
   Uint8List _stitchPages(
