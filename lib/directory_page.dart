@@ -20,6 +20,7 @@ import 'services/file_cleanup_service.dart';
 import 'services/test_data_generator_service.dart';
 import 'package:archive/archive_io.dart';
 import 'services/export_import_utils.dart';
+import 'services/document_visual_export_service.dart';
 import 'utils/export_import_error_utils.dart';
 import 'widgets/stored_view_image_layer.dart';
 import 'widgets/stored_view_video_background_layer.dart';
@@ -101,6 +102,7 @@ class _DirectoryPageState extends State<DirectoryPage>
   BackgroundMediaOrigin? _backgroundVideoOrigin;
   Color? _backgroundColor;
   int _backgroundViewRefreshTick = 0;
+
   /// Navigator 上 push 了子页面（如文档编辑）时为 true，暂停目录背景视频与声音。
   final ValueNotifier<bool> _pauseDirectoryBgVideoForChildRoute =
       ValueNotifier<bool>(false);
@@ -109,6 +111,7 @@ class _DirectoryPageState extends State<DirectoryPage>
   ItemType? _lastCreatedItemType;
   Timer? _highlightTimer;
   bool _isHighlightingNewItem = false;
+
   /// 从子文件夹返回或从文档编辑返回后，在当前列表中标示该项（与媒体页预览返回的蓝框一致）。
   String? _lastVisitedItemName;
   ItemType? _lastVisitedItemType;
@@ -473,9 +476,7 @@ class _DirectoryPageState extends State<DirectoryPage>
           }
         }
 
-        if (nextVideo == null &&
-            imagePath != null &&
-            imagePath.isNotEmpty) {
+        if (nextVideo == null && imagePath != null && imagePath.isNotEmpty) {
           final imageFile = File(imagePath);
           final exists = await imageFile.exists();
           Logger.log('检查图片文件: $imagePath, 是否存在: $exists');
@@ -626,16 +627,16 @@ class _DirectoryPageState extends State<DirectoryPage>
       if (picked == null) return;
 
       final Directory appDocDir = await getApplicationDocumentsDirectory();
-      final String backgroundVideosPath =
-          '${appDocDir.path}/background_videos';
+      final String backgroundVideosPath = '${appDocDir.path}/background_videos';
       final Directory backgroundDir = Directory(backgroundVideosPath);
       if (!await backgroundDir.exists()) {
         await backgroundDir.create(recursive: true);
       }
 
-      final ext = path.extension(picked.path).isNotEmpty
-          ? path.extension(picked.path)
-          : '.mp4';
+      final ext =
+          path.extension(picked.path).isNotEmpty
+              ? path.extension(picked.path)
+              : '.mp4';
       final String fileName =
           'background_${DateTime.now().millisecondsSinceEpoch}$ext';
       final String permanentPath = '$backgroundVideosPath/$fileName';
@@ -673,8 +674,7 @@ class _DirectoryPageState extends State<DirectoryPage>
       _showWebUnsupportedDialog();
       return;
     }
-    final shouldDelete =
-        await _showDeleteConfirmationDialog('背景视频', '目录的背景视频');
+    final shouldDelete = await _showDeleteConfirmationDialog('背景视频', '目录的背景视频');
     if (shouldDelete) {
       try {
         final appDir = (await getApplicationDocumentsDirectory()).path;
@@ -1075,6 +1075,96 @@ class _DirectoryPageState extends State<DirectoryPage>
           context,
         ).showSnackBar(SnackBar(content: Text('导出文档出错：$e')));
       }
+    }
+  }
+
+  void _showDocumentExportOptions(String documentName) {
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.archive_outlined),
+                title: const Text('ZIP 原始文档'),
+                subtitle: const Text('可在本应用中导入并继续编辑'),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  _exportDocument(documentName);
+                },
+              ),
+              const Divider(height: 1),
+              ListTile(
+                leading: const Icon(Icons.image_outlined),
+                title: const Text('图片（PNG）'),
+                subtitle: const Text('按页导出文档内容，可直接查看'),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  _exportVisualDocument(
+                    documentName,
+                    DocumentVisualExportFormat.images,
+                  );
+                },
+              ),
+              const Divider(height: 1),
+              ListTile(
+                leading: const Icon(Icons.picture_as_pdf_outlined),
+                title: const Text('PDF 文档'),
+                subtitle: const Text('按 A4 页面导出，适合阅读和打印'),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  _exportVisualDocument(
+                    documentName,
+                    DocumentVisualExportFormat.pdf,
+                  );
+                },
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _exportVisualDocument(
+    String documentName,
+    DocumentVisualExportFormat format,
+  ) async {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          format == DocumentVisualExportFormat.pdf
+              ? '正在生成 PDF...'
+              : '正在生成文档图片...',
+        ),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+
+    try {
+      final exporter = DocumentVisualExportService(
+        getService<DatabaseService>(),
+      );
+      final paths = await exporter.export(context, documentName, format);
+      if (!mounted) return;
+      final files = paths.map(XFile.new).toList();
+      await Share.shareXFiles(
+        files,
+        subject: documentName,
+        text:
+            format == DocumentVisualExportFormat.pdf
+                ? '$documentName PDF 文档'
+                : '$documentName 文档图片',
+      );
+    } catch (e) {
+      Logger.log('导出可视文档失败: $e');
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('导出文档失败：$e')));
     }
   }
 
@@ -2040,7 +2130,7 @@ class _DirectoryPageState extends State<DirectoryPage>
               dense: true,
               onTap: () {
                 Navigator.pop(context);
-                _exportDocument(documentName);
+                _showDocumentExportOptions(documentName);
               },
             ),
           ],
@@ -2116,9 +2206,8 @@ class _DirectoryPageState extends State<DirectoryPage>
         _currentParentFolder,
       );
       if (mounted) {
-        final settings = await getService<DatabaseService>().getDirectorySettings(
-          _currentParentFolder,
-        );
+        final settings = await getService<DatabaseService>()
+            .getDirectorySettings(_currentParentFolder);
         final int? cv = settings?['background_color'] as int?;
         setState(() {
           _backgroundImage = null;
@@ -3047,9 +3136,7 @@ class _DirectoryPageState extends State<DirectoryPage>
   Widget build(BuildContext context) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       Future.delayed(Duration.zero, () {
-        if (_backgroundImage == null &&
-            _backgroundVideo == null &&
-            mounted) {
+        if (_backgroundImage == null && _backgroundVideo == null && mounted) {
           _checkAndRestoreBackgroundMedia();
         }
       });
@@ -3057,8 +3144,7 @@ class _DirectoryPageState extends State<DirectoryPage>
 
     // 状态栏/系统 UI：仍按实际背景亮度切换；顶栏统一白字+阴影（见 _buildDirectoryFloatingTopBar）。
     final lightFgForSystemUi = FloatingUiBarStyle.preferLightForeground(
-      hasBackgroundImage:
-          _backgroundImage != null || _backgroundVideo != null,
+      hasBackgroundImage: _backgroundImage != null || _backgroundVideo != null,
       backgroundSolidColor: _backgroundColor,
     );
     final mq = MediaQuery.of(context);
@@ -3347,91 +3433,93 @@ class _DirectoryPageState extends State<DirectoryPage>
                                 active: isLastVisited,
                                 child: Column(
                                   mainAxisSize: MainAxisSize.min,
-                                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.stretch,
                                   children: [
                                     Material(
                                       color: Colors.transparent,
                                       child: ListTile(
-                                    contentPadding: EdgeInsets.symmetric(
-                                      horizontal: 16.0,
-                                      vertical: 0.0,
-                                    ),
-                                    dense: false,
-                                    leading: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        if (_isMultiSelectMode)
-                                          Padding(
-                                            padding: EdgeInsets.only(
-                                              right: 8.0,
-                                            ),
-                                            child: Icon(
-                                              item.isSelected
-                                                  ? Icons.check_box
-                                                  : Icons
-                                                      .check_box_outline_blank,
-                                              color: Colors.blue,
-                                              size: 24,
-                                            ),
+                                        contentPadding: EdgeInsets.symmetric(
+                                          horizontal: 16.0,
+                                          vertical: 0.0,
+                                        ),
+                                        dense: false,
+                                        leading: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            if (_isMultiSelectMode)
+                                              Padding(
+                                                padding: EdgeInsets.only(
+                                                  right: 8.0,
+                                                ),
+                                                child: Icon(
+                                                  item.isSelected
+                                                      ? Icons.check_box
+                                                      : Icons
+                                                          .check_box_outline_blank,
+                                                  color: Colors.blue,
+                                                  size: 24,
+                                                ),
+                                              ),
+                                            buildIcon(),
+                                            if (item.isTemplate)
+                                              Padding(
+                                                padding: EdgeInsets.only(
+                                                  left: 4.0,
+                                                ),
+                                                child: Icon(
+                                                  Icons.star,
+                                                  color: Colors.amber,
+                                                  size: 16,
+                                                ),
+                                              ),
+                                          ],
+                                        ),
+                                        title: Text(
+                                          item.name,
+                                          style: TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                            color:
+                                                item.type == ItemType.folder
+                                                    ? Colors.blueAccent
+                                                    : Colors.green,
                                           ),
-                                        buildIcon(),
-                                        if (item.isTemplate)
-                                          Padding(
-                                            padding: EdgeInsets.only(left: 4.0),
-                                            child: Icon(
-                                              Icons.star,
-                                              color: Colors.amber,
-                                              size: 16,
-                                            ),
+                                        ),
+                                        trailing: ReorderableDragStartListener(
+                                          index: index,
+                                          child: Icon(
+                                            Icons.drag_handle,
+                                            color: Colors.grey,
                                           ),
-                                      ],
-                                    ),
-                                    title: Text(
-                                      item.name,
-                                      style: TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                        color:
-                                            item.type == ItemType.folder
-                                                ? Colors.blueAccent
-                                                : Colors.green,
-                                      ),
-                                    ),
-                                    trailing: ReorderableDragStartListener(
-                                      index: index,
-                                      child: Icon(
-                                        Icons.drag_handle,
-                                        color: Colors.grey,
-                                      ),
-                                    ),
-                                    onTap: () {
-                                      if (_isMultiSelectMode) {
-                                        _toggleItemSelection(item);
-                                      } else {
-                                        if (item.type == ItemType.folder) {
-                                          _openFolder(item.name);
-                                        } else {
-                                          _openDocument(item.name);
-                                        }
-                                      }
-                                    },
-                                    onLongPress: () {
-                                      if (item.type == ItemType.folder) {
-                                        _showFolderOptions(item.name);
-                                      } else {
-                                        _showDocumentOptions(item.name);
-                                      }
-                                    },
-                                    tileColor:
-                                        isHighlighted
-                                            ? Colors.blue.withOpacity(0.2)
-                                            : item.isSelected &&
-                                                _isMultiSelectMode
-                                            ? Colors.blue.withOpacity(0.1)
-                                            : null,
-                                    selectedTileColor: Colors.blue.withOpacity(
-                                      0.15,
-                                    ),
-                                    selected: item.isSelected,
+                                        ),
+                                        onTap: () {
+                                          if (_isMultiSelectMode) {
+                                            _toggleItemSelection(item);
+                                          } else {
+                                            if (item.type == ItemType.folder) {
+                                              _openFolder(item.name);
+                                            } else {
+                                              _openDocument(item.name);
+                                            }
+                                          }
+                                        },
+                                        onLongPress: () {
+                                          if (item.type == ItemType.folder) {
+                                            _showFolderOptions(item.name);
+                                          } else {
+                                            _showDocumentOptions(item.name);
+                                          }
+                                        },
+                                        tileColor:
+                                            isHighlighted
+                                                ? Colors.blue.withOpacity(0.2)
+                                                : item.isSelected &&
+                                                    _isMultiSelectMode
+                                                ? Colors.blue.withOpacity(0.1)
+                                                : null,
+                                        selectedTileColor: Colors.blue
+                                            .withOpacity(0.15),
+                                        selected: item.isSelected,
                                       ),
                                     ),
                                     Divider(height: 5.0),
