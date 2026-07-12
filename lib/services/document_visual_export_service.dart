@@ -70,8 +70,10 @@ class DocumentVisualExportService {
 
     await _precacheImages(context, visibleImages, settings);
 
+    const capturePixelRatio = 2.0;
     final pageWidth = MediaQuery.sizeOf(context).width;
-    final pageHeight = pageWidth * 1.4142;
+    final pageHeight =
+        (pageWidth * 1.4142 * capturePixelRatio).floor() / capturePixelRatio;
     final contentBottom = _contentBottom(
       visibleText,
       visibleImages,
@@ -97,7 +99,7 @@ class DocumentVisualExportService {
           widget,
           context: context,
           targetSize: Size(pageWidth, pageHeight),
-          pixelRatio: 2,
+          pixelRatio: capturePixelRatio,
           delay: const Duration(milliseconds: 80),
         ),
       );
@@ -107,32 +109,35 @@ class DocumentVisualExportService {
     final safeName = documentName.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
     final stamp = DateTime.now().millisecondsSinceEpoch;
 
+    final longImage = _stitchPages(
+      pages,
+      logicalPageWidth: pageWidth,
+      logicalContentHeight: contentBottom,
+    );
+
     if (format == DocumentVisualExportFormat.images) {
       final outputPath = path.join(
         tempDirectory.path,
         '${safeName}_$stamp.png',
-      );
-      final longImage = _stitchPages(
-        pages,
-        logicalPageWidth: pageWidth,
-        logicalContentHeight: contentBottom,
       );
       await File(outputPath).writeAsBytes(longImage, flush: true);
       return [outputPath];
     }
 
     final document = pw.Document();
-    for (final pageBytes in pages) {
-      final image = pw.MemoryImage(pageBytes);
-      document.addPage(
-        pw.Page(
-          pageFormat: PdfPageFormat.a4,
-          margin: pw.EdgeInsets.zero,
-          build:
-              (_) => pw.Center(child: pw.Image(image, fit: pw.BoxFit.contain)),
-        ),
-      );
-    }
+    final decodedLongImage = image_lib.decodePng(longImage);
+    if (decodedLongImage == null) throw StateError('PDF 图像生成失败');
+    final pdfWidth = PdfPageFormat.a4.width;
+    final pdfHeight =
+        pdfWidth * decodedLongImage.height / decodedLongImage.width;
+    final image = pw.MemoryImage(longImage);
+    document.addPage(
+      pw.Page(
+        pageFormat: PdfPageFormat(pdfWidth, pdfHeight, marginAll: 0),
+        margin: pw.EdgeInsets.zero,
+        build: (_) => pw.Image(image, fit: pw.BoxFit.fill),
+      ),
+    );
     final outputPath = path.join(tempDirectory.path, '${safeName}_$stamp.pdf');
     await File(outputPath).writeAsBytes(await document.save(), flush: true);
     return [outputPath];
@@ -166,8 +171,17 @@ class DocumentVisualExportService {
       if (destinationY >= contentHeight) break;
       final page = index == 0 ? firstPage : image_lib.decodePng(pages[index]);
       if (page == null) throw StateError('文档图片生成失败');
-      image_lib.compositeImage(result, page, dstY: destinationY);
-      destinationY += page.height;
+      final remainingHeight = contentHeight - destinationY;
+      final copyHeight = math.min(page.height, remainingHeight);
+      image_lib.compositeImage(
+        result,
+        page,
+        dstY: destinationY,
+        dstH: copyHeight,
+        srcH: copyHeight,
+        blend: image_lib.BlendMode.direct,
+      );
+      destinationY += copyHeight;
     }
     return Uint8List.fromList(image_lib.encodePng(result, level: 6));
   }
@@ -353,17 +367,9 @@ class DocumentVisualExportService {
       height: _number(box['height'], 100),
       child: Container(
         decoration: BoxDecoration(
-          border: Border.all(color: Colors.white, width: 1),
+          border: Border.all(color: Colors.black, width: 1),
           borderRadius: BorderRadius.circular(10),
-          color: defaultStyle.backgroundColor,
-          boxShadow: [
-            BoxShadow(
-              color: const Color(0xFFD2B48C).withValues(alpha: 0.2),
-              blurRadius: 3.5,
-              spreadRadius: 0.3,
-              offset: const Offset(1, 1),
-            ),
-          ],
+          color: Colors.transparent,
         ),
         padding: const EdgeInsets.all(5),
         child: RichText(

@@ -1112,7 +1112,7 @@ class _DirectoryPageState extends State<DirectoryPage>
               ListTile(
                 leading: const Icon(Icons.picture_as_pdf_outlined),
                 title: const Text('PDF 文档'),
-                subtitle: const Text('按 A4 页面导出，适合阅读和打印'),
+                subtitle: const Text('导出为无分页接缝的连续 PDF'),
                 onTap: () {
                   Navigator.pop(sheetContext);
                   _exportVisualDocument(
