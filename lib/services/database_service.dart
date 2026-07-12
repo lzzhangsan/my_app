@@ -165,7 +165,8 @@ class DatabaseService {
     required String oldPrefix,
     required String newPrefix,
   }) async {
-    if (oldPrefix.isEmpty || newPrefix.isEmpty || oldPrefix == newPrefix) return;
+    if (oldPrefix.isEmpty || newPrefix.isEmpty || oldPrefix == newPrefix)
+      return;
     final oldNorm = p.normalize(oldPrefix);
     final newNorm = p.normalize(newPrefix);
     final oldWithSep =
@@ -212,7 +213,10 @@ class DatabaseService {
     }
 
     final backupDir = Directory(
-      p.join(root, 'media_backup_recover_${DateTime.now().millisecondsSinceEpoch}'),
+      p.join(
+        root,
+        'media_backup_recover_${DateTime.now().millisecondsSinceEpoch}',
+      ),
     );
     try {
       if (existsMedia && existsNew) {
@@ -595,9 +599,7 @@ class DatabaseService {
         continue;
       }
       try {
-        await db.execute(
-          'ALTER TABLE $table ADD COLUMN $column TEXT',
-        );
+        await db.execute('ALTER TABLE $table ADD COLUMN $column TEXT');
       } catch (_) {}
     }
   }
@@ -888,9 +890,7 @@ class DatabaseService {
           'ALTER TABLE document_settings ADD COLUMN last_scroll_offset REAL DEFAULT 0',
         );
         if (kDebugMode) {
-          Logger.log(
-            '✅ [DB] 已成功添加last_scroll_offset字段到document_settings表',
-          );
+          Logger.log('✅ [DB] 已成功添加last_scroll_offset字段到document_settings表');
         }
       } else {
         if (kDebugMode) {
@@ -1902,7 +1902,11 @@ class DatabaseService {
       _stagedVideoViewParamsByMediaId.remove(id);
       _syncVideoViewStagingJsonToDiskSync();
       final db = await database;
-      final n = await db.delete('media_items', where: 'id = ?', whereArgs: [id]);
+      final n = await db.delete(
+        'media_items',
+        where: 'id = ?',
+        whereArgs: [id],
+      );
       if (n > 0 && id.isNotEmpty) {
         unawaited(() async {
           try {
@@ -1974,7 +1978,9 @@ class DatabaseService {
 
     while (queue.isNotEmpty) {
       final part =
-          queue.length <= chunk ? List<String>.from(queue) : queue.sublist(0, chunk);
+          queue.length <= chunk
+              ? List<String>.from(queue)
+              : queue.sublist(0, chunk);
       queue.removeRange(0, part.length);
       final qs = List.filled(part.length, '?').join(',');
       final rows = await db.rawQuery(
@@ -1990,7 +1996,9 @@ class DatabaseService {
     return seen;
   }
 
-  Future<Map<String, dynamic>> deleteMediaFolderCompletely(String folderId) async {
+  Future<Map<String, dynamic>> deleteMediaFolderCompletely(
+    String folderId,
+  ) async {
     final rootId = folderId.trim();
     if (rootId.isEmpty) {
       return {
@@ -2026,7 +2034,10 @@ class DatabaseService {
 
     final folderIdList = folderIds.toList();
     for (int i = 0; i < folderIdList.length; i += chunk) {
-      final part = folderIdList.sublist(i, (i + chunk).clamp(0, folderIdList.length));
+      final part = folderIdList.sublist(
+        i,
+        (i + chunk).clamp(0, folderIdList.length),
+      );
       final qs = List.filled(part.length, '?').join(',');
       final rows = await db.rawQuery(
         'SELECT id, type, path FROM media_items WHERE directory IN ($qs)',
@@ -2037,7 +2048,8 @@ class DatabaseService {
         if (id.isEmpty) continue;
         allRowIds.add(id);
         final t = r['type'];
-        final typeIndex = t is int ? t : (t is num ? t.toInt() : int.tryParse('$t') ?? -1);
+        final typeIndex =
+            t is int ? t : (t is num ? t.toInt() : int.tryParse('$t') ?? -1);
         final p0 = r['path']?.toString() ?? '';
         if (typeIndex != 3 && p0.trim().isNotEmpty) filePaths.add(p0);
       }
@@ -2054,7 +2066,10 @@ class DatabaseService {
     int dbDeletedCount = 0;
     await db.transaction((txn) async {
       for (int i = 0; i < deleteIds.length; i += chunk) {
-        final part = deleteIds.sublist(i, (i + chunk).clamp(0, deleteIds.length));
+        final part = deleteIds.sublist(
+          i,
+          (i + chunk).clamp(0, deleteIds.length),
+        );
         final qs = List.filled(part.length, '?').join(',');
         final n = await txn.delete(
           'media_items',
@@ -2126,24 +2141,31 @@ class DatabaseService {
     int limit = 20,
   }) async {
     final db = await database;
-    final rows = await db.rawQuery('''
+    final rows = await db.rawQuery(
+      '''
       SELECT id, name, type, directory, path
       FROM media_items
       WHERE directory NOT IN ('root', 'recycle_bin', 'favorites')
         AND (directory = '' OR directory NOT IN (SELECT id FROM media_items WHERE type = 3))
       ORDER BY datetime(date_added) DESC
       LIMIT ?
-    ''', [limit]);
+    ''',
+      [limit],
+    );
     return rows.map((e) => Map<String, dynamic>.from(e)).toList();
   }
 
-  Future<Map<String, dynamic>> moveOrphanMediaDirectoryItemsToRecycleBin() async {
+  Future<Map<String, dynamic>>
+  moveOrphanMediaDirectoryItemsToRecycleBin() async {
     final db = await database;
     int moved = 0;
     await db.transaction((txn) async {
       moved = await txn.update(
         'media_items',
-        {'directory': 'recycle_bin', 'updated_at': DateTime.now().millisecondsSinceEpoch},
+        {
+          'directory': 'recycle_bin',
+          'updated_at': DateTime.now().millisecondsSinceEpoch,
+        },
         where:
             "directory NOT IN ('root','recycle_bin','favorites') AND (directory = '' OR directory NOT IN (SELECT id FROM media_items WHERE type = 3))",
       );
@@ -2151,7 +2173,8 @@ class DatabaseService {
     return {'moved': moved};
   }
 
-  Future<Map<String, dynamic>> deleteOrphanMediaDirectoryItemsCompletely() async {
+  Future<Map<String, dynamic>>
+  deleteOrphanMediaDirectoryItemsCompletely() async {
     final db = await database;
     final rows = await db.rawQuery('''
       SELECT id, name, type, directory, path
@@ -2170,7 +2193,8 @@ class DatabaseService {
       final id = r['id']?.toString() ?? '';
       if (id.isEmpty) continue;
       final t = r['type'];
-      final typeIndex = t is int ? t : (t is num ? t.toInt() : int.tryParse('$t') ?? -1);
+      final typeIndex =
+          t is int ? t : (t is num ? t.toInt() : int.tryParse('$t') ?? -1);
       if (typeIndex == 3) {
         final res = await deleteMediaFolderCompletely(id);
         deletedFolders += (res['folderCount'] as int? ?? 0);
@@ -2212,12 +2236,7 @@ class DatabaseService {
       if (unique.add(p)) targets.add(p);
     }
     if (targets.isEmpty) {
-      return {
-        'checked': 0,
-        'repaired': 0,
-        'deletedRows': 0,
-        'unresolved': 0,
-      };
+      return {'checked': 0, 'repaired': 0, 'deletedRows': 0, 'unresolved': 0};
     }
 
     int checked = 0;
@@ -2240,7 +2259,9 @@ class DatabaseService {
         }
 
         final fixedPath = await tryRepairMediaItemPath(row);
-        if (fixedPath != null && fixedPath.isNotEmpty && await File(fixedPath).exists()) {
+        if (fixedPath != null &&
+            fixedPath.isNotEmpty &&
+            await File(fixedPath).exists()) {
           repaired++;
           continue;
         }
@@ -2293,7 +2314,11 @@ class DatabaseService {
         return {'exists': true, 'parseOk': false, 'pruned': 0, 'deleted': true};
       }
       final items = Map<String, dynamic>.from(itemsRaw as Map);
-      final ids = items.keys.map((e) => e.toString()).where((e) => e.isNotEmpty).toList();
+      final ids =
+          items.keys
+              .map((e) => e.toString())
+              .where((e) => e.isNotEmpty)
+              .toList();
       if (ids.isEmpty) {
         await file.delete();
         _stagedVideoViewParamsByMediaId.clear();
@@ -2309,7 +2334,9 @@ class DatabaseService {
           'SELECT id FROM media_items WHERE id IN ($qs)',
           part,
         );
-        existing.addAll(rows.map((r) => r['id']?.toString() ?? '').where((s) => s.isNotEmpty));
+        existing.addAll(
+          rows.map((r) => r['id']?.toString() ?? '').where((s) => s.isNotEmpty),
+        );
       }
       int pruned = 0;
       for (final id in ids) {
@@ -2321,22 +2348,34 @@ class DatabaseService {
       if (items.isEmpty) {
         await file.delete();
         _stagedVideoViewParamsByMediaId.clear();
-        return {'exists': true, 'parseOk': true, 'pruned': pruned, 'deleted': true};
+        return {
+          'exists': true,
+          'parseOk': true,
+          'pruned': pruned,
+          'deleted': true,
+        };
       }
       final payload = <String, dynamic>{'v': 1, 'items': items};
       await file.writeAsString(jsonEncode(payload), flush: true);
       _stagedVideoViewParamsByMediaId
         ..clear()
-        ..addAll(items.map((k, v) {
-          if (v is Map) {
-            try {
-              final m = Map<String, dynamic>.from(v);
-              return MapEntry(k, VideoViewParams.fromJsonStaging(m));
-            } catch (_) {}
-          }
-          return MapEntry(k, VideoViewParams());
-        }));
-      return {'exists': true, 'parseOk': true, 'pruned': pruned, 'deleted': false};
+        ..addAll(
+          items.map((k, v) {
+            if (v is Map) {
+              try {
+                final m = Map<String, dynamic>.from(v);
+                return MapEntry(k, VideoViewParams.fromJsonStaging(m));
+              } catch (_) {}
+            }
+            return MapEntry(k, VideoViewParams());
+          }),
+        );
+      return {
+        'exists': true,
+        'parseOk': true,
+        'pruned': pruned,
+        'deleted': false,
+      };
     } catch (_) {
       try {
         await file.delete();
@@ -2530,12 +2569,7 @@ class DatabaseService {
     try {
       final db = await database;
       update['updated_at'] = DateTime.now().millisecondsSinceEpoch;
-      await db.update(
-        'media_items',
-        update,
-        where: 'id = ?',
-        whereArgs: [id],
-      );
+      await db.update('media_items', update, where: 'id = ?', whereArgs: [id]);
     } catch (e, stackTrace) {
       _handleError('合并媒体显示/收藏字段失败', e, stackTrace);
       rethrow;
@@ -3008,7 +3042,9 @@ class DatabaseService {
           );
           settingsCopy['backgroundVideoFileName'] = fileName;
           settingsCopy['backgroundVideoVolume'] =
-              await BackgroundVideoVolumePrefs.volumeForPath(backgroundVideoPath);
+              await BackgroundVideoVolumePrefs.volumeForPath(
+                backgroundVideoPath,
+              );
           final File videoFile = File(backgroundVideoPath);
           if (await videoFile.exists()) {
             final String relativePath = 'background_videos/$fileName';
@@ -3059,7 +3095,10 @@ class DatabaseService {
       for (var settings in documentSettings) {
         Map<String, dynamic> settingsCopy = Map<String, dynamic>.from(settings);
         final String docKey =
-            settings['document_id']?.toString().replaceAll(RegExp(r'[^A-Za-z0-9_]'), '_') ??
+            settings['document_id']?.toString().replaceAll(
+              RegExp(r'[^A-Za-z0-9_]'),
+              '_',
+            ) ??
             'doc';
 
         String? backgroundImagePath =
@@ -3104,7 +3143,9 @@ class DatabaseService {
           );
           settingsCopy['backgroundVideoFileName'] = fileName;
           settingsCopy['backgroundVideoVolume'] =
-              await BackgroundVideoVolumePrefs.volumeForPath(backgroundVideoPath);
+              await BackgroundVideoVolumePrefs.volumeForPath(
+                backgroundVideoPath,
+              );
           final File videoFile = File(backgroundVideoPath);
           if (await videoFile.exists()) {
             final String relativePath = 'background_videos/$fileName';
@@ -3665,12 +3706,15 @@ class DatabaseService {
           break;
         } on DatabaseException catch (e) {
           final msg = e.toString();
-          if (msg.contains('no current transaction') &&
-              msg.contains('COMMIT') &&
-              attempt < maxAttempts) {
+          final isRecoverableTransactionStateError =
+              msg.contains('no current transaction') &&
+              (msg.contains('COMMIT') || msg.contains('ROLLBACK'));
+          if (isRecoverableTransactionStateError && attempt < maxAttempts) {
             Logger.log(
               '[导入] 事务异常，${200 * attempt}ms 后重试 ($attempt/$maxAttempts): $msg',
             );
+            progressNotifier?.value =
+                '导入事务临时异常，正在自动重试 $attempt/$maxAttempts...';
             await Future.delayed(Duration(milliseconds: 200 * attempt));
           } else {
             rethrow;
@@ -3686,9 +3730,7 @@ class DatabaseService {
                   as Map<String, dynamic>;
           final prefs = await SharedPreferences.getInstance();
           await applyDirectoryPortablePrefsImportMap(prefs, raw);
-          Logger.log(
-            '[导入] 已恢复 portable_prefs.json（播放游标/续播、文档栏视频静音、背景视频音量）',
-          );
+          Logger.log('[导入] 已恢复 portable_prefs.json（播放游标/续播、文档栏视频静音、背景视频音量）');
         } catch (e) {
           Logger.log('[导入] portable_prefs.json 恢复失败（已跳过）: $e');
         }
@@ -3752,10 +3794,13 @@ class DatabaseService {
     }
   }
 
-  Future<({
-    List<String> mediaPaths,
-    List<({String? path, BackgroundMediaOrigin? origin})> backgroundFiles,
-  })> _collectDocumentFilesForDeletion(String documentId) async {
+  Future<
+    ({
+      List<String> mediaPaths,
+      List<({String? path, BackgroundMediaOrigin? origin})> backgroundFiles,
+    })
+  >
+  _collectDocumentFilesForDeletion(String documentId) async {
     final appDir = (await getApplicationDocumentsDirectory()).path;
     final mediaPaths = <String>[];
     final backgroundFiles = <({String? path, BackgroundMediaOrigin? origin})>[];
@@ -3829,7 +3874,8 @@ class DatabaseService {
     ({
       List<String> mediaPaths,
       List<({String? path, BackgroundMediaOrigin? origin})> backgroundFiles,
-    }) payload,
+    })
+    payload,
   ) async {
     try {
       final fileCleanupService = getService<FileCleanupService>();
@@ -3837,7 +3883,11 @@ class DatabaseService {
       final appDir = (await getApplicationDocumentsDirectory()).path;
       for (final bg in payload.backgroundFiles) {
         try {
-          await deleteBackgroundPhysicalFileIfAllowed(bg.path, bg.origin, appDir);
+          await deleteBackgroundPhysicalFileIfAllowed(
+            bg.path,
+            bg.origin,
+            appDir,
+          );
         } catch (_) {}
       }
       for (final filePath in payload.mediaPaths) {
@@ -3893,7 +3943,8 @@ class DatabaseService {
       ({
         List<String> mediaPaths,
         List<({String? path, BackgroundMediaOrigin? origin})> backgroundFiles,
-      })? deletePayload;
+      })?
+      deletePayload;
       if (documents.isNotEmpty) {
         final documentId = documents.first['id'] as String;
         deletePayload = await _collectDocumentFilesForDeletion(documentId);
@@ -3997,10 +4048,7 @@ class DatabaseService {
         String documentId = docs.first['id'];
         await db.update(
           'document_settings',
-          {
-            'background_image_path': null,
-            'background_image_origin': null,
-          },
+          {'background_image_path': null, 'background_image_origin': null},
           where: 'document_id = ?',
           whereArgs: [documentId],
         );
@@ -4032,10 +4080,7 @@ class DatabaseService {
         final documentId = docs.first['id'] as String;
         await db.update(
           'document_settings',
-          {
-            'background_video_path': null,
-            'background_video_origin': null,
-          },
+          {'background_video_path': null, 'background_video_origin': null},
           where: 'document_id = ?',
           whereArgs: [documentId],
         );
@@ -4113,10 +4158,13 @@ class DatabaseService {
       final folderId = folderToDelete.first['id'] as String;
       final documentIds = await _collectDocumentIdsInFolder(folderId);
       final deletePayloads =
-          <({
-            List<String> mediaPaths,
-            List<({String? path, BackgroundMediaOrigin? origin})> backgroundFiles,
-          })>[];
+          <
+            ({
+              List<String> mediaPaths,
+              List<({String? path, BackgroundMediaOrigin? origin})>
+              backgroundFiles,
+            })
+          >[];
       for (final docId in documentIds) {
         deletePayloads.add(await _collectDocumentFilesForDeletion(docId));
       }
@@ -5897,6 +5945,7 @@ class DatabaseService {
     int? isFreeSortMode,
     bool? clearImagePath, // 新增参数，明确指示是否要清除背景图片
     bool? clearVideoPath,
+
     /// 为 true 时同时写入图/视频路径（可为 null），用于生命周期保存当前内存状态。
     bool commitBackgroundPaths = false,
     BackgroundMediaOrigin? backgroundImageOrigin,
@@ -5914,13 +5963,9 @@ class DatabaseService {
         data['background_image_path'] = imagePath;
         data['background_video_path'] = videoPath;
         data['background_image_origin'] =
-            imagePath == null
-                ? null
-                : backgroundImageOrigin?.dbValue;
+            imagePath == null ? null : backgroundImageOrigin?.dbValue;
         data['background_video_origin'] =
-            videoPath == null
-                ? null
-                : backgroundVideoOrigin?.dbValue;
+            videoPath == null ? null : backgroundVideoOrigin?.dbValue;
       } else {
         if (clearImagePath == true) {
           data['background_image_path'] = null;
@@ -6865,6 +6910,7 @@ class DatabaseService {
     bool? textEnhanceMode,
     bool? positionLocked,
     double? lastScrollOffset,
+
     /// 为 true 时按传入的 [imagePath]/[videoPath]（可为 null）整体写入背景媒体，用于生命周期保存。
     bool commitBackgroundMedia = false,
     BackgroundMediaOrigin? backgroundImageOrigin,
@@ -6967,14 +7013,8 @@ class DatabaseService {
         if (commitBackgroundMedia) {
           settingsData['background_image_path'] = imagePath;
           settingsData['background_video_path'] = videoPath;
-          imgOrig =
-              imagePath == null
-                  ? null
-                  : backgroundImageOrigin?.dbValue;
-          vidOrig =
-              videoPath == null
-                  ? null
-                  : backgroundVideoOrigin?.dbValue;
+          imgOrig = imagePath == null ? null : backgroundImageOrigin?.dbValue;
+          vidOrig = videoPath == null ? null : backgroundVideoOrigin?.dbValue;
         } else if (imagePath != null) {
           settingsData['background_image_path'] = imagePath;
           settingsData['background_video_path'] = null;
@@ -7243,9 +7283,13 @@ class DatabaseService {
           columns: ['background_image_path', 'background_video_path'],
         );
         for (final row in rows) {
-          for (final key in ['background_image_path', 'background_video_path']) {
+          for (final key in [
+            'background_image_path',
+            'background_video_path',
+          ]) {
             final path = row[key]?.toString();
-            if (path != null && path.isNotEmpty) validPaths.add(toAbsolute(path));
+            if (path != null && path.isNotEmpty)
+              validPaths.add(toAbsolute(path));
           }
         }
       }
@@ -7259,9 +7303,13 @@ class DatabaseService {
           columns: ['background_image_path', 'background_video_path'],
         );
         for (final row in rows) {
-          for (final key in ['background_image_path', 'background_video_path']) {
+          for (final key in [
+            'background_image_path',
+            'background_video_path',
+          ]) {
             final path = row[key]?.toString();
-            if (path != null && path.isNotEmpty) validPaths.add(toAbsolute(path));
+            if (path != null && path.isNotEmpty)
+              validPaths.add(toAbsolute(path));
           }
         }
       }
@@ -7276,9 +7324,13 @@ class DatabaseService {
           columns: ['background_image_path', 'background_video_path'],
         );
         for (final row in rows) {
-          for (final key in ['background_image_path', 'background_video_path']) {
+          for (final key in [
+            'background_image_path',
+            'background_video_path',
+          ]) {
             final path = row[key]?.toString();
-            if (path != null && path.isNotEmpty) validPaths.add(toAbsolute(path));
+            if (path != null && path.isNotEmpty)
+              validPaths.add(toAbsolute(path));
           }
         }
       }
@@ -7770,16 +7822,13 @@ class DatabaseService {
     );
     await deleteBackgroundPhysicalFileIfAllowed(img, io, appDir);
     await deleteBackgroundPhysicalFileIfAllowed(vid, vo, appDir);
-    await db.update(
-      'diary_settings',
-      {
-        'background_image_path': null,
-        'background_video_path': null,
-        'background_image_origin': null,
-        'background_video_origin': null,
-        'updated_at': DateTime.now().millisecondsSinceEpoch,
-      },
-    );
+    await db.update('diary_settings', {
+      'background_image_path': null,
+      'background_video_path': null,
+      'background_image_origin': null,
+      'background_video_origin': null,
+      'updated_at': DateTime.now().millisecondsSinceEpoch,
+    });
   }
 
   /// 清空目录背景图/视频（留白），保留已保存的 [background_color]；并按来源规则尝试删除拍照产生的本地副本。
@@ -8101,7 +8150,8 @@ class DatabaseService {
   }) async {
     final db = await database;
     try {
-      final rows = await db.rawQuery('''
+      final rows = await db.rawQuery(
+        '''
         SELECT file_hash AS hash, COUNT(*) AS c
         FROM media_items
         WHERE file_hash IS NOT NULL AND TRIM(file_hash) <> '' AND directory <> 'recycle_bin'
@@ -8109,7 +8159,9 @@ class DatabaseService {
         HAVING c > 1
         ORDER BY c DESC
         LIMIT ?
-      ''', [limit]);
+      ''',
+        [limit],
+      );
       int total = 0;
       try {
         final countRows = await db.rawQuery('''
@@ -8170,7 +8222,8 @@ class DatabaseService {
 
     List<String> duplicateHashes = [];
     try {
-      final rows = await db.rawQuery('''
+      final rows = await db.rawQuery(
+        '''
         SELECT file_hash AS hash
         FROM media_items
         WHERE file_hash IS NOT NULL AND TRIM(file_hash) <> '' AND directory <> 'recycle_bin'
@@ -8178,9 +8231,14 @@ class DatabaseService {
         HAVING COUNT(*) > 1
         ORDER BY COUNT(*) DESC
         LIMIT ?
-      ''', [maxGroups]);
+      ''',
+        [maxGroups],
+      );
       duplicateHashes =
-          rows.map((r) => r['hash']?.toString() ?? '').where((s) => s.isNotEmpty).toList();
+          rows
+              .map((r) => r['hash']?.toString() ?? '')
+              .where((s) => s.isNotEmpty)
+              .toList();
     } catch (_) {}
 
     int pickScore(Map<String, dynamic> row) {
@@ -8246,7 +8304,8 @@ class DatabaseService {
     final usages = <Map<String, dynamic>>[];
 
     try {
-      final rows = await db.rawQuery('''
+      final rows = await db.rawQuery(
+        '''
         SELECT ds.document_id AS document_id,
                d.name AS document_name,
                f.name AS folder_name,
@@ -8256,7 +8315,9 @@ class DatabaseService {
         JOIN documents d ON d.id = ds.document_id
         LEFT JOIN folders f ON f.id = d.parent_folder
         WHERE ds.background_image_path = ? OR ds.background_video_path = ?
-      ''', [p0, p0]);
+      ''',
+        [p0, p0],
+      );
       for (final r in rows) {
         final docId = r['document_id']?.toString() ?? '';
         final docName = r['document_name']?.toString() ?? '';
@@ -8283,11 +8344,14 @@ class DatabaseService {
     } catch (_) {}
 
     try {
-      final rows = await db.rawQuery('''
+      final rows = await db.rawQuery(
+        '''
         SELECT folder_name AS folder_name, background_image_path AS img, background_video_path AS vid
         FROM directory_settings
         WHERE background_image_path = ? OR background_video_path = ?
-      ''', [p0, p0]);
+      ''',
+        [p0, p0],
+      );
       for (final r in rows) {
         final folderName = r['folder_name']?.toString() ?? '';
         final img = r['img']?.toString() ?? '';
@@ -8308,11 +8372,14 @@ class DatabaseService {
     } catch (_) {}
 
     try {
-      final rows = await db.rawQuery('''
+      final rows = await db.rawQuery(
+        '''
         SELECT background_image_path AS img, background_video_path AS vid
         FROM diary_settings
         WHERE background_image_path = ? OR background_video_path = ?
-      ''', [p0, p0]);
+      ''',
+        [p0, p0],
+      );
       for (final r in rows) {
         final img = r['img']?.toString() ?? '';
         final vid = r['vid']?.toString() ?? '';
@@ -8330,11 +8397,14 @@ class DatabaseService {
     } catch (_) {}
     if (hasCoverSettings) {
       try {
-        final rows = await db.rawQuery('''
+        final rows = await db.rawQuery(
+          '''
           SELECT background_image_path AS img, background_video_path AS vid
           FROM cover_settings
           WHERE background_image_path = ? OR background_video_path = ?
-        ''', [p0, p0]);
+        ''',
+          [p0, p0],
+        );
         for (final r in rows) {
           final img = r['img']?.toString() ?? '';
           final vid = r['vid']?.toString() ?? '';
@@ -8357,13 +8427,16 @@ class DatabaseService {
     } catch (_) {}
 
     try {
-      final rows = await db.rawQuery('''
+      final rows = await db.rawQuery(
+        '''
         SELECT ib.id AS box_id, d.id AS document_id, d.name AS document_name, f.name AS folder_name
         FROM image_boxes ib
         JOIN documents d ON d.id = ib.document_id
         LEFT JOIN folders f ON f.id = d.parent_folder
         WHERE ib.image_path = ?
-      ''', [p0]);
+      ''',
+        [p0],
+      );
       for (final r in rows) {
         usages.add({
           'type': 'document_image_box',
@@ -8376,13 +8449,16 @@ class DatabaseService {
     } catch (_) {}
 
     try {
-      final rows = await db.rawQuery('''
+      final rows = await db.rawQuery(
+        '''
         SELECT ab.id AS box_id, d.id AS document_id, d.name AS document_name, f.name AS folder_name
         FROM audio_boxes ab
         JOIN documents d ON d.id = ab.document_id
         LEFT JOIN folders f ON f.id = d.parent_folder
         WHERE ab.audio_path = ?
-      ''', [p0]);
+      ''',
+        [p0],
+      );
       for (final r in rows) {
         usages.add({
           'type': 'document_audio_box',
@@ -8437,11 +8513,14 @@ class DatabaseService {
 
     try {
       final like = '%$p0%';
-      final rows = await db.rawQuery('''
+      final rows = await db.rawQuery(
+        '''
         SELECT id, date, image_paths, audio_paths, video_paths
         FROM diary_entries
         WHERE (image_paths LIKE ?) OR (audio_paths LIKE ?) OR (video_paths LIKE ?)
-      ''', [like, like, like]);
+      ''',
+        [like, like, like],
+      );
       for (final r in rows) {
         final id = r['id']?.toString() ?? '';
         final date = r['date']?.toString() ?? '';
@@ -8459,7 +8538,11 @@ class DatabaseService {
           } catch (_) {}
         }
         if (hit) {
-          usages.add({'type': 'diary_entry_media', 'diaryId': id, 'date': date});
+          usages.add({
+            'type': 'diary_entry_media',
+            'diaryId': id,
+            'date': date,
+          });
         }
       }
     } catch (_) {}
@@ -8508,11 +8591,7 @@ class DatabaseService {
       if (unique.add(p)) paths.add(p);
     }
     if (paths.isEmpty) {
-      return {
-        'fixed': 0,
-        'unfixed': 0,
-        'fixedByType': <String, int>{},
-      };
+      return {'fixed': 0, 'unfixed': 0, 'fixedByType': <String, int>{}};
     }
 
     int fixed = 0;
@@ -8623,10 +8702,7 @@ class DatabaseService {
           try {
             final n = await txn.update(
               'cover_settings',
-              {
-                'background_image_path': null,
-                'background_image_origin': null,
-              },
+              {'background_image_path': null, 'background_image_origin': null},
               where: 'background_image_path = ?',
               whereArgs: [p],
             );
@@ -8635,10 +8711,7 @@ class DatabaseService {
           try {
             final n = await txn.update(
               'cover_settings',
-              {
-                'background_video_path': null,
-                'background_video_origin': null,
-              },
+              {'background_video_path': null, 'background_video_origin': null},
               where: 'background_video_path = ?',
               whereArgs: [p],
             );
@@ -8666,11 +8739,14 @@ class DatabaseService {
 
         try {
           final like = '%$p%';
-          final rows = await txn.rawQuery('''
+          final rows = await txn.rawQuery(
+            '''
             SELECT id, image_paths, audio_paths, video_paths
             FROM diary_entries
             WHERE (image_paths LIKE ?) OR (audio_paths LIKE ?) OR (video_paths LIKE ?)
-          ''', [like, like, like]);
+          ''',
+            [like, like, like],
+          );
           for (final r in rows) {
             final id = r['id']?.toString() ?? '';
             if (id.isEmpty) continue;
@@ -8708,7 +8784,10 @@ class DatabaseService {
       'fixed': fixed,
       'fixedPathCount': fixedPaths.length,
       'pathCount': paths.length,
-      'unfixedPathCount': (paths.length - fixedPaths.length).clamp(0, paths.length),
+      'unfixedPathCount': (paths.length - fixedPaths.length).clamp(
+        0,
+        paths.length,
+      ),
       'fixedByType': fixedByType,
     };
   }
