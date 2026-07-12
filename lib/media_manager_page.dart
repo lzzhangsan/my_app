@@ -566,6 +566,8 @@ class _FolderPropertiesStats {
   final int missingOrUnreadableFiles;
 }
 
+enum _MediaTypeViewMode { all, imagesOnly, imagesFirst }
+
 class _MediaManagerPageState extends State<MediaManagerPage>
     with SingleTickerProviderStateMixin {
   final List<MediaItem> _mediaItems = [];
@@ -575,6 +577,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   int _imageCount = 0;
   int _videoCount = 0;
   bool _mediaVisible = true;
+  _MediaTypeViewMode _mediaTypeViewMode = _MediaTypeViewMode.all;
   final Set<String> _selectedItems = {};
   bool _isMultiSelectMode = false;
 
@@ -2231,9 +2234,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           if (failed > 0 && mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
-                content: Text(
-                  '$failed 个文件记录已删除，但物理文件未能立即清理，可稍后在存储管理中清理孤立文件。',
-                ),
+                content: Text('$failed 个文件记录已删除，但物理文件未能立即清理，可稍后在存储管理中清理孤立文件。'),
               ),
             );
           }
@@ -2261,9 +2262,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     final deleted = result['fileDeleted'] as bool? ?? true;
     if (!attempted || deleted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('记录已删除，但物理文件未能立即清理，可稍后在存储管理中清理孤立文件。'),
-      ),
+      const SnackBar(content: Text('记录已删除，但物理文件未能立即清理，可稍后在存储管理中清理孤立文件。')),
     );
   }
 
@@ -2602,6 +2601,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       _currentDirectory = folder.id;
       _selectedItems.clear();
       _isMultiSelectMode = false;
+      _mediaTypeViewMode = _MediaTypeViewMode.all;
     });
     widget.onMultiSelectModeChanged?.call(false);
     await _loadMediaItems();
@@ -2616,6 +2616,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         _currentDirectory = parentDir ?? 'root';
         _selectedItems.clear();
         _isMultiSelectMode = false;
+        _mediaTypeViewMode = _MediaTypeViewMode.all;
       });
       widget.onMultiSelectModeChanged?.call(false);
       await _loadMediaItems();
@@ -2623,8 +2624,68 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   }
 
   void _toggleMediaVisibility() {
-    setState(() => _mediaVisible = !_mediaVisible);
+    if (!_mediaVisible) return;
+    setState(() => _mediaVisible = false);
     _saveSettings();
+  }
+
+  void _restoreMediaVisibility() {
+    if (_mediaVisible) return;
+    setState(() => _mediaVisible = true);
+    _saveSettings();
+  }
+
+  List<MediaItem> get _visibleMediaItems {
+    switch (_mediaTypeViewMode) {
+      case _MediaTypeViewMode.imagesOnly:
+        return _mediaItems
+            .where((item) => item.type != MediaType.video)
+            .toList(growable: false);
+      case _MediaTypeViewMode.imagesFirst:
+        final indexed = _mediaItems.indexed.toList();
+        indexed.sort((a, b) {
+          final rankCompare = _mediaTypeViewRank(
+            a.$2,
+          ).compareTo(_mediaTypeViewRank(b.$2));
+          if (rankCompare != 0) return rankCompare;
+          return a.$1.compareTo(b.$1);
+        });
+        return indexed.map((entry) => entry.$2).toList(growable: false);
+      case _MediaTypeViewMode.all:
+        return List<MediaItem>.unmodifiable(_mediaItems);
+    }
+  }
+
+  int _mediaTypeViewRank(MediaItem item) {
+    if (item.type == MediaType.folder) return 0;
+    if (item.type == MediaType.image) return 1;
+    if (item.type == MediaType.video) return 2;
+    return 3;
+  }
+
+  Future<void> _cycleImageBrowseMode() async {
+    if (_imageCount == 0 && !_hasMoreMediaItems) return;
+    setState(() {
+      switch (_mediaTypeViewMode) {
+        case _MediaTypeViewMode.all:
+          _mediaTypeViewMode = _MediaTypeViewMode.imagesOnly;
+          break;
+        case _MediaTypeViewMode.imagesOnly:
+          _mediaTypeViewMode = _MediaTypeViewMode.imagesFirst;
+          break;
+        case _MediaTypeViewMode.imagesFirst:
+          _mediaTypeViewMode = _MediaTypeViewMode.all;
+          break;
+      }
+    });
+    if (_gridScrollController.hasClients) {
+      _gridScrollController.jumpTo(0);
+    }
+    if (_mediaTypeViewMode != _MediaTypeViewMode.all) {
+      while (mounted && _hasMoreMediaItems) {
+        await _loadMediaItems(append: true);
+      }
+    }
   }
 
   void _toggleMultiSelectMode() {
@@ -3047,6 +3108,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         _selectedItems.isNotEmpty ? 56.0 : (_isMultiSelectMode ? 72.0 : 0.0);
     final bottomContentPadding =
         padding + bottomSafeInset + bottomOverlayHeight + 12;
+    final visibleItems = _visibleMediaItems;
+    final hasMoreVisibleItems =
+        _hasMoreMediaItems && _mediaTypeViewMode == _MediaTypeViewMode.all;
 
     return Listener(
       behavior: HitTestBehavior.translucent,
@@ -3064,8 +3128,8 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           );
           if (startCr != null) {
             final startIdx = startCr.$2 * crossAxisCount + startCr.$1;
-            if (startIdx >= 0 && startIdx < _mediaItems.length) {
-              final item = _mediaItems[startIdx];
+            if (startIdx >= 0 && startIdx < visibleItems.length) {
+              final item = visibleItems[startIdx];
               if (item.id != 'recycle_bin' && item.id != 'favorites') {
                 setState(() {
                   _hasDragMoved = false;
@@ -3127,10 +3191,11 @@ class _MediaManagerPageState extends State<MediaManagerPage>
               curCr.$1,
               curCr.$2,
               crossAxisCount,
+              visibleItems,
             );
             setState(() {
               for (final idx in indices) {
-                final item = _mediaItems[idx];
+                final item = visibleItems[idx];
                 if (_dragIsDeselectMode) {
                   _selectedItems.remove(item.id);
                 } else {
@@ -3190,12 +3255,12 @@ class _MediaManagerPageState extends State<MediaManagerPage>
               crossAxisSpacing: crossAxisSpacing,
               mainAxisSpacing: mainAxisSpacing,
             ),
-            itemCount: _mediaItems.length + (_hasMoreMediaItems ? 1 : 0),
+            itemCount: visibleItems.length + (hasMoreVisibleItems ? 1 : 0),
             itemBuilder: (context, index) {
-              if (index >= _mediaItems.length) {
+              if (index >= visibleItems.length) {
                 return _buildLoadMoreButton();
               }
-              final item = _mediaItems[index];
+              final item = visibleItems[index];
               return _buildMediaItem(item, index);
             },
           ),
@@ -3264,6 +3329,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     int endCol,
     int endRow,
     int crossAxisCount,
+    List<MediaItem> items,
   ) {
     final minCol = startCol < endCol ? startCol : endCol;
     final maxCol = startCol > endCol ? startCol : endCol;
@@ -3273,8 +3339,8 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     for (int r = minRow; r <= maxRow; r++) {
       for (int c = minCol; c <= maxCol; c++) {
         final idx = r * crossAxisCount + c;
-        if (idx >= 0 && idx < _mediaItems.length) {
-          final item = _mediaItems[idx];
+        if (idx >= 0 && idx < items.length) {
+          final item = items[idx];
           if (item.id != 'recycle_bin' && item.id != 'favorites') {
             list.add(idx);
           }
@@ -5461,11 +5527,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       };
       final manifestBytes = utf8.encode(jsonEncode(manifestMap));
       encoder.addArchiveFile(
-        ArchiveFile(
-          'media_manifest.json',
-          manifestBytes.length,
-          manifestBytes,
-        ),
+        ArchiveFile('media_manifest.json', manifestBytes.length, manifestBytes),
       );
       for (
         int chunkIdx = 0;
@@ -5877,10 +5939,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       final folderName = manifest?['folder_name']?.toString() ?? '导入的文件夹';
       final Map<String, String> fileMapById =
           (manifest?['file_map_by_id'] is Map)
-              ? (manifest!['file_map_by_id'] as Map)
-                  .map(
-                    (k, v) => MapEntry(k.toString(), v.toString()),
-                  )
+              ? (manifest!['file_map_by_id'] as Map).map(
+                (k, v) => MapEntry(k.toString(), v.toString()),
+              )
               : <String, String>{};
       List<dynamic> mediaItemsToImport = [];
       if (await chunk0File.exists()) {
@@ -6182,9 +6243,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         try {
           final raw = jsonDecode(await manifestFile.readAsString());
           if (raw is Map<String, dynamic> && raw['file_map_by_id'] is Map) {
-            fileMapById =
-                (raw['file_map_by_id'] as Map)
-                    .map((k, v) => MapEntry(k.toString(), v.toString()));
+            fileMapById = (raw['file_map_by_id'] as Map).map(
+              (k, v) => MapEntry(k.toString(), v.toString()),
+            );
           }
         } catch (e) {
           debugPrint('读取 media_manifest.json 失败（已忽略，按旧格式导入）: $e');
@@ -6250,8 +6311,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           importBasenames: importBasenames,
           validPathsAbsolute: pathsToPreserve,
         );
-      } finally {
-      }
+      } finally {}
       progress.value = 0.9;
 
       // 6. 媒体文件已就位，使用分块 API 恢复数据库（避免大容量导入 OOM）
@@ -6824,9 +6884,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   Future<void> _toggleFavoriteFromSettingsDoubleTap() async {
     if (_currentDirectory == 'recycle_bin') {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('回收站中的媒体无法标星收藏')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('回收站中的媒体无法标星收藏')));
       }
       return;
     }
@@ -6834,11 +6894,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     if (!_isMultiSelectMode) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              '请先长按略缩图进入多选，勾选或使用底部「全选」，再快速连点两次齿轮',
-            ),
-          ),
+          const SnackBar(content: Text('请先长按略缩图进入多选，勾选或使用底部「全选」，再快速连点两次齿轮')),
         );
       }
       return;
@@ -6847,11 +6903,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     if (_selectedItems.isEmpty) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              '请勾选要切换收藏的略缩图，或使用底部「全选」，再快速连点两次齿轮',
-            ),
-          ),
+          const SnackBar(content: Text('请勾选要切换收藏的略缩图，或使用底部「全选」，再快速连点两次齿轮')),
         );
       }
       return;
@@ -6887,9 +6939,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       await _loadMediaItems();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(ok > 1 ? '已切换 $ok 个媒体的收藏状态' : '已切换收藏状态'),
-        ),
+        SnackBar(content: Text(ok > 1 ? '已切换 $ok 个媒体的收藏状态' : '已切换收藏状态')),
       );
     } else {
       final bool missingInGrid = ids.any(
@@ -6901,9 +6951,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
               : (lastError != null
                   ? '收藏失败: $lastError'
                   : '所选中没有可对图/视频标星的项（文件夹等已跳过）');
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(msg)));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
     }
   }
 
@@ -6953,12 +7001,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     if (box == null || overlayBox == null || !box.hasSize) return;
     final topLeft = box.localToGlobal(Offset.zero, ancestor: overlayBox);
     final position = RelativeRect.fromRect(
-      Rect.fromLTWH(
-        topLeft.dx,
-        topLeft.dy,
-        box.size.width,
-        box.size.height,
-      ),
+      Rect.fromLTWH(topLeft.dx, topLeft.dy, box.size.width, box.size.height),
       Offset.zero & overlayBox.size,
     );
     final choice = await showMenu<String>(
@@ -6994,32 +7037,35 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     _thumbCornerMenuLastTapTime = now;
     _thumbCornerMenuAnchorContext = anchorContext;
     _thumbCornerMenuSingleTapTimer?.cancel();
-    _thumbCornerMenuSingleTapTimer = Timer(const Duration(milliseconds: 360), () {
-      final ctx = _thumbCornerMenuAnchorContext;
-      final it = _thumbCornerMenuPendingItem;
-      _thumbCornerMenuSingleTapTimer = null;
-      _thumbCornerMenuPendingItem = null;
-      _thumbCornerMenuLastTapTime = null;
-      _thumbCornerMenuAnchorContext = null;
-      if (!mounted || ctx == null || !ctx.mounted || it == null) return;
-      unawaited(_showThumbnailOverflowMenu(ctx, it));
-    });
+    _thumbCornerMenuSingleTapTimer = Timer(
+      const Duration(milliseconds: 360),
+      () {
+        final ctx = _thumbCornerMenuAnchorContext;
+        final it = _thumbCornerMenuPendingItem;
+        _thumbCornerMenuSingleTapTimer = null;
+        _thumbCornerMenuPendingItem = null;
+        _thumbCornerMenuLastTapTime = null;
+        _thumbCornerMenuAnchorContext = null;
+        if (!mounted || ctx == null || !ctx.mounted || it == null) return;
+        unawaited(_showThumbnailOverflowMenu(ctx, it));
+      },
+    );
   }
 
   Future<void> _toggleFavoriteForThumbnailItem(MediaItem item) async {
     if (_currentDirectory == 'recycle_bin') {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('回收站中的媒体无法标星收藏')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('回收站中的媒体无法标星收藏')));
       }
       return;
     }
     if (item.type != MediaType.image && item.type != MediaType.video) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('文件夹无法标星收藏')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('文件夹无法标星收藏')));
       }
       return;
     }
@@ -7029,9 +7075,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       await _loadMediaItems();
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('收藏失败: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('收藏失败: $e')));
       }
     }
   }
@@ -7048,11 +7094,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   Widget _buildMediaFloatingTopBar() {
     const Color fg = Color(0xDE000000);
     final pad = MediaQuery.paddingOf(context);
-    const ts = TextStyle(
-      fontSize: 20,
-      fontWeight: FontWeight.w500,
-      color: fg,
-    );
+    const ts = TextStyle(fontSize: 20, fontWeight: FontWeight.w500, color: fg);
     const countStyle = TextStyle(fontSize: 11, color: fg);
 
     final bool showRootTitle =
@@ -7085,20 +7127,41 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       leadingSlot = const SizedBox(width: 2);
     }
 
+    final imageModeActive = _mediaTypeViewMode != _MediaTypeViewMode.all;
+    final imageCountButton = GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () => unawaited(_cycleImageBrowseMode()),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 2),
+        decoration: BoxDecoration(
+          color:
+              imageModeActive
+                  ? Colors.lightBlueAccent.withValues(alpha: 0.22)
+                  : Colors.transparent,
+          borderRadius: BorderRadius.circular(4),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.image, size: 18, color: fg),
+            const SizedBox(width: 2),
+            Text(
+              '$_imageCount',
+              style: countStyle.copyWith(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
     final countsChip = FittedBox(
       fit: BoxFit.scaleDown,
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(Icons.image, size: 18, color: fg),
-          const SizedBox(width: 2),
-          Text(
-            '$_imageCount',
-            style: countStyle.copyWith(
-              fontSize: 14,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
+          imageCountButton,
           const SizedBox(width: 8),
           const Icon(Icons.videocam, size: 18, color: fg),
           const SizedBox(width: 2),
@@ -7155,53 +7218,42 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                   children: [
                     countsChip,
+                    _mediaVisible
+                        ? IconButton(
+                          icon: const Icon(
+                            Icons.visibility,
+                            size: 18,
+                            color: fg,
+                          ),
+                          onPressed: _toggleMediaVisibility,
+                          tooltip: '切换媒体可见性',
+                          style: iconBtnStyle,
+                        )
+                        : GestureDetector(
+                          behavior: HitTestBehavior.translucent,
+                          onDoubleTap: _restoreMediaVisibility,
+                          child: const SizedBox(width: 48, height: 48),
+                        ),
                     IconButton(
-                      icon: Icon(
-                        _mediaVisible ? Icons.visibility : Icons.visibility_off,
-                        size: 18,
-                        color: fg,
-                      ),
-                      onPressed: _toggleMediaVisibility,
-                      tooltip: '切换媒体可见性',
-                      style: iconBtnStyle,
-                    ),
-                    IconButton(
-                      icon: const Icon(
-                        Icons.storage,
-                        size: 18,
-                        color: fg,
-                      ),
+                      icon: const Icon(Icons.storage, size: 18, color: fg),
                       onPressed: _showStorageManagement,
                       tooltip: '存储管理',
                       style: iconBtnStyle,
                     ),
                     IconButton(
-                      icon: const Icon(
-                        Icons.settings,
-                        size: 18,
-                        color: fg,
-                      ),
+                      icon: const Icon(Icons.settings, size: 18, color: fg),
                       onPressed: _onSettingsGearTapForSingleOrDouble,
-                      tooltip:
-                          '设置（多选并勾选后，连点两次齿轮可批量切换收藏）',
+                      tooltip: '设置（多选并勾选后，连点两次齿轮可批量切换收藏）',
                       style: iconBtnStyle,
                     ),
                     IconButton(
-                      icon: const Icon(
-                        Icons.refresh,
-                        size: 18,
-                        color: fg,
-                      ),
+                      icon: const Icon(Icons.refresh, size: 18, color: fg),
                       onPressed: () => unawaited(_refreshMediaAndThumbnails()),
                       tooltip: '刷新',
                       style: iconBtnStyle,
                     ),
                     IconButton(
-                      icon: const Icon(
-                        Icons.find_replace,
-                        size: 18,
-                        color: fg,
-                      ),
+                      icon: const Icon(Icons.find_replace, size: 18, color: fg),
                       onPressed: _deduplicateCurrentFolder,
                       tooltip: '当前目录查重',
                       style: iconBtnStyle,
