@@ -29,6 +29,7 @@ import 'package:encrypt/encrypt.dart' as enc;
 import 'core/service_locator.dart';
 import 'services/database_service.dart';
 import 'utils/export_import_error_utils.dart';
+import 'utils/media_download_utils.dart';
 import 'models/media_item.dart';
 import 'models/media_type.dart';
 import 'media_manager_page.dart';
@@ -45,14 +46,34 @@ class _HlsSegTask {
     required this.useAes128,
     this.aesKey,
     this.explicitIv,
+    this.rangeStart,
+    this.rangeEnd,
+    this.fallbackUrl,
   });
   final String url;
   final int mediaSeq;
   final bool useAes128;
   final Uint8List? aesKey;
+  final int? rangeStart;
+  final int? rangeEnd;
+  final String? fallbackUrl;
 
   /// 来自 #EXT-X-KEY；为 null 时用 [mediaSeq] 生成 IV。
   final Uint8List? explicitIv;
+}
+
+class _CapturedWebResource {
+  const _CapturedWebResource({
+    required this.url,
+    required this.initiatorType,
+    required this.pageUrl,
+    required this.capturedAt,
+  });
+
+  final String url;
+  final String initiatorType;
+  final String pageUrl;
+  final DateTime capturedAt;
 }
 
 /// 同时发起的 HLS 分片 HTTP 请求数（需 ≤ [ _kHlsMaxConnectionsPerHost ]，过大易被 CDN 限流）。
@@ -84,6 +105,131 @@ const Duration _kMediaUrlInFlightTtl = Duration(seconds: 45);
 /// the page blocks capture. Do not import that as a black, unplayable video.
 const int _kMinBase64VideoBytes = 16 * 1024;
 
+const int _kMaxCapturedWebResources = 600;
+
+const String _kBrowserMediaUserAgent =
+    'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 '
+    '(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
+
+const String _kEarlyMediaSnifferScript = r'''
+(() => {
+  if (window.__appEarlyMediaSnifferInstalled) return;
+  window.__appEarlyMediaSnifferInstalled = true;
+  window.__appEarlyMediaRequests = window.__appEarlyMediaRequests || new Map();
+  const remember = (rawUrl, contentType, source) => {
+    try {
+      if (!rawUrl) return;
+      const url = new URL(String(rawUrl), location.href).toString();
+      if (!/^https?:/i.test(url)) return;
+      window.__appEarlyMediaRequests.set(url, {
+        contentType: String(contentType || '').toLowerCase(),
+        source: source || '',
+        timestamp: Date.now()
+      });
+      if (window.__appEarlyMediaRequests.size > 500) {
+        const first = window.__appEarlyMediaRequests.keys().next().value;
+        window.__appEarlyMediaRequests.delete(first);
+      }
+    } catch (_) {}
+  };
+
+  try {
+    const originalFetch = window.fetch;
+    window.fetch = async function(input, init) {
+      const response = await originalFetch.apply(this, arguments);
+      try {
+        const url = typeof input === 'string' ? input : (input && input.url);
+        remember(url, response && response.headers && response.headers.get('content-type'), 'fetch');
+      } catch (_) {}
+      return response;
+    };
+  } catch (_) {}
+
+  try {
+    const originalOpen = XMLHttpRequest.prototype.open;
+    const originalSend = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.open = function(method, url) {
+      this.__appMediaUrl = url;
+      return originalOpen.apply(this, arguments);
+    };
+    XMLHttpRequest.prototype.send = function() {
+      try {
+        this.addEventListener('load', () => {
+          let contentType = '';
+          try { contentType = this.getResponseHeader('content-type') || ''; } catch (_) {}
+          remember(this.__appMediaUrl, contentType, 'xhr');
+        }, { once: true });
+      } catch (_) {}
+      return originalSend.apply(this, arguments);
+    };
+  } catch (_) {}
+
+  try {
+    const observer = new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) {
+        remember(entry && entry.name, '', (entry && entry.initiatorType) || 'resource');
+      }
+    });
+    observer.observe({ type: 'resource', buffered: true });
+  } catch (_) {}
+})();
+''';
+
+const String _kMediaFragmentUrlScript = r'''
+function isMediaFragmentUrl(url) {
+  if (!url || typeof url !== 'string') return false;
+  const lower = url.toLowerCase();
+  if (/\.(m4s|cmfv|cmfa)(\?|#|$)/.test(lower)) return true;
+  if ([
+    'dash-segment', 'dash_segment', 'dash-chunk', 'dash_chunk',
+    '/segment/', '/segments/', '/chunk/', '/chunks/',
+    '/fragment/', '/fragments/', '/init.mp4', '/init.m4s'
+  ].some(p => lower.includes(p))) return true;
+  if (/(^|[\/_.-])(seg|segment|chunk|fragment|frag|part)[-_]?\d+([_.-]|\/|\?|#|$)/.test(lower)) return true;
+  try {
+    const baseUrl =
+      (typeof location !== 'undefined' && location.href) || 'https://localhost/';
+    const parsed = new URL(url, baseUrl);
+    const range = parsed.searchParams.get('range') || '';
+    const sequence = parsed.searchParams.get('sq') || '';
+    return /^\d+-\d+$/.test(range) || /^\d+$/.test(sequence);
+  } catch (_) {
+    return false;
+  }
+}
+
+function normalizeMediaCandidateUrl(url) {
+  if (!url || typeof url !== 'string') return null;
+  let parsed;
+  try {
+    const baseUrl =
+      (typeof location !== 'undefined' && location.href) || 'https://localhost/';
+    parsed = new URL(url, baseUrl);
+  } catch (_) {
+    return null;
+  }
+  if (!isMediaFragmentUrl(parsed.href)) return parsed.href;
+  const path = parsed.pathname.toLowerCase();
+  if (
+    /\.(m4s|cmfv|cmfa)$/.test(path) ||
+    ['dash-segment', 'dash_segment', 'dash-chunk', 'dash_chunk',
+     '/segment/', '/segments/', '/chunk/', '/chunks/',
+     '/fragment/', '/fragments/', '/init.mp4', '/init.m4s']
+      .some(p => path.includes(p))
+  ) {
+    return null;
+  }
+  let changed = false;
+  for (const key of ['range', 'sq', 'rn', 'rbuf']) {
+    if (parsed.searchParams.has(key)) {
+      parsed.searchParams.delete(key);
+      changed = true;
+    }
+  }
+  return changed ? parsed.href : null;
+}
+''';
+
 // Top-level function for ZIP encoding to avoid blocking UI
 List<int>? encodeArchive(Archive archive) {
   return ZipEncoder().encode(archive);
@@ -93,6 +239,15 @@ class _ExistingMediaDuplicateException implements Exception {
   const _ExistingMediaDuplicateException(this.existingRow);
 
   final Map<String, dynamic> existingRow;
+}
+
+class _MediaLibrarySaveException implements Exception {
+  const _MediaLibrarySaveException(this.cause);
+
+  final Object cause;
+
+  @override
+  String toString() => '媒体文件已下载，但写入媒体库失败: $cause';
 }
 
 class BrowserPage extends StatefulWidget {
@@ -197,14 +352,16 @@ class _BrowserPageState extends State<BrowserPage>
     try {
       final networkService = NetworkService();
       await networkService.initialize();
+      final cookie = await _browserCookieHeaderForUrl(absoluteUrl);
       final resp = await networkService.dio.head(
         absoluteUrl,
         options: Options(
           method: 'HEAD',
           headers: {
-            'User-Agent':
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36',
+            'User-Agent': _kBrowserMediaUserAgent,
             ...?headers,
+            if (cookie.isNotEmpty && !(headers?.containsKey('Cookie') ?? false))
+              'Cookie': cookie,
           },
         ),
       );
@@ -215,10 +372,62 @@ class _BrowserPageState extends State<BrowserPage>
     }
   }
 
+  Future<String> _browserCookieHeaderForUrl(String url) async {
+    try {
+      final absolute = _toAbsoluteUrl(url);
+      final uri = Uri.tryParse(absolute);
+      if (uri == null ||
+          !(uri.scheme == 'http' || uri.scheme == 'https') ||
+          uri.host.isEmpty) {
+        return '';
+      }
+      final cookies = await CookieManager.instance().getCookies(
+        url: WebUri(absolute),
+      );
+      final parts = <String>[];
+      for (final c in cookies) {
+        final name = c.name.trim();
+        final value = c.value.trim();
+        if (name.isEmpty) continue;
+        parts.add('$name=$value');
+      }
+      return parts.join('; ');
+    } catch (e) {
+      debugPrint('读取 WebView Cookie 失败: $e');
+      return '';
+    }
+  }
+
+  Future<Map<String, String>> _browserLikeMediaHeaders(
+    String mediaUrl, {
+    required String referer,
+    String accept = '*/*',
+    bool includeOrigin = false,
+  }) async {
+    final headers = <String, String>{
+      'User-Agent': _kBrowserMediaUserAgent,
+      'Referer': referer,
+      'Accept': accept,
+      'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+      'Connection': 'keep-alive',
+      if (includeOrigin && referer.startsWith('http'))
+        'Origin': Uri.tryParse(referer)?.origin ?? referer,
+    };
+    final cookie = await _browserCookieHeaderForUrl(mediaUrl);
+    if (cookie.isNotEmpty) {
+      headers['Cookie'] = cookie;
+    }
+    return headers;
+  }
+
   @override
   bool get wantKeepAlive => true;
 
   InAppWebViewController? _controller;
+  final LinkedHashMap<String, _CapturedWebResource> _capturedWebResources =
+      LinkedHashMap<String, _CapturedWebResource>();
+  final LinkedHashMap<String, DateTime> _trustedMediaCandidateUrls =
+      LinkedHashMap<String, DateTime>();
   final TextEditingController _urlController = TextEditingController();
   bool _isLoading = false;
   double _loadingProgress = 0.0;
@@ -229,6 +438,139 @@ class _BrowserPageState extends State<BrowserPage>
 
   bool _showHomePage = true;
   bool _isBrowsingWebPage = false;
+
+  void _recordLoadedWebResource(LoadedResource resource) {
+    final rawUrl = resource.url?.toString().trim() ?? '';
+    final uri = Uri.tryParse(rawUrl);
+    if (uri == null ||
+        !(uri.scheme == 'http' || uri.scheme == 'https') ||
+        uri.host.isEmpty ||
+        _isLikelyAdUrl(rawUrl)) {
+      return;
+    }
+    final initiator = (resource.initiatorType ?? '').trim().toLowerCase();
+    const ignoredInitiators = <String>{
+      'css',
+      'script',
+      'link',
+      'font',
+      'beacon',
+    };
+    if (ignoredInitiators.contains(initiator)) return;
+
+    _capturedWebResources.remove(rawUrl);
+    _capturedWebResources[rawUrl] = _CapturedWebResource(
+      url: rawUrl,
+      initiatorType: initiator,
+      pageUrl: _currentUrl,
+      capturedAt: DateTime.now(),
+    );
+    final captured = _capturedWebResources[rawUrl]!;
+    if (_capturedResourceMatchesType(captured, MediaType.video) ||
+        _capturedResourceMatchesType(captured, MediaType.image)) {
+      _trustMediaCandidate(rawUrl);
+    }
+    while (_capturedWebResources.length > _kMaxCapturedWebResources) {
+      _capturedWebResources.remove(_capturedWebResources.keys.first);
+    }
+  }
+
+  bool _urlLooksLikeImageResource(String url) {
+    final lower = url.toLowerCase();
+    return RegExp(
+      r'\.(jpe?g|png|gif|webp|bmp|svg|ico|tiff?|avif|heic|heif|jxl)(\?|#|$)',
+      caseSensitive: false,
+    ).hasMatch(lower);
+  }
+
+  bool _capturedResourceMatchesType(
+    _CapturedWebResource resource,
+    MediaType mediaType,
+  ) {
+    final initiator = resource.initiatorType;
+    if (mediaType == MediaType.image) {
+      return initiator == 'img' ||
+          initiator == 'image' ||
+          _urlLooksLikeImageResource(resource.url);
+    }
+    if (mediaType == MediaType.video) {
+      if (_looksLikeMediaFragmentUrl(resource.url)) return false;
+      return initiator == 'video' ||
+          initiator == 'media' ||
+          (_isLikelyDirectMediaUrl(resource.url) &&
+              !_looksLikeMediaFragmentUrl(resource.url));
+    }
+    return initiator == 'audio';
+  }
+
+  List<String> _recentCapturedMediaCandidates(
+    MediaType mediaType, {
+    String? pageUrl,
+    int limit = 24,
+  }) {
+    final now = DateTime.now();
+    final requestedPage = Uri.tryParse((pageUrl ?? _currentUrl).trim());
+    final scored = <(_CapturedWebResource resource, int score)>[];
+    for (final resource in _capturedWebResources.values) {
+      final age = now.difference(resource.capturedAt);
+      if (age > const Duration(minutes: 30) ||
+          !_capturedResourceMatchesType(resource, mediaType)) {
+        continue;
+      }
+      final capturedPage = Uri.tryParse(resource.pageUrl);
+      if (requestedPage != null &&
+          capturedPage != null &&
+          requestedPage.host.isNotEmpty &&
+          capturedPage.host.isNotEmpty &&
+          requestedPage.host != capturedPage.host) {
+        continue;
+      }
+      var score = max(0, 1800 - age.inSeconds);
+      if (resource.initiatorType == 'video' ||
+          resource.initiatorType == 'img' ||
+          resource.initiatorType == 'image') {
+        score += 3000;
+      }
+      if (mediaType == MediaType.video) {
+        score += _scoreFavoriteVideoUrl(resource.url);
+      } else if (_urlLooksLikeImageResource(resource.url)) {
+        score += 1200;
+      }
+      scored.add((resource, score));
+    }
+    scored.sort((a, b) => b.$2.compareTo(a.$2));
+    return scored.take(limit).map((entry) => entry.$1.url).toList();
+  }
+
+  bool _isCapturedVideoCandidate(String url) {
+    final resource = _capturedWebResources[url];
+    if (resource == null) return false;
+    return DateTime.now().difference(resource.capturedAt) <=
+            const Duration(minutes: 30) &&
+        _capturedResourceMatchesType(resource, MediaType.video);
+  }
+
+  void _trustMediaCandidate(String url) {
+    final absolute = _toAbsoluteUrl(url);
+    final uri = Uri.tryParse(absolute);
+    if (uri == null ||
+        !(uri.scheme == 'http' || uri.scheme == 'https') ||
+        _isLikelyAdUrl(absolute) ||
+        _looksLikeMediaFragmentUrl(absolute)) {
+      return;
+    }
+    _trustedMediaCandidateUrls.remove(absolute);
+    _trustedMediaCandidateUrls[absolute] = DateTime.now();
+    while (_trustedMediaCandidateUrls.length > 300) {
+      _trustedMediaCandidateUrls.remove(_trustedMediaCandidateUrls.keys.first);
+    }
+  }
+
+  bool _isTrustedMediaCandidate(String url) {
+    final capturedAt = _trustedMediaCandidateUrls[_toAbsoluteUrl(url)];
+    return capturedAt != null &&
+        DateTime.now().difference(capturedAt) <= const Duration(minutes: 30);
+  }
 
   // 下载任务列表：支持查看、取消
   final List<Map<String, dynamic>> _downloadTasks = [];
@@ -248,6 +590,7 @@ class _BrowserPageState extends State<BrowserPage>
   /// 长按下载：直链失败后 canvas/base64 可能晚到，用定时器合并为「仅一条」失败提示。
   Timer? _mediaDownloadFailHintTimer;
   bool _mediaDownloadSaveResolved = false;
+  bool _longPressVideoDownloadInProgress = false;
 
   void _notifyMediaDownloadSaved() {
     _mediaDownloadSaveResolved = true;
@@ -1135,8 +1478,13 @@ class _BrowserPageState extends State<BrowserPage>
     required String pageUrl,
     required String videoUrl,
   }) async {
-    if (_isLikelyDirectMediaUrl(videoUrl)) return videoUrl;
-    if (_isLikelyDirectMediaUrl(pageUrl)) return pageUrl;
+    if (_isLikelyDirectMediaUrl(videoUrl) ||
+        _isTrustedMediaCandidate(videoUrl)) {
+      return videoUrl;
+    }
+    if (_isLikelyDirectMediaUrl(pageUrl) || _isTrustedMediaCandidate(pageUrl)) {
+      return pageUrl;
+    }
     if (pageUrl.isEmpty ||
         !(pageUrl.startsWith('http://') || pageUrl.startsWith('https://'))) {
       return null;
@@ -1144,19 +1492,24 @@ class _BrowserPageState extends State<BrowserPage>
     try {
       final networkService = NetworkService();
       await networkService.initialize();
+      final pageHeaders = await _browserLikeMediaHeaders(
+        pageUrl,
+        referer: pageUrl,
+        accept:
+            'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      );
       final resp = await networkService.dio.get<String>(
         pageUrl,
         options: Options(
           responseType: ResponseType.plain,
-          headers: {
-            'User-Agent':
-                'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
-            'Accept':
-                'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          },
+          headers: pageHeaders,
         ),
       );
-      final html = resp.data ?? '';
+      final html = (resp.data ?? '')
+          .replaceAll(r'\/', '/')
+          .replaceAll(r'\u002F', '/')
+          .replaceAll(r'\u002f', '/')
+          .replaceAll('&amp;', '&');
       if (html.isEmpty) return null;
       final baseUri = Uri.tryParse(pageUrl);
       if (baseUri == null) return null;
@@ -1235,6 +1588,10 @@ class _BrowserPageState extends State<BrowserPage>
     return hints.any(s.contains);
   }
 
+  bool _looksLikeMediaFragmentUrl(String url) {
+    return isMediaFragmentUrl(url);
+  }
+
   int _scoreFavoriteVideoUrl(String url) {
     final s = url.toLowerCase();
     var score = 0;
@@ -1260,7 +1617,11 @@ class _BrowserPageState extends State<BrowserPage>
       final s = u.trim();
       if (s.isEmpty) return;
       final abs = _toAbsoluteUrl(s);
-      if (abs.isEmpty || seen.contains(abs)) return;
+      if (abs.isEmpty ||
+          seen.contains(abs) ||
+          _looksLikeMediaFragmentUrl(abs)) {
+        return;
+      }
       seen.add(abs);
       merged.add(abs);
     }
@@ -1290,20 +1651,24 @@ class _BrowserPageState extends State<BrowserPage>
     try {
       final networkService = NetworkService();
       await networkService.initialize();
+      final pageHeaders = await _browserLikeMediaHeaders(
+        pageUrl,
+        referer: pageUrl,
+        accept:
+            'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      );
       final resp = await networkService.dio.get<String>(
         pageUrl,
         options: Options(
           responseType: ResponseType.plain,
-          headers: {
-            'User-Agent':
-                'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
-            'Accept':
-                'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Referer': pageUrl,
-          },
+          headers: pageHeaders,
         ),
       );
-      final html = resp.data ?? '';
+      final html = (resp.data ?? '')
+          .replaceAll(r'\/', '/')
+          .replaceAll(r'\u002F', '/')
+          .replaceAll(r'\u002f', '/')
+          .replaceAll('&amp;', '&');
       if (html.isEmpty) return const <String>[];
       final baseUri = Uri.tryParse(pageUrl);
       if (baseUri == null) return const <String>[];
@@ -1375,6 +1740,7 @@ class _BrowserPageState extends State<BrowserPage>
     bool showModalDialog = false, // 是否显示全局阻塞式进度弹窗
     void Function(String failureType)? onFailureType,
   }) async {
+    final isLongPress = item['downloadOrigin'] == 'long_press';
     if (await _favoriteExistsInLibrary(item)) {
       await _markFavoriteDownloaded(item, downloaded: true);
       onFailureType?.call('already_in_library');
@@ -1390,10 +1756,45 @@ class _BrowserPageState extends State<BrowserPage>
     }
     final pageUrl = (item['pageUrl'] ?? '').toString().trim();
     final videoUrl = (item['videoUrl'] ?? '').toString().trim();
-    final downloadUrl = await _resolveFavoriteDownloadUrl(
-      pageUrl: pageUrl,
-      videoUrl: videoUrl,
-    );
+    final candidateRaw = item['candidateUrls'];
+    final candidateUrls = <String>[];
+    if (candidateRaw is List) {
+      for (final e in candidateRaw) {
+        if (e is String && e.trim().isNotEmpty) {
+          candidateUrls.add(e.trim());
+        }
+      }
+    }
+    if (!isLongPress) {
+      candidateUrls.addAll(
+        _recentCapturedMediaCandidates(MediaType.video, pageUrl: pageUrl),
+      );
+    }
+    var downloadUrl =
+        isLongPress
+            ? videoUrl
+            : await _resolveFavoriteDownloadUrl(
+              pageUrl: pageUrl,
+              videoUrl: videoUrl,
+            );
+    if ((downloadUrl == null || downloadUrl.isEmpty) &&
+        candidateUrls.isNotEmpty) {
+      final directCandidates =
+          candidateUrls
+              .where(
+                (url) =>
+                    _isLikelyDirectMediaUrl(url) ||
+                    _isCapturedVideoCandidate(url) ||
+                    _isTrustedMediaCandidate(url),
+              )
+              .toList();
+      if (directCandidates.isNotEmpty) {
+        downloadUrl = _chooseBestFavoriteVideoUrl(
+          videoUrl.isNotEmpty ? videoUrl : directCandidates.first,
+          directCandidates,
+        );
+      }
+    }
     if (downloadUrl == null || downloadUrl.isEmpty) {
       onFailureType?.call('no_direct_url');
       if (showResultHint && mounted) {
@@ -1495,19 +1896,20 @@ class _BrowserPageState extends State<BrowserPage>
       );
     }
     final taskLenBefore = _downloadTasks.length;
-    final candidateRaw = item['candidateUrls'];
-    final candidateUrls = <String>[];
-    if (candidateRaw is List) {
-      for (final e in candidateRaw) {
-        if (e is String && e.trim().isNotEmpty) {
-          candidateUrls.add(e.trim());
-        }
-      }
-    }
     final attempts = _buildFavoriteAttempts(
       downloadUrl,
-      candidateUrls.where(_isLikelyDirectMediaUrl).toList(),
+      candidateUrls
+          .where(
+            (url) =>
+                _isLikelyDirectMediaUrl(url) ||
+                _isCapturedVideoCandidate(url) ||
+                _isTrustedMediaCandidate(url),
+          )
+          .toList(),
     );
+    if (isLongPress && attempts.length > 3) {
+      attempts.removeRange(3, attempts.length);
+    }
     detailNotifier.value = '已获取下载地址，准备开始...';
     if (_favoriteDownloadDiagnosticsEnabled) {
       Logger.log(
@@ -1527,7 +1929,12 @@ class _BrowserPageState extends State<BrowserPage>
         MediaType.video,
         skipFailurePrompt: i < attempts.length - 1,
         onFailureType: (t) => failureType = t,
-        timeout: const Duration(minutes: 3),
+        inactivityTimeout:
+            isLongPress
+                ? const Duration(minutes: 2)
+                : const Duration(minutes: 3),
+        maxRequestAttempts: isLongPress ? 4 : null,
+        showSuccessPrompt: false,
         onProgress: (fraction, {String? detail}) {
           progress.value = fraction.clamp(0.0, 1.0);
           if (detail != null && detail.trim().isNotEmpty) {
@@ -1546,8 +1953,18 @@ class _BrowserPageState extends State<BrowserPage>
         successIndex = i + 1;
         break;
       }
+      if (failureType == 'library_save_failed' ||
+          failureType == 'already_in_library' ||
+          failureType == 'cancelled') {
+        break;
+      }
     }
-    if (!ok && pageUrl.startsWith('http')) {
+    if (!ok &&
+        !isLongPress &&
+        lastFailureType != 'library_save_failed' &&
+        lastFailureType != 'already_in_library' &&
+        lastFailureType != 'cancelled' &&
+        pageUrl.startsWith('http')) {
       detailNotifier.value = '第3步：重新打开源页并二次嗅探...';
       final resniffCandidates = await _resniffFavoriteCandidatesFromSourcePage(
         pageUrl,
@@ -1570,7 +1987,8 @@ class _BrowserPageState extends State<BrowserPage>
             MediaType.video,
             skipFailurePrompt: i < secondAttempts.length - 1,
             onFailureType: (t) => failureType = t,
-            timeout: const Duration(minutes: 3),
+            inactivityTimeout: const Duration(minutes: 3),
+            showSuccessPrompt: false,
             onProgress: (fraction, {String? detail}) {
               progress.value = fraction.clamp(0.0, 1.0);
               if (detail != null && detail.trim().isNotEmpty) {
@@ -1589,6 +2007,11 @@ class _BrowserPageState extends State<BrowserPage>
           if (ok) {
             break;
           }
+          if (failureType == 'library_save_failed' ||
+              failureType == 'already_in_library' ||
+              failureType == 'cancelled') {
+            break;
+          }
         }
       } else {
         lastFailureType = 'resniff_no_candidate';
@@ -1600,7 +2023,7 @@ class _BrowserPageState extends State<BrowserPage>
       );
     }
     if (_downloadTasks.length > taskLenBefore) {
-      final last = _downloadTasks.last;
+      final last = _downloadTasks.first;
       final p = (last['progress'] as num?)?.toDouble();
       progress.value = p == null ? null : p.clamp(0.0, 1.0);
       final d = (last['progressDetail'] ?? '').toString();
@@ -1624,7 +2047,15 @@ class _BrowserPageState extends State<BrowserPage>
     if (showResultHint && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(ok ? '已加入下载：$downloadUrl' : '下载失败，请稍后重试'),
+          content: Text(
+            ok
+                ? (isLongPress ? '已保存当前长按的媒体' : '已加入下载：$downloadUrl')
+                : (lastFailureType == 'library_save_failed'
+                    ? '文件已下载，但写入媒体库失败；已停止重复下载'
+                    : lastFailureType == 'already_in_library'
+                    ? '媒体库中已存在相同文件，未重复保存'
+                    : (isLongPress ? '当前长按的媒体保存失败，已停止尝试' : '下载失败，请稍后重试')),
+          ),
           duration: const Duration(milliseconds: 1200),
         ),
       );
@@ -1981,11 +2412,16 @@ class _BrowserPageState extends State<BrowserPage>
   bool _canvasFallbackSucceeded = false;
   Completer<bool>? _canvasFallbackCompleter;
 
-  void _injectDownloadHandlers() {
-    if (_controller == null) return;
-    debugPrint('为所有网站注入超强媒体下载处理程序 - 95%成功率版本');
-    _controller!.evaluateJavascript(
-      source: '''
+  Future<bool> _injectDownloadHandlers({bool allowRetry = true}) async {
+    final controller = _controller;
+    if (controller == null) return false;
+    debugPrint('正在安装网页媒体长按处理程序');
+    try {
+      await controller.evaluateJavascript(
+        source: '''
+      (() => {
+      const handlerVersion = 'media-download-v3';
+      if (window.__appMediaDownloadHandlersVersion === handlerVersion) return true;
       window.Flutter = window.Flutter || { postMessage: function(m){ try { if(window.flutter_inappwebview && window.flutter_inappwebview.callHandler) window.flutter_inappwebview.callHandler('Flutter', m); } catch(e){} } };
       window.MediaInterceptor = window.MediaInterceptor || {
         processedUrls: new Set(),
@@ -1997,6 +2433,21 @@ class _BrowserPageState extends State<BrowserPage>
         iframeContents: new Set(),
         dynamicContent: new Set()
       };
+      try {
+        const early = window.__appEarlyMediaRequests;
+        if (early && typeof early.forEach === 'function') {
+          early.forEach((info, requestUrl) => {
+            const candidateUrl = normalizeMediaCandidateUrl(requestUrl);
+            if (!candidateUrl) return;
+            window.MediaInterceptor.interceptedRequests.set(candidateUrl, {
+              method: 'GET',
+              timestamp: (info && info.timestamp) || Date.now(),
+              type: (info && info.source) || 'early',
+              contentType: (info && info.contentType) || ''
+            });
+          });
+        }
+      } catch (_) {}
 
       // 增强的Blob URL检测
       function isBlobUrl(url) {
@@ -2009,6 +2460,11 @@ class _BrowserPageState extends State<BrowserPage>
         if (url.startsWith('blob:') || url.startsWith('data:')) return false;
         if (isAdUrl(url)) return true; // 广告也视为不可直接作为媒体
         const lower = url.toLowerCase();
+        try {
+          const known = window.__appEarlyMediaRequests && window.__appEarlyMediaRequests.get(url);
+          const knownType = String((known && known.contentType) || '').toLowerCase();
+          if (knownType.startsWith('video/') || knownType.startsWith('image/') || knownType.includes('mpegurl')) return false;
+        } catch (_) {}
         try {
           const u = new URL(url);
           const path = u.pathname.toLowerCase();
@@ -2043,10 +2499,13 @@ class _BrowserPageState extends State<BrowserPage>
         return adPatterns.some(p => lower.includes(p));
       }
 
+      $_kMediaFragmentUrlScript
+
       // 增强的媒体URL检测 - 优先扩展名，避免误判 API
       function isMediaUrl(url) {
         if (!url) return false;
         if (isApiUrl(url)) return false;
+        if (isMediaFragmentUrl(url)) return false;
         
         const mediaExtensions = [
           '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg', '.ico', '.tiff', '.tif', '.heic', '.heif',
@@ -2284,11 +2743,12 @@ class _BrowserPageState extends State<BrowserPage>
         XMLHttpRequest.prototype.send = function(data) {
           const xhr = this;
           const url = this._interceptedUrl;
-          const mightBeVideo = url && !isApiUrl(url) && (
-            isMediaUrl(url) || /\\/(v|video|stream|seg|segment|chunk)\\/|\\.(ts|m4s|mp4|webm)(\\?|\$)/i.test(url)
+          const requestCandidate = normalizeMediaCandidateUrl(url);
+          const mightBeVideo = requestCandidate && !isApiUrl(requestCandidate) && (
+            isMediaUrl(requestCandidate) || /\\/(v|video|stream)\\/|\\.(mp4|webm)(\\?|\$)/i.test(requestCandidate)
           );
           if (mightBeVideo) {
-            window.MediaInterceptor.interceptedRequests.set(url, {
+            window.MediaInterceptor.interceptedRequests.set(requestCandidate, {
               method: this._interceptedMethod,
               timestamp: Date.now(),
               type: 'xhr'
@@ -2296,7 +2756,7 @@ class _BrowserPageState extends State<BrowserPage>
           }
           const originalOnLoad = this.onload;
           this.onload = function() {
-            if (isMediaUrl(url) && this.response) console.log('媒体请求完成 (XHR):', url);
+            if (isMediaUrl(requestCandidate) && this.response) console.log('媒体请求完成 (XHR):', requestCandidate);
             if (originalOnLoad) originalOnLoad.apply(this, arguments);
           };
           return originalXHRSend.apply(this, arguments);
@@ -2310,15 +2770,16 @@ class _BrowserPageState extends State<BrowserPage>
           const resp = await originalFetch.apply(this, arguments);
           if (url && resp && resp.ok) {
             const ct = (resp.headers.get('content-type') || '').toLowerCase();
-            if (ct.startsWith('video/') || ct.startsWith('image/') || ct.includes('mpegurl') || ct.includes('m3u8')) {
-              window.MediaInterceptor.interceptedRequests.set(url, {
+            const requestCandidate = normalizeMediaCandidateUrl(url);
+            if (requestCandidate && (ct.startsWith('video/') || ct.startsWith('image/') || ct.includes('mpegurl') || ct.includes('m3u8'))) {
+              window.MediaInterceptor.interceptedRequests.set(requestCandidate, {
                 method: (init && init.method) || 'GET',
                 timestamp: Date.now(),
                 type: 'fetch',
                 contentType: ct
               });
-            } else if (isMediaUrl(url)) {
-              window.MediaInterceptor.interceptedRequests.set(url, {
+            } else if (requestCandidate && isMediaUrl(requestCandidate)) {
+              window.MediaInterceptor.interceptedRequests.set(requestCandidate, {
                 method: (init && init.method) || 'GET',
                 timestamp: Date.now(),
                 type: 'fetch'
@@ -2600,7 +3061,7 @@ class _BrowserPageState extends State<BrowserPage>
                   for (const [u, info] of window.MediaInterceptor.interceptedRequests) {
                     if (!u) continue;
                     if ((now - info.timestamp) > 1800000) continue;
-                    if (isApiUrl(u) || isAdUrl(u)) continue;
+                    if (isApiUrl(u) || isAdUrl(u) || isMediaFragmentUrl(u)) continue;
                     const lower = String(u).toLowerCase();
                     const hasMediaHint = lower.includes('.m3u8') || lower.includes('.m3u') || lower.includes('.mp4') || lower.includes('.webm') || lower.includes('.ts') || lower.includes('mpegurl');
                     if (!hasMediaHint) continue;
@@ -2647,7 +3108,7 @@ class _BrowserPageState extends State<BrowserPage>
                     if (added >= 8) break;
                     if (!u) continue;
                     if ((now - info.timestamp) > 1800000) continue;
-                    if (isApiUrl(u) || isAdUrl(u) || looksPreview(u)) continue;
+                    if (isApiUrl(u) || isAdUrl(u) || isMediaFragmentUrl(u) || looksPreview(u)) continue;
                     const lower = String(u).toLowerCase();
                     const hasMediaHint = lower.includes('.m3u8') || lower.includes('.m3u') || lower.includes('.mp4') || lower.includes('.webm') || lower.includes('.ts') || lower.includes('mpegurl');
                     if (!hasMediaHint) continue;
@@ -2782,8 +3243,8 @@ class _BrowserPageState extends State<BrowserPage>
           // 补充扫描性能条目，防止 Hook 遗漏（例如缓存命中或某些特殊的加载方式）
           try {
             performance.getEntriesByType('resource').forEach(entry => {
-              const u = entry.name;
-              if (u && !isApiUrl(u) && !isAdUrl(u) && (u.includes('.m3u8') || u.includes('.m3u') || u.includes('.mp4') || u.includes('.webm') || u.includes('.ts'))) {
+              const u = normalizeMediaCandidateUrl(entry.name);
+              if (u && !isApiUrl(u) && !isAdUrl(u) && (u.includes('.m3u8') || u.includes('.m3u') || u.includes('.mp4') || u.includes('.webm'))) {
                 if (!window.MediaInterceptor.interceptedRequests.has(u)) {
                   window.MediaInterceptor.interceptedRequests.set(u, { method: 'GET', timestamp: Date.now(), type: 'performance', contentType: '' });
                 }
@@ -2792,25 +3253,26 @@ class _BrowserPageState extends State<BrowserPage>
           } catch (e) {}
 
           const now = Date.now();
-          let best = null, bestTime = 0;
+          let best = null, bestScore = -1;
           for (const [u, info] of window.MediaInterceptor.interceptedRequests) {
-            if (!u || (now - info.timestamp) > 1800000) continue; // 延长到30分钟，防止长视频下载时找不到地址
-            if (isAdUrl(u)) continue; // 严格过滤广告
+            if (!u || (now - info.timestamp) > 600000) continue;
+            if (isAdUrl(u) || isMediaFragmentUrl(u)) continue;
 
             const ct = (info.contentType || '').toLowerCase();
-            const isStream = (ct.startsWith('video/') || ct.includes('mpegurl') || ct.includes('m3u8') || /\\.(mp4|webm|m3u8)(\\?|\$)/.test(u)) && !isApiUrl(u);
+            const lower = String(u).toLowerCase();
+            const isStream = (ct.startsWith('video/') || ct.includes('mpegurl') || ct.includes('m3u8') || /\\.(mp4|webm|mov|m3u8|m3u)(\\?|\$)/.test(lower)) && !isApiUrl(u);
             
             if (isStream) {
               // 优先级策略：
               // 1. 如果有当前视频的时长信息，且大于 60s，优先选它（通常广告 < 60s）
               // 2. 否则选时间戳最新的（假设用户正在看的就是最新加载的）
-              const videoDuration = videoEl.duration || 0;
-              if (videoDuration > 60 && !isAdUrl(u)) {
-                // 如果能确定是长视频，直接锁定
-                best = u; break; 
-              }
-              if (info.timestamp > bestTime) {
-                bestTime = info.timestamp; best = u;
+              let score = Number(info.timestamp || 0);
+              if (ct.includes('mpegurl') || lower.includes('.m3u8') || lower.includes('.m3u')) score += 1000000000;
+              else if (ct.startsWith('video/') || lower.includes('.mp4') || lower.includes('.webm') || lower.includes('.mov')) score += 500000000;
+              if (lower.includes('preview') || lower.includes('trailer') || lower.includes('poster') || lower.includes('thumb')) score -= 1500000000;
+              if (lower.includes('.m4s') || lower.includes('/segment') || lower.includes('/chunk')) score -= 1200000000;
+              if (score > bestScore) {
+                bestScore = score; best = u;
               }
             }
           }
@@ -2929,7 +3391,7 @@ class _BrowserPageState extends State<BrowserPage>
             const now = Date.now();
             let bestUrl = null, bestTime = 0;
             for (const [u, info] of window.MediaInterceptor.interceptedRequests) {
-              if (!u || (now - info.timestamp) > 1800000) continue; // 延长到30分钟
+              if (!u || (now - info.timestamp) > 600000 || isMediaFragmentUrl(u)) continue;
               const ct = (info.contentType || '').toLowerCase();
               const isVideo = ct.startsWith('video/') || ct.includes('mpegurl') || ct.includes('m3u8') || isMediaUrl(u);
               if (isVideo && !isApiUrl(u) && info.timestamp > bestTime) {
@@ -3051,19 +3513,66 @@ class _BrowserPageState extends State<BrowserPage>
           if (!s.startsWith('http://') && !s.startsWith('https://')) {
             try { s = new URL(s, location.href).toString(); } catch (_) {}
           }
-          if (!s || seen.has(s) || isApiUrl(s)) return;
+          s = normalizeMediaCandidateUrl(s) || '';
+          if (!s || seen.has(s) || isApiUrl(s) || isAdUrl(s)) return;
           seen.add(s);
           cands.push(s);
         };
+        const pushSrcset = (srcset) => {
+          if (!srcset || typeof srcset !== 'string') return;
+          const parts = srcset.split(',').map(s => s.trim()).filter(Boolean);
+          for (const part of parts) {
+            const u = part.split(/\s+/)[0];
+            push(u);
+          }
+        };
+        const pushAttr = (el, name) => {
+          try { push(el && el.getAttribute && el.getAttribute(name)); } catch (_) {}
+        };
         push(url);
         if (interceptedStreamUrl) push(interceptedStreamUrl);
+        try {
+          push(target.currentSrc || target.src || target.href);
+          pushAttr(target, 'src');
+          pushAttr(target, 'href');
+          pushAttr(target, 'data-src');
+          pushAttr(target, 'data-original');
+          pushAttr(target, 'data-url');
+          pushAttr(target, 'data-href');
+          pushAttr(target, 'data-video-src');
+          pushAttr(target, 'data-media');
+          pushAttr(target, 'data-full');
+          pushAttr(target, 'data-large');
+          pushAttr(target, 'data-lazy-src');
+          pushAttr(target, 'data-lazy');
+          if (!videoEl) pushAttr(target, 'poster');
+          pushSrcset(target.srcset || (target.getAttribute && target.getAttribute('srcset')));
+          const bg = (target.style && (target.style.backgroundImage || target.style.background)) || '';
+          const bgMatches = String(bg).matchAll(/url\(['"]?([^'")]+)['"]?\)/g);
+          for (const m of bgMatches) push(m[1]);
+        } catch (_) {}
         if (videoEl) {
           try {
             const srcs = Array.from(videoEl.querySelectorAll('source')).map(s => s.src || s.getAttribute('src'));
             for (const s of srcs) push(s || '');
+            push(videoEl.currentSrc || videoEl.src);
           } catch (_) {}
         }
-
+        try {
+          const mediaInside = target.querySelectorAll && target.querySelectorAll('img, video, source, a[href]');
+          if (mediaInside) {
+            Array.from(mediaInside).slice(0, 30).forEach(el => {
+              push(el.currentSrc || el.src || el.href);
+              pushAttr(el, 'src');
+              pushAttr(el, 'href');
+              pushAttr(el, 'data-src');
+              pushAttr(el, 'data-original');
+              pushAttr(el, 'data-video-src');
+              if (!videoEl) pushAttr(el, 'poster');
+              pushSrcset(el.srcset || (el.getAttribute && el.getAttribute('srcset')));
+            });
+          }
+        } catch (_) {}
         if (tryBlobOrDataUrl(url, mediaType)) {
           e.preventDefault();
           return;
@@ -3192,8 +3701,35 @@ class _BrowserPageState extends State<BrowserPage>
         });
         console.log('初始扫描完成，找到', initialMediaElements.length, '个媒体元素');
       }, 1000);
+      window.updateFeedbackStatus = updateFeedbackStatus;
+      window.tryCanvasCaptureFallback = tryCanvasCaptureFallback;
+      window.__appMediaDownloadHandlersVersion = handlerVersion;
+      return true;
+      })()
     ''',
-    );
+      );
+      final ready = await controller.evaluateJavascript(
+        source:
+            "window.__appMediaDownloadHandlersVersion === 'media-download-v3'",
+      );
+      if (ready == true || ready.toString().toLowerCase() == 'true')
+        return true;
+    } catch (e, st) {
+      debugPrint('网页媒体长按处理程序安装失败: $e\n$st');
+    }
+    if (allowRetry && mounted && identical(controller, _controller)) {
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      return _injectDownloadHandlers(allowRetry: false);
+    }
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('媒体长按功能初始化失败，请刷新当前网页后重试'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+    }
+    return false;
   }
 
   Future<void> _handleJavaScriptMessage(String message) async {
@@ -3218,6 +3754,40 @@ class _BrowserPageState extends State<BrowserPage>
                   : 'audio'));
       final String sourceMimeType =
           (data['mimeType'] ?? data['mime'] ?? '').toString();
+      final rawDownloadCandidateUrls = <String>[];
+      if (candidateValue is List) {
+        for (final e in candidateValue) {
+          if (e is String && e.trim().isNotEmpty) {
+            rawDownloadCandidateUrls.add(_toAbsoluteUrl(e.trim()));
+          }
+        }
+      }
+      final messagePageUrl = (data['pageUrl'] ?? _currentUrl).toString().trim();
+      final requestedMediaType =
+          mediaType == 'video'
+              ? MediaType.video
+              : mediaType == 'audio'
+              ? MediaType.audio
+              : MediaType.image;
+      if (action == 'favorite' && requestedMediaType == MediaType.video) {
+        rawDownloadCandidateUrls.addAll(
+          _recentCapturedMediaCandidates(
+            requestedMediaType,
+            pageUrl: messagePageUrl,
+          ),
+        );
+      }
+      final downloadCandidateUrls = normalizeMediaCandidateUrls(
+        rawDownloadCandidateUrls,
+        video: requestedMediaType == MediaType.video,
+        maxCandidates: action == 'download' ? 4 : 12,
+      );
+      for (final candidate in downloadCandidateUrls) {
+        _trustMediaCandidate(candidate);
+      }
+      if (urlValue is String && !isBase64) {
+        _trustMediaCandidate(urlValue);
+      }
 
       if (urlValue is! String) return;
       if (action == 'favorite') {
@@ -3225,14 +3795,7 @@ class _BrowserPageState extends State<BrowserPage>
         final title = (data['title'] ?? '').toString().trim();
         final positionSec = (data['positionSec'] as num?)?.toDouble() ?? 0.0;
         final durationSec = (data['durationSec'] as num?)?.toDouble() ?? 0.0;
-        final candidateUrls = <String>[];
-        if (candidateValue is List) {
-          for (final e in candidateValue) {
-            if (e is String && e.trim().isNotEmpty) {
-              candidateUrls.add(_toAbsoluteUrl(e.trim()));
-            }
-          }
-        }
+        final candidateUrls = List<String>.from(downloadCandidateUrls);
         final normalizedVideoUrl = _toAbsoluteUrl(urlValue);
         if (normalizedVideoUrl.isNotEmpty &&
             (_isLikelyAdUrl(normalizedVideoUrl) ||
@@ -3310,46 +3873,76 @@ class _BrowserPageState extends State<BrowserPage>
       // 如果是视频下载，且不是 Base64（Base64 通常是 Canvas/Recorder 生成的小文件），
       // 则强制使用稳健下载逻辑，以解决 Blob 断流或残缺问题。
       if (mediaType == 'video' && !isBase64) {
-        final pageUrl = (data['pageUrl'] ?? '').toString().trim();
-        final title = (data['title'] ?? '').toString().trim();
-        final candidateUrls = <String>[];
-        if (candidateValue is List) {
-          for (final e in candidateValue) {
-            if (e is String && e.trim().isNotEmpty) {
-              candidateUrls.add(_toAbsoluteUrl(e.trim()));
-            }
+        if (_longPressVideoDownloadInProgress) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('当前长按的视频正在保存，请勿重复长按'),
+                duration: Duration(milliseconds: 1600),
+              ),
+            );
           }
+          return;
         }
-
-        final itemMap = {
-          'pageUrl': pageUrl.isNotEmpty ? pageUrl : _currentUrl,
-          'videoUrl': _toAbsoluteUrl(urlValue),
-          'title': title,
-          'candidateUrls': candidateUrls,
-        };
-
-        // 查重：如果媒体库已存在，则弹出提示并终止下载
-        if (await _favoriteExistsInLibrary(itemMap)) {
-          final existing = await _findExistingVideoBeforeDownload(
-            _toAbsoluteUrl(urlValue),
+        _longPressVideoDownloadInProgress = true;
+        try {
+          final pageUrl = (data['pageUrl'] ?? '').toString().trim();
+          final title = (data['title'] ?? '').toString().trim();
+          final candidateUrls = List<String>.from(downloadCandidateUrls);
+          final normalizedPrimary = normalizeMediaCandidateUrls(
+            <String>[_toAbsoluteUrl(urlValue)],
+            video: true,
+            maxCandidates: 1,
           );
-          if (existing != null) {
-            await _showVideoDuplicateSnackBar(existing);
-          } else {
+          final primaryVideoUrl =
+              normalizedPrimary.isEmpty ? '' : normalizedPrimary.first;
+
+          if (primaryVideoUrl.isEmpty && candidateUrls.isEmpty) {
             if (mounted) {
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(
-                  content: Text('媒体库中已存在相同视频'),
+                  content: Text('当前仅检测到无法单独保存的视频分片，请继续播放后再长按重试'),
                   duration: Duration(seconds: 2),
                 ),
               );
             }
+            return;
           }
-          return;
-        }
 
-        await _downloadMediaRobustly(item: itemMap, showResultHint: true);
-        return;
+          final itemMap = {
+            'pageUrl': pageUrl.isNotEmpty ? pageUrl : _currentUrl,
+            'videoUrl': primaryVideoUrl,
+            'title': title,
+            'candidateUrls': candidateUrls,
+            'downloadOrigin': 'long_press',
+          };
+
+          // 查重：如果媒体库已存在，则弹出提示并终止下载
+          if (await _favoriteExistsInLibrary(itemMap)) {
+            final existing = await _findExistingVideoBeforeDownload(
+              primaryVideoUrl,
+            );
+            if (existing != null) {
+              await _showVideoDuplicateSnackBar(existing);
+            } else {
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('媒体库中已存在相同视频'),
+                    duration: Duration(seconds: 2),
+                  ),
+                );
+              }
+            }
+            return;
+          }
+
+          await _downloadMediaRobustly(item: itemMap, showResultHint: true);
+          return;
+        } finally {
+          _longPressVideoDownloadInProgress = false;
+          _releaseJsProcessedUrl(urlValue);
+        }
       }
 
       // Base64 不参与去重；HTTP(S) URL 带 TTL，避免 finally 未执行时永久无法重下同一链接。
@@ -3401,8 +3994,12 @@ class _BrowserPageState extends State<BrowserPage>
             'Accept': '*/*',
           },
         );
+        _trustMediaCandidate(resolvedUrl);
         final mimeType = _guessMimeType(resolvedUrl);
         MediaType selectedType = _determineMediaType(mimeType);
+        if (mimeType == 'application/octet-stream') {
+          selectedType = requestedMediaType;
+        }
         if (selectedType == MediaType.image &&
             _urlLooksLikeVideoStream(resolvedUrl)) {
           selectedType = MediaType.video;
@@ -3414,19 +4011,59 @@ class _BrowserPageState extends State<BrowserPage>
             return;
           }
         }
-        final mayFallback =
-            selectedType == MediaType.image || selectedType == MediaType.video;
-        final success = await _performBackgroundDownload(
-          resolvedUrl,
-          selectedType,
-          skipFailurePrompt: mayFallback,
-        );
+        final canCanvasFallback = selectedType == MediaType.image;
+        final attempts = <String>[];
+        final seenAttempts = <String>{};
+        void pushAttempt(String? candidate) {
+          if (candidate == null) return;
+          final absolute = _toAbsoluteUrl(candidate.trim());
+          if (absolute.isEmpty ||
+              seenAttempts.contains(absolute) ||
+              (_isApiEndpointUrl(absolute) &&
+                  !_isTrustedMediaCandidate(absolute)) ||
+              absolute.startsWith('blob:') ||
+              absolute.startsWith('data:')) {
+            return;
+          }
+          if (selectedType == MediaType.image &&
+              _urlLooksLikeVideoStream(absolute)) {
+            return;
+          }
+          seenAttempts.add(absolute);
+          attempts.add(absolute);
+        }
+
+        pushAttempt(resolvedUrl);
+        for (final candidate in downloadCandidateUrls) {
+          pushAttempt(candidate);
+        }
+        if (attempts.length > 3) {
+          attempts.removeRange(3, attempts.length);
+        }
+        var success = false;
+        for (var i = 0; i < attempts.length; i++) {
+          var failureType = 'unknown';
+          success = await _performBackgroundDownload(
+            attempts[i],
+            selectedType,
+            skipFailurePrompt: canCanvasFallback || i < attempts.length - 1,
+            inactivityTimeout:
+                selectedType == MediaType.image
+                    ? const Duration(seconds: 45)
+                    : const Duration(minutes: 2),
+            maxRequestAttempts: 4,
+            onFailureType: (type) => failureType = type,
+          );
+          if (success) break;
+          if (failureType == 'library_save_failed' ||
+              failureType == 'already_in_library' ||
+              failureType == 'cancelled') {
+            break;
+          }
+        }
         if (success) {
           _notifyMediaDownloadSaved();
-        } else if (!success &&
-            (selectedType == MediaType.image ||
-                selectedType == MediaType.video) &&
-            mounted) {
+        } else if (!success && canCanvasFallback && mounted) {
           try {
             final ctrl = _controller;
             if (ctrl != null) {
@@ -3456,7 +4093,7 @@ class _BrowserPageState extends State<BrowserPage>
               // canvas 成功仅表示已取得像素/base64，真正落盘在 _handleBlobUrl；此处不 _notify，避免与失败提示打架
               // 极晚到的 base64 仍可能随后触发 _handleBlobUrl 并成功，故用短延迟再提示失败，避免与成功条打架。
               if (!recovered &&
-                  mayFallback &&
+                  canCanvasFallback &&
                   !_mediaDownloadSaveResolved &&
                   mounted) {
                 _mediaDownloadFailHintTimer?.cancel();
@@ -3481,7 +4118,7 @@ class _BrowserPageState extends State<BrowserPage>
           } catch (_) {
             _awaitingCanvasFallbackResult = false;
             _canvasFallbackCompleter = null;
-            if (mayFallback && !_mediaDownloadSaveResolved && mounted) {
+            if (canCanvasFallback && !_mediaDownloadSaveResolved && mounted) {
               _mediaDownloadFailHintTimer?.cancel();
               _mediaDownloadFailHintTimer = Timer(
                 const Duration(seconds: 2),
@@ -3566,6 +4203,7 @@ class _BrowserPageState extends State<BrowserPage>
               ? sourceMimeType.trim()
               : dataUrlMime;
       final normalizedMediaType = mediaType.toLowerCase().trim();
+      String? detectedExtension;
       if (normalizedMediaType == 'video') {
         if (bytes.length < _kMinBase64VideoBytes) {
           if (mounted) {
@@ -3578,11 +4216,25 @@ class _BrowserPageState extends State<BrowserPage>
           }
           return;
         }
-        if (!_isValidVideoBytes(bytes) && !_isValidWebmBytes(bytes)) {
+        detectedExtension = _detectVideoExtension(bytes);
+        if (detectedExtension == null) {
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
                 content: Text('保存的内容不是有效视频，未保存到媒体库'),
+                duration: _kMediaSaveSnackDuration,
+              ),
+            );
+          }
+          return;
+        }
+      } else if (normalizedMediaType == 'image') {
+        detectedExtension = _detectImageExtension(bytes);
+        if (detectedExtension == null) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('保存的内容不是有效图片，未保存到媒体库'),
                 duration: _kMediaSaveSnackDuration,
               ),
             );
@@ -3598,9 +4250,7 @@ class _BrowserPageState extends State<BrowserPage>
         normalizedMediaType,
         effectiveMime,
       );
-      if (normalizedMediaType == 'video' && _isValidWebmBytes(bytes)) {
-        extension = '.webm';
-      }
+      extension = detectedExtension ?? extension;
       final filePath = '${mediaDir.path}/$uuid$extension';
       final file = File(filePath);
       await file.writeAsBytes(bytes);
@@ -4564,9 +5214,8 @@ class _BrowserPageState extends State<BrowserPage>
   String _getCleanMediaUrl(String url) {
     final uri = Uri.tryParse(url);
     if (uri == null) return url;
-    final q = uri.query.toLowerCase();
-    if (q.isEmpty) return url;
-    final stripParams = [
+    if (uri.query.isEmpty) return url;
+    const transformParams = <String>[
       'x-bce-process',
       'image/resize',
       'image/format',
@@ -4576,20 +5225,20 @@ class _BrowserPageState extends State<BrowserPage>
       'imagemogr2',
       'imageview2',
     ];
-    if (stripParams.any((p) => q.contains(p))) {
-      return uri.replace(query: '').toString();
+    final kept = <String, dynamic>{};
+    var removedTransform = false;
+    for (final entry in uri.queryParametersAll.entries) {
+      final lowerKey = entry.key.toLowerCase();
+      if (transformParams.any(lowerKey.contains)) {
+        removedTransform = true;
+        continue;
+      }
+      kept[entry.key] =
+          entry.value.length == 1 ? entry.value.first : entry.value;
     }
-    return url;
-  }
-
-  /// 获取完全 stripped 的 URL（仅 path，用于 400/403 重试）
-  String _getStrippedMediaUrl(String url) {
-    final uri = Uri.tryParse(url);
-    if (uri == null) return url;
-    if (uri.hasScheme && (uri.scheme == 'http' || uri.scheme == 'https')) {
-      return uri.origin + uri.path;
-    }
-    return url;
+    if (!removedTransform) return url;
+    if (kept.isEmpty) return uri.replace(query: '').toString();
+    return uri.replace(queryParameters: kept).toString();
   }
 
   String? _safeHttpOrigin(String rawUrl) {
@@ -4694,6 +5343,220 @@ class _BrowserPageState extends State<BrowserPage>
         bytes[3] == 0xA3;
   }
 
+  bool _startsWithAscii(List<int> bytes, String value, [int offset = 0]) {
+    if (offset < 0 || bytes.length < offset + value.length) return false;
+    for (var i = 0; i < value.length; i++) {
+      if (bytes[offset + i] != value.codeUnitAt(i)) return false;
+    }
+    return true;
+  }
+
+  String? _detectImageExtension(List<int> bytes) {
+    if (bytes.length < 4) return null;
+    if (bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF) {
+      return '.jpg';
+    }
+    if (bytes[0] == 0x89 && _startsWithAscii(bytes, 'PNG', 1)) return '.png';
+    if (_startsWithAscii(bytes, 'GIF8')) return '.gif';
+    if (_startsWithAscii(bytes, 'RIFF') && _startsWithAscii(bytes, 'WEBP', 8)) {
+      return '.webp';
+    }
+    if (_startsWithAscii(bytes, 'BM')) return '.bmp';
+    if ((bytes[0] == 0x49 &&
+            bytes[1] == 0x49 &&
+            bytes[2] == 0x2A &&
+            bytes[3] == 0x00) ||
+        (bytes[0] == 0x4D &&
+            bytes[1] == 0x4D &&
+            bytes[2] == 0x00 &&
+            bytes[3] == 0x2A)) {
+      return '.tiff';
+    }
+    if (bytes.length >= 4 &&
+        bytes[0] == 0 &&
+        bytes[1] == 0 &&
+        bytes[2] == 1 &&
+        bytes[3] == 0) {
+      return '.ico';
+    }
+    if (bytes.length >= 12 && _startsWithAscii(bytes, 'ftyp', 4)) {
+      final brand =
+          String.fromCharCodes(
+            bytes.sublist(8, min(64, bytes.length)),
+          ).toLowerCase();
+      if (brand.contains('avif') || brand.contains('avis')) return '.avif';
+      if (brand.contains('heic') ||
+          brand.contains('heix') ||
+          brand.contains('hevc') ||
+          brand.contains('hevx') ||
+          brand.contains('mif1') ||
+          brand.contains('msf1')) {
+        return '.heic';
+      }
+    }
+    if (bytes.length >= 12 &&
+        bytes[0] == 0x00 &&
+        bytes[1] == 0x00 &&
+        bytes[2] == 0x00 &&
+        bytes[3] == 0x0C &&
+        _startsWithAscii(bytes, 'JXL ', 4)) {
+      return '.jxl';
+    }
+    if (bytes[0] == 0xFF && bytes[1] == 0x0A) return '.jxl';
+    final text = utf8.decode(bytes, allowMalformed: true).trimLeft();
+    if (text.startsWith('<svg') ||
+        (text.startsWith('<?xml') && text.toLowerCase().contains('<svg'))) {
+      return '.svg';
+    }
+    return null;
+  }
+
+  String? _detectVideoExtension(List<int> bytes) {
+    if (_isValidVideoBytes(bytes)) {
+      if (bytes.length >= 12) {
+        final brand = String.fromCharCodes(bytes.sublist(8, 12)).toLowerCase();
+        if (brand.startsWith('qt')) return '.mov';
+      }
+      return '.mp4';
+    }
+    if (_isValidWebmBytes(bytes)) {
+      final headerText =
+          String.fromCharCodes(
+            bytes.sublist(0, min(4096, bytes.length)),
+          ).toLowerCase();
+      return headerText.contains('matroska') ? '.mkv' : '.webm';
+    }
+    if (_isLikelyMpegTs(bytes)) return '.ts';
+    if (_startsWithAscii(bytes, 'FLV')) return '.flv';
+    if (_startsWithAscii(bytes, 'RIFF') && _startsWithAscii(bytes, 'AVI ', 8)) {
+      return '.avi';
+    }
+    if (_startsWithAscii(bytes, 'OggS')) return '.ogv';
+    const asfHeader = <int>[
+      0x30,
+      0x26,
+      0xB2,
+      0x75,
+      0x8E,
+      0x66,
+      0xCF,
+      0x11,
+      0xA6,
+      0xD9,
+      0x00,
+      0xAA,
+      0x00,
+      0x62,
+      0xCE,
+      0x6C,
+    ];
+    if (bytes.length >= asfHeader.length) {
+      var isAsf = true;
+      for (var i = 0; i < asfHeader.length; i++) {
+        if (bytes[i] != asfHeader[i]) {
+          isAsf = false;
+          break;
+        }
+      }
+      if (isAsf) return '.wmv';
+    }
+    if (bytes.length >= 4 &&
+        bytes[0] == 0x00 &&
+        bytes[1] == 0x00 &&
+        bytes[2] == 0x01 &&
+        (bytes[3] == 0xBA || bytes[3] == 0xB3)) {
+      return '.mpeg';
+    }
+    return null;
+  }
+
+  bool _isSupportedExtensionForType(String extension, MediaType mediaType) {
+    final ext = extension.toLowerCase();
+    if (mediaType == MediaType.image) {
+      return const <String>{
+        '.jpg',
+        '.jpeg',
+        '.png',
+        '.gif',
+        '.webp',
+        '.bmp',
+        '.tif',
+        '.tiff',
+        '.ico',
+        '.svg',
+        '.avif',
+        '.heic',
+        '.heif',
+        '.jxl',
+      }.contains(ext);
+    }
+    if (mediaType == MediaType.video) {
+      return const <String>{
+        '.mp4',
+        '.webm',
+        '.mov',
+        '.mkv',
+        '.avi',
+        '.flv',
+        '.wmv',
+        '.ts',
+        '.mts',
+        '.mpeg',
+        '.mpg',
+        '.m4v',
+        '.3gp',
+        '.ogv',
+        '.m3u8',
+        '.m3u',
+      }.contains(ext);
+    }
+    return true;
+  }
+
+  Future<File> _normalizeDownloadedMediaFile(
+    File file,
+    MediaType mediaType,
+  ) async {
+    final length = await file.length();
+    final probeLength = min(length, 4096);
+    final bytes = await file
+        .openRead(0, probeLength)
+        .fold<List<int>>([], (previous, chunk) => previous..addAll(chunk));
+    final detectedExtension =
+        mediaType == MediaType.image
+            ? _detectImageExtension(bytes)
+            : mediaType == MediaType.video
+            ? _detectVideoExtension(bytes)
+            : null;
+    if (detectedExtension == null) {
+      final sample = utf8.decode(
+        bytes.take(256).toList(),
+        allowMalformed: true,
+      );
+      final lower = sample.trimLeft().toLowerCase();
+      final looksLikeErrorDocument =
+          lower.startsWith('<!doctype') ||
+          lower.startsWith('<html') ||
+          lower.startsWith('{') ||
+          lower.startsWith('[');
+      throw Exception(
+        looksLikeErrorDocument
+            ? '[下载失败] 服务器返回了网页/JSON而不是媒体，登录态或防盗链校验可能已失效'
+            : '[下载失败] 下载内容不是受支持的有效媒体文件',
+      );
+    }
+    final currentExtension = p.extension(file.path).toLowerCase();
+    if (currentExtension == detectedExtension ||
+        (currentExtension == '.jpeg' && detectedExtension == '.jpg') ||
+        (currentExtension == '.tif' && detectedExtension == '.tiff') ||
+        (currentExtension == '.heif' && detectedExtension == '.heic')) {
+      return file;
+    }
+    final corrected = File(p.setExtension(file.path, detectedExtension));
+    if (await corrected.exists()) await corrected.delete();
+    return file.rename(corrected.path);
+  }
+
   String _extensionForBase64Media(String mediaType, String mimeType) {
     final mime = mimeType.toLowerCase();
     if (mediaType == 'image') {
@@ -4735,51 +5598,26 @@ class _BrowserPageState extends State<BrowserPage>
   /// HLS 分片拼接后为 MPEG-TS，与 MP4 头不同；Android ExoPlayer 可播放 `.ts`。
   bool _isLikelyMpegTs(List<int> bytes) {
     if (bytes.isEmpty) return false;
-    if (bytes[0] == 0x47) return true;
-    final n = bytes.length;
-    for (var i = 0; i < n && i < 564; i += 188) {
-      if (bytes[i] == 0x47) return true;
+    final scanLimit = min(bytes.length, 188);
+    for (var offset = 0; offset < scanLimit; offset++) {
+      if (bytes[offset] != 0x47) continue;
+      if (offset + 188 >= bytes.length || bytes[offset + 188] == 0x47) {
+        return true;
+      }
     }
     return false;
   }
 
   bool _bytesLookLikeHlsPlaylistText(List<int> bytes) {
     if (bytes.length < 7) return false;
-    final s = String.fromCharCodes(bytes.take(16));
+    final s =
+        utf8
+            .decode(bytes.take(64).toList(), allowMalformed: true)
+            .replaceFirst('\uFEFF', '')
+            .trimLeft();
     return s.startsWith('#EXTM3U') ||
         s.startsWith('#EXTINF') ||
         s.startsWith('#EXT-X-VERSION');
-  }
-
-  /// 验证图片字节是否有效（检查文件头 magic numbers）
-  bool _isValidImageBytes(List<int> bytes) {
-    if (bytes.length < 12) return false;
-    // JPEG: FF D8 FF
-    if (bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF) return true;
-    // PNG: 89 50 4E 47 0D 0A 1A 0A
-    if (bytes[0] == 0x89 &&
-        bytes[1] == 0x50 &&
-        bytes[2] == 0x4E &&
-        bytes[3] == 0x47)
-      return true;
-    // GIF: 47 49 46 38
-    if (bytes[0] == 0x47 &&
-        bytes[1] == 0x49 &&
-        bytes[2] == 0x46 &&
-        bytes[3] == 0x38)
-      return true;
-    // WebP: 52 49 46 46 ... 57 45 42 50
-    if (bytes.length >= 12 &&
-        bytes[0] == 0x52 &&
-        bytes[1] == 0x49 &&
-        bytes[2] == 0x46 &&
-        bytes[3] == 0x46 &&
-        bytes[8] == 0x57 &&
-        bytes[9] == 0x45 &&
-        bytes[10] == 0x42 &&
-        bytes[11] == 0x50)
-      return true;
-    return false;
   }
 
   Dio _createDownloadDio({
@@ -4920,18 +5758,11 @@ class _BrowserPageState extends State<BrowserPage>
     required Dio downloadDio,
     required String url,
     required String filePath,
-    required String referer,
-    required String browserUA,
+    required Map<String, String> requestHeaders,
     CancelToken? cancelToken,
     DownloadProgressCallback? onProgress,
   }) async {
-    final headers = <String, String>{
-      'User-Agent': browserUA,
-      'Referer': referer,
-      'Accept': '*/*',
-      if (referer.startsWith('http'))
-        'Origin': Uri.tryParse(referer)?.origin ?? referer,
-    };
+    final headers = requestHeaders;
 
     int? totalBytes;
     try {
@@ -5048,15 +5879,68 @@ class _BrowserPageState extends State<BrowserPage>
     }
   }
 
+  Future<File> _finalizeDirectMediaDownload({
+    required File file,
+    required MediaType mediaType,
+    required String sourceUrl,
+    required Dio downloadDio,
+    required Map<String, String> requestHeaders,
+    DownloadProgressCallback? onProgress,
+  }) async {
+    if (!await file.exists()) {
+      throw Exception('[下载失败] 文件未创建，可能被服务器拒绝访问');
+    }
+    final size = await file.length();
+    if (size == 0) {
+      await file.delete();
+      throw Exception('[下载失败] 文件大小为0，服务器可能返回了空内容或需要特殊鉴权');
+    }
+    if (mediaType == MediaType.video && size < 2 * 1024 * 1024) {
+      final peek = await file
+          .openRead(0, min(size, 4096))
+          .fold<List<int>>([], (previous, chunk) => previous..addAll(chunk));
+      if (_bytesLookLikeHlsPlaylistText(peek)) {
+        final merged = await _handleM3u8Download(
+          file.path,
+          sourceUrl,
+          downloadDio,
+          requestHeaders: requestHeaders,
+          onMergeProgress: (completed, totalSegments, mergedBytes) {
+            final fraction =
+                totalSegments > 0
+                    ? 0.02 + (completed / totalSegments) * 0.98
+                    : 0.5;
+            onProgress?.call(
+              fraction.clamp(0.0, 1.0),
+              detail:
+                  'HLS 分片 $completed/$totalSegments · 已合并 ${_formatBytes(mergedBytes)}',
+            );
+          },
+        );
+        try {
+          if (await file.exists()) await file.delete();
+        } catch (_) {}
+        if (merged == null ||
+            !await merged.exists() ||
+            await merged.length() == 0) {
+          throw Exception('[下载失败] M3U8 解析或合并失败');
+        }
+        return merged;
+      }
+    }
+    return _normalizeDownloadedMediaFile(file, mediaType);
+  }
+
   Future<File?> _downloadFile(
     String url,
     MediaType mediaType, {
     CancelToken? cancelToken,
     DownloadProgressCallback? onProgress,
+    int? maxRequestAttempts,
   }) async {
     try {
       final absoluteUrl = _toAbsoluteUrl(url);
-      final downloadUrl = _getCleanMediaUrl(absoluteUrl);
+      final downloadUrl = absoluteUrl;
       debugPrint('开始下载文件，URL: $downloadUrl');
       final downloadDio =
           mediaType == MediaType.image
@@ -5075,7 +5959,8 @@ class _BrowserPageState extends State<BrowserPage>
       if (uri == null) throw Exception('Invalid URL: $absoluteUrl');
       String extension = _getFileExtension(uri.path);
 
-      if (extension.isEmpty) {
+      if (extension.isEmpty ||
+          !_isSupportedExtensionForType(extension, mediaType)) {
         final mimeType = _guessMimeType(absoluteUrl);
         if (mimeType.startsWith('image/')) {
           extension =
@@ -5106,21 +5991,58 @@ class _BrowserPageState extends State<BrowserPage>
       final filePath = '${mediaDir.path}/$uuid$extension';
       debugPrint('将下载到文件路径: $filePath');
 
-      const browserUA =
-          'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
       final refererCandidates = _getRefererCandidates(absoluteUrl);
-      int retryCount = 0;
-      final maxRetries = mediaType == MediaType.image ? 2 : 5;
-      String urlToTry = downloadUrl;
-      int refererIdx = 0;
+      final urlCandidates = <String>[absoluteUrl];
+      final cleanedUrl = _getCleanMediaUrl(absoluteUrl);
+      if (cleanedUrl != absoluteUrl) urlCandidates.add(cleanedUrl);
+      final requestAttempts =
+          <({String url, String referer, bool includeOrigin})>[];
+      final attemptKeys = <String>{};
+      void addAttempt(String candidate, String referer, bool includeOrigin) {
+        final key = '$candidate\n$referer\n$includeOrigin';
+        if (attemptKeys.add(key)) {
+          requestAttempts.add((
+            url: candidate,
+            referer: referer,
+            includeOrigin: includeOrigin,
+          ));
+        }
+      }
 
-      while (retryCount < maxRetries) {
+      for (final candidate in urlCandidates) {
+        for (final referer in refererCandidates) {
+          addAttempt(candidate, referer, false);
+        }
+        for (final referer in refererCandidates.take(2)) {
+          addAttempt(candidate, referer, true);
+        }
+      }
+      final maxAttempts =
+          maxRequestAttempts ?? (mediaType == MediaType.image ? 8 : 12);
+      if (requestAttempts.length > maxAttempts) {
+        requestAttempts.removeRange(maxAttempts, requestAttempts.length);
+      }
+
+      var attemptIndex = 0;
+      while (attemptIndex < requestAttempts.length) {
+        final attempt = requestAttempts[attemptIndex];
+        final urlToTry = attempt.url;
+        final referer = attempt.referer;
         try {
-          final referer =
-              refererIdx < refererCandidates.length
-                  ? refererCandidates[refererIdx]
-                  : refererCandidates.last;
-          debugPrint('下载尝试 ${retryCount + 1}/$maxRetries, Referer: $referer');
+          debugPrint(
+            '下载尝试 ${attemptIndex + 1}/${requestAttempts.length}, '
+            'Referer: $referer, Origin: ${attempt.includeOrigin}',
+          );
+
+          final requestHeaders = await _browserLikeMediaHeaders(
+            urlToTry,
+            referer: referer,
+            includeOrigin: attempt.includeOrigin,
+            accept:
+                mediaType == MediaType.image
+                    ? 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8'
+                    : '*/*',
+          );
 
           if (mediaType == MediaType.video &&
               _videoExtensionSupportsParallelRange(extension) &&
@@ -5130,17 +6052,23 @@ class _BrowserPageState extends State<BrowserPage>
               downloadDio: downloadDio,
               url: urlToTry,
               filePath: filePath,
-              referer: referer,
-              browserUA: browserUA,
+              requestHeaders: requestHeaders,
               cancelToken: cancelToken,
               onProgress: onProgress,
             );
             if (parallelOk != null) {
-              break;
+              return await _finalizeDirectMediaDownload(
+                file: parallelOk,
+                mediaType: mediaType,
+                sourceUrl: urlToTry,
+                downloadDio: downloadDio,
+                requestHeaders: requestHeaders,
+                onProgress: onProgress,
+              );
             }
           }
 
-          await downloadDio.download(
+          final response = await downloadDio.download(
             urlToTry,
             filePath,
             deleteOnError: true,
@@ -5151,13 +6079,7 @@ class _BrowserPageState extends State<BrowserPage>
               validateStatus:
                   (status) => status != null && status >= 200 && status < 300,
               responseType: ResponseType.bytes,
-              headers: {
-                'User-Agent': browserUA,
-                'Referer': referer,
-                'Accept': '*/*',
-                if (referer.startsWith('http'))
-                  'Origin': Uri.tryParse(referer)?.origin ?? referer,
-              },
+              headers: requestHeaders,
             ),
             onReceiveProgress: (received, total) {
               if (onProgress == null) return;
@@ -5185,11 +6107,16 @@ class _BrowserPageState extends State<BrowserPage>
               }
             },
           );
+          final successfulUrl =
+              response.realUri.toString().isNotEmpty
+                  ? response.realUri.toString()
+                  : urlToTry;
           if (extension == '.m3u8' || extension == '.m3u') {
             final merged = await _handleM3u8Download(
               filePath,
-              downloadUrl,
+              successfulUrl,
               downloadDio,
+              requestHeaders: requestHeaders,
               onMergeProgress: (completed, totalSegs, mergedBytes) {
                 final frac =
                     totalSegs > 0 ? 0.02 + (completed / totalSegs) * 0.98 : 0.5;
@@ -5224,140 +6151,33 @@ class _BrowserPageState extends State<BrowserPage>
             }
             return merged;
           }
-          break;
+          return await _finalizeDirectMediaDownload(
+            file: File(filePath),
+            mediaType: mediaType,
+            sourceUrl: successfulUrl,
+            downloadDio: downloadDio,
+            requestHeaders: requestHeaders,
+            onProgress: onProgress,
+          );
         } catch (e, stackTrace) {
-          retryCount++;
-          debugPrint('下载失败 (尝试 $retryCount/$maxRetries): $e\n$stackTrace');
-          if (e is DioException) {
-            if (e.type == DioExceptionType.connectionTimeout ||
-                e.type == DioExceptionType.receiveTimeout ||
-                e.type == DioExceptionType.sendTimeout) {
-              if (retryCount >= maxRetries)
-                throw Exception('[下载失败] 连接/接收超时，请检查网络或稍后重试');
-            } else if (e.type == DioExceptionType.badResponse) {
-              final code = e.response?.statusCode ?? 0;
-              if (code == 400 || code == 403) {
-                if (refererIdx + 1 < refererCandidates.length) {
-                  refererIdx++;
-                  retryCount--;
-                  debugPrint(
-                    '403/400，尝试下一个Referer: ${refererCandidates[refererIdx]}',
-                  );
-                } else {
-                  final stripped = _getStrippedMediaUrl(downloadUrl);
-                  if (stripped != urlToTry && urlToTry == downloadUrl) {
-                    urlToTry = stripped;
-                    refererIdx = 0;
-                    retryCount--;
-                  }
-                }
-                if (retryCount >= maxRetries)
-                  throw Exception(
-                    '[下载失败] 服务器拒绝(403/400)，已尝试多种Referer，该资源可能需登录',
-                  );
-              } else {
-                if (retryCount >= maxRetries)
-                  throw Exception('[下载失败] 服务器返回$code，请检查URL是否有效');
-              }
-            } else if (e.type == DioExceptionType.connectionError) {
-              if (retryCount >= maxRetries)
-                throw Exception('[下载失败] 无法连接服务器: ${e.message ?? "请检查网络"}');
-            } else if (e.type == DioExceptionType.unknown) {
-              if (retryCount >= maxRetries)
-                throw Exception(
-                  '[下载失败] 网络异常: ${e.message ?? e.error ?? "未知错误"}',
-                );
-            } else {
-              if (retryCount >= maxRetries)
-                throw Exception('[下载失败] ${e.message ?? "网络错误"}');
-            }
-          } else {
-            if (retryCount >= maxRetries) throw Exception('[下载失败] $e');
-          }
+          try {
+            final failedFile = File(filePath);
+            if (await failedFile.exists()) await failedFile.delete();
+          } catch (_) {}
+          attemptIndex++;
+          debugPrint(
+            '下载失败 (尝试 $attemptIndex/${requestAttempts.length}): '
+            '$e\n$stackTrace',
+          );
+          if (attemptIndex >= requestAttempts.length) rethrow;
           final retryDelayMs =
               mediaType == MediaType.image
-                  ? (retryCount * 200).clamp(200, 500)
-                  : (retryCount * 800).clamp(800, 3000);
+                  ? (attemptIndex * 150).clamp(150, 500)
+                  : (attemptIndex * 500).clamp(500, 2500);
           await Future.delayed(Duration(milliseconds: retryDelayMs));
         }
       }
-
-      var file = File(filePath);
-      if (!await file.exists()) {
-        throw Exception('[下载失败] 文件未创建，可能被服务器拒绝访问');
-      }
-      var size = await file.length();
-      if (size == 0) {
-        await file.delete();
-        throw Exception('[下载失败] 文件大小为0，服务器可能返回了空内容或需要特殊鉴权');
-      }
-      // 部分站点把 m3u8 标成 video/mp4，扩展名成了 .mp4，实为 playlist 文本
-      if (mediaType == MediaType.video &&
-          extension != '.m3u8' &&
-          extension != '.m3u' &&
-          size < 2 * 1024 * 1024) {
-        final peek = await file
-            .openRead(0, 32)
-            .fold<List<int>>([], (prev, chunk) => [...prev, ...chunk]);
-        if (_bytesLookLikeHlsPlaylistText(peek)) {
-          final merged = await _handleM3u8Download(
-            file.path,
-            downloadUrl,
-            downloadDio,
-          );
-          try {
-            if (await file.exists()) await file.delete();
-          } catch (_) {}
-          if (merged == null ||
-              !await merged.exists() ||
-              await merged.length() == 0) {
-            throw Exception('[下载失败] M3U8 解析或合并失败');
-          }
-          return merged;
-        }
-      }
-      if (mediaType == MediaType.image) {
-        final bytes = await file
-            .openRead(0, 32)
-            .fold<List<int>>([], (prev, chunk) => [...prev, ...chunk]);
-        if (!_isValidImageBytes(bytes)) {
-          await file.delete();
-          throw Exception(
-            '[下载失败] 下载内容不是有效图片格式(非jpg/png/gif/webp)，可能是HTML错误页或需登录',
-          );
-        }
-      }
-      if (mediaType == MediaType.video && extension == '.mp4') {
-        final bytes = await file
-            .openRead(0, 12)
-            .fold<List<int>>([], (prev, chunk) => [...prev, ...chunk]);
-        if (!_isValidVideoBytes(bytes)) {
-          await file.delete();
-          throw Exception(
-            '[下载失败] 下载内容不是有效MP4格式，可能是HTML错误页(403/404)或需登录，请长按视频获取',
-          );
-        }
-      }
-      if (mediaType == MediaType.video && extension == '.webm') {
-        final bytes = await file
-            .openRead(0, 512)
-            .fold<List<int>>([], (prev, chunk) => [...prev, ...chunk]);
-        if (size < _kMinBase64VideoBytes || !_isValidWebmBytes(bytes)) {
-          await file.delete();
-          throw Exception('[下载失败] 下载内容不是有效 WEBM 视频，可能只是网页返回的空视频占位符');
-        }
-      }
-      if (mediaType == MediaType.video &&
-          (extension == '.ts' || extension == '.mts')) {
-        final bytes = await file
-            .openRead(0, 512)
-            .fold<List<int>>([], (prev, chunk) => [...prev, ...chunk]);
-        if (!_isLikelyMpegTs(bytes)) {
-          await file.delete();
-          throw Exception('[下载失败] 不是有效的 TS 视频流');
-        }
-      }
-      return file;
+      throw Exception('[下载失败] 所有请求方式均未能获得有效媒体内容');
     } on DioException catch (e, st) {
       String reason = '未知网络错误';
       if (e.type == DioExceptionType.connectionTimeout)
@@ -5393,10 +6213,112 @@ class _BrowserPageState extends State<BrowserPage>
   /// 下载 HLS 分片并合并为 MPEG-TS（`.ts`）。支持 AES-128-CBC + PKCS7（[#EXT-X-KEY]）。
   /// SAMPLE-AES / FairPlay 等仍不支持。
   /// [onMergeProgress]：`completed` 已写入分片数，`totalSegments` 总分片数，`mergedBytes` 已合并字节数。
+  String? _pickBestHlsVariantUrl(List<String> lines, Uri baseUri) {
+    String? bestUrl;
+    var bestScore = -1;
+    for (var i = 0; i < lines.length - 1; i++) {
+      final line = lines[i];
+      if (!line.contains('EXT-X-STREAM-INF')) continue;
+      var nextIndex = i + 1;
+      while (nextIndex < lines.length && lines[nextIndex].startsWith('#')) {
+        nextIndex++;
+      }
+      if (nextIndex >= lines.length) continue;
+      final next = lines[nextIndex];
+      var score = 0;
+      final bandwidth = RegExp(
+        r'BANDWIDTH=(\d+)',
+        caseSensitive: false,
+      ).firstMatch(line);
+      if (bandwidth != null) {
+        score += int.tryParse(bandwidth.group(1) ?? '') ?? 0;
+      }
+      final resolution = RegExp(
+        r'RESOLUTION=(\d+)x(\d+)',
+        caseSensitive: false,
+      ).firstMatch(line);
+      if (resolution != null) {
+        final w = int.tryParse(resolution.group(1) ?? '') ?? 0;
+        final h = int.tryParse(resolution.group(2) ?? '') ?? 0;
+        score += w * h;
+      }
+      final lower = next.toLowerCase();
+      if (_looksLikePreviewClipUrl(lower)) score -= 1000000000;
+      if (lower.contains('audio')) score -= 500000000;
+      final candidate =
+          next.startsWith('http://') || next.startsWith('https://')
+              ? next
+              : baseUri.resolve(next).toString();
+      if (bestUrl == null || score > bestScore) {
+        bestScore = score;
+        bestUrl = candidate;
+      }
+    }
+    return bestUrl;
+  }
+
+  String? _hlsUrlWithInheritedQuery(Uri baseUri, String resolvedUrl) {
+    if (baseUri.query.isEmpty) return null;
+    final resolved = Uri.tryParse(resolvedUrl);
+    if (resolved == null || resolved.query.isNotEmpty) return null;
+    return resolved.replace(query: baseUri.query).toString();
+  }
+
+  Future<Map<String, String>> _headersForHlsUrl(
+    String url,
+    Map<String, String> baseHeaders,
+    Map<String, String> cookieCache,
+  ) async {
+    final headers = Map<String, String>.from(baseHeaders)..remove('Cookie');
+    final uri = Uri.tryParse(url);
+    if (uri == null) return headers;
+    final cookieKey = uri.origin;
+    var cookie = cookieCache[cookieKey];
+    if (cookie == null) {
+      cookie = await _browserCookieHeaderForUrl(url);
+      cookieCache[cookieKey] = cookie;
+    }
+    if (cookie.isNotEmpty) headers['Cookie'] = cookie;
+    return headers;
+  }
+
+  void _rememberHlsResponseCookies(
+    Response<dynamic> response,
+    String requestUrl,
+    Map<String, String> cookieCache,
+  ) {
+    final setCookieHeaders = response.headers['set-cookie'];
+    if (setCookieHeaders == null || setCookieHeaders.isEmpty) return;
+    final responseUri = response.realUri;
+    final requestUri = Uri.tryParse(requestUrl);
+    final origin =
+        responseUri.host.isNotEmpty ? responseUri.origin : requestUri?.origin;
+    if (origin == null || origin.isEmpty) return;
+    final values = <String, String>{};
+    final existing = cookieCache[origin] ?? '';
+    for (final pair in existing.split(';')) {
+      final separator = pair.indexOf('=');
+      if (separator <= 0) continue;
+      values[pair.substring(0, separator).trim()] =
+          pair.substring(separator + 1).trim();
+    }
+    for (final header in setCookieHeaders) {
+      final pair = header.split(';').first.trim();
+      final separator = pair.indexOf('=');
+      if (separator <= 0) continue;
+      values[pair.substring(0, separator).trim()] =
+          pair.substring(separator + 1).trim();
+    }
+    cookieCache[origin] = values.entries
+        .map((entry) => '${entry.key}=${entry.value}')
+        .join('; ');
+  }
+
   Future<File?> _handleM3u8Download(
     String m3u8Path,
     String pageUrl,
     Dio? dio, {
+    Map<String, String>? requestHeaders,
     void Function(int completed, int totalSegments, int mergedBytes)?
     onMergeProgress,
   }) async {
@@ -5408,37 +6330,60 @@ class _BrowserPageState extends State<BrowserPage>
       await ns.initialize();
       client = ns.dio;
     }
+    final initialHeaders =
+        requestHeaders ??
+        await _browserLikeMediaHeaders(
+          pageUrl,
+          referer: _getMediaReferer(pageUrl),
+        );
+    final hlsCookieCache = <String, String>{};
+    Future<String> fetchPlaylistText(String playlistUrl) async {
+      final headers = await _headersForHlsUrl(
+        playlistUrl,
+        initialHeaders,
+        hlsCookieCache,
+      );
+      final response = await client.get<String>(
+        playlistUrl,
+        options: Options(responseType: ResponseType.plain, headers: headers),
+      );
+      _rememberHlsResponseCookies(response, playlistUrl, hlsCookieCache);
+      return response.data ?? '';
+    }
+
     String content = '';
     try {
       content = await File(m3u8Path).readAsString();
     } catch (_) {}
     if (!content.contains('#EXTM3U')) {
-      content = (await client.get(pageUrl)).data.toString();
+      content = await fetchPlaylistText(pageUrl);
     }
     Uri baseUri = Uri.parse(pageUrl);
     var effectivePageUrl = pageUrl;
-    final lines0 =
-        content
-            .split('\n')
-            .map((s) => s.trim())
-            .where((s) => s.isNotEmpty)
-            .toList();
-    if (lines0.any((l) => l.contains('EXT-X-STREAM-INF')) &&
-        !lines0.any((l) => l.contains('EXTINF'))) {
-      for (var i = 0; i < lines0.length; i++) {
-        if (lines0[i].contains('EXT-X-STREAM-INF') &&
-            i + 1 < lines0.length &&
-            !lines0[i + 1].startsWith('#')) {
-          final mediaUrl =
-              lines0[i + 1].startsWith('http')
-                  ? lines0[i + 1]
-                  : baseUri.resolve(lines0[i + 1]).toString();
-          content = (await client.get(mediaUrl)).data.toString();
-          baseUri = Uri.parse(mediaUrl);
-          effectivePageUrl = mediaUrl;
-          break;
-        }
+    for (var depth = 0; depth < 4; depth++) {
+      final lines =
+          content
+              .split('\n')
+              .map((s) => s.trim())
+              .where((s) => s.isNotEmpty)
+              .toList();
+      final isMaster =
+          lines.any((line) => line.contains('EXT-X-STREAM-INF')) &&
+          !lines.any((line) => line.contains('EXTINF'));
+      if (!isMaster) break;
+      final mediaUrl = _pickBestHlsVariantUrl(lines, baseUri);
+      if (mediaUrl == null) break;
+      var loadedMediaUrl = mediaUrl;
+      try {
+        content = await fetchPlaylistText(mediaUrl);
+      } catch (_) {
+        final inherited = _hlsUrlWithInheritedQuery(baseUri, mediaUrl);
+        if (inherited == null) rethrow;
+        content = await fetchPlaylistText(inherited);
+        loadedMediaUrl = inherited;
       }
+      baseUri = Uri.parse(loadedMediaUrl);
+      effectivePageUrl = loadedMediaUrl;
     }
 
     final outputPath = p.setExtension(m3u8Path, '.ts');
@@ -5451,14 +6396,19 @@ class _BrowserPageState extends State<BrowserPage>
     await outFile.create(recursive: true);
     final sink = outFile.openWrite();
     final referer = _getMediaReferer(effectivePageUrl);
-    const ua =
-        'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36';
     final headers = <String, String>{
       'Referer': referer,
-      'User-Agent': ua,
+      'User-Agent': _kBrowserMediaUserAgent,
+      'Accept': '*/*',
+      'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
       if (referer.startsWith('http'))
         'Origin': Uri.tryParse(referer)?.origin ?? referer,
+      ...?requestHeaders,
     };
+    if (!headers.containsKey('Cookie')) {
+      final cookie = await _browserCookieHeaderForUrl(effectivePageUrl);
+      if (cookie.isNotEmpty) headers['Cookie'] = cookie;
+    }
 
     final segLines =
         content
@@ -5471,6 +6421,7 @@ class _BrowserPageState extends State<BrowserPage>
       baseUri,
       client,
       headers,
+      hlsCookieCache,
     );
     if (tasks == null) {
       await sink.close();
@@ -5486,6 +6437,7 @@ class _BrowserPageState extends State<BrowserPage>
         tasks,
         client,
         headers,
+        hlsCookieCache,
         sink,
         onProgress: onMergeProgress,
       );
@@ -5504,6 +6456,7 @@ class _BrowserPageState extends State<BrowserPage>
       final plainCount = await _downloadPlainHlsUrlsParallel(
         client,
         headers,
+        hlsCookieCache,
         sink,
         plain,
         onProgress: onMergeProgress,
@@ -5527,13 +6480,31 @@ class _BrowserPageState extends State<BrowserPage>
       return null;
     }
     try {
-      if (await outFile.length() == 0) {
-        try {
-          await outFile.delete();
-        } catch (_) {}
+      final length = await outFile.length();
+      if (length == 0) {
+        await outFile.delete();
         return null;
       }
-    } catch (_) {}
+      final head = await outFile
+          .openRead(0, min(length, 4096))
+          .fold<List<int>>([], (previous, chunk) => previous..addAll(chunk));
+      final detectedExtension = _detectVideoExtension(head);
+      if (detectedExtension == null) {
+        await outFile.delete();
+        return null;
+      }
+      if (detectedExtension != '.ts') {
+        final corrected = File(p.setExtension(outFile.path, detectedExtension));
+        if (await corrected.exists()) await corrected.delete();
+        return outFile.rename(corrected.path);
+      }
+    } catch (e) {
+      debugPrint('HLS 合并文件校验失败: $e');
+      try {
+        if (await outFile.exists()) await outFile.delete();
+      } catch (_) {}
+      return null;
+    }
 
     return outFile;
   }
@@ -5544,6 +6515,7 @@ class _BrowserPageState extends State<BrowserPage>
     Uri baseUri,
     Dio client,
     Map<String, String> headers,
+    Map<String, String> cookieCache,
   ) async {
     final keyCache = <String, Uint8List>{};
     Uint8List? aesKey;
@@ -5551,6 +6523,13 @@ class _BrowserPageState extends State<BrowserPage>
     var useAes128 = false;
     var sequenceForNextSegment = 0;
     final tasks = <_HlsSegTask>[];
+    final initSegments = <String>{};
+    int? pendingRangeStart;
+    int? pendingRangeEnd;
+    var nextImplicitRangeStart = 0;
+    var awaitingSegmentUri = false;
+    var skipNextSegment = false;
+    final hasFullSegments = segLines.any((line) => line.startsWith('#EXTINF'));
 
     var lineIdx = 0;
     while (lineIdx < segLines.length) {
@@ -5583,8 +6562,15 @@ class _BrowserPageState extends State<BrowserPage>
               uriStr.startsWith('http')
                   ? uriStr
                   : baseUri.resolve(uriStr).toString();
+          final keyFallback = _hlsUrlWithInheritedQuery(baseUri, keyAbs);
           aesKey = keyCache[keyAbs];
-          aesKey ??= await _fetchHlsKeyBytes(client, keyAbs, headers);
+          aesKey ??= await _fetchHlsKeyBytes(
+            client,
+            keyAbs,
+            headers,
+            cookieCache,
+            fallbackUrl: keyFallback,
+          );
           if (aesKey == null || aesKey.length != 16) {
             debugPrint('M3U8: 密钥无效 (len=${aesKey?.length})');
             return null;
@@ -5598,32 +6584,143 @@ class _BrowserPageState extends State<BrowserPage>
         lineIdx++;
         continue;
       }
-      if (line.startsWith('#EXTINF')) {
-        if (lineIdx + 1 >= segLines.length) {
-          lineIdx++;
-          continue;
+      if (!hasFullSegments && line.startsWith('#EXT-X-PART:')) {
+        final uriStr = _parseHlsKeyUri(line);
+        if (uriStr != null && uriStr.isNotEmpty && !line.contains('GAP=YES')) {
+          final partUrl =
+              uriStr.startsWith('http://') || uriStr.startsWith('https://')
+                  ? uriStr
+                  : baseUri.resolve(uriStr).toString();
+          int? partStart;
+          int? partEnd;
+          final range = RegExp(
+            r'BYTERANGE="(\d+)(?:@(\d+))?"',
+            caseSensitive: false,
+          ).firstMatch(line);
+          if (range != null) {
+            final length = int.tryParse(range.group(1) ?? '');
+            final offset = int.tryParse(range.group(2) ?? '') ?? 0;
+            if (length != null && length > 0) {
+              partStart = offset;
+              partEnd = offset + length - 1;
+            }
+          }
+          tasks.add(
+            _HlsSegTask(
+              url: partUrl,
+              fallbackUrl: _hlsUrlWithInheritedQuery(baseUri, partUrl),
+              mediaSeq: sequenceForNextSegment,
+              useAes128: useAes128,
+              aesKey: useAes128 ? aesKey : null,
+              explicitIv: useAes128 ? explicitIvFromKey : null,
+              rangeStart: partStart,
+              rangeEnd: partEnd,
+            ),
+          );
         }
-        final nextLine = segLines[lineIdx + 1];
-        if (nextLine.startsWith('#')) {
+        lineIdx++;
+        continue;
+      }
+      if (line.startsWith('#EXT-X-MAP')) {
+        final uriStr = _parseHlsKeyUri(line);
+        if (uriStr == null || uriStr.isEmpty) {
+          debugPrint('M3U8: EXT-X-MAP 缺少 URI');
+          return null;
+        }
+        final initUrl =
+            uriStr.startsWith('http://') || uriStr.startsWith('https://')
+                ? uriStr
+                : baseUri.resolve(uriStr).toString();
+        int? mapStart;
+        int? mapEnd;
+        final mapRange = RegExp(
+          r'BYTERANGE="(\d+)(?:@(\d+))?"',
+          caseSensitive: false,
+        ).firstMatch(line);
+        if (mapRange != null) {
+          final length = int.tryParse(mapRange.group(1) ?? '');
+          final offset = int.tryParse(mapRange.group(2) ?? '') ?? 0;
+          if (length != null && length > 0) {
+            mapStart = offset;
+            mapEnd = offset + length - 1;
+          }
+        }
+        final initKey = '$initUrl:${mapStart ?? -1}-${mapEnd ?? -1}';
+        if (initSegments.add(initKey)) {
+          tasks.add(
+            _HlsSegTask(
+              url: initUrl,
+              fallbackUrl: _hlsUrlWithInheritedQuery(baseUri, initUrl),
+              mediaSeq: sequenceForNextSegment,
+              useAes128: useAes128,
+              aesKey: useAes128 ? aesKey : null,
+              explicitIv: useAes128 ? explicitIvFromKey : null,
+              rangeStart: mapStart,
+              rangeEnd: mapEnd,
+            ),
+          );
+        }
+        lineIdx++;
+        continue;
+      }
+      if (line.startsWith('#EXT-X-BYTERANGE:')) {
+        final spec = line.substring('#EXT-X-BYTERANGE:'.length).trim();
+        final match = RegExp(r'^(\d+)(?:@(\d+))?').firstMatch(spec);
+        final length = int.tryParse(match?.group(1) ?? '');
+        final explicitStart = int.tryParse(match?.group(2) ?? '');
+        if (length != null && length > 0) {
+          pendingRangeStart = explicitStart ?? nextImplicitRangeStart;
+          pendingRangeEnd = pendingRangeStart + length - 1;
+        }
+        lineIdx++;
+        continue;
+      }
+      if (line.startsWith('#EXTINF')) {
+        awaitingSegmentUri = true;
+        lineIdx++;
+        continue;
+      }
+      if (line.startsWith('#EXT-X-GAP')) {
+        skipNextSegment = true;
+        lineIdx++;
+        continue;
+      }
+      if (awaitingSegmentUri && !line.startsWith('#')) {
+        if (skipNextSegment) {
+          skipNextSegment = false;
+          awaitingSegmentUri = false;
+          pendingRangeStart = null;
+          pendingRangeEnd = null;
           lineIdx++;
           continue;
         }
         final segmentUrl =
-            nextLine.startsWith('http://') || nextLine.startsWith('https://')
-                ? nextLine
-                : baseUri.resolve(nextLine).toString();
+            line.startsWith('http://') || line.startsWith('https://')
+                ? line
+                : baseUri.resolve(line).toString();
         final seq = sequenceForNextSegment;
         sequenceForNextSegment++;
         tasks.add(
           _HlsSegTask(
             url: segmentUrl,
+            fallbackUrl: _hlsUrlWithInheritedQuery(baseUri, segmentUrl),
             mediaSeq: seq,
             useAes128: useAes128,
             aesKey: useAes128 ? aesKey : null,
             explicitIv: useAes128 ? explicitIvFromKey : null,
+            rangeStart: pendingRangeStart,
+            rangeEnd: pendingRangeEnd,
           ),
         );
-        lineIdx += 2;
+        if (pendingRangeEnd != null) {
+          nextImplicitRangeStart = pendingRangeEnd + 1;
+        } else {
+          nextImplicitRangeStart = 0;
+        }
+        pendingRangeStart = null;
+        pendingRangeEnd = null;
+        awaitingSegmentUri = false;
+        lineIdx++;
         continue;
       }
       lineIdx++;
@@ -5633,28 +6730,73 @@ class _BrowserPageState extends State<BrowserPage>
 
   Future<Uint8List?> _downloadHlsSegmentRaw(
     Dio client,
-    String url,
+    _HlsSegTask task,
     Map<String, String> headers,
+    Map<String, String> cookieCache,
   ) async {
-    try {
-      final r = await client.get<List<int>>(
-        url,
-        options: Options(responseType: ResponseType.bytes, headers: headers),
-      );
-      final d = r.data;
-      if (d == null) return null;
-      if (d is Uint8List) return d;
-      return Uint8List.fromList(d);
-    } catch (e) {
-      debugPrint('HLS 分片下载失败: $url → $e');
-      return null;
+    final urls = <String>[task.url];
+    if (task.fallbackUrl != null && task.fallbackUrl != task.url) {
+      urls.add(task.fallbackUrl!);
     }
+    Object? lastError;
+    for (final candidate in urls) {
+      for (var retry = 0; retry < 3; retry++) {
+        try {
+          final requestHeaders = await _headersForHlsUrl(
+            candidate,
+            headers,
+            cookieCache,
+          );
+          if (task.rangeStart != null && task.rangeEnd != null) {
+            requestHeaders['Range'] =
+                'bytes=${task.rangeStart}-${task.rangeEnd}';
+          }
+          final r = await client.get<List<int>>(
+            candidate,
+            options: Options(
+              responseType: ResponseType.bytes,
+              headers: requestHeaders,
+              validateStatus:
+                  (code) => code != null && code >= 200 && code < 300,
+            ),
+          );
+          _rememberHlsResponseCookies(r, candidate, cookieCache);
+          final d = r.data;
+          if (d == null || d.isEmpty) throw StateError('空分片');
+          var bytes = d is Uint8List ? d : Uint8List.fromList(d);
+          if (task.rangeStart != null && task.rangeEnd != null) {
+            final expectedLength = task.rangeEnd! - task.rangeStart! + 1;
+            if (r.statusCode == 200 && bytes.length > task.rangeEnd!) {
+              bytes = Uint8List.fromList(
+                bytes.sublist(task.rangeStart!, task.rangeEnd! + 1),
+              );
+            }
+            if (bytes.length != expectedLength) {
+              throw StateError(
+                'Range 分片长度不符: 期望 $expectedLength 实际 ${bytes.length}',
+              );
+            }
+          }
+          return bytes;
+        } catch (e) {
+          lastError = e;
+          if (retry < 2) {
+            await Future<void>.delayed(
+              Duration(milliseconds: 250 * (retry + 1)),
+            );
+          }
+        }
+      }
+    }
+    debugPrint('HLS 分片下载失败: ${task.url} -> $lastError');
+    return null;
   }
 
   Future<bool> _writeHlsSegmentTasksParallel(
     List<_HlsSegTask> tasks,
     Dio client,
     Map<String, String> headers,
+    Map<String, String> cookieCache,
     IOSink sink, {
     void Function(int completed, int totalSegments, int mergedBytes)?
     onProgress,
@@ -5667,7 +6809,9 @@ class _BrowserPageState extends State<BrowserPage>
       final end = min(i + _kHlsParallelSegmentFetches, tasks.length);
       final batch = tasks.sublist(i, end);
       final raws = await Future.wait(
-        batch.map((t) => _downloadHlsSegmentRaw(client, t.url, headers)),
+        batch.map(
+          (task) => _downloadHlsSegmentRaw(client, task, headers, cookieCache),
+        ),
       );
       for (var j = 0; j < batch.length; j++) {
         final raw = raws[j];
@@ -5696,6 +6840,7 @@ class _BrowserPageState extends State<BrowserPage>
   Future<int?> _downloadPlainHlsUrlsParallel(
     Dio client,
     Map<String, String> headers,
+    Map<String, String> cookieCache,
     IOSink sink,
     List<String> urls, {
     void Function(int completed, int totalSegments, int mergedBytes)?
@@ -5709,7 +6854,14 @@ class _BrowserPageState extends State<BrowserPage>
       final end = min(i + _kHlsParallelSegmentFetches, urls.length);
       final batch = urls.sublist(i, end);
       final raws = await Future.wait(
-        batch.map((u) => _downloadHlsSegmentRaw(client, u, headers)),
+        batch.map(
+          (url) => _downloadHlsSegmentRaw(
+            client,
+            _HlsSegTask(url: url, mediaSeq: 0, useAes128: false),
+            headers,
+            cookieCache,
+          ),
+        ),
       );
       for (final raw in raws) {
         if (raw == null || raw.isEmpty) return null;
@@ -5777,19 +6929,35 @@ class _BrowserPageState extends State<BrowserPage>
     Dio client,
     String url,
     Map<String, String> headers,
-  ) async {
-    try {
-      final r = await client.get<List<int>>(
-        url,
-        options: Options(responseType: ResponseType.bytes, headers: headers),
-      );
-      final data = r.data;
-      if (data == null) return null;
-      return Uint8List.fromList(data);
-    } catch (e) {
-      debugPrint('M3U8 拉取密钥失败: $e');
-      return null;
+    Map<String, String> cookieCache, {
+    String? fallbackUrl,
+  }) async {
+    final candidates = <String>[url];
+    if (fallbackUrl != null && fallbackUrl != url) candidates.add(fallbackUrl);
+    Object? lastError;
+    for (final candidate in candidates) {
+      try {
+        final requestHeaders = await _headersForHlsUrl(
+          candidate,
+          headers,
+          cookieCache,
+        );
+        final r = await client.get<List<int>>(
+          candidate,
+          options: Options(
+            responseType: ResponseType.bytes,
+            headers: requestHeaders,
+          ),
+        );
+        _rememberHlsResponseCookies(r, candidate, cookieCache);
+        final data = r.data;
+        if (data != null && data.isNotEmpty) return Uint8List.fromList(data);
+      } catch (e) {
+        lastError = e;
+      }
     }
+    debugPrint('M3U8 拉取密钥失败: $lastError');
+    return null;
   }
 
   Uint8List _decryptHlsAes128Cbc(
@@ -6545,7 +7713,13 @@ class _BrowserPageState extends State<BrowserPage>
                               userAgent:
                                   'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
                             ),
-                            initialUserScripts: UnmodifiableListView([]),
+                            initialUserScripts: UnmodifiableListView([
+                              UserScript(
+                                source: _kEarlyMediaSnifferScript,
+                                injectionTime:
+                                    UserScriptInjectionTime.AT_DOCUMENT_START,
+                              ),
+                            ]),
                             onWebViewCreated:
                                 (ctrl) => _setupWebViewController(ctrl),
                             shouldAllowDeprecatedTLS: (ctrl, challenge) async {
@@ -6587,6 +7761,9 @@ class _BrowserPageState extends State<BrowserPage>
                             },
                             onLoadStop: (ctrl, url) {
                               if (url != null) _onPageFinished(url.toString());
+                            },
+                            onLoadResource: (ctrl, resource) {
+                              _recordLoadedWebResource(resource);
                             },
                             onReceivedError:
                                 (ctrl, req, err) => debugPrint(
@@ -6904,8 +8081,10 @@ class _BrowserPageState extends State<BrowserPage>
     MediaType mediaType, {
     bool skipFailurePrompt = false,
     void Function(String failureType)? onFailureType,
-    Duration? timeout,
+    Duration? inactivityTimeout,
     DownloadProgressCallback? onProgress,
+    int? maxRequestAttempts,
+    bool showSuccessPrompt = true,
   }) async {
     // 仅下载图片和视频，不下载语音/音频
     if (mediaType == MediaType.audio) {
@@ -6923,7 +8102,8 @@ class _BrowserPageState extends State<BrowserPage>
       onProgress?.call(0.0, detail: '同一链接已在下载中');
       return true;
     }
-    if (_isApiEndpointUrl(absoluteUrl)) {
+    if (_isApiEndpointUrl(absoluteUrl) &&
+        !_isTrustedMediaCandidate(absoluteUrl)) {
       onFailureType?.call('api_endpoint_filtered');
       debugPrint('跳过 API 接口 URL（非媒体文件）: ');
       if (mounted) {
@@ -6941,14 +8121,18 @@ class _BrowserPageState extends State<BrowserPage>
     final cancelToken = CancelToken();
     var timedOut = false;
     Timer? timeoutTimer;
-    if (timeout != null) {
-      timeoutTimer = Timer(timeout, () {
+    void resetInactivityTimeout() {
+      if (inactivityTimeout == null || cancelToken.isCancelled) return;
+      timeoutTimer?.cancel();
+      timeoutTimer = Timer(inactivityTimeout, () {
         timedOut = true;
         if (!cancelToken.isCancelled) {
-          cancelToken.cancel('timeout');
+          cancelToken.cancel('inactivity_timeout');
         }
       });
     }
+
+    resetInactivityTimeout();
     if (mounted) _addDownloadTask(taskId, absoluteUrl, mediaType, cancelToken);
 
     File? downloadedFile;
@@ -6959,7 +8143,9 @@ class _BrowserPageState extends State<BrowserPage>
         absoluteUrl,
         mediaType,
         cancelToken: cancelToken,
+        maxRequestAttempts: maxRequestAttempts,
         onProgress: (p, {detail}) {
+          resetInactivityTimeout();
           onProgress?.call(p, detail: detail);
           if (mounted)
             _updateDownloadTask(
@@ -6972,7 +8158,14 @@ class _BrowserPageState extends State<BrowserPage>
 
       if (downloadedFile != null) {
         debugPrint('文件下载成功: ');
-        final mediaMap = await _saveToMediaLibrary(downloadedFile!, mediaType);
+        final Map<String, dynamic> mediaMap;
+        try {
+          mediaMap = await _saveToMediaLibrary(downloadedFile!, mediaType);
+        } on _ExistingMediaDuplicateException {
+          rethrow;
+        } catch (e) {
+          throw _MediaLibrarySaveException(e);
+        }
         if (mediaType == MediaType.video) {
           final norm = _normalizeVideoSourceUrl(absoluteUrl);
           final mediaId = mediaMap['id']?.toString();
@@ -6983,24 +8176,26 @@ class _BrowserPageState extends State<BrowserPage>
         }
         if (mounted) {
           _updateDownloadTask(taskId, status: 'completed', progressDetail: '');
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('已保存：'),
-              duration: _kMediaSaveSnackDuration,
-              action: SnackBarAction(
-                label: '查看',
-                onPressed:
-                    () => Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder:
-                            (context) => const MediaManagerPage(
-                              showRouteBackButton: true,
-                            ),
+          if (showSuccessPrompt) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: const Text('已保存到媒体库'),
+                duration: _kMediaSaveSnackDuration,
+                action: SnackBarAction(
+                  label: '查看',
+                  onPressed:
+                      () => Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder:
+                              (context) => const MediaManagerPage(
+                                showRouteBackButton: true,
+                              ),
+                        ),
                       ),
-                    ),
+                ),
               ),
-            ),
-          );
+            );
+          }
         }
         return true;
       } else {
@@ -7026,17 +8221,19 @@ class _BrowserPageState extends State<BrowserPage>
       if (e.type == DioExceptionType.cancel) {
         if (timedOut) {
           onFailureType?.call('timeout');
-          debugPrint('下载超时，已取消: ');
-          if (mounted) {
+          debugPrint('长时间无下载进度，已取消: $absoluteUrl');
+          if (mounted && skipFailurePrompt) {
+            _removeDownloadTask(taskId);
+          } else if (mounted) {
             _updateDownloadTask(
               taskId,
               status: 'failed',
-              progressDetail: '下载超时已取消',
+              progressDetail: '长时间无下载进度，已取消',
             );
             if (!skipFailurePrompt) {
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(
-                  content: Text('下载超时，已自动取消，请重试或更换清晰度/链接'),
+                  content: Text('连续较长时间没有下载进度，已自动停止并可重试'),
                   duration: Duration(milliseconds: 1800),
                 ),
               );
@@ -7089,11 +8286,16 @@ class _BrowserPageState extends State<BrowserPage>
       } else if (msg.contains('bad state')) {
         type = 'bad_state';
       }
-      onFailureType?.call(type);
       debugPrint('后台下载出错: , 错误: \n');
       final duplicateRow =
           e is _ExistingMediaDuplicateException ? e.existingRow : null;
       final isLibraryDuplicate = duplicateRow != null;
+      if (e is _MediaLibrarySaveException) {
+        type = 'library_save_failed';
+      } else if (isLibraryDuplicate) {
+        type = 'already_in_library';
+      }
+      onFailureType?.call(type);
       if (isLibraryDuplicate) {
         try {
           if (downloadedFile != null && await downloadedFile.exists()) {
@@ -7105,7 +8307,7 @@ class _BrowserPageState extends State<BrowserPage>
         if (isLibraryDuplicate) {
           _removeDownloadTask(taskId);
           await _showVideoDuplicateSnackBar(duplicateRow!);
-        } else if (!skipFailurePrompt) {
+        } else if (!skipFailurePrompt || e is _MediaLibrarySaveException) {
           _updateDownloadTask(taskId, status: 'failed', progressDetail: '');
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
@@ -7183,6 +8385,9 @@ class _BrowserPageState extends State<BrowserPage>
 
   /// 将异常与内部文案转换为用户可读的下载失败说明。
   String _downloadErrorForUser(Object e) {
+    if (e is _MediaLibrarySaveException) {
+      return '文件已经下载完成，但写入媒体库失败；已停止重复下载，请检查存储空间或数据库状态后重试';
+    }
     if (e is DioException) return '下载失败：${_getDioErrorReason(e)}';
     var s = e.toString().replaceFirst(RegExp(r'^Exception:\s*'), '').trim();
     s = s.replaceAll('[下载失败]', '').trim();
@@ -7869,7 +9074,7 @@ class _BrowserPageState extends State<BrowserPage>
       }
 
       // 注入媒体下载处理程序
-      _injectDownloadHandlers();
+      await _injectDownloadHandlers();
 
       // 添加历史记录（仅真实网页）
       final ctrl = _controller;
