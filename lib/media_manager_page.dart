@@ -2196,16 +2196,21 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
   Future<void> _deleteMediaItem(MediaItem item) async {
     final isFolder = item.type == MediaType.folder;
+    final isInRecycleBin = item.directory == 'recycle_bin';
     final shouldDelete =
         await showDialog<bool>(
           context: context,
           builder:
               (context) => AlertDialog(
-                title: const Text('删除媒体'),
+                title: Text(isInRecycleBin ? '彻底删除' : '移入回收站'),
                 content: Text(
-                  isFolder
-                      ? '确定要删除文件夹 "${item.name}" 及其所有子文件夹与媒体文件吗？此操作不可撤销。'
-                      : '确定要删除 "${item.name}" 吗？此操作不可撤销。',
+                  isInRecycleBin
+                      ? (isFolder
+                          ? '确定要彻底删除文件夹 "${item.name}" 及其所有子文件夹与媒体文件吗？此操作不可撤销。'
+                          : '确定要彻底删除 "${item.name}" 吗？此操作不可撤销。')
+                      : (isFolder
+                          ? '确定要将文件夹 "${item.name}" 及其所有子文件夹与媒体文件移入回收站吗？之后可在回收站中还原。'
+                          : '确定要将 "${item.name}" 移入回收站吗？之后可在回收站中还原。'),
                 ),
                 actions: [
                   TextButton(
@@ -2214,9 +2219,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                   ),
                   TextButton(
                     onPressed: () => Navigator.of(context).pop(true),
-                    child: const Text(
-                      '删除',
-                      style: TextStyle(color: Colors.red),
+                    child: Text(
+                      isInRecycleBin ? '彻底删除' : '移入回收站',
+                      style: const TextStyle(color: Colors.red),
                     ),
                   ),
                 ],
@@ -2226,27 +2231,37 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
     if (shouldDelete) {
       try {
-        final result =
-            isFolder
-                ? await _databaseService.deleteMediaFolderCompletely(item.id)
-                : await _databaseService.deleteMediaItemCompletely(item.id);
-
-        await _loadMediaItems();
-        _invalidMediaRetryCounts.remove(item.id);
-        _invalidMediaRetryCounts.remove(item.id);
-        if (isFolder) {
-          final failed = result['fileDeleteFailed'] as int? ?? 0;
-          if (failed > 0 && mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text('$failed 个文件记录已删除，但物理文件未能立即清理，可稍后在存储管理中清理孤立文件。'),
-              ),
+        if (isInRecycleBin) {
+          final result =
+              isFolder
+                  ? await _databaseService.deleteMediaFolderCompletely(item.id)
+                  : await _databaseService.deleteMediaItemCompletely(item.id);
+          if (isFolder) {
+            final failed = result['fileDeleteFailed'] as int? ?? 0;
+            if (failed > 0 && mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    '$failed 个文件记录已删除，但物理文件未能立即清理，可稍后在存储管理中清理孤立文件。',
+                  ),
+                ),
+              );
+            }
+          } else {
+            await _showPartialDeleteWarningIfNeeded(
+              result as Map<String, dynamic>,
             );
           }
         } else {
-          await _showPartialDeleteWarningIfNeeded(
-            result as Map<String, dynamic>,
-          );
+          await _databaseService.moveMediaItemToRecycleBin(item.id);
+        }
+
+        await _loadMediaItems();
+        _invalidMediaRetryCounts.remove(item.id);
+        if (!isInRecycleBin && mounted) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('已移入回收站')));
         }
       } catch (e) {
         debugPrint('删除媒体项时出错: $e');
@@ -2256,6 +2271,24 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           ).showSnackBar(SnackBar(content: Text('删除媒体项时出错: $e')));
         }
       }
+    }
+  }
+
+  Future<void> _restoreMediaItem(MediaItem item) async {
+    if (item.directory != 'recycle_bin') return;
+    try {
+      final ok = await _databaseService.restoreMediaItemFromRecycleBin(item.id);
+      await _loadMediaItems();
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(ok ? '已还原到原位置' : '还原失败：记录不存在')));
+    } catch (e) {
+      debugPrint('还原媒体项时出错: $e');
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('还原媒体项时出错: $e')));
     }
   }
 
@@ -2686,7 +2719,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       _isMultiSelectMode = true;
       final selectableIds =
           _mediaItems
-              .where((item) => item.type != MediaType.folder)
+              .where(
+                (item) => item.id != 'recycle_bin' && item.id != 'favorites',
+              )
               .map((item) => item.id)
               .toSet();
       if (selectableIds.isNotEmpty &&
@@ -2980,13 +3015,18 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   Future<void> _deleteSelectedItems() async {
     if (_selectedItems.isEmpty) return;
 
+    final isRecycleBin = _currentDirectory == 'recycle_bin';
     final shouldDelete =
         await showDialog<bool>(
           context: context,
           builder:
               (context) => AlertDialog(
-                title: const Text('删除选定项'),
-                content: Text('确定要删除 ${_selectedItems.length} 个选定项吗？此操作不可撤销。'),
+                title: Text(isRecycleBin ? '彻底删除选定项' : '移入回收站'),
+                content: Text(
+                  isRecycleBin
+                      ? '确定要彻底删除 ${_selectedItems.length} 个选定项吗？此操作不可撤销。'
+                      : '确定要将 ${_selectedItems.length} 个选定项移入回收站吗？之后可在回收站中还原。',
+                ),
                 actions: [
                   TextButton(
                     onPressed: () => Navigator.of(context).pop(false),
@@ -2994,9 +3034,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                   ),
                   TextButton(
                     onPressed: () => Navigator.of(context).pop(true),
-                    child: const Text(
-                      '删除',
-                      style: TextStyle(color: Colors.red),
+                    child: Text(
+                      isRecycleBin ? '彻底删除' : '移入回收站',
+                      style: const TextStyle(color: Colors.red),
                     ),
                   ),
                 ],
@@ -3014,7 +3054,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                 children: [
                   CircularProgressIndicator(),
                   SizedBox(width: 20),
-                  Text('正在删除...'),
+                  Text('正在处理...'),
                 ],
               ),
             ),
@@ -3025,15 +3065,21 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         for (var id in _selectedItems) {
           final item = _mediaItems.firstWhereOrNull((i) => i.id == id);
           if (item == null) continue;
-          if (item.type == MediaType.folder) {
-            final r = await _databaseService.deleteMediaFolderCompletely(id);
-            partialFileDeleteFailures += r['fileDeleteFailed'] as int? ?? 0;
-          } else {
-            final result = await _databaseService.deleteMediaItemCompletely(id);
-            if ((result['fileDeleteAttempted'] as bool? ?? false) &&
-                !(result['fileDeleted'] as bool? ?? true)) {
-              partialFileDeleteFailures++;
+          if (isRecycleBin) {
+            if (item.type == MediaType.folder) {
+              final r = await _databaseService.deleteMediaFolderCompletely(id);
+              partialFileDeleteFailures += r['fileDeleteFailed'] as int? ?? 0;
+            } else {
+              final result = await _databaseService.deleteMediaItemCompletely(
+                id,
+              );
+              if ((result['fileDeleteAttempted'] as bool? ?? false) &&
+                  !(result['fileDeleted'] as bool? ?? true)) {
+                partialFileDeleteFailures++;
+              }
             }
+          } else {
+            await _databaseService.moveMediaItemToRecycleBin(id);
           }
         }
 
@@ -3053,6 +3099,10 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                 ),
               ),
             );
+          } else if (!isRecycleBin && deletedCount > 0) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('已将 $deletedCount 个选定项移入回收站')),
+            );
           }
           await Future<void>.delayed(const Duration(milliseconds: 900));
           await _loadMediaItems();
@@ -3066,6 +3116,36 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           ).showSnackBar(SnackBar(content: Text('删除选定项时出错: $e')));
         }
       }
+    }
+  }
+
+  Future<void> _restoreSelectedItems() async {
+    if (_selectedItems.isEmpty || _currentDirectory != 'recycle_bin') return;
+    try {
+      var restoredCount = 0;
+      for (final id in _selectedItems.toList()) {
+        final item = _mediaItems.firstWhereOrNull((i) => i.id == id);
+        if (item == null || item.directory != 'recycle_bin') continue;
+        final ok = await _databaseService.restoreMediaItemFromRecycleBin(id);
+        if (ok) restoredCount++;
+      }
+      if (!mounted) return;
+      setState(() {
+        _selectedItems.clear();
+        _isMultiSelectMode = false;
+      });
+      widget.onMultiSelectModeChanged?.call(false);
+      await _loadMediaItems();
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('已还原 $restoredCount 个选定项')));
+    } catch (e) {
+      debugPrint('还原选定项时出错: $e');
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('还原选定项时出错: $e')));
     }
   }
 
@@ -4452,21 +4532,27 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       final items =
           itemsMap
               .map((m) => MediaItem.fromMap(m))
-              .where((i) => i.type != MediaType.folder)
+              .where((i) => i.id != 'recycle_bin' && i.id != 'favorites')
               .toList();
       int deletedCount = 0;
       int partialFileDeleteFailures = 0;
 
       for (final item in items) {
         try {
-          final result = await _databaseService.deleteMediaItemCompletely(
-            item.id,
-          );
+          final result =
+              item.type == MediaType.folder
+                  ? await _databaseService.deleteMediaFolderCompletely(item.id)
+                  : await _databaseService.deleteMediaItemCompletely(item.id);
           deletedCount++;
           _invalidMediaRetryCounts.remove(item.id);
-          if ((result['fileDeleteAttempted'] as bool? ?? false) &&
-              !(result['fileDeleted'] as bool? ?? true)) {
-            partialFileDeleteFailures++;
+          if (item.type == MediaType.folder) {
+            partialFileDeleteFailures +=
+                result['fileDeleteFailed'] as int? ?? 0;
+          } else {
+            if ((result['fileDeleteAttempted'] as bool? ?? false) &&
+                !(result['fileDeleted'] as bool? ?? true)) {
+              partialFileDeleteFailures++;
+            }
           }
         } catch (_) {}
       }
@@ -6814,24 +6900,36 @@ class _MediaManagerPageState extends State<MediaManagerPage>
             IconButton(
               icon: Icon(
                 _mediaItems
-                            .where((i) => i.type != MediaType.folder)
+                            .where(
+                              (i) =>
+                                  i.id != 'recycle_bin' && i.id != 'favorites',
+                            )
                             .every((i) => _selectedItems.contains(i)) &&
-                        _mediaItems.any((i) => i.type != MediaType.folder)
+                        _mediaItems.any(
+                          (i) => i.id != 'recycle_bin' && i.id != 'favorites',
+                        )
                     ? Icons.deselect
                     : Icons.select_all,
               ),
               onPressed: _selectAll,
               tooltip: '全选/取消全选',
             ),
-            IconButton(
-              icon: const Icon(Icons.drive_file_move_outline),
-              onPressed: () => _showMoveDialog(),
-              tooltip: '移动选定项',
-            ),
+            if (_currentDirectory == 'recycle_bin')
+              IconButton(
+                icon: const Icon(Icons.restore_from_trash_outlined),
+                onPressed: _restoreSelectedItems,
+                tooltip: '还原选定项',
+              )
+            else
+              IconButton(
+                icon: const Icon(Icons.drive_file_move_outline),
+                onPressed: () => _showMoveDialog(),
+                tooltip: '移动选定项',
+              ),
             IconButton(
               icon: const Icon(Icons.delete_outline),
               onPressed: _deleteSelectedItems,
-              tooltip: '删除选定项',
+              tooltip: _currentDirectory == 'recycle_bin' ? '彻底删除选定项' : '移入回收站',
             ),
             IconButton(
               icon: const Icon(Icons.close),
@@ -6941,6 +7039,20 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   }
 
   List<PopupMenuEntry<String>> _thumbnailOverflowMenuEntries(MediaItem item) {
+    final isInRecycleBin = item.directory == 'recycle_bin';
+    if (isInRecycleBin) {
+      return [
+        const PopupMenuItem(value: 'restore', child: Text('还原')),
+        const PopupMenuItem(value: 'properties', child: Text('属性')),
+        const PopupMenuItem(
+          value: 'delete',
+          child: Text('彻底删除', style: TextStyle(color: Colors.red)),
+        ),
+        const PopupMenuItem(value: 'multi_select', child: Text('多选')),
+        const PopupMenuItem(value: 'select_all', child: Text('全选')),
+      ];
+    }
+
     return [
       const PopupMenuItem(value: 'rename', child: Text('重命名')),
       const PopupMenuItem(value: 'properties', child: Text('属性')),
@@ -6949,7 +7061,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         const PopupMenuItem(value: 'export', child: Text('导出')),
       const PopupMenuItem(
         value: 'delete',
-        child: Text('删除', style: TextStyle(color: Colors.red)),
+        child: Text('移入回收站', style: TextStyle(color: Colors.red)),
       ),
       const PopupMenuItem(value: 'multi_select', child: Text('多选')),
       const PopupMenuItem(value: 'select_all', child: Text('全选')),
@@ -6960,6 +7072,8 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     if (value == null) return;
     if (value == 'delete') {
       _deleteMediaItem(item);
+    } else if (value == 'restore') {
+      _restoreMediaItem(item);
     } else if (value == 'move') {
       _showMoveDialog(item: item);
     } else if (value == 'rename') {

@@ -65,6 +65,7 @@ class DatabaseService {
       if (_database != null) {
         await _ensureMediaItemsKenBurnsColumns(_database!);
         await _ensureMediaItemsVideoViewColumns(_database!);
+        await _ensureMediaItemsRecycleColumns(_database!);
         try {
           final d = await getApplicationDocumentsDirectory();
           _appDocumentsDirectoryPath = d.path;
@@ -121,6 +122,7 @@ class DatabaseService {
       // 部分环境未走 onUpgrade 或旧表缺少列：补全渐进放大中心点字段
       await _ensureMediaItemsKenBurnsColumns(_database!);
       await _ensureMediaItemsVideoViewColumns(_database!);
+      await _ensureMediaItemsRecycleColumns(_database!);
       await _ensureBackgroundFileViewParamsTable(_database!);
       await _ensureBackgroundVideoPathColumns(_database!);
       await _ensureBackgroundMediaOriginColumns(_database!);
@@ -419,6 +421,8 @@ class DatabaseService {
           video_view_basis_h REAL,
           video_view_anchor_x REAL,
           video_view_anchor_y REAL,
+          deleted_from_directory TEXT,
+          deleted_at INTEGER,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
         )
@@ -1152,6 +1156,39 @@ class DatabaseService {
     }
   }
 
+  /// Ensure soft-delete metadata exists for media recycle-bin restore.
+  Future<void> _ensureMediaItemsRecycleColumns(Database db) async {
+    try {
+      final tables = await db.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='media_items';",
+      );
+      if (tables.isEmpty) return;
+
+      Future<void> addIfMissing(String columnName, String alterSql) async {
+        final columns = await db.rawQuery('PRAGMA table_info(media_items);');
+        final names = columns.map((c) => c['name'] as String).toSet();
+        if (!names.contains(columnName)) {
+          await db.execute(alterSql);
+          if (kDebugMode) {
+            Logger.log('已补全 media_items.$columnName');
+          }
+        }
+      }
+
+      await addIfMissing(
+        'deleted_from_directory',
+        'ALTER TABLE media_items ADD COLUMN deleted_from_directory TEXT',
+      );
+      await addIfMissing(
+        'deleted_at',
+        'ALTER TABLE media_items ADD COLUMN deleted_at INTEGER',
+      );
+    } catch (e, stackTrace) {
+      _handleError('补全回收站还原列失败', e, stackTrace);
+      rethrow;
+    }
+  }
+
   /// 确保媒体项表存在
   Future<void> ensureMediaItemsTableExists() async {
     try {
@@ -1175,6 +1212,7 @@ class DatabaseService {
         ''');
         await _ensureMediaItemsKenBurnsColumns(db);
         await _ensureMediaItemsVideoViewColumns(db);
+        await _ensureMediaItemsRecycleColumns(db);
         Logger.log('已创建media_items表');
       } else {
         // 检查file_hash列是否存在
@@ -1192,6 +1230,7 @@ class DatabaseService {
         }
         await _ensureMediaItemsKenBurnsColumns(db);
         await _ensureMediaItemsVideoViewColumns(db);
+        await _ensureMediaItemsRecycleColumns(db);
         Logger.log('media_items表已存在');
       }
     } catch (e, stackTrace) {
@@ -1837,6 +1876,86 @@ class DatabaseService {
       _handleError('根据文件路径获取媒体项失败', e, stackTrace);
       return null;
     }
+  }
+
+  Future<bool> moveMediaItemToRecycleBin(String id) async {
+    final row = await getMediaItemById(id);
+    if (row == null) return false;
+    final itemId = id.trim();
+    if (itemId.isEmpty ||
+        itemId == 'root' ||
+        itemId == 'recycle_bin' ||
+        itemId == 'favorites') {
+      throw Exception('系统目录不允许移入回收站');
+    }
+    final currentDirectory = row['directory']?.toString() ?? 'root';
+    if (currentDirectory == 'recycle_bin') return true;
+
+    final db = await database;
+    await _ensureMediaItemsRecycleColumns(db);
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    final updated = await db.update(
+      'media_items',
+      {
+        'directory': 'recycle_bin',
+        'deleted_from_directory':
+            currentDirectory.isEmpty ? 'root' : currentDirectory,
+        'deleted_at': nowMs,
+        'updated_at': nowMs,
+      },
+      where: 'id = ?',
+      whereArgs: [itemId],
+    );
+    return updated > 0;
+  }
+
+  Future<bool> restoreMediaItemFromRecycleBin(
+    String id, {
+    String fallbackDirectory = 'root',
+  }) async {
+    final row = await getMediaItemById(id);
+    if (row == null) return false;
+    final itemId = id.trim();
+    if (itemId.isEmpty ||
+        itemId == 'root' ||
+        itemId == 'recycle_bin' ||
+        itemId == 'favorites') {
+      throw Exception('系统目录不允许还原');
+    }
+    final currentDirectory = row['directory']?.toString() ?? '';
+    if (currentDirectory != 'recycle_bin') return true;
+
+    var targetDirectory =
+        (row['deleted_from_directory']?.toString() ?? '').trim();
+    if (targetDirectory.isEmpty || targetDirectory == 'recycle_bin') {
+      targetDirectory = fallbackDirectory;
+    }
+    if (targetDirectory.isEmpty || targetDirectory == 'recycle_bin') {
+      targetDirectory = 'root';
+    }
+    if (targetDirectory != 'root' && targetDirectory != 'favorites') {
+      final parent = await getMediaItemById(targetDirectory);
+      final parentType = parent == null ? -1 : mediaTypeIndex(parent);
+      final parentDir = parent?['directory']?.toString() ?? '';
+      if (parent == null || parentType != 3 || parentDir == 'recycle_bin') {
+        targetDirectory = 'root';
+      }
+    }
+
+    final db = await database;
+    await _ensureMediaItemsRecycleColumns(db);
+    final updated = await db.update(
+      'media_items',
+      {
+        'directory': targetDirectory,
+        'deleted_from_directory': null,
+        'deleted_at': null,
+        'updated_at': DateTime.now().millisecondsSinceEpoch,
+      },
+      where: 'id = ?',
+      whereArgs: [itemId],
+    );
+    return updated > 0;
   }
 
   Future<void> upsertVideoViewParamsForFilePath(
@@ -7544,6 +7663,8 @@ class DatabaseService {
           video_view_basis_h REAL,
           video_view_anchor_x REAL,
           video_view_anchor_y REAL,
+          deleted_from_directory TEXT,
+          deleted_at INTEGER,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
         )
@@ -7598,6 +7719,8 @@ class DatabaseService {
           video_view_basis_h REAL,
           video_view_anchor_x REAL,
           video_view_anchor_y REAL,
+          deleted_from_directory TEXT,
+          deleted_at INTEGER,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
         )
