@@ -15,8 +15,8 @@ class FileCleanupService {
   FileCleanupService._internal();
 
   /// 应用文档目录下按「非数据库引用」规则扫描孤立文件的子目录名（标题用于预览；须与 [cleanOrphanedFiles] 一致）。
-  static const List<({String title, String subdir})> kOrphanScanDocumentSubdirs =
-      [
+  static const List<({String title, String subdir})>
+  kOrphanScanDocumentSubdirs = [
     (title: '孤立媒体文件', subdir: 'media'),
     (title: '孤立图片文件', subdir: 'images'),
     (title: '孤立音频文件', subdir: 'audio'),
@@ -27,9 +27,12 @@ class FileCleanupService {
     (title: '孤立日记背景', subdir: 'diary_backgrounds'),
     (title: '孤立视频文件', subdir: 'videos'),
     (title: '孤立日记媒体', subdir: 'diary_media'),
+    (title: '导入临时文件', subdir: 'temp_import'),
     (title: '孤立文档附件', subdir: 'documents'),
+
     /// 与 [deleteFolderCompletely] 使用的目录一致；库内路径均不指向此目录，仅清理删除文件夹后的残留。
     (title: '孤立文件夹附件', subdir: 'folders'),
+    (title: '导出临时文件', subdir: 'backups/temp_document_export'),
   ];
 
   bool _isInitialized = false;
@@ -38,7 +41,7 @@ class FileCleanupService {
   Directory? _appSupportDirectory;
   Directory? _tempDirectory;
 
-  /// 应用专属外部存储（Android: /Android/data/<package>/files/，系统计入「数据」）
+  /// 应用专属外部存储（Android: `/Android/data/<package>/files/`，系统计入「数据」）
   Directory? _externalStorageDirectory;
 
   /// 应用外部缓存目录（插件如 WebView、PhotoManager 可能使用）
@@ -938,11 +941,7 @@ class FileCleanupService {
     int totalBytes = 0;
 
     if (!_isInitialized) {
-      return {
-        'totalCount': 0,
-        'totalBytes': 0,
-        'sections': sections,
-      };
+      return {'totalCount': 0, 'totalBytes': 0, 'sections': sections};
     }
 
     String toKey(String p) {

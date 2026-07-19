@@ -322,6 +322,7 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
     required int missingCount,
     required Map<String, dynamic> duplicateSummary,
     required Map<String, dynamic> staging,
+    required Map<String, dynamic> recycleHealth,
     required Map<String, dynamic> ioPrecheck,
     required int cleanupPreviewCount,
     required int cleanupPreviewBytes,
@@ -337,12 +338,22 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
     final bool extWritable = ioPrecheck['externalWritable'] == true;
     final int backupZipCount = ioPrecheck['backupZipCount'] as int? ?? 0;
     final int backupZipBadCount = ioPrecheck['backupZipBadCount'] as int? ?? 0;
+    final int backupZipCheckedCount =
+        ioPrecheck['backupZipCheckedCount'] as int? ?? 0;
     final int exportZipCount = ioPrecheck['exportZipCount'] as int? ?? 0;
     final int exportZipBadCount = ioPrecheck['exportZipBadCount'] as int? ?? 0;
+    final int exportZipCheckedCount =
+        ioPrecheck['exportZipCheckedCount'] as int? ?? 0;
     final bool stagingExists = staging['exists'] == true;
     final bool stagingParseOk = staging['parseOk'] == true;
     final int stagingUnknown = staging['unknownIdCount'] as int? ?? 0;
     final int stagingItems = staging['itemCount'] as int? ?? 0;
+    final bool recycleSchemaOk = recycleHealth['schemaOk'] == true;
+    final int recycleRestorable = recycleHealth['restorableCount'] as int? ?? 0;
+    final int recycleMissingOriginal =
+        recycleHealth['missingOriginalDirectoryCount'] as int? ?? 0;
+    final int recycleInvalidOriginal =
+        recycleHealth['invalidOriginalDirectoryCount'] as int? ?? 0;
     final bool dataIntegrityOk = dataIntegrity['isValid'] == true;
     final issues =
         (dataIntegrity['issues'] as List<dynamic>? ?? const [])
@@ -373,6 +384,9 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
     if (!stagingParseOk || stagingUnknown > 0) {
       blockers.add('媒体取景参数暂存文件异常，存在未解析或未知媒体 ID。');
     }
+    if (!recycleSchemaOk) {
+      blockers.add('媒体回收站缺少还原元数据字段，误删还原能力不完整。');
+    }
     if (!docsWritable) {
       blockers.add('应用文档目录不可写。');
     }
@@ -389,13 +403,33 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
       blockers.add('发现 $exportZipBadCount 个损坏或不可读取的导出 ZIP。');
     }
 
+    if (backupZipCheckedCount < backupZipCount) {
+      warnings.add(
+        '备份 ZIP 仅检查了 $backupZipCheckedCount/$backupZipCount 个；发布级自检会全量检查。',
+      );
+    }
+    if (Platform.isAndroid && exportZipCheckedCount < exportZipCount) {
+      warnings.add(
+        '导出 ZIP 仅检查了 $exportZipCheckedCount/$exportZipCount 个；发布级自检会全量检查。',
+      );
+    }
     if (cleanupPreviewCount > 0) {
       warnings.add(
         '存在 $cleanupPreviewCount 个可清理项（${_formatFileSize(cleanupPreviewBytes)}），建议清理后再发版。',
       );
     }
-    if (stagingExists && stagingItems > 0 && stagingParseOk && stagingUnknown == 0) {
+    if (stagingExists &&
+        stagingItems > 0 &&
+        stagingParseOk &&
+        stagingUnknown == 0) {
       warnings.add('仍有 $stagingItems 条取景参数暂存待自然合并，建议重启应用后复检一次。');
+    }
+    final recycleFallbackCount =
+        recycleMissingOriginal + recycleInvalidOriginal;
+    if (recycleRestorable > 0 && recycleFallbackCount > 0) {
+      warnings.add(
+        '回收站中 $recycleFallbackCount/$recycleRestorable 项原目录不可用，还原时会回到媒体根目录。',
+      );
     }
 
     final bool releaseReady = blockers.isEmpty;
@@ -555,7 +589,9 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('完整清理完成：删除 $totalCount 个文件，释放 ${_formatFileSize(totalBytes)}'),
+          content: Text(
+            '完整清理完成：删除 $totalCount 个文件，释放 ${_formatFileSize(totalBytes)}',
+          ),
           backgroundColor: Colors.green,
         ),
       );
@@ -680,11 +716,7 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
   Widget _buildStorageFloatingTopBar() {
     const Color fg = Color(0xDE000000);
     final pad = MediaQuery.paddingOf(context);
-    const ts = TextStyle(
-      fontSize: 18,
-      fontWeight: FontWeight.w500,
-      color: fg,
-    );
+    const ts = TextStyle(fontSize: 18, fontWeight: FontWeight.w500, color: fg);
     final iconBtnStyle = IconButton.styleFrom(
       padding: const EdgeInsets.symmetric(horizontal: 4),
       minimumSize: const Size(36, 36),
@@ -710,9 +742,7 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
                   tooltip: '返回',
                   style: iconBtnStyle,
                 ),
-              const Expanded(
-                child: Text('存储管理', style: ts),
-              ),
+              const Expanded(child: Text('存储管理', style: ts)),
               IconButton(
                 icon: const Icon(Icons.refresh, color: fg),
                 onPressed: _loadStorageInfo,
@@ -964,10 +994,13 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
       final sqliteCheck = await _databaseService.sqliteIntegrityCheck(
         quick: !deep,
       );
-      final fkViolations = await _databaseService.sqliteForeignKeyViolationCount();
+      final fkViolations =
+          await _databaseService.sqliteForeignKeyViolationCount();
       final coreCounts = await _databaseService.getCoreTableRowCounts();
-      final duplicateSummary = await _databaseService.findDuplicateMediaItemsSummary();
+      final duplicateSummary =
+          await _databaseService.findDuplicateMediaItemsSummary();
       final staging = await _databaseService.getVideoViewStagingJsonStatus();
+      final recycleHealth = await _databaseService.getMediaRecycleBinHealth();
       final dataIntegrity = await _databaseService.checkDataIntegrity();
       final orphanMediaCount =
           await _databaseService.countOrphanMediaDirectoryItems();
@@ -985,7 +1018,9 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
       final int maxCheck =
           deep
               ? paths.length
-              : (paths.length <= 5000 ? paths.length : (paths.length > 300 ? 300 : paths.length));
+              : (paths.length <= 5000
+                  ? paths.length
+                  : (paths.length > 300 ? 300 : paths.length));
       int missingCount = 0;
       final sampleMissing = <String>[];
       for (int i = 0; i < maxCheck; i++) {
@@ -1007,18 +1042,28 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
       final missingDetails =
           detailPaths.isEmpty
               ? const <Map<String, dynamic>>[]
-              : await _databaseService.describeMissingFileReferences(detailPaths);
+              : await _databaseService.describeMissingFileReferences(
+                detailPaths,
+              );
 
       final bool sqliteOk = sqliteCheck.trim().toLowerCase() == 'ok';
       final bool integrityOk =
           (dataIntegrity['isValid'] == true) && (fkViolations == 0);
       final bool refsOk = missingCount == 0;
       final bool stagingOk =
-          (staging['parseOk'] == true) && ((staging['unknownIdCount'] ?? 0) == 0);
+          (staging['parseOk'] == true) &&
+          ((staging['unknownIdCount'] ?? 0) == 0);
+      final bool recycleOk = recycleHealth['schemaOk'] == true;
       final bool duplicatesOk = (duplicateSummary['total'] as int? ?? 0) == 0;
       final bool ioOk = ioPrecheck['ok'] == true;
       final overallOk =
-          sqliteOk && integrityOk && refsOk && stagingOk && duplicatesOk && ioOk;
+          sqliteOk &&
+          integrityOk &&
+          refsOk &&
+          stagingOk &&
+          recycleOk &&
+          duplicatesOk &&
+          ioOk;
       final int totalCount = preview['totalCount'] as int? ?? 0;
       final int totalBytes = preview['totalBytes'] as int? ?? 0;
 
@@ -1031,6 +1076,7 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
         'coreCounts': coreCounts,
         'duplicateSummary': duplicateSummary,
         'staging': staging,
+        'recycleHealth': recycleHealth,
         'dataIntegrity': dataIntegrity,
         'validPathCount': validPaths.length,
         'checkedPathCount': maxCheck,
@@ -1039,6 +1085,7 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
         'missingSamples': sampleMissing,
         'missingDetails': missingDetails,
         'missingPaths': isFullScan ? missingPaths : const <String>[],
+        'orphanMediaSamples': orphanMediaSamples,
         'cleanupPreviewCount': totalCount,
         'cleanupPreviewBytes': totalBytes,
         'summary':
@@ -1090,22 +1137,27 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
 
           String _usageLabel(Map<String, dynamic> u) {
             final t = u['type']?.toString() ?? '';
-            if (t == 'document_background_image' || t == 'document_background_video') {
+            if (t == 'document_background_image' ||
+                t == 'document_background_video') {
               final doc = u['documentName']?.toString() ?? '';
               final folder = u['folderName']?.toString();
               final kind = t == 'document_background_image' ? '背景图片' : '背景视频';
-              final prefix = folder == null || folder.isEmpty ? '' : '（$folder）';
+              final prefix =
+                  folder == null || folder.isEmpty ? '' : '（$folder）';
               return '文档$prefix《$doc》$kind';
             }
-            if (t == 'directory_background_image' || t == 'directory_background_video') {
+            if (t == 'directory_background_image' ||
+                t == 'directory_background_video') {
               final folder = u['folderName']?.toString() ?? '';
               final kind = t == 'directory_background_image' ? '背景图片' : '背景视频';
               return '目录「${folder.isEmpty ? '根目录' : folder}」$kind';
             }
-            if (t == 'diary_background_image' || t == 'diary_background_video') {
+            if (t == 'diary_background_image' ||
+                t == 'diary_background_video') {
               return t == 'diary_background_image' ? '日记本背景图片' : '日记本背景视频';
             }
-            if (t == 'cover_background_image' || t == 'cover_background_video') {
+            if (t == 'cover_background_image' ||
+                t == 'cover_background_video') {
               return t == 'cover_background_image' ? '封面背景图片' : '封面背景视频';
             }
             if (t == 'cover_image') return '封面图片';
@@ -1113,13 +1165,15 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
             if (t == 'document_image_box') {
               final doc = u['documentName']?.toString() ?? '';
               final folder = u['folderName']?.toString();
-              final prefix = folder == null || folder.isEmpty ? '' : '（$folder）';
+              final prefix =
+                  folder == null || folder.isEmpty ? '' : '（$folder）';
               return '文档$prefix《$doc》图片框内容';
             }
             if (t == 'document_audio_box') {
               final doc = u['documentName']?.toString() ?? '';
               final folder = u['folderName']?.toString();
-              final prefix = folder == null || folder.isEmpty ? '' : '（$folder）';
+              final prefix =
+                  folder == null || folder.isEmpty ? '' : '（$folder）';
               return '文档$prefix《$doc》音频框内容';
             }
             if (t == 'media_item_file' || t == 'media_item_thumbnail') {
@@ -1140,10 +1194,11 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
             await Navigator.push(
               context,
               MaterialPageRoute(
-                builder: (c) => DocumentEditorPage(
-                  documentName: trimmed,
-                  onSave: (updatedTextBoxes) {},
-                ),
+                builder:
+                    (c) => DocumentEditorPage(
+                      documentName: trimmed,
+                      onSave: (updatedTextBoxes) {},
+                    ),
               ),
             );
           }
@@ -1152,11 +1207,12 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
             await Navigator.push(
               context,
               MaterialPageRoute(
-                builder: (c) => DirectoryPage(
-                  onDocumentOpen: (doc) async {
-                    await _openDocumentByName(doc);
-                  },
-                ),
+                builder:
+                    (c) => DirectoryPage(
+                      onDocumentOpen: (doc) async {
+                        await _openDocumentByName(doc);
+                      },
+                    ),
               ),
             );
           }
@@ -1214,17 +1270,22 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
                     if (dataIntegrity['issues'] is List &&
                         (dataIntegrity['issues'] as List).isNotEmpty) ...[
                       const SizedBox(height: 6),
-                      Text((dataIntegrity['issues'] as List).take(20).join('\n')),
+                      Text(
+                        (dataIntegrity['issues'] as List).take(20).join('\n'),
+                      ),
                     ],
                     const SizedBox(height: 8),
-                    Text('媒体重复（按 file_hash）：${dupTotal == 0 ? '0（OK）' : dupTotal.toString()}'),
+                    Text(
+                      '媒体重复（按 file_hash）：${dupTotal == 0 ? '0（OK）' : dupTotal.toString()}',
+                    ),
                     if (dupTop.isNotEmpty) ...[
                       const SizedBox(height: 6),
                       Text(
                         dupTop
                             .map((e) {
                               final h = e['hash']?.toString() ?? '';
-                              final prefix = h.length <= 8 ? h : h.substring(0, 8);
+                              final prefix =
+                                  h.length <= 8 ? h : h.substring(0, 8);
                               return '$prefix… ×${e['count']}';
                             })
                             .take(12)
@@ -1256,14 +1317,14 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
                             usages.isEmpty
                                 ? ['未能定位到具体来源（可能来自旧数据残留）']
                                 : usages.map(_usageLabel).toList();
-                        final docUsage =
-                            usages.firstWhere(
-                              (u) =>
-                                  (u['type']?.toString() ?? '')
-                                      .startsWith('document_'),
-                              orElse: () => const {},
-                            );
-                        final docName = docUsage['documentName']?.toString() ?? '';
+                        final docUsage = usages.firstWhere(
+                          (u) => (u['type']?.toString() ?? '').startsWith(
+                            'document_',
+                          ),
+                          orElse: () => const {},
+                        );
+                        final docName =
+                            docUsage['documentName']?.toString() ?? '';
                         final hasDir = usages.any((u) {
                           final t = u['type']?.toString() ?? '';
                           return t.startsWith('directory_');
@@ -1315,8 +1376,12 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
                                         ),
                                       );
                                       if (!mounted) return;
-                                      ScaffoldMessenger.of(context).showSnackBar(
-                                        const SnackBar(content: Text('已复制定位信息')),
+                                      ScaffoldMessenger.of(
+                                        context,
+                                      ).showSnackBar(
+                                        const SnackBar(
+                                          content: Text('已复制定位信息'),
+                                        ),
                                       );
                                     },
                                     child: const Text('复制定位'),
@@ -1418,10 +1483,8 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
                       _selfCheckRunning = true;
                     });
                     try {
-                      final r =
-                          await _databaseService.repairMissingFileReferences(
-                        missingPaths,
-                      );
+                      final r = await _databaseService
+                          .repairMissingFileReferences(missingPaths);
                       if (!mounted) return;
                       final fixedPaths = r['fixedPathCount'] ?? 0;
                       final totalPaths = r['pathCount'] ?? 0;
@@ -1434,9 +1497,9 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
                       );
                     } catch (e) {
                       if (!mounted) return;
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('修复缺失引用失败: $e')),
-                      );
+                      ScaffoldMessenger.of(
+                        context,
+                      ).showSnackBar(SnackBar(content: Text('修复缺失引用失败: $e')));
                     } finally {
                       if (mounted) {
                         setState(() {
@@ -1461,8 +1524,8 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
                           title: const Text('修复重复媒体'),
                           content: Text(
                             '检测到 $dupTotal 组重复媒体（按 file_hash）。\n\n'
-                            '将保留每组中更可能是“主副本”的一条记录，删除其余重复记录；随后执行一次“孤立文件清理”以回收重复占用的磁盘文件。\n\n'
-                            '该操作不会清空回收站。',
+                            '将保留每组中更可能是“主副本”的一条记录，其余重复媒体会先移入回收站，避免误删后无法找回。\n\n'
+                            '需要真正释放磁盘空间时，请在确认无误后再清空回收站。',
                           ),
                           actions: [
                             TextButton(
@@ -1485,26 +1548,21 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
                       _selfCheckRunning = true;
                     });
                     try {
-                      final r = await _databaseService.resolveDuplicateMediaItems(
-                        maxGroups: 2000,
-                      );
+                      final r = await _databaseService
+                          .resolveDuplicateMediaItems(maxGroups: 2000);
                       if (!mounted) return;
                       final groups = r['groupsResolved'] ?? 0;
-                      final rows = r['mediaRowsDeleted'] ?? 0;
-                      final of = r['orphanFilesDeleted'] ?? 0;
-                      final ob = r['orphanBytesDeleted'] ?? 0;
+                      final rows = r['mediaRowsMovedToRecycle'] ?? 0;
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
-                          content: Text(
-                            '已处理重复媒体：$groups 组，删除记录 $rows 条，回收孤立文件 $of 个（${_formatFileSize(ob)}）',
-                          ),
+                          content: Text('已处理重复媒体：$groups 组，移入回收站 $rows 项'),
                         ),
                       );
                     } catch (e) {
                       if (!mounted) return;
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('修复重复媒体失败: $e')),
-                      );
+                      ScaffoldMessenger.of(
+                        context,
+                      ).showSnackBar(SnackBar(content: Text('修复重复媒体失败: $e')));
                     } finally {
                       if (mounted) {
                         setState(() {
@@ -1535,14 +1593,11 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
         },
       );
     } catch (e) {
-      result = {
-        'ok': false,
-        'summary': '自检失败：$e',
-      };
+      result = {'ok': false, 'summary': '自检失败：$e'};
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('稳定性自检失败: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('稳定性自检失败: $e')));
       }
     } finally {
       if (mounted) {
@@ -1572,6 +1627,7 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
       final duplicateSummary =
           await _databaseService.findDuplicateMediaItemsSummary();
       final staging = await _databaseService.getVideoViewStagingJsonStatus();
+      final recycleHealth = await _databaseService.getMediaRecycleBinHealth();
       final dataIntegrity = await _databaseService.checkDataIntegrity();
       final orphanMediaCount =
           await _databaseService.countOrphanMediaDirectoryItems();
@@ -1598,11 +1654,15 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
       }
 
       final detailPaths =
-          missingPaths.length <= 60 ? missingPaths : missingPaths.take(20).toList();
+          missingPaths.length <= 60
+              ? missingPaths
+              : missingPaths.take(20).toList();
       final missingDetails =
           detailPaths.isEmpty
               ? const <Map<String, dynamic>>[]
-              : await _databaseService.describeMissingFileReferences(detailPaths);
+              : await _databaseService.describeMissingFileReferences(
+                detailPaths,
+              );
 
       final bool sqliteOk = sqliteCheck.trim().toLowerCase() == 'ok';
       final int totalCount = preview['totalCount'] as int? ?? 0;
@@ -1617,6 +1677,7 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
         missingCount: missingCount,
         duplicateSummary: duplicateSummary,
         staging: staging,
+        recycleHealth: recycleHealth,
         ioPrecheck: ioPrecheck,
         cleanupPreviewCount: totalCount,
         cleanupPreviewBytes: totalBytes,
@@ -1639,6 +1700,7 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
         'missingPaths': missingPaths,
         'orphanMediaCount': orphanMediaCount,
         'orphanMediaSamples': orphanMediaSamples,
+        'recycleHealth': recycleHealth,
         'cleanupPreviewCount': totalCount,
         'cleanupPreviewBytes': totalBytes,
       };
@@ -1708,6 +1770,15 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
               (result['orphanMediaSamples'] as List<dynamic>? ?? const [])
                   .whereType<Map<String, dynamic>>()
                   .toList();
+          final recycleSchemaOk = recycleHealth['schemaOk'] == true;
+          final recycleRestorable =
+              recycleHealth['restorableCount'] as int? ?? 0;
+          final recycleMissingOriginal =
+              recycleHealth['missingOriginalDirectoryCount'] as int? ?? 0;
+          final recycleInvalidOriginal =
+              recycleHealth['invalidOriginalDirectoryCount'] as int? ?? 0;
+          final recycleFallbackCount =
+              recycleMissingOriginal + recycleInvalidOriginal;
 
           final missingMediaPaths =
               missingDetails
@@ -1718,7 +1789,8 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
                             .toList();
                     return usages.any((u) {
                       final t = u['type']?.toString() ?? '';
-                      return t == 'media_item_file' || t == 'media_item_thumbnail';
+                      return t == 'media_item_file' ||
+                          t == 'media_item_thumbnail';
                     });
                   })
                   .map((d) => d['path']?.toString() ?? '')
@@ -1737,22 +1809,27 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
 
           String _usageLabel(Map<String, dynamic> u) {
             final t = u['type']?.toString() ?? '';
-            if (t == 'document_background_image' || t == 'document_background_video') {
+            if (t == 'document_background_image' ||
+                t == 'document_background_video') {
               final doc = u['documentName']?.toString() ?? '';
               final folder = u['folderName']?.toString();
               final kind = t == 'document_background_image' ? '背景图片' : '背景视频';
-              final prefix = folder == null || folder.isEmpty ? '' : '（$folder）';
+              final prefix =
+                  folder == null || folder.isEmpty ? '' : '（$folder）';
               return '文档$prefix《$doc》$kind';
             }
-            if (t == 'directory_background_image' || t == 'directory_background_video') {
+            if (t == 'directory_background_image' ||
+                t == 'directory_background_video') {
               final folder = u['folderName']?.toString() ?? '';
               final kind = t == 'directory_background_image' ? '背景图片' : '背景视频';
               return '目录「${folder.isEmpty ? '根目录' : folder}」$kind';
             }
-            if (t == 'diary_background_image' || t == 'diary_background_video') {
+            if (t == 'diary_background_image' ||
+                t == 'diary_background_video') {
               return t == 'diary_background_image' ? '日记本背景图片' : '日记本背景视频';
             }
-            if (t == 'cover_background_image' || t == 'cover_background_video') {
+            if (t == 'cover_background_image' ||
+                t == 'cover_background_video') {
               return t == 'cover_background_image' ? '封面背景图片' : '封面背景视频';
             }
             if (t == 'cover_image') return '封面图片';
@@ -1760,13 +1837,15 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
             if (t == 'document_image_box') {
               final doc = u['documentName']?.toString() ?? '';
               final folder = u['folderName']?.toString();
-              final prefix = folder == null || folder.isEmpty ? '' : '（$folder）';
+              final prefix =
+                  folder == null || folder.isEmpty ? '' : '（$folder）';
               return '文档$prefix《$doc》图片框内容';
             }
             if (t == 'document_audio_box') {
               final doc = u['documentName']?.toString() ?? '';
               final folder = u['folderName']?.toString();
-              final prefix = folder == null || folder.isEmpty ? '' : '（$folder）';
+              final prefix =
+                  folder == null || folder.isEmpty ? '' : '（$folder）';
               return '文档$prefix《$doc》音频框内容';
             }
             if (t == 'media_item_file' || t == 'media_item_thumbnail') {
@@ -1787,10 +1866,11 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
             await Navigator.push(
               context,
               MaterialPageRoute(
-                builder: (c) => DocumentEditorPage(
-                  documentName: trimmed,
-                  onSave: (updatedTextBoxes) {},
-                ),
+                builder:
+                    (c) => DocumentEditorPage(
+                      documentName: trimmed,
+                      onSave: (updatedTextBoxes) {},
+                    ),
               ),
             );
           }
@@ -1799,11 +1879,12 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
             await Navigator.push(
               context,
               MaterialPageRoute(
-                builder: (c) => DirectoryPage(
-                  onDocumentOpen: (doc) async {
-                    await _openDocumentByName(doc);
-                  },
-                ),
+                builder:
+                    (c) => DirectoryPage(
+                      onDocumentOpen: (doc) async {
+                        await _openDocumentByName(doc);
+                      },
+                    ),
               ),
             );
           }
@@ -1874,11 +1955,16 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
                     if (validPaths.isEmpty) ...[
                       const Text('文件引用：0 条（无需检查）'),
                     ] else ...[
-                      Text('文件引用覆盖：${validPaths.length}/${validPaths.length}（100%，全量）'),
+                      Text(
+                        '文件引用覆盖：${validPaths.length}/${validPaths.length}（100%，全量）',
+                      ),
                       Text(
                         '文件引用缺失：$missingCount/${validPaths.length}'
                         '${missingCount == 0 ? '（OK）' : '（异常）'}',
-                        style: _selfCheckTextStyle(missingCount == 0, bold: true),
+                        style: _selfCheckTextStyle(
+                          missingCount == 0,
+                          bold: true,
+                        ),
                       ),
                     ],
                     const SizedBox(height: 10),
@@ -1894,7 +1980,10 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
                     const SizedBox(height: 10),
                     _selfCheckLine(
                       '导入/导出与恢复预检：',
-                      ioOk && docsWritable && tempWritable && (!Platform.isAndroid || extWritable),
+                      ioOk &&
+                          docsWritable &&
+                          tempWritable &&
+                          (!Platform.isAndroid || extWritable),
                       'OK（文档${docsWritable ? '可写' : '不可写'} / 临时${tempWritable ? '可写' : '不可写'}${Platform.isAndroid ? ' / 外部${extWritable ? '可写' : '不可写'}' : ''}）',
                       '异常（文档${docsWritable ? '可写' : '不可写'} / 临时${tempWritable ? '可写' : '不可写'}${Platform.isAndroid ? ' / 外部${extWritable ? '可写' : '不可写'}' : ''}）',
                       bold: true,
@@ -1929,7 +2018,13 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
                       ),
                     ],
                     const SizedBox(height: 10),
-                    _selfCheckLine('SQLite 检查：', sqliteOk, 'OK', '异常', bold: true),
+                    _selfCheckLine(
+                      'SQLite 检查：',
+                      sqliteOk,
+                      'OK',
+                      '异常',
+                      bold: true,
+                    ),
                     if (!sqliteOk)
                       Text(sqliteCheck, style: _selfCheckTextStyle(false)),
                     const SizedBox(height: 8),
@@ -1974,6 +2069,16 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
                         style: _selfCheckTextStyle(false),
                       ),
                     ],
+                    const SizedBox(height: 8),
+                    _selfCheckLine(
+                      '媒体回收站还原能力：',
+                      recycleSchemaOk,
+                      recycleFallbackCount > 0
+                          ? 'OK（$recycleRestorable 项，$recycleFallbackCount 项将还原到根目录）'
+                          : 'OK（$recycleRestorable 项）',
+                      '异常',
+                      bold: true,
+                    ),
                     const SizedBox(height: 8),
                     _selfCheckLine(
                       '重复媒体（按 file_hash）：',
@@ -2030,14 +2135,14 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
                             usages.isEmpty
                                 ? ['未能定位到具体来源（可能来自旧数据残留）']
                                 : usages.map(_usageLabel).toList();
-                        final docUsage =
-                            usages.firstWhere(
-                              (u) =>
-                                  (u['type']?.toString() ?? '')
-                                      .startsWith('document_'),
-                              orElse: () => const {},
-                            );
-                        final docName = docUsage['documentName']?.toString() ?? '';
+                        final docUsage = usages.firstWhere(
+                          (u) => (u['type']?.toString() ?? '').startsWith(
+                            'document_',
+                          ),
+                          orElse: () => const {},
+                        );
+                        final docName =
+                            docUsage['documentName']?.toString() ?? '';
                         final hasDir = usages.any((u) {
                           final t = u['type']?.toString() ?? '';
                           return t.startsWith('directory_');
@@ -2089,8 +2194,12 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
                                         ),
                                       );
                                       if (!mounted) return;
-                                      ScaffoldMessenger.of(context).showSnackBar(
-                                        const SnackBar(content: Text('已复制定位信息')),
+                                      ScaffoldMessenger.of(
+                                        context,
+                                      ).showSnackBar(
+                                        const SnackBar(
+                                          content: Text('已复制定位信息'),
+                                        ),
                                       );
                                     },
                                     child: const Text('复制定位'),
@@ -2202,9 +2311,9 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
                       );
                     } catch (e) {
                       if (!mounted) return;
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('业务数据修复失败: $e')),
-                      );
+                      ScaffoldMessenger.of(
+                        context,
+                      ).showSnackBar(SnackBar(content: Text('业务数据修复失败: $e')));
                     } finally {
                       if (mounted) {
                         setState(() {
@@ -2248,7 +2357,9 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
                       _selfCheckRunning = true;
                     });
                     try {
-                      final r = await _databaseService.pruneVideoViewStagingJsonIfNeeded();
+                      final r =
+                          await _databaseService
+                              .pruneVideoViewStagingJsonIfNeeded();
                       if (!mounted) return;
                       final pruned = r['pruned'] ?? 0;
                       final deleted = r['deleted'] == true;
@@ -2263,9 +2374,9 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
                       );
                     } catch (e) {
                       if (!mounted) return;
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('修复取景暂存失败: $e')),
-                      );
+                      ScaffoldMessenger.of(
+                        context,
+                      ).showSnackBar(SnackBar(content: Text('修复取景暂存失败: $e')));
                     } finally {
                       if (mounted) {
                         setState(() {
@@ -2310,8 +2421,9 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
                       _selfCheckRunning = true;
                     });
                     try {
-                      final r = await _databaseService
-                          .moveOrphanMediaDirectoryItemsToRecycleBin();
+                      final r =
+                          await _databaseService
+                              .moveOrphanMediaDirectoryItemsToRecycleBin();
                       if (!mounted) return;
                       final moved = r['moved'] ?? 0;
                       ScaffoldMessenger.of(context).showSnackBar(
@@ -2319,9 +2431,9 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
                       );
                     } catch (e) {
                       if (!mounted) return;
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('修复断链媒体失败: $e')),
-                      );
+                      ScaffoldMessenger.of(
+                        context,
+                      ).showSnackBar(SnackBar(content: Text('修复断链媒体失败: $e')));
                     } finally {
                       if (mounted) {
                         setState(() {
@@ -2369,8 +2481,9 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
                       _selfCheckRunning = true;
                     });
                     try {
-                      final r = await _databaseService
-                          .deleteOrphanMediaDirectoryItemsCompletely();
+                      final r =
+                          await _databaseService
+                              .deleteOrphanMediaDirectoryItemsCompletely();
                       if (!mounted) return;
                       final orphanRows = r['orphanRows'] ?? 0;
                       final fileFailed = r['fileDeleteFailed'] ?? 0;
@@ -2384,9 +2497,9 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
                       );
                     } catch (e) {
                       if (!mounted) return;
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('删除断链媒体失败: $e')),
-                      );
+                      ScaffoldMessenger.of(
+                        context,
+                      ).showSnackBar(SnackBar(content: Text('删除断链媒体失败: $e')));
                     } finally {
                       if (mounted) {
                         setState(() {
@@ -2436,10 +2549,8 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
                       _selfCheckRunning = true;
                     });
                     try {
-                      final r =
-                          await _databaseService.repairMissingFileReferences(
-                        missingPaths,
-                      );
+                      final r = await _databaseService
+                          .repairMissingFileReferences(missingPaths);
                       if (!mounted) return;
                       final fixedPaths = r['fixedPathCount'] ?? 0;
                       final totalPaths = r['pathCount'] ?? 0;
@@ -2452,9 +2563,9 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
                       );
                     } catch (e) {
                       if (!mounted) return;
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('修复缺失引用失败: $e')),
-                      );
+                      ScaffoldMessenger.of(
+                        context,
+                      ).showSnackBar(SnackBar(content: Text('修复缺失引用失败: $e')));
                     } finally {
                       if (mounted) {
                         setState(() {
@@ -2517,9 +2628,9 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
                       );
                     } catch (e) {
                       if (!mounted) return;
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('修复缺失媒体失败: $e')),
-                      );
+                      ScaffoldMessenger.of(
+                        context,
+                      ).showSnackBar(SnackBar(content: Text('修复缺失媒体失败: $e')));
                     } finally {
                       if (mounted) {
                         setState(() {
@@ -2653,8 +2764,8 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
                           title: const Text('修复重复媒体'),
                           content: Text(
                             '检测到 $dupTotal 组重复媒体（按 file_hash）。\n\n'
-                            '将保留每组中更可能是“主副本”的一条记录，删除其余重复记录；随后执行一次“孤立文件清理”以回收重复占用的磁盘文件。\n\n'
-                            '该操作不会清空回收站。',
+                            '将保留每组中更可能是“主副本”的一条记录，其余重复媒体会先移入回收站，避免误删后无法找回。\n\n'
+                            '需要真正释放磁盘空间时，请在确认无误后再清空回收站。',
                           ),
                           actions: [
                             TextButton(
@@ -2677,26 +2788,21 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
                       _selfCheckRunning = true;
                     });
                     try {
-                      final r = await _databaseService.resolveDuplicateMediaItems(
-                        maxGroups: 2000,
-                      );
+                      final r = await _databaseService
+                          .resolveDuplicateMediaItems(maxGroups: 2000);
                       if (!mounted) return;
                       final groups = r['groupsResolved'] ?? 0;
-                      final rows = r['mediaRowsDeleted'] ?? 0;
-                      final of = r['orphanFilesDeleted'] ?? 0;
-                      final ob = r['orphanBytesDeleted'] ?? 0;
+                      final rows = r['mediaRowsMovedToRecycle'] ?? 0;
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
-                          content: Text(
-                            '已处理重复媒体：$groups 组，删除记录 $rows 条，回收孤立文件 $of 个（${_formatFileSize(ob)}）',
-                          ),
+                          content: Text('已处理重复媒体：$groups 组，移入回收站 $rows 项'),
                         ),
                       );
                     } catch (e) {
                       if (!mounted) return;
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('修复重复媒体失败: $e')),
-                      );
+                      ScaffoldMessenger.of(
+                        context,
+                      ).showSnackBar(SnackBar(content: Text('修复重复媒体失败: $e')));
                     } finally {
                       if (mounted) {
                         setState(() {
@@ -2719,10 +2825,7 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
         },
       );
     } catch (e) {
-      result = {
-        'ok': false,
-        'summary': '发布级自检失败：$e',
-      };
+      result = {'ok': false, 'summary': '发布级自检失败：$e'};
       if (mounted) {
         ScaffoldMessenger.of(
           context,
@@ -2738,7 +2841,9 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
     }
   }
 
-  Future<Map<String, dynamic>> _runImportExportPrecheck({required bool deep}) async {
+  Future<Map<String, dynamic>> _runImportExportPrecheck({
+    required bool deep,
+  }) async {
     bool docsWritable = false;
     bool tempWritable = false;
     bool externalWritable = false;
@@ -2794,7 +2899,9 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
       final tempDir = await getTemporaryDirectory();
       tempWritable = await canWrite(tempDir);
 
-      final backupDir = Directory('${docsDir.path}${Platform.pathSeparator}backups');
+      final backupDir = Directory(
+        '${docsDir.path}${Platform.pathSeparator}backups',
+      );
       if (await backupDir.exists()) {
         final zips = <File>[];
         await for (final e in backupDir.list()) {
@@ -2815,8 +2922,7 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
             backupZipOk = false;
             if (badBackupZipSamples.length < 8) {
               final reason =
-                  inspect?['reason']?.toString() ??
-                  '文件头校验失败，不是有效 ZIP';
+                  inspect?['reason']?.toString() ?? '文件头校验失败，不是有效 ZIP';
               badBackupZipSamples.add(
                 '${zips[i].path.split(Platform.pathSeparator).last}: $reason',
               );
@@ -2853,7 +2959,8 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
             zips.add(e);
           }
           exportZipCount = zips.length;
-          final max = deep ? zips.length : (zips.length > 30 ? 30 : zips.length);
+          final max =
+              deep ? zips.length : (zips.length > 30 ? 30 : zips.length);
           for (int i = 0; i < max; i++) {
             exportZipCheckedCount++;
             final looksZip = await looksLikeZip(zips[i]);
@@ -2864,8 +2971,7 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
               exportZipOk = false;
               if (badExportZipSamples.length < 8) {
                 final reason =
-                    inspect?['reason']?.toString() ??
-                    '文件头校验失败，不是有效 ZIP';
+                    inspect?['reason']?.toString() ?? '文件头校验失败，不是有效 ZIP';
                 badExportZipSamples.add(
                   '${zips[i].path.split(Platform.pathSeparator).last}: $reason',
                 );

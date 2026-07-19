@@ -2278,15 +2278,20 @@ class DatabaseService {
   moveOrphanMediaDirectoryItemsToRecycleBin() async {
     final db = await database;
     int moved = 0;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await _ensureMediaItemsRecycleColumns(db);
     await db.transaction((txn) async {
-      moved = await txn.update(
-        'media_items',
-        {
-          'directory': 'recycle_bin',
-          'updated_at': DateTime.now().millisecondsSinceEpoch,
-        },
-        where:
-            "directory NOT IN ('root','recycle_bin','favorites') AND (directory = '' OR directory NOT IN (SELECT id FROM media_items WHERE type = 3))",
+      moved = await txn.rawUpdate(
+        '''
+        UPDATE media_items
+        SET deleted_from_directory = directory,
+            deleted_at = ?,
+            directory = 'recycle_bin',
+            updated_at = ?
+        WHERE directory NOT IN ('root','recycle_bin','favorites')
+          AND (directory = '' OR directory NOT IN (SELECT id FROM media_items WHERE type = 3))
+        ''',
+        [now, now],
       );
     });
     return {'moved': moved};
@@ -8175,6 +8180,101 @@ class DatabaseService {
     return counts;
   }
 
+  Future<Map<String, dynamic>> getMediaRecycleBinHealth() async {
+    final db = await database;
+    var hasDeletedFromDirectory = false;
+    var hasDeletedAt = false;
+    try {
+      final columns = await db.rawQuery('PRAGMA table_info(media_items);');
+      final names = columns.map((c) => c['name']?.toString() ?? '').toSet();
+      hasDeletedFromDirectory = names.contains('deleted_from_directory');
+      hasDeletedAt = names.contains('deleted_at');
+    } catch (_) {}
+
+    int recycleItemCount = 0;
+    int restorableCount = 0;
+    int missingOriginalDirectoryCount = 0;
+    int invalidOriginalDirectoryCount = 0;
+    final samples = <Map<String, dynamic>>[];
+
+    try {
+      final rows = await db.query(
+        'media_items',
+        columns: [
+          'id',
+          'name',
+          'type',
+          'directory',
+          if (hasDeletedFromDirectory) 'deleted_from_directory',
+          if (hasDeletedAt) 'deleted_at',
+        ],
+        where: 'directory = ?',
+        whereArgs: ['recycle_bin'],
+      );
+      recycleItemCount = rows.length;
+      for (final row in rows) {
+        final id = row['id']?.toString() ?? '';
+        if (id == 'recycle_bin' || id == 'favorites') continue;
+        restorableCount++;
+        final original =
+            hasDeletedFromDirectory
+                ? (row['deleted_from_directory']?.toString() ?? '').trim()
+                : '';
+        var issue = '';
+        if (original.isEmpty) {
+          missingOriginalDirectoryCount++;
+          issue = 'missing_original_directory';
+        } else if (original != 'root' && original != 'favorites') {
+          final parents = await db.query(
+            'media_items',
+            columns: ['id', 'type', 'directory'],
+            where: 'id = ? AND type = ?',
+            whereArgs: [original, 3],
+            limit: 1,
+          );
+          if (parents.isEmpty ||
+              (parents.first['directory']?.toString() ?? '') == 'recycle_bin') {
+            invalidOriginalDirectoryCount++;
+            issue = 'invalid_original_directory';
+          }
+        }
+        if (issue.isNotEmpty && samples.length < 8) {
+          samples.add({
+            'id': id,
+            'name': row['name']?.toString() ?? '',
+            'originalDirectory': original,
+            'issue': issue,
+          });
+        }
+      }
+    } catch (e) {
+      return {
+        'ok': false,
+        'hasDeletedFromDirectory': hasDeletedFromDirectory,
+        'hasDeletedAt': hasDeletedAt,
+        'recycleItemCount': recycleItemCount,
+        'restorableCount': restorableCount,
+        'missingOriginalDirectoryCount': missingOriginalDirectoryCount,
+        'invalidOriginalDirectoryCount': invalidOriginalDirectoryCount,
+        'samples': samples,
+        'error': e.toString(),
+      };
+    }
+
+    final schemaOk = hasDeletedFromDirectory && hasDeletedAt;
+    return {
+      'ok': schemaOk,
+      'schemaOk': schemaOk,
+      'hasDeletedFromDirectory': hasDeletedFromDirectory,
+      'hasDeletedAt': hasDeletedAt,
+      'recycleItemCount': recycleItemCount,
+      'restorableCount': restorableCount,
+      'missingOriginalDirectoryCount': missingOriginalDirectoryCount,
+      'invalidOriginalDirectoryCount': invalidOriginalDirectoryCount,
+      'samples': samples,
+    };
+  }
+
   Future<Map<String, dynamic>> getVideoViewStagingJsonStatus() async {
     final root = _appDocumentsDirectoryPath;
     if (root == null || root.isEmpty) {
@@ -8339,9 +8439,8 @@ class DatabaseService {
     int maxGroups = 50,
   }) async {
     final db = await database;
-    final fileCleanupService = getService<FileCleanupService>();
     final resolvedHashes = <String>[];
-    int deletedMediaRows = 0;
+    int movedMediaRows = 0;
 
     List<String> duplicateHashes = [];
     try {
@@ -8391,29 +8490,19 @@ class DatabaseService {
         final id = row['id']?.toString() ?? '';
         if (id.isEmpty) continue;
         try {
-          final n = await deleteMediaItem(id);
-          if (n > 0) deletedMediaRows += n;
+          final moved = await moveMediaItemToRecycleBin(id);
+          if (moved) movedMediaRows++;
         } catch (_) {}
       }
       resolvedHashes.add(hash);
     }
 
-    int orphanDeletedCount = 0;
-    int orphanDeletedBytes = 0;
-    if (resolvedHashes.isNotEmpty && fileCleanupService.isInitialized) {
-      try {
-        final validPaths = await getAllValidFilePaths();
-        final r = await fileCleanupService.cleanOrphanedFiles(validPaths);
-        orphanDeletedCount = r['count'] ?? 0;
-        orphanDeletedBytes = r['bytes'] ?? 0;
-      } catch (_) {}
-    }
-
     return {
       'groupsResolved': resolvedHashes.length,
-      'mediaRowsDeleted': deletedMediaRows,
-      'orphanFilesDeleted': orphanDeletedCount,
-      'orphanBytesDeleted': orphanDeletedBytes,
+      'mediaRowsMovedToRecycle': movedMediaRows,
+      'mediaRowsDeleted': 0,
+      'orphanFilesDeleted': 0,
+      'orphanBytesDeleted': 0,
       'hashes': resolvedHashes.take(10).toList(),
     };
   }
