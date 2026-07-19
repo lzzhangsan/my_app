@@ -566,7 +566,7 @@ class _FolderPropertiesStats {
   final int missingOrUnreadableFiles;
 }
 
-enum _MediaTypeViewMode { all, imagesOnly, imagesFirst }
+enum _MediaTypeViewMode { all, imagesOnly }
 
 class _MediaManagerPageState extends State<MediaManagerPage>
     with SingleTickerProviderStateMixin {
@@ -2641,26 +2641,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         return _mediaItems
             .where((item) => item.type != MediaType.video)
             .toList(growable: false);
-      case _MediaTypeViewMode.imagesFirst:
-        final indexed = _mediaItems.indexed.toList();
-        indexed.sort((a, b) {
-          final rankCompare = _mediaTypeViewRank(
-            a.$2,
-          ).compareTo(_mediaTypeViewRank(b.$2));
-          if (rankCompare != 0) return rankCompare;
-          return a.$1.compareTo(b.$1);
-        });
-        return indexed.map((entry) => entry.$2).toList(growable: false);
       case _MediaTypeViewMode.all:
         return List<MediaItem>.unmodifiable(_mediaItems);
     }
-  }
-
-  int _mediaTypeViewRank(MediaItem item) {
-    if (item.type == MediaType.folder) return 0;
-    if (item.type == MediaType.image) return 1;
-    if (item.type == MediaType.video) return 2;
-    return 3;
   }
 
   Future<void> _cycleImageBrowseMode() async {
@@ -2671,9 +2654,6 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           _mediaTypeViewMode = _MediaTypeViewMode.imagesOnly;
           break;
         case _MediaTypeViewMode.imagesOnly:
-          _mediaTypeViewMode = _MediaTypeViewMode.imagesFirst;
-          break;
-        case _MediaTypeViewMode.imagesFirst:
           _mediaTypeViewMode = _MediaTypeViewMode.all;
           break;
       }
