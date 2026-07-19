@@ -540,9 +540,14 @@ class _BatchMediaSelectionDialogState
 }
 
 class MediaManagerPage extends StatefulWidget {
-  const MediaManagerPage({super.key, this.onMultiSelectModeChanged});
+  const MediaManagerPage({
+    super.key,
+    this.onMultiSelectModeChanged,
+    this.showRouteBackButton = false,
+  });
 
   final void Function(bool isMultiSelectMode)? onMultiSelectModeChanged;
+  final bool showRouteBackButton;
 
   @override
   _MediaManagerPageState createState() => _MediaManagerPageState();
@@ -7078,7 +7083,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     const countStyle = TextStyle(fontSize: 11, color: fg);
 
     final bool showRootTitle =
-        !Navigator.of(context).canPop() && _currentDirectory == 'root';
+        _currentDirectory == 'root' && !widget.showRouteBackButton;
     const titleText = '媒体';
 
     final iconBtnStyle = IconButton.styleFrom(
@@ -7089,18 +7094,18 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     );
 
     Widget leadingSlot;
-    if (Navigator.of(context).canPop()) {
-      leadingSlot = IconButton(
-        icon: const Icon(Icons.arrow_back, color: fg),
-        onPressed: () => Navigator.of(context).pop(),
-        tooltip: '返回',
-        style: iconBtnStyle,
-      );
-    } else if (_currentDirectory != 'root') {
+    if (_currentDirectory != 'root') {
       leadingSlot = IconButton(
         icon: const Icon(Icons.arrow_upward, color: fg),
         onPressed: _navigateUp,
         tooltip: '返回上级',
+        style: iconBtnStyle,
+      );
+    } else if (widget.showRouteBackButton) {
+      leadingSlot = IconButton(
+        icon: const Icon(Icons.arrow_back, color: fg),
+        onPressed: () => Navigator.of(context).pop(),
+        tooltip: '返回',
         style: iconBtnStyle,
       );
     } else {

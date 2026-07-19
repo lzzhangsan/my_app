@@ -435,23 +435,29 @@ class _BrowserPageState extends State<BrowserPage>
     try {
       final decoded = jsonDecode(raw);
       if (decoded is! List) return <Map<String, dynamic>>[];
-      final list = decoded
-          .whereType<Map>()
-          .map((e) => Map<String, dynamic>.from(e))
-          .where((e) => (e['pageUrl'] ?? '').toString().trim().isNotEmpty)
-          .toList();
+      final list =
+          decoded
+              .whereType<Map>()
+              .map((e) => Map<String, dynamic>.from(e))
+              .where((e) => (e['pageUrl'] ?? '').toString().trim().isNotEmpty)
+              .toList();
       return _normalizeSharedFavorites(list);
     } catch (_) {
       return <Map<String, dynamic>>[];
     }
   }
 
-  Future<void> _saveSharedFavoriteVideos(List<Map<String, dynamic>> items) async {
+  Future<void> _saveSharedFavoriteVideos(
+    List<Map<String, dynamic>> items,
+  ) async {
     final prefs = await SharedPreferences.getInstance();
     final normalized = _normalizeSharedFavorites(
       items.map((e) => Map<String, dynamic>.from(e)).toList(),
     );
-    await prefs.setString(_kSharedFavoriteVideosPrefsKey, jsonEncode(normalized));
+    await prefs.setString(
+      _kSharedFavoriteVideosPrefsKey,
+      jsonEncode(normalized),
+    );
   }
 
   List<Map<String, dynamic>> _normalizeSharedFavorites(
@@ -486,9 +492,7 @@ class _BrowserPageState extends State<BrowserPage>
 
   bool _isFavoriteLikelyDownloaded(Map<String, dynamic> item) {
     if (item['downloaded'] == true) return true;
-    final urls = <String>[
-      (item['videoUrl'] ?? '').toString().trim(),
-    ];
+    final urls = <String>[(item['videoUrl'] ?? '').toString().trim()];
     final candidateRaw = item['candidateUrls'];
     if (candidateRaw is List) {
       for (final e in candidateRaw) {
@@ -506,9 +510,7 @@ class _BrowserPageState extends State<BrowserPage>
   }
 
   Future<bool> _favoriteExistsInLibrary(Map<String, dynamic> item) async {
-    final urls = <String>[
-      (item['videoUrl'] ?? '').toString().trim(),
-    ];
+    final urls = <String>[(item['videoUrl'] ?? '').toString().trim()];
     final candidateRaw = item['candidateUrls'];
     if (candidateRaw is List) {
       for (final e in candidateRaw) {
@@ -532,7 +534,9 @@ class _BrowserPageState extends State<BrowserPage>
     final pageUrl = (item['pageUrl'] ?? '').toString().trim();
     final videoUrl = (item['videoUrl'] ?? '').toString().trim();
     if (pageUrl.isEmpty && videoUrl.isEmpty) return;
-    final list = List<Map<String, dynamic>>.from(await _loadSharedFavoriteVideos());
+    final list = List<Map<String, dynamic>>.from(
+      await _loadSharedFavoriteVideos(),
+    );
     final nowIso = DateTime.now().toIso8601String();
     var changed = false;
     for (final row in list) {
@@ -575,7 +579,10 @@ class _BrowserPageState extends State<BrowserPage>
       }
       filtered[e.key] = e.value;
     }
-    final next = u.replace(fragment: '', queryParameters: filtered.isEmpty ? null : filtered);
+    final next = u.replace(
+      fragment: '',
+      queryParameters: filtered.isEmpty ? null : filtered,
+    );
     return next.toString();
   }
 
@@ -637,25 +644,26 @@ class _BrowserPageState extends State<BrowserPage>
     final ctl = TextEditingController(text: initialText);
     return showDialog<String>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('重命名收藏'),
-        content: TextField(
-          controller: ctl,
-          maxLines: 1,
-          autofocus: true,
-          decoration: const InputDecoration(hintText: '输入新名称'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('取消'),
+      builder:
+          (ctx) => AlertDialog(
+            title: const Text('重命名收藏'),
+            content: TextField(
+              controller: ctl,
+              maxLines: 1,
+              autofocus: true,
+              decoration: const InputDecoration(hintText: '输入新名称'),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(ctx).pop(ctl.text.trim()),
+                child: const Text('确定'),
+              ),
+            ],
           ),
-          FilledButton(
-            onPressed: () => Navigator.of(ctx).pop(ctl.text.trim()),
-            child: const Text('确定'),
-          ),
-        ],
-      ),
     );
   }
 
@@ -719,7 +727,9 @@ class _BrowserPageState extends State<BrowserPage>
       final pos = (raw['positionSec'] as num?)?.toDouble() ?? 0.0;
       final dur = (raw['durationSec'] as num?)?.toDouble() ?? 0.0;
       if (page.isEmpty || pos < 0) return;
-      final list = List<Map<String, dynamic>>.from(await _loadSharedFavoriteVideos());
+      final list = List<Map<String, dynamic>>.from(
+        await _loadSharedFavoriteVideos(),
+      );
       var changed = false;
       for (int i = 0; i < list.length; i++) {
         final p = (list[i]['pageUrl'] ?? '').toString().trim();
@@ -749,7 +759,9 @@ class _BrowserPageState extends State<BrowserPage>
     List<String>? candidateUrls,
   }) async {
     if (pageUrl.trim().isEmpty) return;
-    final list = List<Map<String, dynamic>>.from(await _loadSharedFavoriteVideos());
+    final list = List<Map<String, dynamic>>.from(
+      await _loadSharedFavoriteVideos(),
+    );
     final normPage = pageUrl.trim();
     final normVideo = videoUrl.trim();
     final pageKey = _normalizeUrlForKey(normPage);
@@ -757,13 +769,16 @@ class _BrowserPageState extends State<BrowserPage>
     list.removeWhere((e) {
       final p = (e['pageUrl'] ?? '').toString().trim();
       final v = (e['videoUrl'] ?? '').toString().trim();
-      final pKey = (e['pageKey'] ?? '').toString().trim().isNotEmpty
-          ? (e['pageKey'] ?? '').toString().trim()
-          : _normalizeUrlForKey(p);
-      final vKey = (e['videoKey'] ?? '').toString().trim().isNotEmpty
-          ? (e['videoKey'] ?? '').toString().trim()
-          : _normalizeUrlForKey(v);
-      return (videoKey.isNotEmpty && vKey == videoKey) || (pageKey.isNotEmpty && pKey == pageKey);
+      final pKey =
+          (e['pageKey'] ?? '').toString().trim().isNotEmpty
+              ? (e['pageKey'] ?? '').toString().trim()
+              : _normalizeUrlForKey(p);
+      final vKey =
+          (e['videoKey'] ?? '').toString().trim().isNotEmpty
+              ? (e['videoKey'] ?? '').toString().trim()
+              : _normalizeUrlForKey(v);
+      return (videoKey.isNotEmpty && vKey == videoKey) ||
+          (pageKey.isNotEmpty && pKey == pageKey);
     });
     list.insert(0, {
       'pageUrl': normPage,
@@ -800,190 +815,304 @@ class _BrowserPageState extends State<BrowserPage>
     );
     if (!mounted) return;
     if (favorites.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('暂无收藏视频记录')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('暂无收藏视频记录')));
       return;
     }
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      builder: (sheetCtx) => StatefulBuilder(
-        builder: (ctx, setSheetState) => SafeArea(
-          child: SizedBox(
-            height: MediaQuery.of(ctx).size.height * 0.82,
-            child: Column(
-              children: [
-                ListTile(
-                  dense: true,
-                  title: const Text('收藏视频'),
-                  subtitle: Text('共${favorites.length}条'),
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      TextButton.icon(
-                        onPressed: () async {
-                          final shouldClear = await showDialog<bool>(
-                            context: context,
-                            builder: (ctx) => AlertDialog(
-                              title: const Text('确认清空'),
-                              content: Text('确定要删除全部 ${favorites.length} 条收藏视频记录吗？'),
-                              actions: [
-                                TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
-                                TextButton(
-                                  onPressed: () => Navigator.pop(ctx, true),
-                                  style: TextButton.styleFrom(foregroundColor: Colors.red),
-                                  child: const Text('全部删除'),
+      builder:
+          (sheetCtx) => StatefulBuilder(
+            builder:
+                (ctx, setSheetState) => SafeArea(
+                  child: SizedBox(
+                    height: MediaQuery.of(ctx).size.height * 0.82,
+                    child: Column(
+                      children: [
+                        ListTile(
+                          dense: true,
+                          title: const Text('收藏视频'),
+                          subtitle: Text('共${favorites.length}条'),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              TextButton.icon(
+                                onPressed: () async {
+                                  final shouldClear =
+                                      await showDialog<bool>(
+                                        context: context,
+                                        builder:
+                                            (ctx) => AlertDialog(
+                                              title: const Text('确认清空'),
+                                              content: Text(
+                                                '确定要删除全部 ${favorites.length} 条收藏视频记录吗？',
+                                              ),
+                                              actions: [
+                                                TextButton(
+                                                  onPressed:
+                                                      () => Navigator.pop(
+                                                        ctx,
+                                                        false,
+                                                      ),
+                                                  child: const Text('取消'),
+                                                ),
+                                                TextButton(
+                                                  onPressed:
+                                                      () => Navigator.pop(
+                                                        ctx,
+                                                        true,
+                                                      ),
+                                                  style: TextButton.styleFrom(
+                                                    foregroundColor: Colors.red,
+                                                  ),
+                                                  child: const Text('全部删除'),
+                                                ),
+                                              ],
+                                            ),
+                                      ) ??
+                                      false;
+                                  if (shouldClear) {
+                                    final pinnedCount =
+                                        favorites
+                                            .where((e) => e['pinned'] == true)
+                                            .length;
+                                    favorites.removeWhere(
+                                      (e) => e['pinned'] != true,
+                                    );
+                                    await _saveSharedFavoriteVideos(favorites);
+                                    setSheetState(() {});
+                                    if (favorites.isEmpty && mounted) {
+                                      Navigator.of(sheetCtx).pop();
+                                      ScaffoldMessenger.of(
+                                        context,
+                                      ).showSnackBar(
+                                        const SnackBar(
+                                          content: Text('收藏记录已清空'),
+                                        ),
+                                      );
+                                    } else if (mounted) {
+                                      ScaffoldMessenger.of(
+                                        context,
+                                      ).showSnackBar(
+                                        SnackBar(
+                                          content: Text(
+                                            '非置顶内容已清空，保留了 $pinnedCount 条置顶视频',
+                                          ),
+                                        ),
+                                      );
+                                    }
+                                  }
+                                },
+                                icon: const Icon(
+                                  Icons.delete_sweep_outlined,
+                                  color: Colors.red,
                                 ),
-                              ],
-                            ),
-                          ) ?? false;
-                          if (shouldClear) {
-                            final pinnedCount = favorites.where((e) => e['pinned'] == true).length;
-                            favorites.removeWhere((e) => e['pinned'] != true);
-                            await _saveSharedFavoriteVideos(favorites);
-                            setSheetState(() {});
-                            if (favorites.isEmpty && mounted) {
-                              Navigator.of(sheetCtx).pop();
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(content: Text('收藏记录已清空')),
-                              );
-                            } else if (mounted) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(content: Text('非置顶内容已清空，保留了 $pinnedCount 条置顶视频')),
-                              );
-                            }
-                          }
-                        },
-                        icon: const Icon(Icons.delete_sweep_outlined, color: Colors.red),
-                        label: const Text('一键清空', style: TextStyle(color: Colors.red)),
-                      ),
-                      const SizedBox(width: 8),
-                      TextButton.icon(
-                        onPressed: () => unawaited(
-                          _downloadFavoritesBatch(
-                            List<Map<String, dynamic>>.from(favorites),
+                                label: const Text(
+                                  '一键清空',
+                                  style: TextStyle(color: Colors.red),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              TextButton.icon(
+                                onPressed:
+                                    () => unawaited(
+                                      _downloadFavoritesBatch(
+                                        List<Map<String, dynamic>>.from(
+                                          favorites,
+                                        ),
+                                      ),
+                                    ),
+                                icon: const Icon(
+                                  Icons.download_for_offline_outlined,
+                                ),
+                                label: const Text('一键下载全部'),
+                              ),
+                            ],
                           ),
                         ),
-                        icon: const Icon(Icons.download_for_offline_outlined),
-                        label: const Text('一键下载全部'),
-                      ),
-                    ],
+                        const Divider(height: 1),
+                        Expanded(
+                          child: ReorderableListView.builder(
+                            itemCount: favorites.length,
+                            onReorder: (oldIdx, newIdx) async {
+                              if (oldIdx < newIdx) newIdx -= 1;
+                              final item = favorites.removeAt(oldIdx);
+                              favorites.insert(newIdx, item);
+                              await _saveSharedFavoriteVideos(favorites);
+                              setSheetState(() {});
+                            },
+                            itemBuilder: (c, i) {
+                              final it = favorites[i];
+                              final isPinned = it['pinned'] == true;
+                              final pageUrl = (it['pageUrl'] ?? '').toString();
+                              final title =
+                                  (it['customName'] ?? '')
+                                          .toString()
+                                          .trim()
+                                          .isNotEmpty
+                                      ? (it['customName'] ?? '')
+                                          .toString()
+                                          .trim()
+                                      : (it['title'] ?? '').toString().trim();
+                              final downloaded = _isFavoriteLikelyDownloaded(
+                                it,
+                              );
+                              final favoritedAt =
+                                  (it['favoritedAt'] ??
+                                          it['favorited_at'] ??
+                                          it['updatedAt'] ??
+                                          it['date_added'] ??
+                                          it['dateAdded'] ??
+                                          '')
+                                      .toString();
+                              final downloadedAt =
+                                  (it['downloadedAt'] ?? '').toString();
+                              final pos =
+                                  (it['positionSec'] as num?)?.toDouble() ??
+                                  0.0;
+                              final dur =
+                                  (it['durationSec'] as num?)?.toDouble() ??
+                                  0.0;
+                              return ListTile(
+                                key: ValueKey('fav_${it['videoUrl']}_$i'),
+                                leading: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    if (isPinned)
+                                      const Icon(
+                                        Icons.push_pin,
+                                        color: Colors.orange,
+                                        size: 16,
+                                      ),
+                                    if (isPinned) const SizedBox(width: 4),
+                                    if (downloaded)
+                                      const Icon(
+                                        Icons.download_done_rounded,
+                                        color: Colors.green,
+                                      )
+                                    else
+                                      const Icon(
+                                        Icons.video_library_outlined,
+                                        color: Colors.grey,
+                                      ),
+                                  ],
+                                ),
+                                title: Text(
+                                  title.isNotEmpty ? title : pageUrl,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                subtitle: Text(
+                                  '${_fmtSec(pos)} / ${_fmtSec(dur)} · ${_fmtFavoriteDate(favoritedAt)}${downloaded ? ' · 已下载' : ''}',
+                                  style: TextStyle(
+                                    color: Colors.grey[600],
+                                    fontSize: 11,
+                                  ),
+                                ),
+                                onTap: () {
+                                  Navigator.of(sheetCtx).pop();
+                                  _openFavoriteInBrowser(
+                                    Map<String, dynamic>.from(it),
+                                  );
+                                },
+                                trailing: PopupMenuButton<String>(
+                                  onSelected: (v) {
+                                    unawaited(() async {
+                                      if (v == 'pin') {
+                                        final currentPinned =
+                                            it['pinned'] == true;
+                                        it['pinned'] = !currentPinned;
+                                        // 如果是置顶，移到最前面（在现有置顶之后，或最前面）
+                                        if (it['pinned'] == true) {
+                                          favorites.removeAt(i);
+                                          favorites.insert(0, it);
+                                        }
+                                        await _saveSharedFavoriteVideos(
+                                          favorites,
+                                        );
+                                        setSheetState(() {});
+                                      } else if (v == 'download') {
+                                        final ok = await _downloadOneFavorite(
+                                          item: it,
+                                          showResultHint: true,
+                                        );
+                                        if (ok) {
+                                          it['downloaded'] = true;
+                                          it['downloadedAt'] =
+                                              DateTime.now().toIso8601String();
+                                          await _saveSharedFavoriteVideos(
+                                            favorites,
+                                          );
+                                          setSheetState(() {});
+                                        }
+                                      } else if (v == 'rename') {
+                                        final renamed =
+                                            await _promptRenameFavorite(
+                                              context: context,
+                                              initialText:
+                                                  title.isNotEmpty
+                                                      ? title
+                                                      : pageUrl,
+                                            );
+                                        if (renamed != null) {
+                                          it['customName'] = renamed;
+                                          await _saveSharedFavoriteVideos(
+                                            favorites,
+                                          );
+                                          setSheetState(() {});
+                                        }
+                                      } else if (v == 'delete') {
+                                        favorites.removeAt(i);
+                                        await _saveSharedFavoriteVideos(
+                                          favorites,
+                                        );
+                                        setSheetState(() {});
+                                      }
+                                    }());
+                                  },
+                                  itemBuilder:
+                                      (_) => [
+                                        PopupMenuItem(
+                                          value: 'pin',
+                                          child: Text(
+                                            it['pinned'] == true
+                                                ? '取消置顶'
+                                                : '置顶视频',
+                                          ),
+                                        ),
+                                        const PopupMenuItem(
+                                          value: 'download',
+                                          child: Text('下载到媒体库'),
+                                        ),
+                                        const PopupMenuItem(
+                                          value: 'rename',
+                                          child: Text('重命名'),
+                                        ),
+                                        const PopupMenuItem(
+                                          value: 'delete',
+                                          child: Text('删除收藏'),
+                                        ),
+                                      ],
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
-                const Divider(height: 1),
-                Expanded(
-                  child: ReorderableListView.builder(
-                    itemCount: favorites.length,
-                    onReorder: (oldIdx, newIdx) async {
-                      if (oldIdx < newIdx) newIdx -= 1;
-                      final item = favorites.removeAt(oldIdx);
-                      favorites.insert(newIdx, item);
-                      await _saveSharedFavoriteVideos(favorites);
-                      setSheetState(() {});
-                    },
-                    itemBuilder: (c, i) {
-                      final it = favorites[i];
-                      final isPinned = it['pinned'] == true;
-                      final pageUrl = (it['pageUrl'] ?? '').toString();
-                      final title = (it['customName'] ?? '').toString().trim().isNotEmpty
-                          ? (it['customName'] ?? '').toString().trim()
-                          : (it['title'] ?? '').toString().trim();
-                      final downloaded = _isFavoriteLikelyDownloaded(it);
-                      final favoritedAt = (it['favoritedAt'] ?? it['favorited_at'] ?? it['updatedAt'] ?? it['date_added'] ?? it['dateAdded'] ?? '').toString();
-                      final downloadedAt = (it['downloadedAt'] ?? '').toString();
-                      final pos = (it['positionSec'] as num?)?.toDouble() ?? 0.0;
-                      final dur = (it['durationSec'] as num?)?.toDouble() ?? 0.0;
-                      return ListTile(
-                        key: ValueKey('fav_${it['videoUrl']}_$i'),
-                        leading: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            if (isPinned)
-                              const Icon(Icons.push_pin, color: Colors.orange, size: 16),
-                            if (isPinned) const SizedBox(width: 4),
-                            if (downloaded)
-                              const Icon(Icons.download_done_rounded, color: Colors.green)
-                            else
-                              const Icon(Icons.video_library_outlined, color: Colors.grey),
-                          ],
-                        ),
-                        title: Text(title.isNotEmpty ? title : pageUrl, maxLines: 2, overflow: TextOverflow.ellipsis),
-                        subtitle: Text(
-                          '${_fmtSec(pos)} / ${_fmtSec(dur)} · ${_fmtFavoriteDate(favoritedAt)}${downloaded ? ' · 已下载' : ''}',
-                          style: TextStyle(color: Colors.grey[600], fontSize: 11),
-                        ),
-                        onTap: () {
-                          Navigator.of(sheetCtx).pop();
-                          _openFavoriteInBrowser(Map<String, dynamic>.from(it));
-                        },
-                        trailing: PopupMenuButton<String>(
-                          onSelected: (v) {
-                            unawaited(() async {
-                              if (v == 'pin') {
-                                final currentPinned = it['pinned'] == true;
-                                it['pinned'] = !currentPinned;
-                                // 如果是置顶，移到最前面（在现有置顶之后，或最前面）
-                                if (it['pinned'] == true) {
-                                  favorites.removeAt(i);
-                                  favorites.insert(0, it);
-                                }
-                                await _saveSharedFavoriteVideos(favorites);
-                                setSheetState(() {});
-                              } else if (v == 'download') {
-                                final ok = await _downloadOneFavorite(
-                                  item: it,
-                                  showResultHint: true,
-                                );
-                                if (ok) {
-                                  it['downloaded'] = true;
-                                  it['downloadedAt'] = DateTime.now().toIso8601String();
-                                  await _saveSharedFavoriteVideos(favorites);
-                                  setSheetState(() {});
-                                }
-                              } else if (v == 'rename') {
-                                final renamed = await _promptRenameFavorite(
-                                  context: context,
-                                  initialText: title.isNotEmpty ? title : pageUrl,
-                                );
-                                if (renamed != null) {
-                                  it['customName'] = renamed;
-                                  await _saveSharedFavoriteVideos(favorites);
-                                  setSheetState(() {});
-                                }
-                              } else if (v == 'delete') {
-                                favorites.removeAt(i);
-                                await _saveSharedFavoriteVideos(favorites);
-                                setSheetState(() {});
-                              }
-                            }());
-                          },
-                          itemBuilder: (_) => [
-                            PopupMenuItem(
-                              value: 'pin',
-                              child: Text(it['pinned'] == true ? '取消置顶' : '置顶视频'),
-                            ),
-                            const PopupMenuItem(value: 'download', child: Text('下载到媒体库')),
-                            const PopupMenuItem(value: 'rename', child: Text('重命名')),
-                            const PopupMenuItem(value: 'delete', child: Text('删除收藏')),
-                          ],
-                        ),
-                      );
-                    },
-                  ),
-                ),
-              ],
-            ),
           ),
-        ),
-      ),
     );
   }
 
   void _openFavoriteInBrowser(Map<String, dynamic> item) {
     final pageUrl = (item['pageUrl'] ?? '').toString().trim();
     final videoUrl = (item['videoUrl'] ?? '').toString().trim();
-    final target = pageUrl.isNotEmpty ? pageUrl : (videoUrl.isNotEmpty ? videoUrl : '');
+    final target =
+        pageUrl.isNotEmpty ? pageUrl : (videoUrl.isNotEmpty ? videoUrl : '');
     if (target.isEmpty) return;
     _loadUrl(target);
   }
@@ -1110,7 +1239,9 @@ class _BrowserPageState extends State<BrowserPage>
     final s = url.toLowerCase();
     var score = 0;
     if (s.contains('.m3u8') || s.contains('.m3u')) score += 1800;
-    if (s.contains('mpegurl') || s.contains('/hls/') || s.contains('/playlist')) {
+    if (s.contains('mpegurl') ||
+        s.contains('/hls/') ||
+        s.contains('/playlist')) {
       score += 1200;
     }
     if (s.contains('.mp4')) score += 900;
@@ -1138,7 +1269,9 @@ class _BrowserPageState extends State<BrowserPage>
     for (final c in candidates) {
       push(c);
     }
-    merged.sort((a, b) => _scoreFavoriteVideoUrl(b).compareTo(_scoreFavoriteVideoUrl(a)));
+    merged.sort(
+      (a, b) => _scoreFavoriteVideoUrl(b).compareTo(_scoreFavoriteVideoUrl(a)),
+    );
     return merged;
   }
 
@@ -1421,10 +1554,11 @@ class _BrowserPageState extends State<BrowserPage>
       );
       if (resniffCandidates.isNotEmpty) {
         final tried = attempts.toSet();
-        final secondAttempts = _buildFavoriteAttempts(
-          downloadUrl,
-          [...candidateUrls, ...resniffCandidates],
-        ).where((u) => !tried.contains(u)).toList();
+        final secondAttempts =
+            _buildFavoriteAttempts(downloadUrl, [
+              ...candidateUrls,
+              ...resniffCandidates,
+            ]).where((u) => !tried.contains(u)).toList();
         for (int i = 0; i < secondAttempts.length; i++) {
           final sw = Stopwatch()..start();
           var failureType = 'unknown';
@@ -1578,9 +1712,10 @@ class _BrowserPageState extends State<BrowserPage>
     try {
       for (int i = 0; i < items.length; i++) {
         final currentItem = items[i];
-        final currentName = currentItem['title'] ?? currentItem['name'] ?? '未知媒体';
+        final currentName =
+            currentItem['title'] ?? currentItem['name'] ?? '未知媒体';
         progressText.value = '正在下载(${i + 1}/${items.length})：$currentName';
-        
+
         if (_isFavoriteLikelyDownloaded(currentItem)) {
           skipped++;
           progress.value = ((i + 1) / items.length) * 0.75;
@@ -1606,9 +1741,10 @@ class _BrowserPageState extends State<BrowserPage>
       if (retryQueue.isNotEmpty) {
         for (int j = 0; j < retryQueue.length; j++) {
           final currentItem = retryQueue[j];
-          final currentName = currentItem['title'] ?? currentItem['name'] ?? '未知媒体';
+          final currentName =
+              currentItem['title'] ?? currentItem['name'] ?? '未知媒体';
           progressText.value = '重试(${j + 1}/${retryQueue.length})：$currentName';
-          
+
           retried++;
           await Future<void>.delayed(const Duration(milliseconds: 320));
           final ok = await _downloadOneFavorite(
@@ -1776,7 +1912,9 @@ class _BrowserPageState extends State<BrowserPage>
                 Navigator.of(dialogContext).pop();
                 Navigator.of(context).push(
                   MaterialPageRoute(
-                    builder: (context) => const MediaManagerPage(),
+                    builder:
+                        (context) =>
+                            const MediaManagerPage(showRouteBackButton: true),
                   ),
                 );
               },
@@ -3113,14 +3251,18 @@ class _BrowserPageState extends State<BrowserPage>
           (pageUrl.isNotEmpty ? pageUrl : _currentUrl).trim(),
         );
         final videoKey =
-            normalizedVideoUrl.isEmpty ? '' : _normalizeUrlForKey(normalizedVideoUrl);
+            normalizedVideoUrl.isEmpty
+                ? ''
+                : _normalizeUrlForKey(normalizedVideoUrl);
         final exists = (await _loadSharedFavoriteVideos()).any((row) {
-          final pk = (row['pageKey'] ?? '').toString().trim().isNotEmpty
-              ? (row['pageKey'] ?? '').toString().trim()
-              : _normalizeUrlForKey((row['pageUrl'] ?? '').toString());
-          final vk = (row['videoKey'] ?? '').toString().trim().isNotEmpty
-              ? (row['videoKey'] ?? '').toString().trim()
-              : _normalizeUrlForKey((row['videoUrl'] ?? '').toString());
+          final pk =
+              (row['pageKey'] ?? '').toString().trim().isNotEmpty
+                  ? (row['pageKey'] ?? '').toString().trim()
+                  : _normalizeUrlForKey((row['pageUrl'] ?? '').toString());
+          final vk =
+              (row['videoKey'] ?? '').toString().trim().isNotEmpty
+                  ? (row['videoKey'] ?? '').toString().trim()
+                  : _normalizeUrlForKey((row['videoUrl'] ?? '').toString());
           if (videoKey.isNotEmpty && vk == videoKey) return true;
           if (pageKey.isNotEmpty && pk == pageKey) return true;
           return false;
@@ -3178,7 +3320,7 @@ class _BrowserPageState extends State<BrowserPage>
             }
           }
         }
-        
+
         final itemMap = {
           'pageUrl': pageUrl.isNotEmpty ? pageUrl : _currentUrl,
           'videoUrl': _toAbsoluteUrl(urlValue),
@@ -3188,23 +3330,25 @@ class _BrowserPageState extends State<BrowserPage>
 
         // 查重：如果媒体库已存在，则弹出提示并终止下载
         if (await _favoriteExistsInLibrary(itemMap)) {
-          final existing = await _findExistingVideoBeforeDownload(_toAbsoluteUrl(urlValue));
+          final existing = await _findExistingVideoBeforeDownload(
+            _toAbsoluteUrl(urlValue),
+          );
           if (existing != null) {
             await _showVideoDuplicateSnackBar(existing);
           } else {
             if (mounted) {
               ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('媒体库中已存在相同视频'), duration: Duration(seconds: 2)),
+                const SnackBar(
+                  content: Text('媒体库中已存在相同视频'),
+                  duration: Duration(seconds: 2),
+                ),
               );
             }
           }
           return;
         }
 
-        await _downloadMediaRobustly(
-          item: itemMap,
-          showResultHint: true,
-        );
+        await _downloadMediaRobustly(item: itemMap, showResultHint: true);
         return;
       }
 
@@ -3480,7 +3624,9 @@ class _BrowserPageState extends State<BrowserPage>
               onPressed:
                   () => Navigator.of(context).push(
                     MaterialPageRoute(
-                      builder: (context) => const MediaManagerPage(),
+                      builder:
+                          (context) =>
+                              const MediaManagerPage(showRouteBackButton: true),
                     ),
                   ),
             ),
@@ -3967,8 +4113,9 @@ class _BrowserPageState extends State<BrowserPage>
     showModalBottomSheet(
       context: pageContext,
       isScrollControlled: true,
-      builder: (sheetContext) => SafeModalSheetScrollable(
-        children: [
+      builder:
+          (sheetContext) => SafeModalSheetScrollable(
+            children: [
               ListTile(
                 leading: const Icon(Icons.edit, color: Colors.blue),
                 title: const Text('重命名'),
@@ -4057,8 +4204,8 @@ class _BrowserPageState extends State<BrowserPage>
                   }
                 },
               ),
-        ],
-      ),
+            ],
+          ),
     );
   }
 
@@ -4520,7 +4667,8 @@ class _BrowserPageState extends State<BrowserPage>
       } catch (_) {}
     }
     candidates.add(_getMediaReferer(mediaUrl));
-    if (_isXVideoLikeHost(mediaUrl) || page.toLowerCase().contains('xvideos.')) {
+    if (_isXVideoLikeHost(mediaUrl) ||
+        page.toLowerCase().contains('xvideos.')) {
       candidates.add('https://www.xvideos.com');
       candidates.add('https://www.xvideos.com/');
       candidates.add('https://www.xvideos.com/video');
@@ -5196,9 +5344,7 @@ class _BrowserPageState extends State<BrowserPage>
             .fold<List<int>>([], (prev, chunk) => [...prev, ...chunk]);
         if (size < _kMinBase64VideoBytes || !_isValidWebmBytes(bytes)) {
           await file.delete();
-          throw Exception(
-            '[下载失败] 下载内容不是有效 WEBM 视频，可能只是网页返回的空视频占位符',
-          );
+          throw Exception('[下载失败] 下载内容不是有效 WEBM 视频，可能只是网页返回的空视频占位符');
         }
       }
       if (mediaType == MediaType.video &&
@@ -5742,7 +5888,9 @@ class _BrowserPageState extends State<BrowserPage>
               onPressed:
                   () => Navigator.of(context).push(
                     MaterialPageRoute(
-                      builder: (context) => const MediaManagerPage(),
+                      builder:
+                          (context) =>
+                              const MediaManagerPage(showRouteBackButton: true),
                     ),
                   ),
             ),
@@ -6251,7 +6399,9 @@ class _BrowserPageState extends State<BrowserPage>
                   Logger.log('[BrowserPage] 媒体库按钮被点击');
                   Navigator.of(context).push(
                     MaterialPageRoute(
-                      builder: (context) => const MediaManagerPage(),
+                      builder:
+                          (context) =>
+                              const MediaManagerPage(showRouteBackButton: true),
                     ),
                   );
                 },
@@ -6842,7 +6992,10 @@ class _BrowserPageState extends State<BrowserPage>
                 onPressed:
                     () => Navigator.of(context).push(
                       MaterialPageRoute(
-                        builder: (context) => const MediaManagerPage(),
+                        builder:
+                            (context) => const MediaManagerPage(
+                              showRouteBackButton: true,
+                            ),
                       ),
                     ),
               ),
@@ -6875,7 +7028,11 @@ class _BrowserPageState extends State<BrowserPage>
           onFailureType?.call('timeout');
           debugPrint('下载超时，已取消: ');
           if (mounted) {
-            _updateDownloadTask(taskId, status: 'failed', progressDetail: '下载超时已取消');
+            _updateDownloadTask(
+              taskId,
+              status: 'failed',
+              progressDetail: '下载超时已取消',
+            );
             if (!skipFailurePrompt) {
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(
