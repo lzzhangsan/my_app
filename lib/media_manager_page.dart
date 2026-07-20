@@ -2719,22 +2719,23 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       _isMultiSelectMode = true;
       final selectableIds =
           _mediaItems
-              .where(
-                (item) => item.id != 'recycle_bin' && item.id != 'favorites',
-              )
+              .where(_isSelectAllEligibleMedia)
               .map((item) => item.id)
               .toSet();
       if (selectableIds.isNotEmpty &&
           selectableIds.every((id) => _selectedItems.contains(id))) {
-        // 已全选，再次点击则取消全选
-        _selectedItems.clear();
+        // 仅取消全选加入的媒体，保留用户手动选择的文件夹。
+        _selectedItems.removeAll(selectableIds);
       } else {
-        // 未全选，则全选
-        _selectedItems.clear();
+        // 全选只处理图片和视频，文件夹必须由用户手动选择。
         _selectedItems.addAll(selectableIds);
       }
     });
     widget.onMultiSelectModeChanged?.call(true);
+  }
+
+  bool _isSelectAllEligibleMedia(MediaItem item) {
+    return item.type == MediaType.image || item.type == MediaType.video;
   }
 
   Future<void> _moveSelectedItems(String targetDirectory) async {
@@ -6900,14 +6901,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
             IconButton(
               icon: Icon(
                 _mediaItems
-                            .where(
-                              (i) =>
-                                  i.id != 'recycle_bin' && i.id != 'favorites',
-                            )
+                            .where(_isSelectAllEligibleMedia)
                             .every((i) => _selectedItems.contains(i)) &&
-                        _mediaItems.any(
-                          (i) => i.id != 'recycle_bin' && i.id != 'favorites',
-                        )
+                        _mediaItems.any(_isSelectAllEligibleMedia)
                     ? Icons.deselect
                     : Icons.select_all,
               ),
