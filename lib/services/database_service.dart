@@ -63,6 +63,7 @@ class DatabaseService {
     if (_isInitialized) {
       // 热重载等场景下已初始化但磁盘库可能未补全新列：再跑一遍补全。
       if (_database != null) {
+        await _ensureMediaItemsInsertColumns(_database!);
         await _ensureMediaItemsKenBurnsColumns(_database!);
         await _ensureMediaItemsVideoViewColumns(_database!);
         await _ensureMediaItemsRecycleColumns(_database!);
@@ -120,6 +121,7 @@ class DatabaseService {
       await _ensureLastScrollOffsetColumn();
 
       // 部分环境未走 onUpgrade 或旧表缺少列：补全渐进放大中心点字段
+      await _ensureMediaItemsInsertColumns(_database!);
       await _ensureMediaItemsKenBurnsColumns(_database!);
       await _ensureMediaItemsVideoViewColumns(_database!);
       await _ensureMediaItemsRecycleColumns(_database!);
@@ -1189,6 +1191,37 @@ class DatabaseService {
     }
   }
 
+  /// 补全媒体入库会使用的基础可选列。
+  ///
+  /// 极旧数据库或旁路创建的精简表可能只有必填列。此时常规媒体仍能查询，
+  /// 但下载完成后会因 `created_at`、`is_favorite` 等列不存在而无法写入。
+  Future<void> _ensureMediaItemsInsertColumns(DatabaseExecutor db) async {
+    final tables = await db.rawQuery(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='media_items';",
+    );
+    if (tables.isEmpty) return;
+
+    final columns = await db.rawQuery('PRAGMA table_info(media_items);');
+    final names = columns.map((c) => c['name']?.toString() ?? '').toSet();
+    const definitions = <String, String>{
+      'file_size': 'INTEGER DEFAULT 0',
+      'duration': 'INTEGER DEFAULT 0',
+      'thumbnail_path': 'TEXT',
+      'file_hash': 'TEXT',
+      'telegram_file_id': 'TEXT',
+      'is_favorite': 'INTEGER DEFAULT 0',
+      'created_at': 'INTEGER DEFAULT 0',
+      'updated_at': 'INTEGER DEFAULT 0',
+    };
+    for (final entry in definitions.entries) {
+      if (names.contains(entry.key)) continue;
+      await db.execute(
+        'ALTER TABLE media_items ADD COLUMN ${entry.key} ${entry.value}',
+      );
+      if (kDebugMode) Logger.log('已补全 media_items.${entry.key}');
+    }
+  }
+
   /// 确保媒体项表存在
   Future<void> ensureMediaItemsTableExists() async {
     try {
@@ -1213,6 +1246,7 @@ class DatabaseService {
         await _ensureMediaItemsKenBurnsColumns(db);
         await _ensureMediaItemsVideoViewColumns(db);
         await _ensureMediaItemsRecycleColumns(db);
+        await _ensureMediaItemsInsertColumns(db);
         Logger.log('已创建media_items表');
       } else {
         // 检查file_hash列是否存在
@@ -1231,6 +1265,7 @@ class DatabaseService {
         await _ensureMediaItemsKenBurnsColumns(db);
         await _ensureMediaItemsVideoViewColumns(db);
         await _ensureMediaItemsRecycleColumns(db);
+        await _ensureMediaItemsInsertColumns(db);
         Logger.log('media_items表已存在');
       }
     } catch (e, stackTrace) {
@@ -1396,32 +1431,58 @@ class DatabaseService {
 
   /// 插入媒体项目
   Future<int> insertMediaItem(Map<String, dynamic> item) async {
-    try {
-      final db = await database;
-      if (kDebugMode) {
-        Logger.log('正在插入媒体项: ${item['name']}');
+    final db = await database;
+    if (kDebugMode) Logger.log('正在插入媒体项: ${item['name']}');
+
+    final data = Map<String, dynamic>.from(item);
+    final now = DateTime.now().millisecondsSinceEpoch;
+    data['created_at'] ??= now;
+    data['updated_at'] ??= now;
+
+    var repairedSchema = false;
+    for (var attempt = 0; attempt < 3; attempt++) {
+      try {
+        final result = await db.insert(
+          'media_items',
+          data,
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+        if (kDebugMode) Logger.log('插入结果: $result');
+        return result;
+      } on DatabaseException catch (e, stackTrace) {
+        final message = e.toString().toLowerCase();
+        final missingColumn =
+            message.contains('no column') ||
+            message.contains('has no column') ||
+            message.contains('no such column');
+        if (missingColumn && !repairedSchema) {
+          repairedSchema = true;
+          await _ensureMediaItemsInsertColumns(db);
+          await _ensureMediaItemsKenBurnsColumns(db);
+          await _ensureMediaItemsVideoViewColumns(db);
+          await _ensureMediaItemsRecycleColumns(db);
+          continue;
+        }
+
+        final temporarilyBusy =
+            message.contains('database is locked') ||
+            message.contains('database is busy') ||
+            message.contains('sqlite_busy') ||
+            message.contains('sqlite_locked');
+        if (temporarilyBusy && attempt < 2) {
+          await Future<void>.delayed(
+            Duration(milliseconds: 150 * (attempt + 1)),
+          );
+          continue;
+        }
+        _handleError('插入媒体项失败', e, stackTrace);
+        rethrow;
+      } catch (e, stackTrace) {
+        _handleError('插入媒体项失败', e, stackTrace);
+        rethrow;
       }
-
-      // Ensure required fields are present
-      final data = Map<String, dynamic>.from(item);
-      final now = DateTime.now().millisecondsSinceEpoch;
-      data['created_at'] ??= now;
-      data['updated_at'] ??= now;
-
-      final result = await db.insert(
-        'media_items',
-        data,
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
-
-      if (kDebugMode) {
-        Logger.log('插入结果: $result');
-      }
-      return result;
-    } catch (e, stackTrace) {
-      _handleError('插入媒体项失败', e, stackTrace);
-      rethrow;
     }
+    throw StateError('媒体项写入重试结束但未返回结果');
   }
 
   /// 查找重复的媒体项目（仅视为「当前有效库」中的重复：不含回收站；文件已丢失的孤儿记录会删除并视为未占用）

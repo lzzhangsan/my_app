@@ -19,6 +19,10 @@ void main() {
         isMediaFragmentUrl('https://cdn.example/dash-segment-1-f1.mp4'),
         isTrue,
       );
+      expect(
+        isMediaFragmentUrl('https://cdn.example/dash-init-f4-v1.webm'),
+        isTrue,
+      );
       expect(isMediaFragmentUrl('https://cdn.example/video/12.m4s'), isTrue);
       expect(
         isMediaFragmentUrl('https://cdn.example/videoplayback?range=0-999'),
@@ -38,7 +42,13 @@ void main() {
       recoverWholeMediaUrlFromFragment(
         'https://cdn.example/dash-segment-1-f1.mp4?token=abc',
       ),
-      isNull,
+      'https://cdn.example/master.mpd?token=abc',
+    );
+    expect(
+      recoverWholeMediaUrlFromFragment(
+        'https://cdn.example/path/dash-init-f4-v1.webm?token=abc',
+      ),
+      'https://cdn.example/path/master.mpd?token=abc',
     );
   });
 
@@ -57,8 +67,8 @@ void main() {
       ),
       const [
         'https://cdn.example/video.mp4?token=abc',
+        'https://cdn.example/master.mpd',
         'https://cdn.example/videoplayback?token=x',
-        'https://cdn.example/other.mp4',
       ],
     );
   });

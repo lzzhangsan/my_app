@@ -3,6 +3,8 @@ bool isMediaFragmentUrl(String url) {
   if (lower.isEmpty) return false;
   if (RegExp(r'\.(?:m4s|cmfv|cmfa)(\?|#|$)').hasMatch(lower)) return true;
   const fragmentHints = <String>[
+    'dash-init',
+    'dash_init',
     '/segment/',
     '/segments/',
     '/chunk/',
@@ -37,6 +39,18 @@ String? recoverWholeMediaUrlFromFragment(String url) {
   if (uri == null || !(uri.scheme == 'http' || uri.scheme == 'https')) {
     return null;
   }
+  final lowerPath = uri.path.toLowerCase();
+  if (lowerPath.contains('dash-init') ||
+      lowerPath.contains('dash_init') ||
+      lowerPath.contains('dash-segment') ||
+      lowerPath.contains('dash_segment')) {
+    final slash = uri.path.lastIndexOf('/');
+    if (slash >= 0) {
+      return uri
+          .replace(path: '${uri.path.substring(0, slash + 1)}master.mpd')
+          .toString();
+    }
+  }
   if (RegExp(
         r'\.(?:m4s|cmfv|cmfa)(?:$|[?#])',
         caseSensitive: false,
@@ -50,6 +64,8 @@ String? recoverWholeMediaUrlFromFragment(String url) {
         '/fragments/',
         'dash-segment',
         'dash_segment',
+        'dash-init',
+        'dash_init',
         'dash-chunk',
         'dash_chunk',
         '/init.mp4',

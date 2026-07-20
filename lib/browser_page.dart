@@ -76,8 +76,27 @@ class _CapturedWebResource {
   final DateTime capturedAt;
 }
 
+class _DashTrackPlan {
+  const _DashTrackPlan({
+    required this.mimeType,
+    required this.codecs,
+    required this.bandwidth,
+    required this.initializationUrl,
+    required this.segmentUrls,
+  });
+
+  final String mimeType;
+  final String codecs;
+  final int bandwidth;
+  final String initializationUrl;
+  final List<String> segmentUrls;
+}
+
 /// 同时发起的 HLS 分片 HTTP 请求数（需 ≤ [ _kHlsMaxConnectionsPerHost ]，过大易被 CDN 限流）。
 const int _kHlsParallelSegmentFetches = 10;
+
+/// TikPORN 的 DASH 音频和视频会并行下载，每轨 10 路，合计低于单主机连接上限。
+const int _kDashParallelSegmentFetches = 10;
 
 /// 单主机最大并行连接数，应 ≥ 分片并行数，否则多余请求会在客户端排队。
 const int _kHlsMaxConnectionsPerHost = 24;
@@ -181,7 +200,7 @@ function isMediaFragmentUrl(url) {
   const lower = url.toLowerCase();
   if (/\.(m4s|cmfv|cmfa)(\?|#|$)/.test(lower)) return true;
   if ([
-    'dash-segment', 'dash_segment', 'dash-chunk', 'dash_chunk',
+    'dash-init', 'dash_init', 'dash-segment', 'dash_segment', 'dash-chunk', 'dash_chunk',
     '/segment/', '/segments/', '/chunk/', '/chunks/',
     '/fragment/', '/fragments/', '/init.mp4', '/init.m4s'
   ].some(p => lower.includes(p))) return true;
@@ -212,7 +231,7 @@ function normalizeMediaCandidateUrl(url) {
   const path = parsed.pathname.toLowerCase();
   if (
     /\.(m4s|cmfv|cmfa)$/.test(path) ||
-    ['dash-segment', 'dash_segment', 'dash-chunk', 'dash_chunk',
+    ['dash-init', 'dash_init', 'dash-segment', 'dash_segment', 'dash-chunk', 'dash_chunk',
      '/segment/', '/segments/', '/chunk/', '/chunks/',
      '/fragment/', '/fragments/', '/init.mp4', '/init.m4s']
       .some(p => path.includes(p))
@@ -538,8 +557,157 @@ class _BrowserPageState extends State<BrowserPage>
       }
       scored.add((resource, score));
     }
-    scored.sort((a, b) => b.$2.compareTo(a.$2));
+    scored.sort((a, b) {
+      final scoreOrder = b.$2.compareTo(a.$2);
+      if (scoreOrder != 0) return scoreOrder;
+      // 同一秒内可能连续加载多个信息流视频；分数相同时必须优先最新资源。
+      return b.$1.capturedAt.compareTo(a.$1.capturedAt);
+    });
     return scored.take(limit).map((entry) => entry.$1.url).toList();
+  }
+
+  List<String> _recentActiveDashManifestCandidates({
+    String? pageUrl,
+    int limit = 4,
+  }) {
+    final now = DateTime.now();
+    final requestedPage = Uri.tryParse((pageUrl ?? _currentUrl).trim());
+    final activity = <String, ({int count, DateTime latest})>{};
+    for (final resource in _capturedWebResources.values) {
+      if (now.difference(resource.capturedAt) > const Duration(minutes: 10) ||
+          !_looksLikeMediaFragmentUrl(resource.url)) {
+        continue;
+      }
+      final lowerUrl = resource.url.toLowerCase();
+      if (lowerUrl.contains('dash-init') ||
+          lowerUrl.contains('dash_init') ||
+          lowerUrl.contains('/init.')) {
+        // 下一条视频通常会预加载初始化分片，但这不代表用户正在观看它。
+        continue;
+      }
+      final capturedPage = Uri.tryParse(resource.pageUrl);
+      if (requestedPage != null &&
+          capturedPage != null &&
+          requestedPage.host.isNotEmpty &&
+          capturedPage.host.isNotEmpty &&
+          requestedPage.host != capturedPage.host) {
+        continue;
+      }
+      final manifest = recoverWholeMediaUrlFromFragment(resource.url);
+      if (manifest == null ||
+          !(Uri.tryParse(manifest)?.path.toLowerCase().endsWith('.mpd') ??
+              false)) {
+        continue;
+      }
+      final previous = activity[manifest];
+      activity[manifest] = (
+        count: (previous?.count ?? 0) + 1,
+        latest:
+            previous == null || resource.capturedAt.isAfter(previous.latest)
+                ? resource.capturedAt
+                : previous.latest,
+      );
+    }
+    final ranked =
+        activity.entries.toList()..sort((a, b) {
+          final timeOrder = b.value.latest.compareTo(a.value.latest);
+          if (timeOrder != 0) return timeOrder;
+          return b.value.count.compareTo(a.value.count);
+        });
+    return ranked.take(limit).map((entry) => entry.key).toList();
+  }
+
+  double? _extractDashManifestDurationSeconds(String xml) {
+    String durationFromTag(String tag) {
+      final match = RegExp(
+        '<$tag\\b([^>]*)>',
+        caseSensitive: false,
+      ).firstMatch(xml);
+      return _dashAttributes(match?.group(1) ?? '')['duration'] ?? '';
+    }
+
+    final mpd = RegExp(r'<MPD\b([^>]*)>', caseSensitive: false).firstMatch(xml);
+    final mpdDuration = _parseDashDurationSeconds(
+      _dashAttributes(mpd?.group(1) ?? '')['mediaPresentationDuration'] ?? '',
+    );
+    if (mpdDuration != null && mpdDuration > 0) return mpdDuration;
+    final periodDuration = _parseDashDurationSeconds(durationFromTag('Period'));
+    if (periodDuration != null && periodDuration > 0) return periodDuration;
+
+    for (final template in RegExp(
+      r'<SegmentTemplate\b([^>]*)>([\s\S]*?)</SegmentTemplate>',
+      caseSensitive: false,
+    ).allMatches(xml)) {
+      final attrs = _dashAttributes(template.group(1) ?? '');
+      final timescale = int.tryParse(attrs['timescale'] ?? '') ?? 1;
+      if (timescale <= 0) continue;
+      var timelineUnits = 0;
+      for (final segment in RegExp(
+        r'<S\b([^>]*)/?>',
+        caseSensitive: false,
+      ).allMatches(template.group(2) ?? '')) {
+        final segmentAttrs = _dashAttributes(segment.group(1) ?? '');
+        final duration = int.tryParse(segmentAttrs['d'] ?? '');
+        final repeat = int.tryParse(segmentAttrs['r'] ?? '') ?? 0;
+        if (duration == null || duration <= 0 || repeat < 0) continue;
+        timelineUnits += duration * (repeat + 1);
+      }
+      if (timelineUnits > 0) return timelineUnits / timescale;
+    }
+    return null;
+  }
+
+  Future<String?> _selectDashManifestForLongPress(
+    List<String> candidates, {
+    required double targetDurationSeconds,
+  }) async {
+    if (candidates.isEmpty) return null;
+    if (targetDurationSeconds <= 0) {
+      return candidates.first;
+    }
+    final networkService = NetworkService();
+    await networkService.initialize();
+    final checks = candidates.take(4).map((candidate) async {
+      try {
+        final headers = await _browserLikeMediaHeaders(
+          candidate,
+          referer: _getMediaReferer(candidate),
+          accept: 'application/dash+xml,application/xml,text/xml,*/*',
+        );
+        final response = await networkService.dio.get<String>(
+          candidate,
+          options: Options(
+            responseType: ResponseType.plain,
+            headers: headers,
+            sendTimeout: const Duration(seconds: 3),
+            receiveTimeout: const Duration(seconds: 3),
+          ),
+        );
+        final duration = _extractDashManifestDurationSeconds(
+          response.data ?? '',
+        );
+        return duration == null ? null : (url: candidate, duration: duration);
+      } catch (_) {
+        return null;
+      }
+    });
+    final matches =
+        (await Future.wait(
+          checks,
+        )).whereType<({String url, double duration})>();
+    ({String url, double duration})? best;
+    var bestDifference = double.infinity;
+    for (final match in matches) {
+      final difference = (match.duration - targetDurationSeconds).abs();
+      if (difference < bestDifference) {
+        best = match;
+        bestDifference = difference;
+      }
+    }
+    // 清单预检可能受临时鉴权限制；完全无法解析时保留上一版的活跃分片选择结果。
+    if (best == null) return candidates.first;
+    final tolerance = max(2.0, targetDurationSeconds * 0.03);
+    return bestDifference <= tolerance ? best.url : null;
   }
 
   bool _isCapturedVideoCandidate(String url) {
@@ -852,22 +1020,27 @@ class _BrowserPageState extends State<BrowserPage>
     return false;
   }
 
-  Future<bool> _favoriteExistsInLibrary(Map<String, dynamic> item) async {
-    final urls = <String>[(item['videoUrl'] ?? '').toString().trim()];
-    final candidateRaw = item['candidateUrls'];
-    if (candidateRaw is List) {
-      for (final e in candidateRaw) {
-        if (e is String && e.trim().isNotEmpty) {
-          urls.add(e.trim());
+  Future<Map<String, dynamic>?> _findExistingMediaForItem(
+    Map<String, dynamic> item,
+  ) async {
+    final primaryUrl = (item['videoUrl'] ?? '').toString().trim();
+    final urls = <String>[if (primaryUrl.isNotEmpty) primaryUrl];
+    // 长按候选可能来自同一页面中其他预加载视频，不能据此判断当前视频重复。
+    if (item['downloadOrigin'] != 'long_press') {
+      final candidateRaw = item['candidateUrls'];
+      if (candidateRaw is List) {
+        for (final e in candidateRaw) {
+          if (e is String && e.trim().isNotEmpty) {
+            urls.add(e.trim());
+          }
         }
       }
     }
     for (final u in urls) {
-      if (u.isEmpty) continue;
       final existing = await _findExistingVideoBeforeDownload(u);
-      if (existing != null) return true;
+      if (existing != null) return existing;
     }
-    return false;
+    return null;
   }
 
   Future<void> _markFavoriteDownloaded(
@@ -885,8 +1058,11 @@ class _BrowserPageState extends State<BrowserPage>
     for (final row in list) {
       final p = (row['pageUrl'] ?? '').toString().trim();
       final v = (row['videoUrl'] ?? '').toString().trim();
-      if ((videoUrl.isNotEmpty && v == videoUrl) ||
-          (pageUrl.isNotEmpty && p == pageUrl)) {
+      final matches =
+          videoUrl.isNotEmpty
+              ? v == videoUrl
+              : pageUrl.isNotEmpty && p == pageUrl;
+      if (matches) {
         row['downloaded'] = downloaded;
         row['downloadedAt'] = downloaded ? nowIso : '';
         row['updatedAt'] = nowIso;
@@ -1466,6 +1642,7 @@ class _BrowserPageState extends State<BrowserPage>
     if (!(u.startsWith('http://') || u.startsWith('https://'))) return false;
     if (u.startsWith('blob:') || u.startsWith('data:')) return false;
     return u.contains('.m3u8') ||
+        u.contains('.mpd') ||
         u.contains('.mp4') ||
         u.contains('.webm') ||
         u.contains('.mov') ||
@@ -1565,6 +1742,11 @@ class _BrowserPageState extends State<BrowserPage>
         s.contains('xhcdn');
   }
 
+  bool _isTikPornPage(String? url) {
+    final host = Uri.tryParse((url ?? '').trim())?.host.toLowerCase() ?? '';
+    return host == 'tik.porn' || host.endsWith('.tik.porn');
+  }
+
   bool _looksLikePreviewClipUrl(String u) {
     final s = u.toLowerCase();
     const hints = [
@@ -1596,6 +1778,7 @@ class _BrowserPageState extends State<BrowserPage>
     final s = url.toLowerCase();
     var score = 0;
     if (s.contains('.m3u8') || s.contains('.m3u')) score += 1800;
+    if (s.contains('.mpd')) score += 1700;
     if (s.contains('mpegurl') ||
         s.contains('/hls/') ||
         s.contains('/playlist')) {
@@ -1721,7 +1904,7 @@ class _BrowserPageState extends State<BrowserPage>
   Future<bool> _downloadOneFavorite({
     required Map<String, dynamic> item,
     bool showResultHint = false,
-    bool showModalDialog = true,
+    bool showModalDialog = false,
     void Function(String failureType)? onFailureType,
   }) async {
     return _downloadMediaRobustly(
@@ -1741,14 +1924,16 @@ class _BrowserPageState extends State<BrowserPage>
     void Function(String failureType)? onFailureType,
   }) async {
     final isLongPress = item['downloadOrigin'] == 'long_press';
-    if (await _favoriteExistsInLibrary(item)) {
+    final existingMedia = await _findExistingMediaForItem(item);
+    if (existingMedia != null) {
       await _markFavoriteDownloaded(item, downloaded: true);
       onFailureType?.call('already_in_library');
       if (showResultHint && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('该媒体已在媒体库中，已为你标记为已下载'),
-            duration: Duration(milliseconds: 1300),
+          SnackBar(
+            content: const Text('该媒体已在媒体库中，已为你标记为已下载'),
+            duration: const Duration(seconds: 3),
+            action: SnackBarAction(label: '查看', onPressed: _openMediaLibrary),
           ),
         );
       }
@@ -2045,6 +2230,7 @@ class _BrowserPageState extends State<BrowserPage>
       await _markFavoriteDownloaded(item, downloaded: true);
     }
     if (showResultHint && mounted) {
+      final canView = ok || lastFailureType == 'already_in_library';
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -2056,7 +2242,11 @@ class _BrowserPageState extends State<BrowserPage>
                     ? '媒体库中已存在相同文件，未重复保存'
                     : (isLongPress ? '当前长按的媒体保存失败，已停止尝试' : '下载失败，请稍后重试')),
           ),
-          duration: const Duration(milliseconds: 1200),
+          duration: Duration(seconds: canView ? 3 : 2),
+          action:
+              canView
+                  ? SnackBarAction(label: '查看', onPressed: _openMediaLibrary)
+                  : null,
         ),
       );
     }
@@ -2320,6 +2510,15 @@ class _BrowserPageState extends State<BrowserPage>
     return _findExistingVideoBySourceUrl(url);
   }
 
+  void _openMediaLibrary() {
+    if (!mounted) return;
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => const MediaManagerPage(showRouteBackButton: true),
+      ),
+    );
+  }
+
   Future<void> _showVideoDuplicateSnackBar(
     Map<String, dynamic> existingRow,
   ) async {
@@ -2420,7 +2619,7 @@ class _BrowserPageState extends State<BrowserPage>
       await controller.evaluateJavascript(
         source: '''
       (() => {
-      const handlerVersion = 'media-download-v3';
+      const handlerVersion = 'media-download-v7';
       if (window.__appMediaDownloadHandlersVersion === handlerVersion) return true;
       window.Flutter = window.Flutter || { postMessage: function(m){ try { if(window.flutter_inappwebview && window.flutter_inappwebview.callHandler) window.flutter_inappwebview.callHandler('Flutter', m); } catch(e){} } };
       window.MediaInterceptor = window.MediaInterceptor || {
@@ -2469,7 +2668,7 @@ class _BrowserPageState extends State<BrowserPage>
           const u = new URL(url);
           const path = u.pathname.toLowerCase();
           const host = u.hostname.toLowerCase();
-          const hasMediaExt = /\\.(jpg|jpeg|png|gif|webp|mp4|webm|mov|m3u8|ts|mp3|m4a)(\\?|\$)/.test(path);
+          const hasMediaExt = /\\.(jpg|jpeg|png|gif|webp|mp4|webm|mov|m3u8|mpd|ts|mp3|m4a)(\\?|\$)/.test(path);
           if (hasMediaExt) return false;
           const videoSiteHosts = ['tik.', 'porn', 'xvideos', 'xhamster', 'pornhub', 'redtube', 'cdn.', 'stream', 'video.', 'media.'];
           if (videoSiteHosts.some(h => host.includes(h))) return false;
@@ -2509,7 +2708,7 @@ class _BrowserPageState extends State<BrowserPage>
         
         const mediaExtensions = [
           '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg', '.ico', '.tiff', '.tif', '.heic', '.heif',
-          '.mp4', '.webm', '.mov', '.avi', '.mkv', '.flv', '.wmv', '.m3u8', '.m3u', '.ts', '.m4v', '.3gp', '.ogv', '.f4v',
+          '.mp4', '.webm', '.mov', '.avi', '.mkv', '.flv', '.wmv', '.m3u8', '.m3u', '.mpd', '.ts', '.m4v', '.3gp', '.ogv', '.f4v',
           '.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac', '.wma', '.opus'
         ];
         
@@ -3063,11 +3262,11 @@ class _BrowserPageState extends State<BrowserPage>
                     if ((now - info.timestamp) > 1800000) continue;
                     if (isApiUrl(u) || isAdUrl(u) || isMediaFragmentUrl(u)) continue;
                     const lower = String(u).toLowerCase();
-                    const hasMediaHint = lower.includes('.m3u8') || lower.includes('.m3u') || lower.includes('.mp4') || lower.includes('.webm') || lower.includes('.ts') || lower.includes('mpegurl');
+                    const hasMediaHint = lower.includes('.m3u8') || lower.includes('.m3u') || lower.includes('.mpd') || lower.includes('.mp4') || lower.includes('.webm') || lower.includes('.ts') || lower.includes('mpegurl');
                     if (!hasMediaHint) continue;
                     if (looksPreview(lower)) continue;
                     let bonus = 0;
-                    if (lower.includes('.m3u8') || lower.includes('.m3u') || lower.includes('mpegurl')) bonus += 1000000000;
+                    if (lower.includes('.m3u8') || lower.includes('.m3u') || lower.includes('.mpd') || lower.includes('mpegurl')) bonus += 1000000000;
                     else if (lower.includes('.ts')) bonus += 500000000;
                     else if (lower.includes('.mp4') || lower.includes('.webm')) bonus += 200000000;
                     const score = (info.timestamp || 0) + bonus;
@@ -3110,7 +3309,7 @@ class _BrowserPageState extends State<BrowserPage>
                     if ((now - info.timestamp) > 1800000) continue;
                     if (isApiUrl(u) || isAdUrl(u) || isMediaFragmentUrl(u) || looksPreview(u)) continue;
                     const lower = String(u).toLowerCase();
-                    const hasMediaHint = lower.includes('.m3u8') || lower.includes('.m3u') || lower.includes('.mp4') || lower.includes('.webm') || lower.includes('.ts') || lower.includes('mpegurl');
+                    const hasMediaHint = lower.includes('.m3u8') || lower.includes('.m3u') || lower.includes('.mpd') || lower.includes('.mp4') || lower.includes('.webm') || lower.includes('.ts') || lower.includes('mpegurl');
                     if (!hasMediaHint) continue;
                     push(u);
                     added += 1;
@@ -3167,9 +3366,65 @@ class _BrowserPageState extends State<BrowserPage>
           return;
         }
         
-        // 优先：用触摸点精确查找 video/img；若长按的是 Download 等按钮，则查找页面主视频
+        function pickCurrentVideo(x, y) {
+          const videos = Array.from(document.querySelectorAll('video'));
+          let picked = null;
+          let bestScore = -Infinity;
+          const vw = Math.max(1, window.innerWidth || 1);
+          const vh = Math.max(1, window.innerHeight || 1);
+          for (const video of videos) {
+            const rect = video.getBoundingClientRect();
+            const visibleW = Math.max(0, Math.min(rect.right, vw) - Math.max(rect.left, 0));
+            const visibleH = Math.max(0, Math.min(rect.bottom, vh) - Math.max(rect.top, 0));
+            const visibleArea = visibleW * visibleH;
+            if (visibleArea <= 0) continue;
+            const containsPoint = x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+            const cx = (rect.left + rect.right) / 2;
+            const cy = (rect.top + rect.bottom) / 2;
+            const distance = Math.hypot(cx - x, cy - y);
+            let score = visibleArea - distance * 200;
+            if (containsPoint) score += 1000000000;
+            if (!video.paused && !video.ended) score += 100000000;
+            if (Number(video.currentTime || 0) > 0) score += 1000000;
+            if (score > bestScore) { bestScore = score; picked = video; }
+          }
+          return picked;
+        }
+
+        function effectiveVideoDuration(video) {
+          if (!video) return 0;
+          const direct = Number(video.duration || 0);
+          if (isFinite(direct) && direct > 0) return direct;
+          try {
+            if (video.seekable && video.seekable.length) {
+              const end = Number(video.seekable.end(video.seekable.length - 1));
+              if (isFinite(end) && end > 0) return end;
+            }
+          } catch (_) {}
+          const durationAttrs = ['data-duration', 'data-video-duration', 'duration'];
+          let node = video;
+          for (let depth = 0; node && depth < 6; depth++, node = node.parentElement) {
+            for (const name of durationAttrs) {
+              const raw = node.getAttribute && node.getAttribute(name);
+              const parsed = Number(raw || 0);
+              if (isFinite(parsed) && parsed > 0) return parsed;
+            }
+            const text = String(node.innerText || '');
+            const times = Array.from(text.matchAll(/(?:^|\s)(\d{1,2}):(\d{2})(?=\s|\$)/g));
+            let longest = 0;
+            for (const match of times) {
+              const seconds = Number(match[1]) * 60 + Number(match[2]);
+              if (seconds > longest) longest = seconds;
+            }
+            if (longest > 0) return longest;
+          }
+          return 0;
+        }
+
+        // 触点上即使覆盖着网页按钮，也优先选择触点范围内真正可见、正在播放的视频。
         let bestTarget = target;
         if (typeof window._lastTouchX === 'number' && typeof window._lastTouchY === 'number') {
+          const currentVideo = pickCurrentVideo(window._lastTouchX, window._lastTouchY);
           const atPoint = document.elementsFromPoint(window._lastTouchX, window._lastTouchY);
           for (const el of atPoint) {
             const tag = (el.tagName || '').toLowerCase();
@@ -3182,14 +3437,14 @@ class _BrowserPageState extends State<BrowserPage>
               break;
             }
           }
+          const selectedTag = (bestTarget.tagName || '').toLowerCase();
+          if (currentVideo && selectedTag !== 'img' && selectedTag !== 'image') bestTarget = currentVideo;
           if (bestTarget === target) {
             const txt = (target.textContent || target.innerText || '').toLowerCase();
             const aria = (target.getAttribute('aria-label') || '').toLowerCase();
             if ((txt.includes('download') || txt.includes('下载') || aria.includes('download') || aria.includes('下载')) && !target.querySelector('video')) {
-              const videos = document.querySelectorAll('video');
-              for (const v of videos) {
-                if (v.currentSrc || v.src) { bestTarget = v; break; }
-              }
+              const visibleVideo = pickCurrentVideo(window._lastTouchX, window._lastTouchY);
+              if (visibleVideo) bestTarget = visibleVideo;
             }
           }
         }
@@ -3244,7 +3499,7 @@ class _BrowserPageState extends State<BrowserPage>
           try {
             performance.getEntriesByType('resource').forEach(entry => {
               const u = normalizeMediaCandidateUrl(entry.name);
-              if (u && !isApiUrl(u) && !isAdUrl(u) && (u.includes('.m3u8') || u.includes('.m3u') || u.includes('.mp4') || u.includes('.webm'))) {
+              if (u && !isApiUrl(u) && !isAdUrl(u) && (u.includes('.m3u8') || u.includes('.m3u') || u.includes('.mpd') || u.includes('.mp4') || u.includes('.webm'))) {
                 if (!window.MediaInterceptor.interceptedRequests.has(u)) {
                   window.MediaInterceptor.interceptedRequests.set(u, { method: 'GET', timestamp: Date.now(), type: 'performance', contentType: '' });
                 }
@@ -3260,14 +3515,14 @@ class _BrowserPageState extends State<BrowserPage>
 
             const ct = (info.contentType || '').toLowerCase();
             const lower = String(u).toLowerCase();
-            const isStream = (ct.startsWith('video/') || ct.includes('mpegurl') || ct.includes('m3u8') || /\\.(mp4|webm|mov|m3u8|m3u)(\\?|\$)/.test(lower)) && !isApiUrl(u);
+            const isStream = (ct.startsWith('video/') || ct.includes('mpegurl') || ct.includes('m3u8') || ct.includes('dash') || /\\.(mp4|webm|mov|m3u8|m3u|mpd)(\\?|\$)/.test(lower)) && !isApiUrl(u);
             
             if (isStream) {
               // 优先级策略：
               // 1. 如果有当前视频的时长信息，且大于 60s，优先选它（通常广告 < 60s）
               // 2. 否则选时间戳最新的（假设用户正在看的就是最新加载的）
               let score = Number(info.timestamp || 0);
-              if (ct.includes('mpegurl') || lower.includes('.m3u8') || lower.includes('.m3u')) score += 1000000000;
+              if (ct.includes('mpegurl') || ct.includes('dash') || lower.includes('.m3u8') || lower.includes('.m3u') || lower.includes('.mpd')) score += 1000000000;
               else if (ct.startsWith('video/') || lower.includes('.mp4') || lower.includes('.webm') || lower.includes('.mov')) score += 500000000;
               if (lower.includes('preview') || lower.includes('trailer') || lower.includes('poster') || lower.includes('thumb')) score -= 1500000000;
               if (lower.includes('.m4s') || lower.includes('/segment') || lower.includes('/chunk')) score -= 1200000000;
@@ -3412,6 +3667,26 @@ class _BrowserPageState extends State<BrowserPage>
         // 多重处理blob/data url
         function tryBlobOrDataUrl(url, mediaType) {
           if (isBlobUrl(url)) {
+            const pageHost = String(location.hostname || '').toLowerCase();
+            const isTikPornPage = pageHost === 'tik.porn' || pageHost.endsWith('.tik.porn');
+            if (mediaType === 'video' && isTikPornPage) {
+              // 该站 Blob 只是 MSE 播放入口；不要先读取完整 Blob，直接让原生侧使用已捕获的 MPD。
+              Flutter.postMessage(JSON.stringify({
+                type: 'media',
+                mediaType: 'video',
+                url: url,
+                isBase64: false,
+                isStreamReference: true,
+                action: 'download',
+                pageUrl: location.href || '',
+                title: document.title || '',
+                positionSec: videoEl && isFinite(Number(videoEl.currentTime)) ? Number(videoEl.currentTime) : 0,
+                durationSec: effectiveVideoDuration(videoEl),
+                candidates: cands
+              }));
+              updateFeedbackStatus('正在获取下载地址…', null);
+              return true;
+            }
             updateFeedbackStatus('正在处理blob...', true);
             resolveBlobUrl(url, mediaType).then(resolved => {
               if (resolved) {
@@ -3420,7 +3695,12 @@ class _BrowserPageState extends State<BrowserPage>
                   mediaType: resolved.mediaType || mediaType,
                   url: resolved.resolvedUrl,
                   isBase64: resolved.isBase64,
-                  action: 'download'
+                  action: 'download',
+                  pageUrl: location.href || '',
+                  title: document.title || '',
+                  positionSec: videoEl && isFinite(Number(videoEl.currentTime)) ? Number(videoEl.currentTime) : 0,
+                  durationSec: effectiveVideoDuration(videoEl),
+                  candidates: cands
                 }));
                 updateFeedbackStatus('正在保存…', null);
               } else {
@@ -3710,7 +3990,7 @@ class _BrowserPageState extends State<BrowserPage>
       );
       final ready = await controller.evaluateJavascript(
         source:
-            "window.__appMediaDownloadHandlersVersion === 'media-download-v3'",
+            "window.__appMediaDownloadHandlersVersion === 'media-download-v7'",
       );
       if (ready == true || ready.toString().toLowerCase() == 'true')
         return true;
@@ -3739,6 +4019,7 @@ class _BrowserPageState extends State<BrowserPage>
 
       final dynamic urlValue = data['url'];
       final bool isBase64 = data['isBase64'] ?? false;
+      final bool isStreamReference = data['isStreamReference'] == true;
       final String? action = data['action'];
       final dynamic candidateValue = data['candidates'];
       final String mediaType =
@@ -3754,6 +4035,8 @@ class _BrowserPageState extends State<BrowserPage>
                   : 'audio'));
       final String sourceMimeType =
           (data['mimeType'] ?? data['mime'] ?? '').toString();
+      final messageDurationSeconds =
+          (data['durationSec'] as num?)?.toDouble() ?? 0.0;
       final rawDownloadCandidateUrls = <String>[];
       if (candidateValue is List) {
         for (final e in candidateValue) {
@@ -3872,7 +4155,7 @@ class _BrowserPageState extends State<BrowserPage>
 
       // 如果是视频下载，且不是 Base64（Base64 通常是 Canvas/Recorder 生成的小文件），
       // 则强制使用稳健下载逻辑，以解决 Blob 断流或残缺问题。
-      if (mediaType == 'video' && !isBase64) {
+      if (mediaType == 'video' && !isBase64 && !isStreamReference) {
         if (_longPressVideoDownloadInProgress) {
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
@@ -3918,22 +4201,9 @@ class _BrowserPageState extends State<BrowserPage>
           };
 
           // 查重：如果媒体库已存在，则弹出提示并终止下载
-          if (await _favoriteExistsInLibrary(itemMap)) {
-            final existing = await _findExistingVideoBeforeDownload(
-              primaryVideoUrl,
-            );
-            if (existing != null) {
-              await _showVideoDuplicateSnackBar(existing);
-            } else {
-              if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('媒体库中已存在相同视频'),
-                    duration: Duration(seconds: 2),
-                  ),
-                );
-              }
-            }
+          final existing = await _findExistingMediaForItem(itemMap);
+          if (existing != null) {
+            await _showVideoDuplicateSnackBar(existing);
             return;
           }
 
@@ -3947,7 +4217,7 @@ class _BrowserPageState extends State<BrowserPage>
 
       // Base64 不参与去重；HTTP(S) URL 带 TTL，避免 finally 未执行时永久无法重下同一链接。
       var didRegisterMediaUrl = false;
-      if (!isBase64) {
+      if (!isBase64 && !isStreamReference) {
         if (!_tryRegisterMediaUrlForProcessing(urlValue)) {
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
@@ -3967,10 +4237,77 @@ class _BrowserPageState extends State<BrowserPage>
           'Received URL from JavaScript with download action: $urlValue, type: $mediaType, isBase64: $isBase64',
         );
 
-        if (isBase64) {
-          if (_awaitingCanvasFallbackResult) {
+        if (isBase64 || isStreamReference) {
+          if (isBase64 && _awaitingCanvasFallbackResult) {
             _canvasFallbackSucceeded = true;
             _canvasFallbackCompleter?.complete(true);
+          }
+          if (mediaType == 'video') {
+            final useTikPornDisambiguation = _isTikPornPage(messagePageUrl);
+            final activeDashCandidates =
+                useTikPornDisambiguation
+                    ? _recentActiveDashManifestCandidates(
+                      pageUrl: messagePageUrl,
+                    )
+                    : const <String>[];
+            final capturedDashCandidates =
+                _recentCapturedMediaCandidates(
+                  MediaType.video,
+                  pageUrl: _currentUrl,
+                ).where((candidate) {
+                  final path =
+                      Uri.tryParse(candidate)?.path.toLowerCase() ?? '';
+                  return path.endsWith('.mpd');
+                }).toList();
+            final dashCandidates = <String>[
+              ...activeDashCandidates,
+              ...capturedDashCandidates.where(
+                (candidate) => !activeDashCandidates.contains(candidate),
+              ),
+            ];
+            if (dashCandidates.isNotEmpty) {
+              // 当前播放会持续产生分片请求；下一条通常仅预加载 MPD/少量分片。
+              final selectedManifest =
+                  useTikPornDisambiguation
+                      ? await _selectDashManifestForLongPress(
+                        dashCandidates,
+                        targetDurationSeconds: messageDurationSeconds,
+                      )
+                      : dashCandidates.first;
+              if (selectedManifest == null) {
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('检测到的下载地址与当前视频时长不一致，已停止以避免下载错误视频'),
+                      duration: Duration(seconds: 3),
+                    ),
+                  );
+                }
+                return;
+              }
+              await _downloadMediaRobustly(
+                item: <String, dynamic>{
+                  'pageUrl': _currentUrl,
+                  'videoUrl': selectedManifest,
+                  'candidateUrls': <String>[selectedManifest],
+                  'title': (data['title'] ?? '').toString(),
+                  'downloadOrigin': 'long_press',
+                },
+                showResultHint: true,
+              );
+              return;
+            }
+          }
+          if (isStreamReference) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('尚未捕获当前视频的完整下载地址，请继续播放几秒后重试'),
+                  duration: Duration(seconds: 2),
+                ),
+              );
+            }
+            return;
           }
           await _handleBlobUrl(
             urlValue,
@@ -4138,7 +4475,7 @@ class _BrowserPageState extends State<BrowserPage>
           }
         }
       } finally {
-        if (didRegisterMediaUrl) {
+        if (didRegisterMediaUrl || isStreamReference) {
           _processedMediaUrlsSince.remove(urlValue);
           _releaseJsProcessedUrl(urlValue);
         }
@@ -4255,6 +4592,21 @@ class _BrowserPageState extends State<BrowserPage>
       final file = File(filePath);
       await file.writeAsBytes(bytes);
       debugPrint('已从Base64保存文件: $filePath');
+      if (normalizedMediaType == 'video') {
+        final durationMs = await _probeNativeVideoDurationMs(file);
+        if (durationMs != null && durationMs <= 0) {
+          await file.delete();
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('网页录制的视频缺少有效时长，已放弃保存；请播放视频后重新长按下载'),
+                duration: Duration(seconds: 3),
+              ),
+            );
+          }
+          return;
+        }
+      }
       await _saveToMediaLibrary(
         file,
         normalizedMediaType == 'image'
@@ -5201,6 +5553,7 @@ class _BrowserPageState extends State<BrowserPage>
     if (extension == '.mkv') return 'video/x-matroska';
     if (extension == '.webm') return 'video/webm';
     if (extension == '.m3u8') return 'application/x-mpegURL';
+    if (extension == '.mpd') return 'application/dash+xml';
     if (extension == '.mp3') return 'audio/mpeg';
     if (extension == '.wav') return 'audio/wav';
     if (extension == '.ogg') return 'audio/ogg';
@@ -5508,6 +5861,7 @@ class _BrowserPageState extends State<BrowserPage>
         '.ogv',
         '.m3u8',
         '.m3u',
+        '.mpd',
       }.contains(ext);
     }
     return true;
@@ -5593,6 +5947,18 @@ class _BrowserPageState extends State<BrowserPage>
       return '.mkv';
     }
     return '.mp4';
+  }
+
+  Future<int?> _probeNativeVideoDurationMs(File file) async {
+    try {
+      return await const MethodChannel('media_muxer').invokeMethod<int>(
+        'probeDurationMs',
+        <String, String>{'path': file.path},
+      );
+    } catch (e) {
+      debugPrint('读取视频时长失败: $e');
+      return null;
+    }
   }
 
   /// HLS 分片拼接后为 MPEG-TS，与 MP4 头不同；Android ExoPlayer 可播放 `.ts`。
@@ -5957,6 +6323,24 @@ class _BrowserPageState extends State<BrowserPage>
       final uuid = const Uuid().v4();
       final uri = Uri.tryParse(absoluteUrl);
       if (uri == null) throw Exception('Invalid URL: $absoluteUrl');
+      if (mediaType == MediaType.video &&
+          p.extension(uri.path).toLowerCase() == '.mpd') {
+        final headers = await _browserLikeMediaHeaders(
+          absoluteUrl,
+          referer: _getMediaReferer(absoluteUrl),
+          includeOrigin: true,
+          accept: 'application/dash+xml,application/xml,text/xml,*/*',
+        );
+        return await _downloadDashManifest(
+          manifestUrl: absoluteUrl,
+          downloadDio: downloadDio,
+          mediaDir: mediaDir,
+          outputId: uuid,
+          requestHeaders: headers,
+          cancelToken: cancelToken,
+          onProgress: onProgress,
+        );
+      }
       String extension = _getFileExtension(uri.path);
 
       if (extension.isEmpty ||
@@ -6207,6 +6591,352 @@ class _BrowserPageState extends State<BrowserPage>
       debugPrint('错误堆栈: $stackTrace');
       if (e is Exception) rethrow;
       throw Exception('[下载失败] $e');
+    }
+  }
+
+  Map<String, String> _dashAttributes(String source) {
+    final out = <String, String>{};
+    final pattern = RegExp(
+      r'''([A-Za-z_:][A-Za-z0-9_:.-]*)\s*=\s*["']([^"']*)["']''',
+    );
+    for (final match in pattern.allMatches(source)) {
+      out[match.group(1)!] = match.group(2)!;
+    }
+    return out;
+  }
+
+  double? _parseDashDurationSeconds(String value) {
+    final match = RegExp(
+      r'^PT(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?$',
+      caseSensitive: false,
+    ).firstMatch(value.trim());
+    if (match == null) return null;
+    final hours = double.tryParse(match.group(1) ?? '') ?? 0;
+    final minutes = double.tryParse(match.group(2) ?? '') ?? 0;
+    final seconds = double.tryParse(match.group(3) ?? '') ?? 0;
+    return hours * 3600 + minutes * 60 + seconds;
+  }
+
+  String _expandDashTemplate(
+    String template,
+    String representationId, {
+    int? number,
+  }) {
+    var value = template.replaceAll(r'$RepresentationID$', representationId);
+    if (number != null) {
+      value = value.replaceAllMapped(RegExp(r'\$Number(?:%0(\d+)d)?\$'), (
+        match,
+      ) {
+        final width = int.tryParse(match.group(1) ?? '') ?? 0;
+        return width > 0 ? number.toString().padLeft(width, '0') : '$number';
+      });
+    }
+    return value;
+  }
+
+  List<_DashTrackPlan> _parseDashTrackPlans(String xml, String manifestUrl) {
+    final manifestUri = Uri.parse(manifestUrl);
+    final mpdMatch = RegExp(
+      r'<MPD\b([^>]*)>',
+      caseSensitive: false,
+    ).firstMatch(xml);
+    final mpdAttrs = _dashAttributes(mpdMatch?.group(1) ?? '');
+    final presentationSeconds = _parseDashDurationSeconds(
+      mpdAttrs['mediaPresentationDuration'] ?? '',
+    );
+    final plans = <_DashTrackPlan>[];
+    final adaptationPattern = RegExp(
+      r'<AdaptationSet\b([^>]*)>([\s\S]*?)</AdaptationSet>',
+      caseSensitive: false,
+    );
+    for (final adaptation in adaptationPattern.allMatches(xml)) {
+      final adaptationAttrs = _dashAttributes(adaptation.group(1) ?? '');
+      final body = adaptation.group(2) ?? '';
+      final templateMatch = RegExp(
+        r'<SegmentTemplate\b([^>]*)>([\s\S]*?)</SegmentTemplate>',
+        caseSensitive: false,
+      ).firstMatch(body);
+      if (templateMatch == null) continue;
+      final templateAttrs = _dashAttributes(templateMatch.group(1) ?? '');
+      final mediaTemplate = templateAttrs['media'] ?? '';
+      final initializationTemplate = templateAttrs['initialization'] ?? '';
+      if (mediaTemplate.isEmpty || initializationTemplate.isEmpty) continue;
+
+      var segmentCount = 0;
+      final timeline = templateMatch.group(2) ?? '';
+      for (final segment in RegExp(
+        r'<S\b([^>]*)/?>',
+        caseSensitive: false,
+      ).allMatches(timeline)) {
+        final attrs = _dashAttributes(segment.group(1) ?? '');
+        final repeat = int.tryParse(attrs['r'] ?? '') ?? 0;
+        if (repeat < 0) {
+          throw Exception('[下载失败] 暂不支持无法确定长度的动态 DASH 时间线');
+        }
+        segmentCount += repeat + 1;
+      }
+      if (segmentCount == 0) {
+        final duration = int.tryParse(templateAttrs['duration'] ?? '');
+        final timescale = int.tryParse(templateAttrs['timescale'] ?? '') ?? 1;
+        if (duration != null && duration > 0 && presentationSeconds != null) {
+          segmentCount = (presentationSeconds * timescale / duration).ceil();
+        }
+      }
+      if (segmentCount <= 0) continue;
+      final startNumber = int.tryParse(templateAttrs['startNumber'] ?? '') ?? 1;
+      final baseMatch = RegExp(
+        r'<BaseURL[^>]*>([^<]+)</BaseURL>',
+        caseSensitive: false,
+      ).firstMatch(body);
+      final baseUri =
+          baseMatch == null
+              ? manifestUri
+              : manifestUri.resolve(baseMatch.group(1)!.trim());
+
+      final representationPattern = RegExp(
+        r'<Representation\b([^>]*)>',
+        caseSensitive: false,
+      );
+      for (final representation in representationPattern.allMatches(body)) {
+        final attrs = _dashAttributes(representation.group(1) ?? '');
+        final id = attrs['id'] ?? '';
+        if (id.isEmpty) continue;
+        final mimeType = attrs['mimeType'] ?? adaptationAttrs['mimeType'] ?? '';
+        if (!mimeType.startsWith('video/') && !mimeType.startsWith('audio/')) {
+          continue;
+        }
+        final initialization = _expandDashTemplate(initializationTemplate, id);
+        final segments = List<String>.generate(segmentCount, (index) {
+          final relative = _expandDashTemplate(
+            mediaTemplate,
+            id,
+            number: startNumber + index,
+          );
+          return baseUri.resolve(relative).toString();
+        });
+        plans.add(
+          _DashTrackPlan(
+            mimeType: mimeType,
+            codecs: attrs['codecs'] ?? adaptationAttrs['codecs'] ?? '',
+            bandwidth: int.tryParse(attrs['bandwidth'] ?? '') ?? 0,
+            initializationUrl: baseUri.resolve(initialization).toString(),
+            segmentUrls: segments,
+          ),
+        );
+      }
+    }
+    return plans;
+  }
+
+  Future<void> _downloadDashTrack({
+    required _DashTrackPlan plan,
+    required File output,
+    required Dio downloadDio,
+    required Map<String, String> requestHeaders,
+    required void Function(int bytes) onPartComplete,
+    int parallelFetches = 4,
+    CancelToken? cancelToken,
+  }) async {
+    final urls = <String>[plan.initializationUrl, ...plan.segmentUrls];
+    final parallel = parallelFetches.clamp(1, _kDashParallelSegmentFetches);
+    final partFiles = List<File>.generate(
+      urls.length,
+      (index) => File('${output.path}.dash-part-$index'),
+    );
+    var nextIndex = 0;
+    Object? firstError;
+
+    Future<void> worker() async {
+      while (firstError == null) {
+        final index = nextIndex++;
+        if (index >= urls.length) return;
+        try {
+          List<int>? bytes;
+          for (var attempt = 0; attempt < 3; attempt++) {
+            try {
+              final response = await downloadDio.get<List<int>>(
+                urls[index],
+                cancelToken: cancelToken,
+                options: Options(
+                  responseType: ResponseType.bytes,
+                  followRedirects: true,
+                  maxRedirects: 5,
+                  headers: requestHeaders,
+                  validateStatus:
+                      (status) =>
+                          status != null && status >= 200 && status < 300,
+                ),
+              );
+              bytes = response.data;
+              if (bytes == null || bytes.isEmpty) {
+                throw Exception('[下载失败] DASH 分片为空');
+              }
+              break;
+            } catch (_) {
+              if (attempt == 2) rethrow;
+              await Future<void>.delayed(
+                Duration(milliseconds: 250 * (attempt + 1)),
+              );
+            }
+          }
+          await partFiles[index].writeAsBytes(bytes!, flush: false);
+          onPartComplete(bytes.length);
+        } catch (error) {
+          firstError ??= error;
+          return;
+        }
+      }
+    }
+
+    final sink = output.openWrite();
+    try {
+      await Future.wait<void>(
+        List<Future<void>>.generate(
+          min(parallel, urls.length),
+          (_) => worker(),
+        ),
+      );
+      if (firstError != null) throw firstError!;
+      for (final part in partFiles) {
+        if (!await part.exists() || await part.length() == 0) {
+          throw Exception('[下载失败] DASH 临时分片缺失');
+        }
+        await sink.addStream(part.openRead());
+      }
+    } finally {
+      await sink.close();
+      for (final part in partFiles) {
+        try {
+          if (await part.exists()) await part.delete();
+        } catch (_) {}
+      }
+    }
+  }
+
+  Future<File> _downloadDashManifest({
+    required String manifestUrl,
+    required Dio downloadDio,
+    required Directory mediaDir,
+    required String outputId,
+    required Map<String, String> requestHeaders,
+    CancelToken? cancelToken,
+    DownloadProgressCallback? onProgress,
+  }) async {
+    final manifestResponse = await downloadDio.get<String>(
+      manifestUrl,
+      cancelToken: cancelToken,
+      options: Options(
+        responseType: ResponseType.plain,
+        headers: requestHeaders,
+        validateStatus:
+            (status) => status != null && status >= 200 && status < 300,
+      ),
+    );
+    final xml = manifestResponse.data ?? '';
+    if (!xml.contains('<MPD')) {
+      throw Exception('[下载失败] 服务器返回的不是有效 DASH 清单');
+    }
+    final plans = _parseDashTrackPlans(xml, manifestUrl);
+    final videoPlans =
+        plans.where((plan) => plan.mimeType.startsWith('video/')).toList();
+    if (videoPlans.isEmpty) throw Exception('[下载失败] DASH 清单中没有视频轨');
+    videoPlans.sort((a, b) {
+      int score(_DashTrackPlan plan) {
+        final codec = plan.codecs.toLowerCase();
+        final compatible = codec.contains('avc1') ? 2000000000 : 0;
+        final mp4 = plan.mimeType == 'video/mp4' ? 1000000000 : 0;
+        return compatible + mp4 + plan.bandwidth;
+      }
+
+      return score(b).compareTo(score(a));
+    });
+    final video = videoPlans.first;
+    final audioPlans =
+        plans.where((plan) => plan.mimeType.startsWith('audio/')).toList()
+          ..sort((a, b) => b.bandwidth.compareTo(a.bandwidth));
+    final audio = audioPlans.isEmpty ? null : audioPlans.first;
+    final useAcceleratedDash =
+        _isTikPornPage(_currentUrl) ||
+        _isTikPornPage(requestHeaders['Referer']);
+
+    final videoFile = File(p.join(mediaDir.path, '$outputId.video.mp4'));
+    final audioFile = File(p.join(mediaDir.path, '$outputId.audio.m4a'));
+    final finalFile = File(p.join(mediaDir.path, '$outputId.mp4'));
+    final totalParts =
+        video.segmentUrls.length +
+        1 +
+        (audio == null ? 0 : audio.segmentUrls.length + 1);
+    var completedParts = 0;
+    var downloadedBytes = 0;
+    void onPart(int bytes) {
+      completedParts++;
+      downloadedBytes += bytes;
+      onProgress?.call(
+        completedParts / totalParts,
+        detail:
+            'DASH 分片 $completedParts/$totalParts · 已下载 ${_formatBytes(downloadedBytes)}',
+      );
+    }
+
+    try {
+      Future<void> downloadTrack(_DashTrackPlan plan, File output) {
+        return _downloadDashTrack(
+          plan: plan,
+          output: output,
+          downloadDio: downloadDio,
+          requestHeaders: requestHeaders,
+          cancelToken: cancelToken,
+          onPartComplete: onPart,
+          parallelFetches:
+              useAcceleratedDash ? _kDashParallelSegmentFetches : 4,
+        );
+      }
+
+      if (useAcceleratedDash && audio != null) {
+        await Future.wait<void>([
+          downloadTrack(video, videoFile),
+          downloadTrack(audio, audioFile),
+        ]);
+      } else {
+        await downloadTrack(video, videoFile);
+        if (audio != null) await downloadTrack(audio, audioFile);
+      }
+
+      var muxed = false;
+      if (audio != null && await audioFile.exists()) {
+        try {
+          muxed =
+              await const MethodChannel(
+                'media_muxer',
+              ).invokeMethod<bool>('muxMp4', <String, String>{
+                'videoPath': videoFile.path,
+                'audioPath': audioFile.path,
+                'outputPath': finalFile.path,
+              }) ==
+              true;
+        } catch (e) {
+          debugPrint('DASH 音视频封装失败，将保留视频轨: $e');
+        }
+      }
+      if (!muxed) {
+        if (await finalFile.exists()) await finalFile.delete();
+        await videoFile.rename(finalFile.path);
+      }
+      if (!await finalFile.exists() || await finalFile.length() == 0) {
+        throw Exception('[下载失败] DASH 合并结果为空');
+      }
+      final durationMs = await _probeNativeVideoDurationMs(finalFile);
+      if (durationMs != null && durationMs <= 0) {
+        await finalFile.delete();
+        throw Exception('[下载失败] DASH 合并结果缺少有效时长，未保存损坏视频');
+      }
+      return _normalizeDownloadedMediaFile(finalFile, MediaType.video);
+    } finally {
+      for (final temporary in <File>[videoFile, audioFile]) {
+        try {
+          if (await temporary.exists()) await temporary.delete();
+        } catch (_) {}
+      }
     }
   }
 
@@ -6997,23 +7727,23 @@ class _BrowserPageState extends State<BrowserPage>
     MediaType mediaType,
   ) async {
     try {
-      final fileName = file.path.split('/').last;
+      if (!await file.exists()) {
+        throw const FileSystemException('下载完成后的媒体文件不存在');
+      }
+      final fileLength = await file.length();
+      if (fileLength <= 0) {
+        throw const FileSystemException('下载完成后的媒体文件为空');
+      }
+      final fileName = p.basename(file.path);
       if (mediaType == MediaType.video &&
           p.extension(fileName).toLowerCase() == '.webm' &&
-          await file.length() < _kMinBase64VideoBytes) {
+          fileLength < _kMinBase64VideoBytes) {
         try {
           await file.delete();
         } catch (_) {}
         throw Exception('视频数据不完整，未保存到媒体库');
       }
       final fileHash = await _calculateFileHash(file);
-      final duplicate = await _databaseService.findDuplicateMediaItem(
-        fileHash,
-        fileName,
-      );
-      if (duplicate != null) {
-        throw _ExistingMediaDuplicateException(duplicate);
-      }
       final uuid = const Uuid().v4();
       final mediaItem = MediaItem(
         id: uuid,
@@ -7025,10 +7755,36 @@ class _BrowserPageState extends State<BrowserPage>
       );
       final mediaItemMap = mediaItem.toMap();
       mediaItemMap['file_hash'] = fileHash;
-      await _databaseService.insertMediaItem(mediaItemMap);
-      return mediaItemMap;
-    } catch (e) {
-      debugPrint('保存到媒体库时出错: ');
+
+      for (var attempt = 0; attempt < 3; attempt++) {
+        try {
+          final duplicate = await _databaseService.findDuplicateMediaItem(
+            fileHash,
+            fileName,
+          );
+          if (duplicate != null) {
+            throw _ExistingMediaDuplicateException(duplicate);
+          }
+          await _databaseService.insertMediaItem(mediaItemMap);
+          return mediaItemMap;
+        } on _ExistingMediaDuplicateException {
+          rethrow;
+        } catch (e) {
+          final message = e.toString().toLowerCase();
+          final temporarilyBusy =
+              message.contains('database is locked') ||
+              message.contains('database is busy') ||
+              message.contains('sqlite_busy') ||
+              message.contains('sqlite_locked');
+          if (!temporarilyBusy || attempt == 2) rethrow;
+          await Future<void>.delayed(
+            Duration(milliseconds: 200 * (attempt + 1)),
+          );
+        }
+      }
+      throw StateError('媒体入库重试结束但未返回结果');
+    } catch (e, stackTrace) {
+      debugPrint('保存到媒体库时出错: $e\n$stackTrace');
       rethrow;
     }
   }
@@ -7919,6 +8675,8 @@ class _BrowserPageState extends State<BrowserPage>
                             final name = t['displayName'] as String? ?? '未知';
                             final progressDetail =
                                 (t['progressDetail'] as String?)?.trim() ?? '';
+                            final transferStatus =
+                                (t['transferStatus'] as String?)?.trim() ?? '';
                             final isDownloading = status == 'downloading';
                             final isPaused = status == 'paused';
                             final canRetry =
@@ -7965,6 +8723,21 @@ class _BrowserPageState extends State<BrowserPage>
                                                   height: 1.2,
                                                 ),
                                                 maxLines: 2,
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                            ),
+                                          if (transferStatus.isNotEmpty)
+                                            Padding(
+                                              padding: const EdgeInsets.only(
+                                                top: 2,
+                                              ),
+                                              child: Text(
+                                                transferStatus,
+                                                style: const TextStyle(
+                                                  color: Colors.greenAccent,
+                                                  fontSize: 10,
+                                                ),
+                                                maxLines: 1,
                                                 overflow: TextOverflow.ellipsis,
                                               ),
                                             ),
@@ -8339,6 +9112,10 @@ class _BrowserPageState extends State<BrowserPage>
       'displayName': displayName,
       'progress': 0.0,
       'progressDetail': '',
+      'transferStatus': '',
+      'lastSampleBytes': 0,
+      'lastSampleAtMs': DateTime.now().millisecondsSinceEpoch,
+      'smoothedBytesPerSecond': 0.0,
       'status': 'downloading',
       'cancelToken': cancelToken,
       'mediaType': mediaType,
@@ -8357,9 +9134,84 @@ class _BrowserPageState extends State<BrowserPage>
     if (idx < 0) return;
     if (progress != null) _downloadTasks[idx]['progress'] = progress;
     if (status != null) _downloadTasks[idx]['status'] = status;
-    if (progressDetail != null)
+    if (progressDetail != null) {
       _downloadTasks[idx]['progressDetail'] = progressDetail;
+      final downloadedBytes = _extractDownloadedBytes(progressDetail);
+      if (downloadedBytes != null) {
+        _updateTransferEstimate(
+          _downloadTasks[idx],
+          downloadedBytes,
+          progress ??
+              (_downloadTasks[idx]['progress'] as num?)?.toDouble() ??
+              0.0,
+        );
+      }
+    }
+    if (status != null && status != 'downloading') {
+      _downloadTasks[idx]['transferStatus'] = '';
+    }
     _downloadTasksNotifier.value = List.from(_downloadTasks);
+  }
+
+  int? _extractDownloadedBytes(String detail) {
+    final match = RegExp(
+      r'(\d+(?:\.\d+)?)\s*(B|KB|MB|GB)\b',
+      caseSensitive: false,
+    ).firstMatch(detail);
+    if (match == null) return null;
+    final value = double.tryParse(match.group(1) ?? '');
+    if (value == null) return null;
+    final unit = (match.group(2) ?? 'B').toUpperCase();
+    final multiplier = switch (unit) {
+      'KB' => 1024,
+      'MB' => 1024 * 1024,
+      'GB' => 1024 * 1024 * 1024,
+      _ => 1,
+    };
+    return (value * multiplier).round();
+  }
+
+  void _updateTransferEstimate(
+    Map<String, dynamic> task,
+    int downloadedBytes,
+    double progress,
+  ) {
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    final previousMs = (task['lastSampleAtMs'] as num?)?.toInt() ?? nowMs;
+    final previousBytes = (task['lastSampleBytes'] as num?)?.toInt() ?? 0;
+    final elapsedMs = nowMs - previousMs;
+    final deltaBytes = downloadedBytes - previousBytes;
+    if (elapsedMs < 300 || deltaBytes <= 0) return;
+    final instantSpeed = deltaBytes * 1000 / elapsedMs;
+    final previousSpeed =
+        (task['smoothedBytesPerSecond'] as num?)?.toDouble() ?? 0.0;
+    final smoothedSpeed =
+        previousSpeed <= 0
+            ? instantSpeed
+            : previousSpeed * 0.7 + instantSpeed * 0.3;
+    task['lastSampleAtMs'] = nowMs;
+    task['lastSampleBytes'] = downloadedBytes;
+    task['smoothedBytesPerSecond'] = smoothedSpeed;
+
+    var status = '${_formatBytes(smoothedSpeed.round())}/s';
+    if (progress > 0.01 && progress < 0.995 && smoothedSpeed > 0) {
+      final estimatedTotal = downloadedBytes / progress;
+      final remainingSeconds =
+          ((estimatedTotal - downloadedBytes) / smoothedSpeed).round();
+      if (remainingSeconds > 0) {
+        status = '$status · 预计剩余 ${_formatRemainingTime(remainingSeconds)}';
+      }
+    }
+    task['transferStatus'] = status;
+  }
+
+  String _formatRemainingTime(int seconds) {
+    if (seconds < 60) return '$seconds 秒';
+    final minutes = seconds ~/ 60;
+    final remainSeconds = seconds % 60;
+    if (minutes < 60) return '$minutes 分 $remainSeconds 秒';
+    final hours = minutes ~/ 60;
+    return '$hours 小时 ${minutes % 60} 分';
   }
 
   String _getShortDisplayName(String url) {

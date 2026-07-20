@@ -9,7 +9,14 @@ import android.app.NotificationManager
 import android.app.ActivityManager
 import android.content.Context
 import android.os.Build
+import android.media.MediaCodec
+import android.media.MediaExtractor
+import android.media.MediaFormat
+import android.media.MediaMuxer
+import android.media.MediaMetadataRetriever
+import java.io.File
 import java.io.RandomAccessFile
+import java.nio.ByteBuffer
 
 class MainActivity: FlutterActivity() {
     private val CHANNEL = "media_auto_import"
@@ -116,6 +123,107 @@ class MainActivity: FlutterActivity() {
                 }
                 else -> result.notImplemented()
             }
+        }
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "media_muxer").setMethodCallHandler { call, result ->
+            if (call.method == "probeDurationMs") {
+                val path = call.argument<String>("path")
+                if (path.isNullOrBlank()) {
+                    result.success(0L)
+                    return@setMethodCallHandler
+                }
+                Thread {
+                    val retriever = MediaMetadataRetriever()
+                    val duration = try {
+                        retriever.setDataSource(path)
+                        retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+                    } catch (_: Exception) {
+                        0L
+                    } finally {
+                        retriever.release()
+                    }
+                    runOnUiThread { result.success(duration) }
+                }.start()
+                return@setMethodCallHandler
+            }
+            if (call.method != "muxMp4") {
+                result.notImplemented()
+                return@setMethodCallHandler
+            }
+            val videoPath = call.argument<String>("videoPath")
+            val audioPath = call.argument<String>("audioPath")
+            val outputPath = call.argument<String>("outputPath")
+            if (videoPath.isNullOrBlank() || audioPath.isNullOrBlank() || outputPath.isNullOrBlank()) {
+                result.error("INVALID_ARGUMENT", "Missing DASH track path", null)
+                return@setMethodCallHandler
+            }
+            Thread {
+                try {
+                    muxMp4Tracks(videoPath, audioPath, outputPath)
+                    runOnUiThread { result.success(true) }
+                } catch (e: Exception) {
+                    File(outputPath).delete()
+                    runOnUiThread { result.error("MUX_FAILED", e.message, null) }
+                }
+            }.start()
+        }
+    }
+
+    private fun findTrack(extractor: MediaExtractor, prefix: String): Int {
+        for (index in 0 until extractor.trackCount) {
+            val mime = extractor.getTrackFormat(index).getString(MediaFormat.KEY_MIME) ?: ""
+            if (mime.startsWith(prefix)) return index
+        }
+        return -1
+    }
+
+    private fun writeTrack(
+        extractor: MediaExtractor,
+        sourceTrack: Int,
+        muxer: MediaMuxer,
+        targetTrack: Int
+    ) {
+        extractor.selectTrack(sourceTrack)
+        val buffer = ByteBuffer.allocateDirect(16 * 1024 * 1024)
+        val info = MediaCodec.BufferInfo()
+        while (true) {
+            buffer.clear()
+            val size = extractor.readSampleData(buffer, 0)
+            if (size < 0) break
+            info.offset = 0
+            info.size = size
+            info.presentationTimeUs = extractor.sampleTime
+            info.flags = extractor.sampleFlags
+            muxer.writeSampleData(targetTrack, buffer, info)
+            if (!extractor.advance()) break
+        }
+        extractor.unselectTrack(sourceTrack)
+    }
+
+    private fun muxMp4Tracks(videoPath: String, audioPath: String, outputPath: String) {
+        val videoExtractor = MediaExtractor()
+        val audioExtractor = MediaExtractor()
+        var muxer: MediaMuxer? = null
+        try {
+            videoExtractor.setDataSource(videoPath)
+            audioExtractor.setDataSource(audioPath)
+            val videoSourceTrack = findTrack(videoExtractor, "video/")
+            val audioSourceTrack = findTrack(audioExtractor, "audio/")
+            if (videoSourceTrack < 0 || audioSourceTrack < 0) {
+                throw IllegalStateException("DASH track is missing video or audio samples")
+            }
+            File(outputPath).delete()
+            muxer = MediaMuxer(outputPath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            val videoTargetTrack = muxer.addTrack(videoExtractor.getTrackFormat(videoSourceTrack))
+            val audioTargetTrack = muxer.addTrack(audioExtractor.getTrackFormat(audioSourceTrack))
+            muxer.start()
+            writeTrack(videoExtractor, videoSourceTrack, muxer, videoTargetTrack)
+            writeTrack(audioExtractor, audioSourceTrack, muxer, audioTargetTrack)
+            muxer.stop()
+        } finally {
+            try { muxer?.release() } catch (_: Exception) {}
+            videoExtractor.release()
+            audioExtractor.release()
         }
     }
     
