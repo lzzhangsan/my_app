@@ -525,12 +525,15 @@ class _BrowserPageState extends State<BrowserPage>
   List<String> _recentCapturedMediaCandidates(
     MediaType mediaType, {
     String? pageUrl,
+    DateTime? notBefore,
     int limit = 24,
   }) {
     final now = DateTime.now();
     final requestedPage = Uri.tryParse((pageUrl ?? _currentUrl).trim());
     final scored = <(_CapturedWebResource resource, int score)>[];
     for (final resource in _capturedWebResources.values) {
+      if (notBefore != null && resource.capturedAt.isBefore(notBefore))
+        continue;
       final age = now.difference(resource.capturedAt);
       if (age > const Duration(minutes: 30) ||
           !_capturedResourceMatchesType(resource, mediaType)) {
@@ -568,12 +571,15 @@ class _BrowserPageState extends State<BrowserPage>
 
   List<String> _recentActiveDashManifestCandidates({
     String? pageUrl,
+    DateTime? notBefore,
     int limit = 4,
   }) {
     final now = DateTime.now();
     final requestedPage = Uri.tryParse((pageUrl ?? _currentUrl).trim());
     final activity = <String, ({int count, DateTime latest})>{};
     for (final resource in _capturedWebResources.values) {
+      if (notBefore != null && resource.capturedAt.isBefore(notBefore))
+        continue;
       if (now.difference(resource.capturedAt) > const Duration(minutes: 10) ||
           !_looksLikeMediaFragmentUrl(resource.url)) {
         continue;
@@ -744,6 +750,7 @@ class _BrowserPageState extends State<BrowserPage>
   final List<Map<String, dynamic>> _downloadTasks = [];
   final ValueNotifier<List<Map<String, dynamic>>> _downloadTasksNotifier =
       ValueNotifier([]);
+  final Map<String, int> _dashConcurrencyByHost = {};
   static const int _maxDisplayTasks = 8;
   bool _downloadPanelExpanded = false;
   Offset? _downloadPanelPosition;
@@ -1924,6 +1931,8 @@ class _BrowserPageState extends State<BrowserPage>
     void Function(String failureType)? onFailureType,
   }) async {
     final isLongPress = item['downloadOrigin'] == 'long_press';
+    final expectedDurationSeconds =
+        (item['durationSec'] as num?)?.toDouble() ?? 0.0;
     final existingMedia = await _findExistingMediaForItem(item);
     if (existingMedia != null) {
       await _markFavoriteDownloaded(item, downloaded: true);
@@ -2119,6 +2128,10 @@ class _BrowserPageState extends State<BrowserPage>
                 ? const Duration(minutes: 2)
                 : const Duration(minutes: 3),
         maxRequestAttempts: isLongPress ? 4 : null,
+        expectedDurationSeconds:
+            isLongPress && expectedDurationSeconds > 0
+                ? expectedDurationSeconds
+                : null,
         showSuccessPrompt: false,
         onProgress: (fraction, {String? detail}) {
           progress.value = fraction.clamp(0.0, 1.0);
@@ -2173,6 +2186,8 @@ class _BrowserPageState extends State<BrowserPage>
             skipFailurePrompt: i < secondAttempts.length - 1,
             onFailureType: (t) => failureType = t,
             inactivityTimeout: const Duration(minutes: 3),
+            expectedDurationSeconds:
+                expectedDurationSeconds > 0 ? expectedDurationSeconds : null,
             showSuccessPrompt: false,
             onProgress: (fraction, {String? detail}) {
               progress.value = fraction.clamp(0.0, 1.0);
@@ -2619,7 +2634,7 @@ class _BrowserPageState extends State<BrowserPage>
       await controller.evaluateJavascript(
         source: '''
       (() => {
-      const handlerVersion = 'media-download-v7';
+      const handlerVersion = 'media-download-v8';
       if (window.__appMediaDownloadHandlersVersion === handlerVersion) return true;
       window.Flutter = window.Flutter || { postMessage: function(m){ try { if(window.flutter_inappwebview && window.flutter_inappwebview.callHandler) window.flutter_inappwebview.callHandler('Flutter', m); } catch(e){} } };
       window.MediaInterceptor = window.MediaInterceptor || {
@@ -3365,6 +3380,7 @@ class _BrowserPageState extends State<BrowserPage>
           updateFeedbackStatus('未找到媒体元素', false);
           return;
         }
+        const longPressSessionId = 'lp-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
         
         function pickCurrentVideo(x, y) {
           const videos = Array.from(document.querySelectorAll('video'));
@@ -3682,6 +3698,8 @@ class _BrowserPageState extends State<BrowserPage>
                 title: document.title || '',
                 positionSec: videoEl && isFinite(Number(videoEl.currentTime)) ? Number(videoEl.currentTime) : 0,
                 durationSec: effectiveVideoDuration(videoEl),
+                sessionId: longPressSessionId,
+                playbackStartedAtMs: Date.now() - Math.max(0, Number(videoEl && videoEl.currentTime || 0)) * 1000,
                 candidates: cands
               }));
               updateFeedbackStatus('正在获取下载地址…', null);
@@ -3700,6 +3718,8 @@ class _BrowserPageState extends State<BrowserPage>
                   title: document.title || '',
                   positionSec: videoEl && isFinite(Number(videoEl.currentTime)) ? Number(videoEl.currentTime) : 0,
                   durationSec: effectiveVideoDuration(videoEl),
+                  sessionId: longPressSessionId,
+                  playbackStartedAtMs: Date.now() - Math.max(0, Number(videoEl && videoEl.currentTime || 0)) * 1000,
                   candidates: cands
                 }));
                 updateFeedbackStatus('正在保存…', null);
@@ -3866,6 +3886,9 @@ class _BrowserPageState extends State<BrowserPage>
           action: 'download',
           pageUrl: location.href || '',
           title: document.title || '',
+          sessionId: longPressSessionId,
+          playbackStartedAtMs: Date.now() - Math.max(0, Number(videoEl && videoEl.currentTime || 0)) * 1000,
+          durationSec: effectiveVideoDuration(videoEl),
           candidates: cands
         }));
         updateFeedbackStatus('正在稳健保存…', null);
@@ -3990,7 +4013,7 @@ class _BrowserPageState extends State<BrowserPage>
       );
       final ready = await controller.evaluateJavascript(
         source:
-            "window.__appMediaDownloadHandlersVersion === 'media-download-v7'",
+            "window.__appMediaDownloadHandlersVersion === 'media-download-v8'",
       );
       if (ready == true || ready.toString().toLowerCase() == 'true')
         return true;
@@ -4037,6 +4060,15 @@ class _BrowserPageState extends State<BrowserPage>
           (data['mimeType'] ?? data['mime'] ?? '').toString();
       final messageDurationSeconds =
           (data['durationSec'] as num?)?.toDouble() ?? 0.0;
+      final mediaSessionId = (data['sessionId'] ?? '').toString().trim();
+      final playbackStartedAtMs =
+          (data['playbackStartedAtMs'] as num?)?.toInt() ?? 0;
+      final sessionNotBefore =
+          playbackStartedAtMs > 0
+              ? DateTime.fromMillisecondsSinceEpoch(
+                playbackStartedAtMs,
+              ).subtract(const Duration(seconds: 2))
+              : null;
       final rawDownloadCandidateUrls = <String>[];
       if (candidateValue is List) {
         for (final e in candidateValue) {
@@ -4198,6 +4230,8 @@ class _BrowserPageState extends State<BrowserPage>
             'title': title,
             'candidateUrls': candidateUrls,
             'downloadOrigin': 'long_press',
+            'sessionId': mediaSessionId,
+            'durationSec': messageDurationSeconds,
           };
 
           // 查重：如果媒体库已存在，则弹出提示并终止下载
@@ -4248,12 +4282,14 @@ class _BrowserPageState extends State<BrowserPage>
                 useTikPornDisambiguation
                     ? _recentActiveDashManifestCandidates(
                       pageUrl: messagePageUrl,
+                      notBefore: sessionNotBefore,
                     )
                     : const <String>[];
             final capturedDashCandidates =
                 _recentCapturedMediaCandidates(
                   MediaType.video,
-                  pageUrl: _currentUrl,
+                  pageUrl: messagePageUrl,
+                  notBefore: sessionNotBefore,
                 ).where((candidate) {
                   final path =
                       Uri.tryParse(candidate)?.path.toLowerCase() ?? '';
@@ -4292,6 +4328,8 @@ class _BrowserPageState extends State<BrowserPage>
                   'candidateUrls': <String>[selectedManifest],
                   'title': (data['title'] ?? '').toString(),
                   'downloadOrigin': 'long_press',
+                  'sessionId': mediaSessionId,
+                  'durationSec': messageDurationSeconds,
                 },
                 showResultHint: true,
               );
@@ -6641,9 +6679,11 @@ class _BrowserPageState extends State<BrowserPage>
       caseSensitive: false,
     ).firstMatch(xml);
     final mpdAttrs = _dashAttributes(mpdMatch?.group(1) ?? '');
-    final presentationSeconds = _parseDashDurationSeconds(
-      mpdAttrs['mediaPresentationDuration'] ?? '',
-    );
+    final presentationSeconds =
+        _parseDashDurationSeconds(
+          mpdAttrs['mediaPresentationDuration'] ?? '',
+        ) ??
+        _extractDashManifestDurationSeconds(xml);
     final plans = <_DashTrackPlan>[];
     final adaptationPattern = RegExp(
       r'<AdaptationSet\b([^>]*)>([\s\S]*?)</AdaptationSet>',
@@ -6652,10 +6692,15 @@ class _BrowserPageState extends State<BrowserPage>
     for (final adaptation in adaptationPattern.allMatches(xml)) {
       final adaptationAttrs = _dashAttributes(adaptation.group(1) ?? '');
       final body = adaptation.group(2) ?? '';
-      final templateMatch = RegExp(
+      final nestedTemplateMatch = RegExp(
         r'<SegmentTemplate\b([^>]*)>([\s\S]*?)</SegmentTemplate>',
         caseSensitive: false,
       ).firstMatch(body);
+      final selfClosingTemplateMatch = RegExp(
+        r'<SegmentTemplate\b([^>]*)/>',
+        caseSensitive: false,
+      ).firstMatch(body);
+      final templateMatch = nestedTemplateMatch ?? selfClosingTemplateMatch;
       if (templateMatch == null) continue;
       final templateAttrs = _dashAttributes(templateMatch.group(1) ?? '');
       final mediaTemplate = templateAttrs['media'] ?? '';
@@ -6663,21 +6708,33 @@ class _BrowserPageState extends State<BrowserPage>
       if (mediaTemplate.isEmpty || initializationTemplate.isEmpty) continue;
 
       var segmentCount = 0;
-      final timeline = templateMatch.group(2) ?? '';
+      var timelineUnits = 0;
+      final timescale = int.tryParse(templateAttrs['timescale'] ?? '') ?? 1;
+      final timeline =
+          nestedTemplateMatch == null ? '' : nestedTemplateMatch.group(2) ?? '';
       for (final segment in RegExp(
         r'<S\b([^>]*)/?>',
         caseSensitive: false,
       ).allMatches(timeline)) {
         final attrs = _dashAttributes(segment.group(1) ?? '');
-        final repeat = int.tryParse(attrs['r'] ?? '') ?? 0;
+        var repeat = int.tryParse(attrs['r'] ?? '') ?? 0;
+        final durationUnits = int.tryParse(attrs['d'] ?? '') ?? 0;
         if (repeat < 0) {
-          throw Exception('[下载失败] 暂不支持无法确定长度的动态 DASH 时间线');
+          if (presentationSeconds == null ||
+              presentationSeconds <= 0 ||
+              durationUnits <= 0 ||
+              timescale <= 0) {
+            throw Exception('[下载失败] 无法确定动态 DASH 时间线长度');
+          }
+          final remainingUnits =
+              (presentationSeconds * timescale).ceil() - timelineUnits;
+          repeat = max(0, (remainingUnits / durationUnits).ceil() - 1);
         }
         segmentCount += repeat + 1;
+        if (durationUnits > 0) timelineUnits += durationUnits * (repeat + 1);
       }
       if (segmentCount == 0) {
         final duration = int.tryParse(templateAttrs['duration'] ?? '');
-        final timescale = int.tryParse(templateAttrs['timescale'] ?? '') ?? 1;
         if (duration != null && duration > 0 && presentationSeconds != null) {
           segmentCount = (presentationSeconds * timescale / duration).ceil();
         }
@@ -6728,6 +6785,22 @@ class _BrowserPageState extends State<BrowserPage>
     return plans;
   }
 
+  Future<void> _cleanupStaleDashResumeDirs(Directory root) async {
+    if (!await root.exists()) return;
+    final cutoff = DateTime.now().subtract(const Duration(hours: 24));
+    await for (final entity in root.list(followLinks: false)) {
+      if (entity is! Directory) continue;
+      try {
+        var newest = (await entity.stat()).modified;
+        await for (final child in entity.list(followLinks: false)) {
+          final modified = (await child.stat()).modified;
+          if (modified.isAfter(newest)) newest = modified;
+        }
+        if (newest.isBefore(cutoff)) await entity.delete(recursive: true);
+      } catch (_) {}
+    }
+  }
+
   Future<void> _downloadDashTrack({
     required _DashTrackPlan plan,
     required File output,
@@ -6739,9 +6812,17 @@ class _BrowserPageState extends State<BrowserPage>
   }) async {
     final urls = <String>[plan.initializationUrl, ...plan.segmentUrls];
     final parallel = parallelFetches.clamp(1, _kDashParallelSegmentFetches);
+    final resumeRoot = Directory(p.join(output.parent.path, '.dash_resume'));
+    await resumeRoot.create(recursive: true);
+    await _cleanupStaleDashResumeDirs(resumeRoot);
+    final resumeSource =
+        '${_normalizeVideoSourceUrl(plan.initializationUrl)}|${urls.length}|${plan.codecs}|${plan.bandwidth}';
+    final resumeKey = sha1.convert(utf8.encode(resumeSource)).toString();
+    final resumeDir = Directory(p.join(resumeRoot.path, resumeKey));
+    await resumeDir.create(recursive: true);
     final partFiles = List<File>.generate(
       urls.length,
-      (index) => File('${output.path}.dash-part-$index'),
+      (index) => File(p.join(resumeDir.path, '$index.part')),
     );
     var nextIndex = 0;
     Object? firstError;
@@ -6751,7 +6832,16 @@ class _BrowserPageState extends State<BrowserPage>
         final index = nextIndex++;
         if (index >= urls.length) return;
         try {
+          final existingPart = partFiles[index];
+          if (await existingPart.exists()) {
+            final existingLength = await existingPart.length();
+            if (existingLength > 0) {
+              onPartComplete(existingLength);
+              continue;
+            }
+          }
           List<int>? bytes;
+          var currentHeaders = Map<String, String>.from(requestHeaders);
           for (var attempt = 0; attempt < 3; attempt++) {
             try {
               final response = await downloadDio.get<List<int>>(
@@ -6761,7 +6851,7 @@ class _BrowserPageState extends State<BrowserPage>
                   responseType: ResponseType.bytes,
                   followRedirects: true,
                   maxRedirects: 5,
-                  headers: requestHeaders,
+                  headers: currentHeaders,
                   validateStatus:
                       (status) =>
                           status != null && status >= 200 && status < 300,
@@ -6772,6 +6862,22 @@ class _BrowserPageState extends State<BrowserPage>
                 throw Exception('[下载失败] DASH 分片为空');
               }
               break;
+            } on DioException catch (error) {
+              if (attempt == 2) rethrow;
+              final statusCode = error.response?.statusCode ?? 0;
+              if (statusCode == 401 || statusCode == 403) {
+                currentHeaders = await _browserLikeMediaHeaders(
+                  urls[index],
+                  referer:
+                      currentHeaders['Referer'] ??
+                      currentHeaders['referer'] ??
+                      _currentUrl,
+                  accept: '*/*',
+                );
+              }
+              await Future<void>.delayed(
+                Duration(milliseconds: 250 * (attempt + 1)),
+              );
             } catch (_) {
               if (attempt == 2) rethrow;
               await Future<void>.delayed(
@@ -6779,7 +6885,10 @@ class _BrowserPageState extends State<BrowserPage>
               );
             }
           }
-          await partFiles[index].writeAsBytes(bytes!, flush: false);
+          final temporaryPart = File('${partFiles[index].path}.tmp');
+          await temporaryPart.writeAsBytes(bytes!, flush: false);
+          if (await partFiles[index].exists()) await partFiles[index].delete();
+          await temporaryPart.rename(partFiles[index].path);
           onPartComplete(bytes.length);
         } catch (error) {
           firstError ??= error;
@@ -6789,6 +6898,7 @@ class _BrowserPageState extends State<BrowserPage>
     }
 
     final sink = output.openWrite();
+    var completed = false;
     try {
       await Future.wait<void>(
         List<Future<void>>.generate(
@@ -6803,11 +6913,12 @@ class _BrowserPageState extends State<BrowserPage>
         }
         await sink.addStream(part.openRead());
       }
+      completed = true;
     } finally {
       await sink.close();
-      for (final part in partFiles) {
+      if (completed) {
         try {
-          if (await part.exists()) await part.delete();
+          if (await resumeDir.exists()) await resumeDir.delete(recursive: true);
         } catch (_) {}
       }
     }
@@ -6858,6 +6969,12 @@ class _BrowserPageState extends State<BrowserPage>
     final useAcceleratedDash =
         _isTikPornPage(_currentUrl) ||
         _isTikPornPage(requestHeaders['Referer']);
+    final dashHost = Uri.tryParse(manifestUrl)?.host.toLowerCase() ?? '';
+    final baseConcurrency = useAcceleratedDash ? 10 : 4;
+    final maxConcurrency = useAcceleratedDash ? 10 : 8;
+    final adaptiveConcurrency = (_dashConcurrencyByHost[dashHost] ??
+            baseConcurrency)
+        .clamp(2, maxConcurrency);
 
     final videoFile = File(p.join(mediaDir.path, '$outputId.video.mp4'));
     final audioFile = File(p.join(mediaDir.path, '$outputId.audio.m4a'));
@@ -6887,19 +7004,28 @@ class _BrowserPageState extends State<BrowserPage>
           requestHeaders: requestHeaders,
           cancelToken: cancelToken,
           onPartComplete: onPart,
-          parallelFetches:
-              useAcceleratedDash ? _kDashParallelSegmentFetches : 4,
+          parallelFetches: adaptiveConcurrency,
         );
       }
 
-      if (useAcceleratedDash && audio != null) {
-        await Future.wait<void>([
-          downloadTrack(video, videoFile),
-          downloadTrack(audio, audioFile),
-        ]);
-      } else {
-        await downloadTrack(video, videoFile);
-        if (audio != null) await downloadTrack(audio, audioFile);
+      try {
+        if (useAcceleratedDash && audio != null) {
+          await Future.wait<void>([
+            downloadTrack(video, videoFile),
+            downloadTrack(audio, audioFile),
+          ]);
+        } else {
+          await downloadTrack(video, videoFile);
+          if (audio != null) await downloadTrack(audio, audioFile);
+        }
+        if (dashHost.isNotEmpty && adaptiveConcurrency < maxConcurrency) {
+          _dashConcurrencyByHost[dashHost] = adaptiveConcurrency + 1;
+        }
+      } catch (_) {
+        if (dashHost.isNotEmpty) {
+          _dashConcurrencyByHost[dashHost] = max(2, adaptiveConcurrency ~/ 2);
+        }
+        rethrow;
       }
 
       var muxed = false;
@@ -8858,6 +8984,7 @@ class _BrowserPageState extends State<BrowserPage>
     DownloadProgressCallback? onProgress,
     int? maxRequestAttempts,
     bool showSuccessPrompt = true,
+    double? expectedDurationSeconds,
   }) async {
     // 仅下载图片和视频，不下载语音/音频
     if (mediaType == MediaType.audio) {
@@ -8931,6 +9058,22 @@ class _BrowserPageState extends State<BrowserPage>
 
       if (downloadedFile != null) {
         debugPrint('文件下载成功: ');
+        if (mediaType == MediaType.video &&
+            expectedDurationSeconds != null &&
+            expectedDurationSeconds > 0) {
+          final actualDurationMs = await _probeNativeVideoDurationMs(
+            downloadedFile,
+          );
+          if (actualDurationMs != null && actualDurationMs > 0) {
+            final actualSeconds = actualDurationMs / 1000.0;
+            final tolerance = max(3.0, expectedDurationSeconds * 0.12);
+            if ((actualSeconds - expectedDurationSeconds).abs() > tolerance) {
+              await downloadedFile.delete();
+              downloadedFile = null;
+              throw Exception('[下载失败] 下载结果时长与当前长按视频不一致，已丢弃错误文件');
+            }
+          }
+        }
         final Map<String, dynamic> mediaMap;
         try {
           mediaMap = await _saveToMediaLibrary(downloadedFile!, mediaType);
@@ -9054,6 +9197,8 @@ class _BrowserPageState extends State<BrowserPage>
       final msg = e.toString().toLowerCase();
       if (msg.contains('m3u8')) {
         type = 'm3u8_parse_or_download';
+      } else if (msg.contains('时长与当前长按视频不一致')) {
+        type = 'wrong_media_duration';
       } else if (msg.contains('origin is only applicable')) {
         type = 'invalid_origin';
       } else if (msg.contains('bad state')) {
