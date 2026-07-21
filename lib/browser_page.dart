@@ -135,15 +135,99 @@ const String _kEarlyMediaSnifferScript = r'''
   if (window.__appEarlyMediaSnifferInstalled) return;
   window.__appEarlyMediaSnifferInstalled = true;
   window.__appEarlyMediaRequests = window.__appEarlyMediaRequests || new Map();
-  const isTikPornPage = location.hostname === 'tik.porn' || location.hostname.endsWith('.tik.porn');
+  const mediaHosts = [String(location.hostname || '').toLowerCase()];
+  try {
+    if (document.referrer) {
+      mediaHosts.push(String(new URL(document.referrer).hostname || '').toLowerCase());
+    }
+  } catch (_) {}
+  const isElementBoundFeedPage = mediaHosts.some(mediaHost =>
+    mediaHost === 'tik.porn' || mediaHost.endsWith('.tik.porn') ||
+    mediaHost === 'pin.porn' || mediaHost.endsWith('.pin.porn'));
   const mediaBufferUrls = new WeakMap();
   const sourceBufferOwners = new WeakMap();
   const mediaSourceByBlobUrl = new Map();
   const mediaSourceActivity = new WeakMap();
+  const videoRequestActivity = new WeakMap();
+  const videoRequestState = new WeakMap();
   let latestMediaBuffer = null;
 
+  const bindRequestToVisibleVideo = (url) => {
+    if (!isElementBoundFeedPage || !url) return;
+    try {
+      const videos = Array.from(document.querySelectorAll('video'));
+      const vw = Math.max(1, window.innerWidth || 1);
+      const vh = Math.max(1, window.innerHeight || 1);
+      const cx = vw / 2;
+      const cy = vh / 2;
+      let best = null;
+      let bestScore = -Infinity;
+      for (const video of videos) {
+        const rect = video.getBoundingClientRect();
+        const visibleW = Math.max(0, Math.min(rect.right, vw) - Math.max(rect.left, 0));
+        const visibleH = Math.max(0, Math.min(rect.bottom, vh) - Math.max(rect.top, 0));
+        const visibleArea = visibleW * visibleH;
+        if (visibleArea <= 0) continue;
+        const vx = (Math.max(rect.left, 0) + Math.min(rect.right, vw)) / 2;
+        const vy = (Math.max(rect.top, 0) + Math.min(rect.bottom, vh)) / 2;
+        let score = visibleArea - Math.hypot(vx - cx, vy - cy) * 500;
+        if (!video.paused && !video.ended) score += 1000000000;
+        if (Number(video.currentTime || 0) > 0) score += 10000000;
+        if (score > bestScore) {
+          bestScore = score;
+          best = video;
+        }
+      }
+      if (!best) return;
+      let activity = videoRequestActivity.get(best);
+      const sourceIdentity = String(best.currentSrc || best.src || '');
+      const currentTime = Number(best.currentTime || 0);
+      const previousState = videoRequestState.get(best);
+      const sourceChanged = previousState && sourceIdentity &&
+        previousState.sourceIdentity && sourceIdentity !== previousState.sourceIdentity;
+      const playbackRestarted = previousState && isFinite(currentTime) &&
+        currentTime + 0.75 < previousState.currentTime;
+      if (sourceChanged || playbackRestarted) {
+        const nextActivity = new Map();
+        const now = Date.now();
+        // Some players fetch the next manifest immediately before swapping
+        // the reused video element. Carry only very recent whole-media URLs
+        // across that boundary; old manifests and all old segments are lost.
+        if (activity) {
+          for (const [candidate, stats] of activity.entries()) {
+            const value = String(candidate || '').toLowerCase();
+            const isWholeMedia = /\.(m3u8|m3u|mpd|mp4|webm|mov)(\?|#|$)/.test(value) &&
+              !/[?&](range|sq|rn|rbuf)=/.test(value);
+            if (isWholeMedia && now - Number(stats.latest || 0) <= 8000) {
+              nextActivity.set(candidate, stats);
+            }
+          }
+        }
+        activity = nextActivity;
+        videoRequestActivity.set(best, activity);
+      }
+      if (!activity) {
+        activity = new Map();
+        videoRequestActivity.set(best, activity);
+      }
+      videoRequestState.set(best, {
+        sourceIdentity,
+        currentTime: isFinite(currentTime) ? currentTime : 0,
+        updatedAt: Date.now()
+      });
+      const previous = activity.get(url) || { count: 0, latest: 0 };
+      activity.set(url, { count: previous.count + 1, latest: Date.now() });
+      if (activity.size > 80) {
+        const oldest = Array.from(activity.entries())
+          .sort((a, b) => a[1].latest - b[1].latest)
+          .slice(0, activity.size - 80);
+        for (const entry of oldest) activity.delete(entry[0]);
+      }
+    } catch (_) {}
+  };
+
   const rememberMediaBuffer = (buffer, rawUrl) => {
-    if (!isTikPornPage || !buffer || !rawUrl || typeof buffer !== 'object') return;
+    if (!isElementBoundFeedPage || !buffer || !rawUrl || typeof buffer !== 'object') return;
     try {
       const url = new URL(String(rawUrl), location.href).toString();
       mediaBufferUrls.set(buffer, url);
@@ -155,7 +239,7 @@ const String _kEarlyMediaSnifferScript = r'''
   };
   window.__appRememberMediaBuffer = rememberMediaBuffer;
 
-  if (isTikPornPage) {
+  if (isElementBoundFeedPage) {
     try {
       const originalCreateObjectURL = URL.createObjectURL;
       URL.createObjectURL = function(object) {
@@ -210,11 +294,41 @@ const String _kEarlyMediaSnifferScript = r'''
       try {
         const blobUrl = String(video && (video.currentSrc || video.src) || '');
         const mediaSource = mediaSourceByBlobUrl.get(blobUrl);
-        const activity = mediaSource && mediaSourceActivity.get(mediaSource);
-        if (!activity) return [];
-        return Array.from(activity.entries())
-          .sort((a, b) => (b[1].count - a[1].count) || (b[1].latest - a[1].latest))
-          .slice(0, 12)
+        const combined = new Map();
+        const merge = (activity) => {
+          if (!activity) return;
+          for (const [url, stats] of activity.entries()) {
+            const previous = combined.get(url) || { count: 0, latest: 0 };
+            combined.set(url, {
+              count: previous.count + Number(stats.count || 0),
+              latest: Math.max(previous.latest, Number(stats.latest || 0))
+            });
+          }
+        };
+        const exactMediaSourceActivity = mediaSource && mediaSourceActivity.get(mediaSource);
+        if (exactMediaSourceActivity && exactMediaSourceActivity.size > 0) {
+          // The MediaSource belongs to this exact Blob/video. Never mix its
+          // consumed segments with page-level requests that may preload the
+          // next feed item.
+          merge(exactMediaSourceActivity);
+        } else {
+          merge(videoRequestActivity.get(video));
+        }
+        const wholeMediaPriority = (url) => {
+          const value = String(url || '').toLowerCase();
+          if (/\.(m3u8|m3u|mpd)(\?|#|$)/.test(value)) return 4;
+          if (/\.(mp4|webm|mov)(\?|#|$)/.test(value) &&
+              !/[?&](range|sq|rn|rbuf)=/.test(value)) return 3;
+          if (/\.(m4s|ts|cmfv|cmfa)(\?|#|$)/.test(value) ||
+              value.includes('/segment/') || value.includes('/chunk/')) return 0;
+          return 1;
+        };
+        return Array.from(combined.entries())
+          .sort((a, b) =>
+            (wholeMediaPriority(b[0]) - wholeMediaPriority(a[0])) ||
+            (b[1].latest - a[1].latest) ||
+            (b[1].count - a[1].count))
+          .slice(0, 32)
           .map(entry => entry[0]);
       } catch (_) {
         return [];
@@ -232,6 +346,7 @@ const String _kEarlyMediaSnifferScript = r'''
         source: source || '',
         timestamp: Date.now()
       });
+      bindRequestToVisibleVideo(url);
       if (window.__appEarlyMediaRequests.size > 500) {
         const first = window.__appEarlyMediaRequests.keys().next().value;
         window.__appEarlyMediaRequests.delete(first);
@@ -246,7 +361,7 @@ const String _kEarlyMediaSnifferScript = r'''
       try {
         const url = typeof input === 'string' ? input : (input && input.url);
         remember(url, response && response.headers && response.headers.get('content-type'), 'fetch');
-        if (isTikPornPage && response && typeof response.arrayBuffer === 'function') {
+        if (isElementBoundFeedPage && response && typeof response.arrayBuffer === 'function') {
           const originalArrayBuffer = response.arrayBuffer.bind(response);
           response.arrayBuffer = async function() {
             const buffer = await originalArrayBuffer();
@@ -1134,7 +1249,8 @@ class _BrowserPageState extends State<BrowserPage>
   ) async {
     final primaryUrl = (item['videoUrl'] ?? '').toString().trim();
     final urls = <String>[if (primaryUrl.isNotEmpty) primaryUrl];
-    // 长按候选可能来自同一页面中其他预加载视频，不能据此判断当前视频重复。
+    // Long-press candidates may include media preloaded for adjacent feed
+    // items. Only its primary URL is suitable for a tentative pre-check.
     if (item['downloadOrigin'] != 'long_press') {
       final candidateRaw = item['candidateUrls'];
       if (candidateRaw is List) {
@@ -1856,6 +1972,14 @@ class _BrowserPageState extends State<BrowserPage>
     return host == 'tik.porn' || host.endsWith('.tik.porn');
   }
 
+  bool _isElementBoundFeedPage(String? url) {
+    final host = Uri.tryParse((url ?? '').trim())?.host.toLowerCase() ?? '';
+    return host == 'tik.porn' ||
+        host.endsWith('.tik.porn') ||
+        host == 'pin.porn' ||
+        host.endsWith('.pin.porn');
+  }
+
   bool _looksLikePreviewClipUrl(String u) {
     final s = u.toLowerCase();
     const hints = [
@@ -1901,7 +2025,11 @@ class _BrowserPageState extends State<BrowserPage>
     return score;
   }
 
-  List<String> _buildFavoriteAttempts(String primary, List<String> candidates) {
+  List<String> _buildFavoriteAttempts(
+    String primary,
+    List<String> candidates, {
+    bool preservePrimary = false,
+  }) {
     final merged = <String>[];
     final seen = <String>{};
     void push(String? u) {
@@ -1925,13 +2053,20 @@ class _BrowserPageState extends State<BrowserPage>
     final insertionOrder = <String, int>{
       for (var i = 0; i < merged.length; i++) merged[i]: i,
     };
-    merged.sort((a, b) {
+    int compareCandidates(String a, String b) {
       final scoreOrder = _scoreFavoriteVideoUrl(
         b,
       ).compareTo(_scoreFavoriteVideoUrl(a));
       if (scoreOrder != 0) return scoreOrder;
       return insertionOrder[a]!.compareTo(insertionOrder[b]!);
-    });
+    }
+
+    if (preservePrimary && merged.length > 1) {
+      final primaryUrl = merged.first;
+      final fallbacks = merged.sublist(1)..sort(compareCandidates);
+      return <String>[primaryUrl, ...fallbacks];
+    }
+    merged.sort(compareCandidates);
     return merged;
   }
 
@@ -2042,21 +2177,16 @@ class _BrowserPageState extends State<BrowserPage>
     final isLongPress = item['downloadOrigin'] == 'long_press';
     final existingMedia = await _findExistingMediaForItem(item);
     if (existingMedia != null) {
-      await _markFavoriteDownloaded(item, downloaded: true);
-      onFailureType?.call('already_in_library');
-      if (showResultHint && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: const Text('该媒体已在媒体库中，已为你标记为已下载'),
-            duration: const Duration(seconds: 3),
-            action: SnackBarAction(
-              label: '查看',
-              onPressed: () => _openMediaLibraryAt(existingMedia),
-            ),
-          ),
-        );
+      final downloadAnyway = await _confirmSourceUrlDuplicateBeforeDownload(
+        existingMedia,
+      );
+      if (!downloadAnyway) {
+        await _markFavoriteDownloaded(item, downloaded: true);
+        onFailureType?.call('already_in_library');
+        return true;
       }
-      return true;
+      // URL matches are only hints. The downloaded content hash remains the
+      // authoritative duplicate check for dynamic and signed media URLs.
     }
     final pageUrl = (item['pageUrl'] ?? '').toString().trim();
     final videoUrl = (item['videoUrl'] ?? '').toString().trim();
@@ -2210,6 +2340,7 @@ class _BrowserPageState extends State<BrowserPage>
                 _isTrustedMediaCandidate(url),
           )
           .toList(),
+      preservePrimary: isLongPress,
     );
     if (isLongPress && attempts.length > 3) {
       attempts.removeRange(3, attempts.length);
@@ -2736,6 +2867,68 @@ class _BrowserPageState extends State<BrowserPage>
     }
   }
 
+  Future<bool> _confirmSourceUrlDuplicateBeforeDownload(
+    Map<String, dynamic> existingRow,
+  ) async {
+    if (!mounted || _mediaDuplicateDialogActive) return false;
+    _mediaDuplicateDialogActive = true;
+    try {
+      final location = await _resolveMediaLocationLabel(existingRow);
+      if (!mounted) return false;
+      final mediaType = DatabaseService.mediaTypeIndex(existingRow);
+      final mediaLabel = mediaType == MediaType.image.index ? '图片' : '视频';
+      final title = existingRow['name']?.toString() ?? '该$mediaLabel';
+      final mediaItem = MediaItem.fromMap(
+        Map<String, dynamic>.from(existingRow),
+      );
+      final action = await showDialog<String>(
+        context: context,
+        builder:
+            (dialogContext) => AlertDialog(
+              title: Text('发现疑似重复$mediaLabel'),
+              content: Text(
+                '根据网页下载地址，媒体库中可能已有这个$mediaLabel。'
+                '部分网站会为不同媒体复用同一地址，你可以继续下载并由文件内容再次准确查重。'
+                '\n\n文件名：$title\n位置：$location',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                  child: const Text('不下载'),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop('locate'),
+                  child: const Text('定位查看'),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop('preview'),
+                  child: const Text('直接查看'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.of(dialogContext).pop('download'),
+                  child: const Text('仍然下载'),
+                ),
+              ],
+            ),
+      );
+      if (!mounted) return false;
+      if (action == 'locate') {
+        await _openMediaLibraryAt(existingRow);
+      } else if (action == 'preview') {
+        await Navigator.of(context).push(
+          MaterialPageRoute(
+            builder:
+                (context) =>
+                    MediaPreviewPage(mediaItems: [mediaItem], initialIndex: 0),
+          ),
+        );
+      }
+      return action == 'download';
+    } finally {
+      _mediaDuplicateDialogActive = false;
+    }
+  }
+
   Future<void> _requestPermissions() async {
     var storageStatus = await Permission.storage.request();
     debugPrint('存储权限状态: $storageStatus');
@@ -2784,7 +2977,7 @@ class _BrowserPageState extends State<BrowserPage>
       await controller.evaluateJavascript(
         source: '''
       (() => {
-      const handlerVersion = 'media-download-v10';
+      const handlerVersion = 'media-download-v18';
       if (window.__appMediaDownloadHandlersVersion === handlerVersion) return true;
       window.Flutter = window.Flutter || { postMessage: function(m){ try { if(window.flutter_inappwebview && window.flutter_inappwebview.callHandler) window.flutter_inappwebview.callHandler('Flutter', m); } catch(e){} } };
       window.MediaInterceptor = window.MediaInterceptor || {
@@ -3530,12 +3723,26 @@ class _BrowserPageState extends State<BrowserPage>
       }, true);
 
       // 增强的媒体下载处理 - 近100%成功率
-      function handleMediaDownload(target, e) {
+      async function handleMediaDownload(target, e) {
         if (!target) {
           updateFeedbackStatus('未找到媒体元素', false);
           return;
         }
         const longPressSessionId = 'lp-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
+        let isPinPornContext = false;
+        let isTikPornContext = false;
+        try {
+          const hosts = [location.hostname || ''];
+          if (document.referrer) hosts.push(new URL(document.referrer).hostname || '');
+          isPinPornContext = hosts.some(host => {
+            const normalized = String(host).toLowerCase();
+            return normalized === 'pin.porn' || normalized.endsWith('.pin.porn');
+          });
+          isTikPornContext = hosts.some(host => {
+            const normalized = String(host).toLowerCase();
+            return normalized === 'tik.porn' || normalized.endsWith('.tik.porn');
+          });
+        } catch (_) {}
         
         function pickCurrentVideo(x, y) {
           const videos = Array.from(document.querySelectorAll('video'));
@@ -3560,6 +3767,129 @@ class _BrowserPageState extends State<BrowserPage>
             if (score > bestScore) { bestScore = score; picked = video; }
           }
           return picked;
+        }
+
+        function pickTikPornVideo(x, y) {
+          try {
+            // TikPORN places controls/overlays above the video. Resolve the
+            // player under the finger first instead of comparing preloaded
+            // videos that may occupy the same viewport rectangle.
+            const stack = document.elementsFromPoint(x, y);
+            for (const element of stack) {
+              if (!element) continue;
+              if (String(element.tagName || '').toLowerCase() === 'video') {
+                return element;
+              }
+              const player = element.closest && (
+                element.closest('[class*="player_wrapper"]') ||
+                element.closest('[class*="Player-module"][class*="player"]')
+              );
+              const playerVideo = player && player.querySelector && player.querySelector('video');
+              if (playerVideo) return playerVideo;
+            }
+          } catch (_) {}
+          return pickCurrentVideo(x, y);
+        }
+
+        function exactTikPornSource(video) {
+          if (!video) return '';
+          try {
+            const sources = Array.from(video.querySelectorAll('source'));
+            for (const source of sources) {
+              const raw = String(source.src || source.getAttribute('src') || '').trim();
+              if (!raw) continue;
+              const absolute = new URL(raw, location.href).toString();
+              const path = String(new URL(absolute).pathname || '').toLowerCase();
+              const supported = ['.mp4', '.webm', '.mov', '.m3u8', '.m3u', '.mpd']
+                .some(extension => path.endsWith(extension));
+              if (/^https?:/i.test(absolute) && supported) {
+                return absolute;
+              }
+            }
+          } catch (_) {}
+          return '';
+        }
+
+        function tikPornVideoId(video) {
+          if (!video) return '';
+          const values = [];
+          const push = value => {
+            const normalized = String(value || '').trim();
+            if (normalized) values.push(normalized);
+          };
+          try {
+            push(video.poster);
+            push(video.getAttribute('poster'));
+            const player = video.closest && video.closest('[class*="player_wrapper"]');
+            if (player) {
+              const poster = player.querySelector('[class*="posterContainer"]');
+              push(poster && poster.style && poster.style.backgroundImage);
+            }
+          } catch (_) {}
+          for (const value of values) {
+            const markerIndex = value.toLowerCase().indexOf('/video/');
+            if (markerIndex < 0) continue;
+            const tail = value.substring(markerIndex + 7).split('?')[0].split('#')[0];
+            const parts = tail.split('/').filter(Boolean);
+            const candidates = parts.length > 1
+              ? [parts[1], parts[0]]
+              : parts;
+            for (const candidate of candidates) {
+              const numeric = Number(candidate);
+              if (candidate && Number.isInteger(numeric) && numeric > 0) {
+                return candidate;
+              }
+            }
+          }
+          return '';
+        }
+
+        async function resolveTikPornVideoSource(video) {
+          const direct = exactTikPornSource(video);
+          const videoId = tikPornVideoId(video);
+          if (!videoId) return { url: direct, videoId: '' };
+          window.__appTikPornSourceCache = window.__appTikPornSourceCache || new Map();
+          const cached = window.__appTikPornSourceCache.get(videoId);
+          if (cached) return { url: cached, videoId: videoId };
+          try {
+            const response = await fetch('/video/' + encodeURIComponent(videoId), {
+              credentials: 'include',
+              headers: { Accept: 'text/html' },
+              cache: 'no-store'
+            });
+            if (response && response.ok) {
+              const html = await response.text();
+              const parsed = new DOMParser().parseFromString(html, 'text/html');
+              const scripts = Array.from(parsed.querySelectorAll('script[type="application/ld+json"]'));
+              let resolved = '';
+              const inspect = value => {
+                if (!value || resolved) return;
+                if (Array.isArray(value)) {
+                  value.forEach(inspect);
+                  return;
+                }
+                if (typeof value !== 'object') return;
+                const type = String(value['@type'] || '').toLowerCase();
+                const pageUrl = String(value.url || value['@id'] || '');
+                if (type === 'videoobject' &&
+                    pageUrl.includes('/video/' + videoId) &&
+                    typeof value.contentUrl === 'string') {
+                  resolved = value.contentUrl.trim();
+                  return;
+                }
+                Object.values(value).forEach(inspect);
+              };
+              for (const script of scripts) {
+                try { inspect(JSON.parse(script.textContent || 'null')); } catch (_) {}
+                if (resolved) break;
+              }
+              if (/^https?:/i.test(resolved)) {
+                window.__appTikPornSourceCache.set(videoId, resolved);
+                return { url: resolved, videoId: videoId };
+              }
+            }
+          } catch (_) {}
+          return { url: direct, videoId: videoId };
         }
 
         function effectiveVideoDuration(video) {
@@ -3595,7 +3925,9 @@ class _BrowserPageState extends State<BrowserPage>
         // 触点上即使覆盖着网页按钮，也优先选择触点范围内真正可见、正在播放的视频。
         let bestTarget = target;
         if (typeof window._lastTouchX === 'number' && typeof window._lastTouchY === 'number') {
-          const currentVideo = pickCurrentVideo(window._lastTouchX, window._lastTouchY);
+          const currentVideo = isTikPornContext
+            ? pickTikPornVideo(window._lastTouchX, window._lastTouchY)
+            : pickCurrentVideo(window._lastTouchX, window._lastTouchY);
           const atPoint = document.elementsFromPoint(window._lastTouchX, window._lastTouchY);
           for (const el of atPoint) {
             const tag = (el.tagName || '').toLowerCase();
@@ -3620,6 +3952,51 @@ class _BrowserPageState extends State<BrowserPage>
           }
         }
         target = bestTarget;
+
+        if (isTikPornContext &&
+            typeof window._lastTouchX === 'number' &&
+            typeof window._lastTouchY === 'number') {
+          const exactVideo = pickTikPornVideo(window._lastTouchX, window._lastTouchY);
+          if (exactVideo) {
+            target = exactVideo;
+            // Resolve the stable card ID to its own detail-page content URL.
+            // The three mounted players otherwise expose interleaved MSE
+            // traffic for the previous, current, and next feed items.
+            updateFeedbackStatus('正在确认当前视频…', null);
+            const resolved = await resolveTikPornVideoSource(exactVideo);
+            target.__appTikDownloadUrl = resolved.url || '';
+            target.__appTikVideoId = resolved.videoId || '';
+          }
+        }
+
+        // PinPorn exposes the exact MP4 for each Swiper item in video[data-src].
+        // Bind to the slide under the finger instead of any globally sniffed
+        // request, because adjacent slides are deliberately preloaded.
+        if (isPinPornContext &&
+            typeof window._lastTouchX === 'number' &&
+            typeof window._lastTouchY === 'number') {
+          try {
+            const touched = document.elementFromPoint(window._lastTouchX, window._lastTouchY);
+            // Swiper may mark adjacent items as visible, but only one item is
+            // active. Use it before all touch/visibility fallbacks.
+            const slide = document.querySelector('.swiper-slide-active') ||
+              (touched && touched.closest && touched.closest('.swiper-slide')) ||
+              document.querySelector('.swiper-slide-visible') ||
+              (target && target.closest && target.closest('.swiper-slide'));
+            const slideVideo = slide && slide.querySelector && slide.querySelector('video[data-src]');
+            const dataSrc = slideVideo && slideVideo.getAttribute('data-src');
+            if (slideVideo && dataSrc) {
+              target = slideVideo;
+              const playingSrc = String(slideVideo.currentSrc || slideVideo.src || '').trim();
+              // data-src belongs to the active slide's API item. currentSrc
+              // can briefly retain the previous item while Swiper reuses DOM.
+              target.__appPinnedDownloadUrl = new URL(dataSrc, location.href).toString();
+              target.__appPinPlayingFallbackUrl = playingSrc ?
+                new URL(playingSrc, location.href).toString() : '';
+              target.__appPinSlideId = String(slide.getAttribute('data-id') || '');
+            }
+          } catch (_) {}
+        }
         
         // 懒加载/预加载触发 - 视频常需 load() 或短暂 play 才能获取 currentSrc
         try {
@@ -3665,7 +4042,10 @@ class _BrowserPageState extends State<BrowserPage>
         const parentLink = target.closest ? target.closest('a') : null;
         const tagName = (target.tagName || '').toLowerCase();
         const videoEl = tagName === 'video' ? target : (target.querySelector && target.querySelector('video'));
-        if (videoEl && window.MediaInterceptor && window.MediaInterceptor.interceptedRequests) {
+        if (videoEl &&
+            window.MediaInterceptor &&
+            window.MediaInterceptor.interceptedRequests &&
+            !(isTikPornContext && target.__appTikDownloadUrl)) {
           // 补充扫描性能条目，防止 Hook 遗漏（例如缓存命中或某些特殊的加载方式）
           try {
             performance.getEntriesByType('resource').forEach(entry => {
@@ -3711,6 +4091,8 @@ class _BrowserPageState extends State<BrowserPage>
           return /\\.(jpg|jpeg|png|gif|webp)(\\?|#|\$)/.test(s) && !/\\.(m3u8|m3u|mp4|webm|ts)(\\?|#|\$)/.test(s);
         }
         const urlSources = [
+          () => target.__appPinnedDownloadUrl,
+          () => target.__appTikDownloadUrl,
           () => target.currentSrc || target.src,
           () => videoEl && (videoEl.currentSrc || videoEl.src),
           () => videoEl && Array.from(videoEl.querySelectorAll('source')).map(s => s.src || s.getAttribute('src')).find(u => u),
@@ -3796,16 +4178,17 @@ class _BrowserPageState extends State<BrowserPage>
         }
         // TikPORN 的 Blob/MSE URL 与当前 video 元素一一绑定。不能用页面级
         // “最近捕获的 MPD”提前覆盖它，否则列表预加载下一条时会下载错视频。
-        let isTikPornContext = false;
+        let isElementBoundFeedContext = false;
         try {
           const hosts = [location.hostname || ''];
           if (document.referrer) hosts.push(new URL(document.referrer).hostname || '');
-          isTikPornContext = hosts.some(host => {
+          isElementBoundFeedContext = hosts.some(host => {
             const normalized = String(host).toLowerCase();
-            return normalized === 'tik.porn' || normalized.endsWith('.tik.porn');
+            return normalized === 'tik.porn' || normalized.endsWith('.tik.porn') ||
+                   normalized === 'pin.porn' || normalized.endsWith('.pin.porn');
           });
         } catch (_) {}
-        const preserveBoundBlob = isTikPornContext && String(url || '').startsWith('blob:');
+        const preserveBoundBlob = isElementBoundFeedContext && String(url || '').startsWith('blob:');
 
         // 拦截到的 m3u8/mp4 不要被 DOM 里的海报图、缩略图或占位 src 覆盖（否则原生侧会当图片下载或失败后退化为截屏）
         if (interceptedStreamUrl && videoEl && !preserveBoundBlob) {
@@ -3817,6 +4200,19 @@ class _BrowserPageState extends State<BrowserPage>
               url = interceptedStreamUrl;
             }
           }
+        }
+        if (isPinPornContext && target.__appPinnedDownloadUrl) {
+          // Do not let requests accumulated from previous/adjacent slides
+          // participate in this independent long-press session.
+          url = target.__appPinnedDownloadUrl;
+          interceptedStreamUrl = null;
+        }
+        if (isTikPornContext && target.__appTikDownloadUrl) {
+          // The source belongs to the one player selected for this session.
+          // Do not allow globally captured previous/next manifests to replace
+          // it or participate as retry candidates.
+          url = target.__appTikDownloadUrl;
+          interceptedStreamUrl = null;
         }
         if (!url) {
           if (videoEl && videoEl.srcObject) {
@@ -3851,7 +4247,7 @@ class _BrowserPageState extends State<BrowserPage>
         // 多重处理blob/data url
         function tryBlobOrDataUrl(url, mediaType) {
           if (isBlobUrl(url)) {
-            if (mediaType === 'video' && isTikPornContext) {
+            if (mediaType === 'video' && isElementBoundFeedContext) {
               let boundFragments = [];
               try {
                 if (videoEl && typeof window.__appMediaFragmentsForVideo === 'function') {
@@ -4003,8 +4399,14 @@ class _BrowserPageState extends State<BrowserPage>
           try { push(el && el.getAttribute && el.getAttribute(name)); } catch (_) {}
         };
         push(url);
-        if (interceptedStreamUrl) push(interceptedStreamUrl);
-        try {
+        if (isTikPornContext && target.__appTikDownloadUrl) {
+          // The exact source is intentionally the only TikPORN candidate.
+        } else if (isPinPornContext && target.__appPinPlayingFallbackUrl) {
+          push(target.__appPinPlayingFallbackUrl);
+        } else if (interceptedStreamUrl) {
+          push(interceptedStreamUrl);
+        }
+        if (!(isTikPornContext && target.__appTikDownloadUrl)) try {
           push(target.currentSrc || target.src || target.href);
           pushAttr(target, 'src');
           pushAttr(target, 'href');
@@ -4024,7 +4426,7 @@ class _BrowserPageState extends State<BrowserPage>
           const bgMatches = String(bg).matchAll(/url\(['"]?([^'")]+)['"]?\)/g);
           for (const m of bgMatches) push(m[1]);
         } catch (_) {}
-        if (videoEl) {
+        if (videoEl && !isPinPornContext && !(isTikPornContext && target.__appTikDownloadUrl)) {
           try {
             const srcs = Array.from(videoEl.querySelectorAll('source')).map(s => s.src || s.getAttribute('src'));
             for (const s of srcs) push(s || '');
@@ -4033,7 +4435,7 @@ class _BrowserPageState extends State<BrowserPage>
         }
         try {
           const mediaInside = target.querySelectorAll && target.querySelectorAll('img, video, source, a[href]');
-          if (mediaInside) {
+          if (mediaInside && !isPinPornContext) {
             Array.from(mediaInside).slice(0, 30).forEach(el => {
               push(el.currentSrc || el.src || el.href);
               pushAttr(el, 'src');
@@ -4060,6 +4462,9 @@ class _BrowserPageState extends State<BrowserPage>
           pageUrl: location.href || '',
           title: document.title || '',
           sessionId: longPressSessionId,
+          siteMediaId: isPinPornContext
+            ? String(target.__appPinSlideId || '')
+            : (isTikPornContext ? String(target.__appTikVideoId || '') : ''),
           playbackStartedAtMs: Date.now() - Math.max(0, Number(videoEl && videoEl.currentTime || 0)) * 1000,
           durationSec: effectiveVideoDuration(videoEl),
           candidates: cands
@@ -4186,7 +4591,7 @@ class _BrowserPageState extends State<BrowserPage>
       );
       final ready = await controller.evaluateJavascript(
         source:
-            "window.__appMediaDownloadHandlersVersion === 'media-download-v10'",
+            "window.__appMediaDownloadHandlersVersion === 'media-download-v18'",
       );
       if (ready == true || ready.toString().toLowerCase() == 'true')
         return true;
@@ -4254,8 +4659,9 @@ class _BrowserPageState extends State<BrowserPage>
       // Media events can originate from a cross-origin player iframe/CDN even
       // when the visible top-level page is TikPORN. Check both contexts so all
       // long-press download paths apply the same site-specific policy.
-      final isTikPornDownloadContext =
-          _isTikPornPage(messagePageUrl) || _isTikPornPage(_currentUrl);
+      final isElementBoundFeedDownloadContext =
+          _isElementBoundFeedPage(messagePageUrl) ||
+          _isElementBoundFeedPage(_currentUrl);
       final requestedMediaType =
           mediaType == 'video'
               ? MediaType.video
@@ -4412,13 +4818,6 @@ class _BrowserPageState extends State<BrowserPage>
             'durationSec': messageDurationSeconds,
           };
 
-          // 查重：如果媒体库已存在，则弹出提示并终止下载
-          final existing = await _findExistingMediaForItem(itemMap);
-          if (existing != null) {
-            await _showMediaDuplicateDialog(existing);
-            return;
-          }
-
           await _downloadMediaRobustly(item: itemMap, showResultHint: true);
           return;
         } finally {
@@ -4455,15 +4854,43 @@ class _BrowserPageState extends State<BrowserPage>
             _canvasFallbackCompleter?.complete(true);
           }
           if (mediaType == 'video') {
-            final useTikPornDisambiguation = isTikPornDownloadContext;
+            final useElementBoundDisambiguation =
+                isElementBoundFeedDownloadContext;
             final boundFragmentValue = data['boundFragments'];
             final boundFragmentUrls = <String>[];
-            if (useTikPornDisambiguation && boundFragmentValue is List) {
+            if (useElementBoundDisambiguation && boundFragmentValue is List) {
               for (final value in boundFragmentValue) {
                 if (value is String && value.trim().isNotEmpty) {
                   boundFragmentUrls.add(value.trim());
                 }
               }
+            }
+            final boundStreamCandidates =
+                normalizeMediaCandidateUrls(
+                  boundFragmentUrls,
+                  video: true,
+                  maxCandidates: 8,
+                ).where((candidate) {
+                  return !_looksLikeMediaFragmentUrl(candidate) &&
+                      _isLikelyDirectMediaUrl(candidate);
+                }).toList();
+            if (boundStreamCandidates.isNotEmpty) {
+              // These URLs were consumed by the exact MediaSource attached to
+              // the long-pressed video, so they outrank every page-level sniff.
+              final selectedManifest = boundStreamCandidates.first;
+              await _downloadMediaRobustly(
+                item: <String, dynamic>{
+                  'pageUrl': _currentUrl,
+                  'videoUrl': selectedManifest,
+                  'candidateUrls': boundStreamCandidates,
+                  'title': (data['title'] ?? '').toString(),
+                  'downloadOrigin': 'long_press',
+                  'sessionId': mediaSessionId,
+                  'durationSec': messageDurationSeconds,
+                },
+                showResultHint: true,
+              );
+              return;
             }
             final boundDashCandidates =
                 normalizeMediaCandidateUrls(
@@ -4477,7 +4904,7 @@ class _BrowserPageState extends State<BrowserPage>
                       false;
                 }).toList();
             final activeDashCandidates =
-                useTikPornDisambiguation
+                useElementBoundDisambiguation
                     ? _recentActiveDashManifestCandidates(
                       pageUrl: messagePageUrl,
                       notBefore: sessionNotBefore,
@@ -4509,7 +4936,7 @@ class _BrowserPageState extends State<BrowserPage>
               final selectedManifest =
                   boundDashCandidates.isNotEmpty
                       ? boundDashCandidates.first
-                      : useTikPornDisambiguation
+                      : useElementBoundDisambiguation
                       ? await _selectDashManifestForLongPress(
                         dashCandidates,
                         targetDurationSeconds: messageDurationSeconds,
@@ -4581,8 +5008,8 @@ class _BrowserPageState extends State<BrowserPage>
         }
         if (selectedType == MediaType.video) {
           final existing = await _findExistingVideoBeforeDownload(resolvedUrl);
-          if (existing != null) {
-            await _showMediaDuplicateDialog(existing);
+          if (existing != null &&
+              !await _confirmSourceUrlDuplicateBeforeDownload(existing)) {
             return;
           }
         }
@@ -5590,8 +6017,9 @@ class _BrowserPageState extends State<BrowserPage>
                 processedUrl,
               );
               if (existing != null) {
-                await _showMediaDuplicateDialog(existing);
-                return;
+                final downloadAnyway =
+                    await _confirmSourceUrlDuplicateBeforeDownload(existing);
+                if (!downloadAnyway) return;
               }
             }
             ScaffoldMessenger.of(context).showSnackBar(
@@ -5611,8 +6039,9 @@ class _BrowserPageState extends State<BrowserPage>
         if (selectedType == MediaType.video) {
           final existing = await _findExistingVideoBeforeDownload(processedUrl);
           if (existing != null) {
-            await _showMediaDuplicateDialog(existing);
-            return;
+            final downloadAnyway =
+                await _confirmSourceUrlDuplicateBeforeDownload(existing);
+            if (!downloadAnyway) return;
           }
         }
         ScaffoldMessenger.of(context).showSnackBar(
