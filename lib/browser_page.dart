@@ -95,7 +95,7 @@ class _DashTrackPlan {
 /// 同时发起的 HLS 分片 HTTP 请求数（需 ≤ [ _kHlsMaxConnectionsPerHost ]，过大易被 CDN 限流）。
 const int _kHlsParallelSegmentFetches = 10;
 
-/// TikPORN 的 DASH 音频和视频会并行下载，每轨 10 路，合计低于单主机连接上限。
+/// DASH 单轨最大并发数；音视频轨会同时下载，合计仍低于单主机连接上限。
 const int _kDashParallelSegmentFetches = 10;
 
 /// 单主机最大并行连接数，应 ≥ 分片并行数，否则多余请求会在客户端排队。
@@ -2049,7 +2049,10 @@ class _BrowserPageState extends State<BrowserPage>
           SnackBar(
             content: const Text('该媒体已在媒体库中，已为你标记为已下载'),
             duration: const Duration(seconds: 3),
-            action: SnackBarAction(label: '查看', onPressed: _openMediaLibrary),
+            action: SnackBarAction(
+              label: '查看',
+              onPressed: () => _openMediaLibraryAt(existingMedia),
+            ),
           ),
         );
       }
@@ -2352,7 +2355,7 @@ class _BrowserPageState extends State<BrowserPage>
     if (ok && lastFailureType != 'already_downloading') {
       await _markFavoriteDownloaded(item, downloaded: true);
     }
-    if (showResultHint && mounted) {
+    if (showResultHint && mounted && lastFailureType != 'already_in_library') {
       final canView = ok || lastFailureType == 'already_in_library';
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -2642,19 +2645,37 @@ class _BrowserPageState extends State<BrowserPage>
     );
   }
 
-  Future<void> _showVideoDuplicateSnackBar(
+  void _openMediaLibraryAt(Map<String, dynamic> mediaRow) {
+    if (!mounted) return;
+    final directory = (mediaRow['directory'] ?? 'root').toString().trim();
+    final mediaId = (mediaRow['id'] ?? '').toString().trim();
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder:
+            (_) => MediaManagerPage(
+              showRouteBackButton: true,
+              initialDirectoryId: directory.isEmpty ? 'root' : directory,
+              highlightMediaId: mediaId.isEmpty ? null : mediaId,
+            ),
+      ),
+    );
+  }
+
+  Future<void> _showMediaDuplicateDialog(
     Map<String, dynamic> existingRow,
   ) async {
     if (!mounted) return;
     final location = await _resolveMediaLocationLabel(existingRow);
-    final title = existingRow['name']?.toString() ?? '该视频';
+    final mediaType = DatabaseService.mediaTypeIndex(existingRow);
+    final mediaLabel = mediaType == MediaType.image.index ? '图片' : '视频';
+    final title = existingRow['name']?.toString() ?? '该$mediaLabel';
     final mediaItem = MediaItem.fromMap(Map<String, dynamic>.from(existingRow));
     await showDialog<void>(
       context: context,
       builder: (dialogContext) {
         return AlertDialog(
-          title: const Text('视频已存在'),
-          content: Text('媒体库中已经有这个视频了。\n\n文件名：$title\n位置：$location'),
+          title: Text('$mediaLabel已存在'),
+          content: Text('媒体库中已经有这个$mediaLabel了。\n\n文件名：$title\n位置：$location'),
           actions: [
             TextButton(
               onPressed: () => Navigator.of(dialogContext).pop(),
@@ -2663,15 +2684,9 @@ class _BrowserPageState extends State<BrowserPage>
             TextButton(
               onPressed: () {
                 Navigator.of(dialogContext).pop();
-                Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder:
-                        (context) =>
-                            const MediaManagerPage(showRouteBackButton: true),
-                  ),
-                );
+                _openMediaLibraryAt(existingRow);
               },
-              child: const Text('打开媒体库'),
+              child: const Text('定位查看'),
             ),
             FilledButton(
               onPressed: () {
@@ -4198,6 +4213,11 @@ class _BrowserPageState extends State<BrowserPage>
         }
       }
       final messagePageUrl = (data['pageUrl'] ?? _currentUrl).toString().trim();
+      // Media events can originate from a cross-origin player iframe/CDN even
+      // when the visible top-level page is TikPORN. Check both contexts so all
+      // long-press download paths apply the same site-specific policy.
+      final isTikPornDownloadContext =
+          _isTikPornPage(messagePageUrl) || _isTikPornPage(_currentUrl);
       final requestedMediaType =
           mediaType == 'video'
               ? MediaType.video
@@ -4352,12 +4372,13 @@ class _BrowserPageState extends State<BrowserPage>
             'downloadOrigin': 'long_press',
             'sessionId': mediaSessionId,
             'durationSec': messageDurationSeconds,
+            'allowDurationMismatch': isTikPornDownloadContext,
           };
 
           // 查重：如果媒体库已存在，则弹出提示并终止下载
           final existing = await _findExistingMediaForItem(itemMap);
           if (existing != null) {
-            await _showVideoDuplicateSnackBar(existing);
+            await _showMediaDuplicateDialog(existing);
             return;
           }
 
@@ -4397,7 +4418,7 @@ class _BrowserPageState extends State<BrowserPage>
             _canvasFallbackCompleter?.complete(true);
           }
           if (mediaType == 'video') {
-            final useTikPornDisambiguation = _isTikPornPage(messagePageUrl);
+            final useTikPornDisambiguation = isTikPornDownloadContext;
             final boundFragmentValue = data['boundFragments'];
             final boundFragmentUrls = <String>[];
             if (useTikPornDisambiguation && boundFragmentValue is List) {
@@ -4528,7 +4549,7 @@ class _BrowserPageState extends State<BrowserPage>
         if (selectedType == MediaType.video) {
           final existing = await _findExistingVideoBeforeDownload(resolvedUrl);
           if (existing != null) {
-            await _showVideoDuplicateSnackBar(existing);
+            await _showMediaDuplicateDialog(existing);
             return;
           }
         }
@@ -4675,6 +4696,7 @@ class _BrowserPageState extends State<BrowserPage>
     String mediaType, {
     String? sourceMimeType,
   }) async {
+    File? outputFile;
     try {
       debugPrint('处理Base64数据以直接保存: $mediaType');
       String raw = base64Data.trim();
@@ -4774,6 +4796,7 @@ class _BrowserPageState extends State<BrowserPage>
       extension = detectedExtension ?? extension;
       final filePath = '${mediaDir.path}/$uuid$extension';
       final file = File(filePath);
+      outputFile = file;
       await file.writeAsBytes(bytes);
       debugPrint('已从Base64保存文件: $filePath');
       if (normalizedMediaType == 'video') {
@@ -4819,6 +4842,13 @@ class _BrowserPageState extends State<BrowserPage>
           ),
         );
       }
+    } on _ExistingMediaDuplicateException catch (e) {
+      try {
+        if (outputFile != null && await outputFile.exists()) {
+          await outputFile.delete();
+        }
+      } catch (_) {}
+      await _showMediaDuplicateDialog(e.existingRow);
     } catch (e, stackTrace) {
       debugPrint('处理Base64数据时出错: $e');
       debugPrint('错误堆栈: $stackTrace');
@@ -5527,7 +5557,7 @@ class _BrowserPageState extends State<BrowserPage>
                 processedUrl,
               );
               if (existing != null) {
-                await _showVideoDuplicateSnackBar(existing);
+                await _showMediaDuplicateDialog(existing);
                 return;
               }
             }
@@ -5548,7 +5578,7 @@ class _BrowserPageState extends State<BrowserPage>
         if (selectedType == MediaType.video) {
           final existing = await _findExistingVideoBeforeDownload(processedUrl);
           if (existing != null) {
-            await _showVideoDuplicateSnackBar(existing);
+            await _showMediaDuplicateDialog(existing);
             return;
           }
         }
@@ -7116,7 +7146,9 @@ class _BrowserPageState extends State<BrowserPage>
         _isTikPornPage(_currentUrl) ||
         _isTikPornPage(requestHeaders['Referer']);
     final dashHost = Uri.tryParse(manifestUrl)?.host.toLowerCase() ?? '';
-    final baseConcurrency = useAcceleratedDash ? 10 : 4;
+    // Generic DASH also benefits from parallel tracks. Start conservatively
+    // below the TikPORN fast path and retain the per-host failure backoff.
+    final baseConcurrency = useAcceleratedDash ? 10 : 6;
     final maxConcurrency = useAcceleratedDash ? 10 : 8;
     final adaptiveConcurrency = (_dashConcurrencyByHost[dashHost] ??
             baseConcurrency)
@@ -7155,14 +7187,13 @@ class _BrowserPageState extends State<BrowserPage>
       }
 
       try {
-        if (useAcceleratedDash && audio != null) {
+        if (audio != null) {
           await Future.wait<void>([
             downloadTrack(video, videoFile),
             downloadTrack(audio, audioFile),
           ]);
         } else {
           await downloadTrack(video, videoFile);
-          if (audio != null) await downloadTrack(audio, audioFile);
         }
         if (dashHost.isNotEmpty && adaptiveConcurrency < maxConcurrency) {
           _dashConcurrencyByHost[dashHost] = adaptiveConcurrency + 1;
@@ -8062,6 +8093,7 @@ class _BrowserPageState extends State<BrowserPage>
   }
 
   Future<bool> _tryScreenshotFallback(InAppWebViewController ctrl) async {
+    File? screenshotFile;
     try {
       await Future.delayed(const Duration(milliseconds: 80));
       final screenshot = await ctrl.takeScreenshot();
@@ -8071,6 +8103,7 @@ class _BrowserPageState extends State<BrowserPage>
       if (!await mediaDir.exists()) await mediaDir.create(recursive: true);
       final uuid = const Uuid().v4();
       final file = File('${mediaDir.path}/$uuid.png');
+      screenshotFile = file;
       await file.writeAsBytes(screenshot);
       await _saveToMediaLibrary(file, MediaType.image);
       _notifyMediaDownloadSaved();
@@ -8093,6 +8126,14 @@ class _BrowserPageState extends State<BrowserPage>
           ),
         );
       }
+      return true;
+    } on _ExistingMediaDuplicateException catch (e) {
+      try {
+        if (screenshotFile != null && await screenshotFile.exists()) {
+          await screenshotFile.delete();
+        }
+      } catch (_) {}
+      await _showMediaDuplicateDialog(e.existingRow);
       return true;
     } catch (e) {
       debugPrint('截屏兜底失败: $e');
@@ -9379,7 +9420,7 @@ class _BrowserPageState extends State<BrowserPage>
       if (mounted) {
         if (isLibraryDuplicate) {
           _removeDownloadTask(taskId);
-          await _showVideoDuplicateSnackBar(duplicateRow!);
+          await _showMediaDuplicateDialog(duplicateRow!);
         } else if (!skipFailurePrompt || e is _MediaLibrarySaveException) {
           _updateDownloadTask(taskId, status: 'failed', progressDetail: '');
           ScaffoldMessenger.of(context).showSnackBar(

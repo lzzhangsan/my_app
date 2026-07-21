@@ -544,10 +544,14 @@ class MediaManagerPage extends StatefulWidget {
     super.key,
     this.onMultiSelectModeChanged,
     this.showRouteBackButton = false,
+    this.initialDirectoryId,
+    this.highlightMediaId,
   });
 
   final void Function(bool isMultiSelectMode)? onMultiSelectModeChanged;
   final bool showRouteBackButton;
+  final String? initialDirectoryId;
+  final String? highlightMediaId;
 
   @override
   _MediaManagerPageState createState() => _MediaManagerPageState();
@@ -602,6 +606,10 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   String? _lastViewedMediaId;
   final List<String> _availableDirectories = ['root'];
   final ScrollController _gridScrollController = ScrollController();
+  final GlobalKey _highlightedMediaKey = GlobalKey();
+  String? _highlightedMediaId;
+  bool _didRevealInitialMedia = false;
+  Timer? _highlightedMediaTimer;
   bool _isDragSelecting = false;
   bool _hasDragMoved = false;
   bool _dragIsDeselectMode = false;
@@ -669,6 +677,8 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   @override
   void initState() {
     super.initState();
+    final initialDirectory = widget.initialDirectoryId?.trim() ?? '';
+    if (initialDirectory.isNotEmpty) _currentDirectory = initialDirectory;
     _gridScrollController.addListener(_handleGridScroll);
 
     if (!kIsWeb) {
@@ -709,6 +719,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     _thumbnailUiRefreshDebounce?.cancel();
     _gridScrollController.removeListener(_handleGridScroll);
     _gridScrollController.dispose();
+    _highlightedMediaTimer?.cancel();
     _cleanupTimer?.cancel(); // Cancel the cleanup timer
     _settingsIconSingleTapTimer?.cancel();
     _thumbCornerMenuSingleTapTimer?.cancel();
@@ -748,6 +759,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     try {
       await _databaseService.ensureMediaItemsTableExists();
       await _loadMediaItems();
+      await _revealInitialMediaIfNeeded();
       unawaited(_warmCurrentDirectoryVideoThumbnailsInBackground());
       unawaited(_warmAllVideoThumbnailsInBackground());
     } catch (e) {
@@ -756,6 +768,77 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         _isLoading = false;
       });
     }
+  }
+
+  Future<void> _revealInitialMediaIfNeeded() async {
+    if (_didRevealInitialMedia) return;
+    _didRevealInitialMedia = true;
+    final targetId = widget.highlightMediaId?.trim() ?? '';
+    if (targetId.isEmpty) return;
+
+    final latestRow = await _databaseService.getMediaItemById(targetId);
+    if (latestRow == null) return;
+    final latestDirectory =
+        (latestRow['directory'] ?? 'root').toString().trim();
+    final targetDirectory = latestDirectory.isEmpty ? 'root' : latestDirectory;
+    if (_currentDirectory != targetDirectory) {
+      _currentDirectory = targetDirectory;
+      await _loadMediaItems();
+    }
+    while (mounted &&
+        !_mediaItems.any((item) => item.id == targetId) &&
+        _hasMoreMediaItems) {
+      await _loadMediaItems(append: true);
+    }
+    if (!mounted || !_mediaItems.any((item) => item.id == targetId)) return;
+
+    setState(() {
+      _mediaTypeViewMode = _MediaTypeViewMode.all;
+      _highlightedMediaId = targetId;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _scrollToHighlightedMedia(targetId);
+    });
+    _highlightedMediaTimer?.cancel();
+    _highlightedMediaTimer = Timer(const Duration(seconds: 8), () {
+      if (!mounted || _highlightedMediaId != targetId) return;
+      setState(() => _highlightedMediaId = null);
+    });
+  }
+
+  void _scrollToHighlightedMedia(String targetId) {
+    if (!_gridScrollController.hasClients) return;
+    final index = _visibleMediaItems.indexWhere((item) => item.id == targetId);
+    if (index < 0) return;
+    final availableWidth = MediaQuery.sizeOf(context).width - _gridPadding * 2;
+    final cellWidth =
+        (availableWidth - (_gridCrossAxisCount - 1) * _gridCrossAxisSpacing) /
+        _gridCrossAxisCount;
+    final cellHeight = cellWidth / _gridChildAspectRatio;
+    final row = index ~/ _gridCrossAxisCount;
+    final viewportHeight = _gridScrollController.position.viewportDimension;
+    final targetOffset =
+        row * (cellHeight + _gridMainAxisSpacing) -
+        (viewportHeight - cellHeight) / 2;
+    final maxOffset = _gridScrollController.position.maxScrollExtent;
+    unawaited(
+      _gridScrollController
+          .animateTo(
+            targetOffset.clamp(0.0, maxOffset).toDouble(),
+            duration: const Duration(milliseconds: 350),
+            curve: Curves.easeOutCubic,
+          )
+          .then((_) async {
+            final targetContext = _highlightedMediaKey.currentContext;
+            if (!mounted || targetContext == null) return;
+            await Scrollable.ensureVisible(
+              targetContext,
+              alignment: 0.5,
+              duration: const Duration(milliseconds: 180),
+            );
+          }),
+    );
   }
 
   Future<void> _loadMediaItems({bool append = false}) async {
@@ -3461,12 +3544,13 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     final isSystemFolder = item.id == 'recycle_bin' || item.id == 'favorites';
     bool isSelected = _selectedItems.contains(item.id);
     bool isLastViewed = item.id == _lastViewedMediaId;
+    final isDuplicateHighlight = item.id == _highlightedMediaId;
     final showFavThumbnailBadge =
         item.isFavorite &&
         (item.type == MediaType.image || item.type == MediaType.video);
 
     return GestureDetector(
-      key: ValueKey(item.id),
+      key: isDuplicateHighlight ? _highlightedMediaKey : ValueKey(item.id),
       onTap:
           isSystemFolder
               ? () => _navigateToFolder(item)
@@ -3490,12 +3574,16 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                 _toggleItemSelection(item.id);
               },
       child: Card(
-        elevation: isLastViewed ? 6 : 2,
+        elevation: isDuplicateHighlight ? 10 : (isLastViewed ? 6 : 2),
+        color:
+            isDuplicateHighlight ? Colors.amber.withValues(alpha: 0.22) : null,
         margin: const EdgeInsets.all(0),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(6),
           side:
-              isLastViewed
+              isDuplicateHighlight
+                  ? const BorderSide(color: Colors.orange, width: 3.5)
+                  : isLastViewed
                   ? const BorderSide(color: Colors.blue, width: 2.0)
                   : BorderSide.none,
         ),
@@ -3523,6 +3611,29 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                   ),
                 ],
               ),
+              if (isDuplicateHighlight)
+                Positioned(
+                  left: 3,
+                  top: 3,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 5,
+                      vertical: 2,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.orange,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: const Text(
+                      '重复文件',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 9,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ),
               if (_isMultiSelectMode && !isSystemFolder)
                 Positioned(
                   top: 2,
