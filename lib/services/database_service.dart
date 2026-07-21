@@ -67,6 +67,7 @@ class DatabaseService {
         await _ensureMediaItemsKenBurnsColumns(_database!);
         await _ensureMediaItemsVideoViewColumns(_database!);
         await _ensureMediaItemsRecycleColumns(_database!);
+        await _ensureMediaItemsIndexes(_database!);
         try {
           final d = await getApplicationDocumentsDirectory();
           _appDocumentsDirectoryPath = d.path;
@@ -125,6 +126,7 @@ class DatabaseService {
       await _ensureMediaItemsKenBurnsColumns(_database!);
       await _ensureMediaItemsVideoViewColumns(_database!);
       await _ensureMediaItemsRecycleColumns(_database!);
+      await _ensureMediaItemsIndexes(_database!);
       await _ensureBackgroundFileViewParamsTable(_database!);
       await _ensureBackgroundVideoPathColumns(_database!);
       await _ensureBackgroundMediaOriginColumns(_database!);
@@ -554,6 +556,22 @@ class DatabaseService {
         asset_id TEXT PRIMARY KEY
       )
     ''');
+  }
+
+  Future<void> _ensureMediaItemsIndexes(DatabaseExecutor db) async {
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_media_items_directory ON media_items(directory)',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_media_items_type ON media_items(type)',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_media_items_hash ON media_items(file_hash)',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_media_items_telegram_file_id '
+      'ON media_items(telegram_file_id)',
+    );
   }
 
   Future<void> _ensureBackgroundFileViewParamsTable(DatabaseExecutor db) async {
@@ -1531,7 +1549,11 @@ class DatabaseService {
         if (hit != null) return hit;
       }
 
-      // 如果没有找到有效哈希匹配，则通过文件名查找（同样排除回收站）
+      // 有可靠内容哈希时只能按哈希判断。不同文件可能同名，继续按名称
+      // 查询会把内容不同的媒体误判为重复。
+      if (fileHash.isNotEmpty) return null;
+
+      // 仅在调用方确实无法提供哈希时才以文件名作为弱兜底。
       final List<Map<String, dynamic>> nameMatches = await db.query(
         'media_items',
         where: 'name = ? AND $notInRecycle',
@@ -1542,6 +1564,65 @@ class DatabaseService {
       _handleError('查找重复媒体项失败', e, stackTrace);
       rethrow;
     }
+  }
+
+  /// 在同一 SQLite 事务内完成内容哈希查重和插入，避免并发任务同时
+  /// 通过“先查询、后插入”而写入两份相同媒体。
+  /// 返回已存在的有效媒体；返回 null 表示新记录已成功插入。
+  Future<Map<String, dynamic>?> insertMediaItemIfContentUnique(
+    Map<String, dynamic> item,
+  ) async {
+    final fileHash = item['file_hash']?.toString().trim() ?? '';
+    if (fileHash.isEmpty) {
+      throw ArgumentError('内容哈希为空，不能执行可靠查重入库');
+    }
+    final db = await database;
+    final data = Map<String, dynamic>.from(item);
+    final now = DateTime.now().millisecondsSinceEpoch;
+    data['created_at'] ??= now;
+    data['updated_at'] ??= now;
+
+    return db.transaction((txn) async {
+      final matches = await txn.query(
+        'media_items',
+        where: 'file_hash = ? AND directory <> ?',
+        whereArgs: [fileHash, 'recycle_bin'],
+      );
+      for (final raw in matches) {
+        final row = Map<String, dynamic>.from(raw);
+        final path = row['path']?.toString() ?? '';
+        if (path.isNotEmpty && await File(path).exists()) return row;
+        final id = row['id']?.toString() ?? '';
+        if (id.isNotEmpty) {
+          await txn.delete('media_items', where: 'id = ?', whereArgs: [id]);
+        }
+      }
+      await txn.insert(
+        'media_items',
+        data,
+        conflictAlgorithm: ConflictAlgorithm.abort,
+      );
+      return null;
+    });
+  }
+
+  /// 返回所有不在回收站中的真实媒体记录，不依赖文件夹树是否完整。
+  /// 用于全库查重，避免父文件夹记录缺失或目录循环造成漏扫。
+  Future<List<Map<String, dynamic>>> getAllActiveMediaFilesForDedup() async {
+    final db = await database;
+    final rows = await db.query(
+      'media_items',
+      where: 'type <> ? AND directory <> ? AND id NOT IN (?, ?, ?)',
+      whereArgs: [
+        3, // MediaType.folder.index
+        'recycle_bin',
+        'root',
+        'recycle_bin',
+        'favorites',
+      ],
+      orderBy: 'datetime(date_added) ASC, id ASC',
+    );
+    return rows.map((row) => Map<String, dynamic>.from(row)).toList();
   }
 
   /// 检查 asset_id 是否已导入（静默导入去重，防止重复导入）
@@ -7751,6 +7832,7 @@ class DatabaseService {
       }
       await txn.execute('DROP TABLE IF EXISTS media_items');
       await txn.execute('ALTER TABLE $tempTable RENAME TO media_items');
+      await _ensureMediaItemsIndexes(txn);
     });
   }
 
@@ -7804,6 +7886,7 @@ class DatabaseService {
 
       await txn.execute('DROP TABLE IF EXISTS media_items');
       await txn.execute('ALTER TABLE $tempTable RENAME TO media_items');
+      await _ensureMediaItemsIndexes(txn);
     });
   }
 

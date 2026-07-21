@@ -4990,6 +4990,50 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   }
 
   /// 选择扫描模式：仅扫描 / 扫描并清理
+  Future<List<Map<String, dynamic>>> _rankDuplicateCleanupCandidates(
+    List<Map<String, dynamic>> files,
+  ) async {
+    final ranked = <Map<String, dynamic>>[];
+    for (final file in files) {
+      final row = Map<String, dynamic>.from(file);
+      final filePath = row['path']?.toString() ?? '';
+      var externalReferences = 0;
+      if (filePath.isNotEmpty) {
+        final usages = await _databaseService.describeFilePathReferences(
+          filePath,
+        );
+        externalReferences =
+            usages.where((usage) {
+              final type = usage['type']?.toString() ?? '';
+              return type != 'media_item_file' &&
+                  type != 'media_item_thumbnail';
+            }).length;
+      }
+      row['_dedup_external_references'] = externalReferences;
+      ranked.add(row);
+    }
+    ranked.sort((a, b) {
+      final referenceOrder = ((b['_dedup_external_references'] as int?) ?? 0)
+          .compareTo((a['_dedup_external_references'] as int?) ?? 0);
+      if (referenceOrder != 0) return referenceOrder;
+      bool isFavorite(Map<String, dynamic> row) {
+        final value = row['is_favorite'];
+        return value == true || value == 1 || (value is num && value != 0);
+      }
+
+      final favoriteOrder = (isFavorite(b) ? 1 : 0).compareTo(
+        isFavorite(a) ? 1 : 0,
+      );
+      if (favoriteOrder != 0) return favoriteOrder;
+      final dateA = DateTime.tryParse(a['date_added']?.toString() ?? '');
+      final dateB = DateTime.tryParse(b['date_added']?.toString() ?? '');
+      return (dateA ?? DateTime.fromMillisecondsSinceEpoch(0)).compareTo(
+        dateB ?? DateTime.fromMillisecondsSinceEpoch(0),
+      );
+    });
+    return ranked;
+  }
+
   Future<void> _showScanDuplicatesOptionsDialog() async {
     final autoRemove = await showDialog<bool>(
       context: context,
@@ -5040,7 +5084,8 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       msgRef.value = '正在枚举媒体库…';
       progRef.value = 0;
 
-      final allMediaItems = await _getAllMediaItemsRecursively('root');
+      final allMediaItems =
+          await _databaseService.getAllActiveMediaFilesForDedup();
       if (!mounted) return;
 
       final totalPass1 = math.max(allMediaItems.length, 1);
@@ -5048,6 +5093,8 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       int processedCount = 0;
       int updatedCount = 0;
       int duplicateCount = 0;
+      int movedCount = 0;
+      int protectedCount = 0;
       int errorCount = 0;
       final Map<String, List<Map<String, dynamic>>> hashGroups = {};
 
@@ -5117,17 +5164,32 @@ class _MediaManagerPageState extends State<MediaManagerPage>
             msgRef.value = '阶段 2/2 处理重复\n$label';
             duplicateCount += files.length - 1;
             if (autoRemove) {
-              final duplicates = files.skip(1).toList();
+              final ranked = await _rankDuplicateCleanupCandidates(files);
+              final keepPath = ranked.first['path']?.toString() ?? '';
+              final duplicates = ranked.skip(1).toList();
               for (final duplicate in duplicates) {
                 if (cancelRef.value) {
                   msgRef.value = '正在停止…';
                   break outerScanDup;
                 }
                 try {
-                  await _databaseService.updateMediaItemDirectory(
-                    duplicate['id'],
-                    'recycle_bin',
-                  );
+                  final duplicatePath = duplicate['path']?.toString() ?? '';
+                  final references =
+                      (duplicate['_dedup_external_references'] as int?) ?? 0;
+                  if (references > 0 ||
+                      (keepPath.isNotEmpty && duplicatePath == keepPath)) {
+                    protectedCount++;
+                    continue;
+                  }
+                  final moved = await _databaseService
+                      .moveMediaItemToRecycleBin(
+                        duplicate['id']?.toString() ?? '',
+                      );
+                  if (moved) {
+                    movedCount++;
+                  } else {
+                    errorCount++;
+                  }
                 } catch (e) {
                   Logger.log('移动重复文件到回收站时出错: ${duplicate['name']}, 错误: $e');
                   errorCount++;
@@ -5160,7 +5222,8 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         } else {
           final removedNote =
               autoRemove && duplicateCount > 0
-                  ? '\n已移至回收站: $duplicateCount 个'
+                  ? '\n已移至回收站: $movedCount 个'
+                      '${protectedCount > 0 ? '\n受引用或共用路径保护: $protectedCount 个' : ''}'
                   : (duplicateCount > 0 ? '\n(未删除，请手动处理)' : '');
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
@@ -5252,6 +5315,8 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       }
 
       int duplicateCount = 0;
+      int movedCount = 0;
+      int protectedCount = 0;
       int dupStep = 0;
       int dupTotal = 0;
       for (final files in hashGroups.values) {
@@ -5264,7 +5329,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         for (final files in hashGroups.values) {
           if (files.length <= 1) continue;
           duplicateCount += files.length - 1;
-          for (final dup in files.skip(1)) {
+          final ranked = await _rankDuplicateCleanupCandidates(files);
+          final keepPath = ranked.first['path']?.toString() ?? '';
+          for (final dup in ranked.skip(1)) {
             if (cancelRef.value) {
               msgRef.value = '正在停止…';
               break outerDedup;
@@ -5273,10 +5340,22 @@ class _MediaManagerPageState extends State<MediaManagerPage>
             progRef.value = 0.85 + (dupStep / dupTotal) * 0.15;
             msgRef.value = '阶段 2/2 移至回收站 ($dupStep/$dupTotal)\n${dup['name']}';
             try {
-              await _databaseService.updateMediaItemDirectory(
-                dup['id'],
-                'recycle_bin',
+              final duplicatePath = dup['path']?.toString() ?? '';
+              final references =
+                  (dup['_dedup_external_references'] as int?) ?? 0;
+              if (references > 0 ||
+                  (keepPath.isNotEmpty && duplicatePath == keepPath)) {
+                protectedCount++;
+                continue;
+              }
+              final moved = await _databaseService.moveMediaItemToRecycleBin(
+                dup['id']?.toString() ?? '',
               );
+              if (moved) {
+                movedCount++;
+              } else {
+                errorCount++;
+              }
             } catch (e) {
               errorCount++;
             }
@@ -5304,7 +5383,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
             SnackBar(
               content: Text(
                 duplicateCount > 0
-                    ? '查重完成：发现 $duplicateCount 个重复文件，已移至回收站'
+                    ? '查重完成：发现 $duplicateCount 个重复文件，'
+                        '已移至回收站 $movedCount 个'
+                        '${protectedCount > 0 ? '，受引用或共用路径保护 $protectedCount 个' : ''}'
                     : '查重完成：当前目录无重复文件',
               ),
               duration: const Duration(seconds: 3),

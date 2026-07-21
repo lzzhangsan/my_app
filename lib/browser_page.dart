@@ -850,8 +850,11 @@ class _BrowserPageState extends State<BrowserPage>
   final ValueNotifier<List<Map<String, dynamic>>> _downloadTasksNotifier =
       ValueNotifier([]);
   final Map<String, int> _dashConcurrencyByHost = {};
+  final Map<String, DateTime> _recentDuplicatePromptTimes = {};
   static const int _maxDisplayTasks = 8;
+  static const Duration _duplicatePromptCooldown = Duration(seconds: 12);
   bool _downloadPanelExpanded = false;
+  bool _mediaDuplicateDialogActive = false;
   Offset? _downloadPanelPosition;
   Timer? _favoriteProgressSyncTimer;
 
@@ -2037,9 +2040,6 @@ class _BrowserPageState extends State<BrowserPage>
     void Function(String failureType)? onFailureType,
   }) async {
     final isLongPress = item['downloadOrigin'] == 'long_press';
-    final allowDurationMismatch = item['allowDurationMismatch'] == true;
-    final expectedDurationSeconds =
-        (item['durationSec'] as num?)?.toDouble() ?? 0.0;
     final existingMedia = await _findExistingMediaForItem(item);
     if (existingMedia != null) {
       await _markFavoriteDownloaded(item, downloaded: true);
@@ -2238,11 +2238,6 @@ class _BrowserPageState extends State<BrowserPage>
                 ? const Duration(minutes: 2)
                 : const Duration(minutes: 3),
         maxRequestAttempts: isLongPress ? 4 : null,
-        expectedDurationSeconds:
-            isLongPress && expectedDurationSeconds > 0
-                ? expectedDurationSeconds
-                : null,
-        allowDurationMismatch: allowDurationMismatch,
         showSuccessPrompt: false,
         onProgress: (fraction, {String? detail}) {
           progress.value = fraction.clamp(0.0, 1.0);
@@ -2297,8 +2292,6 @@ class _BrowserPageState extends State<BrowserPage>
             skipFailurePrompt: i < secondAttempts.length - 1,
             onFailureType: (t) => failureType = t,
             inactivityTimeout: const Duration(minutes: 3),
-            expectedDurationSeconds:
-                expectedDurationSeconds > 0 ? expectedDurationSeconds : null,
             showSuccessPrompt: false,
             onProgress: (fraction, {String? detail}) {
               progress.value = fraction.clamp(0.0, 1.0);
@@ -2645,11 +2638,11 @@ class _BrowserPageState extends State<BrowserPage>
     );
   }
 
-  void _openMediaLibraryAt(Map<String, dynamic> mediaRow) {
+  Future<void> _openMediaLibraryAt(Map<String, dynamic> mediaRow) async {
     if (!mounted) return;
     final directory = (mediaRow['directory'] ?? 'root').toString().trim();
     final mediaId = (mediaRow['id'] ?? '').toString().trim();
-    Navigator.of(context).push(
+    await Navigator.of(context).push(
       MaterialPageRoute(
         builder:
             (_) => MediaManagerPage(
@@ -2664,49 +2657,83 @@ class _BrowserPageState extends State<BrowserPage>
   Future<void> _showMediaDuplicateDialog(
     Map<String, dynamic> existingRow,
   ) async {
-    if (!mounted) return;
-    final location = await _resolveMediaLocationLabel(existingRow);
-    final mediaType = DatabaseService.mediaTypeIndex(existingRow);
-    final mediaLabel = mediaType == MediaType.image.index ? '图片' : '视频';
-    final title = existingRow['name']?.toString() ?? '该$mediaLabel';
-    final mediaItem = MediaItem.fromMap(Map<String, dynamic>.from(existingRow));
-    await showDialog<void>(
-      context: context,
-      builder: (dialogContext) {
-        return AlertDialog(
-          title: Text('$mediaLabel已存在'),
-          content: Text('媒体库中已经有这个$mediaLabel了。\n\n文件名：$title\n位置：$location'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(),
-              child: const Text('取消'),
-            ),
-            TextButton(
-              onPressed: () {
-                Navigator.of(dialogContext).pop();
-                _openMediaLibraryAt(existingRow);
-              },
-              child: const Text('定位查看'),
-            ),
-            FilledButton(
-              onPressed: () {
-                Navigator.of(dialogContext).pop();
-                Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder:
-                        (context) => MediaPreviewPage(
-                          mediaItems: [mediaItem],
-                          initialIndex: 0,
-                        ),
-                  ),
-                );
-              },
-              child: const Text('直接查看'),
-            ),
-          ],
+    // A direct download and its canvas/screenshot fallback can discover the
+    // same duplicate almost simultaneously. Keep one prompt active through
+    // the entire locate/preview flow so a late result cannot cover that page.
+    if (!mounted || _mediaDuplicateDialogActive) return;
+    final duplicateKey = <Object?>[
+          existingRow['id'],
+          existingRow['file_hash'],
+          existingRow['path'],
+          existingRow['name'],
+        ]
+        .map((value) => value?.toString().trim() ?? '')
+        .firstWhere(
+          (value) => value.isNotEmpty,
+          orElse: () => existingRow.toString(),
         );
-      },
+    final now = DateTime.now();
+    _recentDuplicatePromptTimes.removeWhere(
+      (_, promptedAt) =>
+          now.difference(promptedAt) > const Duration(minutes: 2),
     );
+    final lastPromptedAt = _recentDuplicatePromptTimes[duplicateKey];
+    if (lastPromptedAt != null &&
+        now.difference(lastPromptedAt) < _duplicatePromptCooldown) {
+      return;
+    }
+    _recentDuplicatePromptTimes[duplicateKey] = now;
+    _mediaDuplicateDialogActive = true;
+    try {
+      final location = await _resolveMediaLocationLabel(existingRow);
+      if (!mounted) return;
+      final mediaType = DatabaseService.mediaTypeIndex(existingRow);
+      final mediaLabel = mediaType == MediaType.image.index ? '图片' : '视频';
+      final title = existingRow['name']?.toString() ?? '该$mediaLabel';
+      final mediaItem = MediaItem.fromMap(
+        Map<String, dynamic>.from(existingRow),
+      );
+      final action = await showDialog<String>(
+        context: context,
+        builder: (dialogContext) {
+          return AlertDialog(
+            title: Text('$mediaLabel已存在'),
+            content: Text('媒体库中已经有这个$mediaLabel了。\n\n文件名：$title\n位置：$location'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: const Text('取消'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop('locate'),
+                child: const Text('定位查看'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(dialogContext).pop('preview'),
+                child: const Text('直接查看'),
+              ),
+            ],
+          );
+        },
+      );
+      if (!mounted) return;
+      if (action == 'locate') {
+        await _openMediaLibraryAt(existingRow);
+      } else if (action == 'preview') {
+        await Navigator.of(context).push(
+          MaterialPageRoute(
+            builder:
+                (context) =>
+                    MediaPreviewPage(mediaItems: [mediaItem], initialIndex: 0),
+          ),
+        );
+      }
+    } finally {
+      // Refresh on return from preview/library. Delayed canvas or screenshot
+      // results from the same long press may only finish after this route pops.
+      _recentDuplicatePromptTimes[duplicateKey] = DateTime.now();
+      _mediaDuplicateDialogActive = false;
+    }
   }
 
   Future<void> _requestPermissions() async {
@@ -2757,7 +2784,7 @@ class _BrowserPageState extends State<BrowserPage>
       await controller.evaluateJavascript(
         source: '''
       (() => {
-      const handlerVersion = 'media-download-v9';
+      const handlerVersion = 'media-download-v10';
       if (window.__appMediaDownloadHandlersVersion === handlerVersion) return true;
       window.Flutter = window.Flutter || { postMessage: function(m){ try { if(window.flutter_inappwebview && window.flutter_inappwebview.callHandler) window.flutter_inappwebview.callHandler('Flutter', m); } catch(e){} } };
       window.MediaInterceptor = window.MediaInterceptor || {
@@ -3767,8 +3794,21 @@ class _BrowserPageState extends State<BrowserPage>
             if (imgUrl && isMediaUrl(imgUrl)) { url = imgUrl; }
           } catch (e) { console.log('解析图片搜索URL失败:', e); }
         }
+        // TikPORN 的 Blob/MSE URL 与当前 video 元素一一绑定。不能用页面级
+        // “最近捕获的 MPD”提前覆盖它，否则列表预加载下一条时会下载错视频。
+        let isTikPornContext = false;
+        try {
+          const hosts = [location.hostname || ''];
+          if (document.referrer) hosts.push(new URL(document.referrer).hostname || '');
+          isTikPornContext = hosts.some(host => {
+            const normalized = String(host).toLowerCase();
+            return normalized === 'tik.porn' || normalized.endsWith('.tik.porn');
+          });
+        } catch (_) {}
+        const preserveBoundBlob = isTikPornContext && String(url || '').startsWith('blob:');
+
         // 拦截到的 m3u8/mp4 不要被 DOM 里的海报图、缩略图或占位 src 覆盖（否则原生侧会当图片下载或失败后退化为截屏）
-        if (interceptedStreamUrl && videoEl) {
+        if (interceptedStreamUrl && videoEl && !preserveBoundBlob) {
           const dom = (url || '').toLowerCase();
           const domHasStream = /\\.(m3u8|m3u|mp4|webm|ts)(\\?|#|\$)/.test(dom) || dom.includes('mpegurl');
           if (!domHasStream || domUrlLooksLikePosterOrThumb(url) || url === videoEl.poster) {
@@ -3811,9 +3851,7 @@ class _BrowserPageState extends State<BrowserPage>
         // 多重处理blob/data url
         function tryBlobOrDataUrl(url, mediaType) {
           if (isBlobUrl(url)) {
-            const pageHost = String(location.hostname || '').toLowerCase();
-            const isTikPornPage = pageHost === 'tik.porn' || pageHost.endsWith('.tik.porn');
-            if (mediaType === 'video' && isTikPornPage) {
+            if (mediaType === 'video' && isTikPornContext) {
               let boundFragments = [];
               try {
                 if (videoEl && typeof window.__appMediaFragmentsForVideo === 'function') {
@@ -4148,7 +4186,7 @@ class _BrowserPageState extends State<BrowserPage>
       );
       final ready = await controller.evaluateJavascript(
         source:
-            "window.__appMediaDownloadHandlersVersion === 'media-download-v9'",
+            "window.__appMediaDownloadHandlersVersion === 'media-download-v10'",
       );
       if (ready == true || ready.toString().toLowerCase() == 'true')
         return true;
@@ -4372,7 +4410,6 @@ class _BrowserPageState extends State<BrowserPage>
             'downloadOrigin': 'long_press',
             'sessionId': mediaSessionId,
             'durationSec': messageDurationSeconds,
-            'allowDurationMismatch': isTikPornDownloadContext,
           };
 
           // 查重：如果媒体库已存在，则弹出提示并终止下载
@@ -4493,10 +4530,6 @@ class _BrowserPageState extends State<BrowserPage>
                   'downloadOrigin': 'long_press',
                   'sessionId': mediaSessionId,
                   'durationSec': messageDurationSeconds,
-                  // TikPORN's player and MPD can report different timelines.
-                  // Keep a valid downloaded video instead of deleting it only
-                  // because their reported durations differ.
-                  'allowDurationMismatch': true,
                 },
                 showResultHint: true,
               );
@@ -8047,6 +8080,9 @@ class _BrowserPageState extends State<BrowserPage>
         throw Exception('视频数据不完整，未保存到媒体库');
       }
       final fileHash = await _calculateFileHash(file);
+      if (fileHash.isEmpty) {
+        throw const FileSystemException('无法计算媒体内容哈希，已停止入库以避免产生重复文件');
+      }
       final uuid = const Uuid().v4();
       final mediaItem = MediaItem(
         id: uuid,
@@ -8061,14 +8097,11 @@ class _BrowserPageState extends State<BrowserPage>
 
       for (var attempt = 0; attempt < 3; attempt++) {
         try {
-          final duplicate = await _databaseService.findDuplicateMediaItem(
-            fileHash,
-            fileName,
-          );
+          final duplicate = await _databaseService
+              .insertMediaItemIfContentUnique(mediaItemMap);
           if (duplicate != null) {
             throw _ExistingMediaDuplicateException(duplicate);
           }
-          await _databaseService.insertMediaItem(mediaItemMap);
           return mediaItemMap;
         } on _ExistingMediaDuplicateException {
           rethrow;
@@ -9171,8 +9204,6 @@ class _BrowserPageState extends State<BrowserPage>
     DownloadProgressCallback? onProgress,
     int? maxRequestAttempts,
     bool showSuccessPrompt = true,
-    double? expectedDurationSeconds,
-    bool allowDurationMismatch = false,
   }) async {
     // 仅下载图片和视频，不下载语音/音频
     if (mediaType == MediaType.audio) {
@@ -9246,30 +9277,6 @@ class _BrowserPageState extends State<BrowserPage>
 
       if (downloadedFile != null) {
         debugPrint('文件下载成功: ');
-        if (mediaType == MediaType.video &&
-            expectedDurationSeconds != null &&
-            expectedDurationSeconds > 0) {
-          final actualDurationMs = await _probeNativeVideoDurationMs(
-            downloadedFile,
-          );
-          if (actualDurationMs != null && actualDurationMs > 0) {
-            final actualSeconds = actualDurationMs / 1000.0;
-            final tolerance = max(3.0, expectedDurationSeconds * 0.12);
-            if ((actualSeconds - expectedDurationSeconds).abs() > tolerance) {
-              if (allowDurationMismatch) {
-                Logger.log(
-                  '[稳健下载诊断] 下载结果时长与长按媒体不一致，按降级策略保留：'
-                  'expected=${expectedDurationSeconds.toStringAsFixed(2)}s, '
-                  'actual=${actualSeconds.toStringAsFixed(2)}s, url=$absoluteUrl',
-                );
-              } else {
-                await downloadedFile.delete();
-                downloadedFile = null;
-                throw Exception('[下载失败] 下载结果时长与当前长按视频不一致，已丢弃错误文件');
-              }
-            }
-          }
-        }
         final Map<String, dynamic> mediaMap;
         try {
           mediaMap = await _saveToMediaLibrary(downloadedFile!, mediaType);
@@ -9393,8 +9400,6 @@ class _BrowserPageState extends State<BrowserPage>
       final msg = e.toString().toLowerCase();
       if (msg.contains('m3u8')) {
         type = 'm3u8_parse_or_download';
-      } else if (msg.contains('时长与当前长按视频不一致')) {
-        type = 'wrong_media_duration';
       } else if (msg.contains('origin is only applicable')) {
         type = 'invalid_origin';
       } else if (msg.contains('bad state')) {
