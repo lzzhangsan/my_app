@@ -27,6 +27,8 @@ class MainActivity: FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
+        persistWebCookies()
+
         // 性能监控：真实内存与 CPU 数据
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, PERF_CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
@@ -121,6 +123,14 @@ class MainActivity: FlutterActivity() {
                         }
                     }
                 }
+                "flushCookies" -> {
+                    try {
+                        persistWebCookies()
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.error("COOKIE_FLUSH_ERROR", e.toString(), null)
+                    }
+                }
                 else -> result.notImplemented()
             }
         }
@@ -181,10 +191,28 @@ class MainActivity: FlutterActivity() {
                     runOnUiThread { result.success(true) }
                 } catch (e: Exception) {
                     File(outputPath).delete()
-                    runOnUiThread { result.error("MUX_FAILED", e.message, null) }
+                        runOnUiThread { result.error("MUX_FAILED", e.toString(), null) }
                 }
             }.start()
         }
+    }
+
+    private fun persistWebCookies() {
+        val manager = CookieManager.getInstance()
+        manager.setAcceptCookie(true)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            manager.flush()
+        }
+    }
+
+    override fun onPause() {
+        persistWebCookies()
+        super.onPause()
+    }
+
+    override fun onStop() {
+        persistWebCookies()
+        super.onStop()
     }
 
     private fun findTrack(extractor: MediaExtractor, prefix: String): Int {
@@ -204,13 +232,22 @@ class MainActivity: FlutterActivity() {
         extractor.selectTrack(sourceTrack)
         val buffer = ByteBuffer.allocateDirect(16 * 1024 * 1024)
         val info = MediaCodec.BufferInfo()
+        var firstPresentationTimeUs = -1L
+        var lastPresentationTimeUs = -1L
         while (true) {
             buffer.clear()
             val size = extractor.readSampleData(buffer, 0)
             if (size < 0) break
             info.offset = 0
             info.size = size
-            info.presentationTimeUs = extractor.sampleTime
+            val sampleTimeUs = extractor.sampleTime
+            if (firstPresentationTimeUs < 0L) firstPresentationTimeUs = sampleTimeUs
+            var normalizedTimeUs = (sampleTimeUs - firstPresentationTimeUs).coerceAtLeast(0L)
+            if (normalizedTimeUs <= lastPresentationTimeUs) {
+                normalizedTimeUs = lastPresentationTimeUs + 1L
+            }
+            info.presentationTimeUs = normalizedTimeUs
+            lastPresentationTimeUs = normalizedTimeUs
             info.flags = extractor.sampleFlags
             muxer.writeSampleData(targetTrack, buffer, info)
             if (!extractor.advance()) break

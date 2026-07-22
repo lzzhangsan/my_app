@@ -667,6 +667,17 @@ class _BrowserPageState extends State<BrowserPage>
     }
   }
 
+  Future<void> _flushBrowserCookies() async {
+    if (!Platform.isAndroid) return;
+    try {
+      await const MethodChannel(
+        'browser_cookies',
+      ).invokeMethod<bool>('flushCookies');
+    } catch (e) {
+      debugPrint('Failed to persist browser cookies: $e');
+    }
+  }
+
   Future<Map<String, String>> _browserLikeMediaHeaders(
     String mediaUrl, {
     required String referer,
@@ -2750,6 +2761,12 @@ class _BrowserPageState extends State<BrowserPage>
           (failureType == 'outside_requested_size_range' &&
               item['downloadOrigin'] != 'smart_batch') ||
           failureType == 'cancelled') {
+        break;
+      }
+      if (smartXMediaId.isNotEmpty &&
+          failureType == 'invalid_smart_media_content') {
+        // Remaining X candidates are normally lower renditions of the same
+        // media ID. Re-downloading them wastes time without finding a new item.
         break;
       }
     }
@@ -6640,7 +6657,8 @@ class _BrowserPageState extends State<BrowserPage>
             const nearestCenter = list => list.sort((a,b) =>
               centerDistance(a) - centerDistance(b))[0];
             const playingVideos = videos.filter(v => !v.paused && !v.ended && v.readyState >= 2);
-            const host = location.hostname.toLowerCase().replace(/^www\./, '');
+            const rawHost = location.hostname.toLowerCase();
+            const host = rawHost.startsWith('www.') ? rawHost.slice(4) : rawHost;
             const isXPlatform = host === 'x.com' || host.endsWith('.x.com') ||
               host === 'twitter.com' || host.endsWith('.twitter.com');
             const media = nearestCenter(playingVideos) ||
@@ -6696,9 +6714,30 @@ class _BrowserPageState extends State<BrowserPage>
               document.querySelector('meta[property="og:description"]')?.content,
               document.title
             ];
-            const cleaned = values.map(v => String(v || '').replace(/https?:\/\/\S+/g, ' ')
-              .replace(/\s+/g, ' ').trim()).filter(v => {
-                const lower = v.toLowerCase().replace(/^www\./, '');
+            const stripUrls = value => {
+              const parts = [];
+              let token = '';
+              const flush = () => {
+                if (!token) return;
+                const lower = token.toLowerCase();
+                if (!lower.startsWith('http://') && !lower.startsWith('https://')) {
+                  parts.push(token);
+                }
+                token = '';
+              };
+              for (const char of String(value || '')) {
+                if (char.charCodeAt(0) <= 32) {
+                  flush();
+                } else {
+                  token += char;
+                }
+              }
+              flush();
+              return parts.join(' ').trim();
+            };
+            const cleaned = values.map(stripUrls).filter(v => {
+                const rawLower = v.toLowerCase();
+                const lower = rawLower.startsWith('www.') ? rawLower.slice(4) : rawLower;
                 return v.length >= 2 && lower !== host && lower !== location.hostname.toLowerCase();
               });
             return {
@@ -6714,7 +6753,9 @@ class _BrowserPageState extends State<BrowserPage>
         ''',
       );
       if (result is Map) {
-        keyword = (result['keyword'] ?? '').toString().trim();
+        keyword = _sanitizeExtractedSmartKeyword(
+          (result['keyword'] ?? '').toString(),
+        );
         mediaType =
             result['type']?.toString() == 'image'
                 ? MediaType.image
@@ -6742,6 +6783,32 @@ class _BrowserPageState extends State<BrowserPage>
       initialVideoUrls: currentVideoUrls,
       initialVideoDuration: currentVideoDuration,
     );
+  }
+
+  String _sanitizeExtractedSmartKeyword(String value) {
+    final normalized = value.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (normalized.isEmpty) return '';
+    final lower = normalized.toLowerCase();
+    const genericLabels = <String>{
+      'video',
+      'image',
+      'photo',
+      'media',
+      'player',
+      'embedded video',
+      'video player',
+      'embedded image',
+      '视频',
+      '图片',
+      '照片',
+      '媒体',
+      '播放器',
+      '视频播放器',
+      '嵌入式视频',
+      '嵌入式图片',
+    };
+    if (genericLabels.contains(lower)) return '';
+    return normalized;
   }
 
   Future<int?> _estimateSmartSeedVideoBytes(
@@ -6936,7 +7003,11 @@ class _BrowserPageState extends State<BrowserPage>
           (dialogContext) => StatefulBuilder(
             builder:
                 (context, setDialogState) => AlertDialog(
-                  title: Text('智能下载 · ${website['name'] ?? '网站'}'),
+                  title: Text(
+                    startFromCurrentPage
+                        ? '智能下载'
+                        : '智能下载 · ${website['name'] ?? '网站'}',
+                  ),
                   content: SingleChildScrollView(
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
@@ -6973,7 +7044,7 @@ class _BrowserPageState extends State<BrowserPage>
                           textInputAction: TextInputAction.next,
                           decoration: const InputDecoration(
                             labelText: '下载关键词',
-                            hintText: '留空时从当前媒体自动提取',
+                            hintText: '可留空：按屏幕中心媒体由近到远下载',
                           ),
                         ),
                         if (_smartKeywordHistory.isNotEmpty) ...[
@@ -7433,6 +7504,23 @@ class _BrowserPageState extends State<BrowserPage>
       }
 
       if (strictXFeedMode && phase == 'x_search_returning') {
+        if (strictXSearchUrl.isEmpty) {
+          final returnUrl = (task['xReturnUrl'] ?? '').toString().trim();
+          if (_isBlankHistoryUrl(actualLoadedUrl) ||
+              !_isXPlatformPage(actualLoadedUrl) ||
+              (returnUrl.startsWith('http') &&
+                  !_isSameLoadedDocument(returnUrl, actualLoadedUrl))) {
+            if (returnUrl.startsWith('http')) {
+              _loadUrl(returnUrl);
+            } else {
+              _loadUrl((task['siteUrl'] ?? '').toString());
+            }
+            return;
+          }
+          task['phase'] = 'scanning_feed';
+          _continueSmartFeed(task, madeProgress: false);
+          return;
+        }
         final actualUri = Uri.tryParse(actualLoadedUrl);
         final onSearchPage =
             actualUri != null &&
@@ -9153,7 +9241,10 @@ class _BrowserPageState extends State<BrowserPage>
             const media = scope.querySelector('[data-smart-seed-media="1"]') ||
               scope.querySelector('video, [data-testid="tweetPhoto"] img, img');
             if (!media) return {clicked: false, statusId: ''};
-            const links = Array.from(scope.querySelectorAll('a[href*="/status/"]'));
+            const links = [
+              ...(scope.matches?.('a[href*="/status/"]') ? [scope] : []),
+              ...Array.from(scope.querySelectorAll('a[href*="/status/"]'))
+            ];
             const mediaRect = media.getBoundingClientRect();
             const mediaLink = links.find(link => {
               const r = link.getBoundingClientRect();
@@ -9183,7 +9274,12 @@ class _BrowserPageState extends State<BrowserPage>
                 clientY: mediaRect.top + mediaRect.height / 2
               }));
               clickable.click();
-              return {clicked: true, statusId};
+              return {
+                clicked: true,
+                statusId,
+                returnUrl: location.href,
+                returnScrollY: Math.max(0, window.scrollY || 0)
+              };
             } catch (_) {
               return {clicked: false, statusId};
             }
@@ -9191,6 +9287,11 @@ class _BrowserPageState extends State<BrowserPage>
         ''',
       );
       if (result is! Map || result['clicked'] != true) return false;
+      final returnUrl = (result['returnUrl'] ?? '').toString().trim();
+      if (returnUrl.startsWith('http') && _isXPlatformPage(returnUrl)) {
+        task['xReturnUrl'] = returnUrl;
+        task['xReturnScrollY'] = (result['returnScrollY'] as num?)?.toDouble();
+      }
       final statusId = (result['statusId'] ?? '').toString().trim();
       if (statusId.isNotEmpty) {
         (task['xVisitedStatusIds'] as Set<String>).add(statusId);
@@ -9216,13 +9317,35 @@ class _BrowserPageState extends State<BrowserPage>
     if (controller == null || !identical(_smartDownloadTask, task)) return;
     task['phase'] = 'x_search_returning';
     task['xCurrentPostResolveRetries'] = 0;
+    final returnUrl = (task['xReturnUrl'] ?? '').toString().trim();
     if (await controller.canGoBack()) {
       await controller.goBack();
-    } else {
-      _loadUrl((task['strictXSearchUrl'] ?? '').toString());
+      await Future<void>.delayed(const Duration(milliseconds: 220));
     }
-    Future<void>.delayed(const Duration(milliseconds: 900), () {
+    final current = (await controller.getUrl())?.toString() ?? '';
+    if (_isBlankHistoryUrl(current) ||
+        !_isXPlatformPage(current) ||
+        (returnUrl.startsWith('http') &&
+            !_isSameLoadedDocument(returnUrl, current))) {
+      final fallback =
+          returnUrl.startsWith('http')
+              ? returnUrl
+              : (task['strictXSearchUrl'] ?? '').toString().trim().isNotEmpty
+              ? (task['strictXSearchUrl'] ?? '').toString()
+              : (task['siteUrl'] ?? '').toString();
+      if (fallback.startsWith('http')) _loadUrl(fallback);
+    }
+    Future<void>.delayed(const Duration(milliseconds: 900), () async {
       if (identical(_smartDownloadTask, task)) {
+        final scrollY = (task['xReturnScrollY'] as num?)?.toDouble();
+        if (scrollY != null && scrollY > 0 && _controller != null) {
+          try {
+            await _controller!.evaluateJavascript(
+              source:
+                  'window.scrollTo({top: $scrollY, left: 0, behavior: "auto"});',
+            );
+          } catch (_) {}
+        }
         unawaited(_advanceSmartDownload(_currentUrl));
       }
     });
@@ -9346,9 +9469,21 @@ class _BrowserPageState extends State<BrowserPage>
                       Math.max(img.naturalHeight || 0, r.height) >= 180 &&
                       !/(profile_images|profile_banners|emoji|avatar)/.test(src);
                   };
-                  const mediaInArticle = article => xImageMode
-                    ? Array.from(article.querySelectorAll('img')).find(validImage)
-                    : article.querySelector('video');
+                  const mediaInArticle = article => {
+                    if (xImageMode) {
+                      return Array.from(article.querySelectorAll('img')).find(validImage);
+                    }
+                    const video = article.querySelector('video');
+                    if (video) return video;
+                    // X's media-search grid renders videos as poster images. Use
+                    // the poster only as a precise card target, then resolve the
+                    // real video after opening its status page.
+                    const statusLink = article.matches?.('a[href*="/status/"]')
+                      ? article
+                      : article.querySelector('a[href*="/status/"]');
+                    if (!xSearchResultsMode || !statusLink) return null;
+                    return Array.from(article.querySelectorAll('img')).find(validImage);
+                  };
                   const keywordTokens = xKeyword.split(' ')
                     .map(value => value.trim()).filter(value => value.length >= 2);
                   const keywordScore = article => {
@@ -9361,16 +9496,26 @@ class _BrowserPageState extends State<BrowserPage>
                     // result cards contain only media and omit searchable text.
                     return tokenScore > 0 ? tokenScore : (xSearchResultsMode ? 1 : 0);
                   };
-                  const articles = Array.from(document.querySelectorAll(
+                  const articleCandidates = Array.from(document.querySelectorAll(
                     'article[data-testid="tweet"], article'
                   ));
+                  if (xSearchResultsMode) {
+                    document.querySelectorAll('a[href*="/status/"]').forEach(link => {
+                      const card = link.closest(
+                        'article[data-testid="tweet"], article, [data-testid="cellInnerDiv"]'
+                      ) || link;
+                      if (!articleCandidates.includes(card)) articleCandidates.push(card);
+                    });
+                  }
+                  const articles = articleCandidates;
                   const seedIndex = seedArticle ? articles.indexOf(seedArticle) : -1;
                   const forwardArticles = seedIndex >= 0
                     ? articles.slice(seedIndex + 1)
                     : articles;
                   const candidates = forwardArticles.filter(article =>
                     article.getAttribute('data-app-smart-x-visited') !== '1' &&
-                    !Array.from(article.querySelectorAll('a[href*="/status/"]')).some(link => {
+                    ![...(article.matches?.('a[href*="/status/"]') ? [article] : []),
+                      ...Array.from(article.querySelectorAll('a[href*="/status/"]'))].some(link => {
                       const tail = String(link.href || '').split('/status/')[1] || '';
                       const id = (tail.match(/^[0-9]+/) || [''])[0];
                       return id && xVisitedStatusIds.has(id);
@@ -9545,8 +9690,9 @@ class _BrowserPageState extends State<BrowserPage>
                   'button, [role="button"], a'
                 )).find(el => {
                   const label = (el.getAttribute('aria-label') || el.title || el.innerText || '').toLowerCase();
-                  const pattern = /(next|down|下一|下一个)/;
-                  return el.offsetParent !== null && pattern.test(label);
+                  const nextLabel = String.fromCharCode(19979, 19968);
+                  return el.offsetParent !== null &&
+                    (label.includes('next') || label.includes('down') || label.includes(nextLabel));
                 });
                 if (nextButton) {
                   nextButton.click();
@@ -9593,6 +9739,13 @@ class _BrowserPageState extends State<BrowserPage>
                 await _advanceSmartDownload(_currentUrl);
               }
               return;
+            }
+            if (action == 'next_x_post' &&
+                strictXFeedMode &&
+                task['mediaType'] == MediaType.video) {
+              await Future<void>.delayed(const Duration(milliseconds: 280));
+              if (!identical(_smartDownloadTask, task)) return;
+              if (await _openActiveXSmartCard(task)) return;
             }
             if (result?.toString() == 'x_page_end') {
               await _broadenXSmartSearch(task);
@@ -11505,7 +11658,10 @@ class _BrowserPageState extends State<BrowserPage>
     }
     if (mediaType != MediaType.video || length < 64 * 1024) return false;
     final durationMs = await _probeNativeVideoDurationMs(file);
-    if (durationMs != null && durationMs < 500) return false;
+    // Some valid HLS/TS containers are playable by ExoPlayer but Android's
+    // metadata retriever reports 0. Treat 0 as unknown, not as a zero-length
+    // video, otherwise smart download repeatedly fetches other renditions.
+    if (durationMs != null && durationMs > 0 && durationMs < 500) return false;
 
     // If frame extraction is unsupported for this container/codec, retain the
     // already format-validated video instead of creating a false negative.
@@ -12883,7 +13039,12 @@ class _BrowserPageState extends State<BrowserPage>
           }
           if (videoFile != null && await videoFile.exists()) return videoFile;
         } catch (e) {
-          debugPrint('X HLS 音视频合并失败，将使用常规 HLS 兜底: $e');
+          debugPrint('X HLS 音视频合并失败，将保留已下载的视频轨: $e');
+          if (videoFile != null &&
+              await videoFile.exists() &&
+              await videoFile.length() > 0) {
+            return videoFile;
+          }
         } finally {
           for (final temporary in <File?>[audioFile]) {
             try {
@@ -16054,6 +16215,9 @@ class _BrowserPageState extends State<BrowserPage>
       if (!_isSameLoadedDocument(url, actualUrl)) {
         debugPrint('忽略已失效的页面完成回调: $url -> $actualUrl');
         return;
+      }
+      if (_isXPlatformPage(actualUrl)) {
+        unawaited(_flushBrowserCookies());
       }
       if (!mediaHandlersReady && _smartDownloadTask != null) {
         final task = _smartDownloadTask!;
