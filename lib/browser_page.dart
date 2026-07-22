@@ -819,6 +819,103 @@ class _BrowserPageState extends State<BrowserPage>
     return scored.take(limit).map((entry) => entry.$1.url).toList();
   }
 
+  bool _isXPlatformPage(String? url) {
+    final host = Uri.tryParse((url ?? '').trim())?.host.toLowerCase() ?? '';
+    return host == 'x.com' ||
+        host.endsWith('.x.com') ||
+        host == 'twitter.com' ||
+        host.endsWith('.twitter.com');
+  }
+
+  String _xMediaIdentity(String url) {
+    final match = RegExp(
+      r'/(?:amplify_video|ext_tw_video|tweet_video)/(\d+)/',
+      caseSensitive: false,
+    ).firstMatch(url);
+    return match?.group(1) ?? '';
+  }
+
+  int _scoreXVideoCandidate(String url) {
+    final lower = url.toLowerCase();
+    var score = _scoreFavoriteVideoUrl(url);
+    if (!lower.contains('video.twimg.com/')) return score;
+    if (RegExp(r'/pl/[^/]+\.m3u8(?:\?|$)').hasMatch(lower)) score += 10000;
+    if (lower.contains('/pl/avc1/')) score += 4000;
+    if (lower.contains('/vid/avc1/')) score += 3000;
+    if (lower.contains('/pl/mp4a/') || lower.contains('/aud/mp4a/')) {
+      score -= 20000;
+    }
+    return score;
+  }
+
+  Future<List<String>> _resolveXLongPressVideoCandidates({
+    required String primaryUrl,
+    required List<String> candidates,
+    required String pageUrl,
+    String expectedMediaId = '',
+    DateTime? notBefore,
+  }) async {
+    if (!_isXPlatformPage(pageUrl) && !_isXPlatformPage(_currentUrl)) {
+      return <String>[
+        primaryUrl,
+        ...candidates,
+      ].where((url) => url.trim().isNotEmpty).toSet().toList();
+    }
+    final mediaId =
+        expectedMediaId.trim().isNotEmpty
+            ? expectedMediaId.trim()
+            : _xMediaIdentity(primaryUrl);
+    var merged = <String>[primaryUrl, ...candidates];
+    for (var attempt = 0; attempt < 20; attempt++) {
+      merged = <String>[
+        ...merged,
+        ..._recentCapturedMediaCandidates(
+          MediaType.video,
+          pageUrl: pageUrl,
+          // X often loads the master before playback. The media-ID filter
+          // below prevents this wider capture window from crossing posts.
+          notBefore: mediaId.isEmpty ? notBefore : null,
+          limit: 48,
+        ),
+      ];
+      final sameMedia =
+          merged
+              .where((url) {
+                if (url.trim().isEmpty) return false;
+                return mediaId.isEmpty || _xMediaIdentity(url) == mediaId;
+              })
+              .toSet()
+              .toList()
+            ..sort(
+              (left, right) => _scoreXVideoCandidate(
+                right,
+              ).compareTo(_scoreXVideoCandidate(left)),
+            );
+      final hasUsableVideo = sameMedia.any(
+        (url) =>
+            _scoreXVideoCandidate(url) > 0 &&
+            !url.toLowerCase().contains('/mp4a/') &&
+            !url.toLowerCase().contains('/aud/'),
+      );
+      if (hasUsableVideo) return sameMedia;
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+    }
+    final fallback =
+        merged
+            .where((url) {
+              if (url.trim().isEmpty) return false;
+              return mediaId.isEmpty || _xMediaIdentity(url) == mediaId;
+            })
+            .toSet()
+            .toList()
+          ..sort(
+            (left, right) => _scoreXVideoCandidate(
+              right,
+            ).compareTo(_scoreXVideoCandidate(left)),
+          );
+    return fallback;
+  }
+
   List<String> _recentActiveDashManifestCandidates({
     String? pageUrl,
     DateTime? notBefore,
@@ -2132,7 +2229,11 @@ class _BrowserPageState extends State<BrowserPage>
     return host == 'tik.porn' ||
         host.endsWith('.tik.porn') ||
         host == 'pin.porn' ||
-        host.endsWith('.pin.porn');
+        host.endsWith('.pin.porn') ||
+        host == 'x.com' ||
+        host.endsWith('.x.com') ||
+        host == 'twitter.com' ||
+        host.endsWith('.twitter.com');
   }
 
   bool _looksLikePreviewClipUrl(String u) {
@@ -2211,9 +2312,15 @@ class _BrowserPageState extends State<BrowserPage>
       for (var i = 0; i < merged.length; i++) merged[i]: i,
     };
     int compareCandidates(String a, String b) {
-      final scoreOrder = _scoreFavoriteVideoUrl(
-        b,
-      ).compareTo(_scoreFavoriteVideoUrl(a));
+      final aScore =
+          _xMediaIdentity(a).isNotEmpty
+              ? _scoreXVideoCandidate(a)
+              : _scoreFavoriteVideoUrl(a);
+      final bScore =
+          _xMediaIdentity(b).isNotEmpty
+              ? _scoreXVideoCandidate(b)
+              : _scoreFavoriteVideoUrl(b);
+      final scoreOrder = bScore.compareTo(aScore);
       if (scoreOrder != 0) return scoreOrder;
       return insertionOrder[a]!.compareTo(insertionOrder[b]!);
     }
@@ -2516,8 +2623,44 @@ class _BrowserPageState extends State<BrowserPage>
                 _isTrustedMediaCandidate(url),
           )
           .toList(),
-      preservePrimary: isLongPress,
+      // Once smart selection has bound a concrete media URL, keep it first
+      // just like a long press. Fallback candidates are tried only on failure.
+      preservePrimary:
+          isLongPress ||
+          (isSmartBatch &&
+              (downloadUrl.startsWith('http://') ||
+                  downloadUrl.startsWith('https://'))),
     );
+    // X exposes a master playlist together with separate audio/video streams.
+    // Keep one media ID per smart-download step and prefer the complete master.
+    final smartXMediaId =
+        isSmartBatch
+            ? <String>[downloadUrl, videoUrl, ...attempts]
+                .map(_xMediaIdentity)
+                .firstWhere((id) => id.isNotEmpty, orElse: () => '')
+            : '';
+    Map<String, String>? smartVideoStates;
+    if (smartTask != null && smartXMediaId.isNotEmpty) {
+      final existingStates = smartTask['videoMediaStates'];
+      smartVideoStates =
+          existingStates is Map<String, String>
+              ? existingStates
+              : <String, String>{};
+      smartTask['videoMediaStates'] = smartVideoStates;
+      if (smartVideoStates.containsKey(smartXMediaId)) {
+        onFailureType?.call('already_in_smart_task');
+        return false;
+      }
+      attempts.removeWhere((url) {
+        final id = _xMediaIdentity(url);
+        return id.isNotEmpty && id != smartXMediaId;
+      });
+      attempts.sort(
+        (left, right) =>
+            _scoreXVideoCandidate(right).compareTo(_scoreXVideoCandidate(left)),
+      );
+      smartVideoStates[smartXMediaId] = 'downloading';
+    }
     if (isLongPress && attempts.length > 3) {
       attempts.removeRange(3, attempts.length);
     } else if (isSmartBatch && attempts.length > 3) {
@@ -2557,13 +2700,13 @@ class _BrowserPageState extends State<BrowserPage>
         onFailureType: (t) => failureType = t,
         inactivityTimeout:
             isSmartBatch
-                ? const Duration(seconds: 30)
+                ? const Duration(minutes: 2)
                 : isLongPress
                 ? const Duration(minutes: 2)
                 : const Duration(minutes: 3),
         maxRequestAttempts:
             isSmartBatch
-                ? 2
+                ? 4
                 : isLongPress
                 ? 4
                 : null,
@@ -2680,6 +2823,9 @@ class _BrowserPageState extends State<BrowserPage>
       Logger.log(
         '[稳健下载诊断] 结束: ${ok ? "成功" : "失败"} | 命中候选=${ok ? successIndex : 0}',
       );
+    }
+    if (smartVideoStates != null && smartXMediaId.isNotEmpty) {
+      smartVideoStates[smartXMediaId] = ok ? 'completed' : 'failed';
     }
     if (_downloadTasks.length > taskLenBefore) {
       final last = _downloadTasks.first;
@@ -3952,6 +4098,7 @@ class _BrowserPageState extends State<BrowserPage>
         const longPressSessionId = 'lp-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
         let isPinPornContext = false;
         let isTikPornContext = false;
+        let isXPlatformContext = false;
         try {
           const hosts = [location.hostname || ''];
           if (document.referrer) hosts.push(new URL(document.referrer).hostname || '');
@@ -3962,6 +4109,11 @@ class _BrowserPageState extends State<BrowserPage>
           isTikPornContext = hosts.some(host => {
             const normalized = String(host).toLowerCase();
             return normalized === 'tik.porn' || normalized.endsWith('.tik.porn');
+          });
+          isXPlatformContext = hosts.some(host => {
+            const normalized = String(host).toLowerCase();
+            return normalized === 'x.com' || normalized.endsWith('.x.com') ||
+              normalized === 'twitter.com' || normalized.endsWith('.twitter.com');
           });
         } catch (_) {}
         
@@ -3988,6 +4140,107 @@ class _BrowserPageState extends State<BrowserPage>
             if (score > bestScore) { bestScore = score; picked = video; }
           }
           return picked;
+        }
+
+        function xStatusInfoAtPoint(x, y) {
+          if (!isXPlatformContext) return null;
+          try {
+            const stack = document.elementsFromPoint(x, y);
+            let article = null;
+            for (const element of stack) {
+              const candidate = element && element.closest &&
+                element.closest('article[data-testid="tweet"], article');
+              if (candidate) { article = candidate; break; }
+            }
+            const mediaIdFromScope = scope => {
+              if (!scope) return '';
+              const values = [];
+              const add = value => { if (value) values.push(String(value)); };
+              const mediaNodes = String(scope.tagName || '').toLowerCase() === 'video'
+                ? [scope]
+                : Array.from(scope.querySelectorAll(
+                    'video, img, [style*="background-image"], [data-src], [data-poster]'
+                  ));
+              mediaNodes.sort((left, right) => {
+                const lr = left.getBoundingClientRect();
+                const rr = right.getBoundingClientRect();
+                const leftContains = x >= lr.left && x <= lr.right && y >= lr.top && y <= lr.bottom;
+                const rightContains = x >= rr.left && x <= rr.right && y >= rr.top && y <= rr.bottom;
+                if (leftContains !== rightContains) return leftContains ? -1 : 1;
+                const ld = Math.abs(lr.top + lr.height / 2 - y) +
+                  Math.abs(lr.left + lr.width / 2 - x) * 0.25;
+                const rd = Math.abs(rr.top + rr.height / 2 - y) +
+                  Math.abs(rr.left + rr.width / 2 - x) * 0.25;
+                return ld - rd;
+              }).forEach(media => {
+                add(media.poster);
+                add(media.getAttribute && media.getAttribute('poster'));
+                add(media.currentSrc); add(media.src);
+                add(media.getAttribute && media.getAttribute('src'));
+                add(media.getAttribute && media.getAttribute('srcset'));
+                add(media.getAttribute && media.getAttribute('data-src'));
+                add(media.getAttribute && media.getAttribute('data-poster'));
+                add(media.getAttribute && media.getAttribute('style'));
+              });
+              for (const value of values) {
+                const lower = value.toLowerCase();
+                for (const marker of ['/amplify_video_thumb/', '/ext_tw_video_thumb/',
+                  '/tweet_video_thumb/', '/amplify_video/', '/ext_tw_video/', '/tweet_video/']) {
+                  const index = lower.indexOf(marker);
+                  if (index < 0) continue;
+                  const id = value.substring(index + marker.length).split('/')[0];
+                  if (id && Array.from(id).every(ch => ch >= '0' && ch <= '9')) return id;
+                }
+              }
+              return '';
+            };
+            const locationUrl = new URL(location.href);
+            const currentTweet = locationUrl.searchParams.get('currentTweet') || '';
+            let currentScope = article;
+            if (!currentScope && currentTweet) {
+              const currentLink = Array.from(document.querySelectorAll('a[href*="/status/"]'))
+                .find(link => String(link.href || link.getAttribute('href') || '')
+                  .includes('/status/' + currentTweet));
+              currentScope = currentLink && currentLink.closest(
+                'article[data-testid="tweet"], article, [role="dialog"], main'
+              );
+            }
+            const pointVideo = pickCurrentVideo(x, y);
+            if (!currentScope && pointVideo) {
+              currentScope = pointVideo.closest('[role="dialog"], main') || pointVideo.parentElement;
+            }
+            const statusLink = currentTweet
+              ? location.origin + '/i/status/' + currentTweet
+              : (currentScope ? Array.from(currentScope.querySelectorAll('a[href*="/status/"]'))
+                  .map(link => link.href || link.getAttribute('href') || '')
+                  .find(href => String(href).includes('/status/')) : '');
+            const statusTail = String(statusLink || '').split('/status/')[1] || '';
+            const statusId = (statusTail.match(/^[0-9]+/) || [''])[0];
+            const videos = currentScope
+              ? Array.from(currentScope.querySelectorAll('video'))
+              : (pointVideo ? [pointVideo] : []);
+            const video = videos.sort((left, right) => {
+              const lr = left.getBoundingClientRect();
+              const rr = right.getBoundingClientRect();
+              const leftContains = x >= lr.left && x <= lr.right && y >= lr.top && y <= lr.bottom;
+              const rightContains = x >= rr.left && x <= rr.right && y >= rr.top && y <= rr.bottom;
+              if (leftContains !== rightContains) return leftContains ? -1 : 1;
+              if (left.paused !== right.paused) return left.paused ? 1 : -1;
+              return Math.abs(lr.top + lr.height / 2 - y) -
+                Math.abs(rr.top + rr.height / 2 - y);
+            })[0] || null;
+            let mediaId = mediaIdFromScope(video);
+            let node = video && video.parentElement;
+            for (let depth = 0; !mediaId && node && depth < 7; depth++, node = node.parentElement) {
+              mediaId = mediaIdFromScope(node);
+            }
+            if (!mediaId) mediaId = mediaIdFromScope(currentScope);
+            return { article: currentScope, video: video || pointVideo,
+              statusUrl: statusLink || location.href, statusId: statusId || currentTweet,
+              mediaId };
+          } catch (_) {
+            return null;
+          }
         }
 
         function pickTikPornVideo(x, y) {
@@ -4146,14 +4399,18 @@ class _BrowserPageState extends State<BrowserPage>
         // 触点上即使覆盖着网页按钮，也优先选择触点范围内真正可见、正在播放的视频。
         let bestTarget = target;
         if (typeof window._lastTouchX === 'number' && typeof window._lastTouchY === 'number') {
+          const xStatus = xStatusInfoAtPoint(window._lastTouchX, window._lastTouchY);
           const currentVideo = isTikPornContext
             ? pickTikPornVideo(window._lastTouchX, window._lastTouchY)
-            : pickCurrentVideo(window._lastTouchX, window._lastTouchY);
+            : ((xStatus && xStatus.video) ||
+              pickCurrentVideo(window._lastTouchX, window._lastTouchY));
           const atPoint = document.elementsFromPoint(window._lastTouchX, window._lastTouchY);
+          let pointVideo = null;
           for (const el of atPoint) {
             const tag = (el.tagName || '').toLowerCase();
             if (tag === 'video' && (el.currentSrc || el.src)) {
               bestTarget = el;
+              pointVideo = el;
               break;
             }
             if (tag === 'img' && (el.currentSrc || el.src)) {
@@ -4162,7 +4419,19 @@ class _BrowserPageState extends State<BrowserPage>
             }
           }
           const selectedTag = (bestTarget.tagName || '').toLowerCase();
-          if (currentVideo && selectedTag !== 'img' && selectedTag !== 'image') bestTarget = currentVideo;
+          const selectedImage = selectedTag === 'img' || selectedTag === 'image' ||
+            selectedTag === 'picture';
+          if (currentVideo &&
+              !selectedImage &&
+              (!isXPlatformContext || !pointVideo) &&
+              (isXPlatformContext || !selectedImage)) {
+            bestTarget = currentVideo;
+          }
+          if (isXPlatformContext && xStatus && bestTarget) {
+            bestTarget.__appXStatusId = xStatus.statusId || '';
+            bestTarget.__appXStatusUrl = xStatus.statusUrl || '';
+            bestTarget.__appXMediaId = xStatus.mediaId || '';
+          }
           if (bestTarget === target) {
             const txt = (target.textContent || target.innerText || '').toLowerCase();
             const aria = (target.getAttribute('aria-label') || '').toLowerCase();
@@ -4173,6 +4442,17 @@ class _BrowserPageState extends State<BrowserPage>
           }
         }
         target = bestTarget;
+
+        if (isXPlatformContext &&
+            String(target.tagName || '').toLowerCase() === 'video') {
+          try {
+            Array.from(document.querySelectorAll('video')).forEach(video => {
+              if (video !== target) video.pause();
+            });
+            target.muted = true;
+            target.play().catch(() => {});
+          } catch (_) {}
+        }
 
         if (isTikPornContext &&
             typeof window._lastTouchX === 'number' &&
@@ -4284,6 +4564,21 @@ class _BrowserPageState extends State<BrowserPage>
           for (const [u, info] of window.MediaInterceptor.interceptedRequests) {
             if (!u || (now - info.timestamp) > 600000) continue;
             if (isAdUrl(u) || isMediaFragmentUrl(u)) continue;
+
+            if (isXPlatformContext) {
+              const bound = String((videoEl && (videoEl.currentSrc || videoEl.src)) || '');
+              const mediaId = value => {
+                const text = String(value || '');
+                for (const marker of ['/amplify_video/', '/ext_tw_video/', '/tweet_video/']) {
+                  const index = text.toLowerCase().indexOf(marker);
+                  if (index >= 0) return text.substring(index + marker.length).split('/')[0];
+                }
+                return '';
+              };
+              const boundId = mediaId(bound);
+              const candidateId = mediaId(u);
+              if (boundId && candidateId !== boundId) continue;
+            }
 
             const ct = (info.contentType || '').toLowerCase();
             const lower = String(u).toLowerCase();
@@ -4406,7 +4701,9 @@ class _BrowserPageState extends State<BrowserPage>
           isElementBoundFeedContext = hosts.some(host => {
             const normalized = String(host).toLowerCase();
             return normalized === 'tik.porn' || normalized.endsWith('.tik.porn') ||
-                   normalized === 'pin.porn' || normalized.endsWith('.pin.porn');
+                   normalized === 'pin.porn' || normalized.endsWith('.pin.porn') ||
+                   normalized === 'x.com' || normalized.endsWith('.x.com') ||
+                   normalized === 'twitter.com' || normalized.endsWith('.twitter.com');
           });
         } catch (_) {}
         const preserveBoundBlob = isElementBoundFeedContext && String(url || '').startsWith('blob:');
@@ -4484,6 +4781,15 @@ class _BrowserPageState extends State<BrowserPage>
                 isStreamReference: true,
                 action: 'download',
                 pageUrl: location.href || '',
+                sourcePageUrl: isXPlatformContext
+                  ? String(target.__appXStatusUrl || location.href || '')
+                  : String(location.href || ''),
+                siteMediaId: isXPlatformContext
+                  ? String(target.__appXStatusId || '')
+                  : '',
+                expectedXMediaId: isXPlatformContext
+                  ? String(target.__appXMediaId || '')
+                  : '',
                 title: document.title || '',
                 positionSec: videoEl && isFinite(Number(videoEl.currentTime)) ? Number(videoEl.currentTime) : 0,
                 durationSec: effectiveVideoDuration(videoEl),
@@ -4685,7 +4991,15 @@ class _BrowserPageState extends State<BrowserPage>
           sessionId: longPressSessionId,
           siteMediaId: isPinPornContext
             ? String(target.__appPinSlideId || '')
-            : (isTikPornContext ? String(target.__appTikVideoId || '') : ''),
+            : (isTikPornContext
+              ? String(target.__appTikVideoId || '')
+              : (isXPlatformContext ? String(target.__appXStatusId || '') : '')),
+          sourcePageUrl: isXPlatformContext
+            ? String(target.__appXStatusUrl || location.href || '')
+            : String(location.href || ''),
+          expectedXMediaId: isXPlatformContext
+            ? String(target.__appXMediaId || '')
+            : '',
           playbackStartedAtMs: Date.now() - Math.max(0, Number(videoEl && videoEl.currentTime || 0)) * 1000,
           durationSec: effectiveVideoDuration(videoEl),
           candidates: cands
@@ -5030,15 +5344,35 @@ class _BrowserPageState extends State<BrowserPage>
         _longPressVideoDownloadInProgress = true;
         try {
           final pageUrl = (data['pageUrl'] ?? '').toString().trim();
+          final sourcePageUrl = (data['sourcePageUrl'] ?? '').toString().trim();
           final title = (data['title'] ?? '').toString().trim();
-          final candidateUrls = List<String>.from(downloadCandidateUrls);
+          var candidateUrls = List<String>.from(downloadCandidateUrls);
           final normalizedPrimary = normalizeMediaCandidateUrls(
             <String>[_toAbsoluteUrl(urlValue)],
             video: true,
             maxCandidates: 1,
           );
-          final primaryVideoUrl =
+          var primaryVideoUrl =
               normalizedPrimary.isEmpty ? '' : normalizedPrimary.first;
+          final isXDownload =
+              _isXPlatformPage(pageUrl) || _isXPlatformPage(_currentUrl);
+          final expectedXMediaId =
+              (data['expectedXMediaId'] ?? '').toString().trim();
+
+          final xCandidates = await _resolveXLongPressVideoCandidates(
+            primaryUrl: primaryVideoUrl,
+            candidates: candidateUrls,
+            pageUrl: pageUrl.isNotEmpty ? pageUrl : _currentUrl,
+            expectedMediaId: expectedXMediaId,
+            notBefore: sessionNotBefore,
+          );
+          if (isXDownload && xCandidates.isNotEmpty) {
+            primaryVideoUrl = xCandidates.first;
+            candidateUrls = xCandidates.skip(1).toList();
+          } else if (isXDownload && expectedXMediaId.isNotEmpty) {
+            primaryVideoUrl = '';
+            candidateUrls = <String>[];
+          }
 
           if (primaryVideoUrl.isEmpty && candidateUrls.isEmpty) {
             if (mounted) {
@@ -5053,7 +5387,10 @@ class _BrowserPageState extends State<BrowserPage>
           }
 
           final itemMap = {
-            'pageUrl': pageUrl.isNotEmpty ? pageUrl : _currentUrl,
+            'pageUrl':
+                sourcePageUrl.isNotEmpty
+                    ? sourcePageUrl
+                    : (pageUrl.isNotEmpty ? pageUrl : _currentUrl),
             'videoUrl': primaryVideoUrl,
             'title': title,
             'candidateUrls': candidateUrls,
@@ -5100,6 +5437,46 @@ class _BrowserPageState extends State<BrowserPage>
           if (mediaType == 'video') {
             final useElementBoundDisambiguation =
                 isElementBoundFeedDownloadContext;
+            if (isStreamReference &&
+                (_isXPlatformPage(messagePageUrl) ||
+                    _isXPlatformPage(_currentUrl))) {
+              final directXUrls =
+                  downloadCandidateUrls
+                      .where((url) => _xMediaIdentity(url).isNotEmpty)
+                      .toList();
+              if (directXUrls.isNotEmpty) {
+                final xCandidates = await _resolveXLongPressVideoCandidates(
+                  primaryUrl: directXUrls.first,
+                  candidates: directXUrls.skip(1).toList(),
+                  pageUrl: messagePageUrl,
+                  expectedMediaId:
+                      (data['expectedXMediaId'] ?? '').toString().trim(),
+                  notBefore: sessionNotBefore,
+                );
+                if (xCandidates.isNotEmpty) {
+                  final sourcePageUrl =
+                      (data['sourcePageUrl'] ?? messagePageUrl)
+                          .toString()
+                          .trim();
+                  await _downloadMediaRobustly(
+                    item: <String, dynamic>{
+                      'pageUrl':
+                          sourcePageUrl.isNotEmpty
+                              ? sourcePageUrl
+                              : messagePageUrl,
+                      'videoUrl': xCandidates.first,
+                      'candidateUrls': xCandidates.skip(1).toList(),
+                      'title': (data['title'] ?? '').toString(),
+                      'downloadOrigin': 'long_press',
+                      'sessionId': mediaSessionId,
+                      'durationSec': messageDurationSeconds,
+                    },
+                    showResultHint: true,
+                  );
+                  return;
+                }
+              }
+            }
             final boundFragmentValue = data['boundFragments'];
             final boundFragmentUrls = <String>[];
             if (useElementBoundDisambiguation && boundFragmentValue is List) {
@@ -5713,7 +6090,6 @@ class _BrowserPageState extends State<BrowserPage>
 
   void _exitWebPage() {
     _controller?.loadUrl(urlRequest: URLRequest(url: WebUri('about:blank')));
-    _controller?.clearCache();
     setState(() {
       _showHomePage = true;
       _isBrowsingWebPage = false;
@@ -6097,6 +6473,7 @@ class _BrowserPageState extends State<BrowserPage>
     final titleKey = _smartMediaTitleKey(title);
     final sourceKey = _normalizeVideoSourceUrl(mediaUrl);
     final pageKey = _smartStablePageKey(pageUrl);
+    final allowTitleIdentity = !_isElementBoundFeedPage(pageUrl);
     final now = DateTime.now();
     final cutoff = now.subtract(const Duration(hours: 24));
     _smartDownload24hRegistry.removeWhere((row) {
@@ -6108,7 +6485,8 @@ class _BrowserPageState extends State<BrowserPage>
           (row['siteHost'] ?? '').toString() == siteHost &&
           ((nameKey.isNotEmpty &&
                   (row['nameKey'] ?? '').toString() == nameKey) ||
-              (titleKey.isNotEmpty &&
+              (allowTitleIdentity &&
+                  titleKey.isNotEmpty &&
                   (row['titleKey'] ?? '').toString() == titleKey) ||
               (sourceKey.isNotEmpty &&
                   (row['sourceKey'] ?? '').toString() == sourceKey) ||
@@ -6241,6 +6619,7 @@ class _BrowserPageState extends State<BrowserPage>
     var mediaType = MediaType.video;
     var currentVideoUrls = <String>[];
     var currentVideoDuration = 0.0;
+    var currentMediaPageUrl = _currentUrl;
     try {
       final result = await _controller!.evaluateJavascript(
         source: '''
@@ -6261,26 +6640,41 @@ class _BrowserPageState extends State<BrowserPage>
             const nearestCenter = list => list.sort((a,b) =>
               centerDistance(a) - centerDistance(b))[0];
             const playingVideos = videos.filter(v => !v.paused && !v.ended && v.readyState >= 2);
-            const media = nearestCenter(playingVideos) || nearestCenter(images) || nearestCenter(videos);
-            document.querySelectorAll('[data-smart-seed-media], [data-smart-seed-scope]')
+            const host = location.hostname.toLowerCase().replace(/^www\./, '');
+            const isXPlatform = host === 'x.com' || host.endsWith('.x.com') ||
+              host === 'twitter.com' || host.endsWith('.twitter.com');
+            const media = nearestCenter(playingVideos) ||
+              (isXPlatform ? nearestCenter(videos) : nearestCenter(images)) ||
+              (isXPlatform ? nearestCenter(images) : nearestCenter(videos));
+            document.querySelectorAll(
+              '[data-smart-seed-media], [data-smart-seed-scope], '
+              + '[data-app-smart-x-active], [data-app-smart-x-visited]'
+            )
               .forEach(el => {
                 el.removeAttribute('data-smart-seed-media');
                 el.removeAttribute('data-smart-seed-scope');
+                el.removeAttribute('data-app-smart-x-active');
+                el.removeAttribute('data-app-smart-x-visited');
               });
             if (media) {
               media.setAttribute('data-smart-seed-media', '1');
-              let scope = media.parentElement;
-              while (scope && scope !== document.body) {
+              let scope = isXPlatform
+                ? (media.closest('article[data-testid="tweet"], article') || media.parentElement)
+                : media.parentElement;
+              while (!isXPlatform && scope && scope !== document.body) {
                 const count = scope.querySelectorAll('video, img').length;
                 const scopeHint = String(scope.id || '') + ' ' + String(scope.className || '');
                 if (count >= 2 &&
                     /(user|profile|gallery|album|folder|category|channel|feed|list|grid|items|posts)/i.test(scopeHint)) break;
                 scope = scope.parentElement;
               }
-              if (!scope || scope === document.body) {
+              if ((!isXPlatform && !scope) || scope === document.body) {
                 scope = media.closest('main, section, article, [role="feed"]') || media.parentElement;
               }
               if (scope) scope.setAttribute('data-smart-seed-scope', '1');
+              if (isXPlatform && scope) {
+                scope.setAttribute('data-app-smart-x-active', '1');
+              }
             }
             const type = media && media.tagName === 'IMG' ? 'image' : 'video';
             const mediaUrls = type === 'video' ? [
@@ -6289,6 +6683,10 @@ class _BrowserPageState extends State<BrowserPage>
               ...Array.from(media.querySelectorAll('source')).map(source => source.src)
             ].filter(Boolean) : [];
             const nearby = media && media.closest('article, figure, [class*="card"], [class*="item"]');
+            const statusUrl = isXPlatform && nearby
+              ? (Array.from(nearby.querySelectorAll('a[href*="/status/"]'))
+                  .map(link => link.href || '').find(href => String(href).includes('/status/')) || '')
+              : '';
             const values = [
               media && (media.getAttribute('alt') || media.getAttribute('title') || media.getAttribute('aria-label')),
               media && media.parentElement && media.parentElement.getAttribute('title'),
@@ -6298,7 +6696,6 @@ class _BrowserPageState extends State<BrowserPage>
               document.querySelector('meta[property="og:description"]')?.content,
               document.title
             ];
-            const host = location.hostname.toLowerCase().replace(/^www\./, '');
             const cleaned = values.map(v => String(v || '').replace(/https?:\/\/\S+/g, ' ')
               .replace(/\s+/g, ' ').trim()).filter(v => {
                 const lower = v.toLowerCase().replace(/^www\./, '');
@@ -6308,6 +6705,7 @@ class _BrowserPageState extends State<BrowserPage>
               type,
               keyword: (cleaned[0] || '').slice(0, 80),
               mediaUrls: Array.from(new Set(mediaUrls)),
+              sourcePageUrl: statusUrl || location.href,
               duration: type === 'video' && Number.isFinite(media.duration)
                 ? media.duration
                 : 0
@@ -6326,6 +6724,8 @@ class _BrowserPageState extends State<BrowserPage>
           currentVideoUrls = rawUrls.map((value) => value.toString()).toList();
         }
         currentVideoDuration = (result['duration'] as num?)?.toDouble() ?? 0.0;
+        currentMediaPageUrl =
+            (result['sourcePageUrl'] ?? _currentUrl).toString().trim();
       }
     } catch (e) {
       debugPrint('提取当前媒体关键词失败: $e');
@@ -6333,7 +6733,8 @@ class _BrowserPageState extends State<BrowserPage>
     await _showSmartDownloadDialog(
       <String, dynamic>{
         'name': keyword.isNotEmpty ? keyword : '当前媒体',
-        'url': _currentUrl,
+        'url':
+            currentMediaPageUrl.isNotEmpty ? currentMediaPageUrl : _currentUrl,
       },
       initialKeyword: keyword,
       initialMediaType: mediaType,
@@ -6435,6 +6836,81 @@ class _BrowserPageState extends State<BrowserPage>
     return null;
   }
 
+  Future<void> _anchorSmartSeedForType(MediaType mediaType) async {
+    final controller = _controller;
+    if (controller == null) return;
+    final imageMode = mediaType == MediaType.image;
+    try {
+      await controller.evaluateJavascript(
+        source: '''
+          (() => {
+            const imageMode = $imageMode;
+            const selector = imageMode ? 'img' : 'video';
+            const candidates = Array.from(document.querySelectorAll(selector))
+              .filter(media => {
+                const r = media.getBoundingClientRect();
+                if (r.width < 100 || r.height < 80 || r.bottom <= 0 || r.top >= innerHeight) {
+                  return false;
+                }
+                if (!imageMode) return true;
+                const src = String(media.currentSrc || media.src || '').toLowerCase();
+                const width = Math.max(media.naturalWidth || 0, r.width);
+                const height = Math.max(media.naturalHeight || 0, r.height);
+                return width >= 200 && height >= 160 &&
+                  !/(profile_images|profile_banners|emoji|avatar|icon)/.test(src);
+              });
+            const center = candidates.sort((left, right) => {
+              const lr = left.getBoundingClientRect();
+              const rr = right.getBoundingClientRect();
+              const ld = Math.abs(lr.top + lr.height / 2 - innerHeight / 2) +
+                Math.abs(lr.left + lr.width / 2 - innerWidth / 2) * 0.25;
+              const rd = Math.abs(rr.top + rr.height / 2 - innerHeight / 2) +
+                Math.abs(rr.left + rr.width / 2 - innerWidth / 2) * 0.25;
+              return ld - rd;
+            })[0];
+            if (!center) return false;
+            document.querySelectorAll(
+              '[data-smart-seed-media], [data-smart-seed-scope], '
+              + '[data-app-smart-x-active], [data-app-smart-x-visited]'
+            ).forEach(el => {
+              el.removeAttribute('data-smart-seed-media');
+              el.removeAttribute('data-smart-seed-scope');
+              el.removeAttribute('data-app-smart-x-active');
+              el.removeAttribute('data-app-smart-x-visited');
+            });
+            center.setAttribute('data-smart-seed-media', '1');
+            const host = location.hostname.toLowerCase().replace(/^www\./, '');
+            const isX = host === 'x.com' || host.endsWith('.x.com') ||
+              host === 'twitter.com' || host.endsWith('.twitter.com');
+            const scope = isX
+              // Immersive viewers preload adjacent posts inside one dialog.
+              // Bind to the current video's smallest stable container instead.
+              ? center.closest('article[data-testid="tweet"], article') ||
+                center.parentElement
+              : center.closest('article, figure, [class*="card"], [class*="item"], section') ||
+                center.parentElement;
+            if (scope) {
+              scope.setAttribute('data-smart-seed-scope', '1');
+              if (isX) scope.setAttribute('data-app-smart-x-active', '1');
+            }
+            if (!imageMode) {
+              Array.from(document.querySelectorAll('video')).forEach(video => {
+                if (video !== center) {
+                  try { video.pause(); } catch (_) {}
+                }
+              });
+              try { center.muted = true; center.play().catch(() => {}); } catch (_) {}
+            }
+            center.scrollIntoView({behavior: 'auto', block: 'center'});
+            return true;
+          })()
+        ''',
+      );
+    } catch (e) {
+      debugPrint('智能下载定位中心媒体失败: $e');
+    }
+  }
+
   Future<void> _showSmartDownloadDialog(
     Map<String, dynamic> website, {
     String initialKeyword = '',
@@ -6466,6 +6942,11 @@ class _BrowserPageState extends State<BrowserPage>
                       mainAxisSize: MainAxisSize.min,
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
+                        const Text(
+                          '选择智能下载类型',
+                          style: TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                        const SizedBox(height: 8),
                         SegmentedButton<MediaType>(
                           segments: const [
                             ButtonSegment(
@@ -6704,6 +7185,13 @@ class _BrowserPageState extends State<BrowserPage>
         keyword.trim().isNotEmpty &&
         (normalizedHost == '91cg1.com' ||
             normalizedHost.endsWith('.91cg1.com'));
+    final strictXFeedMode =
+        startFromCurrentPage &&
+        (normalizedHost == 'x.com' ||
+            normalizedHost.endsWith('.x.com') ||
+            normalizedHost == 'twitter.com' ||
+            normalizedHost.endsWith('.twitter.com'));
+    final keywordFirstOnX = strictXFeedMode && keyword.trim().isNotEmpty;
     await _loadSmartDownload24hRegistry();
     await _loadSmartStrategyProfiles();
     final startedAt = DateTime.now();
@@ -6712,10 +7200,19 @@ class _BrowserPageState extends State<BrowserPage>
         keywordFirstOn91
             ? '${uri.origin}/search/${Uri.encodeComponent(keyword.trim())}/'
             : '';
+    final strictXSearchUrl =
+        keywordFirstOnX
+            ? '${uri.origin}/search?q=${Uri.encodeQueryComponent(keyword.trim())}&src=typed_query&f=media'
+            : '';
+    if (startFromCurrentPage && keyword.trim().isEmpty) {
+      await _anchorSmartSeedForType(mediaType);
+    }
     _smartDownloadTask = <String, dynamic>{
       'phase':
           keywordFirstOn91
               ? 'collecting_search_results'
+              : keywordFirstOnX
+              ? 'x_search_loading'
               : startFromCurrentPage
               ? 'visiting_seed'
               : 'opening_site',
@@ -6742,6 +7239,7 @@ class _BrowserPageState extends State<BrowserPage>
       'seenMediaUrls': <String>{},
       'attemptedVideoContexts': <String>{},
       'duplicateVideoUrlKeys': <String>{},
+      'videoMediaStates': <String, String>{},
       'reservedMediaNameKeys': <String>{},
       'reservedMediaTitleKeys': <String>{},
       'clickedSmartCardKeys': <String>{},
@@ -6769,6 +7267,9 @@ class _BrowserPageState extends State<BrowserPage>
       'strict91QueueReady': false,
       'strict91ActiveCardUrl': '',
       'strict91ReturnAttempts': 0,
+      'strictXFeedMode': strictXFeedMode,
+      'strictXSearchUrl': strictXSearchUrl,
+      'xVisitedStatusIds': <String>{},
     };
     final activeTask = _smartDownloadTask!;
     activeTask['deadlineTimer'] = Timer(
@@ -6864,6 +7365,9 @@ class _BrowserPageState extends State<BrowserPage>
     if (keywordFirstOn91) {
       _smartDownloadTask!['activeDiscoveryStrategy'] = 'site_search';
       _loadUrl(strict91SearchUrl);
+    } else if (keywordFirstOnX) {
+      _smartDownloadTask!['activeDiscoveryStrategy'] = 'x_media_search';
+      _loadUrl(strictXSearchUrl);
     } else if (startFromCurrentPage) {
       unawaited(_advanceSmartDownload(_currentUrl));
     } else {
@@ -6906,9 +7410,46 @@ class _BrowserPageState extends State<BrowserPage>
           (taskHost == '91cg1.com' || taskHost.endsWith('.91cg1.com')) &&
           (task['keyword'] ?? '').toString().trim().isNotEmpty;
       final strict91Mode = task['strict91KeywordMode'] == true;
+      final strictXFeedMode = task['strictXFeedMode'] == true;
+      final strictXSearchUrl = (task['strictXSearchUrl'] ?? '').toString();
       final strict91SearchUrl = (task['strict91SearchUrl'] ?? '').toString();
       final actualLoadedUrl =
           (await controller.getUrl())?.toString() ?? loadedUrl;
+
+      if (strictXFeedMode && phase == 'x_search_loading') {
+        final actualUri = Uri.tryParse(actualLoadedUrl);
+        final onSearchPage =
+            actualUri != null &&
+            actualUri.pathSegments.isNotEmpty &&
+            actualUri.pathSegments.first == 'search';
+        if (!onSearchPage) {
+          _loadUrl(strictXSearchUrl);
+          return;
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 900));
+        task['phase'] = 'scanning_feed';
+        _continueSmartFeed(task, madeProgress: false);
+        return;
+      }
+
+      if (strictXFeedMode && phase == 'x_search_returning') {
+        final actualUri = Uri.tryParse(actualLoadedUrl);
+        final onSearchPage =
+            actualUri != null &&
+            actualUri.pathSegments.isNotEmpty &&
+            actualUri.pathSegments.first == 'search';
+        if (!onSearchPage) {
+          if (await controller.canGoBack()) {
+            await controller.goBack();
+          } else {
+            _loadUrl(strictXSearchUrl);
+          }
+          return;
+        }
+        task['phase'] = 'scanning_feed';
+        _continueSmartFeed(task, madeProgress: false);
+        return;
+      }
 
       if (strict91Mode && phase == 'strict91_returning') {
         if (_isSame91TaskPage(strict91SearchUrl, actualLoadedUrl)) {
@@ -7207,6 +7748,7 @@ class _BrowserPageState extends State<BrowserPage>
       if (phase == 'visiting_candidate' ||
           phase == 'visiting_seed' ||
           phase == 'visiting_clicked_card' ||
+          phase == 'x_viewing_search_card' ||
           phase == 'scanning_feed') {
         final candidatePreheated =
             phase == 'visiting_candidate' &&
@@ -7225,7 +7767,9 @@ class _BrowserPageState extends State<BrowserPage>
           ),
         );
         final successBefore = task['success'] as int;
-        unawaited(_preheatNextSmartMedia(task, phase));
+        if (!strict91Mode) {
+          unawaited(_preheatNextSmartMedia(task, phase));
+        }
         if (task['mediaType'] == MediaType.image) {
           await _downloadSmartImagesFromCurrentPage(task);
           if (phase == 'visiting_clicked_card') {
@@ -7240,8 +7784,17 @@ class _BrowserPageState extends State<BrowserPage>
             }
           }
           if (_smartDownloadTask == null) return;
+          if (strictXFeedMode &&
+              phase == 'scanning_feed' &&
+              (task['strictXSearchUrl'] ?? '').toString().isNotEmpty &&
+              (task['success'] as int) == successBefore &&
+              await _openActiveXSmartCard(task)) {
+            return;
+          }
           if ((task['success'] as int) >= (task['target'] as int)) {
             await _finishSmartDownload();
+          } else if (phase == 'x_viewing_search_card') {
+            await _returnFromXSmartCard(task);
           } else if (phase == 'visiting_seed' || phase == 'scanning_feed') {
             _continueSmartFeed(
               task,
@@ -7259,26 +7812,34 @@ class _BrowserPageState extends State<BrowserPage>
             !scopeHasKeyword &&
             task['startedFromCurrentPage'] == true &&
             scopeDiscoveryRound == 0;
-        final preferSeedMedia = phase == 'visiting_seed';
+        final preferSeedMedia =
+            phase == 'visiting_seed' ||
+            (strictXFeedMode && phase == 'scanning_feed');
         final result = await controller.evaluateJavascript(
           source: '''
             (() => {
               const preferSeedScope = $preferSeedScope;
               const preferSeedMedia = $preferSeedMedia;
               const allVideos = Array.from(document.querySelectorAll('video'));
-              const scope = preferSeedScope
-                ? document.querySelector('[data-smart-seed-scope="1"]')
+              const activeXScope = $strictXFeedMode
+                ? document.querySelector('[data-app-smart-x-active="1"]')
                 : null;
+              const scope = activeXScope || (preferSeedScope
+                ? document.querySelector('[data-smart-seed-scope="1"]')
+                : null);
               const scopedVideos = scope
                 ? Array.from(scope.querySelectorAll('video'))
                 : [];
-              const videos = scopedVideos.length > 1 ? scopedVideos : allVideos;
+              // In X's immersive viewer adjacent posts are preloaded. Once an
+              // active scope exists, never fall back to those page-wide nodes.
+              const videos = scope ? scopedVideos : allVideos;
               const visible = videos.filter(v => {
                 const r = v.getBoundingClientRect();
                 return r.width > 80 && r.height > 60 && r.bottom > 0 && r.top < innerHeight;
               });
               const seed = preferSeedMedia
-                ? document.querySelector('video[data-smart-seed-media="1"]')
+                ? (scope?.querySelector('video[data-smart-seed-media="1"]') ||
+                    document.querySelector('video[data-smart-seed-media="1"]'))
                 : null;
               const video = seed || (visible.length ? visible : videos).sort((a,b) => {
                 const ar = a.getBoundingClientRect();
@@ -7292,7 +7853,48 @@ class _BrowserPageState extends State<BrowserPage>
               const urls = [video.currentSrc, video.src,
                 ...Array.from(video.querySelectorAll('source')).map(s => s.src)]
                 .filter(Boolean);
-              const nearby = video.closest('article, figure, [class*="card"], [class*="item"], [class*="post"]');
+              const currentTweet = (() => {
+                try { return new URL(location.href).searchParams.get('currentTweet') || ''; }
+                catch (_) { return ''; }
+              })();
+              let nearby = video.closest(
+                'article, figure, [class*="card"], [class*="item"], [class*="post"], [role="dialog"]'
+              );
+              if ($strictXFeedMode && currentTweet && !activeXScope) {
+                const currentLink = Array.from(document.querySelectorAll('a[href*="/status/"]'))
+                  .find(link => String(link.href || '').includes('/status/' + currentTweet));
+                nearby = (currentLink && currentLink.closest(
+                  'article[data-testid="tweet"], article, [role="dialog"], main'
+                )) || nearby;
+              }
+              const xMediaIdFromScope = scope => {
+                if (!scope) return '';
+                const values = [];
+                const add = value => { if (value) values.push(String(value)); };
+                Array.from(scope.querySelectorAll('video, img')).forEach(media => {
+                  add(media.poster); add(media.getAttribute && media.getAttribute('poster'));
+                  if (String(media.tagName || '').toLowerCase() === 'img') {
+                    add(media.currentSrc); add(media.src);
+                    add(media.getAttribute && media.getAttribute('src'));
+                    add(media.getAttribute && media.getAttribute('srcset'));
+                  }
+                });
+                for (const value of values) {
+                  const lower = value.toLowerCase();
+                  for (const marker of ['/amplify_video_thumb/', '/ext_tw_video_thumb/',
+                    '/tweet_video_thumb/', '/amplify_video/', '/ext_tw_video/', '/tweet_video/']) {
+                    const index = lower.indexOf(marker);
+                    if (index < 0) continue;
+                    const id = value.substring(index + marker.length).split('/')[0];
+                    if (id && Array.from(id).every(ch => ch >= '0' && ch <= '9')) return id;
+                  }
+                }
+                return '';
+              };
+              const expectedXMediaId = $strictXFeedMode
+                ? (xMediaIdFromScope(video) || xMediaIdFromScope(scope) ||
+                    xMediaIdFromScope(nearby || video.parentElement))
+                : '';
               const contextText = [video.title, video.getAttribute('aria-label'),
                 nearby && nearby.innerText, document.title].filter(Boolean).join(' ');
               const elementIdentity = [
@@ -7327,6 +7929,7 @@ class _BrowserPageState extends State<BrowserPage>
                 duration: Number.isFinite(video.duration) ? video.duration : 0,
                 currentTime: Number.isFinite(video.currentTime) ? video.currentTime : 0,
                 title: document.title || location.href, contextText, elementIdentity,
+                expectedXMediaId,
                 adLikely, skipClicked: !!skipButton};
             })()
           ''',
@@ -7340,6 +7943,7 @@ class _BrowserPageState extends State<BrowserPage>
         var durationSec = 0.0;
         var currentTimeSec = 0.0;
         var adLikely = false;
+        var expectedXMediaId = '';
         if (result is Map) {
           final rawCandidates = result['candidates'];
           if (rawCandidates is List) {
@@ -7353,6 +7957,8 @@ class _BrowserPageState extends State<BrowserPage>
           durationSec = (result['duration'] as num?)?.toDouble() ?? 0.0;
           currentTimeSec = (result['currentTime'] as num?)?.toDouble() ?? 0.0;
           adLikely = result['adLikely'] == true;
+          expectedXMediaId =
+              (result['expectedXMediaId'] ?? '').toString().trim();
         }
         if (adLikely) {
           final now = DateTime.now();
@@ -7399,15 +8005,93 @@ class _BrowserPageState extends State<BrowserPage>
                   pageUrl: pageUrl,
                   notBefore: lastFeedMoveAt,
                 );
-        final captured =
-            freshCaptured.isNotEmpty
-                ? freshCaptured
-                : _recentCapturedMediaCandidates(
-                  MediaType.video,
-                  pageUrl: pageUrl,
-                );
-        if (_isElementBoundFeedPage(pageUrl) && freshCaptured.isNotEmpty) {
-          urls.insertAll(0, freshCaptured);
+        final captured = <String>[
+          ...(strict91Mode
+              ? freshCaptured
+              : freshCaptured.isNotEmpty
+              ? freshCaptured
+              : _recentCapturedMediaCandidates(
+                MediaType.video,
+                pageUrl: pageUrl,
+              )),
+        ];
+        if (_isXPlatformPage(pageUrl)) {
+          var boundMediaIds =
+              expectedXMediaId.isNotEmpty
+                  ? <String>{expectedXMediaId}
+                  : urls
+                      .map(_xMediaIdentity)
+                      .where((id) => id.isNotEmpty)
+                      .toSet();
+          if (boundMediaIds.isEmpty && strictXFeedMode) {
+            final grouped = <String, List<String>>{};
+            for (final url in freshCaptured) {
+              final id = _xMediaIdentity(url);
+              if (id.isNotEmpty) (grouped[id] ??= <String>[]).add(url);
+            }
+            if (grouped.isNotEmpty) {
+              final ranked =
+                  grouped.entries.toList()..sort((left, right) {
+                    int score(MapEntry<String, List<String>> entry) {
+                      final rows = entry.value;
+                      final hasMaster = rows.any(
+                        (url) => RegExp(
+                          r'/pl/[^/]+\.m3u8(?:\?|$)',
+                        ).hasMatch(url.toLowerCase()),
+                      );
+                      final hasVideo = rows.any(
+                        (url) =>
+                            url.contains('/avc1/') || url.contains('/vid/'),
+                      );
+                      final hasAudio = rows.any(
+                        (url) =>
+                            url.contains('/mp4a/') || url.contains('/aud/'),
+                      );
+                      return (hasMaster ? 10000 : 0) +
+                          (hasVideo ? 3000 : 0) +
+                          (hasAudio ? 1000 : 0) +
+                          rows.length * 10;
+                    }
+
+                    return score(right).compareTo(score(left));
+                  });
+              boundMediaIds = <String>{ranked.first.key};
+            }
+          }
+          if (expectedXMediaId.isNotEmpty) {
+            urls.removeWhere((url) {
+              final id = _xMediaIdentity(url);
+              return id.isNotEmpty && id != expectedXMediaId;
+            });
+          }
+          if (boundMediaIds.isNotEmpty) {
+            captured.retainWhere(
+              (url) => boundMediaIds.contains(_xMediaIdentity(url)),
+            );
+          } else {
+            // X preloads adjacent posts. Without an element-bound media ID,
+            // page-wide traffic is not safe enough to select a download.
+            captured.clear();
+          }
+          if (strictXFeedMode && expectedXMediaId.isNotEmpty) {
+            final resolved = await _resolveXLongPressVideoCandidates(
+              primaryUrl: urls.isEmpty ? '' : urls.first,
+              candidates: <String>[...urls, ...captured],
+              pageUrl: pageUrl,
+              expectedMediaId: expectedXMediaId,
+              notBefore: lastFeedMoveAt,
+            );
+            if (resolved.isNotEmpty) {
+              urls
+                ..clear()
+                ..addAll(resolved);
+              captured.clear();
+            }
+          }
+        }
+        if ((strict91Mode || _isElementBoundFeedPage(pageUrl)) &&
+            captured.isNotEmpty) {
+          urls.insertAll(0, captured);
         } else {
           urls.addAll(captured);
         }
@@ -7422,6 +8106,13 @@ class _BrowserPageState extends State<BrowserPage>
                       !duplicateUrlKeys.contains(_normalizeVideoSourceUrl(url)),
                 )
                 .toList();
+        if (_isXPlatformPage(pageUrl)) {
+          uniqueUrls.sort(
+            (left, right) => _scoreXVideoCandidate(
+              right,
+            ).compareTo(_scoreXVideoCandidate(left)),
+          );
+        }
         if (uniqueUrls.isEmpty &&
             phase == 'visiting_clicked_card' &&
             is91KeywordTask &&
@@ -7494,6 +8185,47 @@ class _BrowserPageState extends State<BrowserPage>
           }
         }
         if (uniqueUrls.isEmpty &&
+            strictXFeedMode &&
+            (phase == 'visiting_seed' ||
+                phase == 'scanning_feed' ||
+                phase == 'x_viewing_search_card')) {
+          final retries = (task['xCurrentPostResolveRetries'] as int?) ?? 0;
+          final retryLimit =
+              phase == 'scanning_feed' &&
+                      (task['strictXSearchUrl'] ?? '').toString().isNotEmpty
+                  ? 3
+                  : 12;
+          if (retries < retryLimit) {
+            task['xCurrentPostResolveRetries'] = retries + 1;
+            final id = (task['discoveryTaskId'] ?? '').toString();
+            if (id.isNotEmpty) {
+              _updateDownloadTask(
+                id,
+                progressDetail:
+                    '正在当前 X 帖子内等待真实视频地址 ${retries + 1}/$retryLimit，不会继续下滑...',
+              );
+            }
+            Future<void>.delayed(
+              const Duration(milliseconds: 800),
+              () => unawaited(_advanceSmartDownload(_currentUrl)),
+            );
+            return;
+          }
+          task['xCurrentPostResolveRetries'] = 0;
+          if (phase == 'scanning_feed' &&
+              (task['strictXSearchUrl'] ?? '').toString().isNotEmpty &&
+              await _openActiveXSmartCard(task)) {
+            return;
+          }
+          if (phase == 'x_viewing_search_card') {
+            await _returnFromXSmartCard(task);
+            return;
+          }
+          _continueSmartFeed(task, madeProgress: false);
+          return;
+        }
+        task['xCurrentPostResolveRetries'] = 0;
+        if (uniqueUrls.isEmpty &&
             (phase == 'visiting_seed' || phase == 'scanning_feed')) {
           if (await _openNearestSmartMediaCard(task, pageUrl)) return;
         }
@@ -7514,8 +8246,13 @@ class _BrowserPageState extends State<BrowserPage>
         final discoveryRound = (task['discoveryRound'] as int?) ?? 0;
         final exhaustiveCycle = ((task['searchCycle'] as int?) ?? 0) > 0;
         final hasKeyword = (task['keyword'] ?? '').toString().trim().isNotEmpty;
+        final trustedXKeywordResult =
+            strictXFeedMode &&
+            hasKeyword &&
+            strictXSearchUrl.isNotEmpty &&
+            (phase == 'scanning_feed' || phase == 'x_viewing_search_card');
         final requiredTier =
-            !hasKeyword
+            !hasKeyword || trustedXKeywordResult
                 ? 0
                 : exhaustiveCycle
                 ? 0
@@ -7531,7 +8268,10 @@ class _BrowserPageState extends State<BrowserPage>
           if (phase == 'visiting_clicked_card') {
             await _returnFromSmartMediaCard(task, madeProgress: false);
           } else if (phase == 'scanning_feed') {
-            if (await _openNearestSmartMediaCard(task, pageUrl)) return;
+            if (!strictXFeedMode &&
+                await _openNearestSmartMediaCard(task, pageUrl)) {
+              return;
+            }
             _continueSmartFeed(task, madeProgress: false);
           } else {
             _visitNextSmartCandidate(task);
@@ -7567,7 +8307,10 @@ class _BrowserPageState extends State<BrowserPage>
                 ((task['duplicateSkipped'] as int?) ?? 0) + 1;
             _updateSmartDiscoveryProgress(task, phase);
             if (phase == 'visiting_seed' || phase == 'scanning_feed') {
-              if (await _openNearestSmartMediaCard(task, pageUrl)) return;
+              if (!strictXFeedMode &&
+                  await _openNearestSmartMediaCard(task, pageUrl)) {
+                return;
+              }
               _continueSmartFeed(task, madeProgress: false);
             } else if (phase == 'visiting_clicked_card') {
               await _returnFromSmartMediaCard(task, madeProgress: false);
@@ -7610,7 +8353,8 @@ class _BrowserPageState extends State<BrowserPage>
               } else if (smartFailureType == 'invalid_smart_media_content') {
                 task['invalidSkipped'] =
                     ((task['invalidSkipped'] as int?) ?? 0) + 1;
-              } else if (smartFailureType == 'already_in_library') {
+              } else if (smartFailureType == 'already_in_library' ||
+                  smartFailureType == 'already_in_smart_task') {
                 duplicateUrlKeys.add(normalizedChosen);
                 task['duplicateSkipped'] =
                     ((task['duplicateSkipped'] as int?) ?? 0) + 1;
@@ -7632,13 +8376,19 @@ class _BrowserPageState extends State<BrowserPage>
         _updateSmartDiscoveryProgress(task, phase);
         if ((task['success'] as int) >= (task['target'] as int)) {
           await _finishSmartDownload();
+        } else if (phase == 'x_viewing_search_card') {
+          await _returnFromXSmartCard(task);
         } else if (phase == 'visiting_clicked_card') {
           await _returnFromSmartMediaCard(
             task,
             madeProgress: (task['success'] as int) > successBefore,
           );
         } else if (phase == 'visiting_seed' || phase == 'scanning_feed') {
-          if (!ok && await _openNearestSmartMediaCard(task, pageUrl)) return;
+          if (!ok &&
+              !strictXFeedMode &&
+              await _openNearestSmartMediaCard(task, pageUrl)) {
+            return;
+          }
           _continueSmartFeed(
             task,
             madeProgress: (task['success'] as int) > successBefore,
@@ -7654,6 +8404,8 @@ class _BrowserPageState extends State<BrowserPage>
         final phase = task['phase']?.toString();
         if (phase == 'visiting_clicked_card') {
           await _returnFromSmartMediaCard(task, madeProgress: false);
+        } else if (phase == 'x_viewing_search_card') {
+          await _returnFromXSmartCard(task);
         } else if (phase == 'visiting_seed' || phase == 'scanning_feed') {
           _continueSmartFeed(task, madeProgress: false);
         } else {
@@ -7853,13 +8605,15 @@ class _BrowserPageState extends State<BrowserPage>
     final siteHost = (task['host'] ?? '').toString().toLowerCase();
     final sourceKey = _normalizeVideoSourceUrl(mediaUrl);
     final pageKey = _smartStablePageKey(pageUrl);
+    final allowTitleIdentity = !_isElementBoundFeedPage(pageUrl);
     final cutoff = DateTime.now().subtract(const Duration(hours: 24));
     final foundIn24hRegistry = _smartDownload24hRegistry.any((row) {
       if ((row['siteHost'] ?? '').toString() != siteHost) return false;
       final savedAt = DateTime.tryParse((row['savedAt'] ?? '').toString());
       if (savedAt == null || savedAt.isBefore(cutoff)) return false;
       return (key.isNotEmpty && (row['nameKey'] ?? '').toString() == key) ||
-          (titleKey.isNotEmpty &&
+          (allowTitleIdentity &&
+              titleKey.isNotEmpty &&
               (row['titleKey'] ?? '').toString() == titleKey) ||
           (sourceKey.isNotEmpty &&
               (row['sourceKey'] ?? '').toString() == sourceKey) ||
@@ -7874,10 +8628,14 @@ class _BrowserPageState extends State<BrowserPage>
     final reservedTitles = task['reservedMediaTitleKeys'] as Set<String>;
     final duplicateInTask =
         (key.isNotEmpty && reservedNames.contains(key)) ||
-        (titleKey.isNotEmpty && reservedTitles.contains(titleKey));
+        (allowTitleIdentity &&
+            titleKey.isNotEmpty &&
+            reservedTitles.contains(titleKey));
     if (!duplicateInTask) {
       if (key.isNotEmpty) reservedNames.add(key);
-      if (titleKey.isNotEmpty) reservedTitles.add(titleKey);
+      if (allowTitleIdentity && titleKey.isNotEmpty) {
+        reservedTitles.add(titleKey);
+      }
       return true;
     }
     task['duplicateSkipped'] = ((task['duplicateSkipped'] as int?) ?? 0) + 1;
@@ -8380,6 +9138,149 @@ class _BrowserPageState extends State<BrowserPage>
     _continueSmartFeed(task, madeProgress: madeProgress);
   }
 
+  Future<bool> _openActiveXSmartCard(Map<String, dynamic> task) async {
+    final controller = _controller;
+    if (controller == null || !identical(_smartDownloadTask, task)) {
+      return false;
+    }
+    try {
+      final result = await controller.evaluateJavascript(
+        source: '''
+          (() => {
+            const scope = document.querySelector('[data-app-smart-x-active="1"]') ||
+              document.querySelector('[data-smart-seed-scope="1"]');
+            if (!scope) return {clicked: false, statusId: ''};
+            const media = scope.querySelector('[data-smart-seed-media="1"]') ||
+              scope.querySelector('video, [data-testid="tweetPhoto"] img, img');
+            if (!media) return {clicked: false, statusId: ''};
+            const links = Array.from(scope.querySelectorAll('a[href*="/status/"]'));
+            const mediaRect = media.getBoundingClientRect();
+            const mediaLink = links.find(link => {
+              const r = link.getBoundingClientRect();
+              return r.width > 40 && r.height > 40 &&
+                r.left <= mediaRect.right && r.right >= mediaRect.left &&
+                r.top <= mediaRect.bottom && r.bottom >= mediaRect.top;
+            });
+            const statusLink = mediaLink || links[0] || null;
+            const href = String(statusLink?.href || '');
+            const statusId = ((href.split('/status/')[1] || '').match(/^[0-9]+/) || [''])[0];
+            const clickable = mediaLink || media.closest('a[href*="/status/"]') ||
+              statusLink || media.closest('[role="link"], [role="button"]') || media;
+            try {
+              document.querySelectorAll(
+                '[data-smart-seed-media], [data-smart-seed-scope], [data-app-smart-x-active]'
+              ).forEach(el => {
+                el.removeAttribute('data-smart-seed-media');
+                el.removeAttribute('data-smart-seed-scope');
+                el.removeAttribute('data-app-smart-x-active');
+              });
+              clickable.dispatchEvent(new MouseEvent('pointerdown', {
+                bubbles: true, cancelable: true, clientX: mediaRect.left + mediaRect.width / 2,
+                clientY: mediaRect.top + mediaRect.height / 2
+              }));
+              clickable.dispatchEvent(new MouseEvent('pointerup', {
+                bubbles: true, cancelable: true, clientX: mediaRect.left + mediaRect.width / 2,
+                clientY: mediaRect.top + mediaRect.height / 2
+              }));
+              clickable.click();
+              return {clicked: true, statusId};
+            } catch (_) {
+              return {clicked: false, statusId};
+            }
+          })()
+        ''',
+      );
+      if (result is! Map || result['clicked'] != true) return false;
+      final statusId = (result['statusId'] ?? '').toString().trim();
+      if (statusId.isNotEmpty) {
+        (task['xVisitedStatusIds'] as Set<String>).add(statusId);
+      }
+      task['phase'] = 'x_viewing_search_card';
+      task['xCurrentPostResolveRetries'] = 0;
+      task['nextMediaStatus'] = '已打开匹配卡片，正在提取真实地址';
+      Future<void>.delayed(const Duration(milliseconds: 1200), () async {
+        if (identical(_smartDownloadTask, task)) {
+          await _anchorSmartSeedForType(task['mediaType'] as MediaType);
+          unawaited(_advanceSmartDownload(_currentUrl));
+        }
+      });
+      return true;
+    } catch (e) {
+      debugPrint('打开 X 智能下载媒体卡片失败: $e');
+      return false;
+    }
+  }
+
+  Future<void> _returnFromXSmartCard(Map<String, dynamic> task) async {
+    final controller = _controller;
+    if (controller == null || !identical(_smartDownloadTask, task)) return;
+    task['phase'] = 'x_search_returning';
+    task['xCurrentPostResolveRetries'] = 0;
+    if (await controller.canGoBack()) {
+      await controller.goBack();
+    } else {
+      _loadUrl((task['strictXSearchUrl'] ?? '').toString());
+    }
+    Future<void>.delayed(const Duration(milliseconds: 900), () {
+      if (identical(_smartDownloadTask, task)) {
+        unawaited(_advanceSmartDownload(_currentUrl));
+      }
+    });
+  }
+
+  Future<void> _broadenXSmartSearch(Map<String, dynamic> task) async {
+    if (!identical(_smartDownloadTask, task) || _controller == null) return;
+    final keyword = (task['keyword'] ?? '').toString().trim();
+    final cycle = ((task['xSearchCycle'] as int?) ?? 0) + 1;
+    task['xSearchCycle'] = cycle;
+    task['xCurrentPostResolveRetries'] = 0;
+    task['feedNoNew'] = 0;
+
+    if (keyword.isNotEmpty) {
+      final siteUri = Uri.tryParse((task['siteUrl'] ?? '').toString());
+      if (siteUri == null || siteUri.host.isEmpty) return;
+      final mode = cycle % 3;
+      final query = <String, String>{
+        'q': keyword,
+        'src': 'typed_query',
+        if (mode == 1) 'f': 'live',
+        if (mode == 2) 'f': 'media',
+      };
+      final nextUrl =
+          siteUri
+              .replace(path: '/search', queryParameters: query, fragment: '')
+              .toString();
+      task['strictXSearchUrl'] = nextUrl;
+      task['phase'] = 'x_search_loading';
+      task['matchStage'] = mode == 1 ? '关键词搜索 · 最新结果' : '关键词搜索 · 扩大结果范围';
+      _loadUrl(nextUrl);
+      return;
+    }
+
+    task['phase'] = 'scanning_feed';
+    await _controller!.evaluateJavascript(
+      source: '''
+        (() => {
+          document.querySelectorAll(
+            '[data-smart-seed-media], [data-smart-seed-scope], '
+            + '[data-app-smart-x-active], [data-app-smart-x-visited]'
+          ).forEach(el => {
+            el.removeAttribute('data-smart-seed-media');
+            el.removeAttribute('data-smart-seed-scope');
+            el.removeAttribute('data-app-smart-x-active');
+            el.removeAttribute('data-app-smart-x-visited');
+          });
+          window.scrollTo({top: 0, left: 0, behavior: 'auto'});
+          return true;
+        })()
+      ''',
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 900));
+    if (identical(_smartDownloadTask, task)) {
+      _continueSmartFeed(task, madeProgress: false);
+    }
+  }
+
   void _continueSmartFeed(
     Map<String, dynamic> task, {
     required bool madeProgress,
@@ -8390,9 +9291,18 @@ class _BrowserPageState extends State<BrowserPage>
     final noNew = madeProgress ? 0 : (task['feedNoNew'] as int) + 1;
     task['feedScans'] = scans;
     task['feedNoNew'] = noNew;
-    final maxScans = ((task['target'] as int) * 12).clamp(24, 240);
-    const noNewLimit = 8;
-    if (noNew >= noNewLimit || scans >= maxScans) {
+    final strictXFeedMode = task['strictXFeedMode'] == true;
+    final xImageMode = task['mediaType'] == MediaType.image;
+    final xKeywordJson = jsonEncode((task['keyword'] ?? '').toString().trim());
+    final xSearchResultsMode =
+        (task['strictXSearchUrl'] ?? '').toString().isNotEmpty;
+    final xVisitedStatusJson = jsonEncode(
+      (task['xVisitedStatusIds'] as Set<String>).toList(),
+    );
+    final maxScans = ((task['target'] as int) * (strictXFeedMode ? 30 : 12))
+        .clamp(strictXFeedMode ? 60 : 24, strictXFeedMode ? 600 : 240);
+    final noNewLimit = strictXFeedMode ? 24 : 8;
+    if (!strictXFeedMode && (noNew >= noNewLimit || scans >= maxScans)) {
       task['phase'] = 'collecting_site_results';
       Future<void>.delayed(
         const Duration(milliseconds: 120),
@@ -8419,17 +9329,191 @@ class _BrowserPageState extends State<BrowserPage>
             source: '''
               (() => {
                 const direction = $directionForScript;
+                const strictXFeedMode = $strictXFeedMode;
+                const xImageMode = $xImageMode;
+                const xKeyword = $xKeywordJson.toLowerCase();
+                const xSearchResultsMode = $xSearchResultsMode;
+                const xVisitedStatusIds = new Set($xVisitedStatusJson);
                 const amount = Math.max(420, Math.floor(innerHeight * 0.82)) * direction;
+                if (strictXFeedMode) {
+                  const seed = document.querySelector('[data-smart-seed-media="1"]');
+                  const seedArticle = seed && seed.closest('article[data-testid="tweet"], article');
+                  if (seedArticle) seedArticle.setAttribute('data-app-smart-x-visited', '1');
+                  const validImage = img => {
+                    const r = img.getBoundingClientRect();
+                    const src = String(img.currentSrc || img.src || '').toLowerCase();
+                    return Math.max(img.naturalWidth || 0, r.width) >= 240 &&
+                      Math.max(img.naturalHeight || 0, r.height) >= 180 &&
+                      !/(profile_images|profile_banners|emoji|avatar)/.test(src);
+                  };
+                  const mediaInArticle = article => xImageMode
+                    ? Array.from(article.querySelectorAll('img')).find(validImage)
+                    : article.querySelector('video');
+                  const keywordTokens = xKeyword.split(' ')
+                    .map(value => value.trim()).filter(value => value.length >= 2);
+                  const keywordScore = article => {
+                    if (!xKeyword) return 1;
+                    const text = String(article.innerText || '').toLowerCase();
+                    if (text.includes(xKeyword)) return 1000 + xKeyword.length;
+                    const tokenScore = keywordTokens.reduce(
+                      (score, token) => score + (text.includes(token) ? 10 : 0), 0);
+                    // X's own media search already applies the keyword. Many
+                    // result cards contain only media and omit searchable text.
+                    return tokenScore > 0 ? tokenScore : (xSearchResultsMode ? 1 : 0);
+                  };
+                  const articles = Array.from(document.querySelectorAll(
+                    'article[data-testid="tweet"], article'
+                  ));
+                  const seedIndex = seedArticle ? articles.indexOf(seedArticle) : -1;
+                  const forwardArticles = seedIndex >= 0
+                    ? articles.slice(seedIndex + 1)
+                    : articles;
+                  const candidates = forwardArticles.filter(article =>
+                    article.getAttribute('data-app-smart-x-visited') !== '1' &&
+                    !Array.from(article.querySelectorAll('a[href*="/status/"]')).some(link => {
+                      const tail = String(link.href || '').split('/status/')[1] || '';
+                      const id = (tail.match(/^[0-9]+/) || [''])[0];
+                      return id && xVisitedStatusIds.has(id);
+                    }) &&
+                    mediaInArticle(article) && keywordScore(article) > 0);
+                  const nextArticle = candidates.sort((left, right) =>
+                    keywordScore(right) - keywordScore(left) ||
+                    left.getBoundingClientRect().top - right.getBoundingClientRect().top)[0];
+                  if (nextArticle) {
+                    nextArticle.setAttribute('data-app-smart-x-visited', '1');
+                    document.querySelectorAll(
+                      '[data-smart-seed-media], [data-smart-seed-scope], [data-app-smart-x-active]'
+                    )
+                      .forEach(el => {
+                        el.removeAttribute('data-smart-seed-media');
+                        el.removeAttribute('data-smart-seed-scope');
+                        el.removeAttribute('data-app-smart-x-active');
+                      });
+                    const nextMedia = mediaInArticle(nextArticle);
+                    nextMedia.setAttribute('data-smart-seed-media', '1');
+                    nextArticle.setAttribute('data-smart-seed-scope', '1');
+                    nextArticle.setAttribute('data-app-smart-x-active', '1');
+                    nextArticle.scrollIntoView({behavior:'auto', block:'center'});
+                    if (!xImageMode) {
+                      Array.from(document.querySelectorAll('video')).forEach(video => {
+                        if (video !== nextMedia) {
+                          try { video.pause(); } catch (_) {}
+                        }
+                      });
+                      try {
+                        nextMedia.muted = true;
+                        nextMedia.play().catch(() => {});
+                      } catch (_) {}
+                    }
+                    return 'next_x_post';
+                  }
+                  if (!xImageMode) {
+                    const videos = Array.from(document.querySelectorAll('video'))
+                      .filter(video => {
+                        const r = video.getBoundingClientRect();
+                        return r.width > 100 && r.height > 80;
+                      });
+                    const seedVideo = seed && seed.tagName === 'VIDEO' ? seed : null;
+                    const seedRect = seedVideo?.getBoundingClientRect();
+                    const nextVideo = videos
+                      .filter(video => video !== seedVideo)
+                      .sort((left, right) => {
+                        const lr = left.getBoundingClientRect();
+                        const rr = right.getBoundingClientRect();
+                        const base = seedRect
+                          ? seedRect.top + seedRect.height / 2
+                          : innerHeight / 2;
+                        const ld = lr.top + lr.height / 2 - base;
+                        const rd = rr.top + rr.height / 2 - base;
+                        const lf = ld > 20 ? 0 : 1;
+                        const rf = rd > 20 ? 0 : 1;
+                        return lf - rf || Math.abs(ld) - Math.abs(rd);
+                      })[0];
+                    if (nextVideo) {
+                      document.querySelectorAll(
+                        '[data-smart-seed-media], [data-smart-seed-scope], [data-app-smart-x-active]'
+                      ).forEach(el => {
+                        el.removeAttribute('data-smart-seed-media');
+                        el.removeAttribute('data-smart-seed-scope');
+                        el.removeAttribute('data-app-smart-x-active');
+                      });
+                      nextVideo.setAttribute('data-smart-seed-media', '1');
+                      const nextScope = nextVideo.closest(
+                        'article[data-testid="tweet"], article, [role="dialog"], [data-testid*="video"]'
+                      ) || nextVideo.parentElement;
+                      if (nextScope) {
+                        nextScope.setAttribute('data-smart-seed-scope', '1');
+                        nextScope.setAttribute('data-app-smart-x-active', '1');
+                      }
+                      nextVideo.scrollIntoView({behavior: 'auto', block: 'center'});
+                      videos.forEach(video => {
+                        if (video !== nextVideo) {
+                          try { video.pause(); } catch (_) {}
+                        }
+                      });
+                      try { nextVideo.muted = true; nextVideo.play().catch(() => {}); } catch (_) {}
+                      return 'next_x_video_node';
+                    }
+
+                    // X's immersive viewer often reuses one <video> element and
+                    // switches items through an inner scroll-snap container.
+                    let scroller = seedVideo?.parentElement || null;
+                    while (scroller && scroller !== document.body) {
+                      const style = getComputedStyle(scroller);
+                      if (scroller.scrollHeight > scroller.clientHeight + 80 &&
+                          /(auto|scroll)/.test(style.overflowY)) break;
+                      scroller = scroller.parentElement;
+                    }
+                    if (!scroller || scroller === document.body) {
+                      scroller = Array.from(document.querySelectorAll('div'))
+                        .filter(el => {
+                          const style = getComputedStyle(el);
+                          const r = el.getBoundingClientRect();
+                          return r.width > innerWidth * 0.6 && r.height > innerHeight * 0.5 &&
+                            el.scrollHeight > el.clientHeight + 80 &&
+                            /(auto|scroll)/.test(style.overflowY);
+                        })
+                        .sort((a, b) => b.clientHeight - a.clientHeight)[0] || null;
+                    }
+                    const move = Math.max(
+                      420,
+                      Math.floor((scroller?.clientHeight || innerHeight) * 0.9)
+                    );
+                    if (scroller) {
+                      scroller.scrollBy({top: move, left: 0, behavior: 'auto'});
+                      scroller.dispatchEvent(new WheelEvent(
+                        'wheel', {deltaY: move, bubbles: true, cancelable: true}
+                      ));
+                    }
+                    (seedVideo || document.body).dispatchEvent(new WheelEvent(
+                      'wheel', {deltaY: move, bubbles: true, cancelable: true}
+                    ));
+                    document.dispatchEvent(new KeyboardEvent(
+                      'keydown', {key: 'ArrowDown', code: 'ArrowDown', keyCode: 40, bubbles: true}
+                    ));
+                    document.dispatchEvent(new KeyboardEvent(
+                      'keydown', {key: 'PageDown', code: 'PageDown', keyCode: 34, bubbles: true}
+                    ));
+                    return 'advance_x_immersive';
+                  }
+                  const root = document.scrollingElement || document.documentElement;
+                  if (root.scrollTop + innerHeight >= root.scrollHeight - 32) {
+                    return 'x_page_end';
+                  }
+                  window.scrollBy({top: amount, left: 0, behavior: 'smooth'});
+                  return 'scan_more_x_posts';
+                }
+                const mediaSelector = xImageMode ? 'img' : 'video';
                 const scope = $preferSeedScope
                   ? document.querySelector('[data-smart-seed-scope="1"]')
                   : null;
                 const scopedMedia = scope
-                  ? Array.from(scope.querySelectorAll('video, img'))
+                  ? Array.from(scope.querySelectorAll(mediaSelector))
                       .filter(el => el.clientWidth > 100 && el.clientHeight > 80)
                   : [];
                 const allMedia = (scopedMedia.length > 1
                   ? scopedMedia
-                  : Array.from(document.querySelectorAll('video, img')))
+                  : Array.from(document.querySelectorAll(mediaSelector)))
                   .filter(el => el.clientWidth > 100 && el.clientHeight > 80);
                 const visibleMedia = allMedia.filter(el => {
                   const r = el.getBoundingClientRect();
@@ -8444,6 +9528,16 @@ class _BrowserPageState extends State<BrowserPage>
                 const currentIndex = media ? allMedia.indexOf(media) : -1;
                 const nextMedia = currentIndex >= 0 ? allMedia[currentIndex + direction] : null;
                 if (nextMedia) {
+                  document.querySelectorAll('[data-smart-seed-media], [data-smart-seed-scope]')
+                    .forEach(el => {
+                      el.removeAttribute('data-smart-seed-media');
+                      el.removeAttribute('data-smart-seed-scope');
+                    });
+                  nextMedia.setAttribute('data-smart-seed-media', '1');
+                  const nextScope = nextMedia.closest(
+                    'article, figure, [class*="card"], [class*="item"], section'
+                  ) || nextMedia.parentElement;
+                  if (nextScope) nextScope.setAttribute('data-smart-seed-scope', '1');
                   nextMedia.scrollIntoView({behavior:'smooth', block:'center'});
                   return 'next_media';
                 }
@@ -8488,6 +9582,22 @@ class _BrowserPageState extends State<BrowserPage>
           .timeout(const Duration(seconds: 5))
           .then((result) async {
             if (!identical(_smartDownloadTask, task)) return;
+            final action = result?.toString() ?? '';
+            if (action == 'advance_x_immersive' ||
+                action == 'next_x_video_node') {
+              await Future<void>.delayed(const Duration(milliseconds: 1100));
+              if (!identical(_smartDownloadTask, task)) return;
+              await _anchorSmartSeedForType(task['mediaType'] as MediaType);
+              await Future<void>.delayed(const Duration(milliseconds: 450));
+              if (identical(_smartDownloadTask, task)) {
+                await _advanceSmartDownload(_currentUrl);
+              }
+              return;
+            }
+            if (result?.toString() == 'x_page_end') {
+              await _broadenXSmartSearch(task);
+              return;
+            }
             if (result?.toString() == 'page_end') {
               task['phase'] = 'collecting_site_results';
               task['feedNoNew'] = noNewLimit;
@@ -8495,7 +9605,10 @@ class _BrowserPageState extends State<BrowserPage>
               return;
             }
             await Future<void>.delayed(
-              Duration(milliseconds: wasPreheated ? 350 : 800),
+              Duration(
+                milliseconds:
+                    strictXFeedMode ? 1500 : (wasPreheated ? 350 : 800),
+              ),
             );
             await _advanceSmartDownload(_currentUrl);
           })
@@ -8630,12 +9743,16 @@ class _BrowserPageState extends State<BrowserPage>
     final discoveryRound = (task['discoveryRound'] as int?) ?? 0;
     final exhaustiveCycle = ((task['searchCycle'] as int?) ?? 0) > 0;
     final hasKeyword = (task['keyword'] ?? '').toString().trim().isNotEmpty;
+    final trustedXKeywordResult =
+        task['strictXFeedMode'] == true &&
+        hasKeyword &&
+        (task['strictXSearchUrl'] ?? '').toString().isNotEmpty;
     final preferSeedScope =
         !hasKeyword &&
         task['startedFromCurrentPage'] == true &&
         discoveryRound == 0;
     final requiredTier =
-        !hasKeyword
+        !hasKeyword || trustedXKeywordResult
             ? 0
             : exhaustiveCycle
             ? 0
@@ -8650,11 +9767,14 @@ class _BrowserPageState extends State<BrowserPage>
           const tokens = keyword.split(' ')
             .map(v => v.trim()).filter(v => v.length >= 2).slice(0, 16);
           const preferCenter = $preferCenter;
-          const scope = $preferSeedScope
+          const activeXScope = document.querySelector('[data-app-smart-x-active="1"]');
+          const scope = activeXScope || ($preferSeedScope
             ? document.querySelector('[data-smart-seed-scope="1"]')
-            : null;
+            : null);
           const scopedImages = scope ? Array.from(scope.querySelectorAll('img')) : [];
-          const images = scopedImages.length > 1
+          // X preloads adjacent results. An active result remains authoritative
+          // even when it contains only one image.
+          const images = scope
             ? scopedImages
             : Array.from(document.querySelectorAll('img'));
           const seen = new Set();
@@ -8676,7 +9796,11 @@ class _BrowserPageState extends State<BrowserPage>
             try { url = new URL(raw, location.href).href; } catch (_) { continue; }
             if (seen.has(url)) continue;
             seen.add(url);
-            const text = (img.alt || img.title || img.closest('a')?.innerText || '').trim();
+            const mediaScope = img.closest(
+              'article[data-testid="tweet"], article, figure, [class*="card"], [class*="post"], [class*="item"]'
+            );
+            const text = (img.alt || img.title || mediaScope?.innerText ||
+              img.closest('a')?.innerText || '').trim();
             const visible = r.bottom > 0 && r.top < innerHeight && r.right > 0 && r.left < innerWidth;
             const dx = (r.left + r.width / 2) - innerWidth / 2;
             const dy = (r.top + r.height / 2) - innerHeight / 2;
@@ -8697,7 +9821,7 @@ class _BrowserPageState extends State<BrowserPage>
           const sorted = rows.sort((a,b) => b.score - a.score);
           return sorted.filter((row, index) =>
             (preferCenter && index === 0 && row.visible) || row.tier >= requiredTier
-          ).slice(0, $limit).map(v => v.url);
+          ).slice(0, preferCenter ? 1 : $limit).map(v => v.url);
         })()
       ''',
     );
@@ -9293,7 +10417,8 @@ class _BrowserPageState extends State<BrowserPage>
       success: ok,
       elapsedMs: sourceWatch.elapsedMilliseconds,
     );
-    if (failureType == 'already_in_library') {
+    if (failureType == 'already_in_library' ||
+        failureType == 'already_in_smart_task') {
       duplicateUrlKeys.add(contextKey);
       task['duplicateSkipped'] = ((task['duplicateSkipped'] as int?) ?? 0) + 1;
     } else if (failureType == 'outside_requested_size_range') {
@@ -10331,6 +11456,38 @@ class _BrowserPageState extends State<BrowserPage>
       );
     } catch (e) {
       debugPrint('读取视频时长失败: $e');
+      return null;
+    }
+  }
+
+  Future<File?> _remuxNativeVideoToMp4(File source) async {
+    final output = File(p.setExtension(source.path, '.seekable.mp4'));
+    try {
+      if (await output.exists()) await output.delete();
+      final ok =
+          await const MethodChannel('media_muxer').invokeMethod<bool>(
+            'remuxMp4',
+            <String, String>{
+              'inputPath': source.path,
+              'outputPath': output.path,
+            },
+          ) ==
+          true;
+      if (!ok || !await output.exists() || await output.length() == 0) {
+        return null;
+      }
+      final finalFile = File(p.setExtension(source.path, '.mp4'));
+      if (await finalFile.exists()) await finalFile.delete();
+      final renamed = await output.rename(finalFile.path);
+      try {
+        if (await source.exists()) await source.delete();
+      } catch (_) {}
+      return renamed;
+    } catch (e) {
+      debugPrint('HLS MP4 remux failed, keeping original stream: $e');
+      try {
+        if (await output.exists()) await output.delete();
+      } catch (_) {}
       return null;
     }
   }
@@ -11500,6 +12657,48 @@ class _BrowserPageState extends State<BrowserPage>
     return bestUrl;
   }
 
+  String? _pickHlsAudioUrlForVariant(
+    List<String> lines,
+    Uri baseUri,
+    String videoUrl,
+  ) {
+    String? audioGroup;
+    for (var i = 0; i < lines.length - 1; i++) {
+      final line = lines[i];
+      if (!line.contains('EXT-X-STREAM-INF')) continue;
+      var nextIndex = i + 1;
+      while (nextIndex < lines.length && lines[nextIndex].startsWith('#')) {
+        nextIndex++;
+      }
+      if (nextIndex >= lines.length) continue;
+      final resolved = baseUri.resolve(lines[nextIndex]).toString();
+      if (resolved != videoUrl) continue;
+      audioGroup = RegExp(
+        r'AUDIO="([^"]+)"',
+        caseSensitive: false,
+      ).firstMatch(line)?.group(1);
+      break;
+    }
+    if (audioGroup == null || audioGroup.isEmpty) return null;
+    for (final line in lines) {
+      if (!line.contains('EXT-X-MEDIA') ||
+          !line.toUpperCase().contains('TYPE=AUDIO')) {
+        continue;
+      }
+      final group = RegExp(
+        r'GROUP-ID="([^"]+)"',
+        caseSensitive: false,
+      ).firstMatch(line)?.group(1);
+      if (group != audioGroup) continue;
+      final uri = RegExp(
+        r'URI="([^"]+)"',
+        caseSensitive: false,
+      ).firstMatch(line)?.group(1);
+      if (uri != null && uri.isNotEmpty) return baseUri.resolve(uri).toString();
+    }
+    return null;
+  }
+
   String? _hlsUrlWithInheritedQuery(Uri baseUri, String resolvedUrl) {
     if (baseUri.query.isEmpty) return null;
     final resolved = Uri.tryParse(resolvedUrl);
@@ -11603,6 +12802,99 @@ class _BrowserPageState extends State<BrowserPage>
     }
     Uri baseUri = Uri.parse(pageUrl);
     var effectivePageUrl = pageUrl;
+    final initialLines =
+        content
+            .split('\n')
+            .map((line) => line.trim())
+            .where((line) => line.isNotEmpty)
+            .toList();
+    final isXMaster =
+        baseUri.host.toLowerCase() == 'video.twimg.com' &&
+        initialLines.any((line) => line.contains('EXT-X-STREAM-INF')) &&
+        initialLines.any(
+          (line) =>
+              line.contains('EXT-X-MEDIA') &&
+              line.toUpperCase().contains('TYPE=AUDIO'),
+        );
+    if (isXMaster) {
+      final videoUrl = _pickBestHlsVariantUrl(initialLines, baseUri);
+      final audioUrl =
+          videoUrl == null
+              ? null
+              : _pickHlsAudioUrlForVariant(initialLines, baseUri, videoUrl);
+      if (videoUrl != null && audioUrl != null) {
+        final videoPlaylistPath = '$m3u8Path.x-video.m3u8';
+        final audioPlaylistPath = '$m3u8Path.x-audio.m3u8';
+        var videoProgress = 0.0;
+        var audioProgress = 0.0;
+        void reportProgress() {
+          final combined = videoProgress * 0.85 + audioProgress * 0.15;
+          onMergeProgress?.call((combined * 1000).round(), 1000, 0);
+        }
+
+        File? videoFile;
+        File? audioFile;
+        try {
+          final results = await Future.wait<File?>([
+            _handleM3u8Download(
+              videoPlaylistPath,
+              videoUrl,
+              client,
+              requestHeaders: initialHeaders,
+              onMergeProgress: (completed, total, _) {
+                videoProgress = total > 0 ? completed / total : 0;
+                reportProgress();
+              },
+            ),
+            _handleM3u8Download(
+              audioPlaylistPath,
+              audioUrl,
+              client,
+              requestHeaders: initialHeaders,
+              onMergeProgress: (completed, total, _) {
+                audioProgress = total > 0 ? completed / total : 0;
+                reportProgress();
+              },
+            ),
+          ]);
+          videoFile = results[0];
+          audioFile = results[1];
+          if (videoFile != null && audioFile != null) {
+            final finalFile = File(p.setExtension(m3u8Path, '.mp4'));
+            if (await finalFile.exists()) await finalFile.delete();
+            final muxed =
+                await const MethodChannel(
+                  'media_muxer',
+                ).invokeMethod<bool>('muxMp4', <String, String>{
+                  'videoPath': videoFile.path,
+                  'audioPath': audioFile.path,
+                  'outputPath': finalFile.path,
+                }) ==
+                true;
+            if (muxed &&
+                await finalFile.exists() &&
+                await finalFile.length() > 0) {
+              try {
+                if (await videoFile.exists()) await videoFile.delete();
+              } catch (_) {}
+              reportProgress();
+              return finalFile;
+            }
+          }
+          if (videoFile != null && await videoFile.exists()) return videoFile;
+        } catch (e) {
+          debugPrint('X HLS 音视频合并失败，将使用常规 HLS 兜底: $e');
+        } finally {
+          for (final temporary in <File?>[audioFile]) {
+            try {
+              if (temporary != null && await temporary.exists()) {
+                await temporary.delete();
+              }
+            } catch (_) {}
+          }
+        }
+      }
+    }
     for (var depth = 0; depth < 4; depth++) {
       final lines =
           content
@@ -11748,6 +13040,9 @@ class _BrowserPageState extends State<BrowserPage>
       } catch (_) {}
       return null;
     }
+
+    final seekableMp4 = await _remuxNativeVideoToMp4(outFile);
+    if (seekableMp4 != null) return seekableMp4;
 
     return outFile;
   }

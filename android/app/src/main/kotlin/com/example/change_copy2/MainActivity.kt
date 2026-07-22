@@ -146,6 +146,24 @@ class MainActivity: FlutterActivity() {
                 }.start()
                 return@setMethodCallHandler
             }
+            if (call.method == "remuxMp4") {
+                val inputPath = call.argument<String>("inputPath")
+                val outputPath = call.argument<String>("outputPath")
+                if (inputPath.isNullOrBlank() || outputPath.isNullOrBlank()) {
+                    result.error("INVALID_ARGUMENT", "Missing remux path", null)
+                    return@setMethodCallHandler
+                }
+                Thread {
+                    try {
+                        remuxToMp4(inputPath, outputPath)
+                        runOnUiThread { result.success(true) }
+                    } catch (e: Exception) {
+                        File(outputPath).delete()
+                        runOnUiThread { result.error("REMUX_FAILED", e.message, null) }
+                    }
+                }.start()
+                return@setMethodCallHandler
+            }
             if (call.method != "muxMp4") {
                 result.notImplemented()
                 return@setMethodCallHandler
@@ -224,6 +242,50 @@ class MainActivity: FlutterActivity() {
             try { muxer?.release() } catch (_: Exception) {}
             videoExtractor.release()
             audioExtractor.release()
+        }
+    }
+
+    private fun remuxToMp4(inputPath: String, outputPath: String) {
+        val extractor = MediaExtractor()
+        var muxer: MediaMuxer? = null
+        try {
+            extractor.setDataSource(inputPath)
+            File(outputPath).delete()
+            muxer = MediaMuxer(outputPath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            val trackMap = mutableMapOf<Int, Int>()
+            for (index in 0 until extractor.trackCount) {
+                val format = extractor.getTrackFormat(index)
+                val mime = format.getString(MediaFormat.KEY_MIME) ?: continue
+                if (!mime.startsWith("video/") && !mime.startsWith("audio/")) continue
+                trackMap[index] = muxer.addTrack(format)
+                extractor.selectTrack(index)
+            }
+            if (trackMap.isEmpty()) throw IllegalStateException("No media track to remux")
+            muxer.start()
+            val buffer = ByteBuffer.allocateDirect(16 * 1024 * 1024)
+            val info = MediaCodec.BufferInfo()
+            while (true) {
+                val sourceTrack = extractor.sampleTrackIndex
+                if (sourceTrack < 0) break
+                val targetTrack = trackMap[sourceTrack]
+                if (targetTrack == null) {
+                    if (!extractor.advance()) break
+                    continue
+                }
+                buffer.clear()
+                val size = extractor.readSampleData(buffer, 0)
+                if (size < 0) break
+                info.offset = 0
+                info.size = size
+                info.presentationTimeUs = extractor.sampleTime
+                info.flags = extractor.sampleFlags
+                muxer.writeSampleData(targetTrack, buffer, info)
+                if (!extractor.advance()) break
+            }
+            muxer.stop()
+        } finally {
+            try { muxer?.release() } catch (_: Exception) {}
+            extractor.release()
         }
     }
     
