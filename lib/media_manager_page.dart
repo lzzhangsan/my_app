@@ -589,6 +589,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   _MediaTypeViewMode _mediaTypeViewMode = _MediaTypeViewMode.all;
   final Set<String> _selectedItems = {};
   bool _isMultiSelectMode = false;
+  bool _isMoveMode = false;
 
   /// 复用同一路径的缩略图任务，避免 FutureBuilder 重建时重复触发生成。
   final Map<String, Future<File?>> _videoThumbnailFutureCache = {};
@@ -2699,8 +2700,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     );
 
     try {
-      final updatedItem = item.copyWith(directory: targetDirectory);
-      await _databaseService.updateMediaItem(updatedItem.toMap());
+      await _databaseService.moveMediaItemToDirectory(item.id, targetDirectory);
 
       if (mounted) {
         Navigator.of(context).pop();
@@ -2791,6 +2791,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
   void _toggleMultiSelectMode() {
     setState(() {
+      _isMoveMode = false;
       _isMultiSelectMode = !_isMultiSelectMode;
       if (!_isMultiSelectMode) _selectedItems.clear();
     });
@@ -2819,6 +2820,112 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
   bool _isSelectAllEligibleMedia(MediaItem item) {
     return item.type == MediaType.image || item.type == MediaType.video;
+  }
+
+  bool _isSystemMediaFolder(MediaItem item) {
+    return item.id == 'recycle_bin' || item.id == 'favorites';
+  }
+
+  Future<void> _toggleMoveMode() async {
+    if (_isMoveMode) {
+      setState(() {
+        _isMoveMode = false;
+      });
+      return;
+    }
+
+    setState(() {
+      _isMoveMode = true;
+      _isMultiSelectMode = false;
+      _selectedItems.clear();
+      _mediaTypeViewMode = _MediaTypeViewMode.all;
+    });
+    widget.onMultiSelectModeChanged?.call(false);
+    while (mounted && _isMoveMode && _hasMoreMediaItems) {
+      await _loadMediaItems(append: true);
+    }
+    if (!mounted || !_isMoveMode) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('移动模式：长按拖动；放到文件夹主体可移入，放到名称区可调整位置'),
+        duration: Duration(seconds: 3),
+      ),
+    );
+  }
+
+  bool _dropIsInsideFolderBody(
+    BuildContext targetContext,
+    Offset globalPosition,
+  ) {
+    final box = targetContext.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return true;
+    final local = box.globalToLocal(globalPosition);
+    return local.dy < box.size.height - 26;
+  }
+
+  Future<void> _handleMediaDrop(
+    MediaItem dragged,
+    MediaItem target, {
+    required bool moveIntoFolder,
+  }) async {
+    if (!_isMoveMode || dragged.id == target.id) return;
+    if (_isSystemMediaFolder(dragged) || _isSystemMediaFolder(target)) return;
+
+    if (moveIntoFolder && target.type == MediaType.folder) {
+      if (dragged.type == MediaType.folder) {
+        final descendants = await _getAllSubfolderIds(dragged.id);
+        if (target.id == dragged.id || descendants.contains(target.id)) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('文件夹不能移入自身或自己的子文件夹')));
+          return;
+        }
+      }
+      try {
+        await _databaseService.moveMediaItemToDirectory(dragged.id, target.id);
+        if (!mounted) return;
+        await _loadMediaItems();
+        if (!mounted) return;
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('已移入“${target.name}”')));
+      } catch (e) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('移动失败：$e')));
+      }
+      return;
+    }
+
+    final ordered =
+        _mediaItems.where((item) => !_isSystemMediaFolder(item)).toList();
+    final oldIndex = ordered.indexWhere((item) => item.id == dragged.id);
+    var newIndex = ordered.indexWhere((item) => item.id == target.id);
+    if (oldIndex < 0 || newIndex < 0 || oldIndex == newIndex) return;
+    final moved = ordered.removeAt(oldIndex);
+    if (oldIndex < newIndex) newIndex--;
+    ordered.insert(newIndex, moved);
+    final systemItems = _mediaItems.where(_isSystemMediaFolder).toList();
+    setState(() {
+      _mediaItems
+        ..clear()
+        ..addAll(systemItems)
+        ..addAll(ordered);
+    });
+    try {
+      await _databaseService.reorderMediaItems(
+        _currentDirectory,
+        ordered.map((item) => item.id).toList(),
+      );
+    } catch (e) {
+      await _loadMediaItems();
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('保存位置失败：$e')));
+    }
   }
 
   Future<void> _moveSelectedItems(String targetDirectory) async {
@@ -2854,13 +2961,10 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
     try {
       for (var id in idsToMove) {
-        final item = _mediaItems.firstWhere((item) => item.id == id);
-        final updatedItem = item.copyWith(directory: targetDirectory);
-        await _databaseService.updateMediaItem(updatedItem.toMap());
+        await _databaseService.moveMediaItemToDirectory(id, targetDirectory);
       }
 
       if (mounted) {
-        final movedCount = _selectedItems.length;
         Navigator.of(context).pop();
         setState(() {
           _selectedItems.clear();
@@ -3410,7 +3514,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                 return _buildLoadMoreButton();
               }
               final item = visibleItems[index];
-              return _buildMediaItem(item, index);
+              return _isMoveMode
+                  ? _buildMovableMediaItem(item, index)
+                  : _buildMediaItem(item, index);
             },
           ),
         ),
@@ -3540,6 +3646,115 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     );
   }
 
+  Widget _buildMovableMediaItem(MediaItem item, int index) {
+    if (_isSystemMediaFolder(item)) return _buildMediaItem(item, index);
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        return DragTarget<MediaItem>(
+          onWillAcceptWithDetails:
+              (details) =>
+                  details.data.id != item.id &&
+                  !_isSystemMediaFolder(details.data),
+          onAcceptWithDetails: (details) {
+            final moveIntoFolder =
+                item.type == MediaType.folder &&
+                _dropIsInsideFolderBody(context, details.offset);
+            unawaited(
+              _handleMediaDrop(
+                details.data,
+                item,
+                moveIntoFolder: moveIntoFolder,
+              ),
+            );
+          },
+          builder: (context, candidateData, rejectedData) {
+            final isTarget = candidateData.isNotEmpty;
+            final card = Stack(
+              fit: StackFit.expand,
+              children: [
+                _buildMediaItem(item, index),
+                if (isTarget)
+                  IgnorePointer(
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: Colors.green.withValues(alpha: 0.16),
+                        border: Border.all(color: Colors.green, width: 3),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child:
+                          item.type == MediaType.folder
+                              ? const Center(
+                                child: DecoratedBox(
+                                  decoration: BoxDecoration(
+                                    color: Colors.green,
+                                    borderRadius: BorderRadius.all(
+                                      Radius.circular(4),
+                                    ),
+                                  ),
+                                  child: Padding(
+                                    padding: EdgeInsets.symmetric(
+                                      horizontal: 6,
+                                      vertical: 3,
+                                    ),
+                                    child: Text(
+                                      '主体移入 / 底部排序',
+                                      style: TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              )
+                              : const SizedBox.shrink(),
+                    ),
+                  ),
+              ],
+            );
+            return LongPressDraggable<MediaItem>(
+              data: item,
+              maxSimultaneousDrags: 1,
+              feedback: Material(
+                color: Colors.transparent,
+                elevation: 10,
+                borderRadius: BorderRadius.circular(6),
+                child: SizedBox(
+                  width: constraints.maxWidth,
+                  height: constraints.maxHeight,
+                  child: Opacity(
+                    opacity: 0.88,
+                    child: Card(
+                      margin: EdgeInsets.zero,
+                      clipBehavior: Clip.antiAlias,
+                      child: Column(
+                        children: [
+                          Expanded(child: _buildMediaThumbnail(item)),
+                          Padding(
+                            padding: const EdgeInsets.all(3),
+                            child: Text(
+                              item.name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(fontSize: 10),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              childWhenDragging: Opacity(opacity: 0.28, child: card),
+              child: card,
+            );
+          },
+        );
+      },
+    );
+  }
+
   Widget _buildMediaItem(MediaItem item, int index) {
     final isSystemFolder = item.id == 'recycle_bin' || item.id == 'favorites';
     bool isSelected = _selectedItems.contains(item.id);
@@ -3564,7 +3779,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                     }
                   }),
       onLongPress:
-          isSystemFolder
+          _isMoveMode
+              ? null
+              : isSystemFolder
               ? () => _navigateToFolder(item)
               : () {
                 if (!_isMultiSelectMode) {
@@ -7443,23 +7660,51 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         ),
       ),
     );
+    final videoMoveButton = Tooltip(
+      message: _isMoveMode ? '退出移动模式' : '进入移动模式',
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => unawaited(_toggleMoveMode()),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 2),
+          decoration: BoxDecoration(
+            color:
+                _isMoveMode
+                    ? Colors.greenAccent.withValues(alpha: 0.28)
+                    : Colors.transparent,
+            borderRadius: BorderRadius.circular(4),
+            border:
+                _isMoveMode
+                    ? Border.all(color: Colors.green.shade700, width: 1)
+                    : null,
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                _isMoveMode ? Icons.open_with : Icons.videocam,
+                size: 18,
+                color: _isMoveMode ? Colors.green.shade800 : fg,
+              ),
+              const SizedBox(width: 2),
+              Text(
+                '$_videoCount',
+                style: countStyle.copyWith(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: _isMoveMode ? Colors.green.shade900 : fg,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
     final countsChip = FittedBox(
       fit: BoxFit.scaleDown,
       child: Row(
         mainAxisSize: MainAxisSize.min,
-        children: [
-          imageCountButton,
-          const SizedBox(width: 8),
-          const Icon(Icons.videocam, size: 18, color: fg),
-          const SizedBox(width: 2),
-          Text(
-            '$_videoCount',
-            style: countStyle.copyWith(
-              fontSize: 14,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ],
+        children: [imageCountButton, const SizedBox(width: 8), videoMoveButton],
       ),
     );
 

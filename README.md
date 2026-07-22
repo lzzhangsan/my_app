@@ -2,6 +2,22 @@
 
 A new Flutter project.
 
+## Safe Android device run
+
+Do not use raw `flutter run` on a phone that contains important app data.
+Flutter may automatically uninstall the existing app when an APK replacement
+is rejected, which also deletes private app data.
+
+Use the repository wrapper instead:
+
+```powershell
+.\safe_flutter_run.bat -FlutterVerbose
+```
+
+The wrapper builds first, performs a data-preserving APK replacement, and
+stops without uninstalling if installation is rejected. After a successful
+install it attaches Flutter, so `r`, `R`, and `q` remain available.
+
 ## Getting Started
 
 This project is a starting point for a Flutter application.

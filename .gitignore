@@ -81,3 +81,6 @@ android/app/build/
 **/gradle-*.zip
 **/gradle-*/
 **/.gradle/
+# Local recovery copies contain private user data and must never be committed.
+recovery_backups_*/
+.codex_*.log

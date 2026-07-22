@@ -30,6 +30,9 @@ class MediaItem {
   /// 星标收藏（仅图/视频；不移动目录，仅排序靠前 + UI 标识）。
   final bool isFavorite;
 
+  /// User-defined position inside [directory]. Null keeps the legacy order.
+  final int? sortOrder;
+
   MediaItem({
     required this.id,
     required this.name,
@@ -41,6 +44,7 @@ class MediaItem {
     this.kenBurnsCenterY,
     this.videoViewParams = const VideoViewParams(),
     this.isFavorite = false,
+    this.sortOrder,
   });
 
   /// 从 Map 构造 MediaItem，用于从数据库读取数据
@@ -60,6 +64,10 @@ class MediaItem {
         ),
         videoViewParams: const VideoViewParams(),
         isFavorite: false,
+        sortOrder:
+            map['sort_order'] is num
+                ? (map['sort_order'] as num).toInt()
+                : int.tryParse('${map['sort_order'] ?? ''}'),
       );
     }
 
@@ -72,9 +80,7 @@ class MediaItem {
 
     final favRaw = map['is_favorite'];
     final isFav =
-        favRaw == true ||
-        favRaw == 1 ||
-        (favRaw is num && favRaw != 0);
+        favRaw == true || favRaw == 1 || (favRaw is num && favRaw != 0);
 
     return MediaItem(
       id: id,
@@ -89,6 +95,10 @@ class MediaItem {
       kenBurnsCenterY: _readKenBurnsCoord(map['ken_burns_center_y']),
       videoViewParams: VideoViewParams.fromMediaMap(map),
       isFavorite: isFav,
+      sortOrder:
+          map['sort_order'] is num
+              ? (map['sort_order'] as num).toInt()
+              : int.tryParse('${map['sort_order'] ?? ''}'),
     );
   }
 
@@ -106,6 +116,7 @@ class MediaItem {
     if (kenBurnsCenterY != null) 'ken_burns_center_y': kenBurnsCenterY,
     if (!videoViewParams.isDefault) ...videoViewParams.toDbUpdateMap(),
     'is_favorite': isFavorite ? 1 : 0,
+    if (sortOrder != null) 'sort_order': sortOrder,
   };
 
   MediaItem copyWith({
@@ -119,6 +130,8 @@ class MediaItem {
     double? kenBurnsCenterY,
     VideoViewParams? videoViewParams,
     bool? isFavorite,
+    int? sortOrder,
+    bool clearSortOrder = false,
     bool clearKenBurnsCenter = false,
     bool clearVideoViewParams = false,
   }) {
@@ -142,6 +155,7 @@ class MediaItem {
               ? const VideoViewParams()
               : (videoViewParams ?? this.videoViewParams),
       isFavorite: isFavorite ?? this.isFavorite,
+      sortOrder: clearSortOrder ? null : (sortOrder ?? this.sortOrder),
     );
   }
 }

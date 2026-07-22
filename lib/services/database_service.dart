@@ -415,6 +415,7 @@ class DatabaseService {
           file_hash TEXT,
           telegram_file_id TEXT,
           is_favorite INTEGER DEFAULT 0,
+          sort_order INTEGER,
           ken_burns_center_x REAL,
           ken_burns_center_y REAL,
           video_view_scale REAL DEFAULT 1,
@@ -1228,6 +1229,7 @@ class DatabaseService {
       'file_hash': 'TEXT',
       'telegram_file_id': 'TEXT',
       'is_favorite': 'INTEGER DEFAULT 0',
+      'sort_order': 'INTEGER',
       'created_at': 'INTEGER DEFAULT 0',
       'updated_at': 'INTEGER DEFAULT 0',
     };
@@ -1325,23 +1327,37 @@ class DatabaseService {
       final imageTypeIndex = 0;
       final videoTypeIndex = 1;
       final orderBy = '''
-        ORDER BY 
-          CASE 
-            WHEN id = 'recycle_bin' THEN 0 
-            WHEN id = 'favorites' THEN 1 
-            WHEN type = $folderTypeIndex THEN 2 
-            WHEN type = $videoTypeIndex THEN 3 
-            WHEN type = $imageTypeIndex THEN 4 
-            ELSE 5 
-          END ASC, 
-          CASE 
+        ORDER BY
+          CASE
+            WHEN id = 'recycle_bin' THEN 0
+            WHEN id = 'favorites' THEN 1
+            ELSE 2
+          END ASC,
+          CASE
             WHEN id = 'recycle_bin' OR id = 'favorites' THEN 0
+            WHEN sort_order IS NOT NULL THEN 0
+            ELSE 1
+          END ASC,
+          CASE
+            WHEN id = 'recycle_bin' OR id = 'favorites' THEN 0
+            ELSE sort_order
+          END ASC,
+          CASE
+            WHEN id = 'recycle_bin' OR id = 'favorites' THEN 0
+            WHEN sort_order IS NOT NULL THEN 0
+            WHEN type = $folderTypeIndex THEN 1
+            WHEN type = $videoTypeIndex THEN 2
+            WHEN type = $imageTypeIndex THEN 3
+            ELSE 4
+          END ASC,
+          CASE
+            WHEN id = 'recycle_bin' OR id = 'favorites' OR sort_order IS NOT NULL THEN 0
             WHEN type = $imageTypeIndex OR type = $videoTypeIndex THEN COALESCE(is_favorite, 0)
             ELSE 0
           END DESC,
-          CASE 
-            WHEN id = 'recycle_bin' OR id = 'favorites' THEN 0 
-            ELSE datetime(date_added) 
+          CASE
+            WHEN id = 'recycle_bin' OR id = 'favorites' THEN 0
+            ELSE datetime(date_added)
           END DESC
       ''';
       final limitClause =
@@ -2790,6 +2806,59 @@ class DatabaseService {
       _handleError('更新媒体项目录失败', e, stackTrace);
       rethrow;
     }
+  }
+
+  /// Persists the complete user-visible order for one media directory.
+  Future<void> reorderMediaItems(
+    String directory,
+    List<String> orderedIds,
+  ) async {
+    final ids = orderedIds
+        .where((id) => id != 'recycle_bin' && id != 'favorites')
+        .toList(growable: false);
+    final db = await database;
+    await db.transaction((txn) async {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final batch = txn.batch();
+      for (var index = 0; index < ids.length; index++) {
+        batch.update(
+          'media_items',
+          {'sort_order': index, 'updated_at': now},
+          where: 'id = ? AND directory = ?',
+          whereArgs: [ids[index], directory],
+        );
+      }
+      await batch.commit(noResult: true);
+    });
+  }
+
+  /// Moves one item and appends it to the persisted order of [directory].
+  Future<void> moveMediaItemToDirectory(String id, String directory) async {
+    if (id == 'recycle_bin' || id == 'favorites') {
+      throw ArgumentError('System media folders cannot be moved');
+    }
+    final db = await database;
+    await db.transaction((txn) async {
+      final maxRows = await txn.rawQuery(
+        '''
+        SELECT MAX(sort_order) AS max_order
+        FROM media_items
+        WHERE directory = ? AND id NOT IN ('recycle_bin', 'favorites')
+        ''',
+        [directory],
+      );
+      final maxOrder = (maxRows.first['max_order'] as num?)?.toInt() ?? -1;
+      await txn.update(
+        'media_items',
+        {
+          'directory': directory,
+          'sort_order': maxOrder + 1,
+          'updated_at': DateTime.now().millisecondsSinceEpoch,
+        },
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+    });
   }
 
   /// 将导出包中该文件的显示与收藏相关字段合并到已有 [media_items] 行（用于文件夹导入遇哈希重复时保留 ZIP 内效果）。
