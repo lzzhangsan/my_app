@@ -7989,15 +7989,16 @@ class _BrowserPageState extends State<BrowserPage>
               };
             }
 
-            if (keyword) {
-              // A clicked result that contains no requested media is a dead
-              // end. Return to the remembered result list instead of clicking
-              // arbitrary image/detail controls repeatedly.
-              if (hasReturnPage) {
-                return {action:'return', key:'', x:0.12, y:0.18};
-              }
+            // Ordinary sites commonly expose videos as thumbnail cards rather
+            // than <video> elements. Allow one card-detail hop even without a
+            // keyword, but keep the dedicated X/91 state machines untouched.
+            const ordinarySiteCardFlow = siteProfile !== 'x' &&
+              siteProfile !== '91';
+            if ((keyword || ordinarySiteCardFlow) && hasReturnPage) {
+              return {action:'return', key:'', x:0.12, y:0.18};
+            }
 
-              if (requestedType !== 'mixed' && !typeFilterApplied) {
+            if (keyword && requestedType !== 'mixed' && !typeFilterApplied) {
                 const wanted = requestedType === 'video'
                   ? /^(视频|video|videos)\$/i
                   : /^(图片|图像|image|images)\$/i;
@@ -8042,6 +8043,7 @@ class _BrowserPageState extends State<BrowserPage>
                 }
               }
 
+            if (keyword || ordinarySiteCardFlow) {
               const cardSelector = siteProfile === 'x'
                 ? 'article[data-testid="tweet"], [data-testid="cellInnerDiv"], a[href*="/status/"]'
                 : siteProfile === '91'
@@ -8054,7 +8056,13 @@ class _BrowserPageState extends State<BrowserPage>
               const siteRoot = host => {
                 const parts = String(host || '').toLowerCase()
                   .replace(/^www\\./, '').split('.').filter(Boolean);
-                return parts.length <= 2 ? parts.join('.') : parts.slice(-2).join('.');
+                if (parts.length <= 2) return parts.join('.');
+                const suffix2 = parts.slice(-2).join('.');
+                const compound = new Set([
+                  'com.cn', 'net.cn', 'org.cn', 'com.hk',
+                  'co.uk', 'com.au', 'co.jp'
+                ]);
+                return parts.slice(-(compound.has(suffix2) ? 3 : 2)).join('.');
               };
               const currentRoot = siteRoot(location.hostname);
               const cards = Array.from(document.querySelectorAll(cardSelector)).filter(el => {
@@ -8100,6 +8108,13 @@ class _BrowserPageState extends State<BrowserPage>
                   if (!hasVideoFeature && !is91ArchiveCard) return false;
                 } else if (requestedType === 'image' &&
                     !el.querySelector('img, picture, canvas')) {
+                  return false;
+                } else if (ordinarySiteCardFlow &&
+                    requestedType === 'mixed' &&
+                    !el.querySelector('img, picture, canvas, video') &&
+                    !/(media|video|image|photo|播放|视频|图片)/.test(
+                      String(el.className || '') + ' ' + lowerText
+                    )) {
                   return false;
                 }
                 return true;
