@@ -838,6 +838,46 @@ class _BrowserPageState extends State<BrowserPage>
         host.endsWith('.twitter.com');
   }
 
+  bool _isXMediaViewerPage(String? url) {
+    final uri = Uri.tryParse((url ?? '').trim());
+    if (uri == null || !_isXPlatformPage(url)) return false;
+    final path = uri.path.toLowerCase();
+    return path.contains('/mediaviewer') ||
+        uri.queryParameters.containsKey('currentTweet');
+  }
+
+  bool _isXStatusDetailPage(String? url) {
+    final uri = Uri.tryParse((url ?? '').trim());
+    if (uri == null || !_isXPlatformPage(url)) return false;
+    final segments = uri.pathSegments.where((part) => part.isNotEmpty).toList();
+    final statusIndex = segments.indexWhere(
+      (part) => part.toLowerCase() == 'status',
+    );
+    return statusIndex >= 0 &&
+        statusIndex + 1 < segments.length &&
+        RegExp(r'^\d+$').hasMatch(segments[statusIndex + 1]);
+  }
+
+  bool _isSameXSmartReturnPage(String expected, String actual) {
+    if (_isSameLoadedDocument(expected, actual)) return true;
+    final expectedUri = Uri.tryParse(expected);
+    final actualUri = Uri.tryParse(actual);
+    if (expectedUri == null ||
+        actualUri == null ||
+        !_isXPlatformPage(expected) ||
+        !_isXPlatformPage(actual) ||
+        _isXStatusDetailPage(actual) ||
+        _isXMediaViewerPage(actual)) {
+      return false;
+    }
+    final expectedPath =
+        expectedUri.path.isEmpty ? '/' : expectedUri.path.toLowerCase();
+    final actualPath =
+        actualUri.path.isEmpty ? '/' : actualUri.path.toLowerCase();
+    return (expectedPath == '/' && actualPath == '/home') ||
+        (expectedPath == '/home' && actualPath == '/');
+  }
+
   String _xMediaIdentity(String url) {
     final match = RegExp(
       r'/(?:amplify_video|ext_tw_video|tweet_video)/(\d+)/',
@@ -1219,6 +1259,8 @@ class _BrowserPageState extends State<BrowserPage>
   ];
   Map<String, dynamic>? _smartDownloadTask;
   bool _smartDownloadAdvancing = false;
+  Offset? _smartOperationPoint;
+  String _smartOperationLabel = '';
   final List<String> _smartKeywordHistory = <String>[];
   static const String _kSmartKeywordHistoryKey =
       'browser_smart_download_keyword_history_v1';
@@ -1752,7 +1794,8 @@ class _BrowserPageState extends State<BrowserPage>
                           trailing: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              TextButton.icon(
+                              IconButton(
+                                tooltip: '一键清空',
                                 onPressed: () async {
                                   final shouldClear =
                                       await showDialog<bool>(
@@ -1823,13 +1866,9 @@ class _BrowserPageState extends State<BrowserPage>
                                   Icons.delete_sweep_outlined,
                                   color: Colors.red,
                                 ),
-                                label: const Text(
-                                  '一键清空',
-                                  style: TextStyle(color: Colors.red),
-                                ),
                               ),
-                              const SizedBox(width: 8),
-                              TextButton.icon(
+                              IconButton(
+                                tooltip: '一键下载全部',
                                 onPressed:
                                     () => unawaited(
                                       _downloadFavoritesBatch(
@@ -1841,7 +1880,65 @@ class _BrowserPageState extends State<BrowserPage>
                                 icon: const Icon(
                                   Icons.download_for_offline_outlined,
                                 ),
-                                label: const Text('一键下载全部'),
+                              ),
+                              IconButton(
+                                tooltip: '一键重新下载全部',
+                                onPressed: () async {
+                                  final downloadedItems =
+                                      favorites
+                                          .where(_isFavoriteLikelyDownloaded)
+                                          .map(
+                                            (item) =>
+                                                Map<String, dynamic>.from(item),
+                                          )
+                                          .toList();
+                                  if (downloadedItems.isEmpty) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                        content: Text('暂无标示为已下载的视频'),
+                                      ),
+                                    );
+                                    return;
+                                  }
+                                  final shouldRedownload =
+                                      await showDialog<bool>(
+                                        context: context,
+                                        builder:
+                                            (ctx) => AlertDialog(
+                                              title: const Text('重新下载全部'),
+                                              content: Text(
+                                                '将重新下载全部 ${downloadedItems.length} 条已标示为下载的视频，是否继续？',
+                                              ),
+                                              actions: [
+                                                TextButton(
+                                                  onPressed:
+                                                      () => Navigator.pop(
+                                                        ctx,
+                                                        false,
+                                                      ),
+                                                  child: const Text('取消'),
+                                                ),
+                                                FilledButton(
+                                                  onPressed:
+                                                      () => Navigator.pop(
+                                                        ctx,
+                                                        true,
+                                                      ),
+                                                  child: const Text('重新下载'),
+                                                ),
+                                              ],
+                                            ),
+                                      ) ??
+                                      false;
+                                  if (!shouldRedownload) return;
+                                  unawaited(
+                                    _downloadFavoritesBatch(
+                                      downloadedItems,
+                                      forceRedownload: true,
+                                    ),
+                                  );
+                                },
+                                icon: const Icon(Icons.refresh_rounded),
                               ),
                             ],
                           ),
@@ -2461,13 +2558,19 @@ class _BrowserPageState extends State<BrowserPage>
   }) async {
     final isLongPress = item['downloadOrigin'] == 'long_press';
     final isSmartBatch = item['downloadOrigin'] == 'smart_batch';
+    final isSmartGesture = item['isSmartGesture'] == true;
+    final isSmartDownload = isSmartBatch || isSmartGesture;
     final smartTask =
         item['smartTask'] is Map<String, dynamic>
             ? item['smartTask'] as Map<String, dynamic>
             : null;
+    if (isSmartGesture) smartTask?.remove('lastGestureFailureType');
     final existingMedia = await _findExistingMediaForItem(item);
     if (existingMedia != null && item['allowSourceUrlReuse'] != true) {
-      if (isSmartBatch) {
+      if (isSmartDownload) {
+        if (isSmartGesture) {
+          smartTask?['lastGestureFailureType'] = 'already_in_library';
+        }
         onFailureType?.call('already_in_library');
         return false;
       }
@@ -2524,6 +2627,9 @@ class _BrowserPageState extends State<BrowserPage>
       }
     }
     if (downloadUrl == null || downloadUrl.isEmpty) {
+      if (isSmartGesture) {
+        smartTask?['lastGestureFailureType'] = 'no_direct_url';
+      }
       onFailureType?.call('no_direct_url');
       if (showResultHint && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -2659,6 +2765,9 @@ class _BrowserPageState extends State<BrowserPage>
               : <String, String>{};
       smartTask['videoMediaStates'] = smartVideoStates;
       if (smartVideoStates.containsKey(smartXMediaId)) {
+        if (isSmartGesture) {
+          smartTask?['lastGestureFailureType'] = 'already_in_smart_task';
+        }
         onFailureType?.call('already_in_smart_task');
         return false;
       }
@@ -2710,21 +2819,21 @@ class _BrowserPageState extends State<BrowserPage>
         skipFailurePrompt: i < attempts.length - 1,
         onFailureType: (t) => failureType = t,
         inactivityTimeout:
-            isSmartBatch
+            isSmartDownload
                 ? const Duration(minutes: 2)
                 : isLongPress
                 ? const Duration(minutes: 2)
                 : const Duration(minutes: 3),
         maxRequestAttempts:
-            isSmartBatch
+            isSmartDownload
                 ? 4
                 : isLongPress
                 ? 4
                 : null,
         showSuccessPrompt: false,
-        showDuplicatePrompt: item['downloadOrigin'] != 'smart_batch',
-        validateSmartMedia: item['downloadOrigin'] == 'smart_batch',
-        isSmartBatchMedia: item['downloadOrigin'] == 'smart_batch',
+        showDuplicatePrompt: !isSmartDownload,
+        validateSmartMedia: isSmartDownload,
+        isSmartBatchMedia: isSmartDownload,
         smartTask: smartTask,
         smartMediaTitle: (item['title'] ?? '').toString(),
         smartPageUrl: pageUrl,
@@ -2801,9 +2910,12 @@ class _BrowserPageState extends State<BrowserPage>
             onFailureType: (t) => failureType = t,
             inactivityTimeout: const Duration(minutes: 3),
             showSuccessPrompt: false,
-            showDuplicatePrompt: item['downloadOrigin'] != 'smart_batch',
-            validateSmartMedia: item['downloadOrigin'] == 'smart_batch',
-            isSmartBatchMedia: item['downloadOrigin'] == 'smart_batch',
+            showDuplicatePrompt: !isSmartDownload,
+            validateSmartMedia: isSmartDownload,
+            isSmartBatchMedia: isSmartDownload,
+            smartTask: smartTask,
+            smartMediaTitle: (item['title'] ?? '').toString(),
+            smartPageUrl: pageUrl,
             minFileBytes: minFileBytes,
             maxFileBytes: maxFileBytes,
             onProgress: (fraction, {String? detail}) {
@@ -2861,6 +2973,9 @@ class _BrowserPageState extends State<BrowserPage>
     progress.dispose();
     detailNotifier.dispose();
     if (!ok) {
+      if (isSmartGesture) {
+        smartTask?['lastGestureFailureType'] = lastFailureType;
+      }
       onFailureType?.call(lastFailureType);
     }
     if (ok && lastFailureType != 'already_downloading') {
@@ -2897,7 +3012,10 @@ class _BrowserPageState extends State<BrowserPage>
         failureType == 'http_5xx';
   }
 
-  Future<void> _downloadFavoritesBatch(List<Map<String, dynamic>> items) async {
+  Future<void> _downloadFavoritesBatch(
+    List<Map<String, dynamic>> items, {
+    bool forceRedownload = false,
+  }) async {
     if (items.isEmpty || !mounted) return;
     final batchTaskId = const Uuid().v4();
     final batchCancelToken = CancelToken();
@@ -2912,7 +3030,10 @@ class _BrowserPageState extends State<BrowserPage>
       'favorite-batch://$batchTaskId',
       MediaType.video,
       batchCancelToken,
-      displayName: '收藏批量下载（${items.length}）',
+      displayName:
+          forceRedownload
+              ? '收藏批量重新下载（${items.length}）'
+              : '收藏批量下载（${items.length}）',
       isFavoriteBatch: true,
     );
 
@@ -2936,15 +3057,19 @@ class _BrowserPageState extends State<BrowserPage>
             (currentItem['title'] ?? currentItem['name'] ?? '未知媒体').toString();
         updateBatchProgress(currentName);
 
-        if (_isFavoriteLikelyDownloaded(currentItem)) {
+        if (!forceRedownload && _isFavoriteLikelyDownloaded(currentItem)) {
           skipped++;
           processed++;
           updateBatchProgress(currentName);
           continue;
         }
+        final downloadItem = Map<String, dynamic>.from(currentItem);
+        if (forceRedownload) {
+          downloadItem['allowSourceUrlReuse'] = true;
+        }
         var failureType = 'unknown';
         final ok = await _downloadOneFavorite(
-          item: currentItem,
+          item: downloadItem,
           showResultHint: false,
           showModalDialog: false, // 批量下载时，不显示单个文件的弹窗
           onFailureType: (t) => failureType = t,
@@ -2972,7 +3097,8 @@ class _BrowserPageState extends State<BrowserPage>
           retried++;
           await Future<void>.delayed(const Duration(milliseconds: 320));
           final ok = await _downloadOneFavorite(
-            item: currentItem,
+            item: Map<String, dynamic>.from(currentItem)
+              ..['allowSourceUrlReuse'] = forceRedownload,
             showResultHint: false,
             showModalDialog: false, // 重试时同样不显示单个文件弹窗
           );
@@ -3008,7 +3134,7 @@ class _BrowserPageState extends State<BrowserPage>
             content: Text(
               cancelled
                   ? '批量下载已停止：成功 $success 条，失败 $failed 条，跳过 $skipped 条'
-                  : '批量下载完成：成功 $success 条，失败 $failed 条，跳过 $skipped 条',
+                  : '${forceRedownload ? "批量重新下载" : "批量下载"}完成：成功 $success 条，失败 $failed 条，跳过 $skipped 条',
             ),
             duration: const Duration(milliseconds: 1500),
           ),
@@ -3156,6 +3282,14 @@ class _BrowserPageState extends State<BrowserPage>
   Future<void> _showMediaDuplicateDialog(
     Map<String, dynamic> existingRow,
   ) async {
+    final smartTask = _smartDownloadTask;
+    if (smartTask != null && smartTask['gestureDownloadPending'] == true) {
+      smartTask['lastGestureFailureType'] = 'already_in_library';
+      smartTask['duplicateSkipped'] =
+          ((smartTask['duplicateSkipped'] as int?) ?? 0) + 1;
+      debugPrint('智能下载检测到重复媒体：自动跳过，不显示阻塞弹窗');
+      return;
+    }
     // A direct download and its canvas/screenshot fallback can discover the
     // same duplicate almost simultaneously. Keep one prompt active through
     // the entire locate/preview flow so a late result cannot cover that page.
@@ -4113,6 +4247,8 @@ class _BrowserPageState extends State<BrowserPage>
           return;
         }
         const longPressSessionId = 'lp-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
+        const isSmartGesture = !!(target && target.getAttribute &&
+          target.getAttribute('data-app-smart-gesture') === '1');
         let isPinPornContext = false;
         let isTikPornContext = false;
         let isXPlatformContext = false;
@@ -4544,6 +4680,7 @@ class _BrowserPageState extends State<BrowserPage>
                 mediaType: 'image',
                 url: extractBase64FromDataUrl(dataUrl),
                 isBase64: true,
+                isSmartGesture: isSmartGesture,
                 action: 'download'
               }));
               updateFeedbackStatus('已截图保存canvas', true);
@@ -4796,6 +4933,7 @@ class _BrowserPageState extends State<BrowserPage>
                 url: url,
                 isBase64: false,
                 isStreamReference: true,
+                isSmartGesture: isSmartGesture,
                 action: 'download',
                 pageUrl: location.href || '',
                 sourcePageUrl: isXPlatformContext
@@ -4826,6 +4964,7 @@ class _BrowserPageState extends State<BrowserPage>
                   mediaType: resolved.mediaType || mediaType,
                   url: resolved.resolvedUrl,
                   isBase64: resolved.isBase64,
+                  isSmartGesture: isSmartGesture,
                   action: 'download',
                   pageUrl: location.href || '',
                   title: document.title || '',
@@ -4843,7 +4982,7 @@ class _BrowserPageState extends State<BrowserPage>
                   if (tag === 'canvas') {
                     const dataUrl = target.toDataURL('image/png');
                     if (dataUrl && dataUrl.startsWith('data:image/')) {
-                      Flutter.postMessage(JSON.stringify({ type: 'media', mediaType: 'image', url: extractBase64FromDataUrl(dataUrl), isBase64: true, action: 'download' }));
+                      Flutter.postMessage(JSON.stringify({ type: 'media', mediaType: 'image', url: extractBase64FromDataUrl(dataUrl), isBase64: true, isSmartGesture: isSmartGesture, action: 'download' }));
                       updateFeedbackStatus('已截图保存', true);
                       return;
                     }
@@ -4859,7 +4998,7 @@ class _BrowserPageState extends State<BrowserPage>
                             ctx.drawImage(v, 0, 0);
                             const dataUrl = c.toDataURL('image/png');
                             if (dataUrl && dataUrl.startsWith('data:image/')) {
-                              Flutter.postMessage(JSON.stringify({ type: 'media', mediaType: 'image', url: extractBase64FromDataUrl(dataUrl), isBase64: true, action: 'download' }));
+                              Flutter.postMessage(JSON.stringify({ type: 'media', mediaType: 'image', url: extractBase64FromDataUrl(dataUrl), isBase64: true, isSmartGesture: isSmartGesture, action: 'download' }));
                               updateFeedbackStatus('已保存当前画面为图片', true);
                               return;
                             }
@@ -4886,6 +5025,7 @@ class _BrowserPageState extends State<BrowserPage>
                 mediaType: mt,
                 url: b64,
                 isBase64: true,
+                isSmartGesture: isSmartGesture,
                 action: 'download'
               }));
               updateFeedbackStatus('已保存data url', true);
@@ -5002,6 +5142,7 @@ class _BrowserPageState extends State<BrowserPage>
           mediaType: mediaType,
           url: url,
           isBase64: false,
+          isSmartGesture: isSmartGesture,
           action: 'download',
           pageUrl: location.href || '',
           title: document.title || '',
@@ -5196,6 +5337,7 @@ class _BrowserPageState extends State<BrowserPage>
       final dynamic urlValue = data['url'];
       final bool isBase64 = data['isBase64'] ?? false;
       final bool isStreamReference = data['isStreamReference'] == true;
+      final bool isSmartGesture = data['isSmartGesture'] == true;
       final String? action = data['action'];
       final dynamic candidateValue = data['candidates'];
       final String mediaType =
@@ -5348,7 +5490,13 @@ class _BrowserPageState extends State<BrowserPage>
       // 则强制使用稳健下载逻辑，以解决 Blob 断流或残缺问题。
       if (mediaType == 'video' && !isBase64 && !isStreamReference) {
         if (_longPressVideoDownloadInProgress) {
-          if (mounted) {
+          if (isSmartGesture) {
+            final task = _smartDownloadTask;
+            if (task != null) {
+              task['lastGestureFailureType'] = 'already_downloading';
+            }
+            await _completeSmartGestureDownload(false);
+          } else if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
                 content: Text('当前长按的视频正在保存，请勿重复长按'),
@@ -5392,7 +5540,13 @@ class _BrowserPageState extends State<BrowserPage>
           }
 
           if (primaryVideoUrl.isEmpty && candidateUrls.isEmpty) {
-            if (mounted) {
+            if (isSmartGesture) {
+              final task = _smartDownloadTask;
+              if (task != null) {
+                task['lastGestureFailureType'] = 'no_direct_url';
+              }
+              await _completeSmartGestureDownload(false);
+            } else if (mounted) {
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(
                   content: Text('当前仅检测到无法单独保存的视频分片，请继续播放后再长按重试'),
@@ -5412,11 +5566,19 @@ class _BrowserPageState extends State<BrowserPage>
             'title': title,
             'candidateUrls': candidateUrls,
             'downloadOrigin': 'long_press',
+            'isSmartGesture': isSmartGesture,
+            'smartTask': isSmartGesture ? _smartDownloadTask : null,
             'sessionId': mediaSessionId,
             'durationSec': messageDurationSeconds,
           };
 
-          await _downloadMediaRobustly(item: itemMap, showResultHint: true);
+          final downloaded = await _downloadMediaRobustly(
+            item: itemMap,
+            showResultHint: !isSmartGesture,
+          );
+          if (isSmartGesture) {
+            await _completeSmartGestureDownload(downloaded);
+          }
           return;
         } finally {
           _longPressVideoDownloadInProgress = false;
@@ -5428,7 +5590,13 @@ class _BrowserPageState extends State<BrowserPage>
       var didRegisterMediaUrl = false;
       if (!isBase64 && !isStreamReference) {
         if (!_tryRegisterMediaUrlForProcessing(urlValue)) {
-          if (mounted) {
+          if (isSmartGesture) {
+            final task = _smartDownloadTask;
+            if (task != null) {
+              task['lastGestureFailureType'] = 'already_downloading';
+            }
+            await _completeSmartGestureDownload(false);
+          } else if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
                 content: Text('该链接正在保存中，请稍候再试'),
@@ -5475,7 +5643,7 @@ class _BrowserPageState extends State<BrowserPage>
                       (data['sourcePageUrl'] ?? messagePageUrl)
                           .toString()
                           .trim();
-                  await _downloadMediaRobustly(
+                  final downloaded = await _downloadMediaRobustly(
                     item: <String, dynamic>{
                       'pageUrl':
                           sourcePageUrl.isNotEmpty
@@ -5485,11 +5653,16 @@ class _BrowserPageState extends State<BrowserPage>
                       'candidateUrls': xCandidates.skip(1).toList(),
                       'title': (data['title'] ?? '').toString(),
                       'downloadOrigin': 'long_press',
+                      'isSmartGesture': isSmartGesture,
+                      'smartTask': isSmartGesture ? _smartDownloadTask : null,
                       'sessionId': mediaSessionId,
                       'durationSec': messageDurationSeconds,
                     },
-                    showResultHint: true,
+                    showResultHint: !isSmartGesture,
                   );
+                  if (isSmartGesture) {
+                    await _completeSmartGestureDownload(downloaded);
+                  }
                   return;
                 }
               }
@@ -5516,18 +5689,23 @@ class _BrowserPageState extends State<BrowserPage>
               // These URLs were consumed by the exact MediaSource attached to
               // the long-pressed video, so they outrank every page-level sniff.
               final selectedManifest = boundStreamCandidates.first;
-              await _downloadMediaRobustly(
+              final downloaded = await _downloadMediaRobustly(
                 item: <String, dynamic>{
                   'pageUrl': _currentUrl,
                   'videoUrl': selectedManifest,
                   'candidateUrls': boundStreamCandidates,
                   'title': (data['title'] ?? '').toString(),
                   'downloadOrigin': 'long_press',
+                  'isSmartGesture': isSmartGesture,
+                  'smartTask': isSmartGesture ? _smartDownloadTask : null,
                   'sessionId': mediaSessionId,
                   'durationSec': messageDurationSeconds,
                 },
-                showResultHint: true,
+                showResultHint: !isSmartGesture,
               );
+              if (isSmartGesture) {
+                await _completeSmartGestureDownload(downloaded);
+              }
               return;
             }
             final boundDashCandidates =
@@ -5580,8 +5758,17 @@ class _BrowserPageState extends State<BrowserPage>
                         targetDurationSeconds: messageDurationSeconds,
                       )
                       : dashCandidates.first;
-              if (selectedManifest == null) return;
-              await _downloadMediaRobustly(
+              if (selectedManifest == null) {
+                if (isSmartGesture) {
+                  final task = _smartDownloadTask;
+                  if (task != null) {
+                    task['lastGestureFailureType'] = 'no_direct_url';
+                  }
+                  await _completeSmartGestureDownload(false);
+                }
+                return;
+              }
+              final downloaded = await _downloadMediaRobustly(
                 item: <String, dynamic>{
                   'pageUrl': _currentUrl,
                   'videoUrl': selectedManifest,
@@ -5593,15 +5780,23 @@ class _BrowserPageState extends State<BrowserPage>
                   ],
                   'title': (data['title'] ?? '').toString(),
                   'downloadOrigin': 'long_press',
+                  'isSmartGesture': isSmartGesture,
+                  'smartTask': isSmartGesture ? _smartDownloadTask : null,
                   'sessionId': mediaSessionId,
                   'durationSec': messageDurationSeconds,
                 },
-                showResultHint: true,
+                showResultHint: !isSmartGesture,
               );
+              if (isSmartGesture) {
+                await _completeSmartGestureDownload(downloaded);
+              }
               return;
             }
           }
           if (isStreamReference) {
+            if (isSmartGesture) {
+              await _completeSmartGestureDownload(false);
+            }
             if (mounted) {
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(
@@ -5612,11 +5807,17 @@ class _BrowserPageState extends State<BrowserPage>
             }
             return;
           }
+          if (isSmartGesture) {
+            _mediaDownloadSaveResolved = false;
+          }
           await _handleBlobUrl(
             urlValue,
             mediaType,
             sourceMimeType: sourceMimeType,
           );
+          if (isSmartGesture) {
+            await _completeSmartGestureDownload(_mediaDownloadSaveResolved);
+          }
           return;
         }
 
@@ -5646,9 +5847,18 @@ class _BrowserPageState extends State<BrowserPage>
         }
         if (selectedType == MediaType.video) {
           final existing = await _findExistingVideoBeforeDownload(resolvedUrl);
-          if (existing != null &&
-              !await _confirmSourceUrlDuplicateBeforeDownload(existing)) {
-            return;
+          if (existing != null) {
+            if (isSmartGesture) {
+              final task = _smartDownloadTask;
+              if (task != null) {
+                task['lastGestureFailureType'] = 'already_in_library';
+              }
+              await _completeSmartGestureDownload(false);
+              return;
+            }
+            if (!await _confirmSourceUrlDuplicateBeforeDownload(existing)) {
+              return;
+            }
           }
         }
         final canCanvasFallback = selectedType == MediaType.image;
@@ -5681,6 +5891,7 @@ class _BrowserPageState extends State<BrowserPage>
           attempts.removeRange(3, attempts.length);
         }
         var success = false;
+        var lastFailureType = 'unknown';
         for (var i = 0; i < attempts.length; i++) {
           var failureType = 'unknown';
           success = await _performBackgroundDownload(
@@ -5692,8 +5903,16 @@ class _BrowserPageState extends State<BrowserPage>
                     ? const Duration(seconds: 45)
                     : const Duration(minutes: 2),
             maxRequestAttempts: 4,
+            showSuccessPrompt: !isSmartGesture,
+            showDuplicatePrompt: !isSmartGesture,
+            validateSmartMedia: isSmartGesture,
+            isSmartBatchMedia: isSmartGesture,
+            smartTask: isSmartGesture ? _smartDownloadTask : null,
+            smartMediaTitle: (data['title'] ?? '').toString(),
+            smartPageUrl: messagePageUrl,
             onFailureType: (type) => failureType = type,
           );
+          lastFailureType = failureType;
           if (success) break;
           if (failureType == 'library_save_failed' ||
               failureType == 'already_in_library' ||
@@ -5703,7 +5922,14 @@ class _BrowserPageState extends State<BrowserPage>
         }
         if (success) {
           _notifyMediaDownloadSaved();
-        } else if (!success && canCanvasFallback && mounted) {
+          if (isSmartGesture) {
+            await _completeSmartGestureDownload(true);
+          }
+        } else if (!success &&
+            canCanvasFallback &&
+            lastFailureType != 'already_in_library' &&
+            lastFailureType != 'cancelled' &&
+            mounted) {
           try {
             final ctrl = _controller;
             if (ctrl != null) {
@@ -5736,6 +5962,50 @@ class _BrowserPageState extends State<BrowserPage>
                   canCanvasFallback &&
                   !_mediaDownloadSaveResolved &&
                   mounted) {
+                if (!isSmartGesture) {
+                  _mediaDownloadFailHintTimer?.cancel();
+                  _mediaDownloadFailHintTimer = Timer(
+                    const Duration(seconds: 2),
+                    () {
+                      if (!mounted || _mediaDownloadSaveResolved) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            _downloadErrorForUser(
+                              Exception('[下载失败] 无法保存该媒体，请稍后重试或长按图片本身'),
+                            ),
+                          ),
+                          duration: _kMediaSaveSnackDuration,
+                        ),
+                      );
+                    },
+                  );
+                }
+              }
+              if (isSmartGesture) {
+                final task = _smartDownloadTask;
+                if (task != null &&
+                    !_mediaDownloadSaveResolved &&
+                    (task['lastGestureFailureType'] ?? '').toString().isEmpty) {
+                  task['lastGestureFailureType'] =
+                      recovered
+                          ? 'invalid_smart_media_content'
+                          : lastFailureType;
+                }
+                await _completeSmartGestureDownload(_mediaDownloadSaveResolved);
+              }
+            }
+          } catch (_) {
+            _awaitingCanvasFallbackResult = false;
+            _canvasFallbackCompleter = null;
+            if (canCanvasFallback && !_mediaDownloadSaveResolved && mounted) {
+              if (isSmartGesture) {
+                final task = _smartDownloadTask;
+                if (task != null) {
+                  task['lastGestureFailureType'] = lastFailureType;
+                }
+                await _completeSmartGestureDownload(false);
+              } else {
                 _mediaDownloadFailHintTimer?.cancel();
                 _mediaDownloadFailHintTimer = Timer(
                   const Duration(seconds: 2),
@@ -5744,9 +6014,7 @@ class _BrowserPageState extends State<BrowserPage>
                     ScaffoldMessenger.of(context).showSnackBar(
                       SnackBar(
                         content: Text(
-                          _downloadErrorForUser(
-                            Exception('[下载失败] 无法保存该媒体，请稍后重试或长按图片本身'),
-                          ),
+                          _downloadErrorForUser(Exception('[下载失败] 无法保存该媒体')),
                         ),
                         duration: _kMediaSaveSnackDuration,
                       ),
@@ -5755,27 +6023,13 @@ class _BrowserPageState extends State<BrowserPage>
                 );
               }
             }
-          } catch (_) {
-            _awaitingCanvasFallbackResult = false;
-            _canvasFallbackCompleter = null;
-            if (canCanvasFallback && !_mediaDownloadSaveResolved && mounted) {
-              _mediaDownloadFailHintTimer?.cancel();
-              _mediaDownloadFailHintTimer = Timer(
-                const Duration(seconds: 2),
-                () {
-                  if (!mounted || _mediaDownloadSaveResolved) return;
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text(
-                        _downloadErrorForUser(Exception('[下载失败] 无法保存该媒体')),
-                      ),
-                      duration: _kMediaSaveSnackDuration,
-                    ),
-                  );
-                },
-              );
-            }
           }
+        } else if (isSmartGesture) {
+          final task = _smartDownloadTask;
+          if (task != null) {
+            task['lastGestureFailureType'] = lastFailureType;
+          }
+          await _completeSmartGestureDownload(false);
         }
       } finally {
         if (didRegisterMediaUrl || isStreamReference) {
@@ -5786,6 +6040,11 @@ class _BrowserPageState extends State<BrowserPage>
     } catch (e, stackTrace) {
       debugPrint('Error handling JavaScript message: $e');
       debugPrint('Trace: $stackTrace');
+      final task = _smartDownloadTask;
+      if (task != null && task['gestureDownloadPending'] == true) {
+        task['lastGestureFailureType'] = 'handler_exception';
+        await _completeSmartGestureDownload(false);
+      }
     }
   }
 
@@ -6632,7 +6891,6 @@ class _BrowserPageState extends State<BrowserPage>
 
   Future<void> _showCurrentMediaSmartDownload() async {
     if (_showHomePage || _controller == null) return;
-    var keyword = '';
     var mediaType = MediaType.video;
     var currentVideoUrls = <String>[];
     var currentVideoDuration = 0.0;
@@ -6753,9 +7011,6 @@ class _BrowserPageState extends State<BrowserPage>
         ''',
       );
       if (result is Map) {
-        keyword = _sanitizeExtractedSmartKeyword(
-          (result['keyword'] ?? '').toString(),
-        );
         mediaType =
             result['type']?.toString() == 'image'
                 ? MediaType.image
@@ -6773,42 +7028,16 @@ class _BrowserPageState extends State<BrowserPage>
     }
     await _showSmartDownloadDialog(
       <String, dynamic>{
-        'name': keyword.isNotEmpty ? keyword : '当前媒体',
+        'name': '当前媒体',
         'url':
             currentMediaPageUrl.isNotEmpty ? currentMediaPageUrl : _currentUrl,
       },
-      initialKeyword: keyword,
+      initialKeyword: '',
       initialMediaType: mediaType,
       startFromCurrentPage: true,
       initialVideoUrls: currentVideoUrls,
       initialVideoDuration: currentVideoDuration,
     );
-  }
-
-  String _sanitizeExtractedSmartKeyword(String value) {
-    final normalized = value.replaceAll(RegExp(r'\s+'), ' ').trim();
-    if (normalized.isEmpty) return '';
-    final lower = normalized.toLowerCase();
-    const genericLabels = <String>{
-      'video',
-      'image',
-      'photo',
-      'media',
-      'player',
-      'embedded video',
-      'video player',
-      'embedded image',
-      '视频',
-      '图片',
-      '照片',
-      '媒体',
-      '播放器',
-      '视频播放器',
-      '嵌入式视频',
-      '嵌入式图片',
-    };
-    if (genericLabels.contains(lower)) return '';
-    return normalized;
   }
 
   Future<int?> _estimateSmartSeedVideoBytes(
@@ -6903,6 +7132,1526 @@ class _BrowserPageState extends State<BrowserPage>
     return null;
   }
 
+  void _showSmartOperation(
+    String label, {
+    Offset point = const Offset(0.5, 0.5),
+  }) {
+    if (!mounted || _smartDownloadTask == null) return;
+    final safePoint = Offset(
+      point.dx.clamp(0.08, 0.92),
+      point.dy.clamp(0.08, 0.92),
+    );
+    setState(() {
+      _smartOperationPoint = safePoint;
+      _smartOperationLabel = label;
+    });
+    _smartDownloadTask!['visibleOperation'] = label;
+  }
+
+  Future<void> _refreshMixedSmartMediaType(Map<String, dynamic> task) async {
+    if (task['allowMixedMedia'] != true ||
+        !identical(_smartDownloadTask, task) ||
+        _controller == null) {
+      return;
+    }
+    try {
+      final result = await _controller!.evaluateJavascript(
+        source: '''
+          (() => {
+            const visible = el => {
+              const r = el.getBoundingClientRect();
+              if (r.width < 100 || r.height < 80 ||
+                  r.bottom <= 0 || r.top >= innerHeight ||
+                  r.right <= 0 || r.left >= innerWidth) return false;
+              if (el.tagName !== 'IMG') return true;
+              const src = String(el.currentSrc || el.src || '').toLowerCase();
+              const width = Math.max(el.naturalWidth || 0, r.width);
+              const height = Math.max(el.naturalHeight || 0, r.height);
+              return width >= 200 && height >= 160 &&
+                !/(avatar|emoji|icon|logo|profile_images|profile_banners)/.test(src);
+            };
+            const rows = Array.from(document.querySelectorAll('video, img'))
+              .filter(visible)
+              .map(el => {
+                const r = el.getBoundingClientRect();
+                const x = r.left + r.width / 2;
+                const y = r.top + r.height / 2;
+                const distance = Math.abs(y - innerHeight / 2) +
+                  Math.abs(x - innerWidth / 2) * 0.25;
+                return {el, x, y, distance};
+              })
+              .sort((a, b) => a.distance - b.distance);
+            const selected = rows[0];
+            if (!selected) return null;
+            return {
+              type: selected.el.tagName === 'IMG' ? 'image' : 'video',
+              x: innerWidth > 0 ? selected.x / innerWidth : 0.5,
+              y: innerHeight > 0 ? selected.y / innerHeight : 0.5
+            };
+          })()
+        ''',
+      );
+      if (result is! Map || !identical(_smartDownloadTask, task)) return;
+      final isImage = result['type']?.toString() == 'image';
+      task['mediaType'] = isImage ? MediaType.image : MediaType.video;
+      _showSmartOperation(
+        isImage ? '已定位中心图片，准备下载' : '已定位中心视频，准备下载',
+        point: Offset(
+          (result['x'] as num?)?.toDouble() ?? 0.5,
+          (result['y'] as num?)?.toDouble() ?? 0.5,
+        ),
+      );
+    } catch (e) {
+      debugPrint('智能下载判断中心媒体类型失败: $e');
+    }
+  }
+
+  bool _isBaiduHost(String host) {
+    final normalized = host.toLowerCase().replaceFirst(RegExp(r'^www\.'), '');
+    return normalized == 'baidu.com' || normalized.endsWith('.baidu.com');
+  }
+
+  String _smartSiteRoot(String host) {
+    final normalized = host.toLowerCase().replaceFirst(RegExp(r'^www\.'), '');
+    final parts =
+        normalized.split('.').where((part) => part.isNotEmpty).toList();
+    if (parts.length <= 2) return normalized;
+    const compoundSuffixes = <String>{
+      'com.cn',
+      'net.cn',
+      'org.cn',
+      'com.hk',
+      'co.uk',
+      'com.au',
+      'co.jp',
+    };
+    final suffix2 = parts.sublist(parts.length - 2).join('.');
+    final take = compoundSuffixes.contains(suffix2) ? 3 : 2;
+    return parts.sublist(parts.length - take).join('.');
+  }
+
+  bool _sameSmartSite(String leftHost, String rightHost) {
+    if (leftHost.isEmpty || rightHost.isEmpty) return false;
+    return _smartSiteRoot(leftHost) == _smartSiteRoot(rightHost);
+  }
+
+  String _smartSiteProfile(String host) {
+    final value = host.toLowerCase().replaceFirst(RegExp(r'^www\.'), '');
+    if (value == 'x.com' ||
+        value.endsWith('.x.com') ||
+        value == 'twitter.com' ||
+        value.endsWith('.twitter.com')) {
+      return 'x';
+    }
+    if (value == '91cg1.com' || value.endsWith('.91cg1.com')) return '91';
+    if (value == 'tik.porn' || value.endsWith('.tik.porn')) return 'tikporn';
+    if (value == 'pin.porn' || value.endsWith('.pin.porn')) return 'pinporn';
+    if (value.contains('xvideos') ||
+        value.contains('xfree') ||
+        value.contains('freevideo')) {
+      return 'xvideo';
+    }
+    if (_isBaiduHost(value)) return 'baidu';
+    return 'generic';
+  }
+
+  String _baiduVideoSearchUrl(String keyword, {int page = 0}) {
+    return Uri.https('m.baidu.com', '/s', <String, String>{
+      'pd': 'video',
+      'sa': 'vs_tab',
+      'word': keyword.trim(),
+      if (page > 0) 'pn': '${page * 10}',
+    }).toString();
+  }
+
+  bool _isBaiduVideoResultsUrl(String url) {
+    final uri = Uri.tryParse(url);
+    return uri != null &&
+        _isBaiduHost(uri.host) &&
+        uri.path == '/s' &&
+        uri.queryParameters['pd'] == 'video';
+  }
+
+  bool _isUnsafeBaiduSmartPage(String url) {
+    final uri = Uri.tryParse(url);
+    if (uri == null) return true;
+    final host = uri.host.toLowerCase();
+    final value = url.toLowerCase();
+    return !_isBaiduHost(host) ||
+        host == 'ufo.baidu.com' ||
+        host == 'mysearch.pae.baidu.com' ||
+        value.contains('sd_privacy_terms') ||
+        value.startsWith('chrome-error://');
+  }
+
+  Future<bool> _recoverStrictGesturePage(
+    Map<String, dynamic> task,
+    String reason, {
+    bool nextPage = false,
+  }) async {
+    if (task['strictBaiduVideoMode'] != true) return false;
+    final keyword = (task['keyword'] ?? '').toString().trim();
+    if (keyword.isEmpty) return false;
+
+    var page = (task['strictBaiduPage'] as int?) ?? 0;
+    if (nextPage) page++;
+    task['strictBaiduPage'] = page;
+    final searchUrl = _baiduVideoSearchUrl(keyword, page: page);
+    task['strictBaiduSearchUrl'] = searchUrl;
+    task['gestureMode'] = true;
+    task['gestureKeywordSubmitted'] = true;
+    task['gestureTypeFilterApplied'] = true;
+    task['gestureDetailMode'] = false;
+    task['gestureReturnUrl'] = '';
+    task['gestureDownloadPending'] = false;
+    task['gestureWaitCount'] = 0;
+    task['gesturePrepareCount'] = 0;
+    task['gestureNoMoveCount'] = 0;
+    task['gestureEngineFailures'] = 0;
+    task['gestureConsecutiveFailures'] = 0;
+    task['phase'] = 'baidu_video_search_loading';
+    task['matchStage'] = '百度视频结果页 · $reason';
+    debugPrint(
+      'Smart Baidu video: recover page=$page reason=$reason url=$searchUrl',
+    );
+    _showSmartOperation('返回“$keyword”视频结果页，继续按顺序查找');
+    _loadUrl(searchUrl);
+    return true;
+  }
+
+  Future<bool> _recoverVisibleGesturePage(
+    Map<String, dynamic> task,
+    String reason, {
+    bool nextPage = false,
+  }) async {
+    if (await _recoverStrictGesturePage(task, reason, nextPage: nextPage)) {
+      return true;
+    }
+    if (task['strict91KeywordMode'] == true) {
+      final searchUrl = (task['strict91SearchUrl'] ?? '').toString();
+      if (searchUrl.isEmpty) return false;
+      task['gestureMode'] = false;
+      task['gestureDownloadPending'] = false;
+      task['gestureEngineFailures'] = 0;
+      task['gestureConsecutiveFailures'] = 0;
+      task['phase'] = 'collecting_search_results';
+      task['matchStage'] = '91 关键词结果页 · 按卡片顺序查找';
+      debugPrint(
+        'Smart 91 strict: leaving generic gesture recovery '
+        'reason=$reason url=$searchUrl',
+      );
+      _showSmartOperation('识别当前关键词结果卡片，按顺序进入下载');
+      if (!_isSame91TaskPage(searchUrl, _currentUrl)) {
+        _loadUrl(searchUrl);
+      } else {
+        Future<void>.delayed(const Duration(milliseconds: 120), () {
+          if (identical(_smartDownloadTask, task)) {
+            unawaited(_advanceSmartDownload(_currentUrl));
+          }
+        });
+      }
+      return true;
+    }
+    if (task['protectVisibleGestureFlow'] != true) return false;
+    if (nextPage && await _returnFromStalledSmartPage(task, reason)) {
+      return true;
+    }
+    if (task['siteProfile'] == 'x' &&
+        (task['keyword'] ?? '').toString().trim().isEmpty) {
+      task['gestureMode'] = true;
+      task['gestureDetailMode'] = false;
+      task['gestureReturnUrl'] = '';
+      task['gestureDownloadPending'] = false;
+      task['gestureEngineFailures'] = 0;
+      task['gestureConsecutiveFailures'] = 0;
+      task['phase'] = 'scanning_feed';
+      task['matchStage'] = 'X 沉浸模式 · 切换下一条媒体';
+      debugPrint('Smart X immersive recovery: reason=$reason url=$_currentUrl');
+      _continueSmartFeed(task, madeProgress: false);
+      return true;
+    }
+
+    final taskHost = (task['host'] ?? '').toString();
+    final recoveryUrl = <String>[
+      (task['gestureReturnUrl'] ?? '').toString(),
+      (task['gestureResultUrl'] ?? '').toString(),
+      (task['gestureLastSafeUrl'] ?? '').toString(),
+      (task['originUrl'] ?? '').toString(),
+    ].firstWhere((value) {
+      final uri = Uri.tryParse(value);
+      return uri != null && uri.hasScheme && _sameSmartSite(uri.host, taskHost);
+    }, orElse: () => '');
+    if (recoveryUrl.isEmpty) return false;
+
+    final alreadyOnRecoveryPage = _isSameLoadedDocument(
+      recoveryUrl,
+      _currentUrl,
+    );
+    if (alreadyOnRecoveryPage && nextPage) return false;
+    final recoveryCount = ((task['gestureRecoveryCount'] as int?) ?? 0) + 1;
+    if (alreadyOnRecoveryPage && recoveryCount > 3) return false;
+
+    task['gestureRecoveryCount'] = recoveryCount;
+    task['gestureMode'] = true;
+    task['gestureDetailMode'] = false;
+    task['gestureReturnUrl'] = '';
+    task['gestureDownloadPending'] = false;
+    task['gestureWaitCount'] = 0;
+    task['gesturePrepareCount'] = 0;
+    task['gestureNoMoveCount'] = 0;
+    task['gestureEngineFailures'] = 0;
+    task['phase'] = 'gesture_recovering_result';
+    task['matchStage'] = '返回媒体结果页 · $reason';
+    debugPrint(
+      'Smart visible recovery: profile=${task['siteProfile']} '
+      'reason=$reason url=$recoveryUrl',
+    );
+    _showSmartOperation('返回上一层媒体列表，继续查找');
+    _loadUrl(recoveryUrl);
+    return true;
+  }
+
+  Future<String> _readSmartPageMotionSnapshot() async {
+    final controller = _controller;
+    if (controller == null) return '';
+    try {
+      final result = await controller.evaluateJavascript(
+        source: '''
+          (() => {
+            const root = document.scrollingElement || document.documentElement;
+            const visible = element => {
+              const r = element.getBoundingClientRect();
+              return r.width > 20 && r.height > 20 &&
+                r.bottom > 0 && r.top < innerHeight;
+            };
+            const scrollables = Array.from(document.querySelectorAll('*'))
+              .filter(element => {
+                if (!visible(element)) return false;
+                const style = getComputedStyle(element);
+                return element.scrollHeight > element.clientHeight + 40 &&
+                  /(auto|scroll)/.test(style.overflowY);
+              })
+              .slice(0, 8)
+              .map(element => [
+                Math.round(element.scrollTop || 0),
+                Math.round(element.scrollHeight || 0),
+                Math.round(element.clientHeight || 0)
+              ].join(':'));
+            const media = Array.from(document.querySelectorAll('video, img'))
+              .filter(visible)
+              .map(element => {
+                const r = element.getBoundingClientRect();
+                const scope = element.closest(
+                  'article, [data-testid="cellInnerDiv"], [role="dialog"]'
+                );
+                const status = scope?.querySelector('a[href*="/status/"]')?.href || '';
+                const source = element.currentSrc || element.src || element.poster || '';
+                return [
+                  status,
+                  String(source).split('?')[0],
+                  Math.round(r.top),
+                  Math.round(r.height)
+                ].join('|');
+              })
+              .slice(0, 6);
+            return JSON.stringify({
+              href: location.href,
+              rootTop: Math.round(root?.scrollTop || window.scrollY || 0),
+              scrollables,
+              media
+            });
+          })()
+        ''',
+      );
+      return result?.toString() ?? '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  Future<bool> _returnFromStalledSmartPage(
+    Map<String, dynamic> task,
+    String reason,
+  ) async {
+    final controller = _controller;
+    if (controller == null || !identical(_smartDownloadTask, task)) {
+      return false;
+    }
+    final actualUrl = (await controller.getUrl())?.toString() ?? _currentUrl;
+    final taskHost = (task['host'] ?? '').toString();
+    final knownReturnUrl = <String>[
+      (task['xReturnUrl'] ?? '').toString(),
+      (task['gestureReturnUrl'] ?? '').toString(),
+      (task['cardListUrl'] ?? '').toString(),
+      (task['candidateListUrl'] ?? '').toString(),
+      (task['gestureResultUrl'] ?? '').toString(),
+      (task['originUrl'] ?? '').toString(),
+    ].firstWhere((value) {
+      final uri = Uri.tryParse(value);
+      return uri != null &&
+          uri.hasScheme &&
+          _sameSmartSite(uri.host, taskHost) &&
+          !_isSameLoadedDocument(value, actualUrl);
+    }, orElse: () => '');
+
+    final isXDetail =
+        task['siteProfile'] == 'x' &&
+        (task['xEnteredDetailFromList'] == true ||
+            _isXStatusDetailPage(actualUrl) ||
+            _isXMediaViewerPage(actualUrl));
+    if (isXDetail && (task['xReturnUrl'] ?? '').toString().startsWith('http')) {
+      task['feedStalledCount'] = 0;
+      task['gestureNoMoveCount'] = 0;
+      task['matchStage'] = '当前详情页无法继续 · 返回原信息流';
+      _showSmartOperation('当前页面已经到底，返回上一级继续下载');
+      await _returnFromXSmartCard(task);
+      return true;
+    }
+
+    if (knownReturnUrl.isEmpty && !await controller.canGoBack()) return false;
+    task['feedStalledCount'] = 0;
+    task['gestureNoMoveCount'] = 0;
+    task['phase'] = 'gesture_returning';
+    task['matchStage'] = '当前页面无法继续 · 返回上一层';
+    _showSmartOperation('连续滑动没有变化，返回上一页继续查找');
+    debugPrint(
+      'Smart stalled page return: reason=$reason '
+      'current=$actualUrl target=$knownReturnUrl',
+    );
+    if (task['siteProfile'] == 'x' && knownReturnUrl.startsWith('http')) {
+      task['phase'] = 'x_search_returning';
+      task['xReturnExpectedUrl'] = knownReturnUrl;
+      task['xReturnAttempts'] = 0;
+      _loadUrl(knownReturnUrl);
+      return true;
+    }
+    if (await controller.canGoBack()) {
+      await controller.goBack();
+      await Future<void>.delayed(const Duration(milliseconds: 280));
+    }
+    final afterBack = (await controller.getUrl())?.toString() ?? '';
+    final afterHost = Uri.tryParse(afterBack)?.host ?? '';
+    if (knownReturnUrl.isNotEmpty &&
+        !_isSameLoadedDocument(knownReturnUrl, afterBack)) {
+      _loadUrl(knownReturnUrl);
+    } else if (afterHost.isNotEmpty && !_sameSmartSite(afterHost, taskHost)) {
+      final originUrl = (task['originUrl'] ?? '').toString();
+      if (originUrl.startsWith('http')) _loadUrl(originUrl);
+    }
+    Future<void>.delayed(const Duration(milliseconds: 800), () {
+      if (identical(_smartDownloadTask, task)) {
+        unawaited(_advanceSmartDownload(_currentUrl));
+      }
+    });
+    return true;
+  }
+
+  Future<bool> _advanceVisibleSmartGesture(Map<String, dynamic> task) async {
+    if (!identical(_smartDownloadTask, task) || _controller == null) {
+      return false;
+    }
+    final taskHost = (task['host'] ?? '').toString().toLowerCase();
+    final currentHost =
+        Uri.tryParse(
+          _currentUrl,
+        )?.host.toLowerCase().replaceFirst(RegExp(r'^www\.'), '') ??
+        '';
+    final strictBaiduVideoMode = task['strictBaiduVideoMode'] == true;
+    if (strictBaiduVideoMode && _isUnsafeBaiduSmartPage(_currentUrl)) {
+      return _recoverStrictGesturePage(task, '拦截无关或异常页面');
+    }
+    final staysOnSite =
+        _sameSmartSite(currentHost, taskHost) ||
+        (strictBaiduVideoMode && _isBaiduHost(currentHost));
+    if (taskHost.isNotEmpty && currentHost.isNotEmpty && !staysOnSite) {
+      if (await _recoverVisibleGesturePage(task, '拦截离开当前网站')) {
+        return true;
+      }
+      return false;
+    }
+    if (!strictBaiduVideoMode || _isBaiduVideoResultsUrl(_currentUrl)) {
+      task['gestureLastSafeUrl'] = _currentUrl;
+    }
+    if (task['gestureDownloadPending'] == true) {
+      final hasActiveDownload = _downloadTasks.any(
+        (row) =>
+            row['isSmartBatchMedia'] == true && row['status'] == 'downloading',
+      );
+      if (hasActiveDownload) return true;
+      final startedAt = task['gestureDownloadStartedAt'] as DateTime?;
+      if (startedAt == null ||
+          DateTime.now().difference(startedAt) < const Duration(seconds: 20)) {
+        return true;
+      }
+      // A page may swallow synthetic touch events. Release the stalled
+      // candidate and continue with the next visible item.
+      await _completeSmartGestureDownload(false);
+      return true;
+    }
+
+    final phase = (task['phase'] ?? '').toString();
+    if (task['xInlineActivationPending'] == true) {
+      final activatedAt = task['xInlineActivatedAt'] as DateTime?;
+      final elapsed =
+          activatedAt == null
+              ? const Duration(seconds: 3)
+              : DateTime.now().difference(activatedAt);
+      if (elapsed < const Duration(milliseconds: 2400)) {
+        final remaining = const Duration(milliseconds: 2400) - elapsed;
+        Future<void>.delayed(remaining, () {
+          if (identical(_smartDownloadTask, task) &&
+              task['xInlineActivationPending'] == true) {
+            unawaited(_advanceSmartDownload(_currentUrl));
+          }
+        });
+        return true;
+      }
+      task['xInlineActivationPending'] = false;
+      task['xInlineReadyToLongPress'] = true;
+      task['phase'] = 'scanning_feed';
+    }
+    if (phase == 'gesture_opening_card') {
+      final returnUrl = (task['gestureReturnUrl'] ?? '').toString();
+      final startedAt = task['gestureActionStartedAt'] as DateTime?;
+      final elapsed =
+          startedAt == null
+              ? const Duration(seconds: 3)
+              : DateTime.now().difference(startedAt);
+      final navigated =
+          returnUrl.startsWith('http') &&
+          !_isSameLoadedDocument(returnUrl, _currentUrl);
+      if (!navigated && elapsed < const Duration(milliseconds: 2600)) {
+        Future<void>.delayed(const Duration(milliseconds: 1300), () {
+          if (identical(_smartDownloadTask, task) &&
+              task['phase'] == 'gesture_opening_card') {
+            unawaited(_advanceSmartDownload(_currentUrl));
+          }
+        });
+        return true;
+      }
+      // URL changes, same-document modals and SPA route updates are all
+      // treated as one detail layer. No second card click is allowed here.
+      task['gestureDetailMode'] = true;
+      task['phase'] = 'gesture_scanning_detail';
+    } else if (phase == 'gesture_returning') {
+      task['gestureDetailMode'] = false;
+      task['gestureReturnUrl'] = '';
+      task['phase'] = 'gesture_scanning_results';
+    }
+    if (task['gestureDetailMode'] != true &&
+        (phase == 'gesture_searching' ||
+            phase == 'gesture_filtering_type' ||
+            phase == 'gesture_scanning_results' ||
+            phase == 'gesture_recovering_result' ||
+            phase == 'collecting_search_results' ||
+            phase == 'x_search_loading' ||
+            phase == 'baidu_video_search_loading') &&
+        _currentUrl.startsWith('http')) {
+      task['gestureResultUrl'] = _currentUrl;
+      task['gestureRecoveryCount'] = 0;
+    }
+
+    final keyword = (task['keyword'] ?? '').toString().trim();
+    final mediaType = task['mediaType'] as MediaType;
+    final allowMixed = task['allowMixedMedia'] == true;
+    final attempted = task['gestureAttemptedKeys'] as Set<String>;
+    final attemptedJson = jsonEncode(attempted.toList());
+    final keywordJson = jsonEncode(keyword.toLowerCase());
+    final requestedType =
+        allowMixed
+            ? 'mixed'
+            : mediaType == MediaType.image
+            ? 'image'
+            : 'video';
+    final requestedTypeJson = jsonEncode(requestedType);
+    final keywordAlreadySubmitted = task['gestureKeywordSubmitted'] == true;
+    final typeFilterApplied = task['gestureTypeFilterApplied'] == true;
+    final skipPendingWait = task['gestureSkipPendingWait'] == true;
+    final gestureReturnUrl = (task['gestureReturnUrl'] ?? '').toString();
+    final hasReturnPage = task['gestureDetailMode'] == true;
+    final siteProfileJson = jsonEncode((task['siteProfile'] ?? 'generic'));
+    final xInlineFeedMode = task['xInlineFeedMode'] == true;
+    final xInlineReadyToLongPress = task['xInlineReadyToLongPress'] == true;
+
+    try {
+      final result = await _controller!.evaluateJavascript(
+        source: '''
+          (() => {
+            const keyword = $keywordJson;
+            const requestedType = $requestedTypeJson;
+            const attempted = new Set($attemptedJson);
+            const keywordAlreadySubmitted = $keywordAlreadySubmitted;
+            const typeFilterApplied = $typeFilterApplied;
+            const skipPendingWait = $skipPendingWait;
+            const hasReturnPage = $hasReturnPage;
+            const siteProfile = $siteProfileJson;
+            const xInlineFeedMode = $xInlineFeedMode;
+            const xInlineReadyToLongPress = $xInlineReadyToLongPress;
+            const currentSearchInputs = Array.from(document.querySelectorAll(
+              'input[type="search"], input[name="q"], input[name="s"], ' +
+              'input[name*="search"], input[placeholder*="搜索"], ' +
+              'input[placeholder*="关键词"], input[placeholder*="Search" i]'
+            ));
+            let decodedLocation = String(location.href || '').toLowerCase();
+            try { decodedLocation = decodeURIComponent(decodedLocation); } catch (_) {}
+            const trustedKeywordResults = !!keyword && (
+              keywordAlreadySubmitted ||
+              decodedLocation.includes(keyword) ||
+              currentSearchInputs.some(input =>
+                String(input.value || '').trim().toLowerCase() === keyword
+              )
+            );
+            if (keyword && !keywordAlreadySubmitted) {
+              const inputs = currentSearchInputs.filter(input => {
+                const r = input.getBoundingClientRect();
+                return r.width > 80 && r.height > 20 && r.bottom > 0 &&
+                  r.top < innerHeight && !input.disabled;
+              });
+              const input = inputs[0];
+              if (input && String(input.value || '').trim().toLowerCase() !== keyword) {
+                input.focus();
+                const setter = Object.getOwnPropertyDescriptor(
+                  HTMLInputElement.prototype, 'value'
+                );
+                if (setter && setter.set) setter.set.call(input, keyword);
+                else input.value = keyword;
+                input.dispatchEvent(new Event('input', {bubbles:true}));
+                input.dispatchEvent(new Event('change', {bubbles:true}));
+                const form = input.closest('form');
+                setTimeout(() => {
+                  if (form && typeof form.requestSubmit === 'function') {
+                    form.requestSubmit();
+                  } else {
+                    input.dispatchEvent(new KeyboardEvent('keydown', {
+                      key:'Enter', code:'Enter', keyCode:13, which:13,
+                      bubbles:true, cancelable:true
+                    }));
+                    input.dispatchEvent(new KeyboardEvent('keyup', {
+                      key:'Enter', code:'Enter', keyCode:13, which:13,
+                      bubbles:true, cancelable:true
+                    }));
+                  }
+                }, 120);
+                const r = input.getBoundingClientRect();
+                return {
+                  action:'search', key:'',
+                  x:(r.left + r.width / 2) / Math.max(1, innerWidth),
+                  y:(r.top + r.height / 2) / Math.max(1, innerHeight)
+                };
+              }
+            }
+            const visible = (el) => {
+              const r = el.getBoundingClientRect();
+              if (r.width < 80 || r.height < 64 ||
+                  r.bottom <= 0 || r.top >= innerHeight ||
+                  r.right <= 0 || r.left >= innerWidth) return false;
+              const style = getComputedStyle(el);
+              return style.display !== 'none' && style.visibility !== 'hidden' &&
+                Number(style.opacity || 1) > 0.05;
+            };
+            const mediaKind = (el) => {
+              if (el.tagName === 'VIDEO') return 'video';
+              if (el.tagName === 'IMG' || el.tagName === 'CANVAS') return 'image';
+              const style = String(
+                (el.style && el.style.backgroundImage) ||
+                getComputedStyle(el).backgroundImage || ''
+              );
+              const source = String(
+                el.getAttribute('data-original') ||
+                el.getAttribute('data-src') || ''
+              );
+              if (style.includes('url(') ||
+                  /\\.(jpe?g|png|gif|webp|bmp|avif)(\\?|#|\$)/i.test(source)) {
+                return 'image';
+              }
+              return '';
+            };
+            const mediaSource = (el) => {
+              const direct = String(
+                el.getAttribute('data-original') ||
+                el.getAttribute('data-src') ||
+                el.currentSrc || el.src || el.getAttribute('poster') || ''
+              ).trim();
+              if (direct) return direct;
+              const bg = String(
+                (el.style && el.style.backgroundImage) ||
+                getComputedStyle(el).backgroundImage || ''
+              );
+              const match = bg.match(/url\\(['"]?([^'")]+)['"]?\\)/i);
+              return match ? match[1] : '';
+            };
+            const isUsefulMedia = (el) => {
+              const kind = mediaKind(el);
+              if (!kind) return false;
+              const r = el.getBoundingClientRect();
+              const source = mediaSource(el).toLowerCase();
+              const hint = String(
+                (el.className && (el.className.baseVal || el.className)) || ''
+              ).toLowerCase() + ' ' +
+                String(el.id || '').toLowerCase() + ' ' +
+                String(el.alt || '').toLowerCase();
+              if (/(avatar|emoji|icon|logo|sprite|badge|qrcode|qr-code|广告|ad[-_])/i
+                  .test(source + ' ' + hint)) return false;
+              if (kind === 'image') {
+                const naturalWidth = Number(el.naturalWidth || el.width || 0);
+                const naturalHeight = Number(el.naturalHeight || el.height || 0);
+                if (el.tagName === 'IMG' && el.complete &&
+                    naturalWidth > 0 && naturalHeight > 0 &&
+                    (naturalWidth < 96 || naturalHeight < 72)) return false;
+                if (r.width * r.height < 9000) return false;
+                if (/^(data:image\\/gif;base64,R0lGODlhAQABA|about:blank)/i.test(source)) {
+                  return false;
+                }
+              }
+              return true;
+            };
+            const bestTouchPoint = (el) => {
+              const r = el.getBoundingClientRect();
+              const points = [
+                [0.5, 0.5], [0.32, 0.5], [0.68, 0.5],
+                [0.5, 0.32], [0.5, 0.68]
+              ];
+              for (const point of points) {
+                const x = Math.max(8, Math.min(innerWidth - 8, r.left + r.width * point[0]));
+                const y = Math.max(8, Math.min(innerHeight - 8, r.top + r.height * point[1]));
+                const stack = document.elementsFromPoint(x, y);
+                const hit = stack.find(node =>
+                  node === el || el.contains(node) || node.contains(el)
+                );
+                if (hit) return {x, y, exposed:true};
+              }
+              return {
+                x:Math.max(8, Math.min(innerWidth - 8, r.left + r.width / 2)),
+                y:Math.max(8, Math.min(innerHeight - 8, r.top + r.height / 2)),
+                exposed:false
+              };
+            };
+            const mediaKey = (el, index) => {
+              const src = mediaSource(el);
+              if (src) return src;
+              const r = el.getBoundingClientRect();
+              return location.href + '#smart-' + el.tagName + '-' +
+                Math.round(scrollY + r.top) + '-' + Math.round(r.left) + '-' + index;
+            };
+            const contextText = (el) => {
+              const host = el.closest(
+                'article, figure, li, [role="article"], [class*="card"], ' +
+                '[class*="item"], [class*="post"], [data-testid="tweet"]'
+              ) || el.parentElement;
+              return String((host && host.innerText) || el.alt || el.title || '')
+                .toLowerCase();
+            };
+            const imageSelector =
+              'img, canvas, [style*="background-image"], [data-original], [data-src]';
+            const selector = requestedType === 'image' ? imageSelector :
+              requestedType === 'video' ? 'video' : 'video, ' + imageSelector;
+            const rows = Array.from(document.querySelectorAll(selector))
+              .filter(el => visible(el) && isUsefulMedia(el))
+              .map((el, index) => {
+                const r = el.getBoundingClientRect();
+                const key = mediaKey(el, index);
+                const point = bestTouchPoint(el);
+                const x = point.x;
+                const y = point.y;
+                const text = contextText(el);
+                // Once the site accepted the keyword, every media item on the
+                // result page is a candidate. Search engines rarely repeat the
+                // query text beside every thumbnail.
+                const matches =
+                  !keyword || trustedKeywordResults || text.includes(keyword);
+                const centerDistance = Math.abs(y - innerHeight / 2) +
+                  Math.abs(x - innerWidth / 2) * 0.2;
+                const quality =
+                  Math.min(r.width * r.height, 1000000) +
+                  (point.exposed ? 250000 : -500000) +
+                  (el.tagName === 'VIDEO' && !el.paused ? 400000 : 0);
+                const activeXSeed = xInlineFeedMode &&
+                  (el.matches?.('[data-smart-seed-media="1"]') ||
+                   el.closest('[data-app-smart-x-active="1"]') != null);
+                return {
+                  el, key, x, y, top:r.top, left:r.left, matches,
+                  centerDistance, quality, type:mediaKind(el), activeXSeed
+                };
+              })
+              .filter(row => !attempted.has(row.key) && row.matches);
+            rows.sort((a, b) => keyword
+              ? (a.top - b.top || a.left - b.left || b.quality - a.quality)
+              : ((b.activeXSeed ? 1 : 0) - (a.activeXSeed ? 1 : 0) ||
+                 a.centerDistance - b.centerDistance || b.quality - a.quality));
+            const selected = rows[0];
+            if (selected) {
+              if (selected.type === 'video') {
+                if (xInlineFeedMode && !xInlineReadyToLongPress) {
+                  const makeTouchEvent = (name, active) => {
+                    const event = new Event(name, {bubbles:true, cancelable:true});
+                    const touch = {
+                      identifier: Date.now(),
+                      target: selected.el,
+                      clientX: selected.x,
+                      clientY: selected.y,
+                      pageX: selected.x + scrollX,
+                      pageY: selected.y + scrollY,
+                      screenX: selected.x,
+                      screenY: selected.y
+                    };
+                    Object.defineProperty(event, 'touches', {
+                      configurable:true, value:active ? [touch] : []
+                    });
+                    Object.defineProperty(event, 'changedTouches', {
+                      configurable:true, value:[touch]
+                    });
+                    return event;
+                  };
+                  selected.el.dispatchEvent(makeTouchEvent('touchstart', true));
+                  if (typeof PointerEvent === 'function') {
+                    selected.el.dispatchEvent(new PointerEvent('pointerdown', {
+                      bubbles:true, cancelable:true,
+                      clientX:selected.x, clientY:selected.y, pointerType:'touch'
+                    }));
+                  }
+                  setTimeout(() => {
+                    selected.el.dispatchEvent(makeTouchEvent('touchend', false));
+                    if (typeof PointerEvent === 'function') {
+                      selected.el.dispatchEvent(new PointerEvent('pointerup', {
+                        bubbles:true, cancelable:true,
+                        clientX:selected.x, clientY:selected.y, pointerType:'touch'
+                      }));
+                    }
+                    selected.el.click();
+                    try {
+                      selected.el.muted = true;
+                      selected.el.play().catch(() => {});
+                    } catch (_) {}
+                  }, 90);
+                  return {
+                    action:'activate',
+                    key:selected.key,
+                    type:'video',
+                    scrollY:Math.max(0, window.scrollY || 0),
+                    x:selected.x / Math.max(1, innerWidth),
+                    y:selected.y / Math.max(1, innerHeight)
+                  };
+                }
+                const source = String(
+                  selected.el.currentSrc || selected.el.src || ''
+                ).trim();
+                if (!source && Number(selected.el.readyState || 0) < 2) {
+                  try {
+                    selected.el.muted = true;
+                    selected.el.setAttribute('preload', 'auto');
+                    selected.el.load();
+                    selected.el.play().catch(() => {});
+                  } catch (_) {}
+                  return {
+                    action:'prepare',
+                    key:selected.key,
+                    type:'video',
+                    x:selected.x / Math.max(1, innerWidth),
+                    y:selected.y / Math.max(1, innerHeight)
+                  };
+                }
+              }
+              selected.el.setAttribute('data-app-smart-gesture', '1');
+              selected.el.setAttribute('data-app-smart-attempted', '1');
+              const makeTouchEvent = (name, active) => {
+                const event = new Event(name, {bubbles:true, cancelable:true});
+                const touch = {
+                  identifier: Date.now(),
+                  target: selected.el,
+                  clientX: selected.x,
+                  clientY: selected.y,
+                  pageX: selected.x + scrollX,
+                  pageY: selected.y + scrollY,
+                  screenX: selected.x,
+                  screenY: selected.y
+                };
+                Object.defineProperty(event, 'touches', {
+                  configurable:true, value: active ? [touch] : []
+                });
+                Object.defineProperty(event, 'changedTouches', {
+                  configurable:true, value:[touch]
+                });
+                return event;
+              };
+              selected.el.dispatchEvent(makeTouchEvent('touchstart', true));
+              setTimeout(() => {
+                selected.el.dispatchEvent(makeTouchEvent('touchend', false));
+                setTimeout(() => selected.el.removeAttribute('data-app-smart-gesture'), 80);
+              }, 560);
+              return {
+                action:'longpress',
+                key:selected.key,
+                type:selected.type,
+                confidence:selected.quality,
+                visibleCandidates:rows.length,
+                x:selected.x / Math.max(1, innerWidth),
+                y:selected.y / Math.max(1, innerHeight)
+              };
+            }
+
+            if (keyword) {
+              // A clicked result that contains no requested media is a dead
+              // end. Return to the remembered result list instead of clicking
+              // arbitrary image/detail controls repeatedly.
+              if (hasReturnPage) {
+                return {action:'return', key:'', x:0.12, y:0.18};
+              }
+
+              if (requestedType !== 'mixed' && !typeFilterApplied) {
+                const wanted = requestedType === 'video'
+                  ? /^(视频|video|videos)\$/i
+                  : /^(图片|图像|image|images)\$/i;
+                const tabs = Array.from(document.querySelectorAll(
+                  'a[href], button, [role="tab"], [role="button"]'
+                )).map(el => {
+                  const text = String(
+                    el.innerText || el.getAttribute('aria-label') || ''
+                  ).replace(/\\s+/g, ' ').trim();
+                  const r = el.getBoundingClientRect();
+                  const href = el.href || '';
+                  let sameHost = true;
+                  if (href) {
+                    try {
+                      sameHost = new URL(href, location.href).hostname ===
+                        location.hostname;
+                    } catch (_) { sameHost = false; }
+                  }
+                  return {el, text, r, sameHost};
+                }).filter(row =>
+                  row.sameHost && wanted.test(row.text) &&
+                  row.r.width > 20 && row.r.height > 16
+                );
+                const tab = tabs[0];
+                if (tab) {
+                  const classText = String(tab.el.className || '').toLowerCase();
+                  const alreadyActive =
+                    tab.el.getAttribute('aria-selected') === 'true' ||
+                    tab.el.getAttribute('aria-current') === 'page' ||
+                    /\\b(active|current|selected)\\b/.test(classText);
+                  if (alreadyActive) {
+                    return {action:'typeReady', key:'', x:0.5, y:0.18};
+                  }
+                  tab.el.scrollIntoView({block:'center', inline:'center'});
+                  setTimeout(() => tab.el.click(), 160);
+                  return {
+                    action:'typeFilter',
+                    key:'',
+                    x:(tab.r.left + tab.r.width / 2) / Math.max(1, innerWidth),
+                    y:(tab.r.top + tab.r.height / 2) / Math.max(1, innerHeight)
+                  };
+                }
+              }
+
+              const cardSelector = siteProfile === 'x'
+                ? 'article[data-testid="tweet"], [data-testid="cellInnerDiv"], a[href*="/status/"]'
+                : siteProfile === '91'
+                ? 'article, a[href*="/archives/"], [class*="post"], [class*="item"]'
+                : siteProfile === 'xvideo'
+                ? '.thumb-block, .thumb-inside, a[href*="/video"], a[href*="/prof-video"]'
+                : (siteProfile === 'tikporn' || siteProfile === 'pinporn')
+                ? 'article, video, [class*="video"], [class*="post"], [role="link"]'
+                : 'a[href], article, [role="link"], [class*="card"], [class*="item"]';
+              const siteRoot = host => {
+                const parts = String(host || '').toLowerCase()
+                  .replace(/^www\\./, '').split('.').filter(Boolean);
+                return parts.length <= 2 ? parts.join('.') : parts.slice(-2).join('.');
+              };
+              const currentRoot = siteRoot(location.hostname);
+              const cards = Array.from(document.querySelectorAll(cardSelector)).filter(el => {
+                if (!visible(el)) return false;
+                if (el.closest(
+                  'header, nav, footer, [role="navigation"], [class*="toolbar"], ' +
+                  '[class*="navbar"], [class*="breadcrumb"]'
+                )) return false;
+                const text = String(el.innerText || el.getAttribute('aria-label') || '')
+                  .toLowerCase();
+                if (!trustedKeywordResults && !text.includes(keyword)) return false;
+                const href = el.href || (el.closest('a[href]') || {}).href || '';
+                if (href) {
+                  try {
+                    const targetUrl = new URL(href, location.href);
+                    if (!/^https?:\$/.test(targetUrl.protocol) ||
+                        siteRoot(targetUrl.hostname) !== currentRoot) {
+                      return false;
+                    }
+                    const routeText = (targetUrl.pathname + ' ' + targetUrl.search).toLowerCase();
+                    if (/(privacy|terms|feedback|history|login|signup|register|javascript:)/.test(
+                      routeText
+                    )) return false;
+                  } catch (_) { return false; }
+                }
+                const lowerText = text.toLowerCase();
+                if (/(隐私|条款|反馈|登录|注册|下载app|打开app|privacy|terms|feedback|sign in)/i
+                    .test(lowerText)) return false;
+                if (requestedType === 'video') {
+                  const mediaHint = String(
+                    el.className || el.getAttribute('aria-label') || ''
+                  ).toLowerCase();
+                  const is91ArchiveCard = siteProfile === '91' &&
+                    href.includes('/archives/') &&
+                    /[0-9]+/.test(href.split('/archives/')[1] || '');
+                  const hasVideoFeature =
+                    !!el.querySelector('video') ||
+                    /(^|\\D)\\d{1,2}:\\d{2}(\\D|\$)/.test(lowerText) ||
+                    /(video|play|播放|视频)/.test(mediaHint + ' ' + lowerText) ||
+                    !!el.querySelector(
+                      '[class*="play"], [class*="video"], [aria-label*="播放"], [aria-label*="Play" i]'
+                    );
+                  if (!hasVideoFeature && !is91ArchiveCard) return false;
+                } else if (requestedType === 'image' &&
+                    !el.querySelector('img, picture, canvas')) {
+                  return false;
+                }
+                return true;
+              }).map((el, index) => {
+                const r = el.getBoundingClientRect();
+                const link = el.matches('a[href]') ? el : el.querySelector('a[href]');
+                const key = String((link && link.href) || '') ||
+                  location.href + '#smart-card-' + Math.round(scrollY + r.top) + '-' + index;
+                return {el, link, key, top:r.top, left:r.left, r};
+              }).filter(row => !attempted.has(row.key))
+                .sort((a,b) => a.top - b.top || a.left - b.left);
+              const card = cards[0];
+              if (card) {
+                const target = card.link || card.el;
+                target.setAttribute('data-app-smart-attempted', '1');
+                target.scrollIntoView({block:'center', inline:'center'});
+                setTimeout(() => target.click(), 180);
+                return {
+                  action:'click',
+                  key:card.key,
+                  x:(card.r.left + card.r.width / 2) / Math.max(1, innerWidth),
+                  y:(card.r.top + card.r.height / 2) / Math.max(1, innerHeight)
+                };
+              }
+            }
+
+            const pendingVisibleMedia = Array.from(
+              document.querySelectorAll(selector)
+            ).some(el => {
+              if (!visible(el)) return false;
+              if (el.tagName === 'IMG') {
+                return !el.complete || Number(el.naturalWidth || 0) === 0;
+              }
+              if (el.tagName === 'VIDEO') {
+                return Number(el.readyState || 0) < 1;
+              }
+              return false;
+            });
+            if (pendingVisibleMedia && !skipPendingWait) {
+              return {action:'wait', key:'', x:0.5, y:0.5};
+            }
+            const page = document.scrollingElement || document.documentElement;
+            const atBottom = page.scrollTop + innerHeight >= page.scrollHeight - 80;
+            if (atBottom) {
+              const nextPattern = /^(下一页|下一頁|下页|更多|加载更多|next|more)\$/i;
+              const pager = Array.from(document.querySelectorAll(
+                'a[href], button, [role="button"]'
+              )).map(el => {
+                const text = String(
+                  el.innerText || el.getAttribute('aria-label') || el.title || ''
+                ).replace(/\\s+/g, ' ').trim();
+                const r = el.getBoundingClientRect();
+                return {el, text, r};
+              }).find(row => {
+                if (!nextPattern.test(row.text) || row.r.width < 20 || row.r.height < 16) {
+                  return false;
+                }
+                const href = row.el.href || '';
+                if (!href) return true;
+                try {
+                  return siteRoot(new URL(href, location.href).hostname) === currentRoot;
+                } catch (_) { return false; }
+              });
+              if (pager) {
+                const key = 'page:' + String(pager.el.href || pager.text);
+                if (!attempted.has(key)) {
+                  pager.el.scrollIntoView({block:'center', inline:'center'});
+                  setTimeout(() => pager.el.click(), 160);
+                  return {
+                    action:'paginate', key,
+                    x:(pager.r.left + pager.r.width / 2) / Math.max(1, innerWidth),
+                    y:(pager.r.top + pager.r.height / 2) / Math.max(1, innerHeight)
+                  };
+                }
+              }
+              return {action:'exhausted', key:'', x:0.5, y:0.82};
+            }
+            const before = scrollY;
+            window.scrollBy({top:Math.max(360, innerHeight * 0.78), behavior:'smooth'});
+            return {action:'scroll', key:'', x:0.5, y:0.78, before};
+          })()
+        ''',
+      );
+      if (result is! Map || !identical(_smartDownloadTask, task)) {
+        if (!identical(_smartDownloadTask, task)) return true;
+        task['gestureEngineFailures'] =
+            ((task['gestureEngineFailures'] as int?) ?? 0) + 1;
+        if ((task['gestureEngineFailures'] as int) >= 3 &&
+            await _recoverVisibleGesturePage(task, '页面识别连续失败')) {
+          return true;
+        }
+        if ((task['gestureEngineFailures'] as int) >= 3) {
+          task['gestureMode'] = false;
+          task['phase'] = 'collecting_site_results';
+        }
+        Future<void>.delayed(const Duration(milliseconds: 180), () {
+          if (identical(_smartDownloadTask, task)) {
+            unawaited(_advanceSmartDownload(_currentUrl));
+          }
+        });
+        return true;
+      }
+      final action = (result['action'] ?? '').toString();
+      final key = (result['key'] ?? '').toString();
+      debugPrint(
+        'Smart visible gesture: action=$action key=$key '
+        'phase=${task['phase']} url=$_currentUrl',
+      );
+      if (key.isNotEmpty && action != 'prepare' && action != 'activate') {
+        attempted.add(key);
+      }
+      final point = Offset(
+        (result['x'] as num?)?.toDouble() ?? 0.5,
+        (result['y'] as num?)?.toDouble() ?? 0.5,
+      );
+      if (action == 'longpress') {
+        task['xInlineActivationPending'] = false;
+        task['xInlineReadyToLongPress'] = false;
+        task['gestureSkipPendingWait'] = false;
+        task['gestureWaitCount'] = 0;
+        task['gesturePrepareCount'] = 0;
+        task['gestureDownloadPending'] = true;
+        task['gestureDownloadStartedAt'] = DateTime.now();
+        task['gestureActiveKey'] = key;
+        task['phase'] = 'gesture_waiting_download';
+        _showSmartOperation('长按当前媒体，触发下载', point: point);
+        _updateSmartDiscoveryProgress(task, 'gesture_waiting_download');
+        Future<void>.delayed(const Duration(seconds: 21), () {
+          if (identical(_smartDownloadTask, task) &&
+              task['gestureDownloadPending'] == true) {
+            unawaited(_advanceSmartDownload(_currentUrl));
+          }
+        });
+        return true;
+      }
+      if (action == 'activate') {
+        task['xInlineActivationPending'] = true;
+        task['xInlineReadyToLongPress'] = false;
+        task['xInlineActivatedAt'] = DateTime.now();
+        task['gestureReturnUrl'] = _currentUrl;
+        task['xReturnUrl'] = _currentUrl;
+        task['xReturnScrollY'] = (result['scrollY'] as num?)?.toDouble();
+        task['phase'] = 'x_inline_activating';
+        task['matchStage'] = 'X 信息流直下模式 · 激活当前视频';
+        _showSmartOperation('点击当前视频并等待播放，再长按下载', point: point);
+        Future<void>.delayed(const Duration(milliseconds: 2450), () {
+          if (identical(_smartDownloadTask, task) &&
+              task['xInlineActivationPending'] == true) {
+            unawaited(_advanceSmartDownload(_currentUrl));
+          }
+        });
+        return true;
+      }
+      if (action == 'prepare') {
+        task['gestureSkipPendingWait'] = false;
+        final prepareCount = ((task['gesturePrepareCount'] as int?) ?? 0) + 1;
+        task['gesturePrepareCount'] = prepareCount;
+        task['phase'] = 'gesture_preparing_media';
+        _showSmartOperation('正在播放预热，获取当前视频地址', point: point);
+        if (prepareCount >= 4 && key.isNotEmpty) {
+          // The next pass will skip this unresolved element and continue,
+          // instead of remaining on an unplayable placeholder forever.
+          attempted.add(key);
+          task['gesturePrepareCount'] = 0;
+        }
+        Future<void>.delayed(const Duration(milliseconds: 700), () {
+          if (identical(_smartDownloadTask, task)) {
+            unawaited(_advanceSmartDownload(_currentUrl));
+          }
+        });
+        return true;
+      }
+      if (action == 'wait') {
+        final waitCount = ((task['gestureWaitCount'] as int?) ?? 0) + 1;
+        task['gestureWaitCount'] = waitCount;
+        task['phase'] = 'gesture_waiting_dom';
+        _showSmartOperation('等待当前页面媒体加载完成', point: point);
+        if (waitCount <= 2) {
+          Future<void>.delayed(const Duration(milliseconds: 550), () {
+            if (identical(_smartDownloadTask, task)) {
+              unawaited(_advanceSmartDownload(_currentUrl));
+            }
+          });
+          return true;
+        }
+        task['gestureWaitCount'] = 0;
+        task['gestureSkipPendingWait'] = true;
+        // Continue immediately so this pass can scroll or use a fallback.
+        Future<void>.delayed(const Duration(milliseconds: 80), () {
+          if (identical(_smartDownloadTask, task)) {
+            unawaited(_advanceSmartDownload(_currentUrl));
+          }
+        });
+        return true;
+      }
+      if (action == 'search') {
+        task['gestureKeywordSubmitted'] = true;
+        task['phase'] = 'gesture_searching';
+        _showSmartOperation('输入关键词并提交站内搜索', point: point);
+        Future<void>.delayed(const Duration(milliseconds: 1400), () {
+          if (identical(_smartDownloadTask, task) &&
+              task['phase'] == 'gesture_searching') {
+            unawaited(_advanceSmartDownload(_currentUrl));
+          }
+        });
+        return true;
+      }
+      if (action == 'typeFilter' || action == 'typeReady') {
+        task['gestureTypeFilterApplied'] = true;
+        task['phase'] = 'gesture_filtering_type';
+        _showSmartOperation(
+          mediaType == MediaType.video ? '切换到视频搜索结果' : '切换到图片搜索结果',
+          point: point,
+        );
+        Future<void>.delayed(const Duration(milliseconds: 1200), () {
+          if (identical(_smartDownloadTask, task) &&
+              task['phase'] == 'gesture_filtering_type') {
+            unawaited(_advanceSmartDownload(_currentUrl));
+          }
+        });
+        return true;
+      }
+      if (action == 'return') {
+        task['phase'] = 'gesture_returning';
+        _showSmartOperation('当前页面没有目标媒体，返回搜索结果');
+        final returnUrl = gestureReturnUrl;
+        if (task['siteProfile'] == 'x' && returnUrl.startsWith('http')) {
+          task['phase'] = 'x_search_returning';
+          task['xReturnUrl'] = returnUrl;
+          task['xReturnExpectedUrl'] = returnUrl;
+          task['xReturnAttempts'] = 0;
+          _loadUrl(returnUrl);
+        } else if (await _controller!.canGoBack()) {
+          await _controller!.goBack();
+        } else if (returnUrl.startsWith('http')) {
+          _loadUrl(returnUrl);
+        } else {
+          task['gestureDetailMode'] = false;
+          task['gestureReturnUrl'] = '';
+          task['phase'] = 'gesture_scanning_results';
+        }
+        return true;
+      }
+      if (action == 'paginate') {
+        task['phase'] = 'gesture_opening_next_page';
+        task['gestureResultUrl'] = _currentUrl;
+        task['gestureNoMoveCount'] = 0;
+        _showSmartOperation('打开站内下一页，继续寻找媒体', point: point);
+        Future<void>.delayed(const Duration(milliseconds: 1300), () {
+          if (identical(_smartDownloadTask, task)) {
+            task['phase'] = 'gesture_scanning_results';
+            unawaited(_advanceSmartDownload(_currentUrl));
+          }
+        });
+        return true;
+      }
+      if (action == 'exhausted') {
+        if (await _recoverVisibleGesturePage(task, '当前结果已遍历', nextPage: true)) {
+          return true;
+        }
+        task['gestureMode'] = false;
+        task['phase'] = 'collecting_site_results';
+        task['matchStage'] = '可视手势已遍历当前结果，启用站内地址兜底';
+        _showSmartOperation('当前结果已浏览完，启用站内兜底查找');
+        Future<void>.delayed(const Duration(milliseconds: 120), () {
+          if (identical(_smartDownloadTask, task)) {
+            unawaited(_advanceSmartDownload(_currentUrl));
+          }
+        });
+        return true;
+      }
+      if (action == 'click') {
+        if (task['xInlineFeedMode'] == true) {
+          attempted.add(key);
+          task['phase'] = 'scanning_feed';
+          task['matchStage'] = 'X 信息流直下模式 · 跳过需要进入详情的卡片';
+          _showSmartOperation('当前卡片无法直接长按，留在信息流寻找下一条');
+          _continueSmartFeed(task, madeProgress: false);
+          return true;
+        }
+        task['gestureReturnUrl'] = _currentUrl;
+        task['gestureActionStartedAt'] = DateTime.now();
+        task['gestureDetailMode'] = false;
+        task['phase'] = 'gesture_opening_card';
+        _showSmartOperation('点击当前媒体卡片，进入下一层', point: point);
+        Future<void>.delayed(const Duration(milliseconds: 1400), () {
+          if (identical(_smartDownloadTask, task) &&
+              task['phase'] == 'gesture_opening_card') {
+            unawaited(_advanceSmartDownload(_currentUrl));
+          }
+        });
+        return true;
+      }
+      if (action == 'scroll') {
+        task['gestureSkipPendingWait'] = false;
+        final before = (result['before'] as num?)?.toDouble() ?? -1;
+        final previous = (task['gestureLastScrollY'] as num?)?.toDouble() ?? -2;
+        final noMove = (before - previous).abs() < 3;
+        task['gestureLastScrollY'] = before;
+        task['gestureNoMoveCount'] =
+            noMove ? ((task['gestureNoMoveCount'] as int?) ?? 0) + 1 : 0;
+        if ((task['gestureNoMoveCount'] as int) >= 2) {
+          if (await _recoverVisibleGesturePage(
+            task,
+            '当前结果无法继续滚动',
+            nextPage: true,
+          )) {
+            return true;
+          }
+          task['gestureMode'] = false;
+          task['phase'] = 'collecting_site_results';
+          task['matchStage'] = '页面无法继续滑动，启用站内地址兜底';
+          Future<void>.delayed(const Duration(milliseconds: 80), () {
+            if (identical(_smartDownloadTask, task)) {
+              unawaited(_advanceSmartDownload(_currentUrl));
+            }
+          });
+          return true;
+        }
+        task['phase'] = 'gesture_scrolling';
+        _showSmartOperation('向上滑动屏幕，寻找下一个媒体', point: point);
+        Future<void>.delayed(const Duration(milliseconds: 850), () {
+          if (identical(_smartDownloadTask, task)) {
+            unawaited(_advanceSmartDownload(_currentUrl));
+          }
+        });
+        return true;
+      }
+      task['gestureEngineFailures'] =
+          ((task['gestureEngineFailures'] as int?) ?? 0) + 1;
+      if ((task['gestureEngineFailures'] as int) >= 3 &&
+          await _recoverVisibleGesturePage(task, '未识别到有效操作')) {
+        return true;
+      }
+      if ((task['gestureEngineFailures'] as int) >= 3) {
+        task['gestureMode'] = false;
+        task['phase'] = 'collecting_site_results';
+      }
+      Future<void>.delayed(const Duration(milliseconds: 180), () {
+        if (identical(_smartDownloadTask, task)) {
+          unawaited(_advanceSmartDownload(_currentUrl));
+        }
+      });
+      return true;
+    } catch (e) {
+      debugPrint('可视手势智能下载失败，转入兼容兜底: $e');
+      final failures = ((task['gestureEngineFailures'] as int?) ?? 0) + 1;
+      task['gestureEngineFailures'] = failures;
+      task['failed'] = (task['failed'] as int) + 1;
+      if (failures >= 3 && await _recoverVisibleGesturePage(task, '可视识别发生异常')) {
+        return true;
+      }
+      if (failures >= 3) {
+        task['gestureMode'] = false;
+        task['phase'] = 'collecting_site_results';
+        task['matchStage'] = '可视识别连续异常，启用原有站内下载兜底';
+      }
+      Future<void>.delayed(const Duration(milliseconds: 180), () {
+        if (identical(_smartDownloadTask, task)) {
+          unawaited(_advanceSmartDownload(_currentUrl));
+        }
+      });
+      return true;
+    }
+    return false;
+  }
+
+  Future<void> _completeSmartGestureDownload(bool success) async {
+    final task = _smartDownloadTask;
+    if (task == null || task['gestureDownloadPending'] != true) return;
+    task['gestureDownloadPending'] = false;
+    task['xInlineActivationPending'] = false;
+    task['xInlineReadyToLongPress'] = false;
+    final failureType =
+        (task.remove('lastGestureFailureType') ?? '').toString();
+    final skippedDuplicate =
+        !success &&
+        <String>{
+          'already_in_library',
+          'already_in_smart_task',
+          'duplicate_name_in_smart_task',
+          'already_downloading',
+        }.contains(failureType);
+    final activeKey = (task['gestureActiveKey'] ?? '').toString();
+    final actionFailures = task['gestureActionFailures'] as Map<String, int>;
+    if (success) {
+      task['gestureConsecutiveFailures'] = 0;
+      task['gestureEngineFailures'] = 0;
+    } else {
+      task['gestureConsecutiveFailures'] =
+          ((task['gestureConsecutiveFailures'] as int?) ?? 0) + 1;
+      if (activeKey.isNotEmpty) {
+        actionFailures[activeKey] = (actionFailures[activeKey] ?? 0) + 1;
+      }
+    }
+    task['gestureActiveKey'] = '';
+    if (success) {
+      task['success'] = (task['success'] as int) + 1;
+    } else if (skippedDuplicate) {
+      if (failureType != 'already_in_library') {
+        task['duplicateSkipped'] =
+            ((task['duplicateSkipped'] as int?) ?? 0) + 1;
+      }
+      task['matchStage'] = '发现重复媒体 · 已自动跳过并切换下一项';
+      _showSmartOperation('当前媒体已经处理过，自动跳过');
+    } else {
+      task['failed'] = (task['failed'] as int) + 1;
+    }
+    _updateSmartDiscoveryProgress(task, 'gesture_download_completed');
+    if (!success && failureType == 'library_save_failed') {
+      await _finishSmartDownload('写入媒体库失败，已停止任务；请检查存储空间和数据库状态');
+      return;
+    }
+    if ((task['success'] as int) >= (task['target'] as int)) {
+      await _finishSmartDownload();
+      return;
+    }
+    final controller = _controller;
+    final actualUrl =
+        controller == null
+            ? _currentUrl
+            : (await controller.getUrl())?.toString() ?? _currentUrl;
+    final originUrl = (task['originUrl'] ?? '').toString();
+    final xReturnUrl = (task['xReturnUrl'] ?? '').toString();
+    final enteredXStatusFromList =
+        task['siteProfile'] == 'x' &&
+        xReturnUrl.startsWith('http') &&
+        (task['xEnteredDetailFromList'] == true ||
+            (_isXStatusDetailPage(actualUrl) &&
+                !_isSameLoadedDocument(xReturnUrl, actualUrl)));
+    if (enteredXStatusFromList) {
+      task['gestureDetailMode'] = false;
+      task['gestureReturnUrl'] = '';
+      task['matchStage'] = 'X 帖子视频已下载 · 返回原信息流';
+      _showSmartOperation('当前帖子下载完成，返回原页面继续下一条');
+      await _returnFromXSmartCard(task);
+      return;
+    }
+    final enteredXMediaViewer =
+        task['siteProfile'] == 'x' &&
+        !_isXMediaViewerPage(originUrl) &&
+        _isXMediaViewerPage(actualUrl);
+    final recordedReturnUrl = (task['gestureReturnUrl'] ?? '').toString();
+    final returnUrl =
+        recordedReturnUrl.startsWith('http')
+            ? recordedReturnUrl
+            : enteredXMediaViewer
+            ? originUrl
+            : '';
+    if ((task['gestureDetailMode'] == true || enteredXMediaViewer) &&
+        returnUrl.startsWith('http')) {
+      task['phase'] = 'gesture_returning';
+      task['matchStage'] = 'X 详情媒体已下载 · 返回原列表';
+      _showSmartOperation('当前媒体下载完成，返回上一级继续查找');
+      var closedXViewer = false;
+      if (task['siteProfile'] == 'x') {
+        // Never use WebView history for X smart tasks. Its SPA inserts
+        // transient about:blank entries that can cause a return loop.
+        final xTarget =
+            _isSameLoadedDocument(returnUrl, actualUrl) &&
+                    originUrl.startsWith('http') &&
+                    !_isSameLoadedDocument(originUrl, actualUrl)
+                ? originUrl
+                : returnUrl;
+        task['phase'] = 'x_search_returning';
+        task['xReturnUrl'] = xTarget;
+        task['xReturnExpectedUrl'] = xTarget;
+        task['xReturnAttempts'] = 0;
+        _loadUrl(xTarget);
+        closedXViewer = true;
+      } else if (controller != null && _isXMediaViewerPage(actualUrl)) {
+        try {
+          final result = await controller.evaluateJavascript(
+            source: '''
+              (() => {
+                const selectors = [
+                  '[data-testid="app-bar-back"]',
+                  'button[aria-label="Close"]',
+                  'button[aria-label="Back"]',
+                  '[role="button"][aria-label="Close"]',
+                  '[role="button"][aria-label="Back"]'
+                ];
+                const button = selectors.map(selector =>
+                  document.querySelector(selector)
+                ).find(element => {
+                  if (!element) return false;
+                  const rect = element.getBoundingClientRect();
+                  return rect.width > 20 && rect.height > 20 &&
+                    rect.bottom > 0 && rect.top < innerHeight;
+                });
+                if (!button) return false;
+                button.click();
+                return true;
+              })()
+            ''',
+          );
+          closedXViewer = result == true || result?.toString() == 'true';
+        } catch (_) {}
+      }
+      if (!closedXViewer &&
+          controller != null &&
+          await controller.canGoBack()) {
+        await controller.goBack();
+      } else if (!closedXViewer) {
+        _loadUrl(returnUrl);
+      }
+      Future<void>.delayed(const Duration(milliseconds: 750), () {
+        if (identical(_smartDownloadTask, task) &&
+            task['phase'] == 'gesture_returning') {
+          unawaited(_advanceSmartDownload(_currentUrl));
+        }
+      });
+      return;
+    }
+    if (success &&
+        task['siteProfile'] == 'x' &&
+        (task['keyword'] ?? '').toString().trim().isEmpty) {
+      task['gestureDetailMode'] = false;
+      task['gestureReturnUrl'] = '';
+      task['phase'] = 'scanning_feed';
+      task['matchStage'] = 'X 沉浸模式 · 上滑到下一条视频';
+      _continueSmartFeed(task, madeProgress: true);
+      return;
+    }
+    task['gestureDetailMode'] = false;
+    task['gestureReturnUrl'] = '';
+    if (!success && ((task['gestureConsecutiveFailures'] as int?) ?? 0) >= 6) {
+      if (await _recoverVisibleGesturePage(
+        task,
+        '连续候选无法触发下载',
+        nextPage: true,
+      )) {
+        return;
+      }
+      task['gestureMode'] = false;
+      task['phase'] = 'collecting_site_results';
+      task['matchStage'] = '连续多个可见媒体无法下载，启用网络地址兜底';
+      Future<void>.delayed(const Duration(milliseconds: 100), () {
+        if (identical(_smartDownloadTask, task)) {
+          unawaited(_advanceSmartDownload(_currentUrl));
+        }
+      });
+      return;
+    }
+    task['phase'] = 'gesture_scrolling';
+    Future<void>.delayed(const Duration(milliseconds: 350), () {
+      if (identical(_smartDownloadTask, task)) {
+        unawaited(_advanceSmartDownload(_currentUrl));
+      }
+    });
+  }
+
   Future<void> _anchorSmartSeedForType(MediaType mediaType) async {
     final controller = _controller;
     if (controller == null) return;
@@ -6973,6 +8722,9 @@ class _BrowserPageState extends State<BrowserPage>
           })()
         ''',
       );
+      _showSmartOperation(
+        mediaType == MediaType.image ? '定位屏幕中心图片' : '定位屏幕中心视频',
+      );
     } catch (e) {
       debugPrint('智能下载定位中心媒体失败: $e');
     }
@@ -6993,10 +8745,11 @@ class _BrowserPageState extends State<BrowserPage>
       return;
     }
     final keywordController = TextEditingController(text: initialKeyword);
-    final countController = TextEditingController(text: '5');
+    final countController = TextEditingController();
     final minVideoSizeController = TextEditingController();
     final maxVideoSizeController = TextEditingController();
-    var selectedMediaType = initialMediaType;
+    MediaType? selectedMediaType;
+    var historyExpanded = false;
     final confirmed = await showDialog<bool>(
       context: context,
       builder:
@@ -7013,41 +8766,39 @@ class _BrowserPageState extends State<BrowserPage>
                       mainAxisSize: MainAxisSize.min,
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        const Text(
-                          '选择智能下载类型',
-                          style: TextStyle(fontWeight: FontWeight.w600),
-                        ),
-                        const SizedBox(height: 8),
-                        SegmentedButton<MediaType>(
-                          segments: const [
-                            ButtonSegment(
-                              value: MediaType.image,
-                              icon: Icon(Icons.image_outlined),
-                              label: Text('图片'),
-                            ),
-                            ButtonSegment(
-                              value: MediaType.video,
-                              icon: Icon(Icons.videocam_outlined),
-                              label: Text('视频'),
-                            ),
-                          ],
-                          selected: {selectedMediaType},
-                          onSelectionChanged:
-                              (values) => setDialogState(
-                                () => selectedMediaType = values.first,
-                              ),
-                        ),
-                        const SizedBox(height: 16),
                         TextField(
                           controller: keywordController,
                           autofocus: true,
                           textInputAction: TextInputAction.next,
-                          decoration: const InputDecoration(
+                          decoration: InputDecoration(
                             labelText: '下载关键词',
                             hintText: '可留空：按屏幕中心媒体由近到远下载',
+                            suffixIcon:
+                                _smartKeywordHistory.isEmpty
+                                    ? null
+                                    : IconButton(
+                                      tooltip:
+                                          historyExpanded
+                                              ? '收起历史关键词'
+                                              : '展开历史关键词',
+                                      onPressed:
+                                          () => setDialogState(
+                                            () =>
+                                                historyExpanded =
+                                                    !historyExpanded,
+                                          ),
+                                      icon: AnimatedRotation(
+                                        turns: historyExpanded ? 0.25 : 0,
+                                        duration: const Duration(
+                                          milliseconds: 160,
+                                        ),
+                                        child: const Icon(Icons.arrow_right),
+                                      ),
+                                    ),
                           ),
                         ),
-                        if (_smartKeywordHistory.isNotEmpty) ...[
+                        if (historyExpanded &&
+                            _smartKeywordHistory.isNotEmpty) ...[
                           const SizedBox(height: 10),
                           const Text(
                             '历史关键词（点击使用，删除错误词）',
@@ -7084,6 +8835,47 @@ class _BrowserPageState extends State<BrowserPage>
                                     .toList(),
                           ),
                         ],
+                        const SizedBox(height: 16),
+                        const Text(
+                          '下载媒体类型（可不选）',
+                          style: TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                        const SizedBox(height: 8),
+                        SegmentedButton<MediaType>(
+                          segments: const [
+                            ButtonSegment(
+                              value: MediaType.image,
+                              icon: Icon(Icons.image_outlined),
+                              label: Text('图片'),
+                            ),
+                            ButtonSegment(
+                              value: MediaType.video,
+                              icon: Icon(Icons.videocam_outlined),
+                              label: Text('视频'),
+                            ),
+                          ],
+                          emptySelectionAllowed: true,
+                          selected:
+                              selectedMediaType == null
+                                  ? const <MediaType>{}
+                                  : <MediaType>{selectedMediaType!},
+                          onSelectionChanged:
+                              (values) => setDialogState(
+                                () =>
+                                    selectedMediaType =
+                                        values.isEmpty ? null : values.first,
+                              ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          selectedMediaType == null
+                              ? '未选择：图片和视频均可，按距离依次下载'
+                              : '仅下载${selectedMediaType == MediaType.image ? '图片' : '视频'}',
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: Colors.grey,
+                          ),
+                        ),
                         const SizedBox(height: 12),
                         TextField(
                           controller: countController,
@@ -7091,13 +8883,13 @@ class _BrowserPageState extends State<BrowserPage>
                           inputFormatters: [
                             FilteringTextInputFormatter.digitsOnly,
                           ],
-                          decoration: InputDecoration(
-                            labelText:
-                                '${selectedMediaType == MediaType.image ? '图片' : '视频'}个数',
-                            helperText: '最少 1 个，最多 100 个',
+                          decoration: const InputDecoration(
+                            labelText: '下载数量',
+                            hintText: '默认 5 个',
+                            helperText: '最少 1 个，最多 100 个；留空默认 5 个',
                           ),
                         ),
-                        if (selectedMediaType == MediaType.video) ...[
+                        if (selectedMediaType != MediaType.image) ...[
                           const SizedBox(height: 12),
                           Row(
                             children: [
@@ -7146,7 +8938,8 @@ class _BrowserPageState extends State<BrowserPage>
                     ),
                     FilledButton(
                       onPressed: () {
-                        final count = int.tryParse(countController.text) ?? 0;
+                        final count =
+                            int.tryParse(countController.text.trim()) ?? 5;
                         if (count < 1 || count > 100) {
                           ScaffoldMessenger.of(dialogContext).showSnackBar(
                             const SnackBar(content: Text('请输入 1～100 的数量')),
@@ -7155,7 +8948,7 @@ class _BrowserPageState extends State<BrowserPage>
                         }
                         final minMb = int.tryParse(minVideoSizeController.text);
                         final maxMb = int.tryParse(maxVideoSizeController.text);
-                        if (selectedMediaType == MediaType.video &&
+                        if (selectedMediaType != MediaType.image &&
                             minMb != null &&
                             maxMb != null &&
                             minMb > maxMb) {
@@ -7173,7 +8966,7 @@ class _BrowserPageState extends State<BrowserPage>
           ),
     );
     final enteredKeyword = keywordController.text.trim();
-    final enteredCount = int.tryParse(countController.text) ?? 0;
+    final enteredCount = int.tryParse(countController.text.trim()) ?? 5;
     final enteredMinVideoMb = int.tryParse(minVideoSizeController.text);
     final enteredMaxVideoMb = int.tryParse(maxVideoSizeController.text);
     // showDialog completes when pop starts, before the reverse transition has
@@ -7181,15 +8974,15 @@ class _BrowserPageState extends State<BrowserPage>
     await Future<void>.delayed(const Duration(milliseconds: 360));
     if (confirmed == true && mounted) {
       int? minVideoBytes =
-          selectedMediaType == MediaType.video && enteredMinVideoMb != null
+          selectedMediaType != MediaType.image && enteredMinVideoMb != null
               ? enteredMinVideoMb * 1024 * 1024
               : null;
       int? maxVideoBytes =
-          selectedMediaType == MediaType.video && enteredMaxVideoMb != null
+          selectedMediaType != MediaType.image && enteredMaxVideoMb != null
               ? enteredMaxVideoMb * 1024 * 1024
               : null;
       var autoVideoSizeRange = false;
-      if (selectedMediaType == MediaType.video &&
+      if (selectedMediaType != MediaType.image &&
           enteredMinVideoMb == null &&
           enteredMaxVideoMb == null &&
           startFromCurrentPage) {
@@ -7217,7 +9010,8 @@ class _BrowserPageState extends State<BrowserPage>
         website: website,
         keyword: keyword,
         targetCount: enteredCount,
-        mediaType: selectedMediaType,
+        mediaType: selectedMediaType ?? initialMediaType,
+        allowMixedMedia: selectedMediaType == null,
         startFromCurrentPage: startFromCurrentPage,
         minVideoBytes: minVideoBytes,
         maxVideoBytes: maxVideoBytes,
@@ -7235,6 +9029,7 @@ class _BrowserPageState extends State<BrowserPage>
     required String keyword,
     required int targetCount,
     required MediaType mediaType,
+    bool allowMixedMedia = false,
     bool startFromCurrentPage = false,
     int? minVideoBytes,
     int? maxVideoBytes,
@@ -7251,30 +9046,57 @@ class _BrowserPageState extends State<BrowserPage>
       RegExp(r'^www\.'),
       '',
     );
+    final currentHost =
+        Uri.tryParse(
+          _currentUrl,
+        )?.host.toLowerCase().replaceFirst(RegExp(r'^www\.'), '') ??
+        '';
+    final currentUri = Uri.tryParse(_currentUrl);
+    final effectiveHost =
+        startFromCurrentPage && currentHost.isNotEmpty
+            ? currentHost
+            : normalizedHost;
+    final effectiveUri =
+        startFromCurrentPage && currentUri != null && currentUri.host.isNotEmpty
+            ? currentUri
+            : uri;
     final keywordFirstOn91 =
         startFromCurrentPage &&
         keyword.trim().isNotEmpty &&
-        (normalizedHost == '91cg1.com' ||
-            normalizedHost.endsWith('.91cg1.com'));
+        (effectiveHost == '91cg1.com' || effectiveHost.endsWith('.91cg1.com'));
     final strictXFeedMode =
         startFromCurrentPage &&
-        (normalizedHost == 'x.com' ||
-            normalizedHost.endsWith('.x.com') ||
-            normalizedHost == 'twitter.com' ||
-            normalizedHost.endsWith('.twitter.com'));
+        (effectiveHost == 'x.com' ||
+            effectiveHost.endsWith('.x.com') ||
+            effectiveHost == 'twitter.com' ||
+            effectiveHost.endsWith('.twitter.com'));
     final keywordFirstOnX = strictXFeedMode && keyword.trim().isNotEmpty;
+    final xInlineFeedMode =
+        strictXFeedMode &&
+        keyword.trim().isEmpty &&
+        !_isXStatusDetailPage(_currentUrl) &&
+        !_isXMediaViewerPage(_currentUrl);
+    final strictBaiduVideoMode =
+        startFromCurrentPage &&
+        keyword.trim().isNotEmpty &&
+        !allowMixedMedia &&
+        mediaType == MediaType.video &&
+        _isBaiduHost(effectiveHost);
+    final siteProfile = _smartSiteProfile(effectiveHost);
     await _loadSmartDownload24hRegistry();
     await _loadSmartStrategyProfiles();
     final startedAt = DateTime.now();
     final deadlineAt = startedAt.add(const Duration(hours: 5));
     final strict91SearchUrl =
         keywordFirstOn91
-            ? '${uri.origin}/search/${Uri.encodeComponent(keyword.trim())}/'
+            ? '${effectiveUri.origin}/search/${Uri.encodeComponent(keyword.trim())}/'
             : '';
     final strictXSearchUrl =
         keywordFirstOnX
-            ? '${uri.origin}/search?q=${Uri.encodeQueryComponent(keyword.trim())}&src=typed_query&f=media'
+            ? '${effectiveUri.origin}/search?q=${Uri.encodeQueryComponent(keyword.trim())}&src=typed_query&f=media'
             : '';
+    final strictBaiduSearchUrl =
+        strictBaiduVideoMode ? _baiduVideoSearchUrl(keyword) : '';
     if (startFromCurrentPage && keyword.trim().isEmpty) {
       await _anchorSmartSeedForType(mediaType);
     }
@@ -7284,13 +9106,17 @@ class _BrowserPageState extends State<BrowserPage>
               ? 'collecting_search_results'
               : keywordFirstOnX
               ? 'x_search_loading'
+              : strictBaiduVideoMode
+              ? 'baidu_video_search_loading'
               : startFromCurrentPage
               ? 'visiting_seed'
               : 'opening_site',
       'siteUrl': normalized,
-      'host': normalizedHost,
+      'host': effectiveHost,
+      'siteProfile': siteProfile,
       'keyword': keyword,
       'mediaType': mediaType,
+      'allowMixedMedia': allowMixedMedia,
       'target': targetCount,
       'minVideoBytes': minVideoBytes,
       'maxVideoBytes': maxVideoBytes,
@@ -7318,6 +9144,8 @@ class _BrowserPageState extends State<BrowserPage>
       'feedScans': 0,
       'feedNoNew': 0,
       'feedDirection': 1,
+      'feedMotionSnapshot': '',
+      'feedStalledCount': 0,
       'discoveryRound': 0,
       'searchCycle': 0,
       'strategyStats': <String, dynamic>{},
@@ -7332,6 +9160,28 @@ class _BrowserPageState extends State<BrowserPage>
       'disableSyntheticRoutes': false,
       'preheatedVideoCandidates': <String, List<String>>{},
       'startedFromCurrentPage': startFromCurrentPage,
+      // 91 keyword search has a deterministic ordered-card state machine.
+      // Do not let the generic visual gesture recovery compete with it.
+      'gestureMode': startFromCurrentPage && !keywordFirstOn91,
+      'gestureAttemptedKeys': <String>{},
+      'gestureDownloadPending': false,
+      'gestureKeywordSubmitted':
+          keywordFirstOn91 || keywordFirstOnX || strictBaiduVideoMode,
+      'gestureTypeFilterApplied': strictBaiduVideoMode,
+      'gestureDetailMode': false,
+      'gestureConsecutiveFailures': 0,
+      'gestureActionFailures': <String, int>{},
+      'gestureWaitCount': 0,
+      'gesturePrepareCount': 0,
+      'gestureNoMoveCount': 0,
+      'gestureLastScrollY': -1.0,
+      'gestureSkipPendingWait': false,
+      'gestureEngineFailures': 0,
+      'gestureActiveKey': '',
+      'gestureLastSafeUrl': _currentUrl,
+      'gestureResultUrl': _currentUrl,
+      'gestureRecoveryCount': 0,
+      'protectVisibleGestureFlow': startFromCurrentPage && !keywordFirstOn91,
       'originUrl': _currentUrl,
       'strict91KeywordMode': keywordFirstOn91,
       'strict91SearchUrl': strict91SearchUrl,
@@ -7339,8 +9189,17 @@ class _BrowserPageState extends State<BrowserPage>
       'strict91ActiveCardUrl': '',
       'strict91ReturnAttempts': 0,
       'strictXFeedMode': strictXFeedMode,
+      'xInlineFeedMode': xInlineFeedMode,
+      'xInlineActivationPending': false,
+      'xInlineReadyToLongPress': false,
       'strictXSearchUrl': strictXSearchUrl,
       'xVisitedStatusIds': <String>{},
+      'xEnteredDetailFromList': false,
+      'xReturnExpectedUrl': '',
+      'xReturnAttempts': 0,
+      'strictBaiduVideoMode': strictBaiduVideoMode,
+      'strictBaiduSearchUrl': strictBaiduSearchUrl,
+      'strictBaiduPage': 0,
     };
     final activeTask = _smartDownloadTask!;
     activeTask['deadlineTimer'] = Timer(
@@ -7426,10 +9285,15 @@ class _BrowserPageState extends State<BrowserPage>
         progressDetail: '正在解析当前页面媒体地址...',
       );
     }
+    _showSmartOperation(allowMixedMedia ? '正在识别屏幕中心的图片或视频' : '正在定位屏幕中心媒体');
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          '智能下载已开始：${mediaType == MediaType.image ? '图片' : '视频'} · ${keyword.isEmpty ? '按当前媒体从近到远' : keyword} · $targetCount 个',
+          '智能下载已开始：${allowMixedMedia
+              ? '图片+视频'
+              : mediaType == MediaType.image
+              ? '图片'
+              : '视频'} · ${keyword.isEmpty ? '按当前媒体从近到远' : keyword} · $targetCount 个',
         ),
       ),
     );
@@ -7439,6 +9303,9 @@ class _BrowserPageState extends State<BrowserPage>
     } else if (keywordFirstOnX) {
       _smartDownloadTask!['activeDiscoveryStrategy'] = 'x_media_search';
       _loadUrl(strictXSearchUrl);
+    } else if (strictBaiduVideoMode) {
+      _smartDownloadTask!['activeDiscoveryStrategy'] = 'baidu_video_search';
+      _loadUrl(strictBaiduSearchUrl);
     } else if (startFromCurrentPage) {
       unawaited(_advanceSmartDownload(_currentUrl));
     } else {
@@ -7482,10 +9349,82 @@ class _BrowserPageState extends State<BrowserPage>
           (task['keyword'] ?? '').toString().trim().isNotEmpty;
       final strict91Mode = task['strict91KeywordMode'] == true;
       final strictXFeedMode = task['strictXFeedMode'] == true;
+      final xInlineFeedMode = task['xInlineFeedMode'] == true;
+      final strictBaiduVideoMode = task['strictBaiduVideoMode'] == true;
       final strictXSearchUrl = (task['strictXSearchUrl'] ?? '').toString();
       final strict91SearchUrl = (task['strict91SearchUrl'] ?? '').toString();
+      final strictBaiduSearchUrl =
+          (task['strictBaiduSearchUrl'] ?? '').toString();
       final actualLoadedUrl =
           (await controller.getUrl())?.toString() ?? loadedUrl;
+      final actualHost = Uri.tryParse(actualLoadedUrl)?.host ?? '';
+      if (task['protectVisibleGestureFlow'] == true &&
+          actualHost.isNotEmpty &&
+          taskHost.isNotEmpty &&
+          !_sameSmartSite(actualHost, taskHost) &&
+          !_isLikelyDirectMediaUrl(actualLoadedUrl)) {
+        if (await _recoverVisibleGesturePage(task, '阻止站内兜底跳到其他网站')) {
+          return;
+        }
+      }
+
+      if (task['gestureMode'] == true && strict91Mode) {
+        // Tasks created before a hot restart may still carry the old generic
+        // gesture flag. Migrate them into the ordered 91 result-card flow.
+        task['gestureMode'] = false;
+        task['protectVisibleGestureFlow'] = false;
+        task['gestureDownloadPending'] = false;
+        task['phase'] = 'collecting_search_results';
+        if (strict91SearchUrl.isNotEmpty &&
+            !_isSame91TaskPage(strict91SearchUrl, actualLoadedUrl)) {
+          _loadUrl(strict91SearchUrl);
+          return;
+        }
+      }
+
+      final xReturnInProgress =
+          strictXFeedMode &&
+          (phase == 'x_search_returning' || phase == 'gesture_returning');
+      if (xInlineFeedMode &&
+          phase != 'x_search_returning' &&
+          task['xInlineActivationPending'] != true &&
+          task['xInlineReadyToLongPress'] != true &&
+          task['gestureDownloadPending'] != true &&
+          (_isXStatusDetailPage(actualLoadedUrl) ||
+              _isXMediaViewerPage(actualLoadedUrl))) {
+        task['matchStage'] = 'X 信息流直下模式 · 返回原列表';
+        _showSmartOperation('已阻止进入详情页，返回信息流继续下载');
+        await _returnFromXSmartCard(task);
+        return;
+      }
+      if (task['gestureMode'] == true && !xReturnInProgress) {
+        final keyword = (task['keyword'] ?? '').toString().trim();
+        final strictSearchStillLoading =
+            (strict91Mode &&
+                strict91SearchUrl.isNotEmpty &&
+                !_isSameLoadedDocument(strict91SearchUrl, actualLoadedUrl)) ||
+            (strictXFeedMode &&
+                strictXSearchUrl.isNotEmpty &&
+                !(Uri.tryParse(actualLoadedUrl)?.path.startsWith('/search') ??
+                    false)) ||
+            (strictBaiduVideoMode &&
+                phase == 'baidu_video_search_loading' &&
+                strictBaiduSearchUrl.isNotEmpty &&
+                !_isBaiduVideoResultsUrl(actualLoadedUrl));
+        if (strictBaiduVideoMode && strictSearchStillLoading) {
+          if (_isUnsafeBaiduSmartPage(actualLoadedUrl)) {
+            await _recoverStrictGesturePage(task, '搜索页加载异常');
+          }
+          return;
+        }
+        if (!strictSearchStillLoading) {
+          final handled = await _advanceVisibleSmartGesture(task);
+          if (handled) return;
+        }
+        // If a keyword is not represented on the current page, retain the
+        // existing site-search path as a compatibility fallback.
+        if (keyword.isEmpty) return;
+      }
 
       if (strictXFeedMode && phase == 'x_search_loading') {
         final actualUri = Uri.tryParse(actualLoadedUrl);
@@ -7505,11 +9444,14 @@ class _BrowserPageState extends State<BrowserPage>
 
       if (strictXFeedMode && phase == 'x_search_returning') {
         if (strictXSearchUrl.isEmpty) {
-          final returnUrl = (task['xReturnUrl'] ?? '').toString().trim();
+          final returnUrl =
+              (task['xReturnExpectedUrl'] ?? task['xReturnUrl'] ?? '')
+                  .toString()
+                  .trim();
           if (_isBlankHistoryUrl(actualLoadedUrl) ||
               !_isXPlatformPage(actualLoadedUrl) ||
               (returnUrl.startsWith('http') &&
-                  !_isSameLoadedDocument(returnUrl, actualLoadedUrl))) {
+                  !_isSameXSmartReturnPage(returnUrl, actualLoadedUrl))) {
             if (returnUrl.startsWith('http')) {
               _loadUrl(returnUrl);
             } else {
@@ -7517,6 +9459,17 @@ class _BrowserPageState extends State<BrowserPage>
             }
             return;
           }
+          final scrollY = (task['xReturnScrollY'] as num?)?.toDouble();
+          if (scrollY != null && scrollY > 0) {
+            try {
+              await controller.evaluateJavascript(
+                source:
+                    'window.scrollTo({top: $scrollY, left: 0, behavior: "auto"});',
+              );
+            } catch (_) {}
+          }
+          task['xReturnExpectedUrl'] = '';
+          task['xReturnAttempts'] = 0;
           task['phase'] = 'scanning_feed';
           _continueSmartFeed(task, madeProgress: false);
           return;
@@ -7527,13 +9480,11 @@ class _BrowserPageState extends State<BrowserPage>
             actualUri.pathSegments.isNotEmpty &&
             actualUri.pathSegments.first == 'search';
         if (!onSearchPage) {
-          if (await controller.canGoBack()) {
-            await controller.goBack();
-          } else {
-            _loadUrl(strictXSearchUrl);
-          }
+          _loadUrl(strictXSearchUrl);
           return;
         }
+        task['xReturnExpectedUrl'] = '';
+        task['xReturnAttempts'] = 0;
         task['phase'] = 'scanning_feed';
         _continueSmartFeed(task, madeProgress: false);
         return;
@@ -7838,6 +9789,7 @@ class _BrowserPageState extends State<BrowserPage>
           phase == 'visiting_clicked_card' ||
           phase == 'x_viewing_search_card' ||
           phase == 'scanning_feed') {
+        await _refreshMixedSmartMediaType(task);
         final candidatePreheated =
             phase == 'visiting_candidate' &&
             task.remove('nextMediaPreheated') == true;
@@ -8419,6 +10371,7 @@ class _BrowserPageState extends State<BrowserPage>
                 chosen.startsWith('http') && !_isElementBoundFeedPage(pageUrl);
             if (!canTrustUrlIdentity || seen.add(chosen)) {
               var smartFailureType = '';
+              _showSmartOperation('模拟长按当前视频，开始下载');
               ok = await _downloadMediaRobustly(
                 item: <String, dynamic>{
                   'title': title,
@@ -9003,12 +10956,17 @@ class _BrowserPageState extends State<BrowserPage>
             if (!selected) return {clicked:false, diagnostics};
             selected.el.removeAttribute('target');
             selected.el.scrollIntoView({behavior:'auto', block:'center', inline:'center'});
+            const selectedRect = selected.el.getBoundingClientRect();
             setTimeout(() => selected.el.click(), 180);
             return {
               clicked:true,
               key:selected.key,
               url:selected.url,
               label:selected.text || '最近的媒体卡片',
+              x: innerWidth > 0
+                ? (selectedRect.left + selectedRect.width / 2) / innerWidth : 0.5,
+              y: innerHeight > 0
+                ? (selectedRect.top + selectedRect.height / 2) / innerHeight : 0.5,
               diagnostics
             };
           })()
@@ -9030,6 +10988,13 @@ class _BrowserPageState extends State<BrowserPage>
       task['lastFeedMoveAt'] = DateTime.now();
       task['nextMediaLabel'] = (result['label'] ?? '媒体详情').toString();
       task['nextMediaStatus'] = '正在进入详情获取地址';
+      _showSmartOperation(
+        '点击候选媒体：${task['nextMediaLabel']}',
+        point: Offset(
+          (result['x'] as num?)?.toDouble() ?? 0.5,
+          (result['y'] as num?)?.toDouble() ?? 0.5,
+        ),
+      );
       debugPrint(
         '智能卡片诊断：准备点击 url=${result['url']}，key=$key，${result['diagnostics']}',
       );
@@ -9232,6 +11197,11 @@ class _BrowserPageState extends State<BrowserPage>
       return false;
     }
     try {
+      // Capture the list page before dispatching the click. X updates
+      // location.href synchronously for SPA navigation, so reading it after
+      // click can accidentally store the detail page as its own return URL.
+      final pageBeforeClick =
+          (await controller.getUrl())?.toString() ?? _currentUrl;
       final result = await controller.evaluateJavascript(
         source: '''
           (() => {
@@ -9258,6 +11228,8 @@ class _BrowserPageState extends State<BrowserPage>
             const clickable = mediaLink || media.closest('a[href*="/status/"]') ||
               statusLink || media.closest('[role="link"], [role="button"]') || media;
             try {
+              const returnUrl = location.href;
+              const returnScrollY = Math.max(0, window.scrollY || 0);
               document.querySelectorAll(
                 '[data-smart-seed-media], [data-smart-seed-scope], [data-app-smart-x-active]'
               ).forEach(el => {
@@ -9277,8 +11249,8 @@ class _BrowserPageState extends State<BrowserPage>
               return {
                 clicked: true,
                 statusId,
-                returnUrl: location.href,
-                returnScrollY: Math.max(0, window.scrollY || 0)
+                returnUrl,
+                returnScrollY
               };
             } catch (_) {
               return {clicked: false, statusId};
@@ -9287,7 +11259,9 @@ class _BrowserPageState extends State<BrowserPage>
         ''',
       );
       if (result is! Map || result['clicked'] != true) return false;
-      final returnUrl = (result['returnUrl'] ?? '').toString().trim();
+      final jsReturnUrl = (result['returnUrl'] ?? '').toString().trim();
+      final returnUrl =
+          pageBeforeClick.startsWith('http') ? pageBeforeClick : jsReturnUrl;
       if (returnUrl.startsWith('http') && _isXPlatformPage(returnUrl)) {
         task['xReturnUrl'] = returnUrl;
         task['xReturnScrollY'] = (result['returnScrollY'] as num?)?.toDouble();
@@ -9296,6 +11270,7 @@ class _BrowserPageState extends State<BrowserPage>
       if (statusId.isNotEmpty) {
         (task['xVisitedStatusIds'] as Set<String>).add(statusId);
       }
+      task['xEnteredDetailFromList'] = true;
       task['phase'] = 'x_viewing_search_card';
       task['xCurrentPostResolveRetries'] = 0;
       task['nextMediaStatus'] = '已打开匹配卡片，正在提取真实地址';
@@ -9316,39 +11291,53 @@ class _BrowserPageState extends State<BrowserPage>
     final controller = _controller;
     if (controller == null || !identical(_smartDownloadTask, task)) return;
     task['phase'] = 'x_search_returning';
+    task['xEnteredDetailFromList'] = false;
     task['xCurrentPostResolveRetries'] = 0;
-    final returnUrl = (task['xReturnUrl'] ?? '').toString().trim();
-    if (await controller.canGoBack()) {
-      await controller.goBack();
-      await Future<void>.delayed(const Duration(milliseconds: 220));
-    }
-    final current = (await controller.getUrl())?.toString() ?? '';
-    if (_isBlankHistoryUrl(current) ||
-        !_isXPlatformPage(current) ||
-        (returnUrl.startsWith('http') &&
-            !_isSameLoadedDocument(returnUrl, current))) {
-      final fallback =
-          returnUrl.startsWith('http')
-              ? returnUrl
-              : (task['strictXSearchUrl'] ?? '').toString().trim().isNotEmpty
-              ? (task['strictXSearchUrl'] ?? '').toString()
-              : (task['siteUrl'] ?? '').toString();
-      if (fallback.startsWith('http')) _loadUrl(fallback);
-    }
-    Future<void>.delayed(const Duration(milliseconds: 900), () async {
-      if (identical(_smartDownloadTask, task)) {
-        final scrollY = (task['xReturnScrollY'] as num?)?.toDouble();
-        if (scrollY != null && scrollY > 0 && _controller != null) {
-          try {
-            await _controller!.evaluateJavascript(
-              source:
-                  'window.scrollTo({top: $scrollY, left: 0, behavior: "auto"});',
-            );
-          } catch (_) {}
+    task['xInlineActivationPending'] = false;
+    task['xInlineReadyToLongPress'] = false;
+    final current = (await controller.getUrl())?.toString() ?? _currentUrl;
+    final recordedReturnUrl = (task['xReturnUrl'] ?? '').toString().trim();
+    final originUrl = (task['originUrl'] ?? '').toString().trim();
+    final strictSearchUrl = (task['strictXSearchUrl'] ?? '').toString().trim();
+    final siteUrl = (task['siteUrl'] ?? '').toString().trim();
+    bool isSafeListUrl(String value) =>
+        value.startsWith('http') &&
+        _isXPlatformPage(value) &&
+        !_isXStatusDetailPage(value) &&
+        !_isXMediaViewerPage(value);
+    final returnUrl = <String>[
+      recordedReturnUrl,
+      strictSearchUrl,
+      originUrl,
+      siteUrl,
+    ].firstWhere(isSafeListUrl, orElse: () => siteUrl);
+    if (!returnUrl.startsWith('http')) return;
+    task['xReturnUrl'] = returnUrl;
+    task['xReturnExpectedUrl'] = returnUrl;
+    task['xReturnAttempts'] = 0;
+    // X inserts transient about:blank entries into WebView history. Loading
+    // the remembered list URL directly is deterministic and preserves login
+    // cookies, while goBack() can oscillate between blank and the detail page.
+    if (!_isSameXSmartReturnPage(returnUrl, current)) {
+      _loadUrl(returnUrl);
+      Future<void>.delayed(const Duration(seconds: 2), () async {
+        if (!identical(_smartDownloadTask, task) ||
+            task['phase'] != 'x_search_returning') {
+          return;
         }
-        unawaited(_advanceSmartDownload(_currentUrl));
-      }
-    });
+        final actual = (await _controller?.getUrl())?.toString() ?? _currentUrl;
+        if (_isBlankHistoryUrl(actual) ||
+            !_isSameXSmartReturnPage(returnUrl, actual)) {
+          final attempts = ((task['xReturnAttempts'] as int?) ?? 0) + 1;
+          task['xReturnAttempts'] = attempts;
+          if (attempts <= 3) _loadUrl(returnUrl);
+        } else {
+          unawaited(_advanceSmartDownload(actual));
+        }
+      });
+      return;
+    }
+    unawaited(_advanceSmartDownload(current));
   }
 
   Future<void> _broadenXSmartSearch(Map<String, dynamic> task) async {
@@ -9446,6 +11435,10 @@ class _BrowserPageState extends State<BrowserPage>
       task['phase'] = 'opening_site';
       return;
     }
+    _showSmartOperation(
+      madeProgress ? '当前媒体已处理，向下寻找下一项' : '向下浏览，寻找可下载媒体',
+      point: const Offset(0.5, 0.78),
+    );
     unawaited(
       controller
           .evaluateJavascript(
@@ -9550,7 +11543,19 @@ class _BrowserPageState extends State<BrowserPage>
                         nextMedia.play().catch(() => {});
                       } catch (_) {}
                     }
-                    return 'next_x_post';
+                    const statusIdFor = article => {
+                      if (!article) return '';
+                      const link = article.matches?.('a[href*="/status/"]')
+                        ? article
+                        : article.querySelector('a[href*="/status/"]');
+                      const tail = String(link?.href || '').split('/status/')[1] || '';
+                      return (tail.match(/^[0-9]+/) || [''])[0];
+                    };
+                    return {
+                      action: 'next_x_post',
+                      statusIds: [statusIdFor(seedArticle), statusIdFor(nextArticle)]
+                        .filter(Boolean)
+                    };
                   }
                   if (!xImageMode) {
                     const videos = Array.from(document.querySelectorAll('video'))
@@ -9728,7 +11733,48 @@ class _BrowserPageState extends State<BrowserPage>
           .timeout(const Duration(seconds: 5))
           .then((result) async {
             if (!identical(_smartDownloadTask, task)) return;
-            final action = result?.toString() ?? '';
+            final action =
+                result is Map
+                    ? (result['action'] ?? '').toString()
+                    : result?.toString() ?? '';
+            if (result is Map) {
+              final rawStatusIds = result['statusIds'];
+              if (rawStatusIds is List) {
+                (task['xVisitedStatusIds'] as Set<String>).addAll(
+                  rawStatusIds
+                      .map((value) => value.toString().trim())
+                      .where((value) => value.isNotEmpty),
+                );
+              }
+            }
+            if (<String>{
+              'advance_x_immersive',
+              'next_x_video_node',
+              'scan_more_x_posts',
+              'true',
+            }.contains(action)) {
+              await Future<void>.delayed(const Duration(milliseconds: 620));
+              if (!identical(_smartDownloadTask, task)) return;
+              final snapshot = await _readSmartPageMotionSnapshot();
+              final previous = (task['feedMotionSnapshot'] ?? '').toString();
+              final stalled =
+                  snapshot.isNotEmpty &&
+                  previous.isNotEmpty &&
+                  snapshot == previous;
+              task['feedMotionSnapshot'] = snapshot;
+              task['feedStalledCount'] =
+                  stalled ? ((task['feedStalledCount'] as int?) ?? 0) + 1 : 0;
+              if ((task['feedStalledCount'] as int) >= 2 &&
+                  await _returnFromStalledSmartPage(
+                    task,
+                    '连续三次推进后页面和可见媒体均未变化',
+                  )) {
+                return;
+              }
+            } else {
+              task['feedStalledCount'] = 0;
+              task['feedMotionSnapshot'] = '';
+            }
             if (action == 'advance_x_immersive' ||
                 action == 'next_x_video_node') {
               await Future<void>.delayed(const Duration(milliseconds: 1100));
@@ -9745,7 +11791,23 @@ class _BrowserPageState extends State<BrowserPage>
                 task['mediaType'] == MediaType.video) {
               await Future<void>.delayed(const Duration(milliseconds: 280));
               if (!identical(_smartDownloadTask, task)) return;
-              if (await _openActiveXSmartCard(task)) return;
+              if ((task['keyword'] ?? '').toString().trim().isNotEmpty) {
+                if (await _openActiveXSmartCard(task)) return;
+              } else {
+                // Normal X feeds already expose a playable video element.
+                // Reuse the proven long-press path in place and never enter
+                // the post detail page, whose SPA history can contain blanks.
+                task['xCurrentPostResolveRetries'] = 0;
+                task['phase'] = 'scanning_feed';
+                task['matchStage'] = 'X 信息流直下模式 · 长按当前视频';
+                _showSmartOperation('已定位下一条视频，直接长按下载');
+                await _anchorSmartSeedForType(MediaType.video);
+                await Future<void>.delayed(const Duration(milliseconds: 420));
+                if (identical(_smartDownloadTask, task)) {
+                  await _advanceSmartDownload(_currentUrl);
+                }
+                return;
+              }
             }
             if (result?.toString() == 'x_page_end') {
               await _broadenXSmartSearch(task);
@@ -9999,6 +12061,7 @@ class _BrowserPageState extends State<BrowserPage>
           if (!_reserveSmartMediaName(task, url, pageUrl: pageUrl)) {
             return (ok: false, failureType: 'duplicate_name_in_smart_task');
           }
+          _showSmartOperation('模拟长按当前图片，开始下载');
           final ok = await _performBackgroundDownload(
             url,
             MediaType.image,
@@ -10710,8 +12773,12 @@ class _BrowserPageState extends State<BrowserPage>
     if (discoveryTaskId.isNotEmpty) {
       _removeDownloadTask(discoveryTaskId);
     }
-    _smartDownloadTask = null;
     if (mounted) {
+      setState(() {
+        _smartDownloadTask = null;
+        _smartOperationPoint = null;
+        _smartOperationLabel = '';
+      });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -10720,6 +12787,10 @@ class _BrowserPageState extends State<BrowserPage>
           duration: const Duration(seconds: 5),
         ),
       );
+    } else {
+      _smartDownloadTask = null;
+      _smartOperationPoint = null;
+      _smartOperationLabel = '';
     }
     if (restoreOrigin && mounted) {
       _loadUrl(originUrl);
@@ -14601,6 +16672,9 @@ class _BrowserPageState extends State<BrowserPage>
                               return NavigationActionPolicy.ALLOW;
                             },
                           ),
+                          if (_smartDownloadTask != null &&
+                              _smartOperationPoint != null)
+                            _buildSmartOperationOverlay(),
                         ],
                       ),
                     ),
@@ -14668,6 +16742,7 @@ class _BrowserPageState extends State<BrowserPage>
   Widget _buildSmartDownloadSummary(Map<String, dynamic> task) {
     final keyword = (task['keyword'] ?? '').toString().trim();
     final mediaType = task['mediaType'] as MediaType?;
+    final allowMixedMedia = task['allowMixedMedia'] == true;
     final target = (task['target'] as int?) ?? 0;
     final completed = ((task['success'] as int?) ?? 0).clamp(0, target);
     final remaining = max(0, target - completed);
@@ -14703,7 +16778,11 @@ class _BrowserPageState extends State<BrowserPage>
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            '智能${mediaType == MediaType.image ? '图片' : '视频'} · 关键词：${keyword.isEmpty ? '无（按当前媒体距离）' : keyword}',
+            '智能${allowMixedMedia
+                ? '图片+视频'
+                : mediaType == MediaType.image
+                ? '图片'
+                : '视频'} · 关键词：${keyword.isEmpty ? '无（按当前媒体距离）' : keyword}',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: const TextStyle(
@@ -14733,6 +16812,89 @@ class _BrowserPageState extends State<BrowserPage>
             ),
           ],
         ],
+      ),
+    );
+  }
+
+  Widget _buildSmartOperationOverlay() {
+    final point = _smartOperationPoint ?? const Offset(0.5, 0.5);
+    return Positioned.fill(
+      child: IgnorePointer(
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final left =
+                (point.dx * constraints.maxWidth - 22)
+                    .clamp(4.0, max(4.0, constraints.maxWidth - 48))
+                    .toDouble();
+            final top =
+                (point.dy * constraints.maxHeight - 22)
+                    .clamp(4.0, max(4.0, constraints.maxHeight - 94))
+                    .toDouble();
+            return Stack(
+              children: [
+                AnimatedPositioned(
+                  duration: const Duration(milliseconds: 280),
+                  curve: Curves.easeOutCubic,
+                  left: left,
+                  top: top,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        width: 44,
+                        height: 44,
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.82),
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: Colors.greenAccent,
+                            width: 2.5,
+                          ),
+                          boxShadow: const [
+                            BoxShadow(
+                              color: Colors.black45,
+                              blurRadius: 8,
+                              offset: Offset(0, 3),
+                            ),
+                          ],
+                        ),
+                        child: const Icon(
+                          Icons.touch_app,
+                          color: Colors.greenAccent,
+                          size: 27,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 230),
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.82),
+                            borderRadius: BorderRadius.circular(7),
+                          ),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 5,
+                            ),
+                            child: Text(
+                              _smartOperationLabel,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
       ),
     );
   }
@@ -16200,6 +18362,25 @@ class _BrowserPageState extends State<BrowserPage>
           _loadingProgress = 0.0;
         });
         debugPrint('页面加载完成(about:blank): 保持主界面');
+        final task = _smartDownloadTask;
+        if (task != null && task['siteProfile'] == 'x') {
+          final expected =
+              (task['xReturnExpectedUrl'] ?? task['xReturnUrl'] ?? '')
+                  .toString()
+                  .trim();
+          if (expected.startsWith('http') && _isXPlatformPage(expected)) {
+            final attempts = ((task['xReturnAttempts'] as int?) ?? 0) + 1;
+            task['xReturnAttempts'] = attempts;
+            if (attempts <= 3) {
+              task['phase'] = 'x_search_returning';
+              Future<void>.delayed(const Duration(milliseconds: 80), () {
+                if (identical(_smartDownloadTask, task)) {
+                  _loadUrl(expected);
+                }
+              });
+            }
+          }
+        }
         return;
       }
 
