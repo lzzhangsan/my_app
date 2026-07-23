@@ -2052,18 +2052,31 @@ class DatabaseService {
     final db = await database;
     await _ensureMediaItemsRecycleColumns(db);
     final nowMs = DateTime.now().millisecondsSinceEpoch;
-    final updated = await db.update(
-      'media_items',
-      {
-        'directory': 'recycle_bin',
-        'deleted_from_directory':
-            currentDirectory.isEmpty ? 'root' : currentDirectory,
-        'deleted_at': nowMs,
-        'updated_at': nowMs,
-      },
-      where: 'id = ?',
-      whereArgs: [itemId],
-    );
+    final updated = await db.transaction((txn) async {
+      final orderRows = await txn.rawQuery('''
+        SELECT
+          COUNT(sort_order) AS ordered_count,
+          MAX(sort_order) AS max_order
+        FROM media_items
+        WHERE directory = 'recycle_bin'
+        ''');
+      final orderedCount =
+          (orderRows.first['ordered_count'] as num?)?.toInt() ?? 0;
+      final maxOrder = (orderRows.first['max_order'] as num?)?.toInt() ?? -1;
+      return txn.update(
+        'media_items',
+        {
+          'directory': 'recycle_bin',
+          'deleted_from_directory':
+              currentDirectory.isEmpty ? 'root' : currentDirectory,
+          'deleted_at': nowMs,
+          'sort_order': orderedCount > 0 ? maxOrder + 1 : null,
+          'updated_at': nowMs,
+        },
+        where: 'id = ?',
+        whereArgs: [itemId],
+      );
+    });
     return updated > 0;
   }
 
@@ -2832,27 +2845,48 @@ class DatabaseService {
     });
   }
 
-  /// Moves one item and appends it to the persisted order of [directory].
+  /// Moves one item into [directory].
+  ///
+  /// A directory keeps the default folder/video/image grouping until the user
+  /// explicitly reorders it. If it already has a custom order, append the
+  /// moved item to that order; otherwise leave [sort_order] null.
   Future<void> moveMediaItemToDirectory(String id, String directory) async {
     if (id == 'recycle_bin' || id == 'favorites') {
       throw ArgumentError('System media folders cannot be moved');
     }
     final db = await database;
+    await _ensureMediaItemsRecycleColumns(db);
     await db.transaction((txn) async {
-      final maxRows = await txn.rawQuery(
+      final currentRows = await txn.query(
+        'media_items',
+        columns: ['directory'],
+        where: 'id = ?',
+        whereArgs: [id],
+        limit: 1,
+      );
+      final wasInRecycleBin =
+          currentRows.isNotEmpty &&
+          currentRows.first['directory']?.toString() == 'recycle_bin';
+      final orderRows = await txn.rawQuery(
         '''
-        SELECT MAX(sort_order) AS max_order
+        SELECT
+          COUNT(sort_order) AS ordered_count,
+          MAX(sort_order) AS max_order
         FROM media_items
         WHERE directory = ? AND id NOT IN ('recycle_bin', 'favorites')
         ''',
         [directory],
       );
-      final maxOrder = (maxRows.first['max_order'] as num?)?.toInt() ?? -1;
+      final orderedCount =
+          (orderRows.first['ordered_count'] as num?)?.toInt() ?? 0;
+      final maxOrder = (orderRows.first['max_order'] as num?)?.toInt() ?? -1;
       await txn.update(
         'media_items',
         {
           'directory': directory,
-          'sort_order': maxOrder + 1,
+          'sort_order': orderedCount > 0 ? maxOrder + 1 : null,
+          if (wasInRecycleBin) 'deleted_from_directory': null,
+          if (wasInRecycleBin) 'deleted_at': null,
           'updated_at': DateTime.now().millisecondsSinceEpoch,
         },
         where: 'id = ?',

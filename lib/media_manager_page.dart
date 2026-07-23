@@ -2342,11 +2342,6 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
         await _loadMediaItems();
         _invalidMediaRetryCounts.remove(item.id);
-        if (!isInRecycleBin && mounted) {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(const SnackBar(content: Text('已移入回收站')));
-        }
       } catch (e) {
         debugPrint('删除媒体项时出错: $e');
         if (mounted) {
@@ -2847,7 +2842,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     if (!mounted || !_isMoveMode) return;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
-        content: Text('移动模式：长按拖动；放到文件夹主体可移入，放到名称区可调整位置'),
+        content: Text('移动模式：按住后直接拖动；可调整位置、移入文件夹，或拖到底部收藏夹/回收站'),
         duration: Duration(seconds: 3),
       ),
     );
@@ -2869,7 +2864,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     required bool moveIntoFolder,
   }) async {
     if (!_isMoveMode || dragged.id == target.id) return;
-    if (_isSystemMediaFolder(dragged) || _isSystemMediaFolder(target)) return;
+    if (_isSystemMediaFolder(dragged)) return;
 
     if (moveIntoFolder && target.type == MediaType.folder) {
       if (dragged.type == MediaType.folder) {
@@ -2883,13 +2878,22 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         }
       }
       try {
-        await _databaseService.moveMediaItemToDirectory(dragged.id, target.id);
+        if (target.id == 'recycle_bin') {
+          await _databaseService.moveMediaItemToRecycleBin(dragged.id);
+        } else {
+          await _databaseService.moveMediaItemToDirectory(
+            dragged.id,
+            target.id,
+          );
+        }
         if (!mounted) return;
         await _loadMediaItems();
         if (!mounted) return;
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('已移入“${target.name}”')));
+        if (!_isSystemMediaFolder(target)) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('已移入“${target.name}”')));
+        }
       } catch (e) {
         if (!mounted) return;
         ScaffoldMessenger.of(
@@ -3272,7 +3276,6 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         }
 
         if (mounted) {
-          final deletedCount = _selectedItems.length;
           Navigator.of(context).pop();
           setState(() {
             _selectedItems.clear();
@@ -3287,12 +3290,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                 ),
               ),
             );
-          } else if (!isRecycleBin && deletedCount > 0) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('已将 $deletedCount 个选定项移入回收站')),
-            );
           }
-          await Future<void>.delayed(const Duration(milliseconds: 900));
           await _loadMediaItems();
         }
       } catch (e) {
@@ -3358,7 +3356,11 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     const double padding = _gridPadding;
     final bottomSafeInset = MediaQuery.viewPaddingOf(context).bottom;
     final bottomOverlayHeight =
-        _selectedItems.isNotEmpty ? 56.0 : (_isMultiSelectMode ? 72.0 : 0.0);
+        _isMoveMode && _currentDirectory != 'root'
+            ? 72.0
+            : (_selectedItems.isNotEmpty
+                ? 56.0
+                : (_isMultiSelectMode ? 72.0 : 0.0));
     final bottomContentPadding =
         padding + bottomSafeInset + bottomOverlayHeight + 12;
     final visibleItems = _visibleMediaItems;
@@ -3647,7 +3649,58 @@ class _MediaManagerPageState extends State<MediaManagerPage>
   }
 
   Widget _buildMovableMediaItem(MediaItem item, int index) {
-    if (_isSystemMediaFolder(item)) return _buildMediaItem(item, index);
+    if (_isSystemMediaFolder(item)) {
+      return DragTarget<MediaItem>(
+        onWillAcceptWithDetails:
+            (details) =>
+                details.data.id != item.id &&
+                !_isSystemMediaFolder(details.data),
+        onAcceptWithDetails: (details) {
+          unawaited(_handleMediaDrop(details.data, item, moveIntoFolder: true));
+        },
+        builder: (context, candidateData, rejectedData) {
+          final isTarget = candidateData.isNotEmpty;
+          return Stack(
+            fit: StackFit.expand,
+            children: [
+              _buildMediaItem(item, index),
+              if (isTarget)
+                IgnorePointer(
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: Colors.green.withValues(alpha: 0.18),
+                      border: Border.all(color: Colors.green, width: 3),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Center(
+                      child: DecoratedBox(
+                        decoration: const BoxDecoration(
+                          color: Colors.green,
+                          borderRadius: BorderRadius.all(Radius.circular(4)),
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 7,
+                            vertical: 4,
+                          ),
+                          child: Text(
+                            item.id == 'recycle_bin' ? '移入回收站' : '移入收藏夹',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          );
+        },
+      );
+    }
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -3713,7 +3766,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                   ),
               ],
             );
-            return LongPressDraggable<MediaItem>(
+            return Draggable<MediaItem>(
               data: item,
               maxSimultaneousDrags: 1,
               feedback: Material(
@@ -7250,6 +7303,34 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
   /// 底部操作栏：选中时显示计数+移动+删除+查重，未选中时仅显示查重按钮
   Widget _buildBottomActionBar() {
+    if (_isMoveMode) {
+      if (_currentDirectory == 'root') return const SizedBox.shrink();
+      return Material(
+        color: Theme.of(context).colorScheme.surface,
+        elevation: 8,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: Row(
+            children: [
+              _buildMoveModeSystemDropTarget(
+                id: 'favorites',
+                label: '收藏夹',
+                icon: Icons.favorite_outline,
+                color: Colors.pink,
+              ),
+              const SizedBox(width: 10),
+              _buildMoveModeSystemDropTarget(
+                id: 'recycle_bin',
+                label: '回收站',
+                icon: Icons.delete_outline,
+                color: Colors.red,
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     final hasSelection = _selectedItems.isNotEmpty;
     int imageCount = 0;
     int videoCount = 0;
@@ -7343,6 +7424,64 @@ class _MediaManagerPageState extends State<MediaManagerPage>
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildMoveModeSystemDropTarget({
+    required String id,
+    required String label,
+    required IconData icon,
+    required Color color,
+  }) {
+    return Expanded(
+      child: DragTarget<MediaItem>(
+        onWillAcceptWithDetails:
+            (details) =>
+                !_isSystemMediaFolder(details.data) &&
+                details.data.directory != id,
+        onAcceptWithDetails: (details) {
+          final target = MediaItem(
+            id: id,
+            name: label,
+            path: '',
+            type: MediaType.folder,
+            directory: 'root',
+            dateAdded: DateTime.fromMillisecondsSinceEpoch(0),
+          );
+          unawaited(
+            _handleMediaDrop(details.data, target, moveIntoFolder: true),
+          );
+        },
+        builder: (context, candidateData, rejectedData) {
+          final active = candidateData.isNotEmpty;
+          return AnimatedContainer(
+            duration: const Duration(milliseconds: 120),
+            height: 46,
+            decoration: BoxDecoration(
+              color:
+                  active
+                      ? color.withValues(alpha: 0.18)
+                      : color.withValues(alpha: 0.06),
+              border: Border.all(
+                color: active ? color : color.withValues(alpha: 0.55),
+                width: active ? 2.5 : 1,
+              ),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(icon, color: color),
+                const SizedBox(width: 7),
+                Text(
+                  active ? '松开移入$label' : '拖到$label',
+                  style: TextStyle(color: color, fontWeight: FontWeight.w600),
+                ),
+              ],
+            ),
+          );
+        },
       ),
     );
   }
