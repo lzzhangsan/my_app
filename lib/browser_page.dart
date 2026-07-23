@@ -27,6 +27,7 @@ import 'package:image/image.dart' as image_lib;
 import 'package:path/path.dart' as p;
 import 'package:encrypt/encrypt.dart' as enc;
 import 'package:video_thumbnail/video_thumbnail.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 import 'core/service_locator.dart';
 import 'services/database_service.dart';
@@ -9217,6 +9218,12 @@ class _BrowserPageState extends State<BrowserPage>
       'strictBaiduPage': 0,
     };
     final activeTask = _smartDownloadTask!;
+    try {
+      await WakelockPlus.enable();
+      activeTask['screenWakeLockEnabled'] = true;
+    } catch (e) {
+      debugPrint('智能下载保持屏幕常亮失败: $e');
+    }
     activeTask['deadlineTimer'] = Timer(
       deadlineAt.difference(DateTime.now()),
       () {
@@ -12787,6 +12794,13 @@ class _BrowserPageState extends State<BrowserPage>
     }
     if (discoveryTaskId.isNotEmpty) {
       _removeDownloadTask(discoveryTaskId);
+    }
+    if (task['screenWakeLockEnabled'] == true) {
+      try {
+        await WakelockPlus.disable();
+      } catch (e) {
+        debugPrint('智能下载释放屏幕常亮失败: $e');
+      }
     }
     if (mounted) {
       setState(() {
@@ -17138,6 +17152,21 @@ class _BrowserPageState extends State<BrowserPage>
 
   @override
   void dispose() {
+    final smartTask = _smartDownloadTask;
+    (smartTask?['deadlineTimer'] as Timer?)?.cancel();
+    (smartTask?['watchdogTimer'] as Timer?)?.cancel();
+    final discoveryToken = smartTask?['discoveryCancelToken'] as CancelToken?;
+    if (discoveryToken != null && !discoveryToken.isCancelled) {
+      discoveryToken.cancel('浏览器页面已关闭');
+    }
+    if (smartTask?['screenWakeLockEnabled'] == true) {
+      unawaited(
+        WakelockPlus.disable().catchError(
+          (Object e) => debugPrint('浏览器关闭时释放屏幕常亮失败: $e'),
+        ),
+      );
+    }
+    _smartDownloadTask = null;
     _urlController.dispose();
     _downloadTasksNotifier.dispose();
     _favoriteProgressSyncTimer?.cancel();
