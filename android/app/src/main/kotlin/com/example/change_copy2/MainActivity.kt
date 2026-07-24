@@ -289,35 +289,20 @@ class MainActivity: FlutterActivity() {
             extractor.setDataSource(inputPath)
             File(outputPath).delete()
             muxer = MediaMuxer(outputPath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-            val trackMap = mutableMapOf<Int, Int>()
+            // Reuse writeTrack (same PTS zero-base / monotonic logic as muxMp4 for X)
+            // so HLS TS→MP4 remux does not freeze on the first frame until scrubbed.
+            val trackPairs = mutableListOf<Pair<Int, Int>>()
             for (index in 0 until extractor.trackCount) {
                 val format = extractor.getTrackFormat(index)
                 val mime = format.getString(MediaFormat.KEY_MIME) ?: continue
                 if (!mime.startsWith("video/") && !mime.startsWith("audio/")) continue
-                trackMap[index] = muxer.addTrack(format)
-                extractor.selectTrack(index)
+                trackPairs.add(index to muxer.addTrack(format))
             }
-            if (trackMap.isEmpty()) throw IllegalStateException("No media track to remux")
+            if (trackPairs.isEmpty()) throw IllegalStateException("No media track to remux")
             muxer.start()
-            val buffer = ByteBuffer.allocateDirect(16 * 1024 * 1024)
-            val info = MediaCodec.BufferInfo()
-            while (true) {
-                val sourceTrack = extractor.sampleTrackIndex
-                if (sourceTrack < 0) break
-                val targetTrack = trackMap[sourceTrack]
-                if (targetTrack == null) {
-                    if (!extractor.advance()) break
-                    continue
-                }
-                buffer.clear()
-                val size = extractor.readSampleData(buffer, 0)
-                if (size < 0) break
-                info.offset = 0
-                info.size = size
-                info.presentationTimeUs = extractor.sampleTime
-                info.flags = extractor.sampleFlags
-                muxer.writeSampleData(targetTrack, buffer, info)
-                if (!extractor.advance()) break
+            for ((sourceTrack, targetTrack) in trackPairs) {
+                extractor.seekTo(0, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+                writeTrack(extractor, sourceTrack, muxer, targetTrack)
             }
             muxer.stop()
         } finally {
