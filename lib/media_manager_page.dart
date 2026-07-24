@@ -842,11 +842,15 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     );
   }
 
-  Future<void> _loadMediaItems({bool append = false}) async {
+  Future<void> _loadMediaItems({
+    bool append = false,
+    bool silent = false,
+  }) async {
     if (append && _isLoadingMore) return;
     if (append) {
       setState(() => _isLoadingMore = true);
-    } else {
+    } else if (!silent) {
+      // silent：拖动/移动后刷新时保持网格可见，避免整页 Loading 闪屏。
       setState(() => _isLoading = true);
     }
 
@@ -2887,8 +2891,14 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           );
         }
         if (!mounted) return;
-        await _loadMediaItems();
-        if (!mounted) return;
+        // 只本地移除，不触发整页 Loading / 网格重建闪屏。
+        setState(() {
+          _mediaItems.removeWhere((item) => item.id == dragged.id);
+          _imageCount =
+              _mediaItems.where((i) => i.type == MediaType.image).length;
+          _videoCount =
+              _mediaItems.where((i) => i.type == MediaType.video).length;
+        });
         if (!_isSystemMediaFolder(target)) {
           ScaffoldMessenger.of(
             context,
@@ -2924,7 +2934,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         ordered.map((item) => item.id).toList(),
       );
     } catch (e) {
-      await _loadMediaItems();
+      await _loadMediaItems(silent: true);
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
