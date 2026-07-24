@@ -34,7 +34,14 @@ import 'app_route_observer.dart';
 class DirectoryPage extends StatefulWidget {
   final Function(String) onDocumentOpen;
 
-  DirectoryPage({Key? key, required this.onDocumentOpen}) : super(key: key);
+  /// 从浏览器等路由 push 进入时为 true：根目录显示返回按钮，`Navigator.pop` 回到上一页。
+  final bool showRouteBackButton;
+
+  DirectoryPage({
+    Key? key,
+    required this.onDocumentOpen,
+    this.showRouteBackButton = false,
+  }) : super(key: key);
 
   @override
   _DirectoryPageState createState() => _DirectoryPageState();
@@ -3137,6 +3144,13 @@ class _DirectoryPageState extends State<DirectoryPage>
                   onPressed: () {
                     unawaited(_goBack());
                   },
+                  tooltip: '返回上级',
+                )
+              else if (widget.showRouteBackButton)
+                IconButton(
+                  icon: Icon(Icons.arrow_back, color: ic, shadows: sh),
+                  onPressed: () => Navigator.of(context).pop(),
+                  tooltip: '返回浏览器',
                 )
               else
                 const SizedBox(width: 8),

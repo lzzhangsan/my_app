@@ -37,6 +37,8 @@ import 'models/media_item.dart';
 import 'models/media_type.dart';
 import 'media_manager_page.dart';
 import 'media_preview_page.dart';
+import 'directory_page.dart';
+import 'document_editor_page.dart';
 import 'widgets/safe_modal_sheet_body.dart';
 import 'services/logger.dart';
 import 'services/network_service.dart';
@@ -3260,6 +3262,30 @@ class _BrowserPageState extends State<BrowserPage>
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => const MediaManagerPage(showRouteBackButton: true),
+      ),
+    );
+  }
+
+  void _openDirectoryPage() {
+    if (!mounted) return;
+    Logger.log('[BrowserPage] 目录页按钮被点击');
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder:
+            (context) => DirectoryPage(
+              showRouteBackButton: true,
+              onDocumentOpen: (documentName) {
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder:
+                        (_) => DocumentEditorPage(
+                          documentName: documentName,
+                          onSave: (_) {},
+                        ),
+                  ),
+                );
+              },
+            ),
       ),
     );
   }
@@ -16403,8 +16429,8 @@ class _BrowserPageState extends State<BrowserPage>
         key: _scaffoldKey,
         appBar: AppBar(
           titleSpacing: 0,
-          title: _showHomePage ? const Text('浏览器') : const SizedBox.shrink(),
-          leadingWidth: _showHomePage ? 56 : null,
+          automaticallyImplyLeading: _showHomePage,
+          leadingWidth: _showHomePage ? 56 : 0,
           leading:
               _showHomePage
                   ? IconButton(
@@ -16412,113 +16438,170 @@ class _BrowserPageState extends State<BrowserPage>
                     onPressed: _showSharedFavoriteVideosSheet,
                     tooltip: '收藏视频',
                   )
-                  : IconButton(
-                    icon: const Icon(Icons.home),
-                    onPressed: _goToHomePage,
-                    tooltip: '回到主页',
-                  ),
-          centerTitle: true,
-          actions: [
-            // 添加媒体库按钮到actions列表的第一个位置
-            if (!_showHomePage)
-              IconButton(
-                icon: const Icon(Icons.photo_library),
-                onPressed: () {
-                  Logger.log('[BrowserPage] 媒体库按钮被点击');
-                  Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder:
-                          (context) =>
-                              const MediaManagerPage(showRouteBackButton: true),
+                  : null,
+          centerTitle: _showHomePage,
+          title: _showHomePage ? const Text('浏览器') : const SizedBox.shrink(),
+          flexibleSpace:
+              _showHomePage
+                  ? null
+                  : SafeArea(
+                    bottom: false,
+                    child: Builder(
+                      builder: (context) {
+                        final iconColor =
+                            Theme.of(context).appBarTheme.foregroundColor ??
+                            Theme.of(context).colorScheme.onSurface;
+                        Widget slot({
+                          required String tooltip,
+                          required Widget icon,
+                          required VoidCallback? onPressed,
+                          VoidCallback? onLongPress,
+                          String? semanticsLabel,
+                        }) {
+                          return Expanded(
+                            child: Tooltip(
+                              message: tooltip,
+                              child: Material(
+                                type: MaterialType.transparency,
+                                child: InkWell(
+                                  onTap: onPressed,
+                                  onLongPress: onLongPress,
+                                  child: SizedBox(
+                                    height: kToolbarHeight,
+                                    width: double.infinity,
+                                    child: Center(
+                                      child: IconTheme(
+                                        data: IconThemeData(color: iconColor),
+                                        child:
+                                            semanticsLabel == null
+                                                ? icon
+                                                : Semantics(
+                                                  button: true,
+                                                  label: semanticsLabel,
+                                                  child: icon,
+                                                ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          );
+                        }
+
+                        return Row(
+                          children: [
+                            slot(
+                              tooltip: '回到主页',
+                              icon: const Icon(Icons.home),
+                              onPressed: _goToHomePage,
+                            ),
+                            slot(
+                              tooltip: '目录',
+                              icon: const Icon(Icons.folder),
+                              onPressed: _openDirectoryPage,
+                            ),
+                            slot(
+                              tooltip: '媒体库',
+                              icon: const Icon(Icons.photo_library),
+                              onPressed: () {
+                                Logger.log('[BrowserPage] 媒体库按钮被点击');
+                                Navigator.of(context).push(
+                                  MaterialPageRoute(
+                                    builder:
+                                        (context) => const MediaManagerPage(
+                                          showRouteBackButton: true,
+                                        ),
+                                  ),
+                                );
+                              },
+                            ),
+                            slot(
+                              tooltip: '书签',
+                              semanticsLabel: '书签；长按智能下载当前媒体',
+                              icon: const Icon(Icons.bookmark),
+                              onPressed: _showBookmarks,
+                              onLongPress: _showCurrentMediaSmartDownload,
+                            ),
+                            slot(
+                              tooltip: '复制当前网址',
+                              icon: const Icon(Icons.content_copy),
+                              onPressed: () async {
+                                String? realTimeUrl;
+                                if (_controller != null) {
+                                  final uri = await _controller!.getUrl();
+                                  realTimeUrl = uri?.toString();
+                                }
+
+                                final url =
+                                    (realTimeUrl != null &&
+                                            realTimeUrl.isNotEmpty)
+                                        ? realTimeUrl
+                                        : (_urlController.text.trim().isNotEmpty
+                                            ? _urlController.text.trim()
+                                            : _currentUrl);
+
+                                if (url.isNotEmpty) {
+                                  await Clipboard.setData(
+                                    ClipboardData(text: url),
+                                  );
+                                  if (mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                        content: Text('当前网址已复制到剪贴板'),
+                                        duration: Duration(seconds: 1),
+                                      ),
+                                    );
+                                  }
+                                }
+                              },
+                            ),
+                            slot(
+                              tooltip: '添加书签',
+                              icon: const Icon(Icons.bookmark_add),
+                              onPressed: () => _addBookmark(_currentUrl),
+                            ),
+                            slot(
+                              tooltip: '退出网页',
+                              icon: const Icon(Icons.close, color: Colors.red),
+                              onPressed: _exitWebPage,
+                            ),
+                            slot(
+                              tooltip: '历史记录',
+                              icon: const Icon(Icons.history),
+                              onPressed: _showHistory,
+                            ),
+                          ],
+                        );
+                      },
                     ),
-                  );
-                },
-                tooltip: '媒体库',
-              ),
-            if (_isBrowsingWebPage && _shouldKeepWebPageState && _showHomePage)
-              IconButton(
-                icon: const Icon(Icons.arrow_right_alt),
-                onPressed: _restoreWebPage,
-                tooltip: '返回上次浏览的网页',
-              ),
-            if (_showHomePage)
-              IconButton(
-                icon: const Icon(Icons.bookmark),
-                onPressed: _showBookmarks,
-                tooltip: '显示书签',
-              )
-            else
-              Semantics(
-                button: true,
-                label: '书签；长按智能下载当前媒体',
-                child: InkResponse(
-                  onTap: _showBookmarks,
-                  onLongPress: _showCurrentMediaSmartDownload,
-                  radius: 24,
-                  child: const SizedBox(
-                    width: 48,
-                    height: 48,
-                    child: Icon(Icons.bookmark),
                   ),
-                ),
-              ),
-            if (!_showHomePage)
-              IconButton(
-                icon: const Icon(Icons.content_copy),
-                onPressed: () async {
-                  // 优先从 WebView 控制器获取最实时的 URL，以应对单页面应用或复杂跳转
-                  String? realTimeUrl;
-                  if (_controller != null) {
-                    final uri = await _controller!.getUrl();
-                    realTimeUrl = uri?.toString();
-                  }
-
-                  final url =
-                      (realTimeUrl != null && realTimeUrl.isNotEmpty)
-                          ? realTimeUrl
-                          : (_urlController.text.trim().isNotEmpty
-                              ? _urlController.text.trim()
-                              : _currentUrl);
-
-                  if (url.isNotEmpty) {
-                    await Clipboard.setData(ClipboardData(text: url));
-                    if (mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('当前网址已复制到剪贴板'),
-                          duration: Duration(seconds: 1),
-                        ),
-                      );
-                    }
-                  }
-                },
-                tooltip: '复制当前网址',
-              ),
-            if (!_showHomePage)
-              IconButton(
-                icon: const Icon(Icons.bookmark_add),
-                onPressed: () => _addBookmark(_currentUrl),
-                tooltip: '添加书签',
-              ),
-            if (_showHomePage) ...[
-              IconButton(
-                icon: const Icon(Icons.import_export),
-                onPressed: _showExportImportMenu,
-                tooltip: '导入/导出数据',
-              ),
-            ],
-            if (!_showHomePage)
-              IconButton(
-                icon: const Icon(Icons.close, color: Colors.red),
-                onPressed: _exitWebPage,
-                tooltip: '退出网页',
-              ),
-            IconButton(
-              icon: const Icon(Icons.history),
-              onPressed: _showHistory,
-              tooltip: '历史记录',
-            ),
-          ],
+          actions:
+              _showHomePage
+                  ? [
+                    if (_isBrowsingWebPage && _shouldKeepWebPageState)
+                      IconButton(
+                        icon: const Icon(Icons.arrow_right_alt),
+                        onPressed: _restoreWebPage,
+                        tooltip: '返回上次浏览的网页',
+                      ),
+                    IconButton(
+                      icon: const Icon(Icons.bookmark),
+                      onPressed: _showBookmarks,
+                      tooltip: '显示书签',
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.import_export),
+                      onPressed: _showExportImportMenu,
+                      tooltip: '导入/导出数据',
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.history),
+                      onPressed: _showHistory,
+                      tooltip: '历史记录',
+                    ),
+                  ]
+                  : const <Widget>[],
         ),
         body: LayoutBuilder(
           builder: (context, constraints) {
