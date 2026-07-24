@@ -5535,11 +5535,12 @@ class _BrowserPageState extends State<BrowserPage>
       if (mediaType == 'video' && !isBase64 && !isStreamReference) {
         if (_longPressVideoDownloadInProgress) {
           if (isSmartGesture) {
-            final task = _smartDownloadTask;
-            if (task != null) {
-              task['lastGestureFailureType'] = 'already_downloading';
-            }
-            await _completeSmartGestureDownload(false);
+            // 同一次智能长按常会连发多条 media 消息；绝不能因此清掉 pending，
+            // 否则会一边下载一边继续空滚，91 详情页尤其明显。
+            debugPrint(
+              'Smart gesture: ignore duplicate media while download in progress',
+            );
+            return;
           } else if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
@@ -6266,8 +6267,26 @@ class _BrowserPageState extends State<BrowserPage>
 
   void _loadUrl(String url) {
     String processedUrl = url;
-    if (!url.startsWith('http://') && !url.startsWith('https://'))
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
       processedUrl = 'https://$url';
+    }
+    // 智能下载期间禁止任何跨站页面跳转（含程序主动 _loadUrl，不只靠 WebView 拦截）。
+    if (_smartDownloadTask != null &&
+        !_isWithinSmartDownloadSite(processedUrl)) {
+      debugPrint('智能下载禁止跨站导航: $processedUrl');
+      final task = _smartDownloadTask!;
+      task['matchStage'] = '已阻止跨站跳转';
+      _showSmartOperation('已阻止跳出当前网站，继续在本站内下载');
+      final id = (task['discoveryTaskId'] ?? '').toString();
+      if (id.isNotEmpty) {
+        _updateDownloadTask(
+          id,
+          progressDetail:
+              '已阻止外部网站跳转，继续在当前网站内寻找 · 已保存 ${task['success']}/${task['target']}',
+        );
+      }
+      return;
+    }
     final uri = Uri.tryParse(processedUrl);
     if (uri != null) {
       _controller?.loadUrl(urlRequest: URLRequest(url: WebUri(processedUrl)));
@@ -6295,15 +6314,75 @@ class _BrowserPageState extends State<BrowserPage>
     if (task == null) return true;
     final uri = Uri.tryParse(url);
     if (uri == null || !(uri.scheme == 'http' || uri.scheme == 'https')) {
+      // about:blank / data / blob 等非网页导航不视为跨站。
       return true;
     }
     final targetHost = uri.host.toLowerCase().replaceFirst(
       RegExp(r'^www\.'),
       '',
     );
-    final siteHost = (task['host'] ?? '').toString().toLowerCase();
+    final siteHost =
+        (task['host'] ?? '')
+            .toString()
+            .toLowerCase()
+            .replaceFirst(RegExp(r'^www\.'), '');
     if (targetHost.isEmpty || siteHost.isEmpty) return false;
-    return targetHost == siteHost || targetHost.endsWith('.$siteHost');
+    // 用站点根域判断，避免 www/m 子域误伤；同时禁止完全不同的外站。
+    return _sameSmartSite(targetHost, siteHost);
+  }
+
+  /// 智能下载中若已落到外站，强制拉回本站入口。
+  Future<bool> _recoverSmartDownloadIfOffsite(
+    Map<String, dynamic> task,
+    String actualLoadedUrl, {
+    String reason = '检测到已离开当前网站',
+  }) async {
+    final taskHost = (task['host'] ?? '').toString();
+    final actualHost =
+        Uri.tryParse(actualLoadedUrl)?.host.toLowerCase().replaceFirst(
+              RegExp(r'^www\.'),
+              '',
+            ) ??
+        '';
+    if (actualHost.isEmpty ||
+        taskHost.isEmpty ||
+        _sameSmartSite(actualHost, taskHost)) {
+      return false;
+    }
+    final siteUrl = (task['siteUrl'] ?? '').toString();
+    final originUrl = (task['originUrl'] ?? '').toString();
+    final strict91 = (task['strict91SearchUrl'] ?? '').toString();
+    final strictX = (task['strictXSearchUrl'] ?? '').toString();
+    final strictBaidu = (task['strictBaiduSearchUrl'] ?? '').toString();
+    var recovery = '';
+    if (strict91.isNotEmpty) {
+      recovery = strict91;
+    } else if (strictX.isNotEmpty) {
+      recovery = strictX;
+    } else if (strictBaidu.isNotEmpty) {
+      recovery = strictBaidu;
+    } else if (originUrl.startsWith('http') &&
+        _isWithinSmartDownloadSite(originUrl)) {
+      recovery = originUrl;
+    } else if (siteUrl.startsWith('http')) {
+      recovery = siteUrl;
+    }
+    task['matchStage'] = reason;
+    _showSmartOperation('$reason，已拉回本站继续');
+    debugPrint('Smart offsite recovery: from=$actualLoadedUrl to=$recovery');
+    if (recovery.isNotEmpty) {
+      // 临时清任务拦截会导致递归；recovery 已保证同站，直接 load。
+      final processed =
+          recovery.startsWith('http') ? recovery : 'https://$recovery';
+      _controller?.loadUrl(urlRequest: URLRequest(url: WebUri(processed)));
+      if (mounted) {
+        setState(() {
+          _currentUrl = processed;
+          _urlController.text = processed;
+        });
+      }
+    }
+    return true;
   }
 
   Future<void> _goToHomePage() async {
@@ -7303,11 +7382,48 @@ class _BrowserPageState extends State<BrowserPage>
   bool _smartUsesLegacyPriorityPipeline(String siteProfile) =>
       siteProfile == 'x' || siteProfile == '91';
 
-  /// 候选用尽时：X/91 继续扩大探索；其他站按 V1「下满/用尽即停」。
+  /// 91 关键词搜索分页 URL（第 1 页无页码后缀）。
+  String _strict91SearchUrlForPage(String origin, String keyword, int page) {
+    final encoded = Uri.encodeComponent(keyword.trim());
+    if (page <= 1) return '$origin/search/$encoded/';
+    return '$origin/search/$encoded/$page/';
+  }
+
+  /// 关键词模式：仅翻搜索结果页，禁止 broaden / 乱逛。
+  bool _tryAdvance91KeywordSearchPage(Map<String, dynamic> task) {
+    if (task['strict91KeywordMode'] != true) return false;
+    final keyword = (task['keyword'] ?? '').toString().trim();
+    if (keyword.isEmpty) return false;
+    final siteUri = Uri.tryParse((task['siteUrl'] ?? '').toString());
+    if (siteUri == null || siteUri.origin.isEmpty) return false;
+    final page = ((task['strict91SearchPage'] as int?) ?? 1) + 1;
+    if (page > 12) return false;
+    task['strict91SearchPage'] = page;
+    final nextUrl = _strict91SearchUrlForPage(siteUri.origin, keyword, page);
+    task['strict91SearchUrl'] = nextUrl;
+    task['phase'] = 'collecting_search_results';
+    task['candidates'] = <Map<String, String>>[];
+    task['index'] = 0;
+    task['strict91QueueReady'] = false;
+    task['strict91ActiveCardUrl'] = '';
+    task['matchStage'] = '关键词搜索 · 第 $page 页';
+    _showSmartOperation('当前页已试完，加载关键词第 $page 页');
+    _loadUrl(nextUrl);
+    return true;
+  }
+
+  /// 候选用尽时：X/91 继续扩大探索；91 关键词模式只翻搜索页。
   void _onSmartCandidatesExhausted(
     Map<String, dynamic> task,
     String reason,
   ) {
+    if (task['strict91KeywordMode'] == true) {
+      if (_tryAdvance91KeywordSearchPage(task)) return;
+      unawaited(
+        _finishSmartDownload('关键词搜索结果已尝试完毕（$reason）'),
+      );
+      return;
+    }
     if (task['allowBroadenDiscovery'] == true) {
       _broadenSmartDiscovery(task, reason);
       return;
@@ -7458,7 +7574,12 @@ class _BrowserPageState extends State<BrowserPage>
       final updated = DateTime.tryParse((r['updatedAt'] ?? '').toString());
       final ageBoost =
           updated == null ? 0 : updated.millisecondsSinceEpoch ~/ 1000000;
-      return successes * 100000000 + ageBoost;
+      // 用户主动示范教出来的经验享有最高优先级。
+      final demoBoost =
+          (r['source'] == 'user_demo' || r['demoTaught'] == true)
+              ? 500000000000
+              : 0;
+      return demoBoost + successes * 100000000 + ageBoost;
     }
 
     for (final entry in _smartDemoRecipes.entries) {
@@ -7474,7 +7595,11 @@ class _BrowserPageState extends State<BrowserPage>
         bestAny = entry;
       }
     }
-    return (bestExact ?? bestAny)?.key;
+    if (bestExact != null) return bestExact.key;
+    if (bestAny == null) return null;
+    final anySuccess = (bestAny.value['successes'] as int?) ?? 0;
+    // 跨页型回退要够强，避免信息流经验误伤搜索页。
+    return anySuccess >= 3 ? bestAny.key : null;
   }
 
   List<MapEntry<String, Map<String, dynamic>>> _sortedSmartStrategies({
@@ -7488,6 +7613,11 @@ class _BrowserPageState extends State<BrowserPage>
       final aSame = pref.isNotEmpty && ha == pref;
       final bSame = pref.isNotEmpty && hb == pref;
       if (aSame != bSame) return aSame ? -1 : 1;
+      final aDemo =
+          a.value['source'] == 'user_demo' || a.value['demoTaught'] == true;
+      final bDemo =
+          b.value['source'] == 'user_demo' || b.value['demoTaught'] == true;
+      if (aDemo != bDemo) return aDemo ? -1 : 1;
       final sa = (a.value['successes'] as int?) ?? 0;
       final sb = (b.value['successes'] as int?) ?? 0;
       if (sa != sb) return sb.compareTo(sa);
@@ -7583,10 +7713,17 @@ class _BrowserPageState extends State<BrowserPage>
     var value = _normalizeSmartAcquisition(acquisition);
     if (value.isEmpty) return;
     final siteProfile = (task['siteProfile'] ?? '').toString();
-    // X/91 永远落到原智能，禁止被跨站「直链」策略带偏。
-    if (_smartUsesLegacyPriorityPipeline(siteProfile)) {
-      if (value == 'sniff' || value == 'site_address') {
+    // X/91：默认保住原智能；仅在备用尝试或已学到直链/站内地址时允许锁定这些方式。
+    if (_smartUsesLegacyPriorityPipeline(siteProfile) &&
+        (value == 'sniff' || value == 'site_address')) {
+      final preferred = (task['preferredAcquisition'] ?? '').toString();
+      final allowAlt = task['allowLegacyAlternateAcquire'] == true;
+      if (!allowAlt &&
+          preferred != 'sniff' &&
+          preferred != 'site_address') {
         value = siteProfile == 'x' ? 'legacy_x' : 'legacy_91';
+      } else {
+        task['allowLegacyAlternateAcquire'] = true;
       }
     }
     final previous = (task['lockedAcquisition'] ?? '').toString();
@@ -7613,12 +7750,9 @@ class _BrowserPageState extends State<BrowserPage>
     task['lockedFailStreak'] = 0;
     task['sniffEmptyScrolls'] = 0;
     if (_smartUsesLegacyPriorityPipeline(siteProfile)) {
+      // X/91：只复位获取偏好，绝不改写 gestureMode / FSM，避免打乱原可靠管线。
       final acq = siteProfile == 'x' ? 'legacy_x' : 'legacy_91';
       _applyAcquisitionLockPrefs(task, acq);
-      final startedFromCurrent = task['startedFromCurrentPage'] == true;
-      final keywordFirst91 = task['strict91KeywordMode'] == true;
-      task['gestureMode'] = startedFromCurrent && !keywordFirst91;
-      task['protectVisibleGestureFlow'] = task['gestureMode'] == true;
       task['preferSniffFirst'] = false;
       task['skipSniffAcquire'] = true;
     } else {
@@ -7695,6 +7829,79 @@ class _BrowserPageState extends State<BrowserPage>
     });
   }
 
+  Map<String, dynamic> _builtInPreferredRecipe({
+    required String host,
+    required String pageType,
+    required String siteProfile,
+  }) {
+    if (_smartUsesLegacyPriorityPipeline(siteProfile)) {
+      final acquisition = siteProfile == 'x' ? 'legacy_x' : 'legacy_91';
+      final recipe = <String, dynamic>{
+        'host': host,
+        'pageType': pageType,
+        'acquisition': acquisition,
+        'traversal': 'nearby',
+        'scrollBetween': false,
+        'successes': 0,
+        'updatedAt': DateTime.now().toIso8601String(),
+        'nameCustom': true,
+      };
+      recipe['name'] =
+          siteProfile == 'x' ? 'X·原智能（已验证）' : '91·原智能（已验证）';
+      return recipe;
+    }
+    final recipe = <String, dynamic>{
+      'host': host,
+      'pageType': pageType,
+      'acquisition': 'sniff',
+      'traversal': pageType == 'search' ? 'list' : 'nearby',
+      'scrollBetween': false,
+      'successes': 0,
+      'updatedAt': DateTime.now().toIso8601String(),
+      'nameCustom': true,
+    };
+    recipe['name'] =
+        '${_smartStrategyDisplaySite(host)}·默认直链优先';
+    return recipe;
+  }
+
+  /// 自动方式用尽且数量未满时，请求用户示范一次；学会后继续自动。
+  Future<bool> _tryEnterSmartDemoAfterExhaustion(
+    Map<String, dynamic> task,
+    String reason,
+  ) async {
+    if (!identical(_smartDownloadTask, task)) return false;
+    if (task['allowAutoDemo'] != true) return false;
+    if (task['autoDemoRequested'] == true) return false;
+    if (task['demoPhase'] == 'demo') return false;
+    final success = (task['success'] as int?) ?? 0;
+    final target = (task['target'] as int?) ?? 0;
+    if (success >= target) return false;
+
+    task['autoDemoRequested'] = true;
+    task['demoPhase'] = 'demo';
+    // 冷启动多示范 1 次以便推断「详情/滚动」；已有成功时再示范 1 次即可。
+    final needExtra = success <= 0 ? 2 : 1;
+    task['demoRequired'] = success + needExtra;
+    task['demoCompleted'] = success;
+    task['gestureMode'] = false;
+    task['protectVisibleGestureFlow'] = false;
+    task['lockedAcquisition'] = '';
+    task['lockedFailStreak'] = 0;
+    task['skipSniffAcquire'] = true;
+    task['preferSniffFirst'] = false;
+    task['allowLegacyAlternateAcquire'] = false;
+    task['matchStage'] = '请示范 · 自动尝试已尽力';
+    _showSmartOperation(
+      needExtra > 1
+          ? '自动方式暂时不够用（$reason）。请手动长按成功下载 $needExtra 个，学会后继续自动'
+          : '自动方式暂时不够用（$reason）。请手动长按成功下载 1 个，学会后继续自动完成剩余',
+    );
+    _updateSmartDiscoveryProgress(task, 'demo_after_exhaustion');
+    debugPrint('Smart demo requested after auto exhaustion: $reason');
+    return true;
+  }
+
   void _bindSmartStrategyToTask(
     Map<String, dynamic> task,
     Map<String, dynamic> recipe, {
@@ -7707,10 +7914,10 @@ class _BrowserPageState extends State<BrowserPage>
       (bound['acquisition'] ?? 'longpress_inplace').toString(),
     );
     final siteProfile = (task['siteProfile'] ?? '').toString();
+    // 同站已验证经验（含示范学会的直链）应原样优先；勿强行改回原智能。
     if (_smartUsesLegacyPriorityPipeline(siteProfile) &&
         (acquisition == 'sniff' || acquisition == 'site_address')) {
-      acquisition = siteProfile == 'x' ? 'legacy_x' : 'legacy_91';
-      bound['acquisition'] = acquisition;
+      task['allowLegacyAlternateAcquire'] = true;
     }
     task['learnedRecipe'] = bound;
     task['preferredStrategyKey'] = strategyKey;
@@ -7718,11 +7925,24 @@ class _BrowserPageState extends State<BrowserPage>
     task['strategyManualPick'] = manualPick;
     task['strategyLayer'] = 'preferred';
     task['strategyFailStreak'] = 0;
+    // 把可执行字段真正应用到任务（不再只当标签）。
+    final traversal = (bound['traversal'] ?? '').toString();
+    if (traversal == 'list' || traversal == 'nearby' || traversal == 'nearby_scroll') {
+      task['smartRunMode'] = traversal == 'list' ? 'list' : 'nearby';
+      task['preferScrollBetween'] = traversal == 'nearby_scroll' ||
+          bound['scrollBetween'] == true;
+    } else if (bound['scrollBetween'] == true) {
+      task['preferScrollBetween'] = true;
+    }
     // 策略只决定「优先尝试」；真正锁定发生在本任务首次成功之后。
     _applyAcquisitionLockPrefs(task, acquisition);
     task['lockedAcquisition'] = '';
     task['lockedFailStreak'] = 0;
-    task['matchStage'] = '策略优先 · ${bound['name']}';
+    final isBuiltin = strategyKey.startsWith('__builtin__');
+    task['matchStage'] =
+        isBuiltin
+            ? '内置默认 · ${bound['name']}'
+            : '成功经验优先 · ${bound['name']}';
   }
 
   void _noteSmartTaskAcquisitionFailure(Map<String, dynamic> task) {
@@ -7758,15 +7978,26 @@ class _BrowserPageState extends State<BrowserPage>
     task['strategyFailStreak'] = streak;
     final layer = (task['strategyLayer'] ?? 'preferred').toString();
     final siteProfile = (task['siteProfile'] ?? '').toString();
+    // 91 关键词模式：不升层到嗅探/扩大探索，只在搜索页按卡片顺序继续。
+    if (task['strict91KeywordMode'] == true) {
+      task['matchStage'] = '关键词搜索 · 当前方式未成功（$streak）';
+      return;
+    }
     if (layer == 'preferred' && streak >= 4) {
       task['strategyLayer'] = 'default';
       task['strategyFailStreak'] = 0;
       _clearSmartTaskAcquisitionLock(
         task,
-        reason: '已保存策略连续未成功，改用本站默认下载方式继续',
+        reason: '当前成功经验暂未奏效，改用本站默认可靠方式继续',
       );
       _applySiteDefaultAcquisition(task);
-      task['matchStage'] = '策略未奏效 · 切换本站默认方式';
+      // X/91 默认可靠方式就是原智能管线。
+      if (_smartUsesLegacyPriorityPipeline(siteProfile)) {
+        task['skipSniffAcquire'] = true;
+        task['preferSniffFirst'] = false;
+        task['allowLegacyAlternateAcquire'] = false;
+      }
+      task['matchStage'] = '经验未奏效 · 切换本站默认方式';
       return;
     }
     if (layer == 'default' && streak >= 6) {
@@ -7774,25 +8005,47 @@ class _BrowserPageState extends State<BrowserPage>
       task['strategyFailStreak'] = 0;
       _clearSmartTaskAcquisitionLock(
         task,
-        reason: '默认方式受阻，正在启用兜底以继续完成数量',
+        reason: '默认方式受阻，正在启用更多尝试以继续完成数量',
       );
+      if (_smartUsesLegacyPriorityPipeline(siteProfile)) {
+        // X/91：原管线之外再开放直链等备用获取，仍保留扩大探索。
+        task['allowLegacyAlternateAcquire'] = true;
+        task['skipSniffAcquire'] = false;
+        task['preferSniffFirst'] = true;
+        task['matchStage'] = '原智能受阻 · 尝试更多下载方式';
+        _showSmartOperation('原可靠方式受阻，正在尝试其他下载方式');
+        if (task['allowBroadenDiscovery'] == true) {
+          _broadenSmartDiscovery(task, '默认管线受阻，扩大探索并启用备用获取');
+        } else {
+          Future<void>.delayed(const Duration(milliseconds: 120), () {
+            if (identical(_smartDownloadTask, task)) {
+              unawaited(_advanceSmartDownload(_currentUrl));
+            }
+          });
+        }
+        return;
+      }
       if (task['allowBroadenDiscovery'] == true) {
         _applySiteDefaultAcquisition(task);
         task['matchStage'] = '默认受阻 · 扩大站内探索';
         _broadenSmartDiscovery(task, '默认管线受阻，扩大探索');
       } else {
+        // 通用站兜底：先开有限扩大探索，再不行才请示范。
+        task['allowBroadenDiscovery'] = true;
         task['gestureMode'] = false;
         task['phase'] = 'collecting_site_results';
         task['lockedAcquisition'] = 'site_address';
         task['lockedFailStreak'] = 0;
         _applyAcquisitionLockPrefs(task, 'site_address');
-        task['matchStage'] = '默认受阻 · 启用站内地址兜底';
-        Future<void>.delayed(const Duration(milliseconds: 120), () {
-          if (identical(_smartDownloadTask, task)) {
-            unawaited(_advanceSmartDownload(_currentUrl));
-          }
-        });
+        task['matchStage'] = '默认受阻 · 站内地址 + 扩大探索';
+        _broadenSmartDiscovery(task, '默认管线受阻，启用站内探索兜底');
       }
+      return;
+    }
+    if (layer == 'fallback' && streak >= 5) {
+      unawaited(
+        _tryEnterSmartDemoAfterExhaustion(task, '多种自动方式连续未成功'),
+      );
     }
   }
 
@@ -7926,19 +8179,62 @@ class _BrowserPageState extends State<BrowserPage>
     };
   }
 
-  Future<void> _persistSmartDemoRecipe(Map<String, dynamic> task) async {
+  Future<void> _persistSmartDemoRecipe(
+    Map<String, dynamic> task, {
+    bool allowRewrite = false,
+  }) async {
     await _loadSmartDemoRecipes();
     final host = (task['host'] ?? '').toString();
     final pageType = (task['demoPageType'] ?? 'feed').toString();
     if (host.isEmpty) return;
     final key = _smartDemoRecipeKey(host: host, pageType: pageType);
     final previous = _smartDemoRecipes[key];
+    // 自动收尾只累计成功次数，避免浅层推断覆盖示范学到的强经验。
+    if (previous != null && !allowRewrite) {
+      final prevAcq =
+          _normalizeSmartAcquisition((previous['acquisition'] ?? '').toString());
+      final lastAcq =
+          _normalizeSmartAcquisition(
+            (task['lastSuccessAcquisition'] ?? '').toString(),
+          );
+      final bump = 1;
+      previous['successes'] = ((previous['successes'] as int?) ?? 0) + bump;
+      previous['updatedAt'] = DateTime.now().toIso8601String();
+      final isUserDemo =
+          previous['source'] == 'user_demo' || previous['demoTaught'] == true;
+      // 用户示范经验：自动阶段不得改写 acquisition。
+      if (!isUserDemo &&
+          lastAcq.isNotEmpty &&
+          prevAcq.isNotEmpty &&
+          lastAcq != prevAcq &&
+          (task['demoPhase'] == 'auto')) {
+        previous['acquisition'] = lastAcq;
+        if (previous['nameCustom'] != true) {
+          previous['nameCustom'] = false;
+          _ensureSmartStrategyName(previous);
+        }
+      }
+      _smartDemoRecipes[key] = previous;
+      await _saveSmartDemoRecipes();
+      task['learnedRecipe'] = previous;
+      debugPrint('智能下载策略已累计: $key -> ${previous['name']} +$bump');
+      return;
+    }
     final recipe = _inferSmartDemoRecipe(task);
     recipe['host'] = host;
     recipe['pageType'] = pageType;
-    final gained = ((task['success'] as int?) ?? 0);
-    recipe['successes'] =
-        ((previous?['successes'] as int?) ?? 0) + (gained > 0 ? gained : 1);
+    recipe['successes'] = ((previous?['successes'] as int?) ?? 0) + 1;
+    if (allowRewrite || task['demoPhase'] == 'demo' || task['userRequestedDemo'] == true) {
+      recipe['source'] = 'user_demo';
+      recipe['demoTaught'] = true;
+    } else if (previous != null &&
+        (previous['source'] == 'user_demo' || previous['demoTaught'] == true)) {
+      recipe['source'] = 'user_demo';
+      recipe['demoTaught'] = true;
+    } else {
+      recipe['source'] = previous?['source'] ?? 'auto';
+      recipe['demoTaught'] = previous?['demoTaught'] == true;
+    }
     if (previous != null && previous['nameCustom'] == true) {
       recipe['name'] = previous['name'];
       recipe['nameCustom'] = true;
@@ -7954,41 +8250,60 @@ class _BrowserPageState extends State<BrowserPage>
 
   Future<void> _finishSmartDemoLearning(Map<String, dynamic> task) async {
     if (!identical(_smartDownloadTask, task)) return;
-    await _persistSmartDemoRecipe(task);
-    task['demoPhase'] = 'auto';
     final siteProfile = (task['siteProfile'] ?? '').toString();
+    // 用示范结束时的真实页面类型落盘，便于下次同场景复用。
+    task['demoPageType'] = _smartDemoPageType(
+      url: _currentUrl,
+      siteProfile: siteProfile,
+      keyword: (task['keyword'] ?? '').toString(),
+      smartRunMode: (task['smartRunMode'] ?? 'nearby').toString(),
+    );
+    await _persistSmartDemoRecipe(task, allowRewrite: true);
+    task['demoPhase'] = 'auto';
     final isLegacy = _smartUsesLegacyPriorityPipeline(siteProfile);
     final learned = task['learnedRecipe'];
     final learnedAcq =
         learned is Map
-            ? (learned['acquisition'] ?? '').toString()
+            ? _normalizeSmartAcquisition(
+              (learned['acquisition'] ?? '').toString(),
+            )
             : '';
+    // 新学会的方式立刻成为本任务优先成功经验，并已持久化供下次复用。
+    if (learned is Map) {
+      final host = (task['host'] ?? '').toString();
+      final pageType = (task['demoPageType'] ?? 'feed').toString();
+      final key = _smartDemoRecipeKey(host: host, pageType: pageType);
+      _bindSmartStrategyToTask(
+        task,
+        Map<String, dynamic>.from(learned),
+        strategyKey: key,
+        manualPick: false,
+      );
+    }
     if (isLegacy) {
-      // 回到 X/91 原智能下载能力（扩大探索、站点 FSM 等保留）。
       final startedFromCurrent = task['startedFromCurrentPage'] == true;
       final keywordFirst91 = task['strict91KeywordMode'] == true;
       task['gestureMode'] = startedFromCurrent && !keywordFirst91;
       task['protectVisibleGestureFlow'] = task['gestureMode'] == true;
       task['allowBroadenDiscovery'] = true;
-      _lockSmartTaskAcquisition(
-        task,
-        learnedAcq.isNotEmpty
-            ? learnedAcq
-            : (siteProfile == 'x' ? 'legacy_x' : 'legacy_91'),
-        announce: false,
-      );
-      task['matchStage'] = '示范完成 · 继续原智能下载';
-      _showSmartOperation('示范完成，已切换回本站原有智能下载');
+      if (learnedAcq == 'sniff' || learnedAcq == 'site_address') {
+        task['allowLegacyAlternateAcquire'] = true;
+      }
     } else {
       task['gestureMode'] = true;
       task['protectVisibleGestureFlow'] = true;
-      _lockSmartTaskAcquisition(
-        task,
-        learnedAcq.isNotEmpty ? learnedAcq : 'longpress_inplace',
-      );
-      task['matchStage'] = '示范完成 · 沿用已学方式继续';
-      _showSmartOperation('已学会本站手势，将沿用该方式自动下载剩余媒体');
     }
+    final fallbackAcq =
+        isLegacy
+            ? (siteProfile == 'x' ? 'legacy_x' : 'legacy_91')
+            : 'longpress_inplace';
+    _lockSmartTaskAcquisition(
+      task,
+      learnedAcq.isNotEmpty ? learnedAcq : fallbackAcq,
+      announce: false,
+    );
+    task['matchStage'] = '示范完成 · 沿用新成功经验';
+    _showSmartOperation('已学会并保存成功经验，将优先沿用继续下载剩余媒体');
     _updateSmartDiscoveryProgress(task, 'demo_learning_done');
     if ((task['success'] as int) >= (task['target'] as int)) {
       await _finishSmartDownload();
@@ -7999,6 +8314,13 @@ class _BrowserPageState extends State<BrowserPage>
         unawaited(_advanceSmartDownload(_currentUrl));
       }
     });
+  }
+
+  bool _isSmartHardStopReason(String reason) {
+    return reason.contains('用户已停止') ||
+        reason.contains('5 小时') ||
+        reason.contains('写入媒体库失败') ||
+        reason.contains('地址无效');
   }
 
 
@@ -8022,7 +8344,16 @@ class _BrowserPageState extends State<BrowserPage>
       videosOnly: !allowMixed && mediaType == MediaType.video,
       preferVideo: allowMixed || mediaType == MediaType.video,
     );
-    if (urls.isEmpty) return false;
+    if (urls.isEmpty) {
+      // 空直链也算本轮无进展，推动升层/解锁，避免只靠看门狗。
+      final empty = ((task['sniffEmptyScrolls'] as int?) ?? 0) + 1;
+      task['sniffEmptyScrolls'] = empty;
+      if (empty >= 3) {
+        task['sniffEmptyScrolls'] = 0;
+        _noteSmartTaskAcquisitionFailure(task);
+      }
+      return false;
+    }
 
     for (final rawUrl in urls) {
       if (!identical(_smartDownloadTask, task)) return false;
@@ -8541,10 +8872,14 @@ class _BrowserPageState extends State<BrowserPage>
         (row) =>
             row['isSmartBatchMedia'] == true && row['status'] == 'downloading',
       );
-      if (hasActiveDownload) return true;
+      // HLS 等长视频下载可能远超 20 秒；有在途下载或长按保存进行中时绝不能提前判失败。
+      if (hasActiveDownload || _longPressVideoDownloadInProgress) {
+        task['matchStage'] = '等待当前视频下载完成';
+        return true;
+      }
       final startedAt = task['gestureDownloadStartedAt'] as DateTime?;
       if (startedAt == null ||
-          DateTime.now().difference(startedAt) < const Duration(seconds: 20)) {
+          DateTime.now().difference(startedAt) < const Duration(seconds: 45)) {
         return true;
       }
       // A page may swallow synthetic touch events. Release the stalled
@@ -8560,11 +8895,20 @@ class _BrowserPageState extends State<BrowserPage>
         _normalizeSmartAcquisition(
           (task['lockedAcquisition'] ?? '').toString(),
         );
-    // X/91 永不走 V1 嗅探；通用站在锁定直链或未跳过嗅探时优先直链。
+    // 通用站：优先直链（或锁定直链）。
+    // X/91：默认走原智能；仅在 fallback 备用阶段才开放直链等额外尝试。
+    final isLegacy = _smartUsesLegacyPriorityPipeline(siteProfile);
+    final allowLegacyAlternate =
+        isLegacy && task['allowLegacyAlternateAcquire'] == true;
     final allowSniff =
-        !_smartUsesLegacyPriorityPipeline(siteProfile) &&
-        (lockedAcquisition == 'sniff' ||
-            (lockedAcquisition.isEmpty && task['skipSniffAcquire'] != true));
+        (!isLegacy &&
+            (lockedAcquisition == 'sniff' ||
+                (lockedAcquisition.isEmpty &&
+                    task['skipSniffAcquire'] != true))) ||
+        (allowLegacyAlternate &&
+            (lockedAcquisition == 'sniff' ||
+                (lockedAcquisition.isEmpty &&
+                    task['skipSniffAcquire'] != true)));
     if (allowSniff) {
       final sniffed = await _tryV1SmartSniffAcquire(task);
       if (sniffed) return true;
@@ -9235,11 +9579,15 @@ class _BrowserPageState extends State<BrowserPage>
         task['gestureDownloadStartedAt'] = DateTime.now();
         task['gestureActiveKey'] = key;
         task['phase'] = 'gesture_waiting_download';
+        if (task['siteProfile'] == '91') {
+          task['91DetailScrolls'] = 0;
+        }
         _showSmartOperation('长按当前媒体，触发下载', point: point);
         _updateSmartDiscoveryProgress(task, 'gesture_waiting_download');
-        Future<void>.delayed(const Duration(seconds: 21), () {
+        Future<void>.delayed(const Duration(minutes: 6), () {
           if (identical(_smartDownloadTask, task) &&
-              task['gestureDownloadPending'] == true) {
+              task['gestureDownloadPending'] == true &&
+              !_longPressVideoDownloadInProgress) {
             unawaited(_advanceSmartDownload(_currentUrl));
           }
         });
@@ -9411,6 +9759,32 @@ class _BrowserPageState extends State<BrowserPage>
         task['gestureLastScrollY'] = before;
         task['gestureNoMoveCount'] =
             noMove ? ((task['gestureNoMoveCount'] as int?) ?? 0) + 1 : 0;
+        // 91 详情页通常只有一个主视频：空滚太多次就别空转，改为结束本页尝试。
+        if (task['siteProfile'] == '91' && _is91ContentPage(_currentUrl)) {
+          final detailScrolls =
+              ((task['91DetailScrolls'] as int?) ?? 0) + 1;
+          task['91DetailScrolls'] = detailScrolls;
+          if (detailScrolls >= 10 || (task['gestureNoMoveCount'] as int) >= 2) {
+            task['91DetailScrolls'] = 0;
+            task['gestureNoMoveCount'] = 0;
+            if (await _recoverVisibleGesturePage(
+              task,
+              '91详情页已尝试完毕',
+              nextPage: true,
+            )) {
+              return true;
+            }
+            task['gestureMode'] = false;
+            task['phase'] = 'collecting_site_results';
+            task['matchStage'] = '91详情页无法继续，启用站内地址兜底';
+            Future<void>.delayed(const Duration(milliseconds: 120), () {
+              if (identical(_smartDownloadTask, task)) {
+                unawaited(_advanceSmartDownload(_currentUrl));
+              }
+            });
+            return true;
+          }
+        }
         if ((task['gestureNoMoveCount'] as int) >= 2) {
           if (await _recoverVisibleGesturePage(
             task,
@@ -9505,7 +9879,13 @@ class _BrowserPageState extends State<BrowserPage>
       if (success) {
         final siteProfile = (task['siteProfile'] ?? '').toString();
         String acq;
-        if (_smartUsesLegacyPriorityPipeline(siteProfile)) {
+        if (demoLearning) {
+          // 示范期记录用户真实手势通道，便于举一反三（详情/原地）。
+          acq =
+              task['gestureDetailMode'] == true
+                  ? 'detail_longpress'
+                  : 'longpress_inplace';
+        } else if (_smartUsesLegacyPriorityPipeline(siteProfile)) {
           acq = siteProfile == 'x' ? 'legacy_x' : 'legacy_91';
         } else {
           final fromRecipe =
@@ -9522,6 +9902,7 @@ class _BrowserPageState extends State<BrowserPage>
         }
         _lockSmartTaskAcquisition(task, acq);
         _noteSmartStrategyProgress(task, success: true);
+        task['lastSuccessAcquisition'] = acq;
       }
     } else {
       task['gestureConsecutiveFailures'] =
@@ -9534,8 +9915,9 @@ class _BrowserPageState extends State<BrowserPage>
     task['gestureActiveKey'] = '';
     if (success) {
       task['success'] = (task['success'] as int) + 1;
-      task['lastSuccessAcquisition'] =
-          (task['lockedAcquisition'] ?? 'longpress_inplace').toString();
+      if ((task['lastSuccessAcquisition'] ?? '').toString().isEmpty) {
+        task['lastSuccessAcquisition'] = 'longpress_inplace';
+      }
     } else if (skippedDuplicate) {
       if (failureType != 'already_in_library') {
         task['duplicateSkipped'] =
@@ -9810,11 +10192,12 @@ class _BrowserPageState extends State<BrowserPage>
     }
     final keywordController = TextEditingController(text: initialKeyword);
     final countController = TextEditingController();
-    final demoCountController = TextEditingController();
+    final demoCountController = TextEditingController(text: '2');
     final minVideoSizeController = TextEditingController();
     final maxVideoSizeController = TextEditingController();
     MediaType? selectedMediaType;
     var historyExpanded = false;
+    var teachByDemo = false;
     await _loadSmartDemoRecipes();
     final dialogRawUrl = (website['url'] ?? '').toString().trim();
     final dialogNormalized =
@@ -9829,7 +10212,8 @@ class _BrowserPageState extends State<BrowserPage>
       keyword: initialKeyword,
       smartRunMode: initialKeyword.trim().isEmpty ? 'nearby' : 'list',
     );
-    // null=不选用；非空=选用（同站默认自动填入；跨站仅用户点选）
+    // null=不选用已保存策略（仍会用内置成功经验：X/91=原智能，其他站=直链优先）。
+    // 同站有记忆时全局自动勾选（含 X/91）。
     String? selectedStrategyKey = _defaultSameHostStrategyKey(
       host: dialogHost,
       pageType: dialogPageType,
@@ -9977,13 +10361,13 @@ class _BrowserPageState extends State<BrowserPage>
                         ),
                         const SizedBox(height: 12),
                         const Text(
-                          '已保存策略（同站自动选用；其他站需手动点选）',
+                          '成功经验（同站自动优先；其他站需手动点选）',
                           style: TextStyle(fontWeight: FontWeight.w600),
                         ),
                         const SizedBox(height: 6),
                         if (_smartDemoRecipes.isEmpty)
                           const Text(
-                            '暂无已保存策略。示范成功或自动下载成功后会生成，如「91·详情·长按」。',
+                            '暂无已保存经验。可开启下方「开始前先示范教学」主动教应用；或先自动尝试，穷尽后再示范。示范经验享有最高优先级。',
                             style: TextStyle(fontSize: 12, color: Colors.black54),
                           )
                         else ...[
@@ -10015,9 +10399,14 @@ class _BrowserPageState extends State<BrowserPage>
                             final selected = selectedStrategyKey == key;
                             final successes =
                                 (recipe['successes'] as int?) ?? 0;
+                            final taught =
+                                recipe['source'] == 'user_demo' ||
+                                recipe['demoTaught'] == true;
                             final subtitle =
                                 sameHost
-                                    ? '本站 · 成功 $successes 次'
+                                    ? (taught
+                                        ? '本站 · 示范教学（最高优先）· 成功 $successes 次'
+                                        : '本站 · 成功 $successes 次')
                                     : '其他站 · 需手动选用 · 成功 $successes 次';
                             return Card(
                               margin: const EdgeInsets.only(bottom: 6),
@@ -10094,19 +10483,42 @@ class _BrowserPageState extends State<BrowserPage>
                           }),
                         ],
                         const SizedBox(height: 12),
-                        TextField(
-                          controller: demoCountController,
-                          keyboardType: TextInputType.number,
-                          inputFormatters: [
-                            FilteringTextInputFormatter.digitsOnly,
-                          ],
-                          decoration: const InputDecoration(
-                            labelText: '示范次数（V2 学习）',
-                            hintText: '留空＝按站点默认',
-                            helperText:
-                                '留空：X/91 走原智能下载；通用站默认示范 2 次（有策略则直接自动）。填 1–5：任何站（含 X/91）先示范再自动。填 0：不示范。',
+                        SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text('开始前先示范教学'),
+                          subtitle: const Text(
+                            '开启后先由你手动长按下载几次，应用会把这次示范记为最高优先的成功经验，供本次与下次复用。',
+                            style: TextStyle(fontSize: 12),
                           ),
+                          value: teachByDemo,
+                          onChanged:
+                              (v) => setDialogState(() => teachByDemo = v),
                         ),
+                        if (teachByDemo) ...[
+                          const SizedBox(height: 4),
+                          TextField(
+                            controller: demoCountController,
+                            keyboardType: TextInputType.number,
+                            inputFormatters: [
+                              FilteringTextInputFormatter.digitsOnly,
+                            ],
+                            decoration: const InputDecoration(
+                              labelText: '示范次数',
+                              hintText: '1–5，默认 2',
+                              helperText: '建议 2 次：便于学会「原地长按」还是「进详情再长按」。',
+                            ),
+                          ),
+                        ] else
+                          const Padding(
+                            padding: EdgeInsets.only(bottom: 4),
+                            child: Text(
+                              '关闭时：先自动复用成功经验并自行尝试；实在不行再请求你示范。若要禁止中途示范，可在高级里填 0（当前默认允许自动穷尽后请教）。',
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: Colors.black54,
+                              ),
+                            ),
+                          ),
                         if (selectedMediaType != MediaType.image) ...[
                           const SizedBox(height: 12),
                           Row(
@@ -10185,11 +10597,14 @@ class _BrowserPageState extends State<BrowserPage>
     );
     final enteredKeyword = keywordController.text.trim();
     final enteredCount = int.tryParse(countController.text.trim()) ?? 5;
-    final enteredDemoCountRaw = demoCountController.text.trim();
-    final int? enteredDemoCount =
-        enteredDemoCountRaw.isEmpty
-            ? null
-            : (int.tryParse(enteredDemoCountRaw) ?? 0).clamp(0, 5);
+    final int? enteredDemoCount;
+    if (teachByDemo) {
+      final raw = int.tryParse(demoCountController.text.trim()) ?? 2;
+      enteredDemoCount = raw.clamp(1, 5);
+    } else {
+      // 关闭开关：先自动；留空允许中途示范（allowAutoDemo）。
+      enteredDemoCount = null;
+    }
     final enteredMinVideoMb = int.tryParse(minVideoSizeController.text);
     final enteredMaxVideoMb = int.tryParse(maxVideoSizeController.text);
     // showDialog completes when pop starts, before the reverse transition has
@@ -10365,8 +10780,9 @@ class _BrowserPageState extends State<BrowserPage>
               ? '关键词优先 · 站内搜索'
               : '模式B · 列表顺序',
       'smartRunMode': keyword.trim().isEmpty ? 'nearby' : 'list',
-      // X/91 保留既有「扩大探索」；其他站 V1 下满或候选用尽即停。
-      'allowBroadenDiscovery': _smartUsesLegacyPriorityPipeline(siteProfile),
+      // 91 关键词模式：严禁 broaden 乱逛；无关键词 X/91 仍可扩大探索。
+      'allowBroadenDiscovery':
+          _smartUsesLegacyPriorityPipeline(siteProfile) && !keywordFirstOn91,
       'demoPageType': _smartDemoPageType(
         url: _currentUrl,
         siteProfile: siteProfile,
@@ -10433,6 +10849,7 @@ class _BrowserPageState extends State<BrowserPage>
       'originUrl': _currentUrl,
       'strict91KeywordMode': keywordFirstOn91,
       'strict91SearchUrl': strict91SearchUrl,
+      'strict91SearchPage': 1,
       'strict91QueueReady': false,
       'strict91ActiveCardUrl': '',
       'strict91ReturnAttempts': 0,
@@ -10450,6 +10867,7 @@ class _BrowserPageState extends State<BrowserPage>
       'strictBaiduPage': 0,
     };
     final activeTask = _smartDownloadTask!;
+    final isLegacySite = _smartUsesLegacyPriorityPipeline(siteProfile);
     activeTask['strategyLayer'] = 'default';
     activeTask['strategyFailStreak'] = 0;
     activeTask['lockedAcquisition'] = '';
@@ -10457,18 +10875,24 @@ class _BrowserPageState extends State<BrowserPage>
     activeTask['sniffEmptyScrolls'] = 0;
     activeTask['lastProgressMarker'] = '';
     activeTask['lastProgressAt'] = startedAt;
-    activeTask['skipSniffAcquire'] = false;
-    activeTask['preferSniffFirst'] =
-        !_smartUsesLegacyPriorityPipeline(siteProfile);
-    // 策略选用：同站自动；跨站仅手动点选；可显式不选用。
+    activeTask['allowLegacyAlternateAcquire'] = false;
+    // 留空＝允许自动穷尽后再请示范；显式填 0＝禁止中途示范。
+    activeTask['allowAutoDemo'] = demoCount == null;
+    activeTask['autoDemoRequested'] = false;
+    // X/91 默认跳过嗅探；备用阶段或学到直链后再开。
+    activeTask['skipSniffAcquire'] = isLegacySite;
+    activeTask['preferSniffFirst'] = !isLegacySite;
+    // 全局：优先同站成功经验（含 X/91 原智能内置经验）；无记忆则用内置默认。
     Map<String, dynamic>? selectedRecipe;
     var selectedKey = '';
     var selectedManual = false;
     if (!strategyExplicitNone) {
-      if (preferredStrategyKey != null &&
+      final canUsePreferred =
+          preferredStrategyKey != null &&
           preferredStrategyKey.isNotEmpty &&
-          _smartDemoRecipes.containsKey(preferredStrategyKey)) {
-        selectedKey = preferredStrategyKey;
+          _smartDemoRecipes.containsKey(preferredStrategyKey);
+      if (canUsePreferred) {
+        selectedKey = preferredStrategyKey!;
         selectedRecipe = _smartDemoRecipes[preferredStrategyKey];
         selectedManual = strategyManualPick;
       } else {
@@ -10492,59 +10916,60 @@ class _BrowserPageState extends State<BrowserPage>
       );
       if (!selectedManual) {
         _showSmartOperation(
-          '已自动选用同站策略「${selectedRecipe['name']}」',
+          '已自动选用同站成功经验「${selectedRecipe['name']}」',
         );
       } else {
         _showSmartOperation('已选用策略「${selectedRecipe['name']}」');
       }
-    }
-    // V2 示范学习：X/91 默认保留原管线；示范次数>=1 时也可先示范。
-    // 通用站：留空默认示范 2 次（有同站策略/记忆则直接自动）。
-    {
+    } else {
       final pageType = (activeTask['demoPageType'] ?? 'feed').toString();
-      final recipeKey = _smartDemoRecipeKey(
+      final builtIn = _builtInPreferredRecipe(
         host: effectiveHost,
         pageType: pageType,
+        siteProfile: siteProfile,
       );
-      final savedRecipe =
-          selectedRecipe ?? _smartDemoRecipes[recipeKey];
-      final isLegacy = _smartUsesLegacyPriorityPipeline(siteProfile);
+      _bindSmartStrategyToTask(
+        activeTask,
+        builtIn,
+        strategyKey: '__builtin__|$siteProfile|$pageType',
+        manualPick: false,
+      );
+      if (isLegacySite) {
+        activeTask['matchStage'] =
+            keywordFirstOn91
+                ? '关键词优先 · 站内搜索'
+                : (keyword.isEmpty
+                    ? '模式A · 中心起点 · 邻近依次'
+                    : '关键词优先 · 站内搜索');
+        debugPrint(
+          'Smart legacy pipeline: site=$siteProfile '
+          'gestureMode=${activeTask['gestureMode']} '
+          'strict91=${activeTask['strict91KeywordMode']} '
+          'url=$_currentUrl',
+        );
+      }
+    }
+    // V2 示范学习：默认不打扰。留空/0＝先自动；仅显式填 1–5 才先示范。
+    {
       late final int requiredDemos;
-      if (demoCount == null) {
-        // 留空：X/91 不示范；通用站有策略/记忆则跳过示范。
-        requiredDemos =
-            isLegacy ? 0 : (savedRecipe != null ? 0 : 2);
-      } else if (demoCount <= 0) {
+      if (demoCount == null || demoCount <= 0) {
         requiredDemos = 0;
       } else {
         requiredDemos = demoCount.clamp(1, 5);
       }
-      if (requiredDemos == 0 &&
-          savedRecipe != null &&
-          !isLegacy &&
-          activeTask['learnedRecipe'] == null) {
-        _bindSmartStrategyToTask(
-          activeTask,
-          savedRecipe,
-          strategyKey: recipeKey,
-          manualPick: false,
-        );
-        activeTask['gestureMode'] = true;
-      } else if (requiredDemos > 0) {
+      if (requiredDemos > 0) {
+        activeTask['userRequestedDemo'] = true;
         activeTask['demoPhase'] = 'demo';
         activeTask['demoRequired'] = requiredDemos;
         activeTask['demoCompleted'] = 0;
         activeTask['gestureMode'] = false;
         activeTask['protectVisibleGestureFlow'] = false;
-        // 示范期不锁定、不嗅探，专心学手动长按。
         activeTask['lockedAcquisition'] = '';
         activeTask['lockedFailStreak'] = 0;
         activeTask['skipSniffAcquire'] = true;
         activeTask['preferSniffFirst'] = false;
-        activeTask['matchStage'] =
-            isLegacy
-                ? '示范学习 · 完成后回到原智能下载'
-                : '示范学习 · 请手动长按下载';
+        activeTask['allowLegacyAlternateAcquire'] = false;
+        activeTask['matchStage'] = '示范学习 · 请手动长按下载';
         _showSmartOperation(
           '请手动长按下载第 1/$requiredDemos 个媒体（示范学习）',
         );
@@ -10620,8 +11045,7 @@ class _BrowserPageState extends State<BrowserPage>
     void enqueueDiscoveryPage(String value) {
       final candidateUri = Uri.tryParse(value);
       if (candidateUri == null ||
-          candidateUri.host.toLowerCase().replaceFirst(RegExp(r'^www\.'), '') !=
-              uri.host.toLowerCase().replaceFirst(RegExp(r'^www\.'), '') ||
+          !_isWithinSmartDownloadSite(value) ||
           value == _currentUrl ||
           !queuedDiscoveryUrls.add(value)) {
         return;
@@ -10749,6 +11173,10 @@ class _BrowserPageState extends State<BrowserPage>
       final actualLoadedUrl =
           (await controller.getUrl())?.toString() ?? loadedUrl;
       final actualHost = Uri.tryParse(actualLoadedUrl)?.host ?? '';
+      // 全局跨站护栏：任意阶段一旦出站，立即拉回（不只限手势保护模式）。
+      if (await _recoverSmartDownloadIfOffsite(task, actualLoadedUrl)) {
+        return;
+      }
       if (task['protectVisibleGestureFlow'] == true &&
           actualHost.isNotEmpty &&
           taskHost.isNotEmpty &&
@@ -11082,6 +11510,7 @@ class _BrowserPageState extends State<BrowserPage>
           for (final row in result) {
             if (row is Map && row['url'] != null) {
               final rowUrl = row['url'].toString();
+              if (!_isWithinSmartDownloadSite(rowUrl)) continue;
               if (isKeywordFirst91 && !_is91ContentPage(rowUrl)) continue;
               if (row['scopeOnly'] == true) {
                 if (isKeywordFirst91) {
@@ -11155,6 +11584,11 @@ class _BrowserPageState extends State<BrowserPage>
           );
         }
         if (candidates.isEmpty) {
+          if (strict91Mode) {
+            if (_tryAdvance91KeywordSearchPage(task)) return;
+            _onSmartCandidatesExhausted(task, '当前搜索页没有更多关键词结果');
+            return;
+          }
           // Some sites render playable cards through CSS/JavaScript and expose
           // no useful detail links to the source scanner. Exhaust real cards
           // on the current productive page before guessing another route.
@@ -12822,6 +13256,7 @@ class _BrowserPageState extends State<BrowserPage>
     task['phase'] = 'scanning_feed';
     task['lastFeedMoveAt'] = DateTime.now();
     const directionForScript = 1;
+    final scrollBoost = task['preferScrollBetween'] == true ? 1.35 : 1.0;
     final keywordEmpty = (task['keyword'] ?? '').toString().trim().isEmpty;
     final preferSeedScope =
         keywordEmpty &&
@@ -12847,7 +13282,7 @@ class _BrowserPageState extends State<BrowserPage>
                 const xKeyword = $xKeywordJson.toLowerCase();
                 const xSearchResultsMode = $xSearchResultsMode;
                 const xVisitedStatusIds = new Set($xVisitedStatusJson);
-                const amount = Math.max(420, Math.floor(innerHeight * 0.82)) * direction;
+                const amount = Math.max(420, Math.floor(innerHeight * 0.82 * $scrollBoost)) * direction;
                 if (strictXFeedMode) {
                   const seed = document.querySelector('[data-smart-seed-media="1"]');
                   const seedArticle = seed && seed.closest('article[data-testid="tweet"], article');
@@ -13512,6 +13947,13 @@ class _BrowserPageState extends State<BrowserPage>
     String exhaustedReason,
   ) {
     if (!identical(_smartDownloadTask, task)) return;
+    if (task['strict91KeywordMode'] == true) {
+      if (_tryAdvance91KeywordSearchPage(task)) return;
+      unawaited(
+        _finishSmartDownload('关键词搜索已穷尽，未继续扩大探索（$exhaustedReason）'),
+      );
+      return;
+    }
     task.remove('nextMediaPreheated');
     task.remove('nextMediaLabel');
     task.remove('nextMediaStatus');
@@ -13519,6 +13961,7 @@ class _BrowserPageState extends State<BrowserPage>
     final visitedDiscoveryUrls = task['visitedDiscoveryUrls'] as Set<String>;
     while (discoveryQueue.isNotEmpty) {
       final nextScopeUrl = discoveryQueue.removeAt(0);
+      if (!_isWithinSmartDownloadSite(nextScopeUrl)) continue;
       if (!visitedDiscoveryUrls.add(nextScopeUrl)) continue;
       task['phase'] = 'collecting_site_results';
       task['activeDiscoveryStrategy'] = 'actual_scope_link';
@@ -13756,7 +14199,8 @@ class _BrowserPageState extends State<BrowserPage>
     var index = task['index'] as int;
     final visited = task['visitedPageUrls'] as Set<String>;
     while (index < candidates.length &&
-        !visited.add(candidates[index]['url'] ?? '')) {
+        (!visited.add(candidates[index]['url'] ?? '') ||
+            !_isWithinSmartDownloadSite(candidates[index]['url'] ?? ''))) {
       index++;
     }
     if (index >= candidates.length) {
@@ -13801,6 +14245,15 @@ class _BrowserPageState extends State<BrowserPage>
         <String, dynamic>{'index': i, 'candidate': candidates[i]},
     ];
     final initialPageUrl = (candidate['url'] ?? '').trim();
+    if (initialPageUrl.isEmpty || !_isWithinSmartDownloadSite(initialPageUrl)) {
+      debugPrint('Smart skip offsite candidate: $initialPageUrl');
+      Future<void>.delayed(const Duration(milliseconds: 80), () {
+        if (identical(_smartDownloadTask, task)) {
+          _visitNextSmartCandidate(task);
+        }
+      });
+      return;
+    }
     final candidateListUrl = (task['candidateListUrl'] ?? '').toString();
     final taskHost = (task['host'] ?? '').toString();
     final is91 = taskHost == '91cg1.com' || taskHost.endsWith('.91cg1.com');
@@ -14164,17 +14617,38 @@ class _BrowserPageState extends State<BrowserPage>
     }
   }
 
+  void _cancelSmartBatchDownloads(String reason) {
+    for (final row in List<Map<String, dynamic>>.from(_downloadTasks)) {
+      final isSmart =
+          row['isSmartBatchMedia'] == true || row['isSmartDiscovery'] == true;
+      if (!isSmart) continue;
+      if ((row['status'] as String?) != 'downloading') continue;
+      final token = row['cancelToken'] as CancelToken?;
+      if (token != null && !token.isCancelled) {
+        token.cancel(reason);
+      }
+      final id = (row['id'] ?? '').toString();
+      if (id.isNotEmpty) _removeDownloadTask(id);
+    }
+  }
+
   Future<void> _finishSmartDownload([String? reason]) async {
     final task = _smartDownloadTask;
     if (task == null) return;
     final success = task['success'] as int;
     final target = task['target'] as int;
-    if (success < target && reason == null) {
-      if (task['allowBroadenDiscovery'] == true) {
+    final hardStop = reason != null && _isSmartHardStopReason(reason);
+    if (success < target && !hardStop) {
+      if (reason == null && task['allowBroadenDiscovery'] == true) {
         _broadenSmartDiscovery(task, '数量尚未达标，继续扩大站内探索');
         return;
       }
-      reason = '已完成当前页尝试，未继续扩大探索（成功 $success/$target）';
+      final demoReason =
+          reason ?? '已完成当前页尝试（成功 $success/$target）';
+      if (await _tryEnterSmartDemoAfterExhaustion(task, demoReason)) {
+        return;
+      }
+      reason ??= '已完成当前页尝试，未继续扩大探索（成功 $success/$target）';
     }
     if (success > 0 && task['demoPhase'] == 'auto') {
       unawaited(_persistSmartDemoRecipe(task));
@@ -14192,6 +14666,7 @@ class _BrowserPageState extends State<BrowserPage>
     if (discoveryToken != null && !discoveryToken.isCancelled) {
       discoveryToken.cancel(reason ?? '智能下载已完成');
     }
+    _cancelSmartBatchDownloads(reason ?? '智能下载已完成');
     if (discoveryTaskId.isNotEmpty) {
       _removeDownloadTask(discoveryTaskId);
     }
@@ -16097,7 +16572,6 @@ class _BrowserPageState extends State<BrowserPage>
     }
 
     final sink = output.openWrite();
-    var completed = false;
     try {
       await Future.wait<void>(
         List<Future<void>>.generate(
@@ -16112,14 +16586,12 @@ class _BrowserPageState extends State<BrowserPage>
         }
         await sink.addStream(part.openRead());
       }
-      completed = true;
     } finally {
       await sink.close();
-      if (completed) {
-        try {
-          if (await resumeDir.exists()) await resumeDir.delete(recursive: true);
-        } catch (_) {}
-      }
+      // 成功或失败都清掉分片目录，避免残留 .dash_resume 占空间/污染重试。
+      try {
+        if (await resumeDir.exists()) await resumeDir.delete(recursive: true);
+      } catch (_) {}
     }
   }
 
@@ -16689,6 +17161,7 @@ class _BrowserPageState extends State<BrowserPage>
         await outFile.delete();
         return null;
       }
+      // 83876f6 已验证路径：fMP4 拼接后直接改名入库可播；仅 MPEG-TS 才 remux。
       if (detectedExtension != '.ts') {
         final corrected = File(p.setExtension(outFile.path, detectedExtension));
         if (await corrected.exists()) await corrected.delete();
@@ -18108,6 +18581,12 @@ class _BrowserPageState extends State<BrowserPage>
                                 debugPrint('网页请求打开新窗口，但没有提供目标地址');
                                 return false;
                               }
+                              if (_smartDownloadTask != null &&
+                                  !_isWithinSmartDownloadSite(popupUrl)) {
+                                debugPrint('智能下载已阻止跨站弹窗: $popupUrl');
+                                _showSmartOperation('已阻止外部网站弹窗');
+                                return false;
+                              }
                               debugPrint('接管网页新窗口并在当前页打开: $popupUrl');
                               await ctrl.loadUrl(
                                 urlRequest: URLRequest(url: WebUri(popupUrl)),
@@ -18659,6 +19138,7 @@ class _BrowserPageState extends State<BrowserPage>
     if (discoveryToken != null && !discoveryToken.isCancelled) {
       discoveryToken.cancel('浏览器页面已关闭');
     }
+    _cancelSmartBatchDownloads('浏览器页面已关闭');
     if (smartTask?['screenWakeLockEnabled'] == true) {
       unawaited(
         WakelockPlus.disable().catchError(
@@ -18683,6 +19163,12 @@ class _BrowserPageState extends State<BrowserPage>
         debugPrint('常用网站保存完成');
       } catch (e) {
         debugPrint('保存常用网站时出错: $e');
+      }
+      try {
+        await _saveHistory();
+        debugPrint('浏览历史保存完成');
+      } catch (e) {
+        debugPrint('保存浏览历史时出错: $e');
       }
     });
     widget.onBrowserHomePageChanged?.call(true);

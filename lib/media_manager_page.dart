@@ -2344,7 +2344,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           await _databaseService.moveMediaItemToRecycleBin(item.id);
         }
 
-        await _loadMediaItems();
+        await _loadMediaItems(silent: true);
         _invalidMediaRetryCounts.remove(item.id);
       } catch (e) {
         debugPrint('删除媒体项时出错: $e');
@@ -2361,7 +2361,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     if (item.directory != 'recycle_bin') return;
     try {
       final ok = await _databaseService.restoreMediaItemFromRecycleBin(item.id);
-      await _loadMediaItems();
+      await _loadMediaItems(silent: true);
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
@@ -2440,7 +2440,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
         final updatedItem = item.copyWith(name: newName);
         await _databaseService.updateMediaItem(updatedItem.toMap());
-        await _loadMediaItems();
+        await _loadMediaItems(silent: true);
         if (mounted) {}
       } catch (e) {
         debugPrint('重命名媒体项时出错: $e');
@@ -2703,7 +2703,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
       if (mounted) {
         Navigator.of(context).pop();
-        await _loadMediaItems();
+        await _loadMediaItems(silent: true);
       }
     } catch (e) {
       if (mounted) {
@@ -2840,9 +2840,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       _mediaTypeViewMode = _MediaTypeViewMode.all;
     });
     widget.onMultiSelectModeChanged?.call(false);
-    while (mounted && _isMoveMode && _hasMoreMediaItems) {
-      await _loadMediaItems(append: true);
-    }
+    // 不再进入时全量加载：大目录会卡死。移动模式沿用已加载分页，滚动继续加载即可。
     if (!mounted || !_isMoveMode) return;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
@@ -2985,7 +2983,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           _isMultiSelectMode = false;
         });
         widget.onMultiSelectModeChanged?.call(false);
-        await _loadMediaItems();
+        await _loadMediaItems(silent: true);
       }
     } catch (e) {
       if (mounted) {
@@ -3301,7 +3299,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
               ),
             );
           }
-          await _loadMediaItems();
+          await _loadMediaItems(silent: true);
         }
       } catch (e) {
         if (mounted) {
@@ -3331,7 +3329,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         _isMultiSelectMode = false;
       });
       widget.onMultiSelectModeChanged?.call(false);
-      await _loadMediaItems();
+      await _loadMediaItems(silent: true);
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
@@ -5821,6 +5819,23 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         debugPrint('图片加载失败但源文件仍存在，跳过自动清理: ${item.name}');
         return;
       }
+      // 跨设备导入后 path 可能错误：先尝试 media/ 下同名文件再决定是否清理。
+      final appDir = await getApplicationDocumentsDirectory();
+      final candidatePath = path.join(appDir.path, 'media', path.basename(item.path));
+      if (candidatePath != item.path && await File(candidatePath).exists()) {
+        await _databaseService.updateMediaItemPath(item.id, candidatePath);
+        _invalidMediaRetryCounts.remove(item.id);
+        if (mounted) {
+          final idx = _mediaItems.indexWhere((i) => i.id == item.id);
+          if (idx >= 0) {
+            setState(() {
+              _mediaItems[idx] = _mediaItems[idx].copyWith(path: candidatePath);
+            });
+          }
+        }
+        debugPrint('图片路径已修复，跳过自动清理: ${item.name}');
+        return;
+      }
       _scheduleCleanup(item.id);
     } catch (e) {
       debugPrint('检查媒体文件是否缺失时出错(${item.id}): $e');
@@ -5876,7 +5891,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       }
     }
 
-    await _loadMediaItems();
+    await _loadMediaItems(silent: true);
     debugPrint('无效媒体文件自动清理完成。');
   }
 
@@ -7725,7 +7740,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     try {
       await _databaseService.toggleMediaItemFavorite(item.id);
       if (!mounted) return;
-      await _loadMediaItems();
+      await _loadMediaItems(silent: true);
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(

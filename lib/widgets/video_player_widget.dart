@@ -182,9 +182,17 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
           );
 
           setState(() {});
-          _controller.play();
+          // HLS remux 偶发「卡在第一帧，拖一下才动」：先轻量 seek 再播，踢开 demuxer。
+          if (widget.initialSeekPosition == null ||
+              widget.initialSeekPosition! <= Duration.zero) {
+            try {
+              await _controller.seekTo(const Duration(milliseconds: 1));
+            } catch (_) {}
+          }
+          await _controller.play();
           _controller.setLooping(widget.looping);
           unawaited(_applyDocumentBarVolume());
+          unawaited(_unstickFrozenFirstFrame());
 
           Logger.i(
             '[播放器] 初始化成功, isInitialized: ${_controller.value.isInitialized}, isPlaying: ${_controller.value.isPlaying}',
@@ -221,6 +229,20 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     await _controller.setVolume(
       widget.documentMediaBarMuted ? 0.0 : 1.0,
     );
+  }
+
+  /// 部分 HLS remux 文件会卡在首帧直到拖动；若播放中位置长期为 0，再踢一次。
+  Future<void> _unstickFrozenFirstFrame() async {
+    await Future<void>.delayed(const Duration(milliseconds: 450));
+    if (!mounted || _hasError || _skipResumeShort) return;
+    final v = _controller.value;
+    if (!v.isInitialized || v.duration <= const Duration(seconds: 1)) return;
+    if (v.position > const Duration(milliseconds: 80)) return;
+    try {
+      await _controller.seekTo(const Duration(milliseconds: 40));
+      if (!mounted) return;
+      await _controller.play();
+    } catch (_) {}
   }
 
   void _videoListener() {
