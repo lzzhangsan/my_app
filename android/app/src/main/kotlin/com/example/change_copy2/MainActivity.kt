@@ -4,11 +4,19 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import android.webkit.CookieManager
+import android.webkit.WebView
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.ActivityManager
 import android.content.Context
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
+import android.view.InputDevice
+import android.view.MotionEvent
+import android.view.View
+import android.view.ViewGroup
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
@@ -194,6 +202,282 @@ class MainActivity: FlutterActivity() {
                         runOnUiThread { result.error("MUX_FAILED", e.toString(), null) }
                 }
             }.start()
+        }
+
+        // 向 WebView 注入真实 MotionEvent（JS 合成触摸 isTrusted=false，多数信息流会忽略）
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "webview_touch")
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "flick" -> {
+                        val axisHint = call.argument<String>("axisHint") ?: "up"
+                        val distanceFraction =
+                            (call.argument<Number>("distanceFraction")?.toDouble() ?: 0.32)
+                                .coerceIn(0.12, 0.85)
+                        val durationMs =
+                            (call.argument<Number>("durationMs")?.toInt() ?: 260)
+                                .coerceIn(120, 900)
+                        val fromXArg = call.argument<Number>("fromX")?.toDouble()
+                        val fromYArg = call.argument<Number>("fromY")?.toDouble()
+                        val toXArg = call.argument<Number>("toX")?.toDouble()
+                        val toYArg = call.argument<Number>("toY")?.toDouble()
+                        runOnUiThread {
+                            try {
+                                val webView = findWebView(window.decorView)
+                                if (webView == null || webView.width <= 0 || webView.height <= 0) {
+                                    result.error("NO_WEBVIEW", "WebView not found or not laid out", null)
+                                    return@runOnUiThread
+                                }
+                                val w = webView.width.toFloat()
+                                val h = webView.height.toFloat()
+                                val norms = computeFlickNorms(
+                                    axisHint,
+                                    distanceFraction,
+                                    fromXArg,
+                                    fromYArg,
+                                    toXArg,
+                                    toYArg,
+                                )
+                                fun px(norm: Double, size: Float): Float =
+                                    (norm.toFloat() * size).coerceIn(2f, size - 2f)
+                                injectFlick(
+                                    target = webView,
+                                    fromX = px(norms.a, w),
+                                    fromY = px(norms.b, h),
+                                    toX = px(norms.c, w),
+                                    toY = px(norms.d, h),
+                                    durationMs = durationMs.toLong(),
+                                ) { ok ->
+                                    result.success(ok)
+                                }
+                            } catch (e: Exception) {
+                                result.error("FLICK_FAILED", e.message, null)
+                            }
+                        }
+                    }
+                    "tap" -> {
+                        val xNorm = (call.argument<Number>("x")?.toDouble() ?: 0.5)
+                            .coerceIn(0.02, 0.98)
+                        val yNorm = (call.argument<Number>("y")?.toDouble() ?: 0.5)
+                            .coerceIn(0.02, 0.98)
+                        val holdMs = (call.argument<Number>("holdMs")?.toInt() ?: 70)
+                            .coerceIn(40, 400)
+                        runOnUiThread {
+                            try {
+                                val webView = findWebView(window.decorView)
+                                if (webView == null || webView.width <= 0 || webView.height <= 0) {
+                                    result.error("NO_WEBVIEW", "WebView not found or not laid out", null)
+                                    return@runOnUiThread
+                                }
+                                val x = (xNorm * webView.width).toFloat()
+                                    .coerceIn(2f, webView.width - 2f)
+                                val y = (yNorm * webView.height).toFloat()
+                                    .coerceIn(2f, webView.height - 2f)
+                                injectTap(
+                                    target = webView,
+                                    x = x,
+                                    y = y,
+                                    holdMs = holdMs.toLong(),
+                                ) { ok -> result.success(ok) }
+                            } catch (e: Exception) {
+                                result.error("TAP_FAILED", e.message, null)
+                            }
+                        }
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+    }
+
+    private fun computeFlickNorms(
+        axisHint: String,
+        distanceFraction: Double,
+        fromXArg: Double?,
+        fromYArg: Double?,
+        toXArg: Double?,
+        toYArg: Double?,
+    ): Quadruple {
+        if (fromXArg != null && fromYArg != null && toXArg != null && toYArg != null) {
+            return Quadruple(fromXArg, fromYArg, toXArg, toYArg)
+        }
+        val f = distanceFraction
+        return when (axisHint) {
+            "down" -> Quadruple(0.5, 0.38, 0.5, (0.38 + f).coerceAtMost(0.92))
+            "left" -> Quadruple(0.72, 0.5, (0.72 - f).coerceAtLeast(0.06), 0.5)
+            "right" -> Quadruple(0.28, 0.5, (0.28 + f).coerceAtMost(0.94), 0.5)
+            else -> Quadruple(0.5, 0.62, 0.5, (0.62 - f).coerceAtLeast(0.08)) // up
+        }
+    }
+
+    private data class Quadruple(
+        val a: Double,
+        val b: Double,
+        val c: Double,
+        val d: Double,
+    )
+
+    private fun findWebView(root: View?): WebView? {
+        if (root == null) return null
+        val found = ArrayList<WebView>()
+        fun walk(view: View?) {
+            if (view == null) return
+            if (view is WebView) {
+                found.add(view)
+                return
+            }
+            if (view is ViewGroup) {
+                for (i in 0 until view.childCount) {
+                    walk(view.getChildAt(i))
+                }
+            }
+        }
+        walk(root)
+        // 优先可见且面积最大的 WebView（避免点到隐藏/预加载实例）
+        return found
+            .filter { it.isShown && it.width > 0 && it.height > 0 }
+            .maxByOrNull { it.width * it.height }
+            ?: found.maxByOrNull { it.width * it.height }
+    }
+
+    private fun obtainTouch(
+        downTime: Long,
+        eventTime: Long,
+        action: Int,
+        x: Float,
+        y: Float,
+    ): MotionEvent {
+        val props = arrayOf(
+            MotionEvent.PointerProperties().apply {
+                id = 0
+                toolType = MotionEvent.TOOL_TYPE_FINGER
+            },
+        )
+        val coords = arrayOf(
+            MotionEvent.PointerCoords().apply {
+                this.x = x
+                this.y = y
+                pressure = 1f
+                size = 1f
+            },
+        )
+        return MotionEvent.obtain(
+            downTime,
+            eventTime,
+            action,
+            1,
+            props,
+            coords,
+            0,
+            0,
+            1f,
+            1f,
+            0,
+            0,
+            InputDevice.SOURCE_TOUCHSCREEN,
+            0,
+        )
+    }
+
+    private fun injectTap(
+        target: View,
+        x: Float,
+        y: Float,
+        holdMs: Long,
+        onDone: (Boolean) -> Unit,
+    ) {
+        val handler = Handler(Looper.getMainLooper())
+        val downTime = SystemClock.uptimeMillis()
+        var finished = false
+        fun finish(ok: Boolean) {
+            if (finished) return
+            finished = true
+            onDone(ok)
+        }
+        try {
+            val down = obtainTouch(downTime, downTime, MotionEvent.ACTION_DOWN, x, y)
+            try {
+                target.dispatchTouchEvent(down)
+            } finally {
+                down.recycle()
+            }
+            handler.postDelayed({
+                if (finished) return@postDelayed
+                val upTime = SystemClock.uptimeMillis()
+                val up = obtainTouch(downTime, upTime, MotionEvent.ACTION_UP, x, y)
+                try {
+                    target.dispatchTouchEvent(up)
+                } finally {
+                    up.recycle()
+                }
+                finish(true)
+            }, holdMs)
+            handler.postDelayed({ finish(true) }, holdMs + 120L)
+        } catch (e: Exception) {
+            finish(false)
+        }
+    }
+
+    private fun injectFlick(
+        target: View,
+        fromX: Float,
+        fromY: Float,
+        toX: Float,
+        toY: Float,
+        durationMs: Long,
+        onDone: (Boolean) -> Unit,
+    ) {
+        val handler = Handler(Looper.getMainLooper())
+        val downTime = SystemClock.uptimeMillis()
+        val steps = maxOf(8, minOf(20, (durationMs / 16L).toInt()))
+        var finished = false
+
+        fun finish(ok: Boolean) {
+            if (finished) return
+            finished = true
+            onDone(ok)
+        }
+
+        fun dispatch(action: Int, x: Float, y: Float, eventTime: Long) {
+            val ev = obtainTouch(downTime, eventTime, action, x, y)
+            try {
+                target.dispatchTouchEvent(ev)
+            } finally {
+                ev.recycle()
+            }
+        }
+
+        try {
+            dispatch(MotionEvent.ACTION_DOWN, fromX, fromY, downTime)
+            for (i in 1..steps) {
+                val step = i
+                handler.postDelayed({
+                    if (finished) return@postDelayed
+                    val t = step.toFloat() / steps
+                    // ease-out cubic，贴近真手指轻扫末段加速感
+                    val eased = 1f - (1f - t) * (1f - t) * (1f - t)
+                    val x = fromX + (toX - fromX) * eased
+                    val y = fromY + (toY - fromY) * eased
+                    val eventTime = downTime + durationMs * step / steps
+                    if (step < steps) {
+                        dispatch(MotionEvent.ACTION_MOVE, x, y, eventTime)
+                    } else {
+                        dispatch(MotionEvent.ACTION_MOVE, toX, toY, eventTime)
+                        handler.postDelayed({
+                            if (finished) return@postDelayed
+                            dispatch(
+                                MotionEvent.ACTION_UP,
+                                toX,
+                                toY,
+                                eventTime + 16,
+                            )
+                            finish(true)
+                        }, 16L)
+                    }
+                }, durationMs * step / steps)
+            }
+            // 兜底：避免 MethodChannel 永久挂起
+            handler.postDelayed({ finish(true) }, durationMs + 160L)
+        } catch (e: Exception) {
+            finish(false)
         }
     }
 

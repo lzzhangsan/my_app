@@ -3,8 +3,9 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// 智能下载「动作零件」分类（最小完备）。
+/// 智能下载「动作零件」分类（最小完备，按真人操作分组）。
 enum SmartActionCategory {
+  gesture,
   media,
   touch,
   navigate,
@@ -15,8 +16,10 @@ enum SmartActionCategory {
 extension SmartActionCategoryX on SmartActionCategory {
   String get label {
     switch (this) {
+      case SmartActionCategory.gesture:
+        return '手势';
       case SmartActionCategory.media:
-        return '滑动';
+        return '媒体';
       case SmartActionCategory.touch:
         return '点按';
       case SmartActionCategory.navigate:
@@ -29,27 +32,35 @@ extension SmartActionCategoryX on SmartActionCategory {
   }
 }
 
-/// 最小完备动作集：屏幕距离滑动 / 找媒体滑动 分开，其余为真实效力零件。
+/// 最小完备动作集：短轻扫（真人手指）与整屏滚动分开；点按/长按/等待/导航齐全。
 enum SmartActionKind {
-  /// 按屏幕高度向上滑动（不找媒体）
-  swipeUpScreen,
-  /// 按屏幕高度向下滑动
-  swipeDownScreen,
-  /// 按屏幕宽度向左滑动
-  swipeLeftScreen,
-  /// 按屏幕宽度向右滑动
-  swipeRightScreen,
-  /// 向上滑动并找到下一条媒体
-  swipeUpFindMedia,
-  /// 向下滑动并找到上一条媒体
-  swipeDownFindMedia,
-  /// 向左滑动并找到下一条媒体
-  swipeLeftFindMedia,
-  /// 向右滑动并找到下一条媒体
-  swipeRightFindMedia,
+  /// 手指向上轻扫（短距离 flick，默认约 28% 屏高）
+  flickUp,
+  /// 手指向下轻扫
+  flickDown,
+  /// 手指向左轻扫
+  flickLeft,
+  /// 手指向右轻扫
+  flickRight,
+  /// 向上滚约一屏（较长滚动，非手指轻扫）
+  scrollPageUp,
+  /// 向下滚约一屏
+  scrollPageDown,
+  /// 向左滚约一屏
+  scrollPageLeft,
+  /// 向右滚约一屏
+  scrollPageRight,
+  /// 上切到下一条媒体（验证切成功；失败则加重试轻扫）
+  findNextMedia,
+  /// 下切到上一条媒体
+  findPrevMedia,
+  /// 左切到下一条媒体
+  findNextMediaRight,
+  /// 右切到上一条/左侧媒体
+  findPrevMediaLeft,
   /// 当前媒体滚到屏幕中心
   focusMedia,
-  /// 点击当前媒体（进详情）
+  /// 点击当前媒体（进详情/卡片）
   tapMedia,
   /// 双击当前媒体
   doubleTapMedia,
@@ -63,11 +74,11 @@ enum SmartActionKind {
   goBack,
   /// 刷新页面
   reloadPage,
-  /// 下拉刷新
+  /// 下拉刷新（真人下拉手势）
   pullRefresh,
   /// 滚到列表顶部
   scrollToTop,
-  /// 短等待（约 1 秒）
+  /// 短等待（默认约 1 秒）
   waitBrief,
   /// 等页面稳定
   waitPageSettle,
@@ -82,22 +93,30 @@ enum SmartActionKind {
 extension SmartActionKindX on SmartActionKind {
   String get id {
     switch (this) {
-      case SmartActionKind.swipeUpScreen:
-        return 'swipe_up_screen';
-      case SmartActionKind.swipeDownScreen:
-        return 'swipe_down_screen';
-      case SmartActionKind.swipeLeftScreen:
-        return 'swipe_left_screen';
-      case SmartActionKind.swipeRightScreen:
-        return 'swipe_right_screen';
-      case SmartActionKind.swipeUpFindMedia:
-        return 'swipe_up_find_media';
-      case SmartActionKind.swipeDownFindMedia:
-        return 'swipe_down_find_media';
-      case SmartActionKind.swipeLeftFindMedia:
-        return 'swipe_left_find_media';
-      case SmartActionKind.swipeRightFindMedia:
-        return 'swipe_right_find_media';
+      case SmartActionKind.flickUp:
+        return 'flick_up';
+      case SmartActionKind.flickDown:
+        return 'flick_down';
+      case SmartActionKind.flickLeft:
+        return 'flick_left';
+      case SmartActionKind.flickRight:
+        return 'flick_right';
+      case SmartActionKind.scrollPageUp:
+        return 'scroll_page_up';
+      case SmartActionKind.scrollPageDown:
+        return 'scroll_page_down';
+      case SmartActionKind.scrollPageLeft:
+        return 'scroll_page_left';
+      case SmartActionKind.scrollPageRight:
+        return 'scroll_page_right';
+      case SmartActionKind.findNextMedia:
+        return 'find_next_media';
+      case SmartActionKind.findPrevMedia:
+        return 'find_prev_media';
+      case SmartActionKind.findNextMediaRight:
+        return 'find_next_media_right';
+      case SmartActionKind.findPrevMediaLeft:
+        return 'find_prev_media_left';
       case SmartActionKind.focusMedia:
         return 'focus_media';
       case SmartActionKind.tapMedia:
@@ -133,22 +152,30 @@ extension SmartActionKindX on SmartActionKind {
 
   String get label {
     switch (this) {
-      case SmartActionKind.swipeUpScreen:
-        return '向上推进一屏';
-      case SmartActionKind.swipeDownScreen:
-        return '向下推进一屏';
-      case SmartActionKind.swipeLeftScreen:
-        return '向左推进一屏';
-      case SmartActionKind.swipeRightScreen:
-        return '向右推进一屏';
-      case SmartActionKind.swipeUpFindMedia:
-        return '定位下一条媒体';
-      case SmartActionKind.swipeDownFindMedia:
-        return '定位上一条媒体';
-      case SmartActionKind.swipeLeftFindMedia:
-        return '定位右侧下一条';
-      case SmartActionKind.swipeRightFindMedia:
-        return '定位左侧下一条';
+      case SmartActionKind.flickUp:
+        return '轻扫上';
+      case SmartActionKind.flickDown:
+        return '轻扫下';
+      case SmartActionKind.flickLeft:
+        return '轻扫左';
+      case SmartActionKind.flickRight:
+        return '轻扫右';
+      case SmartActionKind.scrollPageUp:
+        return '向上滚一屏';
+      case SmartActionKind.scrollPageDown:
+        return '向下滚一屏';
+      case SmartActionKind.scrollPageLeft:
+        return '向左滚一屏';
+      case SmartActionKind.scrollPageRight:
+        return '向右滚一屏';
+      case SmartActionKind.findNextMedia:
+        return '上切下一条';
+      case SmartActionKind.findPrevMedia:
+        return '下切上一条';
+      case SmartActionKind.findNextMediaRight:
+        return '左切下一条';
+      case SmartActionKind.findPrevMediaLeft:
+        return '右切一条';
       case SmartActionKind.focusMedia:
         return '媒体居中';
       case SmartActionKind.tapMedia:
@@ -184,30 +211,38 @@ extension SmartActionKindX on SmartActionKind {
 
   String get subtitle {
     switch (this) {
-      case SmartActionKind.swipeUpScreen:
-        return '直接把页面向上滚约一屏（不做假手指）';
-      case SmartActionKind.swipeDownScreen:
-        return '直接把页面向下滚约一屏（不做假手指）';
-      case SmartActionKind.swipeLeftScreen:
-        return '直接把页面向左滚约一屏（不做假手指）';
-      case SmartActionKind.swipeRightScreen:
-        return '直接把页面向右滚约一屏（不做假手指）';
-      case SmartActionKind.swipeUpFindMedia:
-        return '找到下一条视频/图片并滚到屏幕中央';
-      case SmartActionKind.swipeDownFindMedia:
-        return '找到上一条视频/图片并滚到屏幕中央';
-      case SmartActionKind.swipeLeftFindMedia:
-        return '找到右侧下一条媒体并滚入视野';
-      case SmartActionKind.swipeRightFindMedia:
-        return '找到左侧下一条媒体并滚入视野';
+      case SmartActionKind.flickUp:
+        return '真人手指短促向上轻扫（默认约 28% 屏高，站点可感知 touch）';
+      case SmartActionKind.flickDown:
+        return '真人手指短促向下轻扫（默认约 28% 屏高）';
+      case SmartActionKind.flickLeft:
+        return '真人手指短促向左轻扫（默认约 32% 屏宽）';
+      case SmartActionKind.flickRight:
+        return '真人手指短促向右轻扫（默认约 32% 屏宽）';
+      case SmartActionKind.scrollPageUp:
+        return '把内容向上推进约一屏（长距离滚动，不是轻扫）';
+      case SmartActionKind.scrollPageDown:
+        return '把内容向下推进约一屏';
+      case SmartActionKind.scrollPageLeft:
+        return '把内容向左推进约一屏';
+      case SmartActionKind.scrollPageRight:
+        return '把内容向右推进约一屏';
+      case SmartActionKind.findNextMedia:
+        return '目标是切到下一条：先定位，不成则原生上滑并校验是否换了媒体';
+      case SmartActionKind.findPrevMedia:
+        return '目标是切到上一条：先定位，不成则原生下滑并校验是否换了媒体';
+      case SmartActionKind.findNextMediaRight:
+        return '目标是左切到下一条：校验媒体是否真的切换，失败自动加重试';
+      case SmartActionKind.findPrevMediaLeft:
+        return '目标是右切切换媒体：校验是否真的切换，失败自动加重试';
       case SmartActionKind.focusMedia:
         return '把当前媒体滚进屏幕正中';
       case SmartActionKind.tapMedia:
-        return '点击当前媒体（常用于进详情）';
+        return '单击当前媒体（常用于进详情/打开卡片）';
       case SmartActionKind.doubleTapMedia:
-        return '双击当前媒体';
+        return '双击当前媒体（点赞/放大等）';
       case SmartActionKind.longPressDownload:
-        return '长按当前媒体，触发下载';
+        return '长按当前媒体，触发本地下载';
       case SmartActionKind.clickPlay:
         return '寻找并点击播放按钮 / 播放视频';
       case SmartActionKind.closeOverlay:
@@ -217,7 +252,7 @@ extension SmartActionKindX on SmartActionKind {
       case SmartActionKind.reloadPage:
         return '刷新当前页';
       case SmartActionKind.pullRefresh:
-        return '从顶部下拉，触发站点刷新';
+        return '从顶部真人下拉，触发站点刷新';
       case SmartActionKind.scrollToTop:
         return '滚到页面最上方';
       case SmartActionKind.waitBrief:
@@ -235,17 +270,22 @@ extension SmartActionKindX on SmartActionKind {
 
   SmartActionCategory get category {
     switch (this) {
-      case SmartActionKind.swipeUpScreen:
-      case SmartActionKind.swipeDownScreen:
-      case SmartActionKind.swipeLeftScreen:
-      case SmartActionKind.swipeRightScreen:
-      case SmartActionKind.swipeUpFindMedia:
-      case SmartActionKind.swipeDownFindMedia:
-      case SmartActionKind.swipeLeftFindMedia:
-      case SmartActionKind.swipeRightFindMedia:
-      case SmartActionKind.focusMedia:
-      case SmartActionKind.scrollToTop:
+      case SmartActionKind.flickUp:
+      case SmartActionKind.flickDown:
+      case SmartActionKind.flickLeft:
+      case SmartActionKind.flickRight:
+      case SmartActionKind.scrollPageUp:
+      case SmartActionKind.scrollPageDown:
+      case SmartActionKind.scrollPageLeft:
+      case SmartActionKind.scrollPageRight:
       case SmartActionKind.pullRefresh:
+      case SmartActionKind.scrollToTop:
+        return SmartActionCategory.gesture;
+      case SmartActionKind.findNextMedia:
+      case SmartActionKind.findPrevMedia:
+      case SmartActionKind.findNextMediaRight:
+      case SmartActionKind.findPrevMediaLeft:
+      case SmartActionKind.focusMedia:
         return SmartActionCategory.media;
       case SmartActionKind.tapMedia:
       case SmartActionKind.doubleTapMedia:
@@ -268,22 +308,30 @@ extension SmartActionKindX on SmartActionKind {
 
   IconData get icon {
     switch (this) {
-      case SmartActionKind.swipeUpScreen:
+      case SmartActionKind.flickUp:
         return Icons.swipe_up;
-      case SmartActionKind.swipeDownScreen:
+      case SmartActionKind.flickDown:
         return Icons.swipe_down;
-      case SmartActionKind.swipeLeftScreen:
+      case SmartActionKind.flickLeft:
         return Icons.swipe_left;
-      case SmartActionKind.swipeRightScreen:
+      case SmartActionKind.flickRight:
         return Icons.swipe_right;
-      case SmartActionKind.swipeUpFindMedia:
+      case SmartActionKind.scrollPageUp:
+        return Icons.keyboard_double_arrow_up;
+      case SmartActionKind.scrollPageDown:
+        return Icons.keyboard_double_arrow_down;
+      case SmartActionKind.scrollPageLeft:
+        return Icons.keyboard_double_arrow_left;
+      case SmartActionKind.scrollPageRight:
+        return Icons.keyboard_double_arrow_right;
+      case SmartActionKind.findNextMedia:
         return Icons.skip_next;
-      case SmartActionKind.swipeDownFindMedia:
+      case SmartActionKind.findPrevMedia:
         return Icons.skip_previous;
-      case SmartActionKind.swipeLeftFindMedia:
-        return Icons.arrow_circle_left_outlined;
-      case SmartActionKind.swipeRightFindMedia:
+      case SmartActionKind.findNextMediaRight:
         return Icons.arrow_circle_right_outlined;
+      case SmartActionKind.findPrevMediaLeft:
+        return Icons.arrow_circle_left_outlined;
       case SmartActionKind.focusMedia:
         return Icons.center_focus_strong;
       case SmartActionKind.tapMedia:
@@ -317,35 +365,88 @@ extension SmartActionKindX on SmartActionKind {
     }
   }
 
+  /// 新建步骤时的默认参数（距离/时长等）。
+  Map<String, dynamic> get defaultParams {
+    switch (this) {
+      case SmartActionKind.flickUp:
+      case SmartActionKind.flickDown:
+        return <String, dynamic>{
+          'distanceFraction': 0.28,
+          'durationMs': 220,
+        };
+      case SmartActionKind.flickLeft:
+      case SmartActionKind.flickRight:
+        return <String, dynamic>{
+          'distanceFraction': 0.32,
+          'durationMs': 220,
+        };
+      case SmartActionKind.scrollPageUp:
+      case SmartActionKind.scrollPageDown:
+      case SmartActionKind.scrollPageLeft:
+      case SmartActionKind.scrollPageRight:
+        return <String, dynamic>{'distanceFraction': 0.85};
+      case SmartActionKind.waitBrief:
+        return <String, dynamic>{'ms': 1000};
+      case SmartActionKind.findNextMedia:
+      case SmartActionKind.findPrevMedia:
+        return <String, dynamic>{
+          'maxAttempts': 4,
+          'distanceFraction': 0.34,
+          'durationMs': 280,
+        };
+      case SmartActionKind.findNextMediaRight:
+      case SmartActionKind.findPrevMediaLeft:
+        return <String, dynamic>{
+          'maxAttempts': 4,
+          'distanceFraction': 0.36,
+          'durationMs': 280,
+        };
+      default:
+        return <String, dynamic>{};
+    }
+  }
+
   static SmartActionKind? fromId(String id) {
     for (final kind in SmartActionKind.values) {
       if (kind.id == id) return kind;
     }
     // 兼容旧版零件 id
     switch (id) {
-      case 'next_media':
-      case 'next_media_button':
-      case 'scroll_to_bottom':
-      case 'scroll_down_half':
-      case 'scroll_down_full':
-        return SmartActionKind.swipeUpFindMedia;
-      case 'prev_media':
-      case 'scroll_up_half':
-      case 'scroll_up_full':
-        return SmartActionKind.swipeDownFindMedia;
-      case 'next_media_horizontal':
-      case 'swipe_left':
-      case 'finger_swipe_left':
-        return SmartActionKind.swipeLeftFindMedia;
-      case 'swipe_right':
-      case 'finger_swipe_right':
-        return SmartActionKind.swipeRightFindMedia;
+      case 'swipe_up_screen':
       case 'swipe_up':
       case 'finger_swipe_up':
-        return SmartActionKind.swipeUpScreen;
+        return SmartActionKind.flickUp;
+      case 'swipe_down_screen':
       case 'swipe_down':
       case 'finger_swipe_down':
-        return SmartActionKind.swipeDownScreen;
+        return SmartActionKind.flickDown;
+      case 'swipe_left_screen':
+      case 'swipe_left':
+      case 'finger_swipe_left':
+        return SmartActionKind.flickLeft;
+      case 'swipe_right_screen':
+      case 'swipe_right':
+      case 'finger_swipe_right':
+        return SmartActionKind.flickRight;
+      case 'scroll_down_half':
+      case 'scroll_down_full':
+      case 'scroll_to_bottom':
+        return SmartActionKind.scrollPageUp;
+      case 'scroll_up_half':
+      case 'scroll_up_full':
+        return SmartActionKind.scrollPageDown;
+      case 'next_media':
+      case 'next_media_button':
+      case 'swipe_up_find_media':
+        return SmartActionKind.findNextMedia;
+      case 'prev_media':
+      case 'swipe_down_find_media':
+        return SmartActionKind.findPrevMedia;
+      case 'next_media_horizontal':
+      case 'swipe_left_find_media':
+        return SmartActionKind.findNextMediaRight;
+      case 'swipe_right_find_media':
+        return SmartActionKind.findPrevMediaLeft;
       case 'focus_center_media':
         return SmartActionKind.focusMedia;
       case 'tap_center':
@@ -377,7 +478,7 @@ class SmartActionStep {
     String? id,
     Map<String, dynamic>? params,
   }) : id = id ?? _newStepId(),
-       params = params ?? <String, dynamic>{};
+       params = params ?? Map<String, dynamic>.from(kind.defaultParams);
 
   final String id;
   final SmartActionKind kind;
@@ -394,6 +495,20 @@ class SmartActionStep {
     );
   }
 
+  double paramDouble(String key, double fallback) {
+    final v = params[key];
+    if (v is num) return v.toDouble();
+    if (v is String) return double.tryParse(v) ?? fallback;
+    return fallback;
+  }
+
+  int paramInt(String key, int fallback) {
+    final v = params[key];
+    if (v is num) return v.toInt();
+    if (v is String) return int.tryParse(v) ?? fallback;
+    return fallback;
+  }
+
   Map<String, dynamic> toJson() => <String, dynamic>{
     'id': id,
     'kind': kind.id,
@@ -405,13 +520,14 @@ class SmartActionStep {
         SmartActionKindX.fromId((json['kind'] ?? '').toString()) ??
         SmartActionKind.waitBrief;
     final rawParams = json['params'];
+    final merged = Map<String, dynamic>.from(kind.defaultParams);
+    if (rawParams is Map) {
+      merged.addAll(Map<String, dynamic>.from(rawParams));
+    }
     return SmartActionStep(
       id: (json['id'] ?? _newStepId()).toString(),
       kind: kind,
-      params:
-          rawParams is Map
-              ? Map<String, dynamic>.from(rawParams)
-              : <String, dynamic>{},
+      params: merged,
     );
   }
 }
@@ -481,35 +597,58 @@ class SmartActionRecipe {
     );
   }
 
-  /// 普通列表页：下一条 → 长按 → 等下载。
+  /// 核心循环（竖滑信息流）：长按 → 等下载 → 上切下一条（校验切换）→ 短等。
   static SmartActionRecipe feedTemplate(String host) {
     return SmartActionRecipe(
       host: host,
-      name: '列表 · 下一条长按',
+      name: '核心 · 长按→上切',
       steps: [
-        SmartActionStep(kind: SmartActionKind.swipeUpScreen),
-        SmartActionStep(kind: SmartActionKind.focusMedia),
         SmartActionStep(kind: SmartActionKind.longPressDownload),
         SmartActionStep(kind: SmartActionKind.waitDownload),
+        SmartActionStep(
+          kind: SmartActionKind.findNextMedia,
+          params: const {'maxAttempts': 4, 'distanceFraction': 0.34},
+        ),
+        SmartActionStep(kind: SmartActionKind.waitBrief),
       ],
     );
   }
 
-  /// 短视频/信息流：切下一条 → 长按。
+  /// 核心循环（横滑信息流）：长按 → 等下载 → 左切下一条（校验切换）→ 短等。
+  static SmartActionRecipe feedLeftTemplate(String host) {
+    return SmartActionRecipe(
+      host: host,
+      name: '核心 · 长按→左切',
+      steps: [
+        SmartActionStep(kind: SmartActionKind.longPressDownload),
+        SmartActionStep(kind: SmartActionKind.waitDownload),
+        SmartActionStep(
+          kind: SmartActionKind.findNextMediaRight,
+          params: const {'maxAttempts': 4, 'distanceFraction': 0.36},
+        ),
+        SmartActionStep(kind: SmartActionKind.waitBrief),
+      ],
+    );
+  }
+
+  /// 沉浸短视频：长按 → 上切下一条（带校验重试）。
   static SmartActionRecipe immersiveTemplate(String host) {
     return SmartActionRecipe(
       host: host,
-      name: '沉浸流 · 下一条长按',
+      name: '沉浸流 · 长按上切',
       steps: [
-        SmartActionStep(kind: SmartActionKind.swipeUpFindMedia),
-        SmartActionStep(kind: SmartActionKind.waitBrief),
         SmartActionStep(kind: SmartActionKind.longPressDownload),
         SmartActionStep(kind: SmartActionKind.waitDownload),
+        SmartActionStep(
+          kind: SmartActionKind.findNextMedia,
+          params: const {'maxAttempts': 5, 'distanceFraction': 0.38},
+        ),
+        SmartActionStep(kind: SmartActionKind.waitBrief),
       ],
     );
   }
 
-  /// 详情页：点进 → 长按 → 返回 → 下一条。
+  /// 详情页：点进 → 长按 → 返回 → 上切下一条。
   static SmartActionRecipe detailTemplate(String host) {
     return SmartActionRecipe(
       host: host,
@@ -523,10 +662,17 @@ class SmartActionRecipe {
         SmartActionStep(kind: SmartActionKind.waitDownload),
         SmartActionStep(kind: SmartActionKind.goBack),
         SmartActionStep(kind: SmartActionKind.waitPageSettle),
-        SmartActionStep(kind: SmartActionKind.swipeUpScreen),
+        SmartActionStep(
+          kind: SmartActionKind.findNextMedia,
+          params: const {'maxAttempts': 4},
+        ),
       ],
     );
   }
+
+  /// 与 [feedTemplate] 相同：长按当前 → 上滑下一条（推荐默认验证）。
+  static SmartActionRecipe flickLongPressTemplate(String host) =>
+      feedTemplate(host);
 }
 
 String _newRecipeId() =>
@@ -735,4 +881,3 @@ class SmartActionRecipeStore {
     }
   }
 }
-

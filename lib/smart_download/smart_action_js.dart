@@ -1,9 +1,9 @@
 /// JS helpers for smart-download action parts.
-/// Each snippet must produce real page effects (scroll/touch/click), not labels only.
+/// Each snippet must produce real page effects (touch/scroll/click), not labels only.
 class SmartActionJs {
   SmartActionJs._();
 
-  /// Shared: find best vertical/horizontal scrollable under viewport center.
+  /// Shared: find best vertical/horizontal scrollable under viewport center + touch helpers.
   static const finderPreamble = r'''
 function __smartIsScrollable(el, axis) {
   if (!el || el.nodeType !== 1) return false;
@@ -59,14 +59,14 @@ function __smartMakeTouch(target, id, clientX, clientY) {
       return new Touch({
         identifier: id, target,
         clientX, clientY, pageX, pageY, screenX: clientX, screenY: clientY,
-        radiusX: 14, radiusY: 14, force: 0.85
+        radiusX: 12, radiusY: 12, force: 0.9
       });
     } catch (_) {}
   }
   return {
     identifier: id, target,
     clientX, clientY, pageX, pageY, screenX: clientX, screenY: clientY,
-    radiusX: 14, radiusY: 14, force: 0.85
+    radiusX: 12, radiusY: 12, force: 0.9
   };
 }
 function __smartFireTouch(target, type, touch, active, includeMouse) {
@@ -85,7 +85,7 @@ function __smartFireTouch(target, type, touch, active, includeMouse) {
       Object.defineProperty(ev, 'changedTouches', {configurable: true, value: [touch]});
     } catch (_) {}
   }
-  target.dispatchEvent(ev);
+  try { target.dispatchEvent(ev); } catch (_) {}
   try {
     const map = {touchstart: 'pointerdown', touchmove: 'pointermove', touchend: 'pointerup'};
     const pType = map[type];
@@ -94,8 +94,9 @@ function __smartFireTouch(target, type, touch, active, includeMouse) {
         bubbles: true, cancelable: true, composed: true,
         clientX: touch.clientX, clientY: touch.clientY,
         pointerId: touch.identifier, pointerType: 'touch',
-        isPrimary: true, pressure: type === 'touchend' ? 0 : 0.5,
-        buttons: type === 'touchend' ? 0 : 1
+        isPrimary: true, pressure: type === 'touchend' ? 0 : 0.55,
+        buttons: type === 'touchend' ? 0 : 1,
+        width: 24, height: 24
       }));
     }
   } catch (_) {}
@@ -116,7 +117,7 @@ function __smartFireTouch(target, type, touch, active, includeMouse) {
 function __smartIsInteractive(el) {
   if (!el || el.nodeType !== 1) return false;
   const tag = (el.tagName || '').toUpperCase();
-  if (['A','BUTTON','INPUT','TEXTAREA','SELECT','LABEL','SUMMARY','VIDEO','AUDIO'].includes(tag)) {
+  if (['A','BUTTON','INPUT','TEXTAREA','SELECT','LABEL','SUMMARY'].includes(tag)) {
     return true;
   }
   const role = (el.getAttribute && el.getAttribute('role')) || '';
@@ -125,13 +126,16 @@ function __smartIsInteractive(el) {
   return false;
 }
 function __smartPickSwipeTarget(x, y, preferred) {
-  if (preferred && preferred.nodeType === 1) return preferred;
+  if (preferred && preferred.nodeType === 1) {
+    // preferred 若是可点控件，改找父层滚动容器，避免轻扫变成误点
+    if (!__smartIsInteractive(preferred)) return preferred;
+  }
   try {
     const stack = document.elementsFromPoint(x, y) || [];
     for (const el of stack) {
       if (!el || el === document.documentElement || el === document.body) continue;
       if (__smartIsInteractive(el)) continue;
-      if (el.closest && el.closest('a[href], button, [role="button"], input, textarea, select, video, audio')) {
+      if (el.closest && el.closest('a[href], button, [role="button"], input, textarea, select')) {
         continue;
       }
       return el;
@@ -139,57 +143,145 @@ function __smartPickSwipeTarget(x, y, preferred) {
   } catch (_) {}
   return preferred || document.scrollingElement || document.body;
 }
+function __smartEaseOutCubic(t) {
+  return 1 - Math.pow(1 - t, 3);
+}
+function __smartEaseInOut(t) {
+  return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+}
 ''';
 
-  static String scrollRelative({
-    required double fraction,
-    required int direction,
+  /// 真人短促轻扫：派发 touch/pointer 序列，若页面未滚动再 scrollBy 兜底。
+  /// axisHint: up|down|left|right —— 手指移动方向（up = 手指向上，内容上移看更多）。
+  static String fingerFlick({
+    required String axisHint,
+    double distanceFraction = 0.28,
+    int durationMs = 220,
   }) {
-    final f = fraction.clamp(0.1, 2.0);
-    final d = direction >= 0 ? 1 : -1;
+    final axis = axisHint;
+    final f = distanceFraction.clamp(0.12, 0.75);
+    final dur = durationMs.clamp(120, 700);
     return '''
 (() => {
   $finderPreamble
+  const axisHint = '$axis';
   const fraction = $f;
-  const direction = $d;
-  const scroller = __smartFindScroller('y', direction);
-  const before = Number(scroller.scrollTop || 0);
-  const amount = Math.max(
-    160,
-    Math.floor((scroller.clientHeight || window.innerHeight || 640) * fraction)
+  const durationMs = $dur;
+  const w = window.innerWidth || 360;
+  const h = window.innerHeight || 640;
+  const vertical = axisHint === 'up' || axisHint === 'down';
+  const distance = Math.max(
+    72,
+    Math.floor((vertical ? h : w) * fraction)
   );
-  const delta = direction * amount;
-  try { scroller.scrollBy({top: delta, left: 0, behavior: 'auto'}); } catch (_) {
-    scroller.scrollTop = before + delta;
+  // 手指轨迹：up = 手指从下往上滑
+  let fromX = Math.floor(w * 0.5);
+  let fromY = Math.floor(h * 0.58);
+  let toX = fromX;
+  let toY = fromY;
+  if (axisHint === 'up') {
+    fromY = Math.floor(h * 0.62);
+    toY = Math.max(16, fromY - distance);
+  } else if (axisHint === 'down') {
+    fromY = Math.floor(h * 0.38);
+    toY = Math.min(h - 16, fromY + distance);
+  } else if (axisHint === 'left') {
+    fromX = Math.floor(w * 0.72);
+    toX = Math.max(16, fromX - distance);
+    fromY = Math.floor(h * 0.5);
+    toY = fromY;
+  } else {
+    fromX = Math.floor(w * 0.28);
+    toX = Math.min(w - 16, fromX + distance);
+    fromY = Math.floor(h * 0.5);
+    toY = fromY;
   }
-  let after = Number(scroller.scrollTop || 0);
-  if (Math.abs(after - before) < 2) {
-    scroller.scrollTop = before + delta;
-    after = Number(scroller.scrollTop || 0);
+
+  const preferRemain = (axisHint === 'up' || axisHint === 'left') ? 1 : -1;
+  const scroller = __smartFindScroller(vertical ? 'y' : 'x', preferRemain);
+  const target = __smartPickSwipeTarget(fromX, fromY, scroller);
+  const beforeY = Number(scroller.scrollTop || 0);
+  const beforeX = Number(scroller.scrollLeft || 0);
+  const winBeforeY = Number(window.scrollY || window.pageYOffset || 0);
+  const winBeforeX = Number(window.scrollX || window.pageXOffset || 0);
+  // 内容滚动方向与手指相反
+  let scrollDx = 0, scrollDy = 0;
+  if (axisHint === 'up') scrollDy = distance;
+  else if (axisHint === 'down') scrollDy = -distance;
+  else if (axisHint === 'left') scrollDx = distance;
+  else scrollDx = -distance;
+
+  const id = Date.now() % 100000;
+  const steps = Math.max(6, Math.min(16, Math.round(durationMs / 18)));
+  try { document.documentElement.setAttribute('data-app-smart-gesture', '1'); } catch (_) {}
+  const startTouch = __smartMakeTouch(target, id, fromX, fromY);
+  __smartFireTouch(target, 'touchstart', startTouch, true, false);
+
+  for (let i = 1; i <= steps; i++) {
+    const delay = Math.floor(durationMs * (i / steps));
+    const t = __smartEaseOutCubic(i / steps);
+    const x = Math.round(fromX + (toX - fromX) * t);
+    const y = Math.round(fromY + (toY - fromY) * t);
+    setTimeout(() => {
+      const touch = __smartMakeTouch(target, id, x, y);
+      if (i < steps) {
+        __smartFireTouch(target, 'touchmove', touch, true, false);
+      } else {
+        __smartFireTouch(target, 'touchend', touch, false, false);
+        try { document.documentElement.removeAttribute('data-app-smart-gesture'); } catch (_) {}
+        // 若站点未响应 touch（常见于普通文档流），用短距离 scroll 兜底
+        setTimeout(() => {
+          try {
+            const afterY = Number(scroller.scrollTop || 0);
+            const afterX = Number(scroller.scrollLeft || 0);
+            const moved = Math.abs(afterY - beforeY) + Math.abs(afterX - beforeX);
+            const winMoved = Math.abs((window.scrollY || 0) - winBeforeY) +
+              Math.abs((window.scrollX || 0) - winBeforeX);
+            if (moved < 4 && winMoved < 4) {
+              try {
+                scroller.scrollBy({ top: scrollDy, left: scrollDx, behavior: 'auto' });
+              } catch (_) {
+                try {
+                  scroller.scrollTop = beforeY + scrollDy;
+                  scroller.scrollLeft = beforeX + scrollDx;
+                } catch (__) {}
+              }
+              const isRoot = scroller === document.scrollingElement ||
+                scroller === document.documentElement || scroller === document.body;
+              if (isRoot) {
+                try { window.scrollBy(scrollDx, scrollDy); } catch (_) {}
+              }
+              try {
+                scroller.dispatchEvent(new WheelEvent('wheel', {
+                  deltaY: scrollDy, deltaX: scrollDx,
+                  bubbles: true, cancelable: true, deltaMode: 0
+                }));
+              } catch (_) {}
+            }
+          } catch (_) {}
+        }, 24);
+      }
+    }, delay);
   }
-  try {
-    scroller.dispatchEvent(new WheelEvent('wheel', {
-      deltaY: delta, bubbles: true, cancelable: true, deltaMode: 0
-    }));
-  } catch (_) {}
-  if (scroller === document.scrollingElement ||
-      scroller === document.documentElement ||
-      scroller === document.body) {
-    try { window.scrollBy(0, delta); } catch (_) {}
-  }
-  after = Number(scroller.scrollTop || 0);
+
   return {
     ok: true,
-    moved: Math.abs(after - before),
-    before, after,
-    tag: (scroller.tagName || '') + (scroller.id ? '#' + scroller.id : '')
+    intent: 'finger_flick',
+    axisHint,
+    distance,
+    durationMs,
+    fromX: fromX / w,
+    fromY: fromY / h,
+    toX: toX / w,
+    toY: toY / h,
+    scheduledMs: durationMs + 80,
+    tag: (target.tagName || '') + (target.id ? '#' + target.id : '')
   };
 })()
 ''';
   }
 
-  /// 按屏幕尺寸推进一屏（意图驱动：直接滚一屏，不做假手指）。
-  /// axisHint: up|down|left|right —— up = 内容向上走 / 看下面更多
+  /// 按屏幕尺寸推进一屏（较长滚动，与轻扫分开）。
   static String screenSwipe({
     required String axisHint,
     double fraction = 0.85,
@@ -262,7 +354,6 @@ function __smartPickSwipeTarget(x, y, preferred) {
       scroller.scrollLeft = beforeX + dx;
     } catch (__) {}
   }
-  // 若 smooth 未立刻生效，下一帧强制落到目标，保证「就滚这一下」
   const targetY = beforeY + dy;
   const targetX = beforeX + dx;
   setTimeout(() => {
@@ -319,8 +410,7 @@ function __smartPickSwipeTarget(x, y, preferred) {
 ''';
   }
 
-  /// 定位相邻媒体（意图驱动：找到下一条 → scrollIntoView，不做假滑动）。
-  /// direction: next | prev ； axisHint: up | down | left | right（用于挑空间相邻项）
+  /// 定位相邻媒体；找不到时用真人轻扫推进（而不是整屏假滚）。
   static String swipeToAdjacentMedia({
     required String direction,
     required String axisHint,
@@ -455,37 +545,33 @@ function __smartPickSwipeTarget(x, y, preferred) {
     };
   }
 
-  // 没有下一条可见媒体：只推进一屏（同方向），再等下一轮识别
-  const distance = Math.max(180, Math.floor((axisHint === 'left' || axisHint === 'right' ? w : h) * 0.75));
-  try {
-    const scroller = __smartFindScroller(
-      (axisHint === 'left' || axisHint === 'right') ? 'x' : 'y',
-      direction === 'next' ? 1 : -1
-    );
-    if (axisHint === 'left' || axisHint === 'right') {
-      scroller.scrollBy({
-        left: direction === 'next' ? distance : -distance,
-        top: 0,
-        behavior: 'smooth'
-      });
-    } else {
-      scroller.scrollBy({
-        top: direction === 'next' ? distance : -distance,
-        left: 0,
-        behavior: 'smooth'
-      });
-    }
-  } catch (_) {}
-  current.el.setAttribute('data-app-smart-current', '1');
+  // 没有下一条：不在此派发合成 touch（Android WebView 会忽略 isTrusted=false）。
+  // 交由 Dart 侧注入原生 MotionEvent 轻扫。
+  let fromX = Math.floor(w * 0.5);
+  let fromY = Math.floor(h * 0.58);
+  let toX = fromX;
+  let toY = fromY;
+  const flickDistance = Math.max(96, Math.floor((axisHint === 'left' || axisHint === 'right' ? w : h) * 0.34));
+  if (axisHint === 'left') {
+    fromX = Math.floor(w * 0.72); toX = fromX - flickDistance; fromY = Math.floor(h * 0.5); toY = fromY;
+  } else if (axisHint === 'right') {
+    fromX = Math.floor(w * 0.28); toX = fromX + flickDistance; fromY = Math.floor(h * 0.5); toY = fromY;
+  } else if (axisHint === 'down' || direction === 'prev') {
+    fromY = Math.floor(h * 0.38); toY = fromY + flickDistance;
+  } else {
+    fromY = Math.floor(h * 0.62); toY = fromY - flickDistance;
+  }
+  try { current.el.setAttribute('data-app-smart-current', '1'); } catch (_) {}
   return {
     ok: true,
     intent: 'find_media',
     foundNext: false,
-    fromX: current.x / w,
-    fromY: current.y / h,
-    toX: current.x / w,
-    toY: current.y / h,
-    scheduledMs: 520,
+    needsNativeFlick: true,
+    fromX: fromX / w,
+    fromY: fromY / h,
+    toX: toX / w,
+    toY: toY / h,
+    scheduledMs: 40,
     axisHint,
     index: curIdx,
     total: rows.length
@@ -494,50 +580,121 @@ function __smartPickSwipeTarget(x, y, preferred) {
 ''';
   }
 
-  /// 上/左/右 → 下一条媒体；下滑 → 上一条。
-  /// [preferHorizontal] 为 true 时强制横滑；null 时自动判断。
+  /// 当前「主媒体」指纹：用于判断是否已真正切到下一条（不仅是滑了距离）。
+  static String mediaIdentity({
+    required bool imagesOnly,
+    required bool videosOnly,
+  }) {
+    return '''
+(() => {
+  const imagesOnly = $imagesOnly;
+  const videosOnly = $videosOnly;
+  const w = window.innerWidth || 360;
+  const h = window.innerHeight || 640;
+  const cx = w / 2, cy = h / 2;
+  const selector = imagesOnly ? 'img' : (videosOnly ? 'video' : 'video, img');
+  const se = document.scrollingElement || document.documentElement || document.body;
+  const marked = document.querySelector('[data-app-smart-current="1"]');
+  function srcOf(el) {
+    if (!el) return '';
+    return String(el.currentSrc || el.src || el.getAttribute('src') ||
+      el.getAttribute('data-src') || el.getAttribute('poster') || '').trim();
+  }
+  function pick() {
+    if (marked && (!imagesOnly || marked.tagName === 'IMG') &&
+        (!videosOnly || marked.tagName === 'VIDEO')) {
+      const r = marked.getBoundingClientRect();
+      if (r.width >= 80 && r.height >= 60) return marked;
+    }
+    let best = null, bestScore = -1e18;
+    for (const el of document.querySelectorAll(selector)) {
+      const r = el.getBoundingClientRect();
+      const iw = Math.max(0, Math.min(w, r.right) - Math.max(0, r.left));
+      const ih = Math.max(0, Math.min(h, r.bottom) - Math.max(0, r.top));
+      if (iw < 100 || ih < 80) continue;
+      const mx = r.left + r.width / 2, my = r.top + r.height / 2;
+      const cover = (r.left <= cx && r.right >= cx && r.top <= cy && r.bottom >= cy) ? 1 : 0;
+      const score = cover * 50000 + (iw * ih) / (w * h) * 20000 -
+        Math.hypot(mx - cx, my - cy) * 2 + (el.tagName === 'VIDEO' ? 2000 : 0);
+      if (score > bestScore) { bestScore = score; best = el; }
+    }
+    return best;
+  }
+  const el = pick();
+  const r = el ? el.getBoundingClientRect() : {left:0,top:0,width:0,height:0};
+  const src = srcOf(el);
+  const key = [
+    el ? el.tagName : 'none',
+    src.slice(0, 220),
+    Math.round(r.left), Math.round(r.top),
+    Math.round(r.width), Math.round(r.height),
+    Math.round(Number(se && se.scrollTop) || 0),
+    Math.round(Number(se && se.scrollLeft) || 0),
+    String(location.pathname || ''),
+    String(location.search || '').slice(0, 80)
+  ].join('|');
+  return {
+    ok: true,
+    found: !!el,
+    key,
+    src: src.slice(0, 180),
+    tag: el ? el.tagName : '',
+    x: w > 0 ? ((r.left + r.width / 2) / w) : 0.5,
+    y: h > 0 ? ((r.top + r.height / 2) / h) : 0.5,
+    scrollTop: Math.round(Number(se && se.scrollTop) || 0),
+    scrollLeft: Math.round(Number(se && se.scrollLeft) || 0)
+  };
+})()
+''';
+  }
+
+  /// 定位相邻媒体。directionOverride: next|prev|null（null 时由 dy/dx 推断）。
   static String fingerSwipe({
     required double dxNorm,
     required double dyNorm,
     bool imagesOnly = false,
     bool videosOnly = false,
     bool? preferHorizontal,
+    String? directionOverride,
+    String? axisHint,
   }) {
-    final goNext = dyNorm < 0 || dxNorm != 0;
-    String axisHint;
-    if (preferHorizontal == true) {
-      axisHint = 'left';
+    final goNext =
+        directionOverride == 'next'
+            ? true
+            : directionOverride == 'prev'
+            ? false
+            : (dyNorm < 0 || (dxNorm < 0 && dyNorm == 0));
+    late final String resolvedAxis;
+    final override = (axisHint ?? '').trim();
+    if (override == 'up' ||
+        override == 'down' ||
+        override == 'left' ||
+        override == 'right') {
+      resolvedAxis = override;
+    } else if (preferHorizontal == true) {
+      // 手指左滑常用于看右侧下一条；右滑看左侧
+      resolvedAxis = goNext ? 'left' : 'right';
     } else if (preferHorizontal == false) {
-      axisHint = goNext ? 'up' : 'down';
+      resolvedAxis = goNext ? 'up' : 'down';
     } else if (dyNorm.abs() >= dxNorm.abs()) {
-      axisHint = dyNorm < 0 ? 'up' : 'down';
+      resolvedAxis = dyNorm < 0 ? 'up' : 'down';
     } else {
-      axisHint = dxNorm < 0 ? 'left' : 'right';
+      resolvedAxis = dxNorm < 0 ? 'left' : 'right';
     }
     return swipeToAdjacentMedia(
       direction: goNext ? 'next' : 'prev',
-      axisHint: axisHint,
+      axisHint: resolvedAxis,
       imagesOnly: imagesOnly,
       videosOnly: videosOnly,
-      autoAxis: preferHorizontal == null && goNext,
+      autoAxis:
+          override.isEmpty &&
+          preferHorizontal == null &&
+          goNext &&
+          directionOverride == null,
     );
   }
 
-  /// 滚动零件也改为切相邻媒体。
-  static String scrollToAdjacentMedia({
-    required String direction,
-    required bool imagesOnly,
-    required bool videosOnly,
-  }) {
-    return swipeToAdjacentMedia(
-      direction: direction == 'prev' ? 'prev' : 'next',
-      axisHint: direction == 'prev' ? 'down' : 'up',
-      imagesOnly: imagesOnly,
-      videosOnly: videosOnly,
-    );
-  }
-
-  /// 顶部下拉刷新：真人下拉手势（单次、竖直、不点控件）。
+  /// 顶部下拉刷新：真人下拉手势。
   static String pullRefresh() {
     return '''
 (() => {
@@ -552,13 +709,12 @@ function __smartPickSwipeTarget(x, y, preferred) {
   const id = Date.now() % 100000;
   const steps = 14;
   const durationMs = 420;
-  const ease = (t) => t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
   try { document.documentElement.setAttribute('data-app-smart-gesture', '1'); } catch (_) {}
   const startTouch = __smartMakeTouch(target, id, cx, fromY);
   __smartFireTouch(target, 'touchstart', startTouch, true, false);
   for (let i = 1; i <= steps; i++) {
     const delay = Math.floor(durationMs * (i / steps));
-    const t = ease(i / steps);
+    const t = __smartEaseInOut(i / steps);
     const y = Math.round(fromY + (toY - fromY) * t);
     setTimeout(() => {
       const touch = __smartMakeTouch(target, id, cx, y);
@@ -579,23 +735,31 @@ function __smartPickSwipeTarget(x, y, preferred) {
 ''';
   }
 
+  /// 真实单击：touchstart → 短停 → touchend → click。
   static String tapAt({required double clientX, required double clientY}) {
     return '''
 (() => {
   $finderPreamble
   const x = $clientX, y = $clientY;
   const el = document.elementFromPoint(x, y) || document.body;
-  const target = (el.closest && (el.closest('a[href], button, [role="button"], video, img') || el)) || el;
+  const target = (el.closest && (el.closest('a[href], button, [role="button"], video, img, [onclick]') || el)) || el;
   const id = Date.now() % 100000;
+  const holdMs = 48;
+  try { target.setAttribute('data-app-smart-gesture', '1'); } catch (_) {}
   const touch = __smartMakeTouch(target, id, x, y);
-  __smartFireTouch(target, 'touchstart', touch, true);
-  __smartFireTouch(target, 'touchend', touch, false);
-  try { target.click(); } catch (_) {}
-  return {ok: true, tag: target.tagName || ''};
+  __smartFireTouch(target, 'touchstart', touch, true, true);
+  setTimeout(() => {
+    const end = __smartMakeTouch(target, id, x, y);
+    __smartFireTouch(target, 'touchend', end, false, true);
+    try { target.click(); } catch (_) {}
+    try { target.removeAttribute('data-app-smart-gesture'); } catch (_) {}
+  }, holdMs);
+  return {ok: true, tag: target.tagName || '', scheduledMs: holdMs + 40};
 })()
 ''';
   }
 
+  /// 真实双击：两次短按，间隔约 90ms。
   static String doubleTapAt({required double clientX, required double clientY}) {
     return '''
 (() => {
@@ -604,20 +768,31 @@ function __smartPickSwipeTarget(x, y, preferred) {
   const el = document.elementFromPoint(x, y) || document.body;
   const target = (el.closest && (el.closest('video, img, a[href], button') || el)) || el;
   const id = Date.now() % 100000;
-  const fireOnce = () => {
-    const touch = __smartMakeTouch(target, id, x, y);
-    __smartFireTouch(target, 'touchstart', touch, true);
-    __smartFireTouch(target, 'touchend', touch, false);
-    try { target.click(); } catch (_) {}
+  const tapOnce = (delay, withClick) => {
+    setTimeout(() => {
+      const t0 = __smartMakeTouch(target, id, x, y);
+      __smartFireTouch(target, 'touchstart', t0, true, true);
+      setTimeout(() => {
+        const t1 = __smartMakeTouch(target, id, x, y);
+        __smartFireTouch(target, 'touchend', t1, false, true);
+        if (withClick) {
+          try { target.click(); } catch (_) {}
+        }
+      }, 40);
+    }, delay);
   };
-  fireOnce();
-  fireOnce();
-  try {
-    target.dispatchEvent(new MouseEvent('dblclick', {
-      bubbles: true, cancelable: true, clientX: x, clientY: y
-    }));
-  } catch (_) {}
-  return {ok: true};
+  try { target.setAttribute('data-app-smart-gesture', '1'); } catch (_) {}
+  tapOnce(0, false);
+  tapOnce(100, true);
+  setTimeout(() => {
+    try {
+      target.dispatchEvent(new MouseEvent('dblclick', {
+        bubbles: true, cancelable: true, clientX: x, clientY: y
+      }));
+    } catch (_) {}
+    try { target.removeAttribute('data-app-smart-gesture'); } catch (_) {}
+  }, 180);
+  return {ok: true, scheduledMs: 240};
 })()
 ''';
   }
@@ -661,35 +836,229 @@ function __smartPickSwipeTarget(x, y, preferred) {
 ''';
   }
 
-  static String clickCloseOverlay() {
+  static String clickCloseOverlay() => clearSmartBlockers(forceHide: false);
+
+  /// 探测干扰弹层是否仍在（用于清障后复核）。
+  static String probeSmartBlockers() {
     return r'''
 (() => {
-  const pattern = /(关闭|關閉|close|dismiss|got it|知道了|跳过|skip|×|✕|x)/i;
-  const nodes = Array.from(document.querySelectorAll(
-    'button, [role="button"], a, [aria-label], .close, [class*="close"], [class*="modal"] button'
-  ));
-  const candidates = nodes.map(el => {
+  const w = window.innerWidth || 360;
+  const h = window.innerHeight || 640;
+  const promoRe = /(温馨提示|溫馨提示|建议前往|建議前往|百度|更高清|打开app|打開APP|下载app|安裝app|领券|廣告|广告)/i;
+  const hits = [];
+  const nodes = document.querySelectorAll('body *');
+  for (let i = 0; i < nodes.length && hits.length < 6; i++) {
+    const el = nodes[i];
     const r = el.getBoundingClientRect();
-    const label = String(
-      el.getAttribute('aria-label') || el.title || el.innerText || el.className || ''
-    ).replace(/\s+/g, ' ').trim();
-    return {el, r, label};
-  }).filter(row => {
-    if (row.r.width < 12 || row.r.height < 12) return false;
-    if (row.r.bottom <= 0 || row.r.top >= innerHeight) return false;
-    return pattern.test(row.label) || /close/i.test(row.el.className || '');
-  }).sort((a, b) => (a.r.top + a.r.left) - (b.r.top + b.r.left));
-  const hit = candidates[0];
-  if (!hit) {
-    try {
-      document.dispatchEvent(new KeyboardEvent('keydown', {
-        key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true
-      }));
-    } catch (_) {}
-    return {ok: false};
+    if (r.width < 80 || r.height < 40) continue;
+    if (r.bottom <= 0 || r.top >= h || r.right <= 0 || r.left >= w) continue;
+    const st = getComputedStyle(el);
+    if (st.display === 'none' || st.visibility === 'hidden' || Number(st.opacity) === 0) continue;
+    const t = String(el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+    if (!t || t.length > 60) continue;
+    if (promoRe.test(t) && (/(取消|确定|確定|关闭|關閉)/.test(t) || r.width * r.height > w * h * 0.08)) {
+      hits.push(t.slice(0, 40));
+    }
   }
-  try { hit.el.click(); } catch (_) {}
-  return {ok: true, label: hit.label.slice(0, 40)};
+  return { ok: true, present: hits.length > 0, samples: hits };
+})()
+''';
+  }
+
+  /// 智能下载中清障：定位「取消」坐标供原生 MotionEvent 点击；
+  /// JS click 常被忽略（isTrusted=false）。仅当 forceHide=true 时强制隐藏弹层。
+  static String clearSmartBlockers({bool forceHide = false}) {
+    // 前缀插值 + 后续 raw，避免正则里的 `$` 被 Dart 当成插值
+    return '''
+(() => {
+  const forceHide = $forceHide;
+'''
+        r'''
+  const w = window.innerWidth || 360;
+  const h = window.innerHeight || 640;
+  const actions = [];
+  const tapTargets = [];
+
+  const dismissRe = /^(取消|关闭|關閉|关掉|跳过|skip|知道了|我知道了|暂不|拒絕|拒绝|忽略|算了|以后再说|以後再說|继续浏览|繼續瀏覽|×|✕|✖|x)$/i;
+  const dismissSoftRe = /(取消|关闭|關閉|关闭广告|關閉廣告|跳过广告|跳过|dismiss|cancel|close|got it|知道了|暂不|拒絕|拒绝|不了|继续浏览|忽略|算了)/i;
+  const dangerGoRe = /(百度|高清|更高清|前往|立即前往|打开app|打開app|下载app|下載app|安装|安裝|领取|領取|开通|開通|vip|充值|免费领|免費領)/i;
+  const promoDialogRe = /(温馨提示|溫馨提示|温馨|建议前往|建議前往|广告|廣告|推荐|推薦|高清|百度|打开app|领券|領券)/i;
+  const confirmOkRe = /^(确定|確定|ok|yes|确认|確認|同意|允许|允許)$/i;
+
+  function labelOf(el) {
+    return String(
+      el.getAttribute('aria-label') || el.title || el.value ||
+      el.innerText || el.textContent || ''
+    ).replace(/\s+/g, ' ').trim();
+  }
+
+  function ownText(el) {
+    let s = '';
+    try {
+      for (const n of el.childNodes) {
+        if (n.nodeType === 3) s += (n.textContent || '');
+      }
+    } catch (_) {}
+    s = s.replace(/\s+/g, ' ').trim();
+    if (s) return s;
+    // 叶子或近似叶子
+    const t = String(el.innerText || '').replace(/\s+/g, ' ').trim();
+    return t.length <= 12 ? t : '';
+  }
+
+  function visible(el) {
+    const r = el.getBoundingClientRect();
+    if (r.width < 8 || r.height < 8) return false;
+    if (r.bottom <= 0 || r.top >= h || r.right <= 0 || r.left >= w) return false;
+    const st = getComputedStyle(el);
+    if (st.display === 'none' || st.visibility === 'hidden' || Number(st.opacity) === 0) return false;
+    return true;
+  }
+
+  function pushTap(el, why) {
+    const r = el.getBoundingClientRect();
+    const x = (r.left + r.width / 2) / w;
+    const y = (r.top + r.height / 2) / h;
+    tapTargets.push({
+      x: Math.max(0.03, Math.min(0.97, x)),
+      y: Math.max(0.03, Math.min(0.97, y)),
+      label: (ownText(el) || labelOf(el)).slice(0, 20),
+      why
+    });
+    actions.push(why + ':' + (ownText(el) || labelOf(el)).slice(0, 20));
+  }
+
+  function tryJsClick(el) {
+    try { el.click(); return true; } catch (_) {}
+    try {
+      el.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, view: window}));
+      return true;
+    } catch (_) { return false; }
+  }
+
+  // A) 精确找短文案「取消」—— 不依赖 modal class
+  const candidates = [];
+  const scan = document.querySelectorAll(
+    'button, [role="button"], a, input[type="button"], input[type="submit"],' +
+    'span, div, li, p, font, label, td'
+  );
+  for (const el of scan) {
+    if (!visible(el)) continue;
+    const own = ownText(el);
+    const full = labelOf(el);
+    const t = own || (full.length <= 10 ? full : '');
+    if (!t || t.length > 10) continue;
+    if (dangerGoRe.test(t)) continue;
+    let score = -1;
+    if (dismissRe.test(t)) score = 120;
+    else if (dismissSoftRe.test(t) && t.length <= 8) score = 90;
+    else if (/^(×|✕|✖|x|X)$/.test(t)) score = 110;
+    if (score < 0) continue;
+    // 父级若是促销弹窗，加分
+    let p = el.parentElement, promoBoost = 0, depth = 0;
+    while (p && depth < 6) {
+      const pt = labelOf(p).slice(0, 100);
+      if (promoDialogRe.test(pt)) { promoBoost = 40; break; }
+      p = p.parentElement; depth++;
+    }
+    const r = el.getBoundingClientRect();
+    candidates.push({ el, score: score + promoBoost, t, r });
+  }
+  candidates.sort((a, b) => b.score - a.score || (a.r.top - b.r.top));
+
+  let jsClicked = false;
+  if (candidates[0]) {
+    pushTap(candidates[0].el, 'cancel_btn');
+    jsClicked = tryJsClick(candidates[0].el);
+    // 再备选一个次优坐标
+    if (candidates[1]) pushTap(candidates[1].el, 'cancel_alt');
+  }
+
+  // B) 找到「温馨提示」类容器，估算左侧「取消」热区（双按钮常见布局）
+  if (tapTargets.length === 0) {
+    for (const el of document.querySelectorAll('body *')) {
+      if (!visible(el)) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width < w * 0.45 || r.height < 90 || r.height > h * 0.85) continue;
+      const t = labelOf(el).slice(0, 120);
+      if (!promoDialogRe.test(t)) continue;
+      if (!/(取消|确定|確定|关闭|關閉)/.test(t)) continue;
+      // 左下「取消」、右下「确定」
+      tapTargets.push({
+        x: (r.left + r.width * 0.28) / w,
+        y: (r.top + r.height * 0.78) / h,
+        label: 'promo_left_cancel_zone',
+        why: 'promo_zone'
+      });
+      tapTargets.push({
+        x: (r.left + r.width * 0.22) / w,
+        y: (r.top + r.height * 0.72) / h,
+        label: 'promo_left_cancel_zone2',
+        why: 'promo_zone'
+      });
+      actions.push('promo_zone');
+      break;
+    }
+  }
+
+  // C) 仅在明确要求时强制隐藏促销层（避免干净页误伤）
+  let forceHidden = 0;
+  if (forceHide) {
+    for (const el of Array.from(document.querySelectorAll('body *'))) {
+      if (!visible(el)) continue;
+      const r = el.getBoundingClientRect();
+      const area = r.width * r.height;
+      if (area < w * h * 0.08 && !(r.width >= w * 0.5 && r.height >= 100)) continue;
+      const t = labelOf(el).slice(0, 160);
+      if (!promoDialogRe.test(t)) continue;
+      if (el === document.body || el === document.documentElement) continue;
+      try {
+        el.style.setProperty('display', 'none', 'important');
+        el.style.setProperty('visibility', 'hidden', 'important');
+        el.style.setProperty('pointer-events', 'none', 'important');
+        el.setAttribute('data-app-smart-force-hidden', '1');
+        forceHidden++;
+        actions.push('force_hide');
+        if (forceHidden >= 3) break;
+      } catch (_) {}
+    }
+    document.querySelectorAll(
+      '[class*="mask"], [class*="overlay"], [class*="modal"], [class*="dialog"], [class*="popup"]'
+    ).forEach(el => {
+      if (forceHidden >= 6) return;
+      if (!visible(el)) return;
+      const t = labelOf(el).slice(0, 120);
+      if (!promoDialogRe.test(t) && !/(取消|确定|確定)/.test(t)) return;
+      try {
+        el.style.setProperty('display', 'none', 'important');
+        el.setAttribute('data-app-smart-force-hidden', '1');
+        forceHidden++;
+        actions.push('force_hide_mask');
+      } catch (_) {}
+    });
+  }
+
+  // 复核
+  let still = false;
+  try {
+    const probeNodes = document.querySelectorAll('body *');
+    for (let i = 0; i < probeNodes.length; i++) {
+      const el = probeNodes[i];
+      if (el.getAttribute && el.getAttribute('data-app-smart-force-hidden') === '1') continue;
+      if (!visible(el)) continue;
+      const t = labelOf(el).slice(0, 80);
+      if (promoDialogRe.test(t) && /(取消|确定|確定)/.test(t)) { still = true; break; }
+    }
+  } catch (_) {}
+
+  return {
+    ok: tapTargets.length > 0 || forceHidden > 0 || jsClicked,
+    clicked: jsClicked,
+    forceHidden,
+    stillPresent: still,
+    tapTargets: tapTargets.slice(0, 4),
+    actions: actions.slice(0, 10)
+  };
 })()
 ''';
   }
@@ -774,6 +1143,153 @@ function __smartPickSwipeTarget(x, y, preferred) {
     ok: true,
     x: innerWidth > 0 ? (r.left + r.width / 2) / innerWidth : 0.5,
     y: innerHeight > 0 ? (r.top + r.height / 2) / innerHeight : 0.5
+  };
+})()
+''';
+  }
+
+  /// 选中「当前应操作」的媒体：优先盖住屏幕中心的大图/视频，返回其中心点。
+  /// [excludeSrcsJson]：已下载/已跳过的 src 列表，避免清障后又选回旧媒体。
+  static String findCenterMedia({
+    required bool imagesOnly,
+    required bool videosOnly,
+    String excludeSrcsJson = '[]',
+  }) {
+    return '''
+(() => {
+  const imagesOnly = $imagesOnly;
+  const videosOnly = $videosOnly;
+  const excludeSrcs = $excludeSrcsJson;
+  const w = window.innerWidth || 360;
+  const h = window.innerHeight || 640;
+  const cx = w / 2;
+  const cy = h / 2;
+  const vw = Math.max(1, w);
+  const vh = Math.max(1, h);
+  const selector = imagesOnly ? 'img' : (videosOnly ? 'video' : 'video, img');
+  function isExcludedSrc(src) {
+    if (!src) return false;
+    const s = String(src).toLowerCase();
+    for (const ex of excludeSrcs) {
+      const e = String(ex || '').toLowerCase();
+      if (!e) continue;
+      if (s === e || (e.length >= 12 && s.indexOf(e) >= 0) || (s.length >= 12 && e.indexOf(s) >= 0)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function isJunkImg(el) {
+    if (!el || el.tagName !== 'IMG') return false;
+    const src = String(el.currentSrc || el.src || el.getAttribute('src') || '').toLowerCase();
+    return /(avatar|emoji|icon|logo|sprite|badge|profile_images|profile_banners|favicon)/.test(src);
+  }
+
+  function visibleRect(el) {
+    const r = el.getBoundingClientRect();
+    const left = Math.max(0, r.left);
+    const top = Math.max(0, r.top);
+    const right = Math.min(w, r.right);
+    const bottom = Math.min(h, r.bottom);
+    const iw = Math.max(0, right - left);
+    const ih = Math.max(0, bottom - top);
+    return { r, iw, ih, area: iw * ih };
+  }
+
+  function coversCenter(r) {
+    return r.left <= cx && r.right >= cx && r.top <= cy && r.bottom >= cy;
+  }
+
+  const samplePts = [
+    [cx, cy],
+    [cx, h * 0.42],
+    [cx, h * 0.58],
+    [w * 0.4, cy],
+    [w * 0.6, cy],
+  ];
+  const hitSet = new Set();
+  for (const [px, py] of samplePts) {
+    try {
+      const el = document.elementFromPoint(px, py);
+      const media = el && el.closest ? el.closest(selector) : null;
+      if (media) hitSet.add(media);
+    } catch (_) {}
+  }
+
+  const marked = document.querySelector('[data-app-smart-current="1"]');
+  const all = Array.from(document.querySelectorAll(selector));
+  const candidates = new Set(all);
+  hitSet.forEach(el => candidates.add(el));
+  if (marked) candidates.add(marked);
+
+  let best = null;
+  let bestScore = -1e18;
+  for (const el of candidates) {
+    if (!el || !el.getBoundingClientRect) continue;
+    if (imagesOnly && el.tagName !== 'IMG') continue;
+    if (videosOnly && el.tagName !== 'VIDEO') continue;
+    if (isJunkImg(el)) continue;
+    const src = String(el.currentSrc || el.src || el.getAttribute('src') ||
+      el.getAttribute('data-src') || el.getAttribute('poster') || '');
+    const excluded = isExcludedSrc(src);
+    // 已处理过的媒体：不当作首选（彻底排除），防止清障后回到旧条
+    if (excluded) continue;
+    const { r, iw, ih, area } = visibleRect(el);
+    if (iw < 120 || ih < 100) continue;
+    if (area < vw * vh * 0.04) continue; // 太小的角标/缩略图丢掉
+    const mx = r.left + r.width / 2;
+    const my = r.top + r.height / 2;
+    // 中心点必须落在屏幕内，否则会漂到边缘/右下角
+    if (mx < 8 || mx > w - 8 || my < 8 || my > h - 8) continue;
+    const dist = Math.hypot(mx - cx, my - cy);
+    const cover = coversCenter(r) ? 1 : 0;
+    const areaRatio = area / (vw * vh);
+    const isVideo = el.tagName === 'VIDEO' ? 1 : 0;
+    const isMarked = (marked && el === marked) ? 1 : 0;
+    const fromHitTest = hitSet.has(el) ? 1 : 0;
+    // 盖住中心 > 面积 > 命中探测 > 视频 > 标记 > 靠近中心
+    const score =
+      cover * 50000 +
+      areaRatio * 20000 +
+      fromHitTest * 8000 +
+      isVideo * 3000 +
+      isMarked * 1500 -
+      dist * 2;
+    if (score > bestScore) {
+      bestScore = score;
+      best = { el, mx, my, cover, areaRatio, isVideo, src };
+    }
+  }
+
+  document.querySelectorAll('[data-app-smart-current]').forEach(el => {
+    try { el.removeAttribute('data-app-smart-current'); } catch (_) {}
+  });
+
+  if (!best) {
+    return {
+      ok: true,
+      found: false,
+      reason: 'fallback_screen_center',
+      type: 'none',
+      x: 0.5,
+      y: 0.5,
+      clientX: cx,
+      clientY: cy
+    };
+  }
+
+  try { best.el.setAttribute('data-app-smart-current', '1'); } catch (_) {}
+  return {
+    ok: true,
+    found: true,
+    type: best.isVideo ? 'video' : 'image',
+    coversCenter: !!best.cover,
+    areaRatio: Math.round(best.areaRatio * 1000) / 1000,
+    x: best.mx / w,
+    y: best.my / h,
+    clientX: best.mx,
+    clientY: best.my
   };
 })()
 ''';

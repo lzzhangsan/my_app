@@ -19,6 +19,16 @@ function Stop-WithMessage {
 
 Set-Location $projectRoot
 
+# Clash / system proxy often breaks localhost VM Service → R does nothing.
+$env:HTTP_PROXY = ""
+$env:HTTPS_PROXY = ""
+$env:http_proxy = ""
+$env:https_proxy = ""
+$env:ALL_PROXY = ""
+$env:all_proxy = ""
+$env:NO_PROXY = "localhost,127.0.0.1,::1,LOCALHOST"
+$env:no_proxy = $env:NO_PROXY
+
 # A second flutter run can race the installer and also causes DDS conflicts.
 $activeRuns = @(
     Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
