@@ -6583,66 +6583,112 @@ class _BrowserPageState extends State<BrowserPage>
     }
 
     final bottomSafeInset = MediaQuery.of(context).padding.bottom;
-    return Stack(
-      children: [
-        Column(
-          children: [
-            // 移除了顶部工具栏
-            Expanded(
-              child: ReorderableGridView.builder(
-                padding: EdgeInsets.fromLTRB(
-                  16.0,
-                  16.0,
-                  16.0,
-                  16.0 + bottomSafeInset + 8.0,
-                ),
-                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 3,
-                  childAspectRatio: 1.0,
-                  crossAxisSpacing: 16.0,
-                  mainAxisSpacing: 16.0,
-                ),
-                itemCount: _commonWebsites.length + 1, // +1 for the add button
-                itemBuilder: (context, index) {
-                  if (index == _commonWebsites.length) {
-                    // 添加新网站的按钮
-                    return InkWell(
-                      key: const ValueKey('add_website'),
-                      onTap: () => _showAddWebsiteDialog(context),
-                      child: Card(
-                        elevation: 4.0,
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: const [
-                            Icon(
-                              Icons.add_circle_outline,
-                              size: 40,
-                              color: Colors.green,
-                            ),
-                            SizedBox(height: 8),
-                            Text(
-                              '添加网站',
-                              style: TextStyle(fontSize: 16),
-                              textAlign: TextAlign.center,
-                            ),
-                          ],
-                        ),
-                      ),
-                    );
-                  } else {
-                    return _buildWebsiteCard(_commonWebsites[index], index);
-                  }
-                },
-                onReorder: _reorderWebsites,
-                dragStartBehavior: DragStartBehavior.start,
-                // 移除 dragEnabled 函数参数，改为在 _reorderWebsites 方法中处理
-                // 移除 onReorderStart 参数，因为 ReorderableGridView 不支持此参数
-              ),
-            ),
-          ],
+    return ColoredBox(
+      color: Colors.white,
+      child: ReorderableGridView.builder(
+        padding: EdgeInsets.fromLTRB(
+          14.0,
+          14.0,
+          14.0,
+          14.0 + bottomSafeInset + 8.0,
         ),
-        // 移除底部浮动按钮，改为在顶部显示
-      ],
+        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: 5,
+          childAspectRatio: 1.15,
+          crossAxisSpacing: 10.0,
+          mainAxisSpacing: 10.0,
+        ),
+        itemCount: _commonWebsites.length + 1, // +1 for the add button
+        itemBuilder: (context, index) {
+          if (index == _commonWebsites.length) {
+            return _buildAddWebsiteCard();
+          }
+          return _buildWebsiteCard(_commonWebsites[index], index);
+        },
+        onReorder: _reorderWebsites,
+        dragStartBehavior: DragStartBehavior.start,
+      ),
+    );
+  }
+
+  /// 轻柔糖果色轮换，按卡片序号取色
+  static const List<Color> _candyCardColors = [
+    Color(0xFFFFE4D6), // 蜜桃
+    Color(0xFFD8F3E8), // 薄荷
+    Color(0xFFE8E0F5), // 淡紫
+    Color(0xFFFFF3C9), // 柠檬
+    Color(0xFFD6ECFA), // 天空
+    Color(0xFFF9DCE8), // 玫瑰
+    Color(0xFFFFE8CC), // 杏橙
+    Color(0xFFD5F0EE), // 海盐
+  ];
+
+  Widget _buildCandyShortcutShell({
+    required Key key,
+    required Color color,
+    required Widget child,
+    required VoidCallback onTap,
+    VoidCallback? onDoubleTap,
+    bool isAdd = false,
+  }) {
+    const radius = 14.0;
+    return Material(
+      key: key,
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        onDoubleTap: onDoubleTap,
+        borderRadius: BorderRadius.circular(radius),
+        splashColor: color.withValues(alpha: 0.35),
+        highlightColor: color.withValues(alpha: 0.2),
+        child: Ink(
+          decoration: BoxDecoration(
+            color: color,
+            borderRadius: BorderRadius.circular(radius),
+            border: Border.all(
+              color:
+                  isAdd
+                      ? const Color(0xFFD0D5DD)
+                      : color.withValues(alpha: 0.85),
+              width: 1,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: color.withValues(alpha: 0.45),
+                blurRadius: 6,
+                offset: const Offset(0, 2),
+              ),
+            ],
+          ),
+          child: child,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAddWebsiteCard() {
+    return _buildCandyShortcutShell(
+      key: const ValueKey('add_website'),
+      color: const Color(0xFFF4F5F7),
+      isAdd: true,
+      onTap: () => _showAddWebsiteDialog(context),
+      child: const Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.add_rounded, size: 20, color: Color(0xFF8B93A7)),
+          SizedBox(height: 2),
+          Text(
+            '添加',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w500,
+              color: Color(0xFF8B93A7),
+              letterSpacing: 0.2,
+            ),
+            textAlign: TextAlign.center,
+          ),
+        ],
+      ),
     );
   }
 
@@ -16190,31 +16236,28 @@ class _BrowserPageState extends State<BrowserPage>
   }
 
   Widget _buildWebsiteCard(Map<String, dynamic> website, int index) {
-    // 根据 iconCode 获取对应的图标
-    IconData iconData = _getIconFromCode(website['iconCode']);
-
-    return InkWell(
+    final color = _candyCardColors[index % _candyCardColors.length];
+    return _buildCandyShortcutShell(
       key: ValueKey(website['url']),
+      color: color,
       onTap: () => _loadUrl((website['url'] ?? '').toString()),
       onDoubleTap: () => _showWebsiteOptionsDialog(context, website, index),
-      child: Card(
-        elevation: 4.0,
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(iconData, size: 40, color: Colors.blue),
-            const SizedBox(height: 8),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 4.0),
-              child: Text(
-                website['name'],
-                style: const TextStyle(fontSize: 14), // 稍微调小字号以适应更多文字
-                textAlign: TextAlign.center,
-                maxLines: 2, // 最多显示两行
-                overflow: TextOverflow.ellipsis, // 超出部分显示省略号
-              ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 4.0, vertical: 2.0),
+        child: Center(
+          child: Text(
+            website['name']?.toString() ?? '',
+            style: const TextStyle(
+              fontSize: 11.5,
+              fontWeight: FontWeight.w500,
+              height: 1.2,
+              letterSpacing: 0.15,
+              color: Color(0xFF5A5568),
             ),
-          ],
+            textAlign: TextAlign.center,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
         ),
       ),
     );
@@ -20136,10 +20179,7 @@ class _BrowserPageState extends State<BrowserPage>
                 ),
                 if (_showHomePage)
                   Positioned.fill(
-                    child: Container(
-                      color: Theme.of(context).scaffoldBackgroundColor,
-                      child: _buildHomePage(),
-                    ),
+                    child: _buildHomePage(),
                   ),
                 // 下载任务面板：可拖动，打开网站时常驻；主页面仅在有下载任务时显示（Positioned 必须是 Stack 的直接子项）
                 ValueListenableBuilder<List<Map<String, dynamic>>>(
