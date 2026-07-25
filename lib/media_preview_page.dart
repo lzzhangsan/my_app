@@ -928,8 +928,18 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
 
           // 如果是当前页面，立即开始播放，并添加完成监听（手动/非自动模式下用于循环）
           if (shouldAutoPlay && controller.value.isInitialized) {
+            final resumed =
+                widget.initialResumeVideoPosition != null &&
+                index == widget.initialIndex &&
+                widget.initialResumeVideoPosition! > Duration.zero;
+            if (!resumed) {
+              try {
+                await controller.seekTo(const Duration(milliseconds: 1));
+              } catch (_) {}
+            }
             await controller.play();
             _addVideoCompleteListenerFor(controller, index);
+            unawaited(_unstickFrozenFirstFrameAt(index));
           }
         } catch (chewieError) {
           if (_videoControllers.containsKey(index)) {
@@ -1080,13 +1090,37 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     final currentItem = widget.mediaItems[_currentIndex];
     if (currentItem.type == MediaType.video) {
       // 确保视频控制器已初始化
-      _initializeVideoControllerAt(_currentIndex).then((_) {
-        if (_videoControllers.containsKey(_currentIndex) &&
-            _videoControllers[_currentIndex]?.value.isInitialized == true) {
-          _videoControllers[_currentIndex]?.play();
-        }
+      _initializeVideoControllerAt(_currentIndex).then((_) async {
+        final controller = _videoControllers[_currentIndex];
+        if (controller == null || !controller.value.isInitialized) return;
+        try {
+          if (controller.value.position <= const Duration(milliseconds: 1)) {
+            await controller.seekTo(const Duration(milliseconds: 1));
+          }
+        } catch (_) {}
+        await controller.play();
+        unawaited(_unstickFrozenFirstFrameAt(_currentIndex));
       });
     }
+  }
+
+  /// Legacy MediaMuxer remux MP4s have crushed B-frame PTS and often stay at 0;
+  /// a near-zero seek cannot repair them. New HLS downloads keep `.ts` instead.
+  Future<void> _unstickFrozenFirstFrameAt(int index) async {
+    await Future<void>.delayed(const Duration(milliseconds: 450));
+    if (!mounted) return;
+    final controller = _videoControllers[index];
+    if (controller == null || index != _currentIndex) return;
+    final v = controller.value;
+    if (!v.isInitialized || v.duration <= const Duration(seconds: 1)) return;
+    if (v.position > const Duration(milliseconds: 80)) return;
+    try {
+      // Kick past the near-zero PTS cluster on legacy remux files when possible.
+      final kickMs = v.duration.inMilliseconds > 4000 ? 1000 : 200;
+      await controller.seekTo(Duration(milliseconds: kickMs));
+      if (!mounted || index != _currentIndex) return;
+      await controller.play();
+    } catch (_) {}
   }
 
   void _shareMediaItem() async {
@@ -2179,8 +2213,15 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
             await controller.seekTo(Duration.zero);
           }
         }
+        // 片头附近：轻量 seek，避免 HLS remux 卡在第一帧。
+        if (controller.value.position <= const Duration(milliseconds: 1)) {
+          try {
+            await controller.seekTo(const Duration(milliseconds: 1));
+          } catch (_) {}
+        }
         await controller.play();
         _addVideoCompleteListenerFor(controller, _currentIndex);
+        unawaited(_unstickFrozenFirstFrameAt(_currentIndex));
       }
     } else if (currentItem.type == MediaType.image) {
       _mediaTimer?.cancel();

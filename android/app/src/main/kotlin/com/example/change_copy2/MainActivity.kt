@@ -282,6 +282,12 @@ class MainActivity: FlutterActivity() {
         }
     }
 
+    /**
+     * Legacy TS→MP4 helper. Unsafe for H.264 with B-frames: MediaExtractor delivers
+     * decode order while [writeTrack] forces monotonic PTS, collapsing several frames
+     * onto one presentationTime (first-frame freeze in ExoPlayer). HLS downloads now
+     * keep MPEG-TS instead; X still uses [muxMp4Tracks] only.
+     */
     private fun remuxToMp4(inputPath: String, outputPath: String) {
         val extractor = MediaExtractor()
         var muxer: MediaMuxer? = null
@@ -289,8 +295,6 @@ class MainActivity: FlutterActivity() {
             extractor.setDataSource(inputPath)
             File(outputPath).delete()
             muxer = MediaMuxer(outputPath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-            // Reuse writeTrack (same PTS zero-base / monotonic logic as muxMp4 for X)
-            // so HLS TS→MP4 remux does not freeze on the first frame until scrubbed.
             val trackPairs = mutableListOf<Pair<Int, Int>>()
             for (index in 0 until extractor.trackCount) {
                 val format = extractor.getTrackFormat(index)

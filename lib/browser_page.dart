@@ -2345,7 +2345,29 @@ class _BrowserPageState extends State<BrowserPage>
     if (leftKey.isNotEmpty || rightKey.isNotEmpty) {
       return leftKey.isNotEmpty && leftKey == rightKey;
     }
-    return _isSameLoadedDocument(left, right);
+    // 搜索列表页：www / 尾斜杠差异不能判成不同页，否则 91 点卡片深挖整段被跳过。
+    final leftUri = Uri.tryParse(left.trim());
+    final rightUri = Uri.tryParse(right.trim());
+    if (leftUri == null || rightUri == null) {
+      return _isSameLoadedDocument(left, right);
+    }
+    String normHost(Uri uri) =>
+        uri.host.toLowerCase().replaceFirst(RegExp(r'^www\.'), '');
+    String normPath(Uri uri) {
+      var path = uri.path;
+      if (path.length > 1 && path.endsWith('/')) {
+        path = path.substring(0, path.length - 1);
+      }
+      return path;
+    }
+
+    if (normHost(leftUri) != normHost(rightUri)) return false;
+    if (normPath(leftUri) != normPath(rightUri)) return false;
+    final isSearch =
+        leftUri.pathSegments.any((s) => s.toLowerCase() == 'search') ||
+        rightUri.pathSegments.any((s) => s.toLowerCase() == 'search');
+    if (isSearch) return true;
+    return leftUri.query == rightUri.query;
   }
 
   bool _isElementBoundFeedPage(String? url) {
@@ -2827,6 +2849,11 @@ class _BrowserPageState extends State<BrowserPage>
         failureType = 'duplicate_name_in_smart_task';
         lastFailureType = failureType;
         detailNotifier.value = '同一任务已处理过同名媒体，正在换下一个';
+        if (_favoriteDownloadDiagnosticsEnabled) {
+          Logger.log(
+            '[稳健下载诊断] 尝试#${i + 1}/${attempts.length}: 跳过 | failureType=$failureType | url=${attempts[i]}',
+          );
+        }
         continue;
       }
       ok = await _performBackgroundDownload(
@@ -7444,6 +7471,11 @@ class _BrowserPageState extends State<BrowserPage>
         _controller == null) {
       return;
     }
+    // 91 专有套路不走「屏幕中心媒体」混合识别，避免冲掉详情页向下找视频逻辑。
+    final siteProfile = (task['siteProfile'] ?? '').toString();
+    if (siteProfile == '91' || task['strict91KeywordMode'] == true) {
+      return;
+    }
     try {
       final result = await _controller!.evaluateJavascript(
         source: '''
@@ -7546,8 +7578,41 @@ class _BrowserPageState extends State<BrowserPage>
   }
 
   /// X / 91 已验证的智能下载管线：保留扩大探索等既有行为，避免回归。
+  /// 「沿用套路」面板：专有套路见 [_dedicatedSmartPatternIds]；通用见 id=`generic`。
+  /// 91 专有套路以 a00c4bd（2026.7.23-6:47）已验证行为为准完整保留。
   bool _smartUsesLegacyPriorityPipeline(String siteProfile) =>
       siteProfile == 'x' || siteProfile == '91';
+
+  /// 已固化的「专有」站点套路（重要常用站逐个加入；勿自动套到别的站）。
+  static const Set<String> _dedicatedSmartPatternIds = <String>{'x', '91'};
+
+  /// 「沿用套路」可选列表：专有站 + 普适通用套路。
+  static const List<Map<String, String>> _confirmedSmartPatterns =
+      <Map<String, String>>[
+        {'id': 'x', 'label': 'X · 原智能（已验证）', 'kind': 'dedicated'},
+        {'id': '91', 'label': '91 · 原智能（已验证）', 'kind': 'dedicated'},
+        {'id': 'generic', 'label': '通用套路', 'kind': 'generic'},
+      ];
+
+  static final Set<String> _confirmedSmartPatternIds =
+      _confirmedSmartPatterns.map((e) => e['id']!).toSet();
+
+  /// 默认选用：有本站专有套路 → 专有；否则 → 通用套路。
+  String _defaultConfirmedPatternIdForHost(String host) {
+    final profile = _smartSiteProfile(host);
+    if (_dedicatedSmartPatternIds.contains(profile)) return profile;
+    return 'generic';
+  }
+
+  bool _hostHasDedicatedSmartPattern(String host) =>
+      _dedicatedSmartPatternIds.contains(_smartSiteProfile(host));
+
+  String _confirmedPatternLabel(String patternId) {
+    for (final row in _confirmedSmartPatterns) {
+      if (row['id'] == patternId) return row['label'] ?? patternId;
+    }
+    return patternId;
+  }
 
   /// 91 关键词搜索分页 URL（第 1 页无页码后缀）。
   String _strict91SearchUrlForPage(String origin, String keyword, int page) {
@@ -8028,7 +8093,7 @@ class _BrowserPageState extends State<BrowserPage>
       'nameCustom': true,
     };
     recipe['name'] =
-        '${_smartStrategyDisplaySite(host)}·默认直链优先';
+        '${_smartStrategyDisplaySite(host)}·通用套路';
     return recipe;
   }
 
@@ -8450,7 +8515,9 @@ class _BrowserPageState extends State<BrowserPage>
     if (isLegacy) {
       final startedFromCurrent = task['startedFromCurrentPage'] == true;
       final keywordFirst91 = task['strict91KeywordMode'] == true;
-      task['gestureMode'] = startedFromCurrent && !keywordFirst91;
+      // 91 专有套路不启用手势引擎（与 a00c4bd 一致）。
+      task['gestureMode'] =
+          startedFromCurrent && !keywordFirst91 && siteProfile != '91';
       task['protectVisibleGestureFlow'] = task['gestureMode'] == true;
       task['allowBroadenDiscovery'] = true;
       if (learnedAcq == 'sniff' || learnedAcq == 'site_address') {
@@ -10381,6 +10448,7 @@ class _BrowserPageState extends State<BrowserPage>
       await _promptStopOrResetSmartDownload();
       return;
     }
+    final keywordController = TextEditingController(text: initialKeyword);
     final countController = TextEditingController(text: '5');
     final minVideoSizeController = TextEditingController();
     final maxVideoSizeController = TextEditingController();
@@ -10395,113 +10463,24 @@ class _BrowserPageState extends State<BrowserPage>
           )?.host ??
           '',
     );
-    final isXSite = _smartSiteProfile(dialogHost) == 'x';
-    // 从当前页启动：默认「本页同层批量」；否则保留原逻辑。
-    var runMode =
-        startFromCurrentPage ? 'scope' : (isXSite ? 'legacy' : 'action');
-    var scopeDepth = 0;
-    var scopeLevels = <Map<String, dynamic>>[];
-    var scopeLevelsLoading = startFromCurrentPage;
-    var scopeLevelsError = '';
-    var scopeLevelsRequested = false;
-    var scopeSummary = '';
-    var scopeTotalLevels = 0;
+    // 所有网站统一三种方式；默认沿用套路。
+    var runMode = 'reuse';
+    var historyExpanded = false;
+    // 沿用套路：本站有专有套路则默认专有；否则默认通用；均可手动改选。
+    String selectedPatternId = _defaultConfirmedPatternIdForHost(dialogHost);
+    final nativePatternId = _smartSiteProfile(dialogHost);
+    final hostHasDedicated = _hostHasDedicatedSmartPattern(dialogHost);
     SmartActionRecipe? selectedRecipe =
         await SmartActionRecipeStore.loadLastForHost(dialogHost);
     var hostRecipes = List<SmartActionRecipe>.from(
       await SmartActionRecipeStore.loadForHost(dialogHost),
     );
 
-    Future<void> refreshScopeLevels(void Function(void Function()) setDialogState) async {
-      if (_controller == null) {
-        setDialogState(() {
-          scopeLevelsLoading = false;
-          scopeLevelsError = '页面未就绪';
-        });
-        return;
-      }
-      setDialogState(() {
-        scopeLevelsLoading = true;
-        scopeLevelsError = '';
-      });
-      try {
-        final raw = await _controller!.evaluateJavascript(
-          source: SmartScopeBatchJs.listLevels(
-            imagesOnly: false,
-            videosOnly: false,
-          ),
-        );
-        final map = _coerceJsMap(raw);
-        final levelsRaw = map?['levels'];
-        final levels = <Map<String, dynamic>>[];
-        if (levelsRaw is List) {
-          for (final row in levelsRaw) {
-            if (row is Map) {
-              levels.add(Map<String, dynamic>.from(row));
-            }
-          }
-        }
-        final def = (map?['defaultDepth'] as num?)?.toInt() ?? 0;
-        final totalLv =
-            (map?['totalLevels'] as num?)?.toInt() ?? levels.length;
-        final summary = (map?['summary'] ?? '').toString();
-        if (!mounted) return;
-        setDialogState(() {
-          scopeLevels = levels;
-          scopeTotalLevels = totalLv;
-          scopeSummary = summary.isNotEmpty
-              ? summary
-              : (totalLv > 0
-                  ? '共 $totalLv 层（最外 L1 → 最内 L$totalLv）'
-                  : '');
-          Map<String, dynamic>? recommended;
-          for (final l in levels) {
-            if (l['recommend'] == true) {
-              recommended = l;
-              break;
-            }
-          }
-          final pickDepth = recommended != null
-              ? ((recommended['depth'] as num?)?.toInt() ?? def)
-              : def;
-          scopeDepth =
-              levels.any((l) => (l['depth'] as num?)?.toInt() == pickDepth)
-                  ? pickDepth
-                  : (levels.isNotEmpty
-                      ? ((levels.firstWhere(
-                              (l) => (l['total'] as num?)?.toInt() != 0,
-                              orElse: () => levels.first,
-                            )['depth'] as num?)
-                              ?.toInt() ??
-                          0)
-                      : 0);
-          scopeLevelsLoading = false;
-          if (levels.isEmpty) {
-            scopeLevelsError = (map?['reason'] ?? '未找到可用媒体').toString();
-          }
-        });
-      } catch (e) {
-        if (!mounted) return;
-        setDialogState(() {
-          scopeLevelsLoading = false;
-          scopeLevelsError = '扫描失败：$e';
-        });
-      }
-    }
-
     final confirmed = await showDialog<String>(
       context: context,
       builder:
           (dialogContext) => StatefulBuilder(
             builder: (context, setDialogState) {
-              if (startFromCurrentPage && !scopeLevelsRequested) {
-                scopeLevelsRequested = true;
-                WidgetsBinding.instance.addPostFrameCallback((_) {
-                  if (dialogContext.mounted) {
-                    unawaited(refreshScopeLevels(setDialogState));
-                  }
-                });
-              }
               Future<void> openEditor({SmartActionRecipe? seed}) async {
                 final edited = await showSmartActionEditor(
                   context: dialogContext,
@@ -10535,26 +10514,229 @@ class _BrowserPageState extends State<BrowserPage>
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      Text(
-                        startFromCurrentPage
-                            ? '推荐：本页同层批量 —— 先看清整页有几层、每层图/视频分布，再选一层批量下载（视频优先于海报，去广告，不滑动）。'
-                            : (isXSite
-                                ? 'X 平台：优先使用旧版自动；也可改用动作编排或本页同层。'
-                                : '可使用动作编排，或打开页面后用本页同层批量。'),
-                        style: const TextStyle(
-                          fontSize: 12,
-                          color: Colors.black87,
+                      const Text(
+                        '1. 运行方式',
+                        style: TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                      const SizedBox(height: 8),
+                      SegmentedButton<String>(
+                        showSelectedIcon: false,
+                        style: const ButtonStyle(
+                          visualDensity: VisualDensity.compact,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        segments: const [
+                          ButtonSegment(
+                            value: 'reuse',
+                            label: Text('沿用套路', style: TextStyle(fontSize: 12)),
+                          ),
+                          ButtonSegment(
+                            value: 'sniff',
+                            label: Text('分页嗅探', style: TextStyle(fontSize: 12)),
+                          ),
+                          ButtonSegment(
+                            value: 'action',
+                            label: Text('动作编排', style: TextStyle(fontSize: 12)),
+                          ),
+                        ],
+                        selected: <String>{runMode},
+                        onSelectionChanged: (values) {
+                          if (values.isEmpty) return;
+                          setDialogState(() => runMode = values.first);
+                        },
+                      ),
+                      if (runMode == 'action') ...[
+                        const SizedBox(height: 8),
+                        if (hostRecipes.isNotEmpty)
+                          Wrap(
+                            spacing: 6,
+                            runSpacing: 4,
+                            children:
+                                hostRecipes.map((r) {
+                                  final selected = selectedRecipe?.id == r.id;
+                                  return ChoiceChip(
+                                    label: Text(r.name),
+                                    selected: selected,
+                                    onSelected: (_) {
+                                      setDialogState(() {
+                                        selectedRecipe = r;
+                                      });
+                                    },
+                                  );
+                                }).toList(),
+                          )
+                        else
+                          Text(
+                            selectedRecipe == null
+                                ? '尚未保存动作，请先编辑一套。'
+                                : '将使用：${selectedRecipe!.name}',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: Colors.black54,
+                            ),
+                          ),
+                        if (selectedRecipe != null && hostRecipes.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 4),
+                            child: Text(
+                              '当前选用：${selectedRecipe!.name}',
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: Colors.black54,
+                              ),
+                            ),
+                          ),
+                        const SizedBox(height: 6),
+                        OutlinedButton.icon(
+                          onPressed: () => openEditor(),
+                          icon: const Icon(Icons.edit_note, size: 18),
+                          label: Text(
+                            selectedRecipe == null
+                                ? '编辑动作编排'
+                                : '编辑 / 管理动作',
+                          ),
+                        ),
+                      ] else if (runMode == 'reuse') ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          hostHasDedicated &&
+                                  selectedPatternId == nativePatternId
+                              ? '本站有专有套路，将直接使用；也可改选通用或其他站套路。'
+                              : selectedPatternId == 'generic'
+                              ? '本站暂无专有套路，将使用通用套路；也可手动改选其他站套路（如 X / 91）。'
+                              : '已手动选用「${_confirmedPatternLabel(selectedPatternId)}」（专有套路不会自动套到其他站）。',
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: Colors.black54,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 6,
+                          runSpacing: 4,
+                          children: [
+                            for (final row in _confirmedSmartPatterns)
+                              ChoiceChip(
+                                label: Text(row['label'] ?? row['id']!),
+                                selected: selectedPatternId == row['id'],
+                                onSelected: (on) {
+                                  if (!on) return;
+                                  setDialogState(() {
+                                    selectedPatternId = row['id']!;
+                                  });
+                                },
+                              ),
+                          ],
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.only(top: 6),
+                          child: Text(
+                            '当前套路：${_confirmedPatternLabel(selectedPatternId)}'
+                            '${selectedPatternId == 'x' ? '（完整保留 X 旧版智能下载）' : ''}'
+                            '${selectedPatternId == '91' ? '（完整保留 91 已验证智能下载）' : ''}'
+                            '${selectedPatternId == 'generic' ? '（普适直链优先）' : ''}',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: Colors.black54,
+                            ),
+                          ),
+                        ),
+                      ] else
+                        const Padding(
+                          padding: EdgeInsets.only(top: 6),
+                          child: Text(
+                            '按关键词/列表在页面间通用嗅探并依次下载（可留空关键词）。',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: Colors.black54,
+                            ),
+                          ),
+                        ),
+                      const SizedBox(height: 16),
+                      const Text(
+                        '2. 关键词',
+                        style: TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                      const SizedBox(height: 6),
+                      TextField(
+                        controller: keywordController,
+                        autofocus: true,
+                        textInputAction: TextInputAction.next,
+                        decoration: InputDecoration(
+                          labelText: '下载关键词',
+                          hintText: '可留空：从当前页邻近依次；填写后按搜索/列表顺序',
+                          border: const OutlineInputBorder(),
+                          isDense: true,
+                          suffixIcon:
+                              _smartKeywordHistory.isEmpty
+                                  ? null
+                                  : IconButton(
+                                    tooltip:
+                                        historyExpanded
+                                            ? '收起历史关键词'
+                                            : '展开历史关键词',
+                                    onPressed:
+                                        () => setDialogState(
+                                          () =>
+                                              historyExpanded =
+                                                  !historyExpanded,
+                                        ),
+                                    icon: AnimatedRotation(
+                                      turns: historyExpanded ? 0.25 : 0,
+                                      duration: const Duration(
+                                        milliseconds: 160,
+                                      ),
+                                      child: const Icon(Icons.arrow_right),
+                                    ),
+                                  ),
                         ),
                       ),
-                      const SizedBox(height: 14),
+                      if (historyExpanded &&
+                          _smartKeywordHistory.isNotEmpty) ...[
+                        const SizedBox(height: 10),
+                        const Text(
+                          '历史关键词（点击使用，删除错误词）',
+                          style: TextStyle(fontSize: 12),
+                        ),
+                        const SizedBox(height: 4),
+                        Wrap(
+                          spacing: 6,
+                          runSpacing: 2,
+                          children:
+                              List<String>.from(_smartKeywordHistory)
+                                  .map(
+                                    (value) => InputChip(
+                                      label: ConstrainedBox(
+                                        constraints: const BoxConstraints(
+                                          maxWidth: 180,
+                                        ),
+                                        child: Text(
+                                          value,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                      onPressed:
+                                          () =>
+                                              keywordController.text = value,
+                                      onDeleted: () async {
+                                        await _removeSmartKeyword(value);
+                                        if (dialogContext.mounted) {
+                                          setDialogState(() {});
+                                        }
+                                      },
+                                    ),
+                                  )
+                                  .toList(),
+                        ),
+                      ],
+                      const SizedBox(height: 16),
                       const Text(
-                        '1. 数量',
+                        '3. 下载数量',
                         style: TextStyle(fontWeight: FontWeight.w600),
                       ),
                       const SizedBox(height: 6),
                       TextField(
                         controller: countController,
-                        autofocus: true,
                         keyboardType: TextInputType.number,
                         inputFormatters: [
                           FilteringTextInputFormatter.digitsOnly,
@@ -10569,7 +10751,7 @@ class _BrowserPageState extends State<BrowserPage>
                       ),
                       const SizedBox(height: 16),
                       const Text(
-                        '2. 大小区间',
+                        '4. 大小区间',
                         style: TextStyle(fontWeight: FontWeight.w600),
                       ),
                       const SizedBox(height: 6),
@@ -10613,375 +10795,6 @@ class _BrowserPageState extends State<BrowserPage>
                         '两项留空时，若从当前视频启动，将按约 50%～150% 自动估算；否则不限制。',
                         style: TextStyle(fontSize: 11, color: Colors.grey),
                       ),
-                      const SizedBox(height: 16),
-                      const Text(
-                        '3. 运行方式',
-                        style: TextStyle(fontWeight: FontWeight.w600),
-                      ),
-                      const SizedBox(height: 8),
-                      SegmentedButton<String>(
-                        segments: [
-                          const ButtonSegment(
-                            value: 'scope',
-                            label: Text('本页同层'),
-                            icon: Icon(Icons.grid_view),
-                          ),
-                          const ButtonSegment(
-                            value: 'action',
-                            label: Text('动作编排'),
-                            icon: Icon(Icons.swipe),
-                          ),
-                          if (isXSite)
-                            const ButtonSegment(
-                              value: 'legacy',
-                              label: Text('旧版自动'),
-                              icon: Icon(Icons.auto_awesome),
-                            ),
-                        ],
-                        selected: <String>{runMode},
-                        onSelectionChanged: (values) {
-                          if (values.isEmpty) return;
-                          setDialogState(() => runMode = values.first);
-                          if (values.first == 'scope' &&
-                              scopeLevels.isEmpty &&
-                              !scopeLevelsLoading) {
-                            unawaited(refreshScopeLevels(setDialogState));
-                          }
-                        },
-                      ),
-                      if (runMode == 'scope') ...[
-                        const SizedBox(height: 10),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: Text(
-                                scopeTotalLevels > 0
-                                    ? '层级结构 · 共 $scopeTotalLevels 层'
-                                    : '层级结构（最外 → 最内）',
-                                style: const TextStyle(
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ),
-                            TextButton(
-                              onPressed:
-                                  scopeLevelsLoading
-                                      ? null
-                                      : () => unawaited(
-                                        refreshScopeLevels(setDialogState),
-                                      ),
-                              child: Text(
-                                scopeLevelsLoading ? '扫描中…' : '重新扫描',
-                              ),
-                            ),
-                          ],
-                        ),
-                        if (scopeSummary.isNotEmpty)
-                          Padding(
-                            padding: const EdgeInsets.only(bottom: 6),
-                            child: Text(
-                              scopeSummary,
-                              style: const TextStyle(
-                                fontSize: 11,
-                                color: Colors.black54,
-                              ),
-                            ),
-                          ),
-                        if (scopeLevelsError.isNotEmpty)
-                          Text(
-                            scopeLevelsError,
-                            style: const TextStyle(
-                              fontSize: 12,
-                              color: Colors.orange,
-                            ),
-                          ),
-                        if (scopeLevels.isNotEmpty)
-                          ConstrainedBox(
-                            constraints: const BoxConstraints(maxHeight: 300),
-                            child: ListView.separated(
-                              shrinkWrap: true,
-                              itemCount: scopeLevels.length,
-                              separatorBuilder:
-                                  (_, __) => const SizedBox(height: 6),
-                              itemBuilder: (context, index) {
-                                final level = scopeLevels[index];
-                                final depth =
-                                    (level['depth'] as num?)?.toInt() ?? 0;
-                                final fromTop =
-                                    (level['fromTop'] as num?)?.toInt() ??
-                                    (index + 1);
-                                final images =
-                                    (level['images'] as num?)?.toInt() ?? 0;
-                                final videos =
-                                    (level['videos'] as num?)?.toInt() ?? 0;
-                                final rawVideos =
-                                    (level['rawVideos'] as num?)?.toInt() ?? 0;
-                                final poster =
-                                    (level['posterLikelyVideo'] as num?)
-                                            ?.toInt() ??
-                                        0;
-                                final exclV =
-                                    (level['exclusiveVideos'] as num?)
-                                            ?.toInt() ??
-                                        0;
-                                final exclI =
-                                    (level['exclusiveImages'] as num?)
-                                            ?.toInt() ??
-                                        0;
-                                final label =
-                                    (level['label'] ?? 'L$fromTop').toString();
-                                final kind = (level['kind'] ?? '').toString();
-                                final pathHint =
-                                    (level['pathHint'] ?? '').toString();
-                                final hint = (level['hint'] ?? '').toString();
-                                final recommend = level['recommend'] == true;
-                                final selected = depth == scopeDepth;
-                                final borderColor =
-                                    selected
-                                        ? Theme.of(context).colorScheme.primary
-                                        : Colors.black12;
-                                return Material(
-                                  color:
-                                      selected
-                                          ? Theme.of(context)
-                                              .colorScheme
-                                              .primaryContainer
-                                              .withValues(alpha: 0.45)
-                                          : Colors.grey.shade50,
-                                  borderRadius: BorderRadius.circular(10),
-                                  child: InkWell(
-                                    borderRadius: BorderRadius.circular(10),
-                                    onTap:
-                                        () => setDialogState(
-                                          () => scopeDepth = depth,
-                                        ),
-                                    child: Container(
-                                      padding: const EdgeInsets.fromLTRB(
-                                        10,
-                                        8,
-                                        10,
-                                        8,
-                                      ),
-                                      decoration: BoxDecoration(
-                                        borderRadius: BorderRadius.circular(10),
-                                        border: Border.all(
-                                          color: borderColor,
-                                          width: selected ? 1.5 : 1,
-                                        ),
-                                      ),
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Row(
-                                            children: [
-                                              Icon(
-                                                selected
-                                                    ? Icons.radio_button_checked
-                                                    : Icons
-                                                        .radio_button_unchecked,
-                                                size: 18,
-                                                color:
-                                                    selected
-                                                        ? Theme.of(context)
-                                                            .colorScheme
-                                                            .primary
-                                                        : Colors.black45,
-                                              ),
-                                              const SizedBox(width: 6),
-                                              Expanded(
-                                                child: Text(
-                                                  label,
-                                                  style: const TextStyle(
-                                                    fontSize: 12.5,
-                                                    fontWeight: FontWeight.w600,
-                                                  ),
-                                                ),
-                                              ),
-                                              if (pathHint.isNotEmpty)
-                                                Container(
-                                                  padding:
-                                                      const EdgeInsets.symmetric(
-                                                    horizontal: 6,
-                                                    vertical: 2,
-                                                  ),
-                                                  decoration: BoxDecoration(
-                                                    color: Colors.black12,
-                                                    borderRadius:
-                                                        BorderRadius.circular(4),
-                                                  ),
-                                                  child: Text(
-                                                    pathHint,
-                                                    style: const TextStyle(
-                                                      fontSize: 10,
-                                                    ),
-                                                  ),
-                                                ),
-                                              if (recommend) ...[
-                                                const SizedBox(width: 4),
-                                                Container(
-                                                  padding:
-                                                      const EdgeInsets.symmetric(
-                                                    horizontal: 6,
-                                                    vertical: 2,
-                                                  ),
-                                                  decoration: BoxDecoration(
-                                                    color: Colors.green
-                                                        .withValues(alpha: 0.15),
-                                                    borderRadius:
-                                                        BorderRadius.circular(4),
-                                                  ),
-                                                  child: const Text(
-                                                    '推荐',
-                                                    style: TextStyle(
-                                                      fontSize: 10,
-                                                      color: Colors.green,
-                                                      fontWeight: FontWeight.w600,
-                                                    ),
-                                                  ),
-                                                ),
-                                              ],
-                                            ],
-                                          ),
-                                          if (kind.isNotEmpty)
-                                            Padding(
-                                              padding: const EdgeInsets.only(
-                                                top: 2,
-                                                left: 24,
-                                              ),
-                                              child: Text(
-                                                kind,
-                                                style: const TextStyle(
-                                                  fontSize: 10.5,
-                                                  color: Colors.black45,
-                                                ),
-                                              ),
-                                            ),
-                                          Padding(
-                                            padding: const EdgeInsets.only(
-                                              top: 4,
-                                              left: 24,
-                                            ),
-                                            child: Text(
-                                              '本层及以内：视频 $videos'
-                                              '${poster > 0 ? '（含疑似封面 $poster）' : ''}'
-                                              '${rawVideos > 0 ? ' · 真实video $rawVideos' : ''}'
-                                              ' · 图片 $images',
-                                              style: const TextStyle(fontSize: 11),
-                                            ),
-                                          ),
-                                          if (exclV > 0 || exclI > 0)
-                                            Padding(
-                                              padding: const EdgeInsets.only(
-                                                top: 2,
-                                                left: 24,
-                                              ),
-                                              child: Text(
-                                                '本层独占：视频 $exclV · 图片 $exclI',
-                                                style: const TextStyle(
-                                                  fontSize: 10.5,
-                                                  color: Colors.black54,
-                                                ),
-                                              ),
-                                            ),
-                                          if (hint.isNotEmpty)
-                                            Padding(
-                                              padding: const EdgeInsets.only(
-                                                top: 3,
-                                                left: 24,
-                                              ),
-                                              child: Text(
-                                                hint,
-                                                style: TextStyle(
-                                                  fontSize: 10.5,
-                                                  color:
-                                                      hint.contains('海报') ||
-                                                              hint.contains(
-                                                                '更内层',
-                                                              )
-                                                          ? Colors.orange.shade800
-                                                          : Colors.black54,
-                                                ),
-                                              ),
-                                            ),
-                                        ],
-                                      ),
-                                    ),
-                                  ),
-                                );
-                              },
-                            ),
-                          ),
-                        const SizedBox(height: 6),
-                        const Text(
-                          '选中一层后，会下载该层范围内去广告的媒体；视频优先，避免把视频当海报图下。数量上限仍以上方为准。',
-                          style: TextStyle(fontSize: 11, color: Colors.black54),
-                        ),
-                      ] else if (runMode == 'action') ...[
-                        const SizedBox(height: 10),
-                        if (hostRecipes.isNotEmpty)
-                          Wrap(
-                            spacing: 6,
-                            runSpacing: 4,
-                            children:
-                                hostRecipes.map((r) {
-                                  final selected = selectedRecipe?.id == r.id;
-                                  return ChoiceChip(
-                                    label: Text(r.name),
-                                    selected: selected,
-                                    onSelected: (_) {
-                                      setDialogState(() {
-                                        selectedRecipe = r;
-                                        runMode = 'action';
-                                      });
-                                    },
-                                  );
-                                }).toList(),
-                          )
-                        else
-                          Text(
-                            selectedRecipe == null
-                                ? '尚未保存套路，请先编辑一套动作。'
-                                : '将使用：${selectedRecipe!.name}',
-                            style: const TextStyle(
-                              fontSize: 12,
-                              color: Colors.black54,
-                            ),
-                          ),
-                        if (selectedRecipe != null && hostRecipes.isNotEmpty)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 6),
-                            child: Text(
-                              '当前选用：${selectedRecipe!.name}'
-                              '${selectedRecipe!.lastUsedAt != null ? '（本站上次使用）' : ''}',
-                              style: const TextStyle(
-                                fontSize: 12,
-                                color: Colors.black54,
-                              ),
-                            ),
-                          ),
-                        const SizedBox(height: 8),
-                        OutlinedButton.icon(
-                          onPressed: () => openEditor(),
-                          icon: const Icon(Icons.edit_note),
-                          label: Text(
-                            selectedRecipe == null
-                                ? '编辑动作编排'
-                                : '编辑 / 管理套路',
-                          ),
-                        ),
-                      ] else
-                        const Padding(
-                          padding: EdgeInsets.only(top: 8),
-                          child: Text(
-                            '将使用 X 旧版自动逻辑（已验证的原智能下载流程）。',
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: Colors.black54,
-                            ),
-                          ),
-                        ),
                     ],
                   ),
                 ),
@@ -11012,25 +10825,20 @@ class _BrowserPageState extends State<BrowserPage>
                         );
                         return;
                       }
-                      if (runMode == 'scope' &&
-                          startFromCurrentPage &&
-                          scopeLevels.isEmpty) {
+                      if (runMode == 'reuse' &&
+                          !_confirmedSmartPatternIds.contains(
+                            selectedPatternId,
+                          )) {
                         ScaffoldMessenger.of(dialogContext).showSnackBar(
                           const SnackBar(
-                            content: Text('当前层级未扫描到媒体，请换层级或重新扫描'),
+                            content: Text('请选择一个网站套路（专有或通用）'),
                           ),
                         );
                         return;
                       }
                       Navigator.pop(dialogContext, runMode);
                     },
-                    child: Text(
-                      runMode == 'legacy'
-                          ? '开始（旧版自动）'
-                          : runMode == 'scope'
-                          ? '开始同层批量'
-                          : '开始',
-                    ),
+                    child: const Text('开始'),
                   ),
                 ],
               );
@@ -11038,15 +10846,21 @@ class _BrowserPageState extends State<BrowserPage>
           ),
     );
 
+    final enteredKeyword = keywordController.text.trim();
     final enteredCount = int.tryParse(countController.text.trim()) ?? 5;
     final enteredMinVideoMb = int.tryParse(minVideoSizeController.text.trim());
     final enteredMaxVideoMb = int.tryParse(maxVideoSizeController.text.trim());
     await Future<void>.delayed(const Duration(milliseconds: 280));
     if (confirmed == null || !mounted) {
+      keywordController.dispose();
       countController.dispose();
       minVideoSizeController.dispose();
       maxVideoSizeController.dispose();
       return;
+    }
+
+    if (enteredKeyword.isNotEmpty) {
+      await _rememberSmartKeyword(enteredKeyword);
     }
 
     int? minVideoBytes =
@@ -11054,9 +10868,7 @@ class _BrowserPageState extends State<BrowserPage>
     int? maxVideoBytes =
         enteredMaxVideoMb != null ? enteredMaxVideoMb * 1024 * 1024 : null;
     var autoVideoSizeRange = false;
-    // 本页同层批量：页面上各条目体量差异大，勿用「当前一条」估算去卡死整页
-    if (confirmed != 'scope' &&
-        enteredMinVideoMb == null &&
+    if (enteredMinVideoMb == null &&
         enteredMaxVideoMb == null &&
         startFromCurrentPage) {
       final seedBytes = await _estimateSmartSeedVideoBytes(
@@ -11072,50 +10884,62 @@ class _BrowserPageState extends State<BrowserPage>
     }
 
     final mediaType = initialMediaType;
-    final allowMixed = confirmed == 'scope';
 
-    if (confirmed == 'scope') {
-      await _startScopeBatchDownload(
-        website: website,
-        targetCount: enteredCount,
-        mediaType: mediaType,
-        allowMixedMedia: true,
-        startFromCurrentPage: startFromCurrentPage,
-        scopeDepth: scopeDepth,
-        minVideoBytes: minVideoBytes,
-        maxVideoBytes: maxVideoBytes,
-      );
-    } else if (confirmed == 'action') {
-      var recipe = selectedRecipe;
-      if (recipe == null) {
-        recipe = await showSmartActionEditor(
-          context: context,
-          host: dialogHost.isEmpty ? 'unknown' : dialogHost,
-          initial: SmartActionRecipe.feedTemplate(dialogHost),
-        );
+    /// 「沿用套路」：按所选站点固化管线启动。
+    /// 91 = a00c4bd 绝对原版管线；X/通用走当前 _startSmartDownload。
+    Future<void> startReusePattern() async {
+      final id = selectedPatternId.trim();
+      if (id.isEmpty || !_confirmedSmartPatternIds.contains(id)) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('未选择有效的网站套路')),
+          );
+        }
+        return;
       }
-      if (recipe != null && mounted) {
-        await SmartActionRecipeStore.save(recipe);
-        await SmartActionRecipeStore.markUsed(recipe);
-        await _startActionRecipeDownload(
+      // 91：实测独立管线（有关键词走搜索；无关键词从当前列表/详情批量）。
+      if (id == '91') {
+        await _startSimple91KeywordDownload(
           website: website,
-          recipe: recipe,
+          keyword: enteredKeyword,
           targetCount: enteredCount,
           mediaType: mediaType,
-          allowMixedMedia: allowMixed,
           startFromCurrentPage: startFromCurrentPage,
           minVideoBytes: minVideoBytes,
           maxVideoBytes: maxVideoBytes,
+          autoVideoSizeRange: autoVideoSizeRange,
         );
+        return;
       }
-    } else if (confirmed == 'legacy') {
-      // X 旧版自动：不走关键词搜索，从当前页/站点入口按原智能流程跑。
+      final native = _smartSiteProfile(dialogHost);
+      final crossSite =
+          _dedicatedSmartPatternIds.contains(id) && id != native;
       await _startSmartDownload(
         website: website,
-        keyword: '',
+        keyword: enteredKeyword,
         targetCount: enteredCount,
         mediaType: mediaType,
-        allowMixedMedia: allowMixed,
+        allowMixedMedia: false,
+        startFromCurrentPage: startFromCurrentPage,
+        minVideoBytes: minVideoBytes,
+        maxVideoBytes: maxVideoBytes,
+        autoVideoSizeRange: autoVideoSizeRange,
+        demoCount: null,
+        preferredStrategyKey: null,
+        strategyManualPick: crossSite,
+        strategyExplicitNone: true,
+        forceSiteProfile: id,
+      );
+    }
+
+    /// 「分页嗅探」：通用页面嗅探（可自动选用同站成功经验）。
+    Future<void> startSniff() async {
+      await _startSmartDownload(
+        website: website,
+        keyword: enteredKeyword,
+        targetCount: enteredCount,
+        mediaType: mediaType,
+        allowMixedMedia: false,
         startFromCurrentPage: startFromCurrentPage,
         minVideoBytes: minVideoBytes,
         maxVideoBytes: maxVideoBytes,
@@ -11123,9 +10947,44 @@ class _BrowserPageState extends State<BrowserPage>
         demoCount: null,
         preferredStrategyKey: null,
         strategyManualPick: false,
-        strategyExplicitNone: true,
+        strategyExplicitNone: false,
       );
     }
+
+    Future<void> startAction(SmartActionRecipe? recipe) async {
+      var next = recipe;
+      if (next == null) {
+        next = await showSmartActionEditor(
+          context: context,
+          host: dialogHost.isEmpty ? 'unknown' : dialogHost,
+          initial: SmartActionRecipe.feedTemplate(dialogHost),
+        );
+      }
+      if (next != null && mounted) {
+        await SmartActionRecipeStore.save(next);
+        await SmartActionRecipeStore.markUsed(next);
+        await _startActionRecipeDownload(
+          website: website,
+          recipe: next,
+          targetCount: enteredCount,
+          mediaType: mediaType,
+          allowMixedMedia: false,
+          startFromCurrentPage: startFromCurrentPage,
+          minVideoBytes: minVideoBytes,
+          maxVideoBytes: maxVideoBytes,
+        );
+      }
+    }
+
+    if (confirmed == 'reuse') {
+      await startReusePattern();
+    } else if (confirmed == 'sniff') {
+      await startSniff();
+    } else if (confirmed == 'action') {
+      await startAction(selectedRecipe);
+    }
+
+    keywordController.dispose();
     countController.dispose();
     minVideoSizeController.dispose();
     maxVideoSizeController.dispose();
@@ -12197,6 +12056,9 @@ class _BrowserPageState extends State<BrowserPage>
     String? preferredStrategyKey,
     bool strategyManualPick = false,
     bool strategyExplicitNone = false,
+    /// 「沿用套路」手动指定的站点管线（如 x）。仅用户显式选择时传入；
+    /// 不会根据当前页面自动把 X 套到其他网站。
+    String? forceSiteProfile,
   }) async {
     final rawUrl = (website['url'] ?? '').toString().trim();
     final normalized =
@@ -12223,6 +12085,10 @@ class _BrowserPageState extends State<BrowserPage>
         startFromCurrentPage && currentUri != null && currentUri.host.isNotEmpty
             ? currentUri
             : uri;
+    final nativeSiteProfile = _smartSiteProfile(effectiveHost);
+    final forcedProfile = (forceSiteProfile ?? '').trim();
+    final siteProfile =
+        forcedProfile.isNotEmpty ? forcedProfile : nativeSiteProfile;
     final keywordFirstOn91 =
         startFromCurrentPage &&
         keyword.trim().isNotEmpty &&
@@ -12245,7 +12111,6 @@ class _BrowserPageState extends State<BrowserPage>
         !allowMixedMedia &&
         mediaType == MediaType.video &&
         _isBaiduHost(effectiveHost);
-    final siteProfile = _smartSiteProfile(effectiveHost);
     await _loadSmartDownload24hRegistry();
     await _loadSmartStrategyProfiles();
     await _loadSmartDemoRecipes();
@@ -12261,7 +12126,9 @@ class _BrowserPageState extends State<BrowserPage>
             : '';
     final strictBaiduSearchUrl =
         strictBaiduVideoMode ? _baiduVideoSearchUrl(keyword) : '';
-    if (startFromCurrentPage && keyword.trim().isEmpty) {
+    if (startFromCurrentPage &&
+        keyword.trim().isEmpty &&
+        siteProfile != '91') {
       await _anchorSmartSeedForType(mediaType);
     }
     _smartDownloadTask = <String, dynamic>{
@@ -12290,6 +12157,8 @@ class _BrowserPageState extends State<BrowserPage>
       'matchStage':
           keywordFirstOn91
               ? '关键词优先 · 站内搜索'
+              : siteProfile == '91' && keyword.trim().isEmpty
+              ? '无关键词 · 邻近媒体查找'
               : keyword.isEmpty
               ? '模式A · 中心起点 · 邻近依次'
               : _smartUsesLegacyPriorityPipeline(siteProfile)
@@ -12340,9 +12209,12 @@ class _BrowserPageState extends State<BrowserPage>
       'disableSyntheticRoutes': false,
       'preheatedVideoCandidates': <String, List<String>>{},
       'startedFromCurrentPage': startFromCurrentPage,
-      // 91 keyword search has a deterministic ordered-card state machine.
-      // Do not let the generic visual gesture recovery compete with it.
-      'gestureMode': startFromCurrentPage && !keywordFirstOn91,
+      // 91 专有套路（a00c4bd）：关键词走 ordered-card FSM；无关键词走邻近/信息流，
+      // 不与通用手势引擎混用，避免回归。
+      'gestureMode':
+          startFromCurrentPage &&
+          !keywordFirstOn91 &&
+          siteProfile != '91',
       'gestureAttemptedKeys': <String>{},
       'gestureDownloadPending': false,
       'gestureKeywordSubmitted':
@@ -12361,7 +12233,10 @@ class _BrowserPageState extends State<BrowserPage>
       'gestureLastSafeUrl': _currentUrl,
       'gestureResultUrl': _currentUrl,
       'gestureRecoveryCount': 0,
-      'protectVisibleGestureFlow': startFromCurrentPage && !keywordFirstOn91,
+      'protectVisibleGestureFlow':
+          startFromCurrentPage &&
+          !keywordFirstOn91 &&
+          siteProfile != '91',
       'originUrl': _currentUrl,
       'strict91KeywordMode': keywordFirstOn91,
       'strict91SearchUrl': strict91SearchUrl,
@@ -12454,7 +12329,9 @@ class _BrowserPageState extends State<BrowserPage>
         activeTask['matchStage'] =
             keywordFirstOn91
                 ? '关键词优先 · 站内搜索'
-                : (keyword.isEmpty
+                : (siteProfile == '91' && keyword.isEmpty
+                    ? '无关键词 · 邻近媒体查找'
+                    : keyword.isEmpty
                     ? '模式A · 中心起点 · 邻近依次'
                     : '关键词优先 · 站内搜索');
         debugPrint(
@@ -12603,7 +12480,20 @@ class _BrowserPageState extends State<BrowserPage>
         progressDetail: '正在解析当前页面媒体地址...',
       );
     }
-    _showSmartOperation(allowMixedMedia ? '正在识别屏幕中心的图片或视频' : '正在定位屏幕中心媒体');
+    // 91 专有套路（a00c4bd）：不要显示「定位屏幕中心媒体」——那是后来通用/X 邻近模式的文案。
+    if (keywordFirstOn91) {
+      _showSmartOperation('91 关键词搜索 · 按结果卡片顺序进入详情下载');
+    } else if (siteProfile == '91') {
+      _showSmartOperation(
+        keyword.trim().isEmpty
+            ? '91 · 邻近媒体查找'
+            : '91 · 站内搜索下载',
+      );
+    } else {
+      _showSmartOperation(
+        allowMixedMedia ? '正在识别屏幕中心的图片或视频' : '正在定位屏幕中心媒体',
+      );
+    }
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
@@ -12635,8 +12525,15 @@ class _BrowserPageState extends State<BrowserPage>
     final task = _smartDownloadTask;
     final controller = _controller;
     if (task == null || controller == null) return;
-    // 动作套路 / 本页同层批量 由独立循环驱动，不进入旧 FSM。
-    if (task['mode'] == 'action_recipe' || task['mode'] == 'scope_batch') {
+    // 动作套路 / 本页同层批量 / 91 实测关键词管线 由独立循环驱动，不进入旧 FSM。
+    if (task['mode'] == 'action_recipe' ||
+        task['mode'] == 'scope_batch' ||
+        task['mode'] == 'simple_91_keyword') {
+      return;
+    }
+    // 91 a00c4bd 绝对原版管线：整段推进逻辑不走 HEAD 改造版。
+    if (task['a00_91_pipeline'] == true) {
+      await _advanceSmartDownload91A00(loadedUrl);
       return;
     }
     if (_smartDownloadAdvancing) {
@@ -12679,9 +12576,14 @@ class _BrowserPageState extends State<BrowserPage>
     try {
       final phase = task['phase']?.toString() ?? '';
       final taskHost = (task['host'] ?? '').toString();
+      final is91Host =
+          taskHost == '91cg1.com' || taskHost.endsWith('.91cg1.com');
       final is91KeywordTask =
-          (taskHost == '91cg1.com' || taskHost.endsWith('.91cg1.com')) &&
-          (task['keyword'] ?? '').toString().trim().isNotEmpty;
+          (task['strict91KeywordMode'] == true) ||
+          (is91Host &&
+              (task['keyword'] ?? '').toString().trim().isNotEmpty);
+      final is91Dedicated =
+          (task['siteProfile'] ?? '').toString() == '91' || is91Host;
       final strict91Mode = task['strict91KeywordMode'] == true;
       final strictXFeedMode = task['strictXFeedMode'] == true;
       final xInlineFeedMode = task['xInlineFeedMode'] == true;
@@ -13019,7 +12921,9 @@ class _BrowserPageState extends State<BrowserPage>
                 loadedUri.queryParameters.containsKey('q'));
         final taskHost = (task['host'] ?? '').toString();
         final isKeywordFirst91 =
-            taskHost == '91cg1.com' || taskHost.endsWith('.91cg1.com');
+            task['strict91KeywordMode'] == true ||
+            taskHost == '91cg1.com' ||
+            taskHost.endsWith('.91cg1.com');
         final requiredTier =
             !hasKeyword || (isSearchResultsPage && !isKeywordFirst91)
                 ? 0
@@ -13030,7 +12934,11 @@ class _BrowserPageState extends State<BrowserPage>
           for (final row in result) {
             if (row is Map && row['url'] != null) {
               final rowUrl = row['url'].toString();
-              if (!_isWithinSmartDownloadSite(rowUrl)) continue;
+              // 91 专有套路（a00c4bd）：不额外用站内域名过滤裁掉搜索卡片。
+              if (!isKeywordFirst91 &&
+                  !_isWithinSmartDownloadSite(rowUrl)) {
+                continue;
+              }
               if (isKeywordFirst91 && !_is91ContentPage(rowUrl)) continue;
               if (row['scopeOnly'] == true) {
                 if (isKeywordFirst91) {
@@ -13151,6 +13059,92 @@ class _BrowserPageState extends State<BrowserPage>
                     : (candidatePreheated ? 180 : 450),
           ),
         );
+        // 91 详情页（a00 成功套路）：先强制向下滑动找主视频区，再解析下载。
+        // 旧逻辑只在 uniqueUrls 为空时才滚，顶部若有广告/封面 video 就永远不往下找。
+        if (phase == 'visiting_clicked_card' &&
+            is91Dedicated &&
+            _is91ContentPage(
+              loadedUrl.isNotEmpty ? loadedUrl : _currentUrl,
+            )) {
+          final prep = (task['91DetailPrepScrolls'] as int?) ?? 0;
+          if (prep < 3) {
+            final prepResult = await controller.evaluateJavascript(
+              source: '''
+                (() => {
+                  const step = $prep;
+                  const amount = Math.max(420, Math.floor(innerHeight * 0.78));
+                  window.scrollBy(0, amount);
+                  const videos = Array.from(document.querySelectorAll('video'));
+                  const scored = videos.map(v => {
+                    const r = v.getBoundingClientRect();
+                    const area = Math.max(0, r.width) * Math.max(0, r.height);
+                    const visible = r.width > 80 && r.height > 60 &&
+                      r.bottom > 0 && r.top < innerHeight;
+                    const belowFold = r.top > innerHeight * 0.18;
+                    return {v, r, area, visible, belowFold, top: r.top};
+                  }).sort((a, b) => {
+                    // 优先：可见且靠下的大视频（详情主体），不是屏幕正中的小封面
+                    const as = (a.visible ? 100000 : 0) + (a.belowFold ? 30000 : 0) + a.area;
+                    const bs = (b.visible ? 100000 : 0) + (b.belowFold ? 30000 : 0) + b.area;
+                    return bs - as || a.top - b.top;
+                  });
+                  const best = scored[0];
+                  let clickedPlay = false;
+                  if (best && best.area > 12000) {
+                    try { best.v.scrollIntoView({behavior:'auto', block:'center'}); } catch (_) {}
+                    try { best.v.muted = true; best.v.load(); } catch (_) {}
+                    try { best.v.play().catch(() => {}); } catch (_) {}
+                  }
+                  const play = Array.from(document.querySelectorAll(
+                    'button, [role="button"], .play, [class*="play"]'
+                  )).find(el => {
+                    const r = el.getBoundingClientRect();
+                    const text = (el.innerText || el.title || el.getAttribute('aria-label') || '').trim();
+                    return r.width > 20 && r.height > 20 &&
+                      r.bottom > 0 && r.top < innerHeight &&
+                      /(play|播放|开始)/i.test([text, el.className].join(' '));
+                  });
+                  if (play) { try { play.click(); clickedPlay = true; } catch (_) {} }
+                  return {
+                    step,
+                    videos: videos.length,
+                    bestArea: best ? Math.round(best.area) : 0,
+                    bestTop: best ? Math.round(best.top) : -1,
+                    clickedPlay,
+                    scrolled: amount
+                  };
+                })()
+              ''',
+            );
+            task['91DetailPrepScrolls'] = prep + 1;
+            debugPrint('Smart 91 detail prep scroll #${prep + 1}: $prepResult');
+            _showSmartOperation(
+              '详情页向下寻找真正视频 ${prep + 1}/3',
+              point: const Offset(0.5, 0.78),
+            );
+            final id = (task['discoveryTaskId'] ?? '').toString();
+            if (id.isNotEmpty) {
+              _updateDownloadTask(
+                id,
+                progressDetail: '详情页向下滑动寻找主视频 ${prep + 1}/3...',
+              );
+            }
+            // 若已找到较大主体视频，可提前结束预备滚动进入解析
+            final bestArea =
+                prepResult is Map
+                    ? ((prepResult['bestArea'] as num?)?.toInt() ?? 0)
+                    : 0;
+            if (bestArea < 40000 && prep + 1 < 3) {
+              Future<void>.delayed(
+                const Duration(milliseconds: 900),
+                () => unawaited(_advanceSmartDownload(_currentUrl)),
+              );
+              return;
+            }
+            // 找到较大视频后稍等播放器暴露真实地址
+            await Future<void>.delayed(const Duration(milliseconds: 700));
+          }
+        }
         final successBefore = task['success'] as int;
         if (!strict91Mode) {
           unawaited(_preheatNextSmartMedia(task, phase));
@@ -13196,15 +13190,21 @@ class _BrowserPageState extends State<BrowserPage>
         final preferSeedScope =
             !scopeHasKeyword &&
             task['startedFromCurrentPage'] == true &&
-            scopeDiscoveryRound == 0;
+            scopeDiscoveryRound == 0 &&
+            !is91Dedicated &&
+            !strict91Mode;
         final preferSeedMedia =
-            phase == 'visiting_seed' ||
-            (strictXFeedMode && phase == 'scanning_feed');
+            !is91Dedicated &&
+            (phase == 'visiting_seed' ||
+                (strictXFeedMode && phase == 'scanning_feed'));
+        final prefer91DetailVideo =
+            is91Dedicated && phase == 'visiting_clicked_card';
         final result = await controller.evaluateJavascript(
           source: '''
             (() => {
               const preferSeedScope = $preferSeedScope;
               const preferSeedMedia = $preferSeedMedia;
+              const prefer91DetailVideo = $prefer91DetailVideo;
               const allVideos = Array.from(document.querySelectorAll('video'));
               const activeXScope = $strictXFeedMode
                 ? document.querySelector('[data-app-smart-x-active="1"]')
@@ -13226,13 +13226,24 @@ class _BrowserPageState extends State<BrowserPage>
                 ? (scope?.querySelector('video[data-smart-seed-media="1"]') ||
                     document.querySelector('video[data-smart-seed-media="1"]'))
                 : null;
-              const video = seed || (visible.length ? visible : videos).sort((a,b) => {
+              const video = seed || (prefer91DetailVideo
+                ? (visible.length ? visible : videos).slice().sort((a,b) => {
+                    const ar = a.getBoundingClientRect();
+                    const br = b.getBoundingClientRect();
+                    const aa = ar.width * ar.height;
+                    const ba = br.width * br.height;
+                    const aBelow = ar.top > innerHeight * 0.15 ? 1 : 0;
+                    const bBelow = br.top > innerHeight * 0.15 ? 1 : 0;
+                    // 91 详情：优先靠下的大主视频，而不是屏幕正中的封面/广告
+                    return (bBelow - aBelow) || (ba - aa) || (ar.top - br.top);
+                  })[0]
+                : (visible.length ? visible : videos).sort((a,b) => {
                 const ar = a.getBoundingClientRect();
                 const br = b.getBoundingClientRect();
                 const ad = Math.abs(ar.top + ar.height / 2 - innerHeight / 2);
                 const bd = Math.abs(br.top + br.height / 2 - innerHeight / 2);
                 return ad - bd || (b.clientWidth*b.clientHeight) - (a.clientWidth*a.clientHeight);
-              })[0];
+              })[0]);
               if (!video) return {hasVideo:false, candidates:[]};
               try { video.muted = true; video.play().catch(() => {}); } catch (_) {}
               const urls = [video.currentSrc, video.src,
@@ -13501,22 +13512,31 @@ class _BrowserPageState extends State<BrowserPage>
         }
         if (uniqueUrls.isEmpty &&
             phase == 'visiting_clicked_card' &&
-            is91KeywordTask &&
+            is91Dedicated &&
             _is91ContentPage(pageUrl)) {
           final retries = (task['candidateResolveRetries'] as int?) ?? 0;
           final enteredAt =
               task['cardEnteredAt'] as DateTime? ?? DateTime.now();
           task['cardEnteredAt'] = enteredAt;
 
-          // Some 91 players expose the real address only after play/visibility.
+          // 91 专有套路（a00c4bd）：进详情后向下找真正视频并触发播放，再嗅探地址。
           await controller.evaluateJavascript(
             source: '''
               (() => {
                 const videos = Array.from(document.querySelectorAll('video'));
-                const video = videos.find(v => {
+                let video = videos.find(v => {
                   const r = v.getBoundingClientRect();
-                  return r.width > 80 && r.height > 60;
-                }) || videos[0];
+                  return r.width > 80 && r.height > 60 &&
+                    r.bottom > 0 && r.top < innerHeight;
+                }) || null;
+                if (!video) {
+                  // 当前屏没有可见视频：向下翻找详情页主体视频区
+                  window.scrollBy(0, Math.max(360, Math.floor(innerHeight * 0.72)));
+                  video = videos.find(v => {
+                    const r = v.getBoundingClientRect();
+                    return r.width > 80 && r.height > 60;
+                  }) || videos[0] || null;
+                }
                 if (video) {
                   video.scrollIntoView({behavior:'auto', block:'center'});
                   video.muted = true;
@@ -13532,9 +13552,17 @@ class _BrowserPageState extends State<BrowserPage>
                     /(play|播放|开始)/i.test([text, el.className].join(' '));
                 });
                 if (play) { try { play.click(); } catch (_) {} }
-                return {videos: videos.length, clickedPlay: !!play};
+                return {
+                  videos: videos.length,
+                  clickedPlay: !!play,
+                  scrolled: !video || true
+                };
               })()
             ''',
+          );
+          _showSmartOperation(
+            '详情页向下寻找视频并解析地址 ${retries + 1}/15',
+            point: const Offset(0.5, 0.72),
           );
 
           if (retries == 2 || retries == 6) {
@@ -14018,20 +14046,27 @@ class _BrowserPageState extends State<BrowserPage>
     }
     final reservedNames = task['reservedMediaNameKeys'] as Set<String>;
     final reservedTitles = task['reservedMediaTitleKeys'] as Set<String>;
-    final duplicateInTask =
-        (key.isNotEmpty && reservedNames.contains(key)) ||
-        (allowTitleIdentity &&
-            titleKey.isNotEmpty &&
-            reservedTitles.contains(titleKey));
-    if (!duplicateInTask) {
-      if (key.isNotEmpty) reservedNames.add(key);
+    // Same media name already reserved in this task: allow re-entry.
+    // Callers often reserve once, then `_downloadMediaRobustly` reserves again;
+    // treating that as a duplicate skipped every candidate instantly (no download).
+    if (key.isNotEmpty && reservedNames.contains(key)) {
       if (allowTitleIdentity && titleKey.isNotEmpty) {
         reservedTitles.add(titleKey);
       }
       return true;
     }
-    task['duplicateSkipped'] = ((task['duplicateSkipped'] as int?) ?? 0) + 1;
-    return false;
+    if (allowTitleIdentity &&
+        titleKey.isNotEmpty &&
+        reservedTitles.contains(titleKey)) {
+      // Different URL but same title already claimed by another item.
+      task['duplicateSkipped'] = ((task['duplicateSkipped'] as int?) ?? 0) + 1;
+      return false;
+    }
+    if (key.isNotEmpty) reservedNames.add(key);
+    if (allowTitleIdentity && titleKey.isNotEmpty) {
+      reservedTitles.add(titleKey);
+    }
+    return true;
   }
 
   void _releaseSmartMediaName(
@@ -14497,12 +14532,20 @@ class _BrowserPageState extends State<BrowserPage>
     required bool madeProgress,
   }) async {
     if (!identical(_smartDownloadTask, task)) return;
+    // 共享卡片入口若触发返回，a00 91 任务必须回到 a00 队列，不能串进 HEAD visitNext。
+    if (task['a00_91_pipeline'] == true) {
+      await _returnFromSmartMediaCard91A00(task, madeProgress: madeProgress);
+      return;
+    }
     if (task['strict91KeywordMode'] == true) {
       final listUrl = (task['strict91SearchUrl'] ?? '').toString();
       task['phase'] = 'strict91_returning';
       task['strict91ReturnAttempts'] = 0;
       task.remove('nextMediaLabel');
       task.remove('nextMediaStatus');
+      task.remove('91DetailPrepScrolls');
+      task.remove('cardEnteredAt');
+      task['candidateResolveRetries'] = 0;
       final controller = _controller;
       if (controller == null || listUrl.isEmpty) return;
       final actualUrl = (await controller.getUrl())?.toString() ?? _currentUrl;
@@ -15708,7 +15751,8 @@ class _BrowserPageState extends State<BrowserPage>
 
   void _visitNextSmartCandidate(Map<String, dynamic> task) {
     final candidates = task['candidates'] as List<Map<String, String>>;
-    if (task['strict91KeywordMode'] == true) {
+    final strict91 = task['strict91KeywordMode'] == true;
+    if (strict91) {
       final listUrl = (task['strict91SearchUrl'] ?? '').toString();
       if (listUrl.isNotEmpty && !_isSame91TaskPage(listUrl, _currentUrl)) {
         task['phase'] = 'strict91_returning';
@@ -15718,9 +15762,13 @@ class _BrowserPageState extends State<BrowserPage>
     }
     var index = task['index'] as int;
     final visited = task['visitedPageUrls'] as Set<String>;
-    while (index < candidates.length &&
-        (!visited.add(candidates[index]['url'] ?? '') ||
-            !_isWithinSmartDownloadSite(candidates[index]['url'] ?? ''))) {
+    // 91 专有套路（a00c4bd）：只跳过已访问；勿再按域名过滤误丢卡片。
+    while (index < candidates.length) {
+      final url = candidates[index]['url'] ?? '';
+      final alreadyVisited = !visited.add(url);
+      final offsiteBlocked =
+          !strict91 && !_isWithinSmartDownloadSite(url);
+      if (!alreadyVisited && !offsiteBlocked) break;
       index++;
     }
     if (index >= candidates.length) {
@@ -15765,7 +15813,14 @@ class _BrowserPageState extends State<BrowserPage>
         <String, dynamic>{'index': i, 'candidate': candidates[i]},
     ];
     final initialPageUrl = (candidate['url'] ?? '').trim();
-    if (initialPageUrl.isEmpty || !_isWithinSmartDownloadSite(initialPageUrl)) {
+    final taskHost = (task['host'] ?? '').toString();
+    final is91 =
+        task['strict91KeywordMode'] == true ||
+        taskHost == '91cg1.com' ||
+        taskHost.endsWith('.91cg1.com');
+    // 91 专有套路（a00c4bd）：详情卡点击前不做域名出站拦截，避免误跳过 archives。
+    if (initialPageUrl.isEmpty ||
+        (!is91 && !_isWithinSmartDownloadSite(initialPageUrl))) {
       debugPrint('Smart skip offsite candidate: $initialPageUrl');
       Future<void>.delayed(const Duration(milliseconds: 80), () {
         if (identical(_smartDownloadTask, task)) {
@@ -15775,8 +15830,6 @@ class _BrowserPageState extends State<BrowserPage>
       return;
     }
     final candidateListUrl = (task['candidateListUrl'] ?? '').toString();
-    final taskHost = (task['host'] ?? '').toString();
-    final is91 = taskHost == '91cg1.com' || taskHost.endsWith('.91cg1.com');
     final currentlyOnCandidateList =
         candidateListUrl.isNotEmpty &&
         (is91
@@ -15789,10 +15842,17 @@ class _BrowserPageState extends State<BrowserPage>
       task['resumeCandidateQueueAfterCard'] = true;
       task['activeDiscoveryStrategy'] = 'click_media_card';
       task['cardEnteredAt'] = DateTime.now();
+      task['candidateResolveRetries'] = 0;
+      task['91DetailPrepScrolls'] = 0;
+      task['matchStage'] = '详情页 · 向下寻找视频';
       task['nextMediaLabel'] =
           (candidate['title'] ?? '').trim().isEmpty
               ? '下一个关键词视频'
               : (candidate['title'] ?? '').trim();
+      _showSmartOperation(
+        '进入详情页，向下寻找真正视频',
+        point: const Offset(0.5, 0.72),
+      );
       task['nextMediaStatus'] = '正在直接进入关键词视频详情';
       final clicked = await _clickSmartCandidateLink(initialPageUrl);
       if (!identical(_smartDownloadTask, task)) return;
@@ -15805,6 +15865,13 @@ class _BrowserPageState extends State<BrowserPage>
           'Smart 91: clicked ordered card ${task['index']}/${candidates.length} $initialPageUrl',
         );
       }
+      // 详情页加载后主动推进；并强制先向下找主视频（不依赖顶部是否已有假 video）。
+      Future<void>.delayed(const Duration(milliseconds: 1400), () {
+        if (identical(_smartDownloadTask, task) &&
+            task['phase'] == 'visiting_clicked_card') {
+          unawaited(_advanceSmartDownload(_currentUrl));
+        }
+      });
       return;
     }
     if (currentlyOnCandidateList &&
@@ -16159,9 +16226,11 @@ class _BrowserPageState extends State<BrowserPage>
     final target = task['target'] as int;
     final actionRecipeMode = task['mode'] == 'action_recipe';
     final scopeBatchMode = task['mode'] == 'scope_batch';
+    final simple91Mode = task['mode'] == 'simple_91_keyword';
     final hardStop = reason != null && _isSmartHardStopReason(reason);
     if (!actionRecipeMode &&
         !scopeBatchMode &&
+        !simple91Mode &&
         success < target &&
         !hardStop) {
       if (reason == null && task['allowBroadenDiscovery'] == true) {
@@ -16177,6 +16246,7 @@ class _BrowserPageState extends State<BrowserPage>
     }
     if (!actionRecipeMode &&
         !scopeBatchMode &&
+        !simple91Mode &&
         success > 0 &&
         task['demoPhase'] == 'auto') {
       unawaited(_persistSmartDemoRecipe(task));
@@ -17119,6 +17189,10 @@ class _BrowserPageState extends State<BrowserPage>
     }
   }
 
+  /// Legacy MediaMuxer TS→MP4. Do not use for HLS: it collapses B-frame PTS and
+  /// freezes ExoPlayer on the first frame. Kept only for the native channel; HLS
+  /// merge returns `.ts` instead. X DASH still uses `muxMp4` (separate tracks).
+  // ignore: unused_element
   Future<File?> _remuxNativeVideoToMp4(File source) async {
     final output = File(p.setExtension(source.path, '.seekable.mp4'));
     try {
@@ -18692,12 +18766,16 @@ class _BrowserPageState extends State<BrowserPage>
         await outFile.delete();
         return null;
       }
-      // 83876f6 已验证路径：fMP4 拼接后直接改名入库可播；仅 MPEG-TS 才 remux。
+      // 83876f6 已验证路径：fMP4 拼接后直接改名入库可播。
+      // MPEG-TS：不要走 MediaMuxer remuxMp4。MediaExtractor 按解码序吐 B 帧，
+      // writeTrack 再强制单调 PTS，会把多帧压成同一 presentationTime（实测同 PTS
+      // 重复 4 次），ExoPlayer 能出首帧但无法推进。本地保留 .ts，ExoPlayer 可直接播。
       if (detectedExtension != '.ts') {
         final corrected = File(p.setExtension(outFile.path, detectedExtension));
         if (await corrected.exists()) await corrected.delete();
         return outFile.rename(corrected.path);
       }
+      return outFile;
     } catch (e) {
       debugPrint('HLS 合并文件校验失败: $e');
       try {
@@ -18705,11 +18783,6 @@ class _BrowserPageState extends State<BrowserPage>
       } catch (_) {}
       return null;
     }
-
-    final seekableMp4 = await _remuxNativeVideoToMp4(outFile);
-    if (seekableMp4 != null) return seekableMp4;
-
-    return outFile;
   }
 
   /// 解析媒体 playlist 得到分片列表；`null` 表示 SAMPLE-AES / 密钥错误等致命问题。
@@ -22018,8 +22091,17 @@ class _BrowserPageState extends State<BrowserPage>
       final ctrl = _controller;
       final actualUrl = (await ctrl?.getUrl())?.toString() ?? _currentUrl;
       if (!_isSameLoadedDocument(url, actualUrl)) {
-        debugPrint('忽略已失效的页面完成回调: $url -> $actualUrl');
-        return;
+        // 绝不能用「url 是详情 / actual 是列表」这种半截导航回调去 advance，
+        // 日志里正是它导致详情秒退回搜索页。
+        final smartTask = _smartDownloadTask;
+        final same91Page =
+            smartTask != null &&
+            smartTask['a00_91_pipeline'] == true &&
+            _isSame91TaskPage(url, actualUrl);
+        if (!same91Page) {
+          debugPrint('忽略已失效的页面完成回调: $url -> $actualUrl');
+          return;
+        }
       }
       if (_isXPlatformPage(actualUrl)) {
         unawaited(_flushBrowserCookies());
@@ -22040,18 +22122,3425 @@ class _BrowserPageState extends State<BrowserPage>
       // 更新状态：仅当加载真实网页时切换到 WebView
       setState(() {
         _isLoading = false;
-        _currentUrl = url;
-        _urlController.text = url;
+        _currentUrl = actualUrl.isNotEmpty ? actualUrl : url;
+        _urlController.text = _currentUrl;
         _showHomePage = false;
       });
 
       // 通知父组件浏览器状态变化
       widget.onBrowserHomePageChanged?.call(_showHomePage);
 
-      debugPrint('页面加载完成: $url, 标题: $title');
-      unawaited(_advanceSmartDownload(url));
+      debugPrint('页面加载完成: $_currentUrl, 标题: $title');
+      unawaited(_advanceSmartDownload(_currentUrl));
     } catch (e) {
       debugPrint('页面加载完成处理时出错: $e');
     }
   }
+
+  // ========== 91 实测管线（有关键词：搜索；无关键词：当前列表/详情批量） ==========
+
+  String _simple91ArchiveKey(String url) {
+    final uri = Uri.tryParse(url.trim());
+    if (uri == null) return '';
+    final segments = uri.pathSegments.where((e) => e.isNotEmpty).toList();
+    if (segments.length < 2 || segments.first.toLowerCase() != 'archives') {
+      return '';
+    }
+    if (!RegExp(r'^\d+$').hasMatch(segments[1])) return '';
+    final host = uri.host.toLowerCase().replaceFirst(RegExp(r'^www\.'), '');
+    return '$host/archives/${segments[1]}';
+  }
+
+  Future<void> _startSimple91KeywordDownload({
+    required Map<String, dynamic> website,
+    required String keyword,
+    required int targetCount,
+    required MediaType mediaType,
+    bool startFromCurrentPage = false,
+    int? minVideoBytes,
+    int? maxVideoBytes,
+    bool autoVideoSizeRange = false,
+  }) async {
+    if (_smartDownloadTask != null) return;
+    final rawUrl = (website['url'] ?? '').toString().trim();
+    final normalized =
+        rawUrl.startsWith('http://') || rawUrl.startsWith('https://')
+            ? rawUrl
+            : (rawUrl.isEmpty ? _currentUrl : 'https://$rawUrl');
+    final seedBrowse =
+        startFromCurrentPage && _currentUrl.startsWith('http')
+            ? _currentUrl
+            : normalized;
+    final uri = Uri.tryParse(seedBrowse);
+    if (uri == null || uri.host.isEmpty) return;
+    final host = _normalizeSmartHost(uri.host);
+    if (host != '91cg1.com' && !host.endsWith('.91cg1.com')) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('91 套路仅用于 91cg1.com')),
+        );
+      }
+      return;
+    }
+    final browseOrigin = Uri.tryParse(_currentUrl)?.origin ?? '';
+    final siteOrigin =
+        browseOrigin.startsWith('http') ? browseOrigin : uri.origin;
+    final kw = keyword.trim();
+    final browseMode = kw.isEmpty;
+    var listUrl = '';
+    var seedDetailFirst = false;
+    if (!browseMode) {
+      listUrl = '$siteOrigin/search/${Uri.encodeComponent(kw)}/';
+    } else if (_is91ContentPage(seedBrowse)) {
+      // 正在看详情：先下当前，再回站点首页（或分类列表）继续批量。
+      seedDetailFirst = true;
+      listUrl = '$siteOrigin/';
+    } else {
+      // 首页 / 分类 / 标签 / 已打开的搜索结果页：就地批量。
+      listUrl = seedBrowse.startsWith('http') ? seedBrowse : '$siteOrigin/';
+    }
+    await _loadSmartDownload24hRegistry();
+    final startedAt = DateTime.now();
+    final deadlineAt = startedAt.add(const Duration(hours: 5));
+    _smartDownloadTask = <String, dynamic>{
+      'mode': 'simple_91_keyword',
+      'phase': 'simple_91_running',
+      'siteUrl': normalized,
+      'host': host,
+      'siteProfile': '91',
+      'keyword': kw,
+      'mediaType': mediaType,
+      'allowMixedMedia': false,
+      'target': targetCount.clamp(1, 100),
+      'minVideoBytes': minVideoBytes,
+      'maxVideoBytes': maxVideoBytes,
+      'autoVideoSizeRange': autoVideoSizeRange,
+      'success': 0,
+      'failed': 0,
+      'matchStage':
+          browseMode ? '91 实测 · 当前页批量' : '91 实测 · 关键词搜索',
+      'demoPhase': 'auto',
+      'gestureDownloadPending': false,
+      'startedAt': startedAt,
+      'deadlineAt': deadlineAt,
+      'originUrl': _currentUrl,
+      'startedFromCurrentPage': startFromCurrentPage,
+      'strict91SearchUrl': listUrl,
+      'simple91BrowseMode': browseMode,
+      'simple91SeedDetailFirst': seedDetailFirst,
+      'simple91SkipFirstCard': listUrl.toLowerCase().contains('/search/'),
+      'seenMediaUrls': <String>{},
+      'attemptedVideoContexts': <String>{},
+      'duplicateVideoUrlKeys': <String>{},
+      'videoMediaStates': <String, String>{},
+      'reservedMediaNameKeys': <String>{},
+      'reservedMediaTitleKeys': <String>{},
+      'allowBroadenDiscovery': false,
+    };
+    final task = _smartDownloadTask!;
+    try {
+      await WakelockPlus.enable();
+      task['screenWakeLockEnabled'] = true;
+    } catch (_) {}
+    task['deadlineTimer'] = Timer(deadlineAt.difference(DateTime.now()), () {
+      if (identical(_smartDownloadTask, task)) {
+        unawaited(_finishSmartDownload('已达到单次任务 5 小时时间上限'));
+      }
+    });
+    if (browseMode) {
+      _showSmartOperation(
+        seedDetailFirst ? '91：先下载当前详情，再批量列表' : '91：从当前页批量下载',
+      );
+    } else {
+      _showSmartOperation('91 实测管线：打开「$kw」搜索结果');
+    }
+    debugPrint(
+      'simple91: start browse=$browseMode keyword=$kw seedDetail=$seedDetailFirst '
+      'target=${task['target']} listUrl=$listUrl host=$host',
+    );
+    unawaited(_runSimple91KeywordLoop(task));
+  }
+
+  Future<bool> _simple91StillRunning(Map<String, dynamic> task) {
+    if (!identical(_smartDownloadTask, task)) return Future<bool>.value(false);
+    final deadlineAt = task['deadlineAt'] as DateTime?;
+    if (deadlineAt != null && !DateTime.now().isBefore(deadlineAt)) {
+      return Future<bool>.value(false);
+    }
+    return Future<bool>.value(true);
+  }
+
+  Future<bool> _simple91WaitUntil(
+    Map<String, dynamic> task,
+    bool Function() ready, {
+    Duration timeout = const Duration(seconds: 28),
+    Duration poll = const Duration(milliseconds: 320),
+  }) async {
+    final end = DateTime.now().add(timeout);
+    while (DateTime.now().isBefore(end)) {
+      if (!await _simple91StillRunning(task)) return false;
+      if (ready()) return true;
+      await Future<void>.delayed(poll);
+    }
+    return ready();
+  }
+
+  Future<void> _simple91DismissAgeGate() async {
+    final controller = _controller;
+    if (controller == null) return;
+    try {
+      await controller.evaluateJavascript(
+        source: '''
+          (function(){
+            const nodes = Array.from(document.querySelectorAll('a,button,div,span,p'));
+            for (const el of nodes) {
+              const t = String(el.innerText || el.textContent || '').replace(/\\s+/g,' ').trim();
+              if (!t || t.length > 48) continue;
+              if (/年满\\s*18|我已满18|进入网站|同意进入/.test(t)) {
+                try { el.click(); return 'clicked'; } catch (e) {}
+              }
+            }
+            return 'none';
+          })()
+        ''',
+      );
+    } catch (_) {}
+  }
+
+  Future<List<String>> _simple91CollectArchiveUrls() async {
+    final controller = _controller;
+    if (controller == null) {
+      debugPrint('simple91: collect skip — no controller url=$_currentUrl');
+      return const <String>[];
+    }
+    try {
+      // 站点结构：`<a href="/archives/ID/"><div class="post-card">…</div></a>`
+      // 链接是 post-card 的父节点，不能在 card 内 querySelector('a')。
+      final raw = await controller.evaluateJavascript(
+        source: '''
+          (function(){
+            const out = [];
+            const seen = new Set();
+            const push = (href) => {
+              try {
+                const u = new URL(href, location.href);
+                const m = u.pathname.match(/\\/archives\\/(\\d+)\\/?/);
+                if (!m) return;
+                const key = u.origin + '/archives/' + m[1] + '/';
+                if (seen.has(key)) return;
+                seen.add(key);
+                out.push(key);
+              } catch (e) {}
+            };
+            // 优先：包裹 .post-card 的 archives 链接（搜索列表主路径）
+            const wrapLinks = Array.from(
+              document.querySelectorAll('a[href*="/archives/"]')
+            ).filter((a) => !!a.querySelector('.post-card'));
+            if (wrapLinks.length) {
+              for (const a of wrapLinks) {
+                push(a.getAttribute('href') || a.href);
+              }
+              return JSON.stringify({urls: out, via: 'wrap_post_card'});
+            }
+            // 次选：article 内的 archives 链接
+            const articleLinks = Array.from(
+              document.querySelectorAll('article a[href*="/archives/"]')
+            );
+            if (articleLinks.length) {
+              for (const a of articleLinks) {
+                push(a.getAttribute('href') || a.href);
+              }
+              return JSON.stringify({urls: out, via: 'article_a'});
+            }
+            // 兜底：card 自身或祖先上的 archives（含旧 DOM）
+            for (const card of document.querySelectorAll('div.post-card')) {
+              const a = card.closest('a[href*="/archives/"]') ||
+                card.querySelector('a[href*="/archives/"]');
+              if (a) push(a.getAttribute('href') || a.href);
+            }
+            return JSON.stringify({urls: out, via: 'card_closest'});
+          })()
+        ''',
+      );
+      List? decoded;
+      String via = '';
+      if (raw is List) {
+        decoded = raw;
+      } else if (raw is Map) {
+        via = (raw['via'] ?? '').toString();
+        final urls = raw['urls'];
+        if (urls is List) decoded = urls;
+      } else {
+        final text = raw?.toString() ?? '[]';
+        dynamic parsed = text;
+        try {
+          parsed = jsonDecode(text);
+          if (parsed is String) parsed = jsonDecode(parsed);
+        } catch (_) {}
+        if (parsed is Map) {
+          via = (parsed['via'] ?? '').toString();
+          final urls = parsed['urls'];
+          if (urls is List) decoded = urls;
+        } else if (parsed is List) {
+          decoded = parsed;
+        }
+      }
+      if (decoded == null) {
+        debugPrint(
+          'simple91: collect parseFail url=$_currentUrl raw=${raw?.toString()}',
+        );
+        return const <String>[];
+      }
+      final urls = decoded
+          .map((e) => e.toString().trim())
+          .where((e) => e.startsWith('http'))
+          .toList();
+      debugPrint(
+        'simple91: collect url=$_currentUrl cardCount=${urls.length} via=$via',
+      );
+      return urls;
+    } catch (e) {
+      debugPrint('simple91: collect error url=$_currentUrl err=$e');
+      return const <String>[];
+    }
+  }
+
+  /// 详情页内相关链接（热门推荐、上下篇等），不要求 .post-card 包裹。
+  Future<List<String>> _simple91CollectRelatedArchiveUrls({
+    String excludeKey = '',
+  }) async {
+    final controller = _controller;
+    if (controller == null) return const <String>[];
+    try {
+      final raw = await controller.evaluateJavascript(
+        source: '''
+          (function(){
+            const out = [];
+            const seen = new Set();
+            const push = (href) => {
+              try {
+                const u = new URL(href, location.href);
+                const m = u.pathname.match(/\\/archives\\/(\\d+)\\/?\$/);
+                if (!m) return;
+                const key = u.origin + '/archives/' + m[1] + '/';
+                if (seen.has(key)) return;
+                seen.add(key);
+                out.push(key);
+              } catch (e) {}
+            };
+            const selectors = [
+              'a.top_picks_item[href*="/archives/"]',
+              '.top_picks a[href*="/archives/"]',
+              '.post-near a[href*="/archives/"]',
+              'span.next a[href*="/archives/"]',
+              'span.prev a[href*="/archives/"]',
+              'article a[href*="/archives/"]',
+              'a[href*="/archives/"]'
+            ];
+            for (const sel of selectors) {
+              for (const a of document.querySelectorAll(sel)) {
+                push(a.getAttribute('href') || a.href);
+              }
+              if (out.length >= 24) break;
+            }
+            return JSON.stringify(out.slice(0, 24));
+          })()
+        ''',
+      );
+      List? decoded;
+      if (raw is List) {
+        decoded = raw;
+      } else {
+        dynamic parsed = raw?.toString() ?? '[]';
+        try {
+          parsed = jsonDecode(parsed is String ? parsed : parsed.toString());
+          if (parsed is String) parsed = jsonDecode(parsed);
+        } catch (_) {}
+        if (parsed is List) decoded = parsed;
+      }
+      if (decoded == null) return const <String>[];
+      return decoded
+          .map((e) => e.toString().trim())
+          .where((e) => e.startsWith('http'))
+          .where((e) =>
+              excludeKey.isEmpty || _simple91ArchiveKey(e) != excludeKey)
+          .toList();
+    } catch (e) {
+      debugPrint('simple91: collectRelated error err=$e');
+      return const <String>[];
+    }
+  }
+
+  Future<String> _simple91NextListPageUrl() async {
+    final controller = _controller;
+    if (controller == null) return '';
+    // 详情页「下一篇」在 span.next，不在 .page-navigator；绝不能误跟。
+    if (_is91ContentPage(_currentUrl)) {
+      debugPrint(
+        'simple91: nextPage skip — on detail url=$_currentUrl',
+      );
+      return '';
+    }
+    try {
+      final raw = await controller.evaluateJavascript(
+        source: '''
+          (function(){
+            const isDetailArchives = (href) => {
+              try {
+                const u = new URL(href, location.href);
+                return /\\/archives\\/\\d+\\/?\$/i.test(u.pathname);
+              } catch (e) { return false; }
+            };
+            // 只认 .page-navigator（首页/分类/搜索分页），不认详情上一篇/下一篇
+            const next = document.querySelector(
+              '.page-navigator li.next a, .page-navigator a.next'
+            );
+            if (next && next.href && !isDetailArchives(next.href)) {
+              return String(next.href);
+            }
+            const links = Array.from(
+              document.querySelectorAll('.page-navigator a')
+            );
+            for (const a of links) {
+              const t = String(a.textContent || a.getAttribute('alt') || '')
+                .replace(/\\s+/g, ' ').trim();
+              const href = String(a.href || '');
+              if (!href || isDetailArchives(href)) continue;
+              if (t === '下一页' || t === '>' || t === '»' ||
+                  /下一页/.test(String(a.innerHTML || ''))) {
+                return href;
+              }
+            }
+            return '';
+          })()
+        ''',
+      );
+      final href = (raw?.toString() ?? '').replaceAll('"', '').trim();
+      final ok = href.startsWith('http') && !_is91ContentPage(href);
+      debugPrint(
+        'simple91: nextPage url=$_currentUrl nextUrl=${ok ? href : "(none)"} raw=$href',
+      );
+      return ok ? href : '';
+    } catch (e) {
+      debugPrint('simple91: nextPage error url=$_currentUrl err=$e');
+      return '';
+    }
+  }
+
+  Future<Map<String, dynamic>> _simple91ScrollFindPlayer() async {
+    final controller = _controller;
+    if (controller == null) return <String, dynamic>{'ok': false};
+    try {
+      final raw = await controller.evaluateJavascript(
+        source: '''
+          (function(){
+            const dp = document.querySelector('.dplayer, [class*="dplayer"]');
+            if (!dp) {
+              const step = Math.max(420, Math.floor(window.innerHeight * 0.9));
+              window.scrollBy(0, step);
+              return JSON.stringify({
+                ok: false,
+                reason: 'no_dplayer',
+                scrollY: window.scrollY || 0,
+                height: Math.max(
+                  document.body ? document.body.scrollHeight : 0,
+                  document.documentElement ? document.documentElement.scrollHeight : 0
+                )
+              });
+            }
+            try {
+              dp.scrollIntoView({block: 'center', inline: 'nearest'});
+            } catch (e) {
+              const top = dp.getBoundingClientRect().top + window.scrollY - 120;
+              window.scrollTo(0, Math.max(0, top));
+            }
+            let m3u8 = '';
+            let title = dp.getAttribute('data-video_title') || '';
+            try {
+              const cfgRaw = dp.getAttribute('data-config') || '';
+              if (cfgRaw) {
+                const cfg = JSON.parse(cfgRaw);
+                const url = (cfg && cfg.video && cfg.video.url) || (cfg && cfg.url) || '';
+                if (typeof url === 'string' && /\\.m3u8(\\?|#|\$)/i.test(url)) {
+                  m3u8 = url;
+                }
+              }
+            } catch (e) {}
+            if (!m3u8) {
+              const html = dp.outerHTML || '';
+              const m = html.match(/https?:\\/\\/[^"'\\s<>]+?\\.m3u8[^"'\\s<>]*/i);
+              if (m) m3u8 = m[0];
+            }
+            const video = dp.querySelector('video') ||
+              document.querySelector('video.dplayer-video, video');
+            if (video) {
+              try {
+                video.muted = true;
+                video.setAttribute('playsinline', 'true');
+                video.play().catch(function(){});
+              } catch (e) {}
+            }
+            const rect = dp.getBoundingClientRect();
+            const inView = rect.bottom > 40 && rect.top < window.innerHeight - 40;
+            if (!title) {
+              const h = document.querySelector('h1, .post-title, .post-card-title');
+              title = h ? String(h.textContent || '').trim() : (document.title || '');
+            }
+            return JSON.stringify({
+              ok: true,
+              m3u8: m3u8 || '',
+              inView: !!inView,
+              hasVideo: !!video,
+              videoSrc: video ? String(video.currentSrc || video.src || '') : '',
+              title: title || '',
+              scrollY: window.scrollY || 0
+            });
+          })()
+        ''',
+      );
+      final map = _coerceJsMap(raw);
+      if (map != null) return map;
+    } catch (_) {}
+    return <String, dynamic>{'ok': false};
+  }
+
+  Future<String> _simple91ResolveMediaUrl(
+    Map<String, dynamic> task,
+    Map<String, dynamic> player,
+  ) async {
+    final fromConfig = (player['m3u8'] ?? '').toString().trim();
+    if (fromConfig.contains('.m3u8') && !_isLikelyAdUrl(fromConfig)) {
+      return fromConfig;
+    }
+    final pageUrl = _currentUrl;
+    final captures = _recentCapturedMediaCandidates(
+      MediaType.video,
+      pageUrl: pageUrl,
+    );
+    for (final u in captures) {
+      final s = u.trim();
+      if (s.contains('.m3u8') && !_isLikelyAdUrl(s) && !s.contains('spinner')) {
+        return s;
+      }
+    }
+    for (final u in captures) {
+      final s = u.trim();
+      if (_isLikelyDirectMediaUrl(s) &&
+          !_isLikelyAdUrl(s) &&
+          !s.toLowerCase().contains('spinner') &&
+          !s.toLowerCase().endsWith('.svg')) {
+        return s;
+      }
+    }
+    return '';
+  }
+
+  Future<bool> _simple91DownloadOne(
+    Map<String, dynamic> task, {
+    required String mediaUrl,
+    required String pageUrl,
+    required String title,
+    void Function(String failureType)? onFailureType,
+  }) async {
+    if (mediaUrl.isEmpty) return false;
+    final seen = task['seenMediaUrls'] as Set<String>;
+    if (!seen.add(mediaUrl)) {
+      debugPrint('simple91: downloadOne skip seen mediaUrl=$mediaUrl');
+      onFailureType?.call('duplicate_name_in_smart_task');
+      _showSmartOperation('已处理过该地址，跳过', showFinger: false);
+      return false;
+    }
+    // Do NOT pre-reserve here: `_downloadMediaRobustly` reserves each attempt.
+    // A prior outer reserve made every candidate look like a same-task duplicate
+    // and aborted in ~200ms with zero download attempts.
+    final minBytes = task['minVideoBytes'] as int?;
+    final maxBytes = task['maxVideoBytes'] as int?;
+    _showSmartOperation('下载视频…', point: const Offset(0.5, 0.55));
+    var failureType = '';
+    final ok = await _downloadMediaRobustly(
+      item: <String, dynamic>{
+        'videoUrl': mediaUrl,
+        'pageUrl': pageUrl,
+        'candidateUrls': <String>[mediaUrl],
+        'downloadOrigin': 'smart_batch',
+        'isSmartBatchMedia': true,
+        'smartTask': task,
+        'mediaType': MediaType.video,
+        'title': title,
+        if (minBytes != null) 'minFileBytes': minBytes,
+        if (maxBytes != null) 'maxFileBytes': maxBytes,
+      },
+      showResultHint: false,
+      showModalDialog: false,
+      minFileBytes: minBytes,
+      maxFileBytes: maxBytes,
+      onFailureType: (t) {
+        failureType = t;
+        onFailureType?.call(t);
+      },
+    );
+    debugPrint(
+      'simple91: downloadOne result ok=$ok failureType=${failureType.isEmpty ? "none" : failureType} mediaUrl=$mediaUrl',
+    );
+    if (!ok && failureType == 'already_in_library') {
+      _showSmartOperation('媒体库已有，跳过', showFinger: false);
+    } else if (!ok && failureType == 'duplicate_name_in_smart_task') {
+      _showSmartOperation('任务内重复，跳过', showFinger: false);
+    }
+    return ok;
+  }
+
+  /// 已在详情页时：下滑找 DPlayer → 取 m3u8 → 下载。返回 downloaded / skipped / failed。
+  Future<String> _simple91TryDownloadCurrentDetail(
+    Map<String, dynamic> task,
+  ) async {
+    if (!_is91ContentPage(_currentUrl)) return 'failed';
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+    await _simple91DismissAgeGate();
+    Map<String, dynamic> player = <String, dynamic>{'ok': false};
+    String mediaUrl = '';
+    for (var scrollTry = 0; scrollTry < 28; scrollTry++) {
+      if (!await _simple91StillRunning(task)) return 'stopped';
+      if (!_is91ContentPage(_currentUrl)) break;
+      task['matchStage'] = '91 实测 · 下滑找播放器 ($scrollTry)';
+      _showSmartOperation(
+        '向下滑动寻找视频播放器…',
+        point: Offset(0.5, 0.72 + (scrollTry % 3) * 0.04),
+      );
+      player = await _simple91ScrollFindPlayer();
+      mediaUrl = await _simple91ResolveMediaUrl(task, player);
+      if (mediaUrl.isNotEmpty) break;
+      if (player['ok'] == true && player['inView'] == true) {
+        await Future<void>.delayed(const Duration(milliseconds: 900));
+        mediaUrl = await _simple91ResolveMediaUrl(task, player);
+        if (mediaUrl.isNotEmpty) break;
+        player = await _simple91ScrollFindPlayer();
+        mediaUrl = await _simple91ResolveMediaUrl(task, player);
+        if (mediaUrl.isNotEmpty) break;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 420));
+      final height = (player['height'] as num?)?.toDouble() ?? 0;
+      final scrollY = (player['scrollY'] as num?)?.toDouble() ?? 0;
+      if (height > 0 && scrollY + 900 >= height && player['ok'] != true) {
+        break;
+      }
+    }
+    if (mediaUrl.isEmpty) {
+      debugPrint('simple91: noMedia detail=$_currentUrl');
+      return 'failed';
+    }
+    final title = (player['title'] ?? '').toString();
+    final pageUrl = _currentUrl;
+    var downloadFailureType = '';
+    final ok = await _simple91DownloadOne(
+      task,
+      mediaUrl: mediaUrl,
+      pageUrl: pageUrl,
+      title: title,
+      onFailureType: (t) => downloadFailureType = t,
+    );
+    final target = (task['target'] as int?) ?? 1;
+    if (ok) {
+      task['success'] = ((task['success'] as int?) ?? 0) + 1;
+      _showSmartOperation(
+        '下载成功 ${task['success']}/$target',
+        showFinger: false,
+      );
+      return 'downloaded';
+    }
+    if (downloadFailureType == 'already_in_library' ||
+        downloadFailureType == 'duplicate_name_in_smart_task') {
+      _showSmartOperation('已存在/重复，跳过', showFinger: false);
+      return 'skipped';
+    }
+    task['failed'] = ((task['failed'] as int?) ?? 0) + 1;
+    _showSmartOperation('下载未成功', showFinger: false);
+    return 'failed';
+  }
+
+  Future<void> _runSimple91KeywordLoop(Map<String, dynamic> task) async {
+    final target = (task['target'] as int?) ?? 1;
+    final browseMode = task['simple91BrowseMode'] == true;
+    final seedDetailFirst = task['simple91SeedDetailFirst'] == true;
+    final skipFirstCard = task['simple91SkipFirstCard'] == true;
+    final listUrl0 = (task['strict91SearchUrl'] ?? '').toString();
+    if (!listUrl0.startsWith('http')) {
+      await _finishSmartDownload(browseMode ? '列表地址无效' : '搜索地址无效');
+      return;
+    }
+    debugPrint(
+      'simple91: loop start browse=$browseMode seedDetail=$seedDetailFirst '
+      'listUrl=$listUrl0 target=$target',
+    );
+
+    Future<bool> openList([String? override]) async {
+      final url =
+          (override ?? (task['strict91SearchUrl'] ?? listUrl0).toString())
+              .trim();
+      if (!url.startsWith('http')) return false;
+      task['matchStage'] =
+          browseMode ? '91 实测 · 卡片列表' : '91 实测 · 搜索列表';
+      _showSmartOperation(
+        browseMode ? '回到卡片列表' : '回到关键词搜索列表',
+        showFinger: false,
+      );
+      debugPrint('simple91: openList url=$url');
+      _loadUrl(url);
+      final wantHost = _normalizeSmartHost(Uri.tryParse(url)?.host ?? '');
+      final ok = await _simple91WaitUntil(
+        task,
+        () {
+          if (_is91ContentPage(_currentUrl)) return false;
+          final curHost = _normalizeSmartHost(
+            Uri.tryParse(_currentUrl)?.host ?? '',
+          );
+          if (wantHost.isEmpty || curHost != wantHost) return false;
+          // 关键词模式仍要求落在 /search/
+          if (!browseMode && !_currentUrl.toLowerCase().contains('/search/')) {
+            return false;
+          }
+          return _currentUrl.startsWith('http');
+        },
+        timeout: const Duration(seconds: 35),
+      );
+      if (!ok) {
+        debugPrint('simple91: openList timeout current=$_currentUrl');
+        return false;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      await _simple91DismissAgeGate();
+      await Future<void>.delayed(const Duration(milliseconds: 450));
+      return await _simple91StillRunning(task);
+    }
+
+    Future<List<String>> collectOnListWithRetry({
+      required int pageNo,
+      int maxAttempts = 4,
+      String excludeArchiveKey = '',
+    }) async {
+      var urls = const <String>[];
+      for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+        if (!await _simple91StillRunning(task)) return const <String>[];
+        if (_is91ContentPage(_currentUrl)) {
+          debugPrint(
+            'simple91: collectRetry abort — on detail url=$_currentUrl page=$pageNo',
+          );
+          return const <String>[];
+        }
+        await _simple91DismissAgeGate();
+        urls = await _simple91CollectArchiveUrls();
+        if (excludeArchiveKey.isNotEmpty) {
+          urls =
+              urls
+                  .where((u) => _simple91ArchiveKey(u) != excludeArchiveKey)
+                  .toList();
+        }
+        debugPrint(
+          'simple91: collectRetry page=$pageNo attempt=$attempt cardCount=${urls.length} url=$_currentUrl',
+        );
+        if (urls.isNotEmpty) break;
+        _showSmartOperation(
+          '等待卡片加载…($attempt/$maxAttempts)',
+          showFinger: false,
+        );
+        await Future<void>.delayed(Duration(milliseconds: 600 + attempt * 350));
+      }
+      // 搜索结果首张常为推广；首页/分类不默认跳过。
+      final shouldSkip =
+          skipFirstCard ||
+          (!browseMode && (task['strict91SearchUrl'] ?? '')
+              .toString()
+              .toLowerCase()
+              .contains('/search/'));
+      if (shouldSkip && urls.length > 1) {
+        urls = urls.sublist(1);
+        debugPrint(
+          'simple91: skipPromo page=$pageNo remaining=${urls.length}',
+        );
+      }
+      return urls;
+    }
+
+    Future<bool> processDetailUrl(String detailUrl, int n, int pageNo) async {
+      task['matchStage'] = '91 实测 · 第 $n 张详情';
+      _showSmartOperation('进入第 $n 张卡片详情', showFinger: false);
+      debugPrint('simple91: openDetail index=$n/$pageNo url=$detailUrl');
+      _loadUrl(detailUrl);
+      final entered = await _simple91WaitUntil(
+        task,
+        () => _is91ContentPage(_currentUrl),
+        timeout: const Duration(seconds: 35),
+      );
+      if (!entered) {
+        task['failed'] = ((task['failed'] as int?) ?? 0) + 1;
+        _showSmartOperation('详情未打开，下一张', showFinger: false);
+        return false;
+      }
+      final result = await _simple91TryDownloadCurrentDetail(task);
+      return result == 'downloaded' || result == 'skipped';
+    }
+
+    try {
+      // 无关键词且当前就是详情：先下本页，再收集页内相关链接，最后回列表批量。
+      if (seedDetailFirst && _is91ContentPage(_currentUrl)) {
+        task['matchStage'] = '91 实测 · 当前详情';
+        _showSmartOperation('下载当前详情页视频…', showFinger: false);
+        final seedKey = _simple91ArchiveKey(_currentUrl);
+        final seedResult = await _simple91TryDownloadCurrentDetail(task);
+        debugPrint('simple91: seedDetail result=$seedResult key=$seedKey');
+        if (((task['success'] as int?) ?? 0) >= target) {
+          await _finishSmartDownload('已完成目标数量');
+          return;
+        }
+        // 详情页相关推荐 / 热门 / 上下篇等 archives（排除自己）。
+        var related = await _simple91CollectRelatedArchiveUrls(
+          excludeKey: seedKey,
+        );
+        debugPrint('simple91: relatedFromDetail count=${related.length}');
+        for (var i = 0; i < related.length; i++) {
+          if (!await _simple91StillRunning(task)) return;
+          if (((task['success'] as int?) ?? 0) >= target) {
+            await _finishSmartDownload('已完成目标数量');
+            return;
+          }
+          await processDetailUrl(related[i], i + 1, 0);
+        }
+        if (((task['success'] as int?) ?? 0) >= target) {
+          await _finishSmartDownload('已完成目标数量');
+          return;
+        }
+      }
+
+      if (!await openList()) {
+        await _finishSmartDownload(
+          browseMode ? '无法打开卡片列表页' : '无法打开关键词搜索页',
+        );
+        return;
+      }
+
+      var cardIndex = 0;
+      var pageNo = 1;
+      var archiveUrls = await collectOnListWithRetry(pageNo: pageNo);
+      if (archiveUrls.isEmpty) {
+        final success = (task['success'] as int?) ?? 0;
+        debugPrint(
+          'simple91: first page empty after retries url=$_currentUrl success=$success',
+        );
+        await _finishSmartDownload(
+          success > 0
+              ? '列表未识别到更多卡片（成功 $success/$target）'
+              : '列表页未识别到卡片（成功 0/$target）',
+        );
+        return;
+      }
+
+      while (await _simple91StillRunning(task)) {
+        final success = (task['success'] as int?) ?? 0;
+        if (success >= target) {
+          await _finishSmartDownload('已完成目标数量');
+          return;
+        }
+
+        if (cardIndex >= archiveUrls.length) {
+          if (_is91ContentPage(_currentUrl)) {
+            debugPrint(
+              'simple91: need next page but on detail — reopen list',
+            );
+            if (!await openList()) {
+              await _finishSmartDownload(
+                '列表已用尽（成功 $success/$target）',
+              );
+              return;
+            }
+          }
+          final next = await _simple91NextListPageUrl();
+          if (next.isEmpty) {
+            await _finishSmartDownload(
+              '列表已用尽（成功 $success/$target）',
+            );
+            return;
+          }
+          pageNo += 1;
+          cardIndex = 0;
+          task['strict91SearchUrl'] = next;
+          // 翻页后若进入搜索路径，才跳过首张推广。
+          task['simple91SkipFirstCard'] = next.toLowerCase().contains(
+            '/search/',
+          );
+          debugPrint('simple91: goto list page=$pageNo nextUrl=$next');
+          if (!await openList(next)) {
+            await _finishSmartDownload('无法打开列表第 $pageNo 页');
+            return;
+          }
+          archiveUrls = await collectOnListWithRetry(pageNo: pageNo);
+          if (archiveUrls.isEmpty) {
+            await _finishSmartDownload(
+              '第 $pageNo 页无卡片（成功 $success/$target）',
+            );
+            return;
+          }
+          continue;
+        }
+
+        final detailUrl = archiveUrls[cardIndex];
+        cardIndex += 1;
+        await processDetailUrl(detailUrl, cardIndex, pageNo);
+
+        if (((task['success'] as int?) ?? 0) >= target) {
+          await _finishSmartDownload('已完成目标数量');
+          return;
+        }
+        if (!await openList()) break;
+      }
+
+      if (identical(_smartDownloadTask, task)) {
+        final success = (task['success'] as int?) ?? 0;
+        await _finishSmartDownload('任务结束（成功 $success/$target）');
+      }
+    } catch (e, st) {
+      debugPrint('simple91 loop error: $e\n$st');
+      if (identical(_smartDownloadTask, task)) {
+        await _finishSmartDownload('91 管线异常：$e');
+      }
+    }
+  }
+
+  // ========== a00c4bd 91 pipeline (pure copy from a00c4bd, no remix) ==========
+
+  Future<void> _startSmartDownload91A00({
+    required Map<String, dynamic> website,
+    required String keyword,
+    required int targetCount,
+    required MediaType mediaType,
+    bool startFromCurrentPage = false,
+    int? minVideoBytes,
+    int? maxVideoBytes,
+    bool autoVideoSizeRange = false,
+  }) async {
+    final rawUrl = (website['url'] ?? '').toString().trim();
+    final normalized =
+        rawUrl.startsWith('http://') || rawUrl.startsWith('https://')
+            ? rawUrl
+            : 'https://$rawUrl';
+    final uri = Uri.tryParse(normalized);
+    if (uri == null || uri.host.isEmpty) return;
+    final normalizedHost = uri.host.toLowerCase().replaceFirst(
+      RegExp(r'^www\.'),
+      '',
+    );
+    final keywordFirstOn91 =
+        startFromCurrentPage &&
+        keyword.trim().isNotEmpty &&
+        (normalizedHost == '91cg1.com' ||
+            normalizedHost.endsWith('.91cg1.com'));
+    final strictXFeedMode =
+        startFromCurrentPage &&
+        (normalizedHost == 'x.com' ||
+            normalizedHost.endsWith('.x.com') ||
+            normalizedHost == 'twitter.com' ||
+            normalizedHost.endsWith('.twitter.com'));
+    final keywordFirstOnX = strictXFeedMode && keyword.trim().isNotEmpty;
+    await _loadSmartDownload24hRegistry();
+    await _loadSmartStrategyProfiles();
+    final startedAt = DateTime.now();
+    final deadlineAt = startedAt.add(const Duration(hours: 5));
+    // a00 用 website.origin 拼搜索地址；当前页若是 www.91cg1.com 而书签无 www，
+    // 列表同一性会失败并跳过点卡片深挖。从当前浏览 origin 拼，才是同一套流程能跑通。
+    final browseOrigin = Uri.tryParse(_currentUrl)?.origin ?? '';
+    final searchOrigin =
+        startFromCurrentPage && browseOrigin.startsWith('http')
+            ? browseOrigin
+            : uri.origin;
+    final strict91SearchUrl =
+        keywordFirstOn91
+            ? '$searchOrigin/search/${Uri.encodeComponent(keyword.trim())}/'
+            : '';
+    final strictXSearchUrl =
+        keywordFirstOnX
+            ? '$searchOrigin/search?q=${Uri.encodeQueryComponent(keyword.trim())}&src=typed_query&f=media'
+            : '';
+    if (startFromCurrentPage && keyword.trim().isEmpty) {
+      await _anchorSmartSeedForType(mediaType);
+    }
+    _smartDownloadTask = <String, dynamic>{
+      'phase':
+          keywordFirstOn91
+              ? 'collecting_search_results'
+              : keywordFirstOnX
+              ? 'x_search_loading'
+              : startFromCurrentPage
+              ? 'visiting_seed'
+              : 'opening_site',
+      'siteUrl': normalized,
+      'host': normalizedHost,
+      'keyword': keyword,
+      'mediaType': mediaType,
+      'target': targetCount,
+      'minVideoBytes': minVideoBytes,
+      'maxVideoBytes': maxVideoBytes,
+      'autoVideoSizeRange': autoVideoSizeRange,
+      'effectiveMinVideoBytes': minVideoBytes,
+      'effectiveMaxVideoBytes': maxVideoBytes,
+      'matchStage':
+          keywordFirstOn91
+              ? '关键词优先 · 站内搜索'
+              : keyword.isEmpty
+              ? '无关键词 · 邻近媒体优先'
+              : '精确匹配',
+      'success': 0,
+      'failed': 0,
+      'index': 0,
+      'candidates': <Map<String, String>>[],
+      'seenMediaUrls': <String>{},
+      'attemptedVideoContexts': <String>{},
+      'duplicateVideoUrlKeys': <String>{},
+      'videoMediaStates': <String, String>{},
+      'reservedMediaNameKeys': <String>{},
+      'reservedMediaTitleKeys': <String>{},
+      'clickedSmartCardKeys': <String>{},
+      'exploratoryClickedKeys': <String>{},
+      'feedScans': 0,
+      'feedNoNew': 0,
+      'feedDirection': 1,
+      'discoveryRound': 0,
+      'searchCycle': 0,
+      'strategyStats': <String, dynamic>{},
+      'startedAt': startedAt,
+      'deadlineAt': deadlineAt,
+      'lastAdvanceAt': startedAt,
+      'visitedPageUrls': <String>{},
+      'discoveryPageQueue': <String>[],
+      'queuedDiscoveryUrls': <String>{},
+      'visitedDiscoveryUrls': <String>{},
+      'syntheticRouteFailures': 0,
+      'disableSyntheticRoutes': false,
+      'preheatedVideoCandidates': <String, List<String>>{},
+      'startedFromCurrentPage': startFromCurrentPage,
+      'originUrl': _currentUrl,
+      'strict91KeywordMode': keywordFirstOn91,
+      'a00_91_pipeline': true,
+      'strict91SearchUrl': strict91SearchUrl,
+      'strict91QueueReady': false,
+      'strict91ActiveCardUrl': '',
+      'strict91ReturnAttempts': 0,
+      'strictXFeedMode': strictXFeedMode,
+      'strictXSearchUrl': strictXSearchUrl,
+      'xVisitedStatusIds': <String>{},
+    };
+    final activeTask = _smartDownloadTask!;
+    activeTask['deadlineTimer'] = Timer(
+      deadlineAt.difference(DateTime.now()),
+      () {
+        if (identical(_smartDownloadTask, activeTask)) {
+          unawaited(_finishSmartDownload('已达到单次任务 5 小时时间上限'));
+        }
+      },
+    );
+    activeTask['watchdogTimer'] = Timer.periodic(const Duration(seconds: 30), (
+      _,
+    ) {
+      if (!identical(_smartDownloadTask, activeTask)) return;
+      if (!DateTime.now().isBefore(deadlineAt)) {
+        unawaited(_finishSmartDownload('已达到单次任务 5 小时时间上限'));
+        return;
+      }
+      final hasActiveMediaDownload = _downloadTasks.any(
+        (row) =>
+            row['isSmartBatchMedia'] == true && row['status'] == 'downloading',
+      );
+      if (hasActiveMediaDownload || _smartDownloadAdvancing) return;
+      final lastAdvance = activeTask['lastAdvanceAt'] as DateTime? ?? startedAt;
+      if (DateTime.now().difference(lastAdvance) <
+          const Duration(seconds: 60)) {
+        return;
+      }
+      activeTask['lastAdvanceAt'] = DateTime.now();
+      if (activeTask['phase'] == 'resolving_candidate_background') {
+        _visitNextSmartCandidate91A00(activeTask);
+      } else {
+        unawaited(_advanceSmartDownload91A00(_currentUrl));
+      }
+    });
+    final discoveryQueue =
+        _smartDownloadTask!['discoveryPageQueue'] as List<String>;
+    final queuedDiscoveryUrls =
+        _smartDownloadTask!['queuedDiscoveryUrls'] as Set<String>;
+    void enqueueDiscoveryPage(String value) {
+      final candidateUri = Uri.tryParse(value);
+      if (candidateUri == null ||
+          candidateUri.host.toLowerCase().replaceFirst(RegExp(r'^www\.'), '') !=
+              uri.host.toLowerCase().replaceFirst(RegExp(r'^www\.'), '') ||
+          value == _currentUrl ||
+          !queuedDiscoveryUrls.add(value)) {
+        return;
+      }
+      discoveryQueue.add(value);
+    }
+
+    final seedUri = Uri.tryParse(
+      startFromCurrentPage ? _currentUrl : normalized,
+    );
+    if (!keywordFirstOn91 && seedUri != null && seedUri.host.isNotEmpty) {
+      final segments =
+          seedUri.pathSegments.where((part) => part.isNotEmpty).toList();
+      while (segments.isNotEmpty) {
+        segments.removeLast();
+        enqueueDiscoveryPage(
+          seedUri
+              .replace(pathSegments: segments, query: '', fragment: '')
+              .toString(),
+        );
+      }
+    }
+    final discoveryTaskId = const Uuid().v4();
+    final discoveryCancelToken = CancelToken();
+    _smartDownloadTask!['discoveryTaskId'] = discoveryTaskId;
+    _smartDownloadTask!['discoveryCancelToken'] = discoveryCancelToken;
+    if (mounted) {
+      _addDownloadTask(
+        discoveryTaskId,
+        'smart://${keyword.isEmpty ? 'nearby-media' : keyword}',
+        mediaType,
+        discoveryCancelToken,
+        displayName: '智能采集：${keyword.isEmpty ? '当前媒体附近' : keyword}',
+        isSmartDiscovery: true,
+      );
+      _updateDownloadTask(
+        discoveryTaskId,
+        progress: 0.02,
+        progressDetail: '正在解析当前页面媒体地址...',
+      );
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          '智能下载已开始：${mediaType == MediaType.image ? '图片' : '视频'} · ${keyword.isEmpty ? '按当前媒体从近到远' : keyword} · $targetCount 个',
+        ),
+      ),
+    );
+    if (keywordFirstOn91) {
+      _smartDownloadTask!['activeDiscoveryStrategy'] = 'site_search';
+      _loadUrl(strict91SearchUrl);
+    } else if (keywordFirstOnX) {
+      _smartDownloadTask!['activeDiscoveryStrategy'] = 'x_media_search';
+      _loadUrl(strictXSearchUrl);
+    } else if (startFromCurrentPage) {
+      unawaited(_advanceSmartDownload91A00(_currentUrl));
+    } else {
+      _loadUrl(normalized);
+    }
+  }
+
+
+  Future<void> _advanceSmartDownload91A00(String loadedUrl) async {
+    final task = _smartDownloadTask;
+    final controller = _controller;
+    if (task == null || controller == null) return;
+    if (_smartDownloadAdvancing) {
+      if (task['advanceRetryScheduled'] != true) {
+        task['advanceRetryScheduled'] = true;
+        Future<void>.delayed(const Duration(milliseconds: 160), () {
+          if (!identical(_smartDownloadTask, task)) return;
+          task['advanceRetryScheduled'] = false;
+          unawaited(_advanceSmartDownload91A00(_currentUrl));
+        });
+      }
+      return;
+    }
+    task['advanceRetryScheduled'] = false;
+    final discoveryToken = task['discoveryCancelToken'] as CancelToken?;
+    if (discoveryToken?.isCancelled == true) {
+      await _finishSmartDownload('用户已停止任务');
+      return;
+    }
+    final deadlineAt = task['deadlineAt'] as DateTime?;
+    if (deadlineAt != null && !DateTime.now().isBefore(deadlineAt)) {
+      await _finishSmartDownload('已达到单次任务 5 小时时间上限');
+      return;
+    }
+    _smartDownloadAdvancing = true;
+    task['lastAdvanceAt'] = DateTime.now();
+    try {
+      var phase = task['phase']?.toString() ?? '';
+      final taskHost = (task['host'] ?? '').toString();
+      final is91KeywordTask =
+          (taskHost == '91cg1.com' || taskHost.endsWith('.91cg1.com')) &&
+          (task['keyword'] ?? '').toString().trim().isNotEmpty;
+      final strict91Mode = task['strict91KeywordMode'] == true;
+      final strictXFeedMode = task['strictXFeedMode'] == true;
+      final strictXSearchUrl = (task['strictXSearchUrl'] ?? '').toString();
+      final strict91SearchUrl = (task['strict91SearchUrl'] ?? '').toString();
+      final actualLoadedUrl =
+          (await controller.getUrl())?.toString() ?? loadedUrl;
+
+      if (strictXFeedMode && phase == 'x_search_loading') {
+        final actualUri = Uri.tryParse(actualLoadedUrl);
+        final onSearchPage =
+            actualUri != null &&
+            actualUri.pathSegments.isNotEmpty &&
+            actualUri.pathSegments.first == 'search';
+        if (!onSearchPage) {
+          _loadUrl(strictXSearchUrl);
+          return;
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 900));
+        task['phase'] = 'scanning_feed';
+        _continueSmartFeed91A00(task, madeProgress: false);
+        return;
+      }
+
+      if (strictXFeedMode && phase == 'x_search_returning') {
+        if (strictXSearchUrl.isEmpty) {
+          final returnUrl = (task['xReturnUrl'] ?? '').toString().trim();
+          if (_isBlankHistoryUrl(actualLoadedUrl) ||
+              !_isXPlatformPage(actualLoadedUrl) ||
+              (returnUrl.startsWith('http') &&
+                  !_isSameLoadedDocument(returnUrl, actualLoadedUrl))) {
+            if (returnUrl.startsWith('http')) {
+              _loadUrl(returnUrl);
+            } else {
+              _loadUrl((task['siteUrl'] ?? '').toString());
+            }
+            return;
+          }
+          task['phase'] = 'scanning_feed';
+          _continueSmartFeed91A00(task, madeProgress: false);
+          return;
+        }
+        final actualUri = Uri.tryParse(actualLoadedUrl);
+        final onSearchPage =
+            actualUri != null &&
+            actualUri.pathSegments.isNotEmpty &&
+            actualUri.pathSegments.first == 'search';
+        if (!onSearchPage) {
+          if (await controller.canGoBack()) {
+            await controller.goBack();
+          } else {
+            _loadUrl(strictXSearchUrl);
+          }
+          return;
+        }
+        task['phase'] = 'scanning_feed';
+        _continueSmartFeed91A00(task, madeProgress: false);
+        return;
+      }
+
+      if (strict91Mode && phase == 'strict91_returning') {
+        if (_isSame91TaskPage(strict91SearchUrl, actualLoadedUrl)) {
+          task['strict91ReturnAttempts'] = 0;
+          task['strict91ActiveCardUrl'] = '';
+          task.remove('cardEnteredAt');
+          task['phase'] = 'visiting_candidate';
+          debugPrint('Smart 91 strict: restored remembered search page');
+          _visitNextSmartCandidate91A00(task);
+          return;
+        }
+        final attempts = (task['strict91ReturnAttempts'] as int?) ?? 0;
+        task['strict91ReturnAttempts'] = attempts + 1;
+        if (attempts < 3 && await controller.canGoBack()) {
+          debugPrint(
+            'Smart 91 strict: backing through intermediate page $actualLoadedUrl',
+          );
+          await controller.goBack();
+        } else {
+          debugPrint('Smart 91 strict: restoring $strict91SearchUrl');
+          _loadUrl(strict91SearchUrl);
+        }
+        return;
+      }
+
+      if (strict91Mode && phase == 'visiting_clicked_card') {
+        final activeCardUrl = (task['strict91ActiveCardUrl'] ?? '').toString();
+        if (activeCardUrl.isNotEmpty &&
+            !_isSame91TaskPage(activeCardUrl, actualLoadedUrl)) {
+          if (_isSame91TaskPage(strict91SearchUrl, actualLoadedUrl)) {
+            final clicked = await _clickSmartCandidateLink(activeCardUrl);
+            if (!clicked) _loadUrl(activeCardUrl);
+          } else {
+            _loadUrl(activeCardUrl);
+          }
+          debugPrint(
+            'Smart 91 strict: rejected unrelated page $actualLoadedUrl; expected $activeCardUrl',
+          );
+          return;
+        }
+      }
+      if (phase == 'returning_candidate_list') {
+        task['phase'] = 'visiting_candidate';
+        _visitNextSmartCandidate91A00(task);
+        return;
+      }
+      if ((phase == 'scanning_feed' ||
+              phase == 'collecting_site_results' ||
+              phase == 'collecting_search_results' ||
+              phase == 'visiting_candidate') &&
+          await _recoverSmartDownloadErrorPage(task, loadedUrl)) {
+        return;
+      }
+      _updateSmartDiscoveryProgress(task, phase);
+      if (phase == 'opening_site') {
+        await Future<void>.delayed(const Duration(milliseconds: 900));
+        if ((task['keyword'] ?? '').toString().trim().isEmpty) {
+          task['phase'] = 'scanning_feed';
+          Future<void>.delayed(
+            const Duration(milliseconds: 120),
+            () => unawaited(_advanceSmartDownload91A00(_currentUrl)),
+          );
+          return;
+        }
+        task['phase'] = 'collecting_site_results';
+        final keywordJson = jsonEncode(task['keyword']);
+        final submitted = await controller.evaluateJavascript(
+          source: '''
+            (() => {
+              const keyword = $keywordJson;
+              const inputs = Array.from(document.querySelectorAll(
+                'input[type="search"], input[name="q"], input[name*="search" i], input[placeholder*="search" i], input[placeholder*="搜索"]'
+              ));
+              const input = inputs.find(e => e.offsetParent !== null) || inputs[0];
+              if (!input) return false;
+              input.focus();
+              input.value = keyword;
+              input.dispatchEvent(new Event('input', {bubbles:true}));
+              input.dispatchEvent(new Event('change', {bubbles:true}));
+              const form = input.form || input.closest('form');
+              if (form) {
+                if (form.requestSubmit) form.requestSubmit(); else form.submit();
+              } else {
+                input.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', code:'Enter', keyCode:13, bubbles:true}));
+              }
+              return true;
+            })()
+          ''',
+        );
+        final didSubmit = submitted == true || submitted.toString() == 'true';
+        if (!didSubmit) {
+          Future<void>.delayed(
+            const Duration(milliseconds: 200),
+            () => unawaited(_advanceSmartDownload91A00(_currentUrl)),
+          );
+        } else {
+          Future<void>.delayed(
+            const Duration(seconds: 3),
+            () => unawaited(_advanceSmartDownload91A00(_currentUrl)),
+          );
+        }
+        return;
+      }
+
+      if (phase == 'collecting_site_results' ||
+          phase == 'collecting_search_results') {
+        if (strict91Mode) {
+          // 以真实落地的搜索页为准，避免 www/尾斜杠导致后续 currentlyOnCandidateList 失败。
+          final landedSearch =
+              actualLoadedUrl.contains('/search/') ||
+              (Uri.tryParse(actualLoadedUrl)?.pathSegments.any(
+                    (s) => s.toLowerCase() == 'search',
+                  ) ??
+                  false);
+          if (landedSearch) {
+            task['strict91SearchUrl'] = actualLoadedUrl;
+          }
+          final rememberedSearch =
+              (task['strict91SearchUrl'] ?? '').toString().isNotEmpty
+                  ? (task['strict91SearchUrl'] ?? '').toString()
+                  : strict91SearchUrl;
+          if (!_isSame91TaskPage(rememberedSearch, actualLoadedUrl)) {
+            debugPrint(
+              'Smart 91 a00: search mismatch remember=$rememberedSearch actual=$actualLoadedUrl',
+            );
+            _loadUrl(rememberedSearch);
+            return;
+          }
+          if (task['strict91QueueReady'] == true &&
+              (task['candidates'] as List).isNotEmpty) {
+            task['phase'] = 'visiting_candidate';
+            _visitNextSmartCandidate91A00(task);
+            return;
+          }
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 900));
+        final hostJson = jsonEncode(task['host']);
+        final keywordJson = jsonEncode(task['keyword']);
+        final searchCycleDepth = (task['searchCycle'] as int?) ?? 0;
+        final exhaustive = searchCycleDepth > 0;
+        final limit = ((task['target'] as int) * 30 + searchCycleDepth * 80)
+            .clamp(60, 1000);
+        final result = await controller.evaluateJavascript(
+          source: '''
+            (() => {
+              const targetHost = $hostJson;
+              const keyword = $keywordJson.toLowerCase();
+              const exhaustive = $exhaustive;
+              // Avoid backslash escapes in injected regular expressions.
+              // Dart string processing can otherwise corrupt the JS source.
+              const tokens = keyword.split(' ')
+                .map(v => v.trim()).filter(v => v.length >= 2).slice(0, 16);
+              const seen = new Set();
+              return Array.from(document.querySelectorAll('a[href]')).map((a, order) => {
+                try {
+                  const u = new URL(a.href, location.href);
+                  const host = u.hostname.toLowerCase();
+                  const normalizedHost = host.replace(/^www\./, '');
+                  if (!(normalizedHost === targetHost || normalizedHost.endsWith('.' + targetHost))) return null;
+                  u.hash = '';
+                  const url = u.href;
+                  if (seen.has(url) || u.pathname === '/' || url === location.href) return null;
+                  if (!exhaustive && a.closest('header, nav, footer, aside, [role="navigation"]')) return null;
+                  const path = u.pathname.toLowerCase();
+                  const directMedia = /[.](m3u8|mp4|webm|mov)(?:\$|[?])/i.test(url);
+                  const detailPath = /[/](archives?|posts?|videos?|watch|view|detail|movies?)[/]/i.test(path);
+                  const taxonomyPath = /[/](category|categories|tags?|authors?|search|feed|page)[/]/i.test(path);
+                  const blockedPath = /[/](login|register|account|logout|cart|checkout|user)[/]/i.test(path);
+                  const mediaCard = !!a.querySelector('img, video, picture') ||
+                    !!a.closest('article, figure, [class*="card"], [class*="post"], [class*="item"]');
+                  if (blockedPath) return null;
+                  if (!directMedia && !detailPath && !mediaCard && !taxonomyPath && !exhaustive) return null;
+                  seen.add(url);
+                  const title = (a.innerText || a.title || a.getAttribute('aria-label') ||
+                    (a.querySelector('img') && a.querySelector('img').alt) || '').trim();
+                  const haystack = (title + ' ' + url).toLowerCase();
+                  const tokenHits = tokens.reduce((sum, token) =>
+                    sum + (haystack.includes(token) ? 1 : 0), 0);
+                  const exact = keyword.length > 0 && haystack.includes(keyword);
+                  const tier = exact ? 2 : (tokenHits > 0 ? 1 : 0);
+                  const score = (exact ? 100000 : 0) +
+                    tokenHits * 5000 +
+                    (directMedia ? 80000 : 0) +
+                    (detailPath ? 50000 : 0) +
+                    (mediaCard ? 20000 : 0) +
+                    Math.max(0, 2000 - order);
+                  return {url, title: title || document.title || url, score, tier, order,
+                    scopeOnly: !directMedia && !detailPath &&
+                      (taxonomyPath || (exhaustive && !mediaCard))};
+                } catch (_) { return null; }
+              }).filter(Boolean).sort((a,b) => b.score - a.score).slice(0, $limit);
+            })()
+          ''',
+        );
+        final candidates = <Map<String, String>>[];
+        final discoveryQueue = task['discoveryPageQueue'] as List<String>;
+        final queuedDiscoveryUrls = task['queuedDiscoveryUrls'] as Set<String>;
+        final discoveryRound = (task['discoveryRound'] as int?) ?? 0;
+        final exhaustiveCycle = ((task['searchCycle'] as int?) ?? 0) > 0;
+        final hasKeyword = (task['keyword'] ?? '').toString().trim().isNotEmpty;
+        final loadedUri = Uri.tryParse(loadedUrl);
+        final isSearchResultsPage =
+            loadedUri != null &&
+            (loadedUri.pathSegments.contains('search') ||
+                loadedUri.queryParameters.containsKey('s') ||
+                loadedUri.queryParameters.containsKey('q'));
+        final taskHost = (task['host'] ?? '').toString();
+        final isKeywordFirst91 =
+            taskHost == '91cg1.com' || taskHost.endsWith('.91cg1.com');
+        final requiredTier =
+            !hasKeyword || (isSearchResultsPage && !isKeywordFirst91)
+                ? 0
+                : exhaustiveCycle
+                ? 0
+                : (discoveryRound <= 1 ? 2 : (discoveryRound == 2 ? 1 : 0));
+        if (result is List) {
+          for (final row in result) {
+            if (row is Map && row['url'] != null) {
+              final rowUrl = row['url'].toString();
+              if (isKeywordFirst91 && !_is91ContentPage(rowUrl)) continue;
+              if (row['scopeOnly'] == true) {
+                if (isKeywordFirst91) {
+                  final rowUri = Uri.tryParse(rowUrl);
+                  final segments = rowUri?.pathSegments ?? const <String>[];
+                  final isSameKeywordSearch =
+                      segments.length >= 2 &&
+                      segments.first.toLowerCase() == 'search' &&
+                      segments[1].trim().toLowerCase() ==
+                          (task['keyword'] ?? '')
+                              .toString()
+                              .trim()
+                              .toLowerCase();
+                  if (!isSameKeywordSearch) continue;
+                }
+                if (discoveryQueue.length < 300 &&
+                    queuedDiscoveryUrls.add(rowUrl)) {
+                  discoveryQueue.add(rowUrl);
+                }
+                continue;
+              }
+              final tier = int.tryParse((row['tier'] ?? '0').toString()) ?? 0;
+              if (tier < requiredTier) continue;
+              candidates.add({
+                'url': rowUrl,
+                'title': (row['title'] ?? '').toString(),
+                'tier': '$tier',
+                'order': (row['order'] ?? '0').toString(),
+              });
+            }
+          }
+        }
+        if (isKeywordFirst91) {
+          // Preserve the visible search-result order. The first 91 result is
+          // commonly stale or promoted, so begin with the second card.
+          candidates.sort((left, right) {
+            final leftOrder = int.tryParse(left['order'] ?? '') ?? 0;
+            final rightOrder = int.tryParse(right['order'] ?? '') ?? 0;
+            return leftOrder.compareTo(rightOrder);
+          });
+          if (candidates.isNotEmpty) {
+            final skipped = candidates.removeAt(0);
+            (task['visitedPageUrls'] as Set<String>).add(skipped['url'] ?? '');
+            debugPrint('Smart 91: skipped first search card ${skipped['url']}');
+          }
+          int searchPageNumber(String value) {
+            final segments = Uri.tryParse(value)?.pathSegments ?? const [];
+            for (final segment in segments.reversed) {
+              final number = int.tryParse(segment);
+              if (number != null) return number;
+            }
+            return 1;
+          }
+
+          discoveryQueue.sort(
+            (left, right) =>
+                searchPageNumber(left).compareTo(searchPageNumber(right)),
+          );
+        }
+        final activeStrategy =
+            (task['activeDiscoveryStrategy'] ?? '').toString();
+        if (<String>{
+          'actual_scope_link',
+          'site_search',
+          'synthetic_route',
+        }.contains(activeStrategy)) {
+          _recordSmartStrategyOutcome(
+            task,
+            activeStrategy,
+            success: candidates.isNotEmpty,
+          );
+        }
+        if (candidates.isEmpty) {
+          if (strict91Mode) {
+            _broadenSmartDiscovery91A00(task, '当前搜索路径没有候选');
+            return;
+          }
+          if (await _openNearestSmartMediaCard91A00(task, loadedUrl)) return;
+          if (_allowSmartExploratoryClick(task) &&
+              await _openExploratorySmartTarget(task, loadedUrl)) {
+            return;
+          }
+          _broadenSmartDiscovery91A00(task, '当前搜索路径没有候选');
+          return;
+        }
+        task['candidates'] = candidates;
+        task['candidateListUrl'] = strict91Mode ? strict91SearchUrl : loadedUrl;
+        if (strict91Mode) task['strict91QueueReady'] = true;
+        task['index'] = 0;
+        task['phase'] = 'visiting_candidate';
+        _visitNextSmartCandidate91A00(task);
+        return;
+      }
+
+      if (phase == 'visiting_candidate' ||
+          phase == 'visiting_seed' ||
+          phase == 'visiting_clicked_card' ||
+          phase == 'x_viewing_search_card' ||
+          phase == 'scanning_feed') {
+        final candidatePreheated =
+            phase == 'visiting_candidate' &&
+            task.remove('nextMediaPreheated') == true;
+        if (candidatePreheated) task['nextMediaStatus'] = '马上下载';
+        await Future<void>.delayed(
+          Duration(
+            milliseconds:
+                phase == 'visiting_seed'
+                    ? 250
+                    : phase == 'scanning_feed'
+                    ? 400
+                    : phase == 'visiting_clicked_card' && is91KeywordTask
+                    ? 1200
+                    : (candidatePreheated ? 180 : 450),
+          ),
+        );
+        final successBefore = task['success'] as int;
+        if (!strict91Mode) {
+          unawaited(_preheatNextSmartMedia(task, phase));
+        }
+        if (task['mediaType'] == MediaType.image) {
+          await _downloadSmartImagesFromCurrentPage(task);
+          if (phase == 'visiting_clicked_card') {
+            final strategy = (task['activeDiscoveryStrategy'] ?? '').toString();
+            if (strategy == 'click_media_card' ||
+                strategy == 'exploratory_click') {
+              _recordSmartStrategyOutcome(
+                task,
+                strategy,
+                success: (task['success'] as int) > successBefore,
+              );
+            }
+          }
+          if (_smartDownloadTask == null) return;
+          if (strictXFeedMode &&
+              phase == 'scanning_feed' &&
+              (task['strictXSearchUrl'] ?? '').toString().isNotEmpty &&
+              (task['success'] as int) == successBefore &&
+              await _openActiveXSmartCard(task)) {
+            return;
+          }
+          if ((task['success'] as int) >= (task['target'] as int)) {
+            await _finishSmartDownload();
+          } else if (phase == 'x_viewing_search_card') {
+            await _returnFromXSmartCard(task);
+          } else if (phase == 'visiting_seed' || phase == 'scanning_feed') {
+            _continueSmartFeed91A00(
+              task,
+              madeProgress: (task['success'] as int) > successBefore,
+            );
+          } else {
+            _visitNextSmartCandidate91A00(task);
+          }
+          return;
+        }
+        final scopeDiscoveryRound = (task['discoveryRound'] as int?) ?? 0;
+        final scopeHasKeyword =
+            (task['keyword'] ?? '').toString().trim().isNotEmpty;
+        final preferSeedScope =
+            !scopeHasKeyword &&
+            task['startedFromCurrentPage'] == true &&
+            scopeDiscoveryRound == 0;
+        final preferSeedMedia =
+            phase == 'visiting_seed' ||
+            (strictXFeedMode && phase == 'scanning_feed');
+        final result = await controller.evaluateJavascript(
+          source: '''
+            (() => {
+              const preferSeedScope = $preferSeedScope;
+              const preferSeedMedia = $preferSeedMedia;
+              const allVideos = Array.from(document.querySelectorAll('video'));
+              const activeXScope = $strictXFeedMode
+                ? document.querySelector('[data-app-smart-x-active="1"]')
+                : null;
+              const scope = activeXScope || (preferSeedScope
+                ? document.querySelector('[data-smart-seed-scope="1"]')
+                : null);
+              const scopedVideos = scope
+                ? Array.from(scope.querySelectorAll('video'))
+                : [];
+              // In X's immersive viewer adjacent posts are preloaded. Once an
+              // active scope exists, never fall back to those page-wide nodes.
+              const videos = scope ? scopedVideos : allVideos;
+              const visible = videos.filter(v => {
+                const r = v.getBoundingClientRect();
+                return r.width > 80 && r.height > 60 && r.bottom > 0 && r.top < innerHeight;
+              });
+              const seed = preferSeedMedia
+                ? (scope?.querySelector('video[data-smart-seed-media="1"]') ||
+                    document.querySelector('video[data-smart-seed-media="1"]'))
+                : null;
+              const video = seed || (visible.length ? visible : videos).sort((a,b) => {
+                const ar = a.getBoundingClientRect();
+                const br = b.getBoundingClientRect();
+                const ad = Math.abs(ar.top + ar.height / 2 - innerHeight / 2);
+                const bd = Math.abs(br.top + br.height / 2 - innerHeight / 2);
+                return ad - bd || (b.clientWidth*b.clientHeight) - (a.clientWidth*a.clientHeight);
+              })[0];
+              if (!video) return {hasVideo:false, candidates:[]};
+              try { video.muted = true; video.play().catch(() => {}); } catch (_) {}
+              const urls = [video.currentSrc, video.src,
+                ...Array.from(video.querySelectorAll('source')).map(s => s.src)]
+                .filter(Boolean);
+              const currentTweet = (() => {
+                try { return new URL(location.href).searchParams.get('currentTweet') || ''; }
+                catch (_) { return ''; }
+              })();
+              let nearby = video.closest(
+                'article, figure, [class*="card"], [class*="item"], [class*="post"], [role="dialog"]'
+              );
+              if ($strictXFeedMode && currentTweet && !activeXScope) {
+                const currentLink = Array.from(document.querySelectorAll('a[href*="/status/"]'))
+                  .find(link => String(link.href || '').includes('/status/' + currentTweet));
+                nearby = (currentLink && currentLink.closest(
+                  'article[data-testid="tweet"], article, [role="dialog"], main'
+                )) || nearby;
+              }
+              const xMediaIdFromScope = scope => {
+                if (!scope) return '';
+                const values = [];
+                const add = value => { if (value) values.push(String(value)); };
+                Array.from(scope.querySelectorAll('video, img')).forEach(media => {
+                  add(media.poster); add(media.getAttribute && media.getAttribute('poster'));
+                  if (String(media.tagName || '').toLowerCase() === 'img') {
+                    add(media.currentSrc); add(media.src);
+                    add(media.getAttribute && media.getAttribute('src'));
+                    add(media.getAttribute && media.getAttribute('srcset'));
+                  }
+                });
+                for (const value of values) {
+                  const lower = value.toLowerCase();
+                  for (const marker of ['/amplify_video_thumb/', '/ext_tw_video_thumb/',
+                    '/tweet_video_thumb/', '/amplify_video/', '/ext_tw_video/', '/tweet_video/']) {
+                    const index = lower.indexOf(marker);
+                    if (index < 0) continue;
+                    const id = value.substring(index + marker.length).split('/')[0];
+                    if (id && Array.from(id).every(ch => ch >= '0' && ch <= '9')) return id;
+                  }
+                }
+                return '';
+              };
+              const expectedXMediaId = $strictXFeedMode
+                ? (xMediaIdFromScope(video) || xMediaIdFromScope(scope) ||
+                    xMediaIdFromScope(nearby || video.parentElement))
+                : '';
+              const contextText = [video.title, video.getAttribute('aria-label'),
+                nearby && nearby.innerText, document.title].filter(Boolean).join(' ');
+              const elementIdentity = [
+                video.getAttribute('data-id'), video.getAttribute('data-video-id'),
+                video.getAttribute('data-post-id'), nearby && nearby.id,
+                nearby && nearby.getAttribute('data-id'),
+                nearby && nearby.getAttribute('data-post-id'),
+                nearby && nearby.querySelector('a[href]')?.href
+              ].filter(Boolean).join('|');
+              const adContainers = Array.from(document.querySelectorAll(
+                '[class*="video-ad" i], [class*="ad-container" i], [class*="ad-overlay" i], '
+                + '[class*="preroll" i], [class*="pre-roll" i], [class*="vast" i], '
+                + '[id*="video-ad" i], [id*="ad-container" i], [id*="preroll" i]'
+              )).filter(el => {
+                const r = el.getBoundingClientRect();
+                return r.width > 20 && r.height > 10 && r.bottom > 0 && r.top < innerHeight;
+              });
+              const skipButton = Array.from(document.querySelectorAll(
+                'button, [role="button"], a'
+              )).find(el => {
+                const r = el.getBoundingClientRect();
+                if (r.width < 20 || r.height < 10 || r.bottom <= 0 || r.top >= innerHeight) return false;
+                const label = (el.innerText || el.getAttribute('aria-label') || el.title || '').trim();
+                return /^(skip|skip ad|跳过|跳过广告|关闭广告)/i.test(label);
+              });
+              if (skipButton) { try { skipButton.click(); } catch (_) {} }
+              const adText = adContainers.map(el =>
+                [el.id, el.className, el.innerText].join(' ')).join(' ').toLowerCase();
+              const adLikely = adContainers.length > 0 &&
+                /(video.?ad|ad.?container|ad.?overlay|preroll|pre.?roll|vast|广告|advertisement)/i.test(adText);
+              return {hasVideo:true, url: urls[0] || '', candidates: Array.from(new Set(urls)),
+                duration: Number.isFinite(video.duration) ? video.duration : 0,
+                currentTime: Number.isFinite(video.currentTime) ? video.currentTime : 0,
+                title: document.title || location.href, contextText, elementIdentity,
+                expectedXMediaId,
+                adLikely, skipClicked: !!skipButton};
+            })()
+          ''',
+        );
+        var ok = false;
+        // 用 WebView 真实地址，避免过期 loadedUrl 导致 _is91ContentPage 误判、深挖被跳过。
+        final pageUrl =
+            actualLoadedUrl.isNotEmpty
+                ? actualLoadedUrl
+                : (loadedUrl.isNotEmpty ? loadedUrl : _currentUrl);
+        if (strict91Mode &&
+            phase == 'visiting_candidate' &&
+            _is91ContentPage(pageUrl)) {
+          task['phase'] = 'visiting_clicked_card';
+          phase = 'visiting_clicked_card';
+          if ((task['strict91ActiveCardUrl'] ?? '').toString().isEmpty) {
+            task['strict91ActiveCardUrl'] = pageUrl;
+          }
+          task['cardEnteredAt'] ??= DateTime.now();
+        }
+        final urls = <String>[];
+        var title = pageUrl;
+        var contextText = '';
+        var elementIdentity = '';
+        var durationSec = 0.0;
+        var currentTimeSec = 0.0;
+        var adLikely = false;
+        var expectedXMediaId = '';
+        if (result is Map) {
+          final rawCandidates = result['candidates'];
+          if (rawCandidates is List) {
+            urls.addAll(rawCandidates.map((e) => e.toString()));
+          }
+          final primary = (result['url'] ?? '').toString();
+          if (primary.isNotEmpty) urls.insert(0, primary);
+          title = (result['title'] ?? pageUrl).toString();
+          contextText = (result['contextText'] ?? '').toString();
+          elementIdentity = (result['elementIdentity'] ?? '').toString();
+          durationSec = (result['duration'] as num?)?.toDouble() ?? 0.0;
+          currentTimeSec = (result['currentTime'] as num?)?.toDouble() ?? 0.0;
+          adLikely = result['adLikely'] == true;
+          expectedXMediaId =
+              (result['expectedXMediaId'] ?? '').toString().trim();
+        }
+        if (adLikely) {
+          final now = DateTime.now();
+          final waitStarted = task['adWaitStartedAt'] as DateTime? ?? now;
+          task['adWaitStartedAt'] = waitStarted;
+          final waited = now.difference(waitStarted);
+          if (waited < const Duration(seconds: 60)) {
+            final remaining =
+                durationSec > currentTimeSec
+                    ? max(0, (durationSec - currentTimeSec).ceil())
+                    : 0;
+            final id = (task['discoveryTaskId'] ?? '').toString();
+            if (id.isNotEmpty) {
+              _updateDownloadTask(
+                id,
+                progressDetail:
+                    '已识别前贴片广告，等待主视频${remaining > 0 ? '（约 $remaining 秒）' : ''}...',
+              );
+            }
+            Future<void>.delayed(
+              const Duration(milliseconds: 1500),
+              () => unawaited(_advanceSmartDownload91A00(_currentUrl)),
+            );
+            return;
+          }
+          task.remove('adWaitStartedAt');
+          task['adSkipped'] = ((task['adSkipped'] as int?) ?? 0) + 1;
+          if (phase == 'visiting_clicked_card') {
+            await _returnFromSmartMediaCard91A00(task, madeProgress: false);
+          } else if (phase == 'visiting_candidate') {
+            _visitNextSmartCandidate91A00(task);
+          } else {
+            _continueSmartFeed91A00(task, madeProgress: false);
+          }
+          return;
+        }
+        task.remove('adWaitStartedAt');
+        final lastFeedMoveAt = task['lastFeedMoveAt'] as DateTime?;
+        final freshCaptured =
+            lastFeedMoveAt == null
+                ? const <String>[]
+                : _recentCapturedMediaCandidates(
+                  MediaType.video,
+                  pageUrl: pageUrl,
+                  notBefore: lastFeedMoveAt,
+                );
+        final captured = <String>[
+          ...(strict91Mode
+              ? freshCaptured
+              : freshCaptured.isNotEmpty
+              ? freshCaptured
+              : _recentCapturedMediaCandidates(
+                MediaType.video,
+                pageUrl: pageUrl,
+              )),
+        ];
+        if (_isXPlatformPage(pageUrl)) {
+          var boundMediaIds =
+              expectedXMediaId.isNotEmpty
+                  ? <String>{expectedXMediaId}
+                  : urls
+                      .map(_xMediaIdentity)
+                      .where((id) => id.isNotEmpty)
+                      .toSet();
+          if (boundMediaIds.isEmpty && strictXFeedMode) {
+            final grouped = <String, List<String>>{};
+            for (final url in freshCaptured) {
+              final id = _xMediaIdentity(url);
+              if (id.isNotEmpty) (grouped[id] ??= <String>[]).add(url);
+            }
+            if (grouped.isNotEmpty) {
+              final ranked =
+                  grouped.entries.toList()..sort((left, right) {
+                    int score(MapEntry<String, List<String>> entry) {
+                      final rows = entry.value;
+                      final hasMaster = rows.any(
+                        (url) => RegExp(
+                          r'/pl/[^/]+\.m3u8(?:\?|$)',
+                        ).hasMatch(url.toLowerCase()),
+                      );
+                      final hasVideo = rows.any(
+                        (url) =>
+                            url.contains('/avc1/') || url.contains('/vid/'),
+                      );
+                      final hasAudio = rows.any(
+                        (url) =>
+                            url.contains('/mp4a/') || url.contains('/aud/'),
+                      );
+                      return (hasMaster ? 10000 : 0) +
+                          (hasVideo ? 3000 : 0) +
+                          (hasAudio ? 1000 : 0) +
+                          rows.length * 10;
+                    }
+
+                    return score(right).compareTo(score(left));
+                  });
+              boundMediaIds = <String>{ranked.first.key};
+            }
+          }
+          if (expectedXMediaId.isNotEmpty) {
+            urls.removeWhere((url) {
+              final id = _xMediaIdentity(url);
+              return id.isNotEmpty && id != expectedXMediaId;
+            });
+          }
+          if (boundMediaIds.isNotEmpty) {
+            captured.retainWhere(
+              (url) => boundMediaIds.contains(_xMediaIdentity(url)),
+            );
+          } else {
+            // X preloads adjacent posts. Without an element-bound media ID,
+            // page-wide traffic is not safe enough to select a download.
+            captured.clear();
+          }
+          if (strictXFeedMode && expectedXMediaId.isNotEmpty) {
+            final resolved = await _resolveXLongPressVideoCandidates(
+              primaryUrl: urls.isEmpty ? '' : urls.first,
+              candidates: <String>[...urls, ...captured],
+              pageUrl: pageUrl,
+              expectedMediaId: expectedXMediaId,
+              notBefore: lastFeedMoveAt,
+            );
+            if (resolved.isNotEmpty) {
+              urls
+                ..clear()
+                ..addAll(resolved);
+              captured.clear();
+            }
+          }
+        }
+        if ((strict91Mode || _isElementBoundFeedPage(pageUrl)) &&
+            captured.isNotEmpty) {
+          urls.insertAll(0, captured);
+        } else {
+          urls.addAll(captured);
+        }
+        urls.removeWhere((url) => url.trim().isEmpty);
+        urls.removeWhere(_isLikelyAdUrl);
+        // 91 详情页首屏常抓到 spinner.svg / 图片，不能当视频地址，否则会跳过下翻深挖。
+        bool isJunk91Media(String raw) {
+          final lower = raw.toLowerCase();
+          if (lower.contains('spinner') || lower.contains('/emoji')) return true;
+          return lower.endsWith('.svg') ||
+              lower.endsWith('.png') ||
+              lower.endsWith('.jpg') ||
+              lower.endsWith('.jpeg') ||
+              lower.endsWith('.gif') ||
+              lower.endsWith('.webp') ||
+              lower.endsWith('.ico') ||
+              lower.contains('.svg?') ||
+              lower.contains('.png?') ||
+              lower.contains('.jpg?');
+        }
+        urls.removeWhere(isJunk91Media);
+        final duplicateUrlKeys = task['duplicateVideoUrlKeys'] as Set<String>;
+        final uniqueUrls =
+            urls
+                .toSet()
+                .where(
+                  (url) =>
+                      !duplicateUrlKeys.contains(_normalizeVideoSourceUrl(url)),
+                )
+                .where((url) => !isJunk91Media(url))
+                .toList();
+        if (_isXPlatformPage(pageUrl)) {
+          uniqueUrls.sort(
+            (left, right) => _scoreXVideoCandidate(
+              right,
+            ).compareTo(_scoreXVideoCandidate(left)),
+          );
+        }
+        if (uniqueUrls.isEmpty &&
+            phase == 'visiting_clicked_card' &&
+            is91KeywordTask &&
+            _is91ContentPage(pageUrl)) {
+          final retries = (task['candidateResolveRetries'] as int?) ?? 0;
+          final enteredAt =
+              task['cardEnteredAt'] as DateTime? ?? DateTime.now();
+          task['cardEnteredAt'] = enteredAt;
+
+          // a00：播放器可见后才有真实地址。91 首屏常无 video，需先整页下翻再找。
+          await controller.evaluateJavascript(
+            source: '''
+              (() => {
+                const pick = (list) => list.find(v => {
+                  const r = v.getBoundingClientRect();
+                  return r.width > 80 && r.height > 60;
+                }) || list[0] || null;
+                let videos = Array.from(document.querySelectorAll('video'));
+                let video = pick(videos);
+                if (!video) {
+                  const step = Math.max(420, Math.floor(innerHeight * 0.8));
+                  window.scrollBy({top: step, left: 0, behavior: 'auto'});
+                  videos = Array.from(document.querySelectorAll('video'));
+                  video = pick(videos);
+                }
+                if (video) {
+                  video.scrollIntoView({behavior:'auto', block:'center'});
+                  video.muted = true;
+                  try { video.load(); } catch (_) {}
+                  try { video.play().catch(() => {}); } catch (_) {}
+                }
+                const play = Array.from(document.querySelectorAll(
+                  'button, [role="button"], .play, [class*="play"]'
+                )).find(el => {
+                  const r = el.getBoundingClientRect();
+                  const text = (el.innerText || el.title || el.getAttribute('aria-label') || '').trim();
+                  return r.width > 20 && r.height > 20 &&
+                    /(play|播放|开始)/i.test([text, el.className].join(' '));
+                });
+                if (play) { try { play.click(); } catch (_) {} }
+                return {videos: document.querySelectorAll('video').length, clickedPlay: !!play, scrolled: !video};
+              })()
+            ''',
+          );
+
+          if (retries == 2 || retries == 6) {
+            final sourceUrls = await _resniffFavoriteCandidatesFromSourcePage(
+              pageUrl,
+            ).timeout(const Duration(seconds: 7), onTimeout: () => <String>[]);
+            uniqueUrls.addAll(
+              sourceUrls.where(
+                (url) =>
+                    !_isLikelyAdUrl(url) &&
+                    !duplicateUrlKeys.contains(_normalizeVideoSourceUrl(url)),
+              ),
+            );
+          }
+
+          final elapsed = DateTime.now().difference(enteredAt);
+          if (uniqueUrls.isEmpty &&
+              retries < 15 &&
+              elapsed < const Duration(seconds: 25)) {
+            task['candidateResolveRetries'] = retries + 1;
+            final id = (task['discoveryTaskId'] ?? '').toString();
+            if (id.isNotEmpty) {
+              _updateDownloadTask(
+                id,
+                progressDetail:
+                    '正在深入解析当前关键词卡片 ${retries + 1}/15 · 已停留 ${elapsed.inSeconds} 秒',
+              );
+            }
+            Future<void>.delayed(
+              const Duration(milliseconds: 1000),
+              () => unawaited(_advanceSmartDownload91A00(_currentUrl)),
+            );
+            return;
+          }
+        }
+        if (uniqueUrls.isEmpty &&
+            strictXFeedMode &&
+            (phase == 'visiting_seed' ||
+                phase == 'scanning_feed' ||
+                phase == 'x_viewing_search_card')) {
+          final retries = (task['xCurrentPostResolveRetries'] as int?) ?? 0;
+          final retryLimit =
+              phase == 'scanning_feed' &&
+                      (task['strictXSearchUrl'] ?? '').toString().isNotEmpty
+                  ? 3
+                  : 12;
+          if (retries < retryLimit) {
+            task['xCurrentPostResolveRetries'] = retries + 1;
+            final id = (task['discoveryTaskId'] ?? '').toString();
+            if (id.isNotEmpty) {
+              _updateDownloadTask(
+                id,
+                progressDetail:
+                    '正在当前 X 帖子内等待真实视频地址 ${retries + 1}/$retryLimit，不会继续下滑...',
+              );
+            }
+            Future<void>.delayed(
+              const Duration(milliseconds: 800),
+              () => unawaited(_advanceSmartDownload91A00(_currentUrl)),
+            );
+            return;
+          }
+          task['xCurrentPostResolveRetries'] = 0;
+          if (phase == 'scanning_feed' &&
+              (task['strictXSearchUrl'] ?? '').toString().isNotEmpty &&
+              await _openActiveXSmartCard(task)) {
+            return;
+          }
+          if (phase == 'x_viewing_search_card') {
+            await _returnFromXSmartCard(task);
+            return;
+          }
+          _continueSmartFeed91A00(task, madeProgress: false);
+          return;
+        }
+        task['xCurrentPostResolveRetries'] = 0;
+        if (uniqueUrls.isEmpty &&
+            (phase == 'visiting_seed' || phase == 'scanning_feed')) {
+          if (await _openNearestSmartMediaCard91A00(task, pageUrl)) return;
+        }
+        if (uniqueUrls.isEmpty && phase == 'visiting_candidate') {
+          final retries = (task['candidateResolveRetries'] as int?) ?? 0;
+          final retryLimit = min(5, 2 + ((task['searchCycle'] as int?) ?? 0));
+          if (retries < retryLimit) {
+            task['candidateResolveRetries'] = retries + 1;
+            Future<void>.delayed(
+              const Duration(milliseconds: 650),
+              () => unawaited(_advanceSmartDownload91A00(_currentUrl)),
+            );
+            return;
+          }
+        }
+        task['candidateResolveRetries'] = 0;
+        task.remove('cardEnteredAt');
+        final discoveryRound = (task['discoveryRound'] as int?) ?? 0;
+        final exhaustiveCycle = ((task['searchCycle'] as int?) ?? 0) > 0;
+        final hasKeyword = (task['keyword'] ?? '').toString().trim().isNotEmpty;
+        final trustedXKeywordResult =
+            strictXFeedMode &&
+            hasKeyword &&
+            strictXSearchUrl.isNotEmpty &&
+            (phase == 'scanning_feed' || phase == 'x_viewing_search_card');
+        final requiredTier =
+            !hasKeyword || trustedXKeywordResult
+                ? 0
+                : exhaustiveCycle
+                ? 0
+                : (discoveryRound <= 1 ? 2 : (discoveryRound == 2 ? 1 : 0));
+        final contextTier = _smartKeywordMatchTier(
+          (task['keyword'] ?? '').toString(),
+          '$title $contextText $pageUrl',
+        );
+        if (phase != 'visiting_seed' && contextTier < requiredTier) {
+          task['relevanceSkipped'] =
+              ((task['relevanceSkipped'] as int?) ?? 0) + 1;
+          _updateSmartDiscoveryProgress(task, phase);
+          if (phase == 'visiting_clicked_card') {
+            await _returnFromSmartMediaCard91A00(task, madeProgress: false);
+          } else if (phase == 'scanning_feed') {
+            if (!strictXFeedMode &&
+                await _openNearestSmartMediaCard91A00(task, pageUrl)) {
+              return;
+            }
+            _continueSmartFeed91A00(task, madeProgress: false);
+          } else {
+            _visitNextSmartCandidate91A00(task);
+          }
+          return;
+        }
+        if (uniqueUrls.isNotEmpty) {
+          final chosen = uniqueUrls.first;
+          final normalizedChosen = _normalizeVideoSourceUrl(chosen);
+          final normalizedContext =
+              contextText.replaceAll(RegExp(r'\s+'), ' ').trim().toLowerCase();
+          final normalizedTitle = title.trim().toLowerCase();
+          final meaningfulContext =
+              normalizedContext.length >= 8 &&
+              normalizedContext != normalizedTitle;
+          final pagePath = Uri.tryParse(pageUrl)?.path ?? pageUrl;
+          final stableElementIdentity = elementIdentity.trim();
+          final contextPart =
+              meaningfulContext
+                  ? normalizedContext.substring(
+                    0,
+                    min(180, normalizedContext.length),
+                  )
+                  : normalizedChosen;
+          final mediaContextKey =
+              _isElementBoundFeedPage(pageUrl)
+                  ? '$pagePath|$stableElementIdentity|${durationSec.round()}|$contextPart'
+                  : normalizedChosen;
+          final attemptedContexts =
+              task['attemptedVideoContexts'] as Set<String>;
+          if (!attemptedContexts.add(mediaContextKey)) {
+            task['duplicateSkipped'] =
+                ((task['duplicateSkipped'] as int?) ?? 0) + 1;
+            _updateSmartDiscoveryProgress(task, phase);
+            if (phase == 'visiting_seed' || phase == 'scanning_feed') {
+              if (!strictXFeedMode &&
+                  await _openNearestSmartMediaCard91A00(task, pageUrl)) {
+                return;
+              }
+              _continueSmartFeed91A00(task, madeProgress: false);
+            } else if (phase == 'visiting_clicked_card') {
+              await _returnFromSmartMediaCard91A00(task, madeProgress: false);
+            } else {
+              _visitNextSmartCandidate91A00(task);
+            }
+            return;
+          }
+          final sizeAllowed = await _smartVideoSizeAllowed(
+            task,
+            uniqueUrls,
+            pageUrl,
+            durationSec,
+          );
+          if (sizeAllowed) {
+            final seen = task['seenMediaUrls'] as Set<String>;
+            final canTrustUrlIdentity =
+                chosen.startsWith('http') && !_isElementBoundFeedPage(pageUrl);
+            if (!canTrustUrlIdentity || seen.add(chosen)) {
+              var smartFailureType = '';
+              ok = await _downloadMediaRobustly(
+                item: <String, dynamic>{
+                  'title': title,
+                  'pageUrl': pageUrl,
+                  'videoUrl': chosen,
+                  'candidateUrls': uniqueUrls,
+                  'durationSec': durationSec,
+                  'downloadOrigin': 'smart_batch',
+                  'allowSourceUrlReuse': _isElementBoundFeedPage(pageUrl),
+                  'smartTask': task,
+                },
+                showModalDialog: false,
+                showResultHint: false,
+                onFailureType: (type) => smartFailureType = type,
+                minFileBytes: task['effectiveMinVideoBytes'] as int?,
+                maxFileBytes: task['effectiveMaxVideoBytes'] as int?,
+              );
+              if (smartFailureType == 'outside_requested_size_range') {
+                task['sizeSkipped'] = ((task['sizeSkipped'] as int?) ?? 0) + 1;
+              } else if (smartFailureType == 'invalid_smart_media_content') {
+                task['invalidSkipped'] =
+                    ((task['invalidSkipped'] as int?) ?? 0) + 1;
+              } else if (smartFailureType == 'already_in_library' ||
+                  smartFailureType == 'already_in_smart_task') {
+                duplicateUrlKeys.add(normalizedChosen);
+                task['duplicateSkipped'] =
+                    ((task['duplicateSkipped'] as int?) ?? 0) + 1;
+              }
+            }
+          } else {
+            task['sizeSkipped'] = ((task['sizeSkipped'] as int?) ?? 0) + 1;
+          }
+        }
+        task[ok ? 'success' : 'failed'] =
+            (task[ok ? 'success' : 'failed'] as int) + 1;
+        if (phase == 'visiting_clicked_card') {
+          final strategy = (task['activeDiscoveryStrategy'] ?? '').toString();
+          if (strategy == 'click_media_card' ||
+              strategy == 'exploratory_click') {
+            _recordSmartStrategyOutcome(task, strategy, success: ok);
+          }
+        }
+        _updateSmartDiscoveryProgress(task, phase);
+        if ((task['success'] as int) >= (task['target'] as int)) {
+          await _finishSmartDownload();
+        } else if (phase == 'x_viewing_search_card') {
+          await _returnFromXSmartCard(task);
+        } else if (phase == 'visiting_clicked_card') {
+          await _returnFromSmartMediaCard91A00(
+            task,
+            madeProgress: (task['success'] as int) > successBefore,
+          );
+        } else if (phase == 'visiting_seed' || phase == 'scanning_feed') {
+          if (!ok &&
+              !strictXFeedMode &&
+              await _openNearestSmartMediaCard91A00(task, pageUrl)) {
+            return;
+          }
+          _continueSmartFeed91A00(
+            task,
+            madeProgress: (task['success'] as int) > successBefore,
+          );
+        } else {
+          _visitNextSmartCandidate91A00(task);
+        }
+      }
+    } catch (e, st) {
+      debugPrint('智能下载步骤失败: $e\n$st');
+      if (_smartDownloadTask != null) {
+        task['failed'] = (task['failed'] as int) + 1;
+        final phase = task['phase']?.toString();
+        if (phase == 'visiting_clicked_card') {
+          await _returnFromSmartMediaCard91A00(task, madeProgress: false);
+        } else if (phase == 'x_viewing_search_card') {
+          await _returnFromXSmartCard(task);
+        } else if (phase == 'visiting_seed' || phase == 'scanning_feed') {
+          _continueSmartFeed91A00(task, madeProgress: false);
+        } else {
+          _visitNextSmartCandidate91A00(task);
+        }
+      }
+    } finally {
+      _smartDownloadAdvancing = false;
+    }
+  }
+
+
+  void _visitNextSmartCandidate91A00(Map<String, dynamic> task) {
+    final candidates = task['candidates'] as List<Map<String, String>>;
+    if (task['strict91KeywordMode'] == true) {
+      final listUrl = (task['strict91SearchUrl'] ?? '').toString();
+      if (listUrl.isNotEmpty && !_isSame91TaskPage(listUrl, _currentUrl)) {
+        task['phase'] = 'strict91_returning';
+        _loadUrl(listUrl);
+        return;
+      }
+    }
+    var index = task['index'] as int;
+    final visited = task['visitedPageUrls'] as Set<String>;
+    while (index < candidates.length &&
+        !visited.add(candidates[index]['url'] ?? '')) {
+      index++;
+    }
+    if (index >= candidates.length) {
+      unawaited(() async {
+        final listUrl = (task['candidateListUrl'] ?? _currentUrl).toString();
+        // strict91 关键词模式禁止 openNearest 乱点：日志显示它会点了却不导航，
+        // 再和详情回调打架，表现为列表↔详情空转且从不「深入解析」。
+        if (task['strict91KeywordMode'] == true) {
+          _broadenSmartDiscovery91A00(task, '当前列表的卡片和候选已全部尝试');
+          return;
+        }
+        if (await _openNearestSmartMediaCard91A00(task, listUrl)) return;
+        if (_allowSmartExploratoryClick(task) &&
+            await _openExploratorySmartTarget(task, listUrl)) {
+          return;
+        }
+        _broadenSmartDiscovery91A00(task, '当前列表的卡片和候选已全部尝试');
+      }());
+      return;
+    }
+    task['candidateResolveRetries'] = 0;
+    task['index'] = index + 1;
+    if (task['mediaType'] != MediaType.video) {
+      task['phase'] = 'visiting_candidate';
+      _loadUrl(candidates[index]['url']!);
+      return;
+    }
+    task['phase'] = 'resolving_candidate_background';
+    unawaited(
+      _resolveAndDownloadSmartCandidate91A00(task, candidates[index]),
+    );
+  }
+
+
+  Future<void> _resolveAndDownloadSmartCandidate91A00(
+    Map<String, dynamic> task,
+    Map<String, String> candidate,
+  ) async {
+    if (!identical(_smartDownloadTask, task)) return;
+    final candidates = task['candidates'] as List<Map<String, String>>;
+    final currentIndex = ((task['index'] as int) - 1).clamp(
+      0,
+      candidates.length - 1,
+    );
+    final probeWidth = min(12, 4 + ((task['searchCycle'] as int?) ?? 0) * 2);
+    final probeEnd = min(currentIndex + probeWidth, candidates.length);
+    final probes = <Map<String, dynamic>>[
+      for (var i = currentIndex; i < probeEnd; i++)
+        <String, dynamic>{'index': i, 'candidate': candidates[i]},
+    ];
+    final initialPageUrl = (candidate['url'] ?? '').trim();
+    final candidateListUrl = (task['candidateListUrl'] ?? '').toString();
+    final taskHost = (task['host'] ?? '').toString();
+    final is91 = taskHost == '91cg1.com' || taskHost.endsWith('.91cg1.com');
+    final currentlyOnCandidateList =
+        candidateListUrl.isNotEmpty &&
+        (is91
+            ? _isSame91TaskPage(_currentUrl, candidateListUrl)
+            : _currentUrl == candidateListUrl);
+    // a00 意图：关键词列表点卡片进详情再深挖。列表页 URL 细微差异时也不能跳过。
+    final on91ListSide =
+        is91 &&
+        task['strict91KeywordMode'] == true &&
+        !_is91ContentPage(_currentUrl);
+    if (is91 && (currentlyOnCandidateList || on91ListSide)) {
+      task['strict91ActiveCardUrl'] = initialPageUrl;
+      task['phase'] = 'visiting_clicked_card';
+      task['cardListUrl'] =
+          candidateListUrl.isNotEmpty
+              ? candidateListUrl
+              : (task['strict91SearchUrl'] ?? '').toString();
+      task['resumeCandidateQueueAfterCard'] = true;
+      task['activeDiscoveryStrategy'] = 'click_media_card';
+      task['cardEnteredAt'] = DateTime.now();
+      task['candidateResolveRetries'] = 0;
+      task['nextMediaLabel'] =
+          (candidate['title'] ?? '').trim().isEmpty
+              ? '下一个关键词视频'
+              : (candidate['title'] ?? '').trim();
+      task['nextMediaStatus'] = '正在直接进入关键词视频详情';
+      // 91 列表点进详情：优先直接 loadUrl，避免站点 click 被广告脚本吞掉却不导航。
+      // （日志里 click/openNearest 多次「点击后尚未导航」，随后空转回列表。）
+      task['activeDiscoveryStrategy'] = 'direct_candidate_navigation';
+      debugPrint(
+        'Smart 91: open ordered card ${task['index']}/${candidates.length} $initialPageUrl',
+      );
+      _loadUrl(initialPageUrl);
+      Future<void>.delayed(const Duration(milliseconds: 1800), () {
+        if (!identical(_smartDownloadTask, task)) return;
+        if (task['phase'] != 'visiting_clicked_card') return;
+        if (!_is91ContentPage(_currentUrl)) {
+          debugPrint(
+            'Smart 91: detail not reached after load, retry $initialPageUrl (now=$_currentUrl)',
+          );
+          _loadUrl(initialPageUrl);
+          return;
+        }
+        unawaited(_advanceSmartDownload91A00(_currentUrl));
+      });
+      return;
+    }
+    if (currentlyOnCandidateList &&
+        !_smartStrategyCircuitOpen(task, 'click_media_card')) {
+      task['phase'] = 'visiting_clicked_card';
+      final clickWatch = Stopwatch()..start();
+      final clicked = await _clickSmartCandidateLink(initialPageUrl);
+      clickWatch.stop();
+      if (!identical(_smartDownloadTask, task)) return;
+      if (clicked) {
+        task['cardListUrl'] = candidateListUrl;
+        task['resumeCandidateQueueAfterCard'] = true;
+        task['activeDiscoveryStrategy'] = 'click_media_card';
+        task['nextMediaLabel'] =
+            (candidate['title'] ?? '').trim().isEmpty
+                ? '下一个视频卡片'
+                : (candidate['title'] ?? '').trim();
+        task['nextMediaStatus'] = '正在进入卡片深挖地址';
+        Future<void>.delayed(const Duration(milliseconds: 1200), () {
+          if (identical(_smartDownloadTask, task) &&
+              task['phase'] == 'visiting_clicked_card') {
+            unawaited(_advanceSmartDownload91A00(_currentUrl));
+          }
+        });
+        return;
+      }
+      _recordSmartStrategyOutcome(
+        task,
+        'click_media_card',
+        success: false,
+        elapsedMs: clickWatch.elapsedMilliseconds,
+      );
+      task['phase'] = 'resolving_candidate_background';
+    }
+    if (_smartStrategyCircuitOpen(task, 'source_parallel')) {
+      task['phase'] = 'visiting_candidate';
+      if (_smartStrategyCircuitOpen(task, 'click_media_card')) {
+        task['activeDiscoveryStrategy'] = 'direct_candidate_navigation';
+        _loadUrl(initialPageUrl);
+        return;
+      }
+      final clickWatch = Stopwatch()..start();
+      final clicked = await _clickSmartCandidateLink(initialPageUrl);
+      clickWatch.stop();
+      _recordSmartStrategyOutcome(
+        task,
+        'click_media_card',
+        success: clicked,
+        elapsedMs: clickWatch.elapsedMilliseconds,
+      );
+      if (clicked) {
+        task['activeDiscoveryStrategy'] = 'click_media_card';
+      } else {
+        _loadUrl(initialPageUrl);
+      }
+      return;
+    }
+    final id = (task['discoveryTaskId'] ?? '').toString();
+    if (id.isNotEmpty) {
+      _updateDownloadTask(
+        id,
+        progressDetail:
+            '正在并行解析候选 ${currentIndex + 1}-$probeEnd/${candidates.length} · 已保存 ${task['success']}/${task['target']}',
+      );
+    }
+    final preheated =
+        task['preheatedVideoCandidates'] as Map<String, List<String>>;
+    final sourceWatch = Stopwatch()..start();
+    final extractedBatch = await Future.wait(
+      probes.map((probe) async {
+        final row = probe['candidate'] as Map<String, String>;
+        final url = (row['url'] ?? '').trim();
+        final cached = preheated.remove(url);
+        if (cached != null && cached.isNotEmpty) {
+          return <String, dynamic>{...probe, 'urls': cached};
+        }
+        final extracted = await _resniffFavoriteCandidatesFromSourcePage(
+          url,
+        ).timeout(const Duration(seconds: 7), onTimeout: () => <String>[]);
+        return <String, dynamic>{...probe, 'urls': extracted};
+      }),
+    );
+    sourceWatch.stop();
+    if (!identical(_smartDownloadTask, task)) return;
+    final duplicateUrlKeys = task['duplicateVideoUrlKeys'] as Set<String>;
+    Map<String, dynamic>? selected;
+    List<String> urls = const <String>[];
+    for (final probe in extractedBatch) {
+      final probeCandidate = probe['candidate'] as Map<String, String>;
+      final probePageUrl = (probeCandidate['url'] ?? '').trim();
+      final resolved =
+          (probe['urls'] as List<String>)
+              .where((url) => !_isLikelyAdUrl(url))
+              .where(
+                (url) =>
+                    !duplicateUrlKeys.contains(_normalizeVideoSourceUrl(url)),
+              )
+              .toSet()
+              .toList();
+      if (resolved.isNotEmpty) preheated[probePageUrl] = resolved;
+      if (resolved.isNotEmpty) {
+        selected = probe;
+        urls = resolved;
+        break;
+      }
+    }
+    if (selected == null) {
+      _recordSmartStrategyOutcome(
+        task,
+        'source_parallel',
+        success: false,
+        elapsedMs: sourceWatch.elapsedMilliseconds,
+      );
+      // 动态播放器无法从 HTML 解析时，真实点击当前页的媒体卡片。
+      if (is91 && task['strict91KeywordMode'] == true) {
+        task['strict91ActiveCardUrl'] = initialPageUrl;
+        task['phase'] = 'visiting_clicked_card';
+        task['cardListUrl'] =
+            candidateListUrl.isNotEmpty
+                ? candidateListUrl
+                : (task['strict91SearchUrl'] ?? '').toString();
+        task['resumeCandidateQueueAfterCard'] = true;
+        task['cardEnteredAt'] = DateTime.now();
+        task['candidateResolveRetries'] = 0;
+      } else {
+        task['phase'] = 'visiting_candidate';
+      }
+      if (_smartStrategyCircuitOpen(task, 'click_media_card')) {
+        task['activeDiscoveryStrategy'] = 'direct_candidate_navigation';
+        _loadUrl(initialPageUrl);
+        return;
+      }
+      final clickWatch = Stopwatch()..start();
+      final clicked = await _clickSmartCandidateLink(initialPageUrl);
+      clickWatch.stop();
+      _recordSmartStrategyOutcome(
+        task,
+        'click_media_card',
+        success: clicked,
+        elapsedMs: clickWatch.elapsedMilliseconds,
+      );
+      if (!identical(_smartDownloadTask, task)) return;
+      if (clicked) {
+        task['activeDiscoveryStrategy'] = 'click_media_card';
+      } else {
+        _loadUrl(initialPageUrl);
+      }
+      return;
+    }
+    task['activeDiscoveryStrategy'] = 'source_parallel';
+
+    final selectedIndex = selected['index'] as int;
+    final selectedCandidate = selected['candidate'] as Map<String, String>;
+    final pageUrl = (selectedCandidate['url'] ?? '').trim();
+    final title = (selectedCandidate['title'] ?? pageUrl).trim();
+    final visited = task['visitedPageUrls'] as Set<String>;
+    for (var i = currentIndex; i <= selectedIndex; i++) {
+      visited.add((candidates[i]['url'] ?? '').trim());
+    }
+    task['index'] = selectedIndex + 1;
+
+    final nextReadyIndex = extractedBatch.indexWhere((probe) {
+      final index = probe['index'] as int;
+      final row = probe['candidate'] as Map<String, String>;
+      return index > selectedIndex &&
+          preheated.containsKey((row['url'] ?? '').trim());
+    });
+    if (nextReadyIndex >= 0) {
+      final nextRow =
+          extractedBatch[nextReadyIndex]['candidate'] as Map<String, String>;
+      task['nextMediaPreheated'] = true;
+      task['nextMediaLabel'] =
+          (nextRow['title'] ?? '').trim().isEmpty
+              ? '下一个站内视频'
+              : (nextRow['title'] ?? '').trim();
+      task['nextMediaStatus'] = '待下载（地址已解析）';
+    } else {
+      unawaited(_preheatSmartCandidateAddresses(task, probeEnd));
+    }
+
+    final contextKey = _normalizeVideoSourceUrl(urls.first);
+    final attemptedContexts = task['attemptedVideoContexts'] as Set<String>;
+    if (!attemptedContexts.add(contextKey)) {
+      _recordSmartStrategyOutcome(
+        task,
+        'source_parallel',
+        success: false,
+        elapsedMs: sourceWatch.elapsedMilliseconds,
+      );
+      task['duplicateSkipped'] = ((task['duplicateSkipped'] as int?) ?? 0) + 1;
+      _visitNextSmartCandidate91A00(task);
+      return;
+    }
+
+    var ok = false;
+    var failureType = '';
+    if (await _smartVideoSizeAllowed(task, urls, pageUrl, 0)) {
+      ok = await _downloadMediaRobustly(
+        item: <String, dynamic>{
+          'title': title,
+          'pageUrl': pageUrl,
+          'videoUrl': urls.first,
+          'candidateUrls': urls,
+          'downloadOrigin': 'smart_batch',
+          'allowSourceUrlReuse': _isElementBoundFeedPage(pageUrl),
+          'smartTask': task,
+        },
+        showModalDialog: false,
+        showResultHint: false,
+        onFailureType: (type) => failureType = type,
+        minFileBytes: task['effectiveMinVideoBytes'] as int?,
+        maxFileBytes: task['effectiveMaxVideoBytes'] as int?,
+      );
+    } else {
+      failureType = 'outside_requested_size_range';
+    }
+    if (!identical(_smartDownloadTask, task)) return;
+    _recordSmartStrategyOutcome(
+      task,
+      'source_parallel',
+      success: ok,
+      elapsedMs: sourceWatch.elapsedMilliseconds,
+    );
+    if (failureType == 'already_in_library' ||
+        failureType == 'already_in_smart_task') {
+      duplicateUrlKeys.add(contextKey);
+      task['duplicateSkipped'] = ((task['duplicateSkipped'] as int?) ?? 0) + 1;
+    } else if (failureType == 'outside_requested_size_range') {
+      task['sizeSkipped'] = ((task['sizeSkipped'] as int?) ?? 0) + 1;
+    } else if (failureType == 'invalid_smart_media_content') {
+      task['invalidSkipped'] = ((task['invalidSkipped'] as int?) ?? 0) + 1;
+    }
+    task[ok ? 'success' : 'failed'] =
+        (task[ok ? 'success' : 'failed'] as int) + 1;
+    _updateSmartDiscoveryProgress(task, 'visiting_candidate');
+    if ((task['success'] as int) >= (task['target'] as int)) {
+      await _finishSmartDownload();
+    } else {
+      _visitNextSmartCandidate91A00(task);
+    }
+  }
+
+
+  Future<void> _returnFromSmartMediaCard91A00(
+    Map<String, dynamic> task, {
+    required bool madeProgress,
+  }) async {
+    if (!identical(_smartDownloadTask, task)) return;
+    if (task['strict91KeywordMode'] == true) {
+      final listUrl = (task['strict91SearchUrl'] ?? '').toString();
+      task['phase'] = 'strict91_returning';
+      task['strict91ReturnAttempts'] = 0;
+      task.remove('nextMediaLabel');
+      task.remove('nextMediaStatus');
+      final controller = _controller;
+      if (controller == null || listUrl.isEmpty) return;
+      final actualUrl = (await controller.getUrl())?.toString() ?? _currentUrl;
+      if (_isSame91TaskPage(listUrl, actualUrl)) {
+        task['phase'] = 'visiting_candidate';
+        task['strict91ActiveCardUrl'] = '';
+        _visitNextSmartCandidate91A00(task);
+      } else if (await controller.canGoBack()) {
+        await controller.goBack();
+      } else {
+        _loadUrl(listUrl);
+      }
+      return;
+    }
+    final listUrl = (task.remove('cardListUrl') ?? '').toString();
+    final resumeCandidateQueue =
+        task.remove('resumeCandidateQueueAfterCard') == true;
+    task['phase'] =
+        resumeCandidateQueue ? 'returning_candidate_list' : 'scanning_feed';
+    task.remove('nextMediaLabel');
+    task.remove('nextMediaStatus');
+    final controller = _controller;
+    if (controller == null) return;
+    if (listUrl.isNotEmpty && _currentUrl != listUrl) {
+      if (await controller.canGoBack()) {
+        await controller.goBack();
+      } else {
+        _loadUrl(listUrl);
+      }
+      return;
+    }
+    if (resumeCandidateQueue) {
+      task['phase'] = 'visiting_candidate';
+      _visitNextSmartCandidate91A00(task);
+      return;
+    }
+    _continueSmartFeed91A00(task, madeProgress: madeProgress);
+  }
+
+
+  // ----- a00c4bd helper snapshots used only by 91 a00 pipeline -----
+
+  Future<bool> _openNearestSmartMediaCard91A00(
+    Map<String, dynamic> task,
+    String pageUrl,
+  ) async {
+    final controller = _controller;
+    if (controller == null || !identical(_smartDownloadTask, task)) {
+      return false;
+    }
+    final visited = task['clickedSmartCardKeys'] as Set<String>;
+    final visitedJson = jsonEncode(visited.toList());
+    final siteHostJson = jsonEncode((task['host'] ?? '').toString());
+    final keyword = (task['keyword'] ?? '').toString().trim().toLowerCase();
+    final keywordJson = jsonEncode(keyword);
+    final keywordTokens =
+        keyword
+            .split(RegExp(r'[\s_\-.,/|:;]+'))
+            .where((value) => value.length >= 2)
+            .take(16)
+            .toList();
+    final keywordTokensJson = jsonEncode(keywordTokens);
+    final discoveryRound = (task['discoveryRound'] as int?) ?? 0;
+    final exhaustiveCycle = ((task['searchCycle'] as int?) ?? 0) > 0;
+    final requiredTier =
+        keyword.isEmpty
+            ? 0
+            : exhaustiveCycle
+            ? 0
+            : (discoveryRound <= 1 ? 2 : (discoveryRound == 2 ? 1 : 0));
+    try {
+      final result = await controller
+          .evaluateJavascript(
+            source: '''
+          (() => {
+            const visited = new Set($visitedJson);
+            const siteHost = $siteHostJson;
+            const keyword = $keywordJson;
+            const keywordTokens = $keywordTokensJson;
+            const requiredTier = $requiredTier;
+            const visible = el => {
+              const r = el.getBoundingClientRect();
+              return r.width >= 120 && r.height >= 90 &&
+                r.bottom > 0 && r.top < innerHeight &&
+                r.right > 0 && r.left < innerWidth;
+            };
+            const mediaLargeEnough = el => {
+              const media = el.matches?.('video, img, picture, [style*="background-image"]')
+                ? el
+                : el.querySelector?.('video, img, picture, [style*="background-image"]');
+              const target = media || el;
+              const r = target.getBoundingClientRect();
+              if (r.width < 100 || r.height < 70) return false;
+              if (media) return true;
+              const style = getComputedStyle(target);
+              const marker = [target.id, target.className].join(' ').toLowerCase();
+              return style.backgroundImage !== 'none' ||
+                /(video|thumb|cover|poster|card|post|item)/i.test(marker);
+            };
+            const candidates = [];
+            const seenElements = new Set();
+            const add = (el, order) => {
+              if (!el || !mediaLargeEnough(el)) return;
+              let clickable = el;
+              if (clickable.tagName !== 'A' && !clickable.hasAttribute('onclick') &&
+                  clickable.getAttribute('role') !== 'link') {
+                clickable = clickable.closest?.('a[href]') ||
+                  clickable.querySelector?.('a[href]') || clickable;
+              }
+              if (seenElements.has(clickable)) return;
+              seenElements.add(clickable);
+              let url = '';
+              if (clickable.tagName === 'A' && clickable.href) {
+                try {
+                  const parsed = new URL(clickable.href, location.href);
+                  const host = parsed.hostname.toLowerCase().replace(/^www\./, '');
+                  if (!(host === siteHost || host.endsWith('.' + siteHost)) ||
+                      parsed.href === location.href) return;
+                  url = parsed.href;
+                } catch (_) { return; }
+              }
+              const text = (clickable.getAttribute('aria-label') || clickable.title ||
+                clickable.innerText || el.innerText || '').trim();
+              const marker = [url, text, clickable.id, clickable.className,
+                el.id, el.className].join(' ').toLowerCase();
+              if (/(^|[ _/.-])(ads?|advert|banner|promo|sponsor|推广|广告)([ _/.-]|\$)/i.test(marker)) return;
+              const key = url || [text.slice(0, 120), order].join('|');
+              if (!key || visited.has(key)) return;
+              const haystack = [text, url, el.innerText || ''].join(' ').toLowerCase();
+              const exact = keyword.length > 0 && haystack.includes(keyword);
+              const tokenHits = keywordTokens.reduce((sum, token) =>
+                sum + (haystack.includes(token) ? 1 : 0), 0);
+              const tier = exact ? 2 : (tokenHits > 0 ? 1 : 0);
+              const r = clickable.getBoundingClientRect();
+              const inView = visible(clickable);
+              const documentTop = Math.max(0, r.top + window.scrollY);
+              const detailPath = /[/](archives?|posts?|videos?|watch|view|detail|movies?)[/]/i.test(url);
+              candidates.push({el:clickable, key, url, text, inView,
+                documentTop, detailPath, order, tier, tokenHits});
+            };
+            Array.from(document.querySelectorAll('a[href]')).forEach(add);
+            Array.from(document.querySelectorAll(
+              '[role="link"], article, figure, [class*="card"], [class*="post"], [class*="item"]'
+            )).forEach((el, index) => {
+              const style = getComputedStyle(el);
+              if (el.getAttribute('role') === 'link' || el.hasAttribute('onclick') ||
+                  el.tabIndex >= 0 || style.cursor === 'pointer') add(el, 10000 + index);
+            });
+            // Deterministic top-to-bottom traversal. Prefer actual detail URLs,
+            // then the currently visible card, while never revisiting a key.
+            candidates.sort((a, b) =>
+              b.tier - a.tier || b.tokenHits - a.tokenHits ||
+              (b.detailPath ? 1 : 0) - (a.detailPath ? 1 : 0) ||
+              (b.inView ? 1 : 0) - (a.inView ? 1 : 0) ||
+              a.documentTop - b.documentTop || a.order - b.order);
+            const diagnostics = {
+              page: location.href,
+              anchors: document.querySelectorAll('a[href]').length,
+              articles: document.querySelectorAll('article').length,
+              candidates: candidates.length,
+              eligible: candidates.filter(row => row.tier >= requiredTier).length,
+              requiredTier,
+              visited: visited.size
+            };
+            const selected = candidates.find(row => row.tier >= requiredTier);
+            if (!selected) return {clicked:false, diagnostics};
+            selected.el.removeAttribute('target');
+            selected.el.scrollIntoView({behavior:'auto', block:'center', inline:'center'});
+            setTimeout(() => selected.el.click(), 180);
+            return {
+              clicked:true,
+              key:selected.key,
+              url:selected.url,
+              label:selected.text || '最近的媒体卡片',
+              diagnostics
+            };
+          })()
+        ''',
+          )
+          .timeout(const Duration(seconds: 5));
+      if (result is! Map || result['clicked'] != true) {
+        debugPrint(
+          '智能卡片诊断：未选中卡片，${result is Map ? result['diagnostics'] : result}',
+        );
+        return false;
+      }
+      final key = (result['key'] ?? '').toString();
+      if (key.isEmpty || !visited.add(key)) return false;
+      task['lastProductiveListUrl'] = pageUrl;
+      task['cardListUrl'] = pageUrl;
+      task['phase'] = 'visiting_clicked_card';
+      task['activeDiscoveryStrategy'] = 'click_media_card';
+      task['lastFeedMoveAt'] = DateTime.now();
+      task['nextMediaLabel'] = (result['label'] ?? '媒体详情').toString();
+      task['nextMediaStatus'] = '正在进入详情获取地址';
+      debugPrint(
+        '智能卡片诊断：准备点击 url=${result['url']}，key=$key，${result['diagnostics']}',
+      );
+      final id = (task['discoveryTaskId'] ?? '').toString();
+      if (id.isNotEmpty) {
+        _updateDownloadTask(id, progressDetail: '正在打开最近的媒体卡片并解析真实下载地址...');
+      }
+      Future<void>.delayed(const Duration(milliseconds: 900), () {
+        if (identical(_smartDownloadTask, task) &&
+            task['phase'] == 'visiting_clicked_card') {
+          if (_currentUrl == pageUrl) {
+            debugPrint('智能卡片诊断：点击后尚未导航，page=$pageUrl，target=${result['url']}');
+          }
+          unawaited(_advanceSmartDownload91A00(_currentUrl));
+        }
+      });
+      return true;
+    } catch (e) {
+      debugPrint('智能下载打开媒体卡片失败（继续扫描）: $e');
+      return false;
+    }
+  }
+
+
+  void _broadenSmartDiscovery91A00(
+    Map<String, dynamic> task,
+    String exhaustedReason,
+  ) {
+    if (!identical(_smartDownloadTask, task)) return;
+    task.remove('nextMediaPreheated');
+    task.remove('nextMediaLabel');
+    task.remove('nextMediaStatus');
+    final discoveryQueue = task['discoveryPageQueue'] as List<String>;
+    final visitedDiscoveryUrls = task['visitedDiscoveryUrls'] as Set<String>;
+    while (discoveryQueue.isNotEmpty) {
+      final nextScopeUrl = discoveryQueue.removeAt(0);
+      if (!visitedDiscoveryUrls.add(nextScopeUrl)) continue;
+      task['phase'] = 'collecting_site_results';
+      task['activeDiscoveryStrategy'] = 'actual_scope_link';
+      task['candidates'] = <Map<String, String>>[];
+      task['index'] = 0;
+      final id = (task['discoveryTaskId'] ?? '').toString();
+      if (id.isNotEmpty) {
+        _updateDownloadTask(
+          id,
+          progressDetail:
+              '正在向上一层/同级页面挖掘媒体地址 · 已保存 ${task['success']}/${task['target']}',
+        );
+      }
+      _loadUrl(nextScopeUrl);
+      return;
+    }
+    var round = ((task['discoveryRound'] as int?) ?? 0) + 1;
+    final deadlineAt = task['deadlineAt'] as DateTime?;
+    if (deadlineAt != null && !DateTime.now().isBefore(deadlineAt)) {
+      unawaited(_finishSmartDownload('已达到单次任务 5 小时时间上限'));
+      return;
+    }
+    var cycleDelay = Duration.zero;
+    if (round > 6) {
+      final cycle = ((task['searchCycle'] as int?) ?? 0) + 1;
+      task['searchCycle'] = cycle;
+      round = 1;
+      cycleDelay = Duration(seconds: min(30, 2 + cycle * 2));
+      (task['preheatedVideoCandidates'] as Map<String, List<String>>).clear();
+    }
+    task['discoveryRound'] = round;
+    task['feedScans'] = 0;
+    task['feedNoNew'] = 0;
+    task['feedDirection'] = 1;
+    task['candidateResolveRetries'] = 0;
+    task['candidates'] = <Map<String, String>>[];
+    task['index'] = 0;
+    final siteUri = Uri.tryParse((task['siteUrl'] ?? '').toString());
+    if (siteUri == null || siteUri.host.isEmpty) {
+      unawaited(_finishSmartDownload('当前网站地址无效'));
+      return;
+    }
+    final origin = siteUri.origin;
+    final keyword = (task['keyword'] ?? '').toString().trim();
+    final requestedMin = task['minVideoBytes'] as int?;
+    final requestedMax = task['maxVideoBytes'] as int?;
+    switch (round) {
+      case 1:
+        task['matchStage'] = '精确匹配 · 站内入口';
+        task['effectiveMinVideoBytes'] = requestedMin;
+        task['effectiveMaxVideoBytes'] = requestedMax;
+        break;
+      case 2:
+        task['matchStage'] = '相近关键词 · 大小放宽 25%';
+        task['effectiveMinVideoBytes'] =
+            requestedMin == null ? null : (requestedMin * 0.75).round();
+        task['effectiveMaxVideoBytes'] =
+            requestedMax == null ? null : (requestedMax * 1.25).round();
+        break;
+      case 3:
+        task['matchStage'] = '相关内容 · 大小放宽 50%';
+        task['effectiveMinVideoBytes'] =
+            requestedMin == null ? null : (requestedMin * 0.5).round();
+        task['effectiveMaxVideoBytes'] =
+            requestedMax == null ? null : (requestedMax * 1.5).round();
+        break;
+      case 4:
+        task['matchStage'] = '站内近似内容 · 大小大幅放宽';
+        task['effectiveMinVideoBytes'] =
+            requestedMin == null ? null : (requestedMin * 0.25).round();
+        task['effectiveMaxVideoBytes'] =
+            requestedMax == null ? null : requestedMax * 2;
+        break;
+      default:
+        task['matchStage'] = '数量保底 · 仅限制类型和当前网站';
+        task['effectiveMinVideoBytes'] = null;
+        task['effectiveMaxVideoBytes'] = null;
+    }
+    if (keyword.isEmpty) {
+      task['matchStage'] = round >= 5 ? '无关键词 · 全站数量保底' : '无关键词 · 从邻近媒体向全站扩展';
+    }
+    final searchCycle = (task['searchCycle'] as int?) ?? 0;
+    if (searchCycle > 0) {
+      task['effectiveMinVideoBytes'] = null;
+      task['effectiveMaxVideoBytes'] = null;
+      task['matchStage'] = '深层穷举第 ${searchCycle + 1} 页 · 只限媒体类型和当前网站';
+    }
+    final firstToken = keyword
+        .split(RegExp(r'\s+'))
+        .firstWhere((value) => value.isNotEmpty, orElse: () => keyword);
+    late String nextUrl;
+    if (keyword.isEmpty) {
+      task['phase'] = 'scanning_feed';
+      final mediaPath =
+          task['mediaType'] == MediaType.image ? 'images' : 'videos';
+      nextUrl = switch (round) {
+        1 => (task['originUrl'] ?? task['siteUrl']).toString(),
+        2 => '$origin/',
+        3 => '$origin/$mediaPath',
+        4 => '$origin/latest',
+        5 => '$origin/popular',
+        _ => '$origin/all',
+      };
+    } else {
+      switch (round) {
+        case 1:
+          task['phase'] = 'opening_site';
+          nextUrl =
+              task['startedFromCurrentPage'] == true
+                  ? (task['originUrl'] ?? task['siteUrl']).toString()
+                  : task['siteUrl'].toString();
+          break;
+        case 2:
+          task['phase'] = 'scanning_feed';
+          nextUrl =
+              Uri.parse(
+                '$origin/search',
+              ).replace(queryParameters: {'q': keyword}).toString();
+          break;
+        case 3:
+          task['phase'] = 'scanning_feed';
+          nextUrl =
+              Uri.parse(
+                '$origin/',
+              ).replace(queryParameters: {'s': keyword}).toString();
+          break;
+        case 4:
+          task['phase'] = 'scanning_feed';
+          nextUrl = '$origin/search/${Uri.encodeComponent(keyword)}';
+          break;
+        case 5:
+          task['phase'] = 'scanning_feed';
+          nextUrl = '$origin/tag/${Uri.encodeComponent(firstToken)}';
+          break;
+        default:
+          task['phase'] = 'scanning_feed';
+          nextUrl = '$origin/';
+      }
+    }
+    final syntheticDisabled =
+        task['disableSyntheticRoutes'] == true ||
+        _smartStrategyCircuitOpen(task, 'synthetic_route');
+    if (round >= 2 && syntheticDisabled) {
+      final productive = (task['lastProductiveListUrl'] ?? '').toString();
+      nextUrl = productive.isNotEmpty ? productive : '$origin/';
+      task['phase'] = 'collecting_site_results';
+      task['activeDiscoveryStrategy'] = 'actual_scope_link';
+    } else if (searchCycle > 0) {
+      task['activeDiscoveryStrategy'] = 'synthetic_route';
+    } else if (keyword.isNotEmpty && round >= 2) {
+      task['activeDiscoveryStrategy'] = 'site_search';
+    } else {
+      task['activeDiscoveryStrategy'] = 'actual_scope_link';
+    }
+    if (searchCycle > 0 && !syntheticDisabled) {
+      final pageNumber = searchCycle + 1;
+      final mediaPath =
+          task['mediaType'] == MediaType.image ? 'images' : 'videos';
+      task['phase'] = 'scanning_feed';
+      if (keyword.isEmpty) {
+        nextUrl = switch (round) {
+          1 => '$origin/page/$pageNumber',
+          2 => '$origin/$mediaPath/page/$pageNumber',
+          3 => '$origin/latest/page/$pageNumber',
+          4 => '$origin/popular/page/$pageNumber',
+          5 =>
+            Uri.parse(
+              '$origin/',
+            ).replace(queryParameters: {'page': '$pageNumber'}).toString(),
+          _ =>
+            Uri.parse(
+              '$origin/',
+            ).replace(queryParameters: {'paged': '$pageNumber'}).toString(),
+        };
+      } else {
+        final encodedKeyword = Uri.encodeComponent(keyword);
+        nextUrl = switch (round) {
+          1 =>
+            Uri.parse(
+              '$origin/page/$pageNumber/',
+            ).replace(queryParameters: {'s': keyword}).toString(),
+          2 =>
+            Uri.parse('$origin/search')
+                .replace(queryParameters: {'q': keyword, 'page': '$pageNumber'})
+                .toString(),
+          3 =>
+            Uri.parse('$origin/')
+                .replace(
+                  queryParameters: {'s': keyword, 'paged': '$pageNumber'},
+                )
+                .toString(),
+          4 => '$origin/search/$encodedKeyword/page/$pageNumber',
+          5 =>
+            '$origin/tag/${Uri.encodeComponent(firstToken)}/page/$pageNumber',
+          _ =>
+            Uri.parse('$origin/')
+                .replace(
+                  queryParameters: {
+                    'q': keyword,
+                    'offset': '${(pageNumber - 1) * (task['target'] as int)}',
+                  },
+                )
+                .toString(),
+        };
+      }
+    }
+    final id = (task['discoveryTaskId'] ?? '').toString();
+    if (id.isNotEmpty) {
+      _updateDownloadTask(
+        id,
+        progressDetail:
+            '正在扩大站内查找范围 ${searchCycle > 0 ? '深层第 ${searchCycle + 1} 页 · ' : ''}$round/6 · 已保存 ${task['success']}/${task['target']}',
+      );
+    }
+    debugPrint('智能下载扩大站内搜索：$exhaustedReason，round=$round, url=$nextUrl');
+    if (cycleDelay == Duration.zero) {
+      _loadUrl(nextUrl);
+    } else {
+      Future<void>.delayed(cycleDelay, () {
+        if (identical(_smartDownloadTask, task)) _loadUrl(nextUrl);
+      });
+    }
+  }
+
+
+  void _continueSmartFeed91A00(
+    Map<String, dynamic> task, {
+    required bool madeProgress,
+  }) {
+    final wasPreheated = task.remove('nextMediaPreheated') == true;
+    if (wasPreheated) task['nextMediaStatus'] = '马上下载';
+    final scans = (task['feedScans'] as int) + 1;
+    final noNew = madeProgress ? 0 : (task['feedNoNew'] as int) + 1;
+    task['feedScans'] = scans;
+    task['feedNoNew'] = noNew;
+    final strictXFeedMode = task['strictXFeedMode'] == true;
+    final xImageMode = task['mediaType'] == MediaType.image;
+    final xKeywordJson = jsonEncode((task['keyword'] ?? '').toString().trim());
+    final xSearchResultsMode =
+        (task['strictXSearchUrl'] ?? '').toString().isNotEmpty;
+    final xVisitedStatusJson = jsonEncode(
+      (task['xVisitedStatusIds'] as Set<String>).toList(),
+    );
+    final maxScans = ((task['target'] as int) * (strictXFeedMode ? 30 : 12))
+        .clamp(strictXFeedMode ? 60 : 24, strictXFeedMode ? 600 : 240);
+    final noNewLimit = strictXFeedMode ? 24 : 8;
+    if (!strictXFeedMode && (noNew >= noNewLimit || scans >= maxScans)) {
+      task['phase'] = 'collecting_site_results';
+      Future<void>.delayed(
+        const Duration(milliseconds: 120),
+        () => unawaited(_advanceSmartDownload91A00(_currentUrl)),
+      );
+      return;
+    }
+    task['phase'] = 'scanning_feed';
+    task['lastFeedMoveAt'] = DateTime.now();
+    const directionForScript = 1;
+    final keywordEmpty = (task['keyword'] ?? '').toString().trim().isEmpty;
+    final preferSeedScope =
+        keywordEmpty &&
+        task['startedFromCurrentPage'] == true &&
+        ((task['discoveryRound'] as int?) ?? 0) == 0;
+    final controller = _controller;
+    if (controller == null) {
+      task['phase'] = 'opening_site';
+      return;
+    }
+    unawaited(
+      controller
+          .evaluateJavascript(
+            source: '''
+              (() => {
+                const direction = $directionForScript;
+                const strictXFeedMode = $strictXFeedMode;
+                const xImageMode = $xImageMode;
+                const xKeyword = $xKeywordJson.toLowerCase();
+                const xSearchResultsMode = $xSearchResultsMode;
+                const xVisitedStatusIds = new Set($xVisitedStatusJson);
+                const amount = Math.max(420, Math.floor(innerHeight * 0.82)) * direction;
+                if (strictXFeedMode) {
+                  const seed = document.querySelector('[data-smart-seed-media="1"]');
+                  const seedArticle = seed && seed.closest('article[data-testid="tweet"], article');
+                  if (seedArticle) seedArticle.setAttribute('data-app-smart-x-visited', '1');
+                  const validImage = img => {
+                    const r = img.getBoundingClientRect();
+                    const src = String(img.currentSrc || img.src || '').toLowerCase();
+                    return Math.max(img.naturalWidth || 0, r.width) >= 240 &&
+                      Math.max(img.naturalHeight || 0, r.height) >= 180 &&
+                      !/(profile_images|profile_banners|emoji|avatar)/.test(src);
+                  };
+                  const mediaInArticle = article => {
+                    if (xImageMode) {
+                      return Array.from(article.querySelectorAll('img')).find(validImage);
+                    }
+                    const video = article.querySelector('video');
+                    if (video) return video;
+                    // X's media-search grid renders videos as poster images. Use
+                    // the poster only as a precise card target, then resolve the
+                    // real video after opening its status page.
+                    const statusLink = article.matches?.('a[href*="/status/"]')
+                      ? article
+                      : article.querySelector('a[href*="/status/"]');
+                    if (!xSearchResultsMode || !statusLink) return null;
+                    return Array.from(article.querySelectorAll('img')).find(validImage);
+                  };
+                  const keywordTokens = xKeyword.split(' ')
+                    .map(value => value.trim()).filter(value => value.length >= 2);
+                  const keywordScore = article => {
+                    if (!xKeyword) return 1;
+                    const text = String(article.innerText || '').toLowerCase();
+                    if (text.includes(xKeyword)) return 1000 + xKeyword.length;
+                    const tokenScore = keywordTokens.reduce(
+                      (score, token) => score + (text.includes(token) ? 10 : 0), 0);
+                    // X's own media search already applies the keyword. Many
+                    // result cards contain only media and omit searchable text.
+                    return tokenScore > 0 ? tokenScore : (xSearchResultsMode ? 1 : 0);
+                  };
+                  const articleCandidates = Array.from(document.querySelectorAll(
+                    'article[data-testid="tweet"], article'
+                  ));
+                  if (xSearchResultsMode) {
+                    document.querySelectorAll('a[href*="/status/"]').forEach(link => {
+                      const card = link.closest(
+                        'article[data-testid="tweet"], article, [data-testid="cellInnerDiv"]'
+                      ) || link;
+                      if (!articleCandidates.includes(card)) articleCandidates.push(card);
+                    });
+                  }
+                  const articles = articleCandidates;
+                  const seedIndex = seedArticle ? articles.indexOf(seedArticle) : -1;
+                  const forwardArticles = seedIndex >= 0
+                    ? articles.slice(seedIndex + 1)
+                    : articles;
+                  const candidates = forwardArticles.filter(article =>
+                    article.getAttribute('data-app-smart-x-visited') !== '1' &&
+                    ![...(article.matches?.('a[href*="/status/"]') ? [article] : []),
+                      ...Array.from(article.querySelectorAll('a[href*="/status/"]'))].some(link => {
+                      const tail = String(link.href || '').split('/status/')[1] || '';
+                      const id = (tail.match(/^[0-9]+/) || [''])[0];
+                      return id && xVisitedStatusIds.has(id);
+                    }) &&
+                    mediaInArticle(article) && keywordScore(article) > 0);
+                  const nextArticle = candidates.sort((left, right) =>
+                    keywordScore(right) - keywordScore(left) ||
+                    left.getBoundingClientRect().top - right.getBoundingClientRect().top)[0];
+                  if (nextArticle) {
+                    nextArticle.setAttribute('data-app-smart-x-visited', '1');
+                    document.querySelectorAll(
+                      '[data-smart-seed-media], [data-smart-seed-scope], [data-app-smart-x-active]'
+                    )
+                      .forEach(el => {
+                        el.removeAttribute('data-smart-seed-media');
+                        el.removeAttribute('data-smart-seed-scope');
+                        el.removeAttribute('data-app-smart-x-active');
+                      });
+                    const nextMedia = mediaInArticle(nextArticle);
+                    nextMedia.setAttribute('data-smart-seed-media', '1');
+                    nextArticle.setAttribute('data-smart-seed-scope', '1');
+                    nextArticle.setAttribute('data-app-smart-x-active', '1');
+                    nextArticle.scrollIntoView({behavior:'auto', block:'center'});
+                    if (!xImageMode) {
+                      Array.from(document.querySelectorAll('video')).forEach(video => {
+                        if (video !== nextMedia) {
+                          try { video.pause(); } catch (_) {}
+                        }
+                      });
+                      try {
+                        nextMedia.muted = true;
+                        nextMedia.play().catch(() => {});
+                      } catch (_) {}
+                    }
+                    return 'next_x_post';
+                  }
+                  if (!xImageMode) {
+                    const videos = Array.from(document.querySelectorAll('video'))
+                      .filter(video => {
+                        const r = video.getBoundingClientRect();
+                        return r.width > 100 && r.height > 80;
+                      });
+                    const seedVideo = seed && seed.tagName === 'VIDEO' ? seed : null;
+                    const seedRect = seedVideo?.getBoundingClientRect();
+                    const nextVideo = videos
+                      .filter(video => video !== seedVideo)
+                      .sort((left, right) => {
+                        const lr = left.getBoundingClientRect();
+                        const rr = right.getBoundingClientRect();
+                        const base = seedRect
+                          ? seedRect.top + seedRect.height / 2
+                          : innerHeight / 2;
+                        const ld = lr.top + lr.height / 2 - base;
+                        const rd = rr.top + rr.height / 2 - base;
+                        const lf = ld > 20 ? 0 : 1;
+                        const rf = rd > 20 ? 0 : 1;
+                        return lf - rf || Math.abs(ld) - Math.abs(rd);
+                      })[0];
+                    if (nextVideo) {
+                      document.querySelectorAll(
+                        '[data-smart-seed-media], [data-smart-seed-scope], [data-app-smart-x-active]'
+                      ).forEach(el => {
+                        el.removeAttribute('data-smart-seed-media');
+                        el.removeAttribute('data-smart-seed-scope');
+                        el.removeAttribute('data-app-smart-x-active');
+                      });
+                      nextVideo.setAttribute('data-smart-seed-media', '1');
+                      const nextScope = nextVideo.closest(
+                        'article[data-testid="tweet"], article, [role="dialog"], [data-testid*="video"]'
+                      ) || nextVideo.parentElement;
+                      if (nextScope) {
+                        nextScope.setAttribute('data-smart-seed-scope', '1');
+                        nextScope.setAttribute('data-app-smart-x-active', '1');
+                      }
+                      nextVideo.scrollIntoView({behavior: 'auto', block: 'center'});
+                      videos.forEach(video => {
+                        if (video !== nextVideo) {
+                          try { video.pause(); } catch (_) {}
+                        }
+                      });
+                      try { nextVideo.muted = true; nextVideo.play().catch(() => {}); } catch (_) {}
+                      return 'next_x_video_node';
+                    }
+
+                    // X's immersive viewer often reuses one <video> element and
+                    // switches items through an inner scroll-snap container.
+                    let scroller = seedVideo?.parentElement || null;
+                    while (scroller && scroller !== document.body) {
+                      const style = getComputedStyle(scroller);
+                      if (scroller.scrollHeight > scroller.clientHeight + 80 &&
+                          /(auto|scroll)/.test(style.overflowY)) break;
+                      scroller = scroller.parentElement;
+                    }
+                    if (!scroller || scroller === document.body) {
+                      scroller = Array.from(document.querySelectorAll('div'))
+                        .filter(el => {
+                          const style = getComputedStyle(el);
+                          const r = el.getBoundingClientRect();
+                          return r.width > innerWidth * 0.6 && r.height > innerHeight * 0.5 &&
+                            el.scrollHeight > el.clientHeight + 80 &&
+                            /(auto|scroll)/.test(style.overflowY);
+                        })
+                        .sort((a, b) => b.clientHeight - a.clientHeight)[0] || null;
+                    }
+                    const move = Math.max(
+                      420,
+                      Math.floor((scroller?.clientHeight || innerHeight) * 0.9)
+                    );
+                    if (scroller) {
+                      scroller.scrollBy({top: move, left: 0, behavior: 'auto'});
+                      scroller.dispatchEvent(new WheelEvent(
+                        'wheel', {deltaY: move, bubbles: true, cancelable: true}
+                      ));
+                    }
+                    (seedVideo || document.body).dispatchEvent(new WheelEvent(
+                      'wheel', {deltaY: move, bubbles: true, cancelable: true}
+                    ));
+                    document.dispatchEvent(new KeyboardEvent(
+                      'keydown', {key: 'ArrowDown', code: 'ArrowDown', keyCode: 40, bubbles: true}
+                    ));
+                    document.dispatchEvent(new KeyboardEvent(
+                      'keydown', {key: 'PageDown', code: 'PageDown', keyCode: 34, bubbles: true}
+                    ));
+                    return 'advance_x_immersive';
+                  }
+                  const root = document.scrollingElement || document.documentElement;
+                  if (root.scrollTop + innerHeight >= root.scrollHeight - 32) {
+                    return 'x_page_end';
+                  }
+                  window.scrollBy({top: amount, left: 0, behavior: 'smooth'});
+                  return 'scan_more_x_posts';
+                }
+                const mediaSelector = xImageMode ? 'img' : 'video';
+                const scope = $preferSeedScope
+                  ? document.querySelector('[data-smart-seed-scope="1"]')
+                  : null;
+                const scopedMedia = scope
+                  ? Array.from(scope.querySelectorAll(mediaSelector))
+                      .filter(el => el.clientWidth > 100 && el.clientHeight > 80)
+                  : [];
+                const allMedia = (scopedMedia.length > 1
+                  ? scopedMedia
+                  : Array.from(document.querySelectorAll(mediaSelector)))
+                  .filter(el => el.clientWidth > 100 && el.clientHeight > 80);
+                const visibleMedia = allMedia.filter(el => {
+                  const r = el.getBoundingClientRect();
+                  return r.width > 100 && r.height > 80 && r.bottom > 0 && r.top < innerHeight;
+                });
+                const media = visibleMedia.sort((a, b) => {
+                  const ar = a.getBoundingClientRect();
+                  const br = b.getBoundingClientRect();
+                  return Math.abs(ar.top + ar.height / 2 - innerHeight / 2) -
+                    Math.abs(br.top + br.height / 2 - innerHeight / 2);
+                })[0];
+                const currentIndex = media ? allMedia.indexOf(media) : -1;
+                const nextMedia = currentIndex >= 0 ? allMedia[currentIndex + direction] : null;
+                if (nextMedia) {
+                  document.querySelectorAll('[data-smart-seed-media], [data-smart-seed-scope]')
+                    .forEach(el => {
+                      el.removeAttribute('data-smart-seed-media');
+                      el.removeAttribute('data-smart-seed-scope');
+                    });
+                  nextMedia.setAttribute('data-smart-seed-media', '1');
+                  const nextScope = nextMedia.closest(
+                    'article, figure, [class*="card"], [class*="item"], section'
+                  ) || nextMedia.parentElement;
+                  if (nextScope) nextScope.setAttribute('data-smart-seed-scope', '1');
+                  nextMedia.scrollIntoView({behavior:'smooth', block:'center'});
+                  return 'next_media';
+                }
+                const nextButton = Array.from(document.querySelectorAll(
+                  'button, [role="button"], a'
+                )).find(el => {
+                  const label = (el.getAttribute('aria-label') || el.title || el.innerText || '').toLowerCase();
+                  const nextLabel = String.fromCharCode(19979, 19968);
+                  return el.offsetParent !== null &&
+                    (label.includes('next') || label.includes('down') || label.includes(nextLabel));
+                });
+                if (nextButton) {
+                  nextButton.click();
+                  return 'next_button';
+                }
+                const root = document.scrollingElement || document.documentElement;
+                if (root.scrollTop + innerHeight >= root.scrollHeight - 24) {
+                  return 'page_end';
+                }
+                let scroller = media && media.parentElement;
+                while (scroller && scroller !== document.body) {
+                  const style = getComputedStyle(scroller);
+                  if (scroller.scrollHeight > scroller.clientHeight + 100 &&
+                      /(auto|scroll)/.test(style.overflowY)) break;
+                  scroller = scroller.parentElement;
+                }
+                if (scroller && scroller !== document.body) {
+                  scroller.scrollBy({top: amount, left: 0, behavior: 'smooth'});
+                  scroller.dispatchEvent(new Event('scroll', {bubbles:true}));
+                } else {
+                  window.scrollBy({top: amount, left: 0, behavior: 'smooth'});
+                  document.scrollingElement?.dispatchEvent(new Event('scroll', {bubbles:true}));
+                }
+                const target = media || document.activeElement || document.body;
+                target.dispatchEvent(new WheelEvent('wheel', {deltaY: amount, bubbles:true, cancelable:true}));
+                const key = direction > 0 ? 'PageDown' : 'PageUp';
+                const keyCode = direction > 0 ? 34 : 33;
+                document.dispatchEvent(new KeyboardEvent('keydown', {key, code:key, keyCode, bubbles:true}));
+                return true;
+              })()
+            ''',
+          )
+          .timeout(const Duration(seconds: 5))
+          .then((result) async {
+            if (!identical(_smartDownloadTask, task)) return;
+            final action = result?.toString() ?? '';
+            if (action == 'advance_x_immersive' ||
+                action == 'next_x_video_node') {
+              await Future<void>.delayed(const Duration(milliseconds: 1100));
+              if (!identical(_smartDownloadTask, task)) return;
+              await _anchorSmartSeedForType(task['mediaType'] as MediaType);
+              await Future<void>.delayed(const Duration(milliseconds: 450));
+              if (identical(_smartDownloadTask, task)) {
+                await _advanceSmartDownload91A00(_currentUrl);
+              }
+              return;
+            }
+            if (action == 'next_x_post' &&
+                strictXFeedMode &&
+                task['mediaType'] == MediaType.video) {
+              await Future<void>.delayed(const Duration(milliseconds: 280));
+              if (!identical(_smartDownloadTask, task)) return;
+              if (await _openActiveXSmartCard(task)) return;
+            }
+            if (result?.toString() == 'x_page_end') {
+              await _broadenXSmartSearch(task);
+              return;
+            }
+            if (result?.toString() == 'page_end') {
+              task['phase'] = 'collecting_site_results';
+              task['feedNoNew'] = noNewLimit;
+              await _advanceSmartDownload91A00(_currentUrl);
+              return;
+            }
+            await Future<void>.delayed(
+              Duration(
+                milliseconds:
+                    strictXFeedMode ? 1500 : (wasPreheated ? 350 : 800),
+              ),
+            );
+            await _advanceSmartDownload91A00(_currentUrl);
+          })
+          .catchError((Object error) {
+            debugPrint('智能下载页面推进超时（自动继续）: $error');
+            Future<void>.delayed(
+              const Duration(milliseconds: 120),
+              () => unawaited(_advanceSmartDownload91A00(_currentUrl)),
+            );
+          }),
+    );
+  }
+
+
 }

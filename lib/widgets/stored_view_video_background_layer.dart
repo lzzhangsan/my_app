@@ -125,7 +125,15 @@ class _StoredViewVideoBackgroundLayerState
       }
     } else {
       if (!c.value.isPlaying) {
-        c.play();
+        if (c.value.position <= const Duration(milliseconds: 1)) {
+          final dur = c.value.duration;
+          final kickMs = dur.inMilliseconds > 4000 ? 1000 : 1;
+          c.seekTo(Duration(milliseconds: kickMs)).whenComplete(() {
+            if (mounted && _controller == c) c.play();
+          });
+        } else {
+          c.play();
+        }
       }
     }
   }

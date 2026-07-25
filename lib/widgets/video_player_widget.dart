@@ -182,7 +182,6 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
           );
 
           setState(() {});
-          // HLS remux 偶发「卡在第一帧，拖一下才动」：先轻量 seek 再播，踢开 demuxer。
           if (widget.initialSeekPosition == null ||
               widget.initialSeekPosition! <= Duration.zero) {
             try {
@@ -231,7 +230,8 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     );
   }
 
-  /// 部分 HLS remux 文件会卡在首帧直到拖动；若播放中位置长期为 0，再踢一次。
+  /// Legacy MediaMuxer remux MP4s often stay at position 0; near-zero seek cannot
+  /// repair crushed B-frame PTS. New HLS downloads keep `.ts` instead.
   Future<void> _unstickFrozenFirstFrame() async {
     await Future<void>.delayed(const Duration(milliseconds: 450));
     if (!mounted || _hasError || _skipResumeShort) return;
@@ -239,7 +239,8 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     if (!v.isInitialized || v.duration <= const Duration(seconds: 1)) return;
     if (v.position > const Duration(milliseconds: 80)) return;
     try {
-      await _controller.seekTo(const Duration(milliseconds: 40));
+      final kickMs = v.duration.inMilliseconds > 4000 ? 1000 : 200;
+      await _controller.seekTo(Duration(milliseconds: kickMs));
       if (!mounted) return;
       await _controller.play();
     } catch (_) {}
