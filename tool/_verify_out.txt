@@ -1,0 +1,70 @@
+﻿{
+  "center": {
+    "tag": "IMG",
+    "id": "",
+    "src": "https://cdni.pornpics.com/460/3/26/79067761/79067761_009_7b05.jpg"
+  },
+  "chain": [
+    {
+      "depth": 0,
+      "tag": "IMGentered ll-loaded"
+    },
+    {
+      "depth": 1,
+      "tag": "Arel-link"
+    },
+    {
+      "depth": 2,
+      "tag": "LIthumbwook in"
+    },
+    {
+      "depth": 3,
+      "tag": "ULwookmark-initialised"
+    },
+    {
+      "depth": 4,
+      "tag": "DIV"
+    },
+    {
+      "depth": 5,
+      "tag": "DIV"
+    },
+    {
+      "depth": 6,
+      "tag": "DIV"
+    },
+    {
+      "depth": 7,
+      "tag": "BODY"
+    }
+  ],
+  "d0": {
+    "depth": 0,
+    "scope": "IMGentered ll-loaded",
+    "groups": 1,
+    "items": [],
+    "videoCount": 0
+  },
+  "d3": {
+    "depth": 3,
+    "scope": "ULwookmark-initialised",
+    "groups": 22,
+    "items": [],
+    "videoCount": 0
+  },
+  "d6": {
+    "depth": 6,
+    "scope": "DIV",
+    "groups": 22,
+    "items": [],
+    "videoCount": 0
+  },
+  "d8": {
+    "depth": 8,
+    "scope": "HTMLmodern-browser android mobile portrait",
+    "groups": 23,
+    "items": [],
+    "videoCount": 0
+  },
+  "upgradeSample": "https://cdn.xfree.com/xfree-prod/f/0/3/f03da92b-010d-44fc-b82b-fb05dfb7b34d/full.mp4"
+}

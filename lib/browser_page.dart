@@ -39,6 +39,10 @@ import 'media_manager_page.dart';
 import 'media_preview_page.dart';
 import 'directory_page.dart';
 import 'document_editor_page.dart';
+import 'smart_download/smart_action_parts.dart';
+import 'smart_download/smart_action_editor_sheet.dart';
+import 'smart_download/smart_action_js.dart';
+import 'smart_download/smart_scope_batch.dart';
 import 'widgets/safe_modal_sheet_body.dart';
 import 'services/logger.dart';
 import 'services/network_service.dart';
@@ -1264,6 +1268,7 @@ class _BrowserPageState extends State<BrowserPage>
   bool _smartDownloadAdvancing = false;
   Offset? _smartOperationPoint;
   String _smartOperationLabel = '';
+  bool _smartOperationShowFinger = true;
   final List<String> _smartKeywordHistory = <String>[];
   static const String _kSmartKeywordHistoryKey =
       'browser_smart_download_keyword_history_v1';
@@ -1575,10 +1580,13 @@ class _BrowserPageState extends State<BrowserPage>
       'telemetry',
       'prebid',
       'header-bidding',
-      'banner',
+      'banner/',
+      '/banner',
       'sponsor',
       'promo',
       'advertising',
+      'hqmediago',
+      'czavbanner',
       'vast',
       'vpaid',
       'mraid',
@@ -4117,6 +4125,15 @@ class _BrowserPageState extends State<BrowserPage>
       }, true);
 
       document.addEventListener('touchmove', function(e) {
+        // 智能编排长按期间会带 data-app-smart-gesture；不要因轻微位移取消下载。
+        try {
+          const smart =
+            (pressedElement && pressedElement.getAttribute &&
+              pressedElement.getAttribute('data-app-smart-gesture') === '1') ||
+            (e.target && e.target.closest &&
+              e.target.closest('[data-app-smart-gesture="1"]'));
+          if (smart) return;
+        } catch (_) {}
         clearTimeout(pressTimer);
         removeFeedbackElement();
         pressedElement = null;
@@ -5209,6 +5226,64 @@ class _BrowserPageState extends State<BrowserPage>
         updateFeedbackStatus('正在稳健保存…', null);
         e.preventDefault();
       }
+
+      // 供动作编排直接调用：不依赖合成 touch 事件链，避免 touchmove 取消长按。
+      window.__appTriggerSmartLongPress = function(clientX, clientY) {
+        try {
+          const x = Number(clientX);
+          const y = Number(clientY);
+          const cx = Number.isFinite(x) ? x : ((window.innerWidth || 360) / 2);
+          const cy = Number.isFinite(y) ? y : ((window.innerHeight || 640) / 2);
+          let media = null;
+          const marked = document.querySelector('[data-app-smart-current="1"]');
+          if (marked && (marked.tagName === 'VIDEO' || marked.tagName === 'IMG')) {
+            media = marked;
+          }
+          if (!media) {
+            const el = document.elementFromPoint(cx, cy);
+            media = (el && el.closest && el.closest('video, img')) || null;
+          }
+          if (!media) {
+            media = Array.from(document.querySelectorAll('video, img')).find(node => {
+              const r = node.getBoundingClientRect();
+              return cx >= r.left && cx <= r.right && cy >= r.top && cy <= r.bottom &&
+                r.width >= 90 && r.height >= 70;
+            }) || null;
+          }
+          if (!media) {
+            const rows = Array.from(document.querySelectorAll('video, img')).filter(el => {
+              const r = el.getBoundingClientRect();
+              return r.width >= 90 && r.height >= 70 && r.bottom > 0 && r.top < innerHeight;
+            }).map(el => {
+              const r = el.getBoundingClientRect();
+              const mx = r.left + r.width / 2;
+              const my = r.top + r.height / 2;
+              return {el, d: Math.abs(my - cy) + Math.abs(mx - cx) * 0.25};
+            }).sort((a, b) => a.d - b.d);
+            media = rows[0] && rows[0].el;
+          }
+          if (!media) return {ok: false, reason: 'no_media'};
+          media.setAttribute('data-app-smart-gesture', '1');
+          media.setAttribute('data-app-smart-attempted', '1');
+          media.setAttribute('data-app-smart-current', '1');
+          pressedElement = media;
+          try { createFeedbackElement(cx, cy); } catch (_) {}
+          const fakeEvent = {
+            preventDefault: function() {},
+            stopPropagation: function() {},
+            target: media,
+            touches: [{ clientX: cx, clientY: cy }],
+            changedTouches: [{ clientX: cx, clientY: cy }]
+          };
+          handleMediaDownload(media, fakeEvent);
+          setTimeout(function() {
+            try { media.removeAttribute('data-app-smart-gesture'); } catch (_) {}
+          }, 2800);
+          return {ok: true, tag: media.tagName || ''};
+        } catch (err) {
+          return {ok: false, reason: String(err && err.message || err || 'error')};
+        }
+      };
 
       function tryCanvasCaptureFallback() {
         const target = window._lastMediaTargetForFallback;
@@ -7012,6 +7087,50 @@ class _BrowserPageState extends State<BrowserPage>
     }());
   }
 
+  Future<void> _onBookmarkSmartLongPress() async {
+    if (_smartDownloadTask != null) {
+      await _promptStopOrResetSmartDownload();
+      return;
+    }
+    await _showCurrentMediaSmartDownload();
+  }
+
+  /// 智能下载进行中：停止，或停止后重新打开设置。
+  Future<void> _promptStopOrResetSmartDownload() async {
+    if (!mounted || _smartDownloadTask == null) return;
+    final choice = await showDialog<String>(
+      context: context,
+      builder:
+          (ctx) => AlertDialog(
+            title: const Text('智能下载进行中'),
+            content: const Text(
+              '可退出卡住的任务，或停止后重新设置数量/大小/动作编排。',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, 'cancel'),
+                child: const Text('继续运行'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, 'stop'),
+                child: const Text('停止退出'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(ctx, 'reset'),
+                child: const Text('停止并重设'),
+              ),
+            ],
+          ),
+    );
+    if (!mounted) return;
+    if (choice == 'stop') {
+      await _finishSmartDownload('用户已停止任务');
+    } else if (choice == 'reset') {
+      await _finishSmartDownload('用户已停止任务');
+      if (mounted) await _showCurrentMediaSmartDownload();
+    }
+  }
+
   Future<void> _showCurrentMediaSmartDownload() async {
     if (_showHomePage || _controller == null) return;
     var mediaType = MediaType.video;
@@ -7258,6 +7377,7 @@ class _BrowserPageState extends State<BrowserPage>
   void _showSmartOperation(
     String label, {
     Offset point = const Offset(0.5, 0.5),
+    bool showFinger = true,
   }) {
     if (!mounted || _smartDownloadTask == null) return;
     final safePoint = Offset(
@@ -7267,6 +7387,7 @@ class _BrowserPageState extends State<BrowserPage>
     setState(() {
       _smartOperationPoint = safePoint;
       _smartOperationLabel = label;
+      _smartOperationShowFinger = showFinger;
     });
     _smartDownloadTask!['visibleOperation'] = label;
   }
@@ -9855,8 +9976,18 @@ class _BrowserPageState extends State<BrowserPage>
     final task = _smartDownloadTask;
     if (task == null) return;
     final demoLearning = task['demoPhase'] == 'demo';
+    final actionRecipeMode = task['mode'] == 'action_recipe';
     // 示范学习期允许手动长按回调；自动期仍要求 gestureDownloadPending。
-    if (!demoLearning && task['gestureDownloadPending'] != true) return;
+    if (!demoLearning &&
+        !actionRecipeMode &&
+        task['gestureDownloadPending'] != true) {
+      return;
+    }
+    if (!demoLearning &&
+        actionRecipeMode &&
+        task['gestureDownloadPending'] != true) {
+      return;
+    }
     task['gestureDownloadPending'] = false;
     task['xInlineActivationPending'] = false;
     task['xInlineReadyToLongPress'] = false;
@@ -9871,16 +10002,18 @@ class _BrowserPageState extends State<BrowserPage>
           'already_downloading',
         }.contains(failureType);
     final activeKey = (task['gestureActiveKey'] ?? '').toString();
-    final actionFailures = task['gestureActionFailures'] as Map<String, int>;
+    final actionFailures =
+        (task['gestureActionFailures'] as Map<String, int>?) ??
+        <String, int>{};
+    task['gestureActionFailures'] = actionFailures;
     // 重复媒体视为「已处理」，不计入连续失败，避免 X 沉浸模式遇重复后卡死。
     if (success || skippedDuplicate) {
       task['gestureConsecutiveFailures'] = 0;
       task['gestureEngineFailures'] = 0;
-      if (success) {
+      if (success && !actionRecipeMode) {
         final siteProfile = (task['siteProfile'] ?? '').toString();
         String acq;
         if (demoLearning) {
-          // 示范期记录用户真实手势通道，便于举一反三（详情/原地）。
           acq =
               task['gestureDetailMode'] == true
                   ? 'detail_longpress'
@@ -9904,7 +10037,7 @@ class _BrowserPageState extends State<BrowserPage>
         _noteSmartStrategyProgress(task, success: true);
         task['lastSuccessAcquisition'] = acq;
       }
-    } else {
+    } else if (!actionRecipeMode) {
       task['gestureConsecutiveFailures'] =
           ((task['gestureConsecutiveFailures'] as int?) ?? 0) + 1;
       if (activeKey.isNotEmpty) {
@@ -9914,10 +10047,13 @@ class _BrowserPageState extends State<BrowserPage>
     }
     task['gestureActiveKey'] = '';
     if (success) {
-      task['success'] = (task['success'] as int) + 1;
+      task['success'] = ((task['success'] as int?) ?? 0) + 1;
       if ((task['lastSuccessAcquisition'] ?? '').toString().isEmpty) {
         task['lastSuccessAcquisition'] = 'longpress_inplace';
       }
+      _showSmartOperation(
+        '下载成功 ${task['success']}/${task['target']}',
+      );
     } else if (skippedDuplicate) {
       if (failureType != 'already_in_library') {
         task['duplicateSkipped'] =
@@ -9926,7 +10062,18 @@ class _BrowserPageState extends State<BrowserPage>
       task['matchStage'] = '发现重复媒体 · 已自动跳过并切换下一项';
       _showSmartOperation('当前媒体已经处理过，自动跳过');
     } else {
-      task['failed'] = (task['failed'] as int) + 1;
+      task['failed'] = ((task['failed'] as int?) ?? 0) + 1;
+    }
+    final pendingCompleter = task.remove('actionDownloadCompleter');
+    if (pendingCompleter is Completer<bool> && !pendingCompleter.isCompleted) {
+      pendingCompleter.complete(success);
+    }
+    if (actionRecipeMode) {
+      // 动作套路由序列循环推进，不进入旧 FSM。
+      if (!success && failureType == 'library_save_failed') {
+        await _finishSmartDownload('写入媒体库失败，已停止任务；请检查存储空间和数据库状态');
+      }
+      return;
     }
     _updateSmartDiscoveryProgress(task, 'gesture_download_completed');
     if (!success && failureType == 'library_save_failed') {
@@ -10185,486 +10332,1809 @@ class _BrowserPageState extends State<BrowserPage>
     double initialVideoDuration = 0,
   }) async {
     if (_smartDownloadTask != null) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('已有智能下载任务正在执行')));
+      await _promptStopOrResetSmartDownload();
       return;
     }
-    final keywordController = TextEditingController(text: initialKeyword);
-    final countController = TextEditingController();
-    final demoCountController = TextEditingController(text: '2');
+    final countController = TextEditingController(text: '5');
     final minVideoSizeController = TextEditingController();
     final maxVideoSizeController = TextEditingController();
-    MediaType? selectedMediaType;
-    var historyExpanded = false;
-    var teachByDemo = false;
-    await _loadSmartDemoRecipes();
     final dialogRawUrl = (website['url'] ?? '').toString().trim();
     final dialogNormalized =
         dialogRawUrl.startsWith('http://') || dialogRawUrl.startsWith('https://')
             ? dialogRawUrl
             : (dialogRawUrl.isEmpty ? _currentUrl : 'https://$dialogRawUrl');
-    final dialogHost =
-        _normalizeSmartHost(Uri.tryParse(dialogNormalized)?.host ?? '');
-    final dialogPageType = _smartDemoPageType(
-      url: startFromCurrentPage ? _currentUrl : dialogNormalized,
-      siteProfile: _smartSiteProfile(dialogHost),
-      keyword: initialKeyword,
-      smartRunMode: initialKeyword.trim().isEmpty ? 'nearby' : 'list',
+    final dialogHost = _normalizeSmartHost(
+      Uri.tryParse(
+            startFromCurrentPage ? _currentUrl : dialogNormalized,
+          )?.host ??
+          '',
     );
-    // null=不选用已保存策略（仍会用内置成功经验：X/91=原智能，其他站=直链优先）。
-    // 同站有记忆时全局自动勾选（含 X/91）。
-    String? selectedStrategyKey = _defaultSameHostStrategyKey(
-      host: dialogHost,
-      pageType: dialogPageType,
+    final isXSite = _smartSiteProfile(dialogHost) == 'x';
+    // 从当前页启动：默认「本页同层批量」；否则保留原逻辑。
+    var runMode =
+        startFromCurrentPage ? 'scope' : (isXSite ? 'legacy' : 'action');
+    var scopeDepth = 0;
+    var scopeLevels = <Map<String, dynamic>>[];
+    var scopeLevelsLoading = startFromCurrentPage;
+    var scopeLevelsError = '';
+    var scopeLevelsRequested = false;
+    var scopeSummary = '';
+    var scopeTotalLevels = 0;
+    SmartActionRecipe? selectedRecipe =
+        await SmartActionRecipeStore.loadLastForHost(dialogHost);
+    var hostRecipes = List<SmartActionRecipe>.from(
+      await SmartActionRecipeStore.loadForHost(dialogHost),
     );
-    var strategyManualPick = false;
-    final confirmed = await showDialog<bool>(
+
+    Future<void> refreshScopeLevels(void Function(void Function()) setDialogState) async {
+      if (_controller == null) {
+        setDialogState(() {
+          scopeLevelsLoading = false;
+          scopeLevelsError = '页面未就绪';
+        });
+        return;
+      }
+      setDialogState(() {
+        scopeLevelsLoading = true;
+        scopeLevelsError = '';
+      });
+      try {
+        final raw = await _controller!.evaluateJavascript(
+          source: SmartScopeBatchJs.listLevels(
+            imagesOnly: false,
+            videosOnly: false,
+          ),
+        );
+        final map = _coerceJsMap(raw);
+        final levelsRaw = map?['levels'];
+        final levels = <Map<String, dynamic>>[];
+        if (levelsRaw is List) {
+          for (final row in levelsRaw) {
+            if (row is Map) {
+              levels.add(Map<String, dynamic>.from(row));
+            }
+          }
+        }
+        final def = (map?['defaultDepth'] as num?)?.toInt() ?? 0;
+        final totalLv =
+            (map?['totalLevels'] as num?)?.toInt() ?? levels.length;
+        final summary = (map?['summary'] ?? '').toString();
+        if (!mounted) return;
+        setDialogState(() {
+          scopeLevels = levels;
+          scopeTotalLevels = totalLv;
+          scopeSummary = summary.isNotEmpty
+              ? summary
+              : (totalLv > 0
+                  ? '共 $totalLv 层（最外 L1 → 最内 L$totalLv）'
+                  : '');
+          Map<String, dynamic>? recommended;
+          for (final l in levels) {
+            if (l['recommend'] == true) {
+              recommended = l;
+              break;
+            }
+          }
+          final pickDepth = recommended != null
+              ? ((recommended['depth'] as num?)?.toInt() ?? def)
+              : def;
+          scopeDepth =
+              levels.any((l) => (l['depth'] as num?)?.toInt() == pickDepth)
+                  ? pickDepth
+                  : (levels.isNotEmpty
+                      ? ((levels.firstWhere(
+                              (l) => (l['total'] as num?)?.toInt() != 0,
+                              orElse: () => levels.first,
+                            )['depth'] as num?)
+                              ?.toInt() ??
+                          0)
+                      : 0);
+          scopeLevelsLoading = false;
+          if (levels.isEmpty) {
+            scopeLevelsError = (map?['reason'] ?? '未找到可用媒体').toString();
+          }
+        });
+      } catch (e) {
+        if (!mounted) return;
+        setDialogState(() {
+          scopeLevelsLoading = false;
+          scopeLevelsError = '扫描失败：$e';
+        });
+      }
+    }
+
+    final confirmed = await showDialog<String>(
       context: context,
       builder:
           (dialogContext) => StatefulBuilder(
-            builder:
-                (context, setDialogState) => AlertDialog(
-                  title: Text(
-                    startFromCurrentPage
-                        ? '智能下载'
-                        : '智能下载 · ${website['name'] ?? '网站'}',
-                  ),
-                  content: SingleChildScrollView(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        TextField(
-                          controller: keywordController,
-                          autofocus: true,
-                          textInputAction: TextInputAction.next,
-                          decoration: InputDecoration(
-                            labelText: '下载关键词',
-                            hintText:
-                                '可留空：模式A从屏幕中心开始依次下载；填写后按列表顺序（模式B）',
-                            suffixIcon:
-                                _smartKeywordHistory.isEmpty
-                                    ? null
-                                    : IconButton(
-                                      tooltip:
-                                          historyExpanded
-                                              ? '收起历史关键词'
-                                              : '展开历史关键词',
-                                      onPressed:
-                                          () => setDialogState(
-                                            () =>
-                                                historyExpanded =
-                                                    !historyExpanded,
-                                          ),
-                                      icon: AnimatedRotation(
-                                        turns: historyExpanded ? 0.25 : 0,
-                                        duration: const Duration(
-                                          milliseconds: 160,
-                                        ),
-                                        child: const Icon(Icons.arrow_right),
-                                      ),
-                                    ),
-                          ),
+            builder: (context, setDialogState) {
+              if (startFromCurrentPage && !scopeLevelsRequested) {
+                scopeLevelsRequested = true;
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (dialogContext.mounted) {
+                    unawaited(refreshScopeLevels(setDialogState));
+                  }
+                });
+              }
+              Future<void> openEditor({SmartActionRecipe? seed}) async {
+                final edited = await showSmartActionEditor(
+                  context: dialogContext,
+                  host: dialogHost.isEmpty ? 'unknown' : dialogHost,
+                  initial:
+                      seed ??
+                      selectedRecipe ??
+                      SmartActionRecipe.feedTemplate(dialogHost),
+                );
+                if (edited == null) return;
+                await SmartActionRecipeStore.save(edited);
+                final refreshed = List<SmartActionRecipe>.from(
+                  await SmartActionRecipeStore.loadForHost(dialogHost),
+                );
+                if (!dialogContext.mounted) return;
+                setDialogState(() {
+                  selectedRecipe = edited;
+                  hostRecipes = refreshed;
+                  runMode = 'action';
+                });
+              }
+
+              return AlertDialog(
+                title: Text(
+                  startFromCurrentPage
+                      ? '智能下载'
+                      : '智能下载 · ${website['name'] ?? '网站'}',
+                ),
+                content: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text(
+                        startFromCurrentPage
+                            ? '推荐：本页同层批量 —— 先看清整页有几层、每层图/视频分布，再选一层批量下载（视频优先于海报，去广告，不滑动）。'
+                            : (isXSite
+                                ? 'X 平台：优先使用旧版自动；也可改用动作编排或本页同层。'
+                                : '可使用动作编排，或打开页面后用本页同层批量。'),
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.black87,
                         ),
-                        if (historyExpanded &&
-                            _smartKeywordHistory.isNotEmpty) ...[
-                          const SizedBox(height: 10),
-                          const Text(
-                            '历史关键词（点击使用，删除错误词）',
-                            style: TextStyle(fontSize: 12),
+                      ),
+                      const SizedBox(height: 14),
+                      const Text(
+                        '1. 数量',
+                        style: TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                      const SizedBox(height: 6),
+                      TextField(
+                        controller: countController,
+                        autofocus: true,
+                        keyboardType: TextInputType.number,
+                        inputFormatters: [
+                          FilteringTextInputFormatter.digitsOnly,
+                        ],
+                        decoration: const InputDecoration(
+                          labelText: '下载数量',
+                          hintText: '默认 5',
+                          helperText: '1～100；留空按 5',
+                          border: OutlineInputBorder(),
+                          isDense: true,
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      const Text(
+                        '2. 大小区间',
+                        style: TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                      const SizedBox(height: 6),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: minVideoSizeController,
+                              keyboardType: TextInputType.number,
+                              inputFormatters: [
+                                FilteringTextInputFormatter.digitsOnly,
+                              ],
+                              decoration: const InputDecoration(
+                                labelText: '最小（MB）',
+                                hintText: '不限',
+                                border: OutlineInputBorder(),
+                                isDense: true,
+                              ),
+                            ),
                           ),
-                          const SizedBox(height: 4),
-                          Wrap(
-                            spacing: 6,
-                            runSpacing: 2,
-                            children:
-                                List<String>.from(_smartKeywordHistory)
-                                    .map(
-                                      (value) => InputChip(
-                                        label: ConstrainedBox(
-                                          constraints: const BoxConstraints(
-                                            maxWidth: 180,
-                                          ),
-                                          child: Text(
-                                            value,
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                        ),
-                                        onPressed:
-                                            () =>
-                                                keywordController.text = value,
-                                        onDeleted: () async {
-                                          await _removeSmartKeyword(value);
-                                          if (dialogContext.mounted) {
-                                            setDialogState(() {});
-                                          }
-                                        },
-                                      ),
-                                    )
-                                    .toList(),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: TextField(
+                              controller: maxVideoSizeController,
+                              keyboardType: TextInputType.number,
+                              inputFormatters: [
+                                FilteringTextInputFormatter.digitsOnly,
+                              ],
+                              decoration: const InputDecoration(
+                                labelText: '最大（MB）',
+                                hintText: '不限',
+                                border: OutlineInputBorder(),
+                                isDense: true,
+                              ),
+                            ),
                           ),
                         ],
-                        const SizedBox(height: 16),
-                        const Text(
-                          '下载媒体类型（可不选）',
-                          style: TextStyle(fontWeight: FontWeight.w600),
-                        ),
-                        const SizedBox(height: 8),
-                        SegmentedButton<MediaType>(
-                          segments: const [
-                            ButtonSegment(
-                              value: MediaType.image,
-                              icon: Icon(Icons.image_outlined),
-                              label: Text('图片'),
+                      ),
+                      const SizedBox(height: 4),
+                      const Text(
+                        '两项留空时，若从当前视频启动，将按约 50%～150% 自动估算；否则不限制。',
+                        style: TextStyle(fontSize: 11, color: Colors.grey),
+                      ),
+                      const SizedBox(height: 16),
+                      const Text(
+                        '3. 运行方式',
+                        style: TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                      const SizedBox(height: 8),
+                      SegmentedButton<String>(
+                        segments: [
+                          const ButtonSegment(
+                            value: 'scope',
+                            label: Text('本页同层'),
+                            icon: Icon(Icons.grid_view),
+                          ),
+                          const ButtonSegment(
+                            value: 'action',
+                            label: Text('动作编排'),
+                            icon: Icon(Icons.swipe),
+                          ),
+                          if (isXSite)
+                            const ButtonSegment(
+                              value: 'legacy',
+                              label: Text('旧版自动'),
+                              icon: Icon(Icons.auto_awesome),
                             ),
-                            ButtonSegment(
-                              value: MediaType.video,
-                              icon: Icon(Icons.videocam_outlined),
-                              label: Text('视频'),
-                            ),
-                          ],
-                          emptySelectionAllowed: true,
-                          selected:
-                              selectedMediaType == null
-                                  ? const <MediaType>{}
-                                  : <MediaType>{selectedMediaType!},
-                          onSelectionChanged:
-                              (values) => setDialogState(
-                                () =>
-                                    selectedMediaType =
-                                        values.isEmpty ? null : values.first,
+                        ],
+                        selected: <String>{runMode},
+                        onSelectionChanged: (values) {
+                          if (values.isEmpty) return;
+                          setDialogState(() => runMode = values.first);
+                          if (values.first == 'scope' &&
+                              scopeLevels.isEmpty &&
+                              !scopeLevelsLoading) {
+                            unawaited(refreshScopeLevels(setDialogState));
+                          }
+                        },
+                      ),
+                      if (runMode == 'scope') ...[
+                        const SizedBox(height: 10),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                scopeTotalLevels > 0
+                                    ? '层级结构 · 共 $scopeTotalLevels 层'
+                                    : '层级结构（最外 → 最内）',
+                                style: const TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600,
+                                ),
                               ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          selectedMediaType == null
-                              ? '未选择：图片和视频均可混合下载（模式A从中心起；模式B按列表）'
-                              : '仅下载${selectedMediaType == MediaType.image ? '图片' : '视频'}',
-                          style: const TextStyle(
-                            fontSize: 11,
-                            color: Colors.grey,
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        TextField(
-                          controller: countController,
-                          keyboardType: TextInputType.number,
-                          inputFormatters: [
-                            FilteringTextInputFormatter.digitsOnly,
-                          ],
-                          decoration: const InputDecoration(
-                            labelText: '下载数量',
-                            hintText: '默认 5 个',
-                            helperText: '最少 1 个，最多 100 个；留空默认 5 个',
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        const Text(
-                          '成功经验（同站自动优先；其他站需手动点选）',
-                          style: TextStyle(fontWeight: FontWeight.w600),
-                        ),
-                        const SizedBox(height: 6),
-                        if (_smartDemoRecipes.isEmpty)
-                          const Text(
-                            '暂无已保存经验。可开启下方「开始前先示范教学」主动教应用；或先自动尝试，穷尽后再示范。示范经验享有最高优先级。',
-                            style: TextStyle(fontSize: 12, color: Colors.black54),
-                          )
-                        else ...[
-                          Align(
-                            alignment: Alignment.centerLeft,
-                            child: TextButton(
+                            ),
+                            TextButton(
                               onPressed:
-                                  selectedStrategyKey == null
+                                  scopeLevelsLoading
                                       ? null
-                                      : () => setDialogState(() {
-                                        selectedStrategyKey = null;
-                                        strategyManualPick = false;
-                                      }),
-                              child: const Text('不选用策略'),
-                            ),
-                          ),
-                          ..._sortedSmartStrategies(preferHost: dialogHost).map((
-                            entry,
-                          ) {
-                            final key = entry.key;
-                            final recipe = entry.value;
-                            _ensureSmartStrategyName(recipe);
-                            final host =
-                                _normalizeSmartHost(
-                                  (recipe['host'] ?? '').toString(),
-                                );
-                            final sameHost =
-                                dialogHost.isNotEmpty && host == dialogHost;
-                            final selected = selectedStrategyKey == key;
-                            final successes =
-                                (recipe['successes'] as int?) ?? 0;
-                            final taught =
-                                recipe['source'] == 'user_demo' ||
-                                recipe['demoTaught'] == true;
-                            final subtitle =
-                                sameHost
-                                    ? (taught
-                                        ? '本站 · 示范教学（最高优先）· 成功 $successes 次'
-                                        : '本站 · 成功 $successes 次')
-                                    : '其他站 · 需手动选用 · 成功 $successes 次';
-                            return Card(
-                              margin: const EdgeInsets.only(bottom: 6),
-                              color:
-                                  selected
-                                      ? Colors.green.withValues(alpha: 0.12)
-                                      : null,
-                              child: ListTile(
-                                dense: true,
-                                selected: selected,
-                                leading: Icon(
-                                  selected
-                                      ? Icons.check_circle
-                                      : Icons.touch_app_outlined,
-                                  color:
-                                      selected ? Colors.green : Colors.black45,
-                                ),
-                                title: Text(
-                                  (recipe['name'] ?? key).toString(),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                subtitle: Text(
-                                  subtitle,
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    color:
-                                        sameHost
-                                            ? Colors.black54
-                                            : Colors.orange.shade800,
-                                  ),
-                                ),
-                                onTap:
-                                    () => setDialogState(() {
-                                      selectedStrategyKey = key;
-                                      // 点选即明确选用（跨站必须点选；同站点选也覆盖自动项）。
-                                      strategyManualPick = true;
-                                    }),
-                                trailing: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    IconButton(
-                                      tooltip: '重命名',
-                                      icon: const Icon(Icons.edit_outlined),
-                                      onPressed: () async {
-                                        await _promptRenameSmartStrategy(
-                                          dialogContext,
-                                          key,
-                                          () => setDialogState(() {}),
-                                        );
-                                      },
-                                    ),
-                                    IconButton(
-                                      tooltip: '删除',
-                                      icon: const Icon(Icons.delete_outline),
-                                      onPressed: () async {
-                                        await _deleteSmartStrategy(key);
-                                        setDialogState(() {
-                                          if (selectedStrategyKey == key) {
-                                            selectedStrategyKey =
-                                                _defaultSameHostStrategyKey(
-                                                  host: dialogHost,
-                                                  pageType: dialogPageType,
-                                                );
-                                            strategyManualPick = false;
-                                          }
-                                        });
-                                      },
-                                    ),
-                                  ],
-                                ),
+                                      : () => unawaited(
+                                        refreshScopeLevels(setDialogState),
+                                      ),
+                              child: Text(
+                                scopeLevelsLoading ? '扫描中…' : '重新扫描',
                               ),
-                            );
-                          }),
-                        ],
-                        const SizedBox(height: 12),
-                        SwitchListTile(
-                          contentPadding: EdgeInsets.zero,
-                          title: const Text('开始前先示范教学'),
-                          subtitle: const Text(
-                            '开启后先由你手动长按下载几次，应用会把这次示范记为最高优先的成功经验，供本次与下次复用。',
-                            style: TextStyle(fontSize: 12),
-                          ),
-                          value: teachByDemo,
-                          onChanged:
-                              (v) => setDialogState(() => teachByDemo = v),
-                        ),
-                        if (teachByDemo) ...[
-                          const SizedBox(height: 4),
-                          TextField(
-                            controller: demoCountController,
-                            keyboardType: TextInputType.number,
-                            inputFormatters: [
-                              FilteringTextInputFormatter.digitsOnly,
-                            ],
-                            decoration: const InputDecoration(
-                              labelText: '示范次数',
-                              hintText: '1–5，默认 2',
-                              helperText: '建议 2 次：便于学会「原地长按」还是「进详情再长按」。',
                             ),
-                          ),
-                        ] else
-                          const Padding(
-                            padding: EdgeInsets.only(bottom: 4),
+                          ],
+                        ),
+                        if (scopeSummary.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 6),
                             child: Text(
-                              '关闭时：先自动复用成功经验并自行尝试；实在不行再请求你示范。若要禁止中途示范，可在高级里填 0（当前默认允许自动穷尽后请教）。',
-                              style: TextStyle(
+                              scopeSummary,
+                              style: const TextStyle(
                                 fontSize: 11,
                                 color: Colors.black54,
                               ),
                             ),
                           ),
-                        if (selectedMediaType != MediaType.image) ...[
-                          const SizedBox(height: 12),
-                          Row(
-                            children: [
-                              Expanded(
-                                child: TextField(
-                                  controller: minVideoSizeController,
-                                  keyboardType: TextInputType.number,
-                                  inputFormatters: [
-                                    FilteringTextInputFormatter.digitsOnly,
-                                  ],
-                                  decoration: const InputDecoration(
-                                    labelText: '最小大小（MB）',
-                                    hintText: '不限',
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: TextField(
-                                  controller: maxVideoSizeController,
-                                  keyboardType: TextInputType.number,
-                                  inputFormatters: [
-                                    FilteringTextInputFormatter.digitsOnly,
-                                  ],
-                                  decoration: const InputDecoration(
-                                    labelText: '最大大小（MB）',
-                                    hintText: '不限',
-                                  ),
-                                ),
-                              ),
-                            ],
+                        if (scopeLevelsError.isNotEmpty)
+                          Text(
+                            scopeLevelsError,
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: Colors.orange,
+                            ),
                           ),
-                          const SizedBox(height: 4),
-                          const Text(
-                            '两项留空时，将以当前视频大小为基准，自动采用约 50%～150%；无法可靠获取时才不限制。',
-                            style: TextStyle(fontSize: 11, color: Colors.grey),
+                        if (scopeLevels.isNotEmpty)
+                          ConstrainedBox(
+                            constraints: const BoxConstraints(maxHeight: 300),
+                            child: ListView.separated(
+                              shrinkWrap: true,
+                              itemCount: scopeLevels.length,
+                              separatorBuilder:
+                                  (_, __) => const SizedBox(height: 6),
+                              itemBuilder: (context, index) {
+                                final level = scopeLevels[index];
+                                final depth =
+                                    (level['depth'] as num?)?.toInt() ?? 0;
+                                final fromTop =
+                                    (level['fromTop'] as num?)?.toInt() ??
+                                    (index + 1);
+                                final images =
+                                    (level['images'] as num?)?.toInt() ?? 0;
+                                final videos =
+                                    (level['videos'] as num?)?.toInt() ?? 0;
+                                final rawVideos =
+                                    (level['rawVideos'] as num?)?.toInt() ?? 0;
+                                final poster =
+                                    (level['posterLikelyVideo'] as num?)
+                                            ?.toInt() ??
+                                        0;
+                                final exclV =
+                                    (level['exclusiveVideos'] as num?)
+                                            ?.toInt() ??
+                                        0;
+                                final exclI =
+                                    (level['exclusiveImages'] as num?)
+                                            ?.toInt() ??
+                                        0;
+                                final label =
+                                    (level['label'] ?? 'L$fromTop').toString();
+                                final kind = (level['kind'] ?? '').toString();
+                                final pathHint =
+                                    (level['pathHint'] ?? '').toString();
+                                final hint = (level['hint'] ?? '').toString();
+                                final recommend = level['recommend'] == true;
+                                final selected = depth == scopeDepth;
+                                final borderColor =
+                                    selected
+                                        ? Theme.of(context).colorScheme.primary
+                                        : Colors.black12;
+                                return Material(
+                                  color:
+                                      selected
+                                          ? Theme.of(context)
+                                              .colorScheme
+                                              .primaryContainer
+                                              .withValues(alpha: 0.45)
+                                          : Colors.grey.shade50,
+                                  borderRadius: BorderRadius.circular(10),
+                                  child: InkWell(
+                                    borderRadius: BorderRadius.circular(10),
+                                    onTap:
+                                        () => setDialogState(
+                                          () => scopeDepth = depth,
+                                        ),
+                                    child: Container(
+                                      padding: const EdgeInsets.fromLTRB(
+                                        10,
+                                        8,
+                                        10,
+                                        8,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        borderRadius: BorderRadius.circular(10),
+                                        border: Border.all(
+                                          color: borderColor,
+                                          width: selected ? 1.5 : 1,
+                                        ),
+                                      ),
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Row(
+                                            children: [
+                                              Icon(
+                                                selected
+                                                    ? Icons.radio_button_checked
+                                                    : Icons
+                                                        .radio_button_unchecked,
+                                                size: 18,
+                                                color:
+                                                    selected
+                                                        ? Theme.of(context)
+                                                            .colorScheme
+                                                            .primary
+                                                        : Colors.black45,
+                                              ),
+                                              const SizedBox(width: 6),
+                                              Expanded(
+                                                child: Text(
+                                                  label,
+                                                  style: const TextStyle(
+                                                    fontSize: 12.5,
+                                                    fontWeight: FontWeight.w600,
+                                                  ),
+                                                ),
+                                              ),
+                                              if (pathHint.isNotEmpty)
+                                                Container(
+                                                  padding:
+                                                      const EdgeInsets.symmetric(
+                                                    horizontal: 6,
+                                                    vertical: 2,
+                                                  ),
+                                                  decoration: BoxDecoration(
+                                                    color: Colors.black12,
+                                                    borderRadius:
+                                                        BorderRadius.circular(4),
+                                                  ),
+                                                  child: Text(
+                                                    pathHint,
+                                                    style: const TextStyle(
+                                                      fontSize: 10,
+                                                    ),
+                                                  ),
+                                                ),
+                                              if (recommend) ...[
+                                                const SizedBox(width: 4),
+                                                Container(
+                                                  padding:
+                                                      const EdgeInsets.symmetric(
+                                                    horizontal: 6,
+                                                    vertical: 2,
+                                                  ),
+                                                  decoration: BoxDecoration(
+                                                    color: Colors.green
+                                                        .withValues(alpha: 0.15),
+                                                    borderRadius:
+                                                        BorderRadius.circular(4),
+                                                  ),
+                                                  child: const Text(
+                                                    '推荐',
+                                                    style: TextStyle(
+                                                      fontSize: 10,
+                                                      color: Colors.green,
+                                                      fontWeight: FontWeight.w600,
+                                                    ),
+                                                  ),
+                                                ),
+                                              ],
+                                            ],
+                                          ),
+                                          if (kind.isNotEmpty)
+                                            Padding(
+                                              padding: const EdgeInsets.only(
+                                                top: 2,
+                                                left: 24,
+                                              ),
+                                              child: Text(
+                                                kind,
+                                                style: const TextStyle(
+                                                  fontSize: 10.5,
+                                                  color: Colors.black45,
+                                                ),
+                                              ),
+                                            ),
+                                          Padding(
+                                            padding: const EdgeInsets.only(
+                                              top: 4,
+                                              left: 24,
+                                            ),
+                                            child: Text(
+                                              '本层及以内：视频 $videos'
+                                              '${poster > 0 ? '（含疑似封面 $poster）' : ''}'
+                                              '${rawVideos > 0 ? ' · 真实video $rawVideos' : ''}'
+                                              ' · 图片 $images',
+                                              style: const TextStyle(fontSize: 11),
+                                            ),
+                                          ),
+                                          if (exclV > 0 || exclI > 0)
+                                            Padding(
+                                              padding: const EdgeInsets.only(
+                                                top: 2,
+                                                left: 24,
+                                              ),
+                                              child: Text(
+                                                '本层独占：视频 $exclV · 图片 $exclI',
+                                                style: const TextStyle(
+                                                  fontSize: 10.5,
+                                                  color: Colors.black54,
+                                                ),
+                                              ),
+                                            ),
+                                          if (hint.isNotEmpty)
+                                            Padding(
+                                              padding: const EdgeInsets.only(
+                                                top: 3,
+                                                left: 24,
+                                              ),
+                                              child: Text(
+                                                hint,
+                                                style: TextStyle(
+                                                  fontSize: 10.5,
+                                                  color:
+                                                      hint.contains('海报') ||
+                                                              hint.contains(
+                                                                '更内层',
+                                                              )
+                                                          ? Colors.orange.shade800
+                                                          : Colors.black54,
+                                                ),
+                                              ),
+                                            ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
                           ),
-                        ],
-                      ],
+                        const SizedBox(height: 6),
+                        const Text(
+                          '选中一层后，会下载该层范围内去广告的媒体；视频优先，避免把视频当海报图下。数量上限仍以上方为准。',
+                          style: TextStyle(fontSize: 11, color: Colors.black54),
+                        ),
+                      ] else if (runMode == 'action') ...[
+                        const SizedBox(height: 10),
+                        if (hostRecipes.isNotEmpty)
+                          Wrap(
+                            spacing: 6,
+                            runSpacing: 4,
+                            children:
+                                hostRecipes.map((r) {
+                                  final selected = selectedRecipe?.id == r.id;
+                                  return ChoiceChip(
+                                    label: Text(r.name),
+                                    selected: selected,
+                                    onSelected: (_) {
+                                      setDialogState(() {
+                                        selectedRecipe = r;
+                                        runMode = 'action';
+                                      });
+                                    },
+                                  );
+                                }).toList(),
+                          )
+                        else
+                          Text(
+                            selectedRecipe == null
+                                ? '尚未保存套路，请先编辑一套动作。'
+                                : '将使用：${selectedRecipe!.name}',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: Colors.black54,
+                            ),
+                          ),
+                        if (selectedRecipe != null && hostRecipes.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 6),
+                            child: Text(
+                              '当前选用：${selectedRecipe!.name}'
+                              '${selectedRecipe!.lastUsedAt != null ? '（本站上次使用）' : ''}',
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: Colors.black54,
+                              ),
+                            ),
+                          ),
+                        const SizedBox(height: 8),
+                        OutlinedButton.icon(
+                          onPressed: () => openEditor(),
+                          icon: const Icon(Icons.edit_note),
+                          label: Text(
+                            selectedRecipe == null
+                                ? '编辑动作编排'
+                                : '编辑 / 管理套路',
+                          ),
+                        ),
+                      ] else
+                        const Padding(
+                          padding: EdgeInsets.only(top: 8),
+                          child: Text(
+                            '将使用 X 旧版自动逻辑（已验证的原智能下载流程）。',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.black54,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(dialogContext),
+                    child: const Text('取消'),
+                  ),
+                  FilledButton(
+                    onPressed: () {
+                      final count =
+                          int.tryParse(countController.text.trim()) ?? 5;
+                      if (count < 1 || count > 100) {
+                        ScaffoldMessenger.of(dialogContext).showSnackBar(
+                          const SnackBar(content: Text('请输入 1～100 的数量')),
+                        );
+                        return;
+                      }
+                      final minMb = int.tryParse(
+                        minVideoSizeController.text.trim(),
+                      );
+                      final maxMb = int.tryParse(
+                        maxVideoSizeController.text.trim(),
+                      );
+                      if (minMb != null && maxMb != null && minMb > maxMb) {
+                        ScaffoldMessenger.of(dialogContext).showSnackBar(
+                          const SnackBar(content: Text('最小大小不能大于最大大小')),
+                        );
+                        return;
+                      }
+                      if (runMode == 'scope' &&
+                          startFromCurrentPage &&
+                          scopeLevels.isEmpty) {
+                        ScaffoldMessenger.of(dialogContext).showSnackBar(
+                          const SnackBar(
+                            content: Text('当前层级未扫描到媒体，请换层级或重新扫描'),
+                          ),
+                        );
+                        return;
+                      }
+                      Navigator.pop(dialogContext, runMode);
+                    },
+                    child: Text(
+                      runMode == 'legacy'
+                          ? '开始（旧版自动）'
+                          : runMode == 'scope'
+                          ? '开始同层批量'
+                          : '开始',
                     ),
                   ),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.pop(dialogContext, false),
-                      child: const Text('取消'),
-                    ),
-                    FilledButton(
-                      onPressed: () {
-                        final count =
-                            int.tryParse(countController.text.trim()) ?? 5;
-                        if (count < 1 || count > 100) {
-                          ScaffoldMessenger.of(dialogContext).showSnackBar(
-                            const SnackBar(content: Text('请输入 1～100 的数量')),
-                          );
-                          return;
-                        }
-                        final minMb = int.tryParse(minVideoSizeController.text);
-                        final maxMb = int.tryParse(maxVideoSizeController.text);
-                        if (selectedMediaType != MediaType.image &&
-                            minMb != null &&
-                            maxMb != null &&
-                            minMb > maxMb) {
-                          ScaffoldMessenger.of(dialogContext).showSnackBar(
-                            const SnackBar(content: Text('最小视频大小不能大于最大大小')),
-                          );
-                          return;
-                        }
-                        Navigator.pop(dialogContext, true);
-                      },
-                      child: const Text('开始'),
-                    ),
-                  ],
-                ),
+                ],
+              );
+            },
           ),
     );
-    final enteredKeyword = keywordController.text.trim();
+
     final enteredCount = int.tryParse(countController.text.trim()) ?? 5;
-    final int? enteredDemoCount;
-    if (teachByDemo) {
-      final raw = int.tryParse(demoCountController.text.trim()) ?? 2;
-      enteredDemoCount = raw.clamp(1, 5);
-    } else {
-      // 关闭开关：先自动；留空允许中途示范（allowAutoDemo）。
-      enteredDemoCount = null;
+    final enteredMinVideoMb = int.tryParse(minVideoSizeController.text.trim());
+    final enteredMaxVideoMb = int.tryParse(maxVideoSizeController.text.trim());
+    await Future<void>.delayed(const Duration(milliseconds: 280));
+    if (confirmed == null || !mounted) {
+      countController.dispose();
+      minVideoSizeController.dispose();
+      maxVideoSizeController.dispose();
+      return;
     }
-    final enteredMinVideoMb = int.tryParse(minVideoSizeController.text);
-    final enteredMaxVideoMb = int.tryParse(maxVideoSizeController.text);
-    // showDialog completes when pop starts, before the reverse transition has
-    // removed every dependent TextField/InheritedWidget from the overlay.
-    await Future<void>.delayed(const Duration(milliseconds: 360));
-    if (confirmed == true && mounted) {
-      int? minVideoBytes =
-          selectedMediaType != MediaType.image && enteredMinVideoMb != null
-              ? enteredMinVideoMb * 1024 * 1024
-              : null;
-      int? maxVideoBytes =
-          selectedMediaType != MediaType.image && enteredMaxVideoMb != null
-              ? enteredMaxVideoMb * 1024 * 1024
-              : null;
-      var autoVideoSizeRange = false;
-      if (selectedMediaType != MediaType.image &&
-          enteredMinVideoMb == null &&
-          enteredMaxVideoMb == null &&
-          startFromCurrentPage) {
-        final seedBytes = await _estimateSmartSeedVideoBytes(
-          initialVideoUrls,
-          _currentUrl,
-          initialVideoDuration,
+
+    int? minVideoBytes =
+        enteredMinVideoMb != null ? enteredMinVideoMb * 1024 * 1024 : null;
+    int? maxVideoBytes =
+        enteredMaxVideoMb != null ? enteredMaxVideoMb * 1024 * 1024 : null;
+    var autoVideoSizeRange = false;
+    // 本页同层批量：页面上各条目体量差异大，勿用「当前一条」估算去卡死整页
+    if (confirmed != 'scope' &&
+        enteredMinVideoMb == null &&
+        enteredMaxVideoMb == null &&
+        startFromCurrentPage) {
+      final seedBytes = await _estimateSmartSeedVideoBytes(
+        initialVideoUrls,
+        _currentUrl,
+        initialVideoDuration,
+      );
+      if (seedBytes != null && seedBytes > 0) {
+        minVideoBytes = max(1, (seedBytes * 0.5).floor());
+        maxVideoBytes = (seedBytes * 1.5).ceil();
+        autoVideoSizeRange = true;
+      }
+    }
+
+    final mediaType = initialMediaType;
+    final allowMixed = confirmed == 'scope';
+
+    if (confirmed == 'scope') {
+      await _startScopeBatchDownload(
+        website: website,
+        targetCount: enteredCount,
+        mediaType: mediaType,
+        allowMixedMedia: true,
+        startFromCurrentPage: startFromCurrentPage,
+        scopeDepth: scopeDepth,
+        minVideoBytes: minVideoBytes,
+        maxVideoBytes: maxVideoBytes,
+      );
+    } else if (confirmed == 'action') {
+      var recipe = selectedRecipe;
+      if (recipe == null) {
+        recipe = await showSmartActionEditor(
+          context: context,
+          host: dialogHost.isEmpty ? 'unknown' : dialogHost,
+          initial: SmartActionRecipe.feedTemplate(dialogHost),
         );
-        if (seedBytes != null && seedBytes > 0) {
-          minVideoBytes = max(1, (seedBytes * 0.5).floor());
-          maxVideoBytes = (seedBytes * 1.5).ceil();
-          autoVideoSizeRange = true;
-        }
       }
-      final keyword =
-          enteredKeyword.isNotEmpty
-              ? enteredKeyword
-              : (startFromCurrentPage
-                  ? ''
-                  : (website['name'] ?? '').toString().trim());
-      if (keyword.isNotEmpty) {
-        await _rememberSmartKeyword(keyword);
+      if (recipe != null && mounted) {
+        await SmartActionRecipeStore.save(recipe);
+        await SmartActionRecipeStore.markUsed(recipe);
+        await _startActionRecipeDownload(
+          website: website,
+          recipe: recipe,
+          targetCount: enteredCount,
+          mediaType: mediaType,
+          allowMixedMedia: allowMixed,
+          startFromCurrentPage: startFromCurrentPage,
+          minVideoBytes: minVideoBytes,
+          maxVideoBytes: maxVideoBytes,
+        );
       }
+    } else if (confirmed == 'legacy') {
+      // X 旧版自动：不走关键词搜索，从当前页/站点入口按原智能流程跑。
       await _startSmartDownload(
         website: website,
-        keyword: keyword,
+        keyword: '',
         targetCount: enteredCount,
-        mediaType: selectedMediaType ?? initialMediaType,
-        allowMixedMedia: selectedMediaType == null,
+        mediaType: mediaType,
+        allowMixedMedia: allowMixed,
         startFromCurrentPage: startFromCurrentPage,
         minVideoBytes: minVideoBytes,
         maxVideoBytes: maxVideoBytes,
         autoVideoSizeRange: autoVideoSizeRange,
-        demoCount: enteredDemoCount,
-        preferredStrategyKey: selectedStrategyKey,
-        strategyManualPick: strategyManualPick,
-        strategyExplicitNone: selectedStrategyKey == null,
+        demoCount: null,
+        preferredStrategyKey: null,
+        strategyManualPick: false,
+        strategyExplicitNone: true,
       );
     }
-    keywordController.dispose();
     countController.dispose();
-    demoCountController.dispose();
     minVideoSizeController.dispose();
     maxVideoSizeController.dispose();
+  }
+
+  Future<void> _startActionRecipeDownload({
+    required Map<String, dynamic> website,
+    required SmartActionRecipe recipe,
+    required int targetCount,
+    required MediaType mediaType,
+    bool allowMixedMedia = false,
+    bool startFromCurrentPage = false,
+    int? minVideoBytes,
+    int? maxVideoBytes,
+  }) async {
+    if (_smartDownloadTask != null) return;
+    final rawUrl = (website['url'] ?? '').toString().trim();
+    final normalized =
+        rawUrl.startsWith('http://') || rawUrl.startsWith('https://')
+            ? rawUrl
+            : (rawUrl.isEmpty ? _currentUrl : 'https://$rawUrl');
+    final uri = Uri.tryParse(
+      startFromCurrentPage ? _currentUrl : normalized,
+    );
+    final host = _normalizeSmartHost(uri?.host ?? recipe.host);
+    if (host.isEmpty) return;
+    if (!startFromCurrentPage && normalized.startsWith('http')) {
+      _loadUrl(normalized);
+      await Future<void>.delayed(const Duration(milliseconds: 900));
+    }
+    final startedAt = DateTime.now();
+    final deadlineAt = startedAt.add(const Duration(hours: 5));
+    _smartDownloadTask = <String, dynamic>{
+      'mode': 'action_recipe',
+      'phase': 'action_running',
+      'siteUrl': normalized,
+      'host': host,
+      'siteProfile': _smartSiteProfile(host),
+      'keyword': '',
+      'mediaType': mediaType,
+      'allowMixedMedia': allowMixedMedia,
+      'target': targetCount.clamp(1, 100),
+      'minVideoBytes': minVideoBytes,
+      'maxVideoBytes': maxVideoBytes,
+      'success': 0,
+      'failed': 0,
+      'matchStage': '动作套路 · ${recipe.name}',
+      'demoPhase': 'auto',
+      'gestureDownloadPending': false,
+      'startedAt': startedAt,
+      'deadlineAt': deadlineAt,
+      'originUrl': _currentUrl,
+      'startedFromCurrentPage': startFromCurrentPage,
+      'seenMediaUrls': <String>{},
+      'attemptedVideoContexts': <String>{},
+      'duplicateVideoUrlKeys': <String>{},
+      'videoMediaStates': <String, String>{},
+      'reservedMediaNameKeys': <String>{},
+      'reservedMediaTitleKeys': <String>{},
+      'allowBroadenDiscovery': false,
+      'recipeName': recipe.name,
+      'gestureActionFailures': <String, int>{},
+      'gestureConsecutiveFailures': 0,
+      'gestureEngineFailures': 0,
+      'gestureActiveKey': '',
+    };
+    final task = _smartDownloadTask!;
+    try {
+      await WakelockPlus.enable();
+      task['screenWakeLockEnabled'] = true;
+    } catch (_) {}
+    task['deadlineTimer'] = Timer(deadlineAt.difference(DateTime.now()), () {
+      if (identical(_smartDownloadTask, task)) {
+        unawaited(_finishSmartDownload('已达到单次任务 5 小时时间上限'));
+      }
+    });
+    _showSmartOperation('开始执行套路「${recipe.name}」');
+    unawaited(_runActionRecipeLoop(task, recipe));
+  }
+
+  Future<void> _startScopeBatchDownload({
+    required Map<String, dynamic> website,
+    required int targetCount,
+    required MediaType mediaType,
+    bool allowMixedMedia = true,
+    bool startFromCurrentPage = true,
+    int scopeDepth = 0,
+    int? minVideoBytes,
+    int? maxVideoBytes,
+  }) async {
+    if (_smartDownloadTask != null) return;
+    final rawUrl = (website['url'] ?? '').toString().trim();
+    final normalized =
+        rawUrl.startsWith('http://') || rawUrl.startsWith('https://')
+            ? rawUrl
+            : (rawUrl.isEmpty ? _currentUrl : 'https://$rawUrl');
+    final uri = Uri.tryParse(
+      startFromCurrentPage ? _currentUrl : normalized,
+    );
+    final host = _normalizeSmartHost(uri?.host ?? '');
+    if (host.isEmpty && _currentUrl.isEmpty) return;
+    if (!startFromCurrentPage && normalized.startsWith('http')) {
+      _loadUrl(normalized);
+      await Future<void>.delayed(const Duration(milliseconds: 900));
+    }
+    final startedAt = DateTime.now();
+    final deadlineAt = startedAt.add(const Duration(hours: 5));
+    _smartDownloadTask = <String, dynamic>{
+      'mode': 'scope_batch',
+      'phase': 'scope_batch_running',
+      'siteUrl': normalized,
+      'host': host,
+      'siteProfile': _smartSiteProfile(host),
+      'keyword': '',
+      'mediaType': mediaType,
+      'allowMixedMedia': allowMixedMedia,
+      'target': targetCount.clamp(1, 100),
+      'minVideoBytes': minVideoBytes,
+      'maxVideoBytes': maxVideoBytes,
+      'success': 0,
+      'failed': 0,
+      'matchStage': '本页同层 · 深度 $scopeDepth',
+      'demoPhase': 'auto',
+      'gestureDownloadPending': false,
+      'startedAt': startedAt,
+      'deadlineAt': deadlineAt,
+      'originUrl': _currentUrl,
+      'startedFromCurrentPage': startFromCurrentPage,
+      'scopeDepth': scopeDepth,
+      'seenMediaUrls': <String>{},
+      'attemptedVideoContexts': <String>{},
+      'duplicateVideoUrlKeys': <String>{},
+      'videoMediaStates': <String, String>{},
+      'reservedMediaNameKeys': <String>{},
+      'reservedMediaTitleKeys': <String>{},
+      'allowBroadenDiscovery': false,
+    };
+    final task = _smartDownloadTask!;
+    try {
+      await WakelockPlus.enable();
+      task['screenWakeLockEnabled'] = true;
+    } catch (_) {}
+    task['deadlineTimer'] = Timer(deadlineAt.difference(DateTime.now()), () {
+      if (identical(_smartDownloadTask, task)) {
+        unawaited(_finishSmartDownload('已达到单次任务 5 小时时间上限'));
+      }
+    });
+    _showSmartOperation(
+      '本页同层批量 · 深度 $scopeDepth',
+      point: const Offset(0.5, 0.1),
+      showFinger: false,
+    );
+    unawaited(_runScopeBatchLoop(task));
+  }
+
+  Future<void> _runScopeBatchLoop(Map<String, dynamic> task) async {
+    final controller = _controller;
+    if (controller == null) {
+      await _finishSmartDownload('页面未就绪');
+      return;
+    }
+    final depth = (task['scopeDepth'] as int?) ?? 0;
+    final target = (task['target'] as int?) ?? 5;
+    final remaining =
+        (target - ((task['success'] as int?) ?? 0)).clamp(1, 100);
+    final allowMixed = task['allowMixedMedia'] == true;
+    final mediaType = task['mediaType'] as MediaType?;
+    final imagesOnly = !allowMixed && mediaType == MediaType.image;
+    final videosOnly = !allowMixed && mediaType == MediaType.video;
+    final minBytes = task['minVideoBytes'] as int?;
+    final maxBytes = task['maxVideoBytes'] as int?;
+    final startedAt = task['startedAt'] is DateTime
+        ? task['startedAt'] as DateTime
+        : DateTime.now().subtract(const Duration(minutes: 5));
+
+    task['matchStage'] = '本页同层 · 预热嗅探';
+    _showSmartOperation(
+      '预热同层视频并加强嗅探…',
+      point: const Offset(0.5, 0.1),
+      showFinger: false,
+    );
+    try {
+      await controller.evaluateJavascript(
+        source: SmartScopeBatchJs.warmScope(depth: depth),
+      );
+    } catch (e) {
+      debugPrint('scope batch warm failed: $e');
+    }
+    // 给 MediaInterceptor / early sniffer 一点时间抓到流
+    await Future<void>.delayed(const Duration(milliseconds: 900));
+    if (!identical(_smartDownloadTask, task)) return;
+
+    task['matchStage'] = '本页同层 · 正在收集媒体（视频优先）';
+    _showSmartOperation(
+      '正在扫描同层媒体（视频优先）…',
+      point: const Offset(0.5, 0.1),
+      showFinger: false,
+    );
+
+    Map<String, dynamic>? collected;
+    try {
+      final raw = await controller.evaluateJavascript(
+        source: SmartScopeBatchJs.collectAtDepth(
+          depth: depth,
+          imagesOnly: imagesOnly,
+          videosOnly: videosOnly,
+          limit: max(remaining * 2, remaining),
+        ),
+      );
+      collected = _coerceJsMap(raw);
+      debugPrint(
+        'scope batch collect: videos=${collected?['videoCount']} '
+        'images=${collected?['imageCount']} sniffed=${collected?['sniffed']}',
+      );
+    } catch (e) {
+      debugPrint('scope batch collect failed: $e');
+    }
+
+    final pageCaptures =
+        _recentCapturedMediaCandidates(
+          MediaType.video,
+          pageUrl: _currentUrl,
+          notBefore: startedAt.subtract(const Duration(minutes: 2)),
+          limit: 32,
+        ).where((u) => !_isLikelyAdUrl(u) && _isLikelyDirectMediaUrl(u)).toList();
+
+    final itemsRaw = collected?['items'];
+    final items = <Map<String, dynamic>>[];
+    if (itemsRaw is List) {
+      for (final row in itemsRaw) {
+        if (row is! Map) continue;
+        final map = Map<String, dynamic>.from(row);
+        var url = (map['url'] ?? '').toString().trim();
+        final kind = (map['kind'] ?? '').toString();
+        final candidates = <String>[];
+        final rawCandidates = map['candidates'];
+        if (rawCandidates is List) {
+          for (final c in rawCandidates) {
+            final s = c.toString().trim();
+            if (s.isNotEmpty && !_isLikelyAdUrl(s)) candidates.add(s);
+          }
+        }
+        // xfree：listing/封面 UUID 升成 full.mp4
+        String? upgradeXfree(String raw) {
+          final listing = RegExp(
+            r'^(https?://cdn\.xfree\.com/xfree-prod/(?:[0-9a-f]/){3}[0-9a-f-]{36}/)listing\d*\.mp4',
+            caseSensitive: false,
+          ).firstMatch(raw);
+          if (listing != null) return '${listing.group(1)}full.mp4';
+          final uuid = RegExp(
+            r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})',
+            caseSensitive: false,
+          ).firstMatch(raw);
+          if (uuid != null &&
+              RegExp(r'(thumbs\.xfree\.com|cdn\.xfree\.com|xfree\.com)',
+                      caseSensitive: false)
+                  .hasMatch(raw)) {
+            final id = uuid.group(1)!.toLowerCase();
+            return 'https://cdn.xfree.com/xfree-prod/${id[0]}/${id[1]}/${id[2]}/$id/full.mp4';
+          }
+          return null;
+        }
+
+        void addCandidate(String? u) {
+          if (u == null || u.isEmpty || _isLikelyAdUrl(u)) return;
+          if (!candidates.contains(u) && u != url) candidates.add(u);
+        }
+
+        final upgradedUrl = url.isNotEmpty ? upgradeXfree(url) : null;
+        if (upgradedUrl != null) {
+          addCandidate(url);
+          url = upgradedUrl;
+          map['url'] = url;
+          map['kind'] = 'video';
+        }
+        final poster = (map['posterUrl'] ?? '').toString();
+        addCandidate(upgradeXfree(poster));
+        for (final c in List<String>.from(candidates)) {
+          addCandidate(upgradeXfree(c));
+        }
+
+        if (kind == 'video' || map['kind'] == 'video') {
+          for (final c in pageCaptures) {
+            if (!candidates.contains(c) && c != url) candidates.add(c);
+          }
+          if (url.isEmpty || !_isLikelyDirectMediaUrl(url)) {
+            String? better = upgradeXfree(poster);
+            if (better == null) {
+              for (final c in candidates) {
+                if (_isLikelyDirectMediaUrl(c) &&
+                    !c.toLowerCase().contains('listing')) {
+                  better = c;
+                  break;
+                }
+              }
+            }
+            better ??=
+                candidates.cast<String?>().firstWhere(
+                  (c) => c != null && _isLikelyDirectMediaUrl(c),
+                  orElse: () => null,
+                );
+            if (better != null && better.isNotEmpty) {
+              if (url.isNotEmpty && !candidates.contains(url)) {
+                candidates.insert(0, url);
+              }
+              url = better;
+              map['url'] = url;
+            }
+          }
+        }
+        // 图片 URL 若其实是视频流，升为视频
+        if ((map['kind'] ?? kind) == 'image' && _isLikelyDirectMediaUrl(url)) {
+          map['kind'] = 'video';
+          map['upgradedFromImage'] = true;
+        }
+        final effectiveKind = (map['kind'] ?? kind).toString();
+        if (url.isEmpty && effectiveKind != 'video') continue;
+        if (url.isNotEmpty && _isLikelyAdUrl(url)) continue;
+        map['candidates'] = candidates.take(12).toList();
+        items.add(map);
+      }
+    }
+
+    // 视频优先排序，再截断到数量
+    items.sort((a, b) {
+      final ak = (a['kind'] == 'video') ? 0 : 1;
+      final bk = (b['kind'] == 'video') ? 0 : 1;
+      if (ak != bk) return ak.compareTo(bk);
+      final as_ = (a['score'] as num?)?.toDouble() ?? 0;
+      final bs_ = (b['score'] as num?)?.toDouble() ?? 0;
+      return bs_.compareTo(as_);
+    });
+
+    if (items.isEmpty) {
+      await _finishSmartDownload('同层未找到可下载媒体（已过滤广告/过小图）');
+      return;
+    }
+
+    final seen = task['seenMediaUrls'] as Set<String>;
+    final queue = <Map<String, dynamic>>[];
+    for (final it in items) {
+      if (queue.length >= remaining) break;
+      final url = (it['url'] ?? '').toString();
+      final kind = (it['kind'] ?? '').toString();
+      if (url.isEmpty && kind == 'video') {
+        // 仍无主键：用捕获池第一条未用过的流
+        final fill = pageCaptures.firstWhere(
+          (c) => !seen.contains(c),
+          orElse: () => '',
+        );
+        if (fill.isEmpty) continue;
+        it['url'] = fill;
+        if (!seen.add(fill)) continue;
+        queue.add(it);
+        continue;
+      }
+      if (url.isEmpty) continue;
+      if (!seen.add(url)) continue;
+      queue.add(it);
+    }
+
+    final videoN = queue.where((e) => e['kind'] == 'video').length;
+    final imageN = queue.length - videoN;
+    task['matchStage'] =
+        '本页同层 · 待下载 ${queue.length}（视频 $videoN / 图片 $imageN）';
+    _showSmartOperation(
+      '开始批量：视频 $videoN · 图片 $imageN',
+      point: const Offset(0.5, 0.1),
+      showFinger: false,
+    );
+
+    for (var start = 0; start < queue.length; start += 3) {
+      if (!identical(_smartDownloadTask, task)) return;
+      final left =
+          (target - ((task['success'] as int?) ?? 0)).clamp(0, 3);
+      if (left <= 0) break;
+      final end = min(start + left, queue.length);
+      final batch = queue.sublist(start, end);
+      final outcomes = await Future.wait(
+        batch.map((it) async {
+          if (!identical(_smartDownloadTask, task)) {
+            return (ok: false, failureType: 'stopped');
+          }
+          final url = (it['url'] ?? '').toString();
+          final kind = (it['kind'] ?? '').toString();
+          final isVideo = kind == 'video';
+          final pageUrl = _currentUrl;
+          final candidateUrls = <String>[
+            url,
+            ...((it['candidates'] is List)
+                ? (it['candidates'] as List).map((e) => e.toString())
+                : const <String>[]),
+          ].where((u) => u.trim().isNotEmpty && !_isLikelyAdUrl(u)).toSet().toList();
+          var failureType = '';
+          if (!_reserveSmartMediaName(task, url, pageUrl: pageUrl)) {
+            return (ok: false, failureType: 'duplicate_name_in_smart_task');
+          }
+          _showSmartOperation(
+            isVideo ? '下载同层视频…' : '下载同层图片…',
+            point: const Offset(0.5, 0.1),
+            showFinger: false,
+          );
+          bool ok;
+          if (isVideo) {
+            ok = await _downloadMediaRobustly(
+              item: <String, dynamic>{
+                'videoUrl': url,
+                'pageUrl': pageUrl,
+                'candidateUrls': candidateUrls,
+                'downloadOrigin': 'smart_batch',
+                'isSmartBatchMedia': true,
+                'smartTask': task,
+                'mediaType': MediaType.video,
+                if (minBytes != null) 'minFileBytes': minBytes,
+                if (maxBytes != null) 'maxFileBytes': maxBytes,
+              },
+              showResultHint: false,
+              onFailureType: (type) => failureType = type,
+              minFileBytes: minBytes,
+              maxFileBytes: maxBytes,
+            );
+          } else {
+            ok = await _performBackgroundDownload(
+              url,
+              MediaType.image,
+              skipFailurePrompt: true,
+              showSuccessPrompt: false,
+              showDuplicatePrompt: false,
+              validateSmartMedia: true,
+              isSmartBatchMedia: true,
+              smartTask: task,
+              smartPageUrl: pageUrl,
+              onFailureType: (type) => failureType = type,
+              maxRequestAttempts: 3,
+              inactivityTimeout: const Duration(minutes: 2),
+            );
+          }
+          if (!ok && failureType != 'already_in_library') {
+            _releaseSmartMediaName(task, url, pageUrl: pageUrl);
+          }
+          return (ok: ok, failureType: failureType);
+        }),
+      );
+      for (final outcome in outcomes) {
+        if (!identical(_smartDownloadTask, task)) return;
+        final skippedDuplicate =
+            !outcome.ok &&
+            <String>{
+              'already_in_library',
+              'already_in_smart_task',
+              'duplicate_name_in_smart_task',
+              'already_downloading',
+            }.contains(outcome.failureType);
+        if (outcome.ok) {
+          task['success'] = (task['success'] as int) + 1;
+        } else if (!skippedDuplicate) {
+          task['failed'] = (task['failed'] as int) + 1;
+        }
+        task['matchStage'] =
+            '本页同层 · 已完成 ${task['success']}/$target';
+      }
+    }
+
+    if (!identical(_smartDownloadTask, task)) return;
+    await _finishSmartDownload(
+      '同层批量结束（成功 ${task['success']}/$target）',
+    );
+  }
+
+  Future<void> _runActionRecipeLoop(
+    Map<String, dynamic> task,
+    SmartActionRecipe recipe,
+  ) async {
+    var idleRounds = 0;
+    while (identical(_smartDownloadTask, task)) {
+      final success = (task['success'] as int?) ?? 0;
+      final target = (task['target'] as int?) ?? 0;
+      if (success >= target) {
+        await _finishSmartDownload();
+        return;
+      }
+      final deadlineAt = task['deadlineAt'] as DateTime?;
+      if (deadlineAt != null && !DateTime.now().isBefore(deadlineAt)) {
+        await _finishSmartDownload('已达到单次任务 5 小时时间上限');
+        return;
+      }
+      final before = success;
+      for (var i = 0; i < recipe.steps.length; i++) {
+        if (!identical(_smartDownloadTask, task)) return;
+        if (((task['success'] as int?) ?? 0) >= target) break;
+        final step = recipe.steps[i];
+        task['matchStage'] =
+            '动作 ${i + 1}/${recipe.steps.length} · ${step.kind.label}';
+        try {
+          await _executeSmartActionStep(task, step);
+        } catch (e) {
+          debugPrint('动作零件执行失败 ${step.kind.id}: $e');
+          task['failed'] = ((task['failed'] as int?) ?? 0) + 1;
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 280));
+      }
+      final after = (task['success'] as int?) ?? 0;
+      if (after <= before) {
+        idleRounds++;
+        if (idleRounds >= 8) {
+          await _finishSmartDownload(
+            '连续多轮未新增下载（成功 $after/$target），已停止。可调整动作序列后重试',
+          );
+          return;
+        }
+      } else {
+        idleRounds = 0;
+      }
+    }
+  }
+
+  Future<void> _executeSmartActionStep(
+    Map<String, dynamic> task,
+    SmartActionStep step,
+  ) async {
+    switch (step.kind) {
+      case SmartActionKind.swipeUpScreen:
+        await _actionScreenSwipe(task, axisHint: 'up', label: '向上推进一屏');
+        break;
+      case SmartActionKind.swipeDownScreen:
+        await _actionScreenSwipe(task, axisHint: 'down', label: '向下推进一屏');
+        break;
+      case SmartActionKind.swipeLeftScreen:
+        await _actionScreenSwipe(task, axisHint: 'left', label: '向左推进一屏');
+        break;
+      case SmartActionKind.swipeRightScreen:
+        await _actionScreenSwipe(task, axisHint: 'right', label: '向右推进一屏');
+        break;
+      case SmartActionKind.swipeUpFindMedia:
+        await _actionFingerSwipe(
+          task,
+          dx: 0,
+          dy: -1,
+          label: '定位下一条媒体',
+          preferHorizontal: false,
+        );
+        break;
+      case SmartActionKind.swipeDownFindMedia:
+        await _actionFingerSwipe(
+          task,
+          dx: 0,
+          dy: 1,
+          label: '定位上一条媒体',
+          preferHorizontal: false,
+        );
+        break;
+      case SmartActionKind.swipeLeftFindMedia:
+        await _actionFingerSwipe(
+          task,
+          dx: -1,
+          dy: 0,
+          label: '定位右侧下一条',
+          preferHorizontal: true,
+        );
+        break;
+      case SmartActionKind.swipeRightFindMedia:
+        await _actionFingerSwipe(
+          task,
+          dx: 1,
+          dy: 0,
+          label: '定位左侧下一条',
+          preferHorizontal: true,
+        );
+        break;
+      case SmartActionKind.focusMedia:
+        await _actionFocusCenterMedia(task);
+        break;
+      case SmartActionKind.tapMedia:
+        await _actionTapMedia(task);
+        break;
+      case SmartActionKind.doubleTapMedia:
+        await _actionDoubleTapMedia(task);
+        break;
+      case SmartActionKind.longPressDownload:
+        await _actionLongPressDownload(task);
+        break;
+      case SmartActionKind.clickPlay:
+        await _actionClickPlay(task);
+        break;
+      case SmartActionKind.closeOverlay:
+        await _actionClickCloseOverlay(task);
+        break;
+      case SmartActionKind.goBack:
+        await _actionGoBack(task);
+        break;
+      case SmartActionKind.reloadPage:
+        await _actionReloadPage(task);
+        break;
+      case SmartActionKind.pullRefresh:
+        await _actionPullRefresh(task);
+        break;
+      case SmartActionKind.scrollToTop:
+        await _actionScrollEdge(task, toTop: true);
+        break;
+      case SmartActionKind.waitBrief:
+        await _actionWaitMs(task, 1000, '等待片刻');
+        break;
+      case SmartActionKind.waitPageSettle:
+        await _actionWaitPageSettle(task);
+        break;
+      case SmartActionKind.waitDownload:
+        await _actionWaitDownload(task);
+        break;
+      case SmartActionKind.nextPage:
+        await _actionClickTextButton(task, mode: 'next', label: '下一页');
+        break;
+      case SmartActionKind.loadMore:
+        await _actionClickTextButton(task, mode: 'more', label: '加载更多');
+        break;
+    }
+  }
+
+  (bool imagesOnly, bool videosOnly) _actionMediaFilterFlags(
+    Map<String, dynamic> task,
+  ) {
+    final allowMixed = task['allowMixedMedia'] == true;
+    final mediaType = task['mediaType'];
+    final imagesOnly =
+        !allowMixed && mediaType == MediaType.image;
+    final videosOnly =
+        !allowMixed && mediaType == MediaType.video;
+    return (imagesOnly, videosOnly);
+  }
+
+  Future<void> _actionScrollEdge(
+    Map<String, dynamic> task, {
+    required bool toTop,
+  }) async {
+    final controller = _controller;
+    if (controller == null) return;
+    final label = toTop ? '滚到顶部' : '滚到底部';
+    _showSmartOperation(label, point: Offset(0.5, toTop ? 0.2 : 0.85));
+    try {
+      await controller.evaluateJavascript(
+        source: SmartActionJs.scrollEdge(toTop: toTop),
+      );
+      if (toTop) {
+        try {
+          await controller.scrollTo(x: 0, y: 0, animated: true);
+        } catch (_) {}
+      }
+    } catch (e) {
+      debugPrint('action scrollEdge failed: $e');
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 700));
+  }
+
+  Future<void> _actionScreenSwipe(
+    Map<String, dynamic> task, {
+    required String axisHint,
+    required String label,
+    double fraction = 0.85,
+  }) async {
+    final controller = _controller;
+    if (controller == null) return;
+    _showSmartOperation(label, point: const Offset(0.5, 0.1), showFinger: false);
+    Map<String, dynamic>? result;
+    try {
+      final raw = await controller.evaluateJavascript(
+        source: SmartActionJs.screenSwipe(
+          axisHint: axisHint,
+          fraction: fraction,
+        ),
+      );
+      result = _coerceJsMap(raw);
+      debugPrint('action screenPage: $result');
+    } catch (e) {
+      debugPrint('action screenPage failed: $e');
+    }
+    final moved = ((result?['moved'] as num?)?.toDouble() ?? 0);
+    // smooth 刚启动时 moved 可能仍为 0，等落地后再读一次
+    final waitMs =
+        ((result?['scheduledMs'] as num?)?.toInt() ?? 480).clamp(350, 800);
+    await Future<void>.delayed(Duration(milliseconds: waitMs));
+    if (!identical(_smartDownloadTask, task)) return;
+    _showSmartOperation(
+      moved > 2 ? '已推进一屏 · $label' : '已执行 · $label',
+      point: const Offset(0.5, 0.1),
+      showFinger: false,
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 180));
+  }
+
+  Map<String, dynamic>? _coerceJsMap(dynamic raw) {
+    if (raw is Map) return Map<String, dynamic>.from(raw);
+    if (raw is String) {
+      final s = raw.trim();
+      if (s.isEmpty || s == 'null' || s == 'undefined') return null;
+      try {
+        final decoded = jsonDecode(s);
+        if (decoded is Map) return Map<String, dynamic>.from(decoded);
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  Future<void> _actionFingerSwipe(
+    Map<String, dynamic> task, {
+    double dx = 0,
+    double dy = 0,
+    required String label,
+    bool? preferHorizontal,
+  }) async {
+    final controller = _controller;
+    if (controller == null) return;
+    final goNext = dy < 0 || dx != 0;
+    final filter = _actionMediaFilterFlags(task);
+    _showSmartOperation(label, point: const Offset(0.5, 0.1), showFinger: false);
+    Map<String, dynamic>? result;
+    try {
+      final raw = await controller.evaluateJavascript(
+        source: SmartActionJs.fingerSwipe(
+          dxNorm: dx,
+          dyNorm: dy,
+          imagesOnly: filter.$1,
+          videosOnly: filter.$2,
+          preferHorizontal: preferHorizontal,
+        ),
+      );
+      result = _coerceJsMap(raw);
+      debugPrint('action findMedia: $result');
+    } catch (e) {
+      debugPrint('action findMedia failed: $e');
+    }
+    final waitMs =
+        ((result?['scheduledMs'] as num?)?.toInt() ?? 520).clamp(350, 900);
+    await Future<void>.delayed(Duration(milliseconds: waitMs));
+    if (!identical(_smartDownloadTask, task)) return;
+    final found = result?['foundNext'] == true;
+    _showSmartOperation(
+      found
+          ? (goNext ? '已定位下一条媒体' : '已定位上一条媒体')
+          : (goNext ? '未找到下一条，已推进一屏' : '未找到上一条'),
+      point: const Offset(0.5, 0.1),
+      showFinger: false,
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+  }
+
+  Future<void> _actionPullRefresh(Map<String, dynamic> task) async {
+    final controller = _controller;
+    if (controller == null) return;
+    _showSmartOperation('下拉刷新', point: const Offset(0.5, 0.15));
+    try {
+      await controller.evaluateJavascript(source: SmartActionJs.pullRefresh());
+    } catch (e) {
+      debugPrint('action pullRefresh failed: $e');
+    }
+    const frames = 10;
+    for (var i = 1; i <= frames; i++) {
+      if (!identical(_smartDownloadTask, task)) return;
+      final t = i / frames;
+      _showSmartOperation(
+        '下拉刷新',
+        point: Offset(0.5, 0.15 + 0.28 * t),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 42));
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 600));
+  }
+
+  Future<void> _actionWaitMs(
+    Map<String, dynamic> task,
+    int ms,
+    String label,
+  ) async {
+    _showSmartOperation(label, point: const Offset(0.5, 0.5));
+    await Future<void>.delayed(Duration(milliseconds: ms));
+  }
+
+  Future<void> _actionWaitPageSettle(Map<String, dynamic> task) async {
+    _showSmartOperation('等待页面稳定', point: const Offset(0.5, 0.5));
+    // Give network/DOM a moment; then check scroll stopped bouncing.
+    await Future<void>.delayed(const Duration(milliseconds: 700));
+    try {
+      await _controller?.evaluateJavascript(
+        source: '''
+(() => {
+  const root = document.scrollingElement || document.documentElement || document.body;
+  const y = Number(root && root.scrollTop || 0);
+  return {ok: true, scrollTop: y, readyState: document.readyState};
+})()
+''',
+      );
+    } catch (_) {}
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+  }
+
+  Future<void> _actionClickPlay(Map<String, dynamic> task) async {
+    _showSmartOperation('点击播放', point: const Offset(0.5, 0.5));
+    try {
+      final result = await _controller?.evaluateJavascript(
+        source: SmartActionJs.clickPlay(),
+      );
+      debugPrint('action clickPlay: $result');
+    } catch (e) {
+      debugPrint('action clickPlay failed: $e');
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 700));
+  }
+
+  Future<void> _actionClickCloseOverlay(Map<String, dynamic> task) async {
+    _showSmartOperation('关闭弹层', point: const Offset(0.88, 0.12));
+    try {
+      final result = await _controller?.evaluateJavascript(
+        source: SmartActionJs.clickCloseOverlay(),
+      );
+      debugPrint('action closeOverlay: $result');
+    } catch (e) {
+      debugPrint('action closeOverlay failed: $e');
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+  }
+
+  Future<void> _actionClickTextButton(
+    Map<String, dynamic> task, {
+    required String mode,
+    required String label,
+  }) async {
+    _showSmartOperation(label, point: const Offset(0.5, 0.88));
+    try {
+      final result = await _controller?.evaluateJavascript(
+        source: SmartActionJs.clickTextButton(mode: mode),
+      );
+      debugPrint('action textButton($mode): $result');
+    } catch (e) {
+      debugPrint('action textButton failed: $e');
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 900));
+  }
+
+  Future<void> _actionFocusCenterMedia(Map<String, dynamic> task) async {
+    final allowMixed = task['allowMixedMedia'] == true;
+    final mediaType = task['mediaType'] as MediaType;
+    final imagesOnly = !allowMixed && mediaType == MediaType.image;
+    final videosOnly = !allowMixed && mediaType == MediaType.video;
+    _showSmartOperation('媒体滚到中心', point: const Offset(0.5, 0.5));
+    try {
+      final result = await _controller?.evaluateJavascript(
+        source: SmartActionJs.focusCenterMedia(
+          imagesOnly: imagesOnly,
+          videosOnly: videosOnly,
+        ),
+      );
+      if (result is Map) {
+        final x = (result['x'] as num?)?.toDouble() ?? 0.5;
+        final y = (result['y'] as num?)?.toDouble() ?? 0.5;
+        _showSmartOperation('媒体滚到中心', point: Offset(x, y));
+      }
+    } catch (e) {
+      debugPrint('action focusCenterMedia failed: $e');
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 650));
+  }
+
+  Future<void> _actionDoubleTapMedia(Map<String, dynamic> task) async {
+    final hit = await _actionFindCenterMedia(task);
+    if (hit == null) {
+      _showSmartOperation('未找到可双击媒体');
+      return;
+    }
+    final point = Offset(
+      (hit['x'] as num?)?.toDouble() ?? 0.5,
+      (hit['y'] as num?)?.toDouble() ?? 0.5,
+    );
+    final cx = (hit['clientX'] as num?)?.toDouble() ?? 0;
+    final cy = (hit['clientY'] as num?)?.toDouble() ?? 0;
+    _showSmartOperation('双击当前媒体', point: point);
+    try {
+      await _controller?.evaluateJavascript(
+        source: SmartActionJs.doubleTapAt(clientX: cx, clientY: cy),
+      );
+    } catch (e) {
+      debugPrint('action doubleTap failed: $e');
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 700));
+  }
+
+  Future<void> _actionReloadPage(Map<String, dynamic> task) async {
+    _showSmartOperation('刷新页面', point: const Offset(0.5, 0.12));
+    final controller = _controller;
+    if (controller == null) return;
+    await controller.reload();
+    await Future<void>.delayed(const Duration(milliseconds: 1200));
+  }
+
+  Future<Map<String, dynamic>?> _actionFindCenterMedia(
+    Map<String, dynamic> task,
+  ) async {
+    final controller = _controller;
+    if (controller == null) return null;
+    final allowMixed = task['allowMixedMedia'] == true;
+    final mediaType = task['mediaType'] as MediaType;
+    final imagesOnly = !allowMixed && mediaType == MediaType.image;
+    final videosOnly = !allowMixed && mediaType == MediaType.video;
+    final result = await controller.evaluateJavascript(
+      source: '''
+(() => {
+  const imagesOnly = $imagesOnly;
+  const videosOnly = $videosOnly;
+  const selector = imagesOnly ? 'img' : (videosOnly ? 'video' : 'video, img');
+  const marked = document.querySelector('[data-app-smart-current="1"]');
+  const rows = Array.from(document.querySelectorAll(selector)).filter(el => {
+    const r = el.getBoundingClientRect();
+    if (r.width < 100 || r.height < 80 || r.bottom <= 0 || r.top >= innerHeight) return false;
+    if (el.tagName === 'IMG') {
+      const src = String(el.currentSrc || el.src || '').toLowerCase();
+      const w = Math.max(el.naturalWidth || 0, r.width);
+      const h = Math.max(el.naturalHeight || 0, r.height);
+      return w >= 200 && h >= 160 &&
+        !/(avatar|emoji|icon|logo|profile_images|profile_banners)/.test(src);
+    }
+    return true;
+  }).map(el => {
+    const r = el.getBoundingClientRect();
+    const x = r.left + r.width / 2;
+    const y = r.top + r.height / 2;
+    const distance = Math.abs(y - innerHeight / 2) + Math.abs(x - innerWidth / 2) * 0.25;
+    return {el, x, y, distance, type: el.tagName === 'IMG' ? 'image' : 'video'};
+  }).sort((a,b) => a.distance - b.distance);
+  let selected = null;
+  if (marked) {
+    selected = rows.find(r => r.el === marked) || null;
+  }
+  if (!selected) selected = rows[0];
+  if (!selected) return null;
+  document.querySelectorAll('[data-app-smart-current]').forEach(el => {
+    el.removeAttribute('data-app-smart-current');
+  });
+  selected.el.setAttribute('data-app-smart-current', '1');
+  return {
+    type: selected.type,
+    x: innerWidth > 0 ? selected.x / innerWidth : 0.5,
+    y: innerHeight > 0 ? selected.y / innerHeight : 0.5,
+    clientX: selected.x,
+    clientY: selected.y
+  };
+})()
+''',
+    );
+    if (result is Map) return Map<String, dynamic>.from(result);
+    return null;
+  }
+
+  Future<void> _actionTapMedia(Map<String, dynamic> task) async {
+    final hit = await _actionFindCenterMedia(task);
+    if (hit == null) {
+      _showSmartOperation('未找到可点击媒体');
+      return;
+    }
+    final point = Offset(
+      (hit['x'] as num?)?.toDouble() ?? 0.5,
+      (hit['y'] as num?)?.toDouble() ?? 0.5,
+    );
+    _showSmartOperation('点击当前媒体', point: point);
+    final cx = (hit['clientX'] as num?)?.toDouble() ?? 0;
+    final cy = (hit['clientY'] as num?)?.toDouble() ?? 0;
+    await _controller?.evaluateJavascript(
+      source: SmartActionJs.tapAt(clientX: cx, clientY: cy),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 900));
+  }
+
+  Future<void> _actionLongPressDownload(Map<String, dynamic> task) async {
+    final hit = await _actionFindCenterMedia(task);
+    if (hit == null) {
+      _showSmartOperation('未找到可长按媒体');
+      task['failed'] = ((task['failed'] as int?) ?? 0) + 1;
+      return;
+    }
+    final point = Offset(
+      (hit['x'] as num?)?.toDouble() ?? 0.5,
+      (hit['y'] as num?)?.toDouble() ?? 0.5,
+    );
+    final cx = (hit['clientX'] as num?)?.toDouble() ?? 0;
+    final cy = (hit['clientY'] as num?)?.toDouble() ?? 0;
+    task['gestureDownloadPending'] = true;
+    task['gestureDownloadStartedAt'] = DateTime.now();
+    final completer = Completer<bool>();
+    task['actionDownloadCompleter'] = completer;
+    _showSmartOperation('长按当前媒体，触发下载', point: point);
+    // 直接调用页面内下载入口，避免合成 touchmove 取消长按计时器。
+    try {
+      final raw = await _controller?.evaluateJavascript(
+        source: '''
+(() => {
+  if (typeof window.__appTriggerSmartLongPress !== 'function') {
+    return {ok:false, reason:'hook_missing'};
+  }
+  return window.__appTriggerSmartLongPress($cx, $cy);
+})()
+''',
+      );
+      debugPrint('action longPressDownload: $raw');
+      if (raw is Map && raw['ok'] == false) {
+        _showSmartOperation('长按下载未触发：${raw['reason'] ?? 'unknown'}');
+        task['gestureDownloadPending'] = false;
+        task.remove('actionDownloadCompleter');
+        task['failed'] = ((task['failed'] as int?) ?? 0) + 1;
+        return;
+      }
+    } catch (e) {
+      debugPrint('action longPressDownload failed: $e');
+      task['gestureDownloadPending'] = false;
+      task.remove('actionDownloadCompleter');
+      task['failed'] = ((task['failed'] as int?) ?? 0) + 1;
+      return;
+    }
+    try {
+      await completer.future.timeout(const Duration(minutes: 6));
+    } on TimeoutException {
+      task['gestureDownloadPending'] = false;
+      task.remove('actionDownloadCompleter');
+      _showSmartOperation('长按下载超时，继续下一步');
+    }
+  }
+
+  Future<void> _actionWaitDownload(Map<String, dynamic> task) async {
+    _showSmartOperation('等待下载完成');
+    final started = DateTime.now();
+    while (identical(_smartDownloadTask, task) &&
+        DateTime.now().difference(started) < const Duration(minutes: 6)) {
+      final pending = task['gestureDownloadPending'] == true;
+      final downloading = _downloadTasks.any(
+        (row) =>
+            row['isSmartBatchMedia'] == true && row['status'] == 'downloading',
+      );
+      final longPressBusy = _longPressVideoDownloadInProgress;
+      if (!pending && !downloading && !longPressBusy) {
+        await Future<void>.delayed(const Duration(milliseconds: 350));
+        return;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+    }
+  }
+
+  Future<void> _actionGoBack(Map<String, dynamic> task) async {
+    _showSmartOperation('返回', point: const Offset(0.12, 0.18));
+    final controller = _controller;
+    if (controller == null) return;
+    if (await controller.canGoBack()) {
+      await controller.goBack();
+      await Future<void>.delayed(const Duration(milliseconds: 800));
+      return;
+    }
+    final origin = (task['originUrl'] ?? '').toString();
+    if (origin.startsWith('http') && _isWithinSmartDownloadSite(origin)) {
+      _loadUrl(origin);
+      await Future<void>.delayed(const Duration(milliseconds: 800));
+    }
   }
 
   Future<void> _startSmartDownload({
@@ -11119,6 +12589,10 @@ class _BrowserPageState extends State<BrowserPage>
     final task = _smartDownloadTask;
     final controller = _controller;
     if (task == null || controller == null) return;
+    // 动作套路 / 本页同层批量 由独立循环驱动，不进入旧 FSM。
+    if (task['mode'] == 'action_recipe' || task['mode'] == 'scope_batch') {
+      return;
+    }
     if (_smartDownloadAdvancing) {
       if (task['advanceRetryScheduled'] != true) {
         task['advanceRetryScheduled'] = true;
@@ -14637,8 +16111,13 @@ class _BrowserPageState extends State<BrowserPage>
     if (task == null) return;
     final success = task['success'] as int;
     final target = task['target'] as int;
+    final actionRecipeMode = task['mode'] == 'action_recipe';
+    final scopeBatchMode = task['mode'] == 'scope_batch';
     final hardStop = reason != null && _isSmartHardStopReason(reason);
-    if (success < target && !hardStop) {
+    if (!actionRecipeMode &&
+        !scopeBatchMode &&
+        success < target &&
+        !hardStop) {
       if (reason == null && task['allowBroadenDiscovery'] == true) {
         _broadenSmartDiscovery(task, '数量尚未达标，继续扩大站内探索');
         return;
@@ -14650,8 +16129,15 @@ class _BrowserPageState extends State<BrowserPage>
       }
       reason ??= '已完成当前页尝试，未继续扩大探索（成功 $success/$target）';
     }
-    if (success > 0 && task['demoPhase'] == 'auto') {
+    if (!actionRecipeMode &&
+        !scopeBatchMode &&
+        success > 0 &&
+        task['demoPhase'] == 'auto') {
       unawaited(_persistSmartDemoRecipe(task));
+    }
+    final pendingCompleter = task.remove('actionDownloadCompleter');
+    if (pendingCompleter is Completer<bool> && !pendingCompleter.isCompleted) {
+      pendingCompleter.complete(false);
     }
     final failed = task['failed'] as int;
     final originUrl = (task['originUrl'] ?? '').toString();
@@ -14682,6 +16168,7 @@ class _BrowserPageState extends State<BrowserPage>
         _smartDownloadTask = null;
         _smartOperationPoint = null;
         _smartOperationLabel = '';
+        _smartOperationShowFinger = true;
       });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -14695,6 +16182,7 @@ class _BrowserPageState extends State<BrowserPage>
       _smartDownloadTask = null;
       _smartOperationPoint = null;
       _smartOperationLabel = '';
+      _smartOperationShowFinger = true;
     }
     if (restoreOrigin && mounted) {
       _loadUrl(originUrl);
@@ -18366,10 +19854,10 @@ class _BrowserPageState extends State<BrowserPage>
                             ),
                             slot(
                               tooltip: '书签',
-                              semanticsLabel: '书签；长按智能下载当前媒体',
+                              semanticsLabel: '书签；长按智能下载，运行中长按可停止/重设',
                               icon: const Icon(Icons.bookmark),
                               onPressed: _showBookmarks,
-                              onLongPress: _showCurrentMediaSmartDownload,
+                              onLongPress: _onBookmarkSmartLongPress,
                             ),
                             slot(
                               tooltip: '复制当前网址',
@@ -18666,7 +20154,7 @@ class _BrowserPageState extends State<BrowserPage>
                     final panelW = _downloadPanelExpanded ? 320.0 : 60.0;
                     final panelH =
                         _downloadPanelExpanded
-                            ? (_smartDownloadTask == null ? 280.0 : 350.0)
+                            ? (_smartDownloadTask == null ? 280.0 : 420.0)
                             : 60.0;
                     final defaultLeft = bodyW - 16 - panelW;
                     final defaultTop = bodyH * 0.75 - panelH / 2;
@@ -18819,6 +20307,38 @@ class _BrowserPageState extends State<BrowserPage>
               ),
             ),
           ],
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.white,
+                    side: const BorderSide(color: Colors.white54),
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    minimumSize: const Size(0, 28),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  onPressed:
+                      () => unawaited(_finishSmartDownload('用户已停止任务')),
+                  child: const Text('退出', style: TextStyle(fontSize: 11)),
+                ),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: FilledButton(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: Colors.orange.shade700,
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    minimumSize: const Size(0, 28),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  onPressed: () => unawaited(_promptStopOrResetSmartDownload()),
+                  child: const Text('停止/重设', style: TextStyle(fontSize: 11)),
+                ),
+              ),
+            ],
+          ),
         ],
       ),
     );
@@ -18826,10 +20346,43 @@ class _BrowserPageState extends State<BrowserPage>
 
   Widget _buildSmartOperationOverlay() {
     final point = _smartOperationPoint ?? const Offset(0.5, 0.5);
+    final showFinger = _smartOperationShowFinger;
     return Positioned.fill(
       child: IgnorePointer(
         child: LayoutBuilder(
           builder: (context, constraints) {
+            if (!showFinger) {
+              // 意图动作（滚屏/定位媒体）：顶部状态条，不演手指
+              return Align(
+                alignment: Alignment.topCenter,
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 10),
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.78),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: Colors.greenAccent.withValues(alpha: 0.7),
+                      ),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 7,
+                      ),
+                      child: Text(
+                        _smartOperationLabel,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            }
             final left =
                 (point.dx * constraints.maxWidth - 22)
                     .clamp(4.0, max(4.0, constraints.maxWidth - 48))
@@ -18921,7 +20474,7 @@ class _BrowserPageState extends State<BrowserPage>
         constraints: BoxConstraints(
           maxWidth: _downloadPanelExpanded ? 320 : 60,
           maxHeight:
-              _downloadPanelExpanded ? (smartTask == null ? 280 : 350) : 60,
+              _downloadPanelExpanded ? (smartTask == null ? 280 : 420) : 60,
         ),
         decoration: BoxDecoration(
           color: Colors.black.withOpacity(0.75),

@@ -1,0 +1,23 @@
+﻿js length 20716
+has FeedRoot True
+has EachMedia True
+page https://www.xfree.com/
+{
+  "ok": true,
+  "depth": 3,
+  "total": 1,
+  "videoCount": 1,
+  "imageCount": 0,
+  "centerTag": "VIDEO",
+  "centerId": "feed-video-element",
+  "items": [
+    {
+      "url": "https://cdn.xfree.com/xfree-prod/f/0/3/f03da92b-010d-44fc-b82b-fb05dfb7b34d/full.mp4",
+      "kind": "video",
+      "candidates": [
+        "https://cdn.xfree.com/xfree-prod/0/3/3/0333ba0c-09d6-4df5-a883-18162fbc5006/full.mp4"
+      ],
+      "score": 3002311.2001921083
+    }
+  ]
+}
