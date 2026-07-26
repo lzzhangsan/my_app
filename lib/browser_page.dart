@@ -45,6 +45,7 @@ import 'smart_download/smart_action_js.dart';
 import 'smart_download/smart_scope_batch.dart';
 import 'smart_download/smart_paginated_sniff.dart';
 import 'widgets/safe_modal_sheet_body.dart';
+import 'services/browser_service.dart';
 import 'services/logger.dart';
 import 'services/network_service.dart';
 
@@ -544,7 +545,7 @@ class BrowserPage extends StatefulWidget {
 }
 
 class _BrowserPageState extends State<BrowserPage>
-    with AutomaticKeepAliveClientMixin {
+    with AutomaticKeepAliveClientMixin, WidgetsBindingObserver {
   /// 将相对 URL 解析为绝对 URL（使用当前页面地址作为基准）
   String _toAbsoluteUrl(String url) {
     if (url.isEmpty) return url;
@@ -676,11 +677,14 @@ class _BrowserPageState extends State<BrowserPage>
   }
 
   Future<void> _flushBrowserCookies() async {
-    if (!Platform.isAndroid) return;
+    // Android: CookieManager.flush() 把内存 cookie 落盘，避免杀进程后丢失登录态。
+    // iOS WKWebView 默认 data store 会自行持久化；这里仍走通道以便统一调用点。
     try {
-      await const MethodChannel(
-        'browser_cookies',
-      ).invokeMethod<bool>('flushCookies');
+      if (Platform.isAndroid) {
+        await const MethodChannel(
+          'browser_cookies',
+        ).invokeMethod<bool>('flushCookies');
+      }
     } catch (e) {
       debugPrint('Failed to persist browser cookies: $e');
     }
@@ -844,6 +848,24 @@ class _BrowserPageState extends State<BrowserPage>
         host.endsWith('.x.com') ||
         host == 'twitter.com' ||
         host.endsWith('.twitter.com');
+  }
+
+  /// Google / X 等登录后需要尽快把 cookie 落盘的站点。
+  bool _shouldPersistCookiesForUrl(String? url) {
+    if (_isXPlatformPage(url)) return true;
+    final host = Uri.tryParse((url ?? '').trim())?.host.toLowerCase() ?? '';
+    if (host.isEmpty) return false;
+    return host == 'google.com' ||
+        host.endsWith('.google.com') ||
+        host == 'google.cn' ||
+        host.endsWith('.google.cn') ||
+        host == 'googleapis.com' ||
+        host.endsWith('.googleapis.com') ||
+        host == 'gstatic.com' ||
+        host.endsWith('.gstatic.com') ||
+        host == 'youtube.com' ||
+        host.endsWith('.youtube.com') ||
+        host == 'youtu.be';
   }
 
   bool _isXMediaViewerPage(String? url) {
@@ -1174,6 +1196,19 @@ class _BrowserPageState extends State<BrowserPage>
   final List<Map<String, dynamic>> _sessionPageTrail =
       <Map<String, dynamic>>[];
   static const int _kSessionPageTrailMax = 80;
+
+  /// 应用侧干净后退栈（旧→新）：忽略 hash / 重复 pushState，供历史劫持时逃生。
+  final List<String> _webBackStack = <String>[];
+  String? _webBackStackCurrent;
+  bool _webBackNavigating = false;
+  static const int _kWebBackStackMax = 50;
+  static const int _kWebBackTrapBurstMax = 10;
+
+  /// 短时间内同 host+path 的 URL 刷屏 → 视为 history 劫持。
+  String? _navSpamPathKey;
+  DateTime? _navSpamWindowStart;
+  int _navSpamCount = 0;
+  bool _historyLikelyHijacked = false;
   /// 分层嗅探页数：第1层当前页，第2层最近3页，第3层最近5页…逐层扩大。
   static const List<int> _kPaginatedSniffLayerSizes = <int>[
     1,
@@ -1187,6 +1222,8 @@ class _BrowserPageState extends State<BrowserPage>
   static int get _kPaginatedSniffMaxPages => _kPaginatedSniffLayerSizes.last;
   /// 分页嗅探「不限」数量软上限，避免一次任务过大。
   static const int _kPaginatedSniffSoftMaxTarget = 500;
+  /// 智能下载（沿用套路 / 动作编排 / 通用·91 管线）数量上限。
+  static const int _kSmartDownloadMaxTarget = 300;
   static const String _kSharedFavoriteVideosPrefsKey =
       'doc_web_video_favorites_v1';
   static const bool _favoriteDownloadDiagnosticsEnabled = true;
@@ -1232,7 +1269,9 @@ class _BrowserPageState extends State<BrowserPage>
 
   /// 常见「拉活 / 应用商店 / 站内 App」协议：拦截即可，不尝试唤起、也不弹「无法打开」。
   bool _isNoisyExternalAppScheme(String lowerUrl) {
-    return lowerUrl.startsWith('baiduboxapp://') ||
+    return lowerUrl.startsWith('baiduboxlite://') ||
+        lowerUrl.startsWith('baiduboxapp://') ||
+        lowerUrl.startsWith('baidu://') ||
         lowerUrl.startsWith('bdapp://') ||
         lowerUrl.startsWith('baiduhaokan://') ||
         lowerUrl.startsWith('tbopen://') ||
@@ -1244,6 +1283,82 @@ class _BrowserPageState extends State<BrowserPage>
         lowerUrl.startsWith('samsungapps://') ||
         lowerUrl.startsWith('market://') ||
         lowerUrl.startsWith('hap://');
+  }
+
+  /// 从 App 深链（如 baiduboxlite://…?url=）或 intent:// 提取可在 WebView 打开的 http(s) URL。
+  String? _extractHttpUrlFromAppDeepLink(String rawUrl) {
+    final trimmed = rawUrl.trim();
+    if (trimmed.isEmpty) return null;
+    final lower = trimmed.toLowerCase();
+
+    String? asHttp(String? value) {
+      if (value == null || value.isEmpty) return null;
+      var candidate = value.trim();
+      try {
+        candidate = Uri.decodeFull(candidate);
+      } catch (_) {}
+      if (candidate.startsWith('http://') || candidate.startsWith('https://')) {
+        return candidate;
+      }
+      try {
+        final again = Uri.decodeFull(candidate);
+        if (again.startsWith('http://') || again.startsWith('https://')) {
+          return again;
+        }
+      } catch (_) {}
+      return null;
+    }
+
+    if (lower.startsWith('intent://')) {
+      final fallback = RegExp(
+        r'S\.browser_fallback_url=([^;]+)',
+        caseSensitive: false,
+      ).firstMatch(trimmed);
+      final fromFallback = asHttp(fallback?.group(1));
+      if (fromFallback != null) return fromFallback;
+
+      final schemeMatch = RegExp(
+        r';scheme=([a-zA-Z][a-zA-Z0-9+.-]*)',
+      ).firstMatch(trimmed);
+      final scheme = (schemeMatch?.group(1) ?? '').toLowerCase();
+      if (scheme == 'http' || scheme == 'https') {
+        final pathPart = trimmed.substring('intent://'.length).split('#').first;
+        if (pathPart.isNotEmpty) return '$scheme://$pathPart';
+      }
+      return null;
+    }
+
+    final uri = Uri.tryParse(trimmed);
+    if (uri == null) return null;
+    for (final key in const ['url', 'target', 'link', 'u', 'weburl', 'src']) {
+      final hit = asHttp(uri.queryParameters[key]);
+      if (hit != null) return hit;
+    }
+    return null;
+  }
+
+  /// 非 http(s) 导航：优先解开深链到网页；否则静默取消（避免「无法打开」页）。
+  Future<NavigationActionPolicy> _handleNonHttpNavigation(
+    InAppWebViewController ctrl,
+    String url,
+  ) async {
+    if (url.startsWith('data:') || url.startsWith('blob:')) {
+      return NavigationActionPolicy.ALLOW;
+    }
+    final extracted = _extractHttpUrlFromAppDeepLink(url);
+    if (extracted != null) {
+      debugPrint('深链转 WebView 打开: $extracted <- $url');
+      await ctrl.loadUrl(urlRequest: URLRequest(url: WebUri(extracted)));
+      return NavigationActionPolicy.CANCEL;
+    }
+    final lower = url.toLowerCase();
+    if (_isNoisyExternalAppScheme(lower)) {
+      debugPrint('已拦截 App 协议导航: $url');
+      return NavigationActionPolicy.CANCEL;
+    }
+    debugPrint('检测到自定义URL协议: $url');
+    _launchExternalApp(url);
+    return NavigationActionPolicy.CANCEL;
   }
 
   Future<void> _launchExternalApp(String url) async {
@@ -1279,7 +1394,11 @@ class _BrowserPageState extends State<BrowserPage>
   String? _lastBrowsedUrl;
 
   final List<Map<String, dynamic>> _commonWebsites = [
-    {'name': 'Google', 'url': 'https://www.google.com', 'icon': Icons.search},
+    {
+      'name': 'Google',
+      'url': BrowserService.kGoogleHomeUrl,
+      'icon': Icons.search,
+    },
     {'name': '百度', 'url': 'https://www.baidu.com', 'icon': Icons.search},
   ];
   Map<String, dynamic>? _smartDownloadTask;
@@ -1339,10 +1458,13 @@ class _BrowserPageState extends State<BrowserPage>
   }
 
   Future<void> _addWebsite(String name, String url, IconData icon) async {
+    // Store user URL verbatim (trim + optional https if scheme missing).
+    // Do not rewrite host/path/query of complete URLs.
+    final storedUrl = BrowserService.normalizeCommonWebsiteUrl(url);
     setState(
       () => _commonWebsites.add({
-        'name': name,
-        'url': url,
+        'name': name.trim(),
+        'url': storedUrl,
         'iconCode': icon.codePoint,
       }),
     );
@@ -1353,6 +1475,7 @@ class _BrowserPageState extends State<BrowserPage>
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _databaseService = getService<DatabaseService>();
     _initializeDownloader();
     _loadBookmarks();
@@ -1367,6 +1490,17 @@ class _BrowserPageState extends State<BrowserPage>
       const Duration(seconds: 3),
       (_) => unawaited(_syncCurrentFavoriteProgress()),
     );
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden) {
+      // 退到后台 / 划掉多任务前尽量把 WebView cookie 刷到磁盘（含 Google 登录态）
+      unawaited(_flushBrowserCookies());
+    }
   }
 
   @override
@@ -2629,22 +2763,31 @@ class _BrowserPageState extends State<BrowserPage>
             ? item['smartTask'] as Map<String, dynamic>
             : null;
     if (isSmartGesture) smartTask?.remove('lastGestureFailureType');
-    final existingMedia = await _findExistingMediaForItem(item);
+    final forceNoPreSkip = _smartForceDownloadNoPreSkip(smartTask);
+    // 动作编排：下载前绝不查重跳过；先强制进下载队列，入库后再按文件哈希去重。
+    final existingMedia =
+        forceNoPreSkip ? null : await _findExistingMediaForItem(item);
     if (existingMedia != null && item['allowSourceUrlReuse'] != true) {
+      // 智能下载：仅当库内行对应磁盘文件仍存在时才可跳过（禁止软映射误杀）
       if (isSmartDownload) {
-        if (isSmartGesture) {
-          smartTask?['lastGestureFailureType'] = 'already_in_library';
+        if (!await _libraryConfirmsExistingMediaRow(existingMedia)) {
+          debugPrint('智能下载：源地址映射失效（库中无文件），继续下载');
+        } else {
+          if (isSmartGesture) {
+            smartTask?['lastGestureFailureType'] = 'already_in_library';
+          }
+          onFailureType?.call('already_in_library');
+          return false;
         }
-        onFailureType?.call('already_in_library');
-        return false;
-      }
-      final downloadAnyway = await _confirmSourceUrlDuplicateBeforeDownload(
-        existingMedia,
-      );
-      if (!downloadAnyway) {
-        await _markFavoriteDownloaded(item, downloaded: true);
-        onFailureType?.call('already_in_library');
-        return true;
+      } else {
+        final downloadAnyway = await _confirmSourceUrlDuplicateBeforeDownload(
+          existingMedia,
+        );
+        if (!downloadAnyway) {
+          await _markFavoriteDownloaded(item, downloaded: true);
+          onFailureType?.call('already_in_library');
+          return true;
+        }
       }
       // URL matches are only hints. The downloaded content hash remains the
       // authoritative duplicate check for dynamic and signed media URLs.
@@ -2829,11 +2972,48 @@ class _BrowserPageState extends State<BrowserPage>
               : <String, String>{};
       smartTask['videoMediaStates'] = smartVideoStates;
       if (smartVideoStates.containsKey(smartXMediaId)) {
-        if (isSmartGesture) {
-          smartTask?['lastGestureFailureType'] = 'already_in_smart_task';
+        final prev = (smartVideoStates[smartXMediaId] ?? '').toString();
+        final activelyDownloading =
+            prev == 'downloading' && _hasActiveSmartBatchDownload();
+        if (activelyDownloading) {
+          if (isSmartGesture) {
+            smartTask?['lastGestureFailureType'] = 'already_in_smart_task';
+          }
+          onFailureType?.call('already_in_smart_task');
+          return false;
         }
-        onFailureType?.call('already_in_smart_task');
-        return false;
+        // 动作编排：忽略 completed/会话态预跳过，清掉软状态后强制再下
+        if (forceNoPreSkip) {
+          smartVideoStates.remove(smartXMediaId);
+          debugPrint(
+            'Smart download: action_recipe ignore videoMediaState '
+            'id=$smartXMediaId prev=$prev (force download)',
+          );
+        } else {
+          // completed/failed/stale downloading：仅当媒体库仍有该条才视为重复
+          var libraryConfirmed = false;
+          if (prev == 'completed') {
+            for (final u in <String>[downloadUrl, videoUrl, ...attempts]) {
+              if (u.trim().isEmpty) continue;
+              if (await _libraryConfirmsMediaSource(u)) {
+                libraryConfirmed = true;
+                break;
+              }
+            }
+          }
+          if (libraryConfirmed) {
+            if (isSmartGesture) {
+              smartTask?['lastGestureFailureType'] = 'already_in_library';
+            }
+            onFailureType?.call('already_in_library');
+            return false;
+          }
+          smartVideoStates.remove(smartXMediaId);
+          debugPrint(
+            'Smart download: cleared stale videoMediaState '
+            'id=$smartXMediaId prev=$prev (not in library)',
+          );
+        }
       }
       attempts.removeWhere((url) {
         final id = _xMediaIdentity(url);
@@ -2866,15 +3046,21 @@ class _BrowserPageState extends State<BrowserPage>
       progress.value = null;
       detailNotifier.value = '候选 ${i + 1}/${attempts.length}：正在连接...';
       if (smartTask != null &&
-          !_reserveSmartMediaName(
+          !forceNoPreSkip &&
+          !await _reserveSmartMediaName(
             smartTask,
             attempts[i],
             title: (item['title'] ?? '').toString(),
             pageUrl: pageUrl,
           )) {
-        failureType = 'duplicate_name_in_smart_task';
+        // 预约拦截仅在媒体库确认后发生；映射为 already_in_library 以便正确跳过
+        // 动作编排 forceNoPreSkip 时已绕过本分支，避免 24h/标题软预约误杀
+        failureType =
+            (smartTask['lastSmartReserveBlockReason'] ?? 'already_in_library')
+                .toString();
+        if (failureType.isEmpty) failureType = 'already_in_library';
         lastFailureType = failureType;
-        detailNotifier.value = '同一任务已处理过同名媒体，正在换下一个';
+        detailNotifier.value = '媒体库已有相同媒体，正在换下一个';
         if (_favoriteDownloadDiagnosticsEnabled) {
           Logger.log(
             '[稳健下载诊断] 尝试#${i + 1}/${attempts.length}: 跳过 | failureType=$failureType | url=${attempts[i]}',
@@ -3388,12 +3574,23 @@ class _BrowserPageState extends State<BrowserPage>
     Map<String, dynamic> existingRow,
   ) async {
     final smartTask = _smartDownloadTask;
-    // 智能下载 / 动作编排期间：重复一律自动跳过，绝不弹窗卡住流程
+    // 智能下载 / 动作编排期间：仅当媒体库文件仍存在才自动跳过
+    // （调用方应为入库后哈希查重；动作编排下载前预跳过已关闭）
     if (smartTask != null) {
+      if (!await _libraryConfirmsExistingMediaRow(existingRow)) {
+        debugPrint('智能下载：重复行无效（库中无文件），不跳过，继续下载');
+        return;
+      }
       smartTask['lastGestureFailureType'] = 'already_in_library';
       smartTask['duplicateSkipped'] =
           ((smartTask['duplicateSkipped'] as int?) ?? 0) + 1;
       await _markCurrentMediaHandled(smartTask);
+      // 库内已存在：视为本条已处理完毕，可交由 findNext（非「下载中」抢跑）
+      _actionRecipeFinishAwaitLibrarySave(
+        smartTask,
+        libraryOk: false,
+        outcome: 'already_in_library',
+      );
       final pendingCompleter = smartTask.remove('actionDownloadCompleter');
       if (pendingCompleter is Completer<bool> &&
           !pendingCompleter.isCompleted) {
@@ -3404,7 +3601,7 @@ class _BrowserPageState extends State<BrowserPage>
       if (identical(_smartDownloadTask, smartTask)) {
         _showSmartOperation(
           smartTask['mode'] == 'action_recipe'
-              ? '重复媒体，已标记，交由套路切下一条'
+              ? '库内确认重复（磁盘文件存在），交由套路切下一条'
               : '重复媒体，已跳过并准备切下一条',
         );
       }
@@ -3495,17 +3692,31 @@ class _BrowserPageState extends State<BrowserPage>
   ) async {
     final smartTask = _smartDownloadTask;
     if (smartTask != null) {
+      // 动作编排：下载前强制继续下载，不做源地址预跳过
+      if (_smartForceDownloadNoPreSkip(smartTask)) {
+        debugPrint('智能下载：action_recipe force download, ignore source pre-skip');
+        return true;
+      }
+      if (!await _libraryConfirmsExistingMediaRow(existingRow)) {
+        debugPrint('智能下载：源地址映射失效（库中无文件），允许继续下载');
+        return true;
+      }
       smartTask['duplicateSkipped'] =
           ((smartTask['duplicateSkipped'] as int?) ?? 0) + 1;
       smartTask['lastGestureFailureType'] = 'already_in_library';
       await _markCurrentMediaHandled(smartTask);
+      _actionRecipeFinishAwaitLibrarySave(
+        smartTask,
+        libraryOk: false,
+        outcome: 'already_in_library',
+      );
       final pendingCompleter = smartTask.remove('actionDownloadCompleter');
       if (pendingCompleter is Completer<bool> &&
           !pendingCompleter.isCompleted) {
         pendingCompleter.complete(false);
       }
       smartTask['gestureDownloadPending'] = false;
-      debugPrint('智能下载：源地址疑似重复，自动不下载并继续切条');
+      debugPrint('智能下载：源地址已在媒体库确认存在，自动跳过');
       // 动作编排：只标记，切条交给套路 findNext（此处再切会双切跳条）
       return false;
     }
@@ -5796,15 +6007,20 @@ class _BrowserPageState extends State<BrowserPage>
       if (!isBase64 && !isStreamReference) {
         if (!_tryRegisterMediaUrlForProcessing(urlValue)) {
           if (isSmartGesture) {
-            // 同一次长按常连发多条 media；在途时绝不能 complete，
+            // 同一次长按常连发多条 media；在等待入库确认时绝不能 complete，
             // 否则 Completer 提前结束 → 套路会边下边切条。
-            if (_hasActiveSmartBatchDownload()) {
+            final task = _smartDownloadTask;
+            final awaitingSave =
+                task != null &&
+                (task['actionAwaitingLibrarySave'] == true ||
+                    task['gestureDownloadPending'] == true ||
+                    _hasActiveSmartBatchDownload());
+            if (awaitingSave) {
               debugPrint(
-                'Smart gesture: ignore duplicate media while download in progress',
+                'Smart gesture: ignore duplicate media while awaiting library save',
               );
               return;
             }
-            final task = _smartDownloadTask;
             if (task != null) {
               task['lastGestureFailureType'] = 'already_downloading';
             }
@@ -6008,6 +6224,21 @@ class _BrowserPageState extends State<BrowserPage>
           }
           if (isStreamReference) {
             if (isSmartGesture) {
+              final task = _smartDownloadTask;
+              // 流引用只是「还没抓到完整地址」：入库闸门打开时绝不能 complete，
+              // 否则 Completer 提前结束 → waitDownload 只剩文案 → findNext 抢跑切条。
+              final awaitingSave =
+                  task != null &&
+                  (task['actionAwaitingLibrarySave'] == true ||
+                      task['actionLongPressNeedsConfirm'] == true ||
+                      task['gestureDownloadPending'] == true);
+              if (awaitingSave) {
+                debugPrint(
+                  'Smart gesture: ignore stream reference while awaiting library save',
+                );
+                return;
+              }
+              task?['lastGestureFailureType'] = 'no_direct_url';
               await _completeSmartGestureDownload(false);
             }
             if (mounted) {
@@ -6029,6 +6260,14 @@ class _BrowserPageState extends State<BrowserPage>
             sourceMimeType: sourceMimeType,
           );
           if (isSmartGesture) {
+            final task = _smartDownloadTask;
+            if (task != null &&
+                !_mediaDownloadSaveResolved &&
+                (task['lastGestureFailureType'] ?? '').toString().isEmpty) {
+              // blob/base64 路径未写入 failureType 时，空 failure 会被
+              // suppressEarlyComplete 当成噪声压制，导致入库闸门永不关闭。
+              task['lastGestureFailureType'] = 'invalid_smart_media_content';
+            }
             await _completeSmartGestureDownload(_mediaDownloadSaveResolved);
           }
           return;
@@ -6059,18 +6298,32 @@ class _BrowserPageState extends State<BrowserPage>
           selectedType = MediaType.video;
         }
         if (selectedType == MediaType.video) {
-          final existing = await _findExistingVideoBeforeDownload(resolvedUrl);
-          if (existing != null) {
-            if (isSmartGesture) {
-              final task = _smartDownloadTask;
-              if (task != null) {
-                task['lastGestureFailureType'] = 'already_in_library';
+          final forceNoPreSkip =
+              _smartForceDownloadNoPreSkip(_smartDownloadTask);
+          // 动作编排：绝不在下载前因源地址映射跳过，强制进入进度队列下载
+          if (!forceNoPreSkip) {
+            final existing =
+                await _findExistingVideoBeforeDownload(resolvedUrl);
+            if (existing != null) {
+              if (isSmartGesture) {
+                // 仅磁盘文件仍在时才可视为库内重复
+                if (!await _libraryConfirmsExistingMediaRow(existing)) {
+                  debugPrint(
+                    'Smart gesture: source map stale (no file), force download',
+                  );
+                } else {
+                  final task = _smartDownloadTask;
+                  if (task != null) {
+                    task['lastGestureFailureType'] = 'already_in_library';
+                  }
+                  await _completeSmartGestureDownload(false);
+                  return;
+                }
+              } else if (!await _confirmSourceUrlDuplicateBeforeDownload(
+                existing,
+              )) {
+                return;
               }
-              await _completeSmartGestureDownload(false);
-              return;
-            }
-            if (!await _confirmSourceUrlDuplicateBeforeDownload(existing)) {
-              return;
             }
           }
         }
@@ -6319,6 +6572,14 @@ class _BrowserPageState extends State<BrowserPage>
       String? detectedExtension;
       if (normalizedMediaType == 'video') {
         if (bytes.length < _kMinBase64VideoBytes) {
+          final smartTask = _smartDownloadTask;
+          if (smartTask != null &&
+              (smartTask['gestureDownloadPending'] == true ||
+                  smartTask['actionAwaitingLibrarySave'] == true ||
+                  smartTask['actionLongPressNeedsConfirm'] == true)) {
+            smartTask['lastGestureFailureType'] =
+                'invalid_smart_media_content';
+          }
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
@@ -6331,6 +6592,14 @@ class _BrowserPageState extends State<BrowserPage>
         }
         detectedExtension = _detectVideoExtension(bytes);
         if (detectedExtension == null) {
+          final smartTask = _smartDownloadTask;
+          if (smartTask != null &&
+              (smartTask['gestureDownloadPending'] == true ||
+                  smartTask['actionAwaitingLibrarySave'] == true ||
+                  smartTask['actionLongPressNeedsConfirm'] == true)) {
+            smartTask['lastGestureFailureType'] =
+                'invalid_smart_media_content';
+          }
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
@@ -6344,6 +6613,14 @@ class _BrowserPageState extends State<BrowserPage>
       } else if (normalizedMediaType == 'image') {
         detectedExtension = _detectImageExtension(bytes);
         if (detectedExtension == null) {
+          final smartTask = _smartDownloadTask;
+          if (smartTask != null &&
+              (smartTask['gestureDownloadPending'] == true ||
+                  smartTask['actionAwaitingLibrarySave'] == true ||
+                  smartTask['actionLongPressNeedsConfirm'] == true)) {
+            smartTask['lastGestureFailureType'] =
+                'invalid_smart_media_content';
+          }
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
@@ -6433,11 +6710,19 @@ class _BrowserPageState extends State<BrowserPage>
     }
   }
 
-  void _loadUrl(String url) {
-    String processedUrl = url;
-    if (!url.startsWith('http://') && !url.startsWith('https://')) {
-      processedUrl = 'https://$url';
+  /// If navigation hits dead Google `/m`, return replacement URL; else null.
+  String? _rewriteDeadGoogleMobileNavigation(String url) {
+    if (!BrowserService.isDeadGoogleMobileUrl(url)) return null;
+    final fixed = BrowserService.normalizeCommonWebsiteUrl(url);
+    if (fixed.isEmpty || fixed == url) {
+      return BrowserService.kGoogleHomeUrl;
     }
+    return fixed;
+  }
+
+  void _loadUrl(String url) {
+    // Only fix known dead Google /m shortcuts; never rewrite user .hk / query URLs.
+    final processedUrl = BrowserService.prepareUrlForLoad(url);
     // 智能下载期间禁止任何跨站页面跳转（含程序主动 _loadUrl，不只靠 WebView 拦截）。
     if (_smartDownloadTask != null &&
         !_isWithinSmartDownloadSite(processedUrl)) {
@@ -6568,7 +6853,7 @@ class _BrowserPageState extends State<BrowserPage>
           _commonWebsites.addAll([
             {
               'name': 'Google',
-              'url': 'https://www.google.com',
+              'url': BrowserService.kGoogleHomeUrl,
               'iconCode': Icons.public.codePoint,
             },
             {
@@ -6596,6 +6881,8 @@ class _BrowserPageState extends State<BrowserPage>
         await _saveCommonWebsites();
       }
 
+      // 回主页不销毁 WebView，但后退栈从「主页再出发」更干净。
+      _clearWebBackStack();
       setState(() => _showHomePage = true);
       widget.onBrowserHomePageChanged?.call(_showHomePage);
     }
@@ -6610,27 +6897,270 @@ class _BrowserPageState extends State<BrowserPage>
         s.startsWith('about:srcdoc');
   }
 
+  /// 用于后退栈 / 劫持判断：去掉 fragment，保留 host/path/query。
+  String _navIdentityKey(String url) {
+    final trimmed = url.trim();
+    if (trimmed.isEmpty) return '';
+    final uri = Uri.tryParse(trimmed);
+    if (uri == null) return trimmed.split('#').first;
+    return uri.replace(fragment: '').toString();
+  }
+
+  String _navHostPathKey(String url) {
+    final uri = Uri.tryParse(url.trim());
+    if (uri == null) return _navIdentityKey(url);
+    final host = uri.host.toLowerCase().replaceFirst(RegExp(r'^www\.'), '');
+    return '$host${uri.path}';
+  }
+
+  void _clearWebBackStack() {
+    _webBackStack.clear();
+    _webBackStackCurrent = null;
+    _historyLikelyHijacked = false;
+    _navSpamPathKey = null;
+    _navSpamWindowStart = null;
+    _navSpamCount = 0;
+  }
+
+  void _observeUrlForHistorySpam(String url) {
+    if (!url.startsWith('http://') && !url.startsWith('https://')) return;
+    final pathKey = _navHostPathKey(url);
+    if (pathKey.isEmpty) return;
+    final now = DateTime.now();
+    if (_navSpamPathKey == pathKey &&
+        _navSpamWindowStart != null &&
+        now.difference(_navSpamWindowStart!) < const Duration(seconds: 2)) {
+      _navSpamCount++;
+      if (_navSpamCount >= 4) {
+        _historyLikelyHijacked = true;
+      }
+    } else {
+      _navSpamPathKey = pathKey;
+      _navSpamWindowStart = now;
+      _navSpamCount = 1;
+    }
+  }
+
+  /// 记录有意义的页面（忽略 hash / 重复 URL），供 WebView history 被污染时逃生。
+  /// [fromHistoryUpdate] 为 true 时：同 host+path 的 query 刷屏只用于劫持检测，不入栈。
+  void _noteMeaningfulWebNavigation(
+    String url, {
+    bool fromHistoryUpdate = false,
+  }) {
+    if (_webBackNavigating) return;
+    if (_isBlankHistoryUrl(url)) return;
+    if (!url.startsWith('http://') && !url.startsWith('https://')) return;
+    final key = _navIdentityKey(url);
+    if (key.isEmpty) return;
+    _observeUrlForHistorySpam(url);
+    if (_webBackStackCurrent == null) {
+      _webBackStackCurrent = key;
+      return;
+    }
+    if (_webBackStackCurrent == key) return;
+    final sameShell =
+        _navHostPathKey(_webBackStackCurrent!) == _navHostPathKey(key);
+    // pushState / 同壳 query 垃圾：不污染干净后退栈。
+    if (sameShell && (fromHistoryUpdate || _historyLikelyHijacked)) {
+      if (!fromHistoryUpdate) {
+        _webBackStackCurrent = key;
+      }
+      return;
+    }
+    _webBackStack.add(_webBackStackCurrent!);
+    if (_webBackStack.length > _kWebBackStackMax) {
+      _webBackStack.removeAt(0);
+    }
+    _webBackStackCurrent = key;
+  }
+
+  void _syncWebBackStackAfterEscape(String landedUrl) {
+    final key = _navIdentityKey(landedUrl);
+    if (key.isEmpty || _isBlankHistoryUrl(landedUrl)) return;
+    _webBackStackCurrent = key;
+    while (_webBackStack.isNotEmpty &&
+        _navIdentityKey(_webBackStack.last) == key) {
+      _webBackStack.removeLast();
+    }
+    if (_navHostPathKey(landedUrl) != _navSpamPathKey) {
+      _historyLikelyHijacked = false;
+      _navSpamCount = 0;
+    }
+  }
+
+  bool _isStillOnTrappedPage(String beforeUrl, String afterUrl) {
+    if (_isBlankHistoryUrl(afterUrl)) return true;
+    final beforeId = _navIdentityKey(beforeUrl);
+    final afterId = _navIdentityKey(afterUrl);
+    if (beforeId.isNotEmpty && beforeId == afterId) return true;
+    // 劫持场景：goBack 只在同壳页面的 query/hash 垃圾项之间挪动。
+    if (_historyLikelyHijacked &&
+        _navHostPathKey(beforeUrl) == _navHostPathKey(afterUrl)) {
+      return true;
+    }
+    return false;
+  }
+
+  bool _isUsableBackTarget(String candidate, String stuckUrl) {
+    if (candidate.isEmpty || _isBlankHistoryUrl(candidate)) return false;
+    if (!candidate.startsWith('http://') && !candidate.startsWith('https://')) {
+      return false;
+    }
+    final stuckKey = _navIdentityKey(stuckUrl);
+    final stuckPath = _navHostPathKey(stuckUrl);
+    if (stuckKey.isNotEmpty && _navIdentityKey(candidate) == stuckKey) {
+      return false;
+    }
+    // 劫持时跳过与困页同壳的垃圾项，保留搜索结果等真正上一页。
+    if (_historyLikelyHijacked &&
+        stuckPath.isNotEmpty &&
+        _navHostPathKey(candidate) == stuckPath) {
+      return false;
+    }
+    return true;
+  }
+
+  Future<String?> _popWebBackStackTarget(String stuckUrl) async {
+    while (_webBackStack.isNotEmpty) {
+      final candidate = _webBackStack.removeLast();
+      if (!_isUsableBackTarget(candidate, stuckUrl)) continue;
+      _webBackStackCurrent = candidate;
+      return candidate;
+    }
+    _webBackStackCurrent = null;
+    return null;
+  }
+
+  /// 栈被清空或未记上时，用本会话浏览轨迹找回上一有意义页（如百度搜索结果）。
+  String? _fallbackPreviousFromSessionTrail(String stuckUrl) {
+    final stuckKey = _navIdentityKey(stuckUrl);
+    for (final row in _sessionPageTrail) {
+      final u = (row['url'] ?? '').toString().trim();
+      if (!_isUsableBackTarget(u, stuckUrl)) continue;
+      // 轨迹最新在前：第一条常是当前困页，已在 usable 检查里跳过。
+      if (stuckKey.isNotEmpty && _navIdentityKey(u) == stuckKey) continue;
+      return _navIdentityKey(u);
+    }
+    return null;
+  }
+
+  Future<String?> _resolveWebBackEscapeTarget(String stuckUrl) async {
+    final fromStack = await _popWebBackStackTarget(stuckUrl);
+    if (fromStack != null && fromStack.isNotEmpty) return fromStack;
+    final fromTrail = _fallbackPreviousFromSessionTrail(stuckUrl);
+    if (fromTrail != null && fromTrail.isNotEmpty) {
+      _webBackStackCurrent = fromTrail;
+      return fromTrail;
+    }
+    return null;
+  }
+
+  Future<void> _loadWebBackEscapeUrl(InAppWebViewController c, String url) async {
+    if (_isBlankHistoryUrl(url)) return;
+    _webBackNavigating = true;
+    try {
+      // loadUrl 会清掉 forward 栈，避免前进落到 about:blank。
+      await c.loadUrl(urlRequest: URLRequest(url: WebUri(url)));
+      _syncWebBackStackAfterEscape(url);
+      if (mounted) {
+        setState(() {
+          _currentUrl = url;
+          _urlController.text = url;
+        });
+      } else {
+        _currentUrl = url;
+        _urlController.text = url;
+      }
+    } finally {
+      Future<void>.delayed(const Duration(milliseconds: 500), () {
+        _webBackNavigating = false;
+      });
+    }
+  }
+
+  /// 跳过历史里的 about:blank；若只剩空白则停止（绝不在此处回主页）。
+  /// 返回当前 URL；仍为空白时由调用方改走应用栈 / 主页兜底。
+  Future<String> _goBackSkippingBlanks(
+    InAppWebViewController c, {
+    int maxSteps = 8,
+  }) async {
+    var u = (await c.getUrl())?.toString() ?? '';
+    for (var i = 0; i < maxSteps; i++) {
+      if (!_isBlankHistoryUrl(u)) return u;
+      if (!await c.canGoBack()) return u;
+      await c.goBack();
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+      u = (await c.getUrl())?.toString() ?? '';
+    }
+    return u;
+  }
+
   Future<void> _performWebGoBack() async {
     final c = _controller;
     if (c == null || _showHomePage) return;
-    if (!await c.canGoBack()) {
-      await _goToHomePage();
-      return;
-    }
-    await c.goBack();
-    await Future<void>.delayed(const Duration(milliseconds: 40));
-    for (var i = 0; i < 28; i++) {
-      final u = (await c.getUrl())?.toString() ?? '';
-      if (!_isBlankHistoryUrl(u)) return;
-      if (!await c.canGoBack()) {
-        await _goToHomePage();
+
+    final before = (await c.getUrl())?.toString() ?? _currentUrl;
+
+    // 历史已被劫持时：优先 loadUrl 到应用栈上一有意义页（搜索结果等），
+    // 避免连续 goBack 越过目标页落到 about:blank / 主页。
+    if (_historyLikelyHijacked) {
+      final hijackTarget = await _resolveWebBackEscapeTarget(before);
+      if (hijackTarget != null && hijackTarget.isNotEmpty) {
+        debugPrint('劫持后退栈逃生: $before -> $hijackTarget');
+        _historyLikelyHijacked = false;
+        await _loadWebBackEscapeUrl(c, hijackTarget);
         return;
       }
-      await c.goBack();
-      await Future<void>.delayed(const Duration(milliseconds: 40));
     }
-    final last = (await c.getUrl())?.toString() ?? '';
-    if (_isBlankHistoryUrl(last)) await _goToHomePage();
+
+    var escaped = false;
+    var after = '';
+
+    if (await c.canGoBack()) {
+      await c.goBack();
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      after = await _goBackSkippingBlanks(c);
+
+      if (!_isStillOnTrappedPage(before, after) && !_isBlankHistoryUrl(after)) {
+        escaped = true;
+      } else if (_isBlankHistoryUrl(after)) {
+        // 落到空白：不要继续 goBack（会冲过搜索结果），改走应用栈。
+        escaped = false;
+      } else {
+        // 仍困在同壳：少量 goBack；一旦空白立刻停，防止越过上一真页。
+        for (var i = 0; i < _kWebBackTrapBurstMax; i++) {
+          if (!await c.canGoBack()) break;
+          await c.goBack();
+          await Future<void>.delayed(const Duration(milliseconds: 55));
+          after = (await c.getUrl())?.toString() ?? '';
+          if (_isBlankHistoryUrl(after)) {
+            escaped = false;
+            break;
+          }
+          if (!_isStillOnTrappedPage(before, after)) {
+            escaped = true;
+            break;
+          }
+        }
+      }
+
+      if (escaped) {
+        _syncWebBackStackAfterEscape(after);
+        return;
+      }
+    }
+
+    // WebView 历史无效、落到 blank、或仍困同页：用干净栈 / 会话轨迹。
+    final target = await _resolveWebBackEscapeTarget(before);
+    if (target != null && target.isNotEmpty) {
+      debugPrint('后退栈逃生: $before -> $target');
+      _historyLikelyHijacked = false;
+      await _loadWebBackEscapeUrl(c, target);
+      return;
+    }
+
+    // 仅当确实没有上一有意义页时才回浏览器主页。
+    await _goToHomePage();
   }
 
   Future<void> _performWebGoForward() async {
@@ -6642,9 +7172,19 @@ class _BrowserPageState extends State<BrowserPage>
     for (var i = 0; i < 28; i++) {
       final u = (await c.getUrl())?.toString() ?? '';
       if (!_isBlankHistoryUrl(u)) return;
-      if (!await c.canGoForward()) return;
+      if (!await c.canGoForward()) {
+        // 前进方向只剩 about:blank：退回，避免停在空白页。
+        if (await c.canGoBack()) {
+          await c.goBack();
+        }
+        return;
+      }
       await c.goForward();
       await Future<void>.delayed(const Duration(milliseconds: 40));
+    }
+    final landed = (await c.getUrl())?.toString() ?? '';
+    if (_isBlankHistoryUrl(landed) && await c.canGoBack()) {
+      await c.goBack();
     }
   }
 
@@ -6656,6 +7196,7 @@ class _BrowserPageState extends State<BrowserPage>
   }
 
   void _exitWebPage() {
+    _clearWebBackStack();
     _controller?.loadUrl(urlRequest: URLRequest(url: WebUri('about:blank')));
     setState(() {
       _showHomePage = true;
@@ -8606,6 +9147,35 @@ class _BrowserPageState extends State<BrowserPage>
     debugPrint('智能下载策略已保存: $key -> ${recipe['name']} $recipe');
   }
 
+  /// 动作编排真实入库成功后：写入全局可借用成功列表，并设为本站默认。
+  Future<void> _persistSiteSuccessActionRecipe(Map<String, dynamic> task) async {
+    try {
+      final host = _normalizeSmartHost((task['host'] ?? '').toString());
+      if (host.isEmpty) return;
+      final raw = task['actionRecipeJson'];
+      if (raw is! Map) return;
+      // 保留套路来源 host；本站默认指针用 defaultForHost=当前站。
+      final recipe = SmartActionRecipe.fromJson(
+        Map<String, dynamic>.from(raw),
+      );
+      if (recipe.steps.isEmpty) return;
+      final axis = (task['advanceAxisHint'] ?? '').toString().trim();
+      final mode = (task['advanceMode'] ?? '').toString().trim();
+      await SmartActionRecipeStore.markLastSuccess(
+        recipe,
+        advanceAxisHint: axis,
+        advanceMode: mode,
+        defaultForHost: host,
+      );
+      debugPrint(
+        '成功动作套路已保存(全局可借用/本站默认): $host -> ${recipe.name} '
+        'axis=$axis mode=$mode steps=${recipe.steps.length}',
+      );
+    } catch (e) {
+      debugPrint('保存本站成功动作套路失败: $e');
+    }
+  }
+
   Future<void> _finishSmartDemoLearning(Map<String, dynamic> task) async {
     if (!identical(_smartDownloadTask, task)) return;
     final siteProfile = (task['siteProfile'] ?? '').toString();
@@ -10238,20 +10808,27 @@ class _BrowserPageState extends State<BrowserPage>
     }
     if (!demoLearning &&
         (actionRecipeMode || simpleGenericMode) &&
-        task['gestureDownloadPending'] != true) {
-      return;
+        task['gestureDownloadPending'] != true &&
+        task['actionAwaitingLibrarySave'] != true &&
+        task['actionLongPressNeedsConfirm'] != true) {
+      // 闸门已关时：仍接受「晚到的真实入库成功」，否则固定等待轮询永远看不到
+      // library_saved（常见于噪声 complete(false) 先关闸、后台下载稍后落盘）。
+      final alreadySaved =
+          task['actionLibrarySaveOk'] == true &&
+          (task['actionDownloadOutcome'] ?? '').toString() == 'library_saved';
+      if (!(success && actionRecipeMode && !alreadySaved)) {
+        return;
+      }
     }
-    // 失败/跳过类 complete 时若真实下载仍在途：忽略，避免抢跑放行切条。
-    // 成功路径由下载 owner 在 await 保存结束后调用，此时 busy 通常已清或即将清。
-    if (!success &&
-        (actionRecipeMode || simpleGenericMode) &&
-        _hasActiveSmartBatchDownload()) {
-      final failureType =
+    // 失败/跳过类 complete：同一次长按的 already_downloading 绝不能放行。
+    // 成功路径仅由「媒体库落盘确认」后的 owner 调用（success 计数 / 入库同一路径）。
+    if (!success && (actionRecipeMode || simpleGenericMode)) {
+      final peekFailure =
           (task['lastGestureFailureType'] ?? '').toString();
-      if (failureType == 'already_downloading' ||
-          failureType == 'already_in_smart_task') {
+      if (_actionRecipeShouldSuppressEarlyComplete(task, peekFailure)) {
         debugPrint(
-          'Smart gesture: suppress early complete ($failureType) while download in flight',
+          'Smart gesture: suppress early complete ($peekFailure); '
+          'await library save before advance',
         );
         return;
       }
@@ -10261,14 +10838,11 @@ class _BrowserPageState extends State<BrowserPage>
     task['xInlineReadyToLongPress'] = false;
     final failureType =
         (task.remove('lastGestureFailureType') ?? '').toString();
+    // 仅媒体库确认的重复可自动跳过。
+    // already_in_smart_task / duplicate_name_in_smart_task 是会话/备案软标记，
+    // 绝不能当成「已经处理过」放行切条（否则未入库也会狂滑下一条）。
     final skippedDuplicate =
-        !success &&
-        <String>{
-          'already_in_library',
-          'already_in_smart_task',
-          'duplicate_name_in_smart_task',
-          'already_downloading',
-        }.contains(failureType);
+        !success && failureType == 'already_in_library';
     final activeKey = (task['gestureActiveKey'] ?? '').toString();
     final actionFailures =
         (task['gestureActionFailures'] as Map<String, int>?) ??
@@ -10323,25 +10897,74 @@ class _BrowserPageState extends State<BrowserPage>
         '下载成功 ${task['success']}/${task['target']}',
       );
     } else if (skippedDuplicate) {
-      if (failureType != 'already_in_library') {
-        task['duplicateSkipped'] =
-            ((task['duplicateSkipped'] as int?) ?? 0) + 1;
-      }
+      // 仅入库后哈希查重 / 磁盘文件确认的库内重复可走此文案；预跳过路径已对动作编排关闭
       task['matchStage'] =
           actionRecipeMode
-              ? '发现重复媒体 · 已标记，交由套路切下一条'
+              ? '库内确认重复 · 已标记，交由套路切下一条'
               : '发现重复媒体 · 已自动跳过并切换下一项';
-      _showSmartOperation('当前媒体已经处理过，自动跳过');
+      _showSmartOperation(
+        actionRecipeMode
+            ? '媒体库已有相同文件（磁盘确认），交由套路切下一条'
+            : '当前媒体已经处理过，自动跳过',
+      );
     } else {
       task['failed'] = ((task['failed'] as int?) ?? 0) + 1;
+      if (failureType == 'already_in_smart_task' ||
+          failureType == 'duplicate_name_in_smart_task') {
+        debugPrint(
+          'Smart gesture: soft-duplicate $failureType ignored as skip '
+          '(not library-confirmed)',
+        );
+      }
+      if (actionRecipeMode &&
+          _actionRecipeIsInvalidMediaOutcome(failureType)) {
+        task['invalidSkipped'] =
+            ((task['invalidSkipped'] as int?) ?? 0) + 1;
+        task['matchStage'] = '无效媒体，已跳过';
+        _showSmartOperation('无效媒体，已跳过');
+      }
     }
-    // 动作编排：只标记已处理，切条交给套路 findNext（避免 complete 再切一次导致跳条）
+    // 动作编排：仅入库成功或库内确认重复后写入会话已处理集合
     if (actionRecipeMode && (success || skippedDuplicate)) {
       await _markCurrentMediaHandled(task);
     }
+    // 入库闸门：与 success 计数同一路径结束等待；仅此时允许 waitDownload/findNext。
+    if (actionRecipeMode || simpleGenericMode) {
+      if (success) {
+        _actionRecipeFinishAwaitLibrarySave(
+          task,
+          libraryOk: true,
+          outcome: 'library_saved',
+        );
+      } else if (skippedDuplicate) {
+        _actionRecipeFinishAwaitLibrarySave(
+          task,
+          libraryOk: false,
+          outcome: failureType,
+        );
+      } else {
+        _actionRecipeFinishAwaitLibrarySave(
+          task,
+          libraryOk: false,
+          outcome: failureType.isEmpty ? 'failed' : failureType,
+        );
+        if (actionRecipeMode &&
+            _actionRecipeIsInvalidMediaOutcome(failureType)) {
+          // 无效媒体：关闸后立刻允许 findNext，并标记当前条避免原地重试
+          task['actionForceSkipReleased'] = true;
+          task['needAdvancePastCurrent'] = true;
+          await _markCurrentMediaHandled(task);
+        }
+      }
+    }
     final pendingCompleter = task.remove('actionDownloadCompleter');
     if (pendingCompleter is Completer<bool> && !pendingCompleter.isCompleted) {
+      // Completer true = 媒体库已确认写入；duplicate skip 为 false 但已 finishAwait。
       pendingCompleter.complete(success);
+      debugPrint(
+        'Smart gesture: completer done success=$success '
+        'skippedDuplicate=$skippedDuplicate failureType=$failureType',
+      );
     }
     if (actionRecipeMode || simpleGenericMode) {
       // 动作套路 / 通用实测管线由独立循环推进，不进入旧 FSM。
@@ -10611,7 +11234,7 @@ class _BrowserPageState extends State<BrowserPage>
       return;
     }
     final keywordController = TextEditingController(text: initialKeyword);
-    final countController = TextEditingController(text: '5');
+    final countController = TextEditingController(text: '50');
     final minVideoSizeController = TextEditingController();
     final maxVideoSizeController = TextEditingController();
     final dialogRawUrl = (website['url'] ?? '').toString().trim();
@@ -10639,8 +11262,23 @@ class _BrowserPageState extends State<BrowserPage>
     var hostRecipes = List<SmartActionRecipe>.from(
       await SmartActionRecipeStore.loadForHost(dialogHost),
     );
+    // 本站默认：供「沿用套路」自动选用；全局成功列表可跨站借用（类似 X/91 芯片）。
+    // 可重命名/删除/覆盖；X/91 内置管线不在此列。
+    SmartActionRecipe? siteSuccessRecipe =
+        await SmartActionRecipeStore.loadLastSuccessForHost(dialogHost);
+    var allSuccessRecipes = List<SmartActionRecipe>.from(
+      await SmartActionRecipeStore.loadUserActionRecipes(),
+    );
+    // reuse 子源：action_recipe（用户成功动作，可跨站）或 pattern（X/91/通用管线）。
+    var reuseSource =
+        siteSuccessRecipe != null ? 'action_recipe' : 'pattern';
+    SmartActionRecipe? selectedReuseRecipe = siteSuccessRecipe;
     String axisHintFromRecipe(SmartActionRecipe? recipe) {
       if (recipe == null) return 'up';
+      final stored = (recipe.advanceAxisHint ?? '').trim();
+      if (stored == 'up' || stored == 'down' || stored == 'left') {
+        return stored;
+      }
       final kinds = recipe.steps.map((s) => s.kind).toSet();
       if (kinds.contains(SmartActionKind.findNextMediaRight) ||
           kinds.contains(SmartActionKind.flickLeft)) {
@@ -10653,10 +11291,57 @@ class _BrowserPageState extends State<BrowserPage>
       return 'up';
     }
 
+    String modeFromRecipe(SmartActionRecipe? recipe) {
+      final stored = (recipe?.advanceMode ?? '').trim();
+      if (stored == 'distance' || stored == 'verify') return stored;
+      return 'distance';
+    }
+
     // 用户手选切条方向（上滑/下滑/左滑）；默认按套路零件推断
-    var advanceAxisHint = axisHintFromRecipe(selectedRecipe);
+    var advanceAxisHint = axisHintFromRecipe(
+      selectedReuseRecipe ?? selectedRecipe,
+    );
     // 切条方式：按距离滑动（默认，更快）/ 确认切到新媒体（指纹校验）
-    var advanceMode = 'distance';
+    var advanceMode = modeFromRecipe(selectedReuseRecipe ?? selectedRecipe);
+    if (siteSuccessRecipe != null) {
+      selectedRecipe = siteSuccessRecipe;
+    }
+
+    Future<void> refreshSuccessRecipes() async {
+      siteSuccessRecipe =
+          await SmartActionRecipeStore.loadLastSuccessForHost(dialogHost);
+      allSuccessRecipes = List<SmartActionRecipe>.from(
+        await SmartActionRecipeStore.loadUserActionRecipes(),
+      );
+      hostRecipes = List<SmartActionRecipe>.from(
+        await SmartActionRecipeStore.loadForHost(dialogHost),
+      );
+      if (selectedReuseRecipe != null) {
+        final keepId = selectedReuseRecipe!.id;
+        SmartActionRecipe? found;
+        for (final r in allSuccessRecipes) {
+          if (r.id == keepId) {
+            found = r;
+            break;
+          }
+        }
+        selectedReuseRecipe = found;
+        if (found == null && reuseSource == 'action_recipe') {
+          if (siteSuccessRecipe != null) {
+            selectedReuseRecipe = siteSuccessRecipe;
+          } else {
+            reuseSource = 'pattern';
+          }
+        }
+      }
+    }
+
+    String successRecipeChipLabel(SmartActionRecipe recipe) {
+      final origin = SmartActionRecipeStore.keyForHost(recipe.host);
+      final current = SmartActionRecipeStore.keyForHost(dialogHost);
+      if (origin.isEmpty || origin == current) return recipe.name;
+      return '${recipe.name} · $origin';
+    }
     // 编辑器在智能下载对话框关闭后打开，避免挡住网页导致「验证零件」看不见效果
     SmartActionRecipe? editorSeed;
 
@@ -10714,12 +11399,12 @@ class _BrowserPageState extends State<BrowserPage>
                           if (values.isEmpty) return;
                           setDialogState(() {
                             final next = values.first;
-                            // 分页嗅探默认不限数量；切回其他模式时恢复默认 5。
+                            // 分页嗅探默认不限数量；切回其他模式时恢复默认 50。
                             if (next == 'sniff' && runMode != 'sniff') {
                               countController.text = '';
                             } else if (runMode == 'sniff' && next != 'sniff') {
                               if (countController.text.trim().isEmpty) {
-                                countController.text = '5';
+                                countController.text = '50';
                               }
                             }
                             runMode = next;
@@ -10769,6 +11454,35 @@ class _BrowserPageState extends State<BrowserPage>
                               ),
                             ),
                           ),
+                        if (selectedRecipe != null) ...[
+                          Builder(
+                            builder: (_) {
+                              SmartActionStep? waitStep;
+                              for (final s in selectedRecipe!.steps) {
+                                if (s.kind == SmartActionKind.waitDownload) {
+                                  waitStep = s;
+                                  break;
+                                }
+                              }
+                              if (waitStep == null) {
+                                return const SizedBox.shrink();
+                              }
+                              final hint = waitStep.waitMode == 'fixed'
+                                  ? '等待方式：最多 ${waitStep.waitSeconds}s，入库成功提前切条'
+                                  : '等待方式：媒体库确认后再切条';
+                              return Padding(
+                                padding: const EdgeInsets.only(top: 4),
+                                child: Text(
+                                  hint,
+                                  style: const TextStyle(
+                                    fontSize: 11,
+                                    color: Colors.black54,
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ],
                         const SizedBox(height: 10),
                         const Text(
                           '切条方向（必选）',
@@ -10864,18 +11578,29 @@ class _BrowserPageState extends State<BrowserPage>
                         ),
                       ] else if (runMode == 'reuse') ...[
                         const SizedBox(height: 8),
+                        const Text(
+                          '内置管线',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
                         Text(
                           hostHasDedicated &&
-                                  selectedPatternId == nativePatternId
-                              ? '本站有专有套路，默认使用；也可改选通用或其他站套路。'
-                              : selectedPatternId == 'generic'
-                              ? '本站暂无专有套路，默认通用；也可手动借用其他站专有套路（如 X / 91）。'
-                              : _dedicatedSmartPatternIds.contains(
-                                      selectedPatternId,
-                                    ) &&
-                                    selectedPatternId != nativePatternId
-                              ? '已手动借用「${_confirmedPatternLabel(selectedPatternId)}」到当前站（仅本次；不会自动套到其他站）。'
-                              : '已选用「${_confirmedPatternLabel(selectedPatternId)}」。',
+                                  selectedPatternId == nativePatternId &&
+                                  reuseSource == 'pattern'
+                              ? '本站有专有套路，可直接用；也可改选通用、其他站专有管线，或下方成功动作套路。'
+                              : selectedPatternId == 'generic' &&
+                                  reuseSource == 'pattern'
+                              ? '可选用通用管线，或手动借用 X / 91；也可选用下方跨站成功动作套路。'
+                              : reuseSource == 'pattern' &&
+                                  _dedicatedSmartPatternIds.contains(
+                                    selectedPatternId,
+                                  ) &&
+                                  selectedPatternId != nativePatternId
+                              ? '已手动借用「${_confirmedPatternLabel(selectedPatternId)}」到当前站（仅本次）。'
+                              : '内置管线与成功动作套路可任选其一后点「开始」。',
                           style: const TextStyle(
                             fontSize: 11,
                             color: Colors.black54,
@@ -10889,29 +11614,328 @@ class _BrowserPageState extends State<BrowserPage>
                             for (final row in _confirmedSmartPatterns)
                               ChoiceChip(
                                 label: Text(row['label'] ?? row['id']!),
-                                selected: selectedPatternId == row['id'],
+                                selected:
+                                    reuseSource == 'pattern' &&
+                                    selectedPatternId == row['id'],
                                 onSelected: (on) {
                                   if (!on) return;
                                   setDialogState(() {
+                                    reuseSource = 'pattern';
                                     selectedPatternId = row['id']!;
+                                    selectedReuseRecipe = null;
                                   });
                                 },
                               ),
                           ],
                         ),
-                        Padding(
-                          padding: const EdgeInsets.only(top: 6),
-                          child: Text(
-                            '当前套路：${_confirmedPatternLabel(selectedPatternId)}'
-                            '${selectedPatternId == 'x' ? '（完整保留 X 旧版智能下载）' : ''}'
-                            '${selectedPatternId == '91' ? '（完整保留 91 已验证智能下载）' : ''}'
-                            '${selectedPatternId == 'generic' ? '（任意站：关键词搜/当前信息流 → 真实视频流下载；海报封面会跳过）' : ''}',
-                            style: const TextStyle(
+                        if (reuseSource == 'pattern')
+                          Padding(
+                            padding: const EdgeInsets.only(top: 6),
+                            child: Text(
+                              '当前套路：${_confirmedPatternLabel(selectedPatternId)}'
+                              '${selectedPatternId == 'x' ? '（完整保留 X 旧版智能下载）' : ''}'
+                              '${selectedPatternId == '91' ? '（完整保留 91 已验证智能下载）' : ''}'
+                              '${selectedPatternId == 'generic' ? '（任意站：关键词搜/当前信息流 → 真实视频流下载；海报封面会跳过）' : ''}',
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: Colors.black54,
+                              ),
+                            ),
+                          ),
+                        const SizedBox(height: 12),
+                        if (siteSuccessRecipe != null) ...[
+                          const Text(
+                            '本站默认',
+                            style: TextStyle(
                               fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Align(
+                            alignment: Alignment.centerLeft,
+                            child: ChoiceChip(
+                              label: Text(
+                                '本站默认 · ${siteSuccessRecipe!.name}',
+                                style: const TextStyle(fontSize: 12),
+                              ),
+                              selected:
+                                  reuseSource == 'action_recipe' &&
+                                  selectedReuseRecipe?.id ==
+                                      siteSuccessRecipe!.id,
+                              onSelected: (on) {
+                                if (!on) return;
+                                setDialogState(() {
+                                  reuseSource = 'action_recipe';
+                                  selectedReuseRecipe = siteSuccessRecipe;
+                                  selectedRecipe = siteSuccessRecipe;
+                                  advanceAxisHint = axisHintFromRecipe(
+                                    siteSuccessRecipe,
+                                  );
+                                  advanceMode = modeFromRecipe(
+                                    siteSuccessRecipe,
+                                  );
+                                });
+                              },
+                            ),
+                          ),
+                          const Padding(
+                            padding: EdgeInsets.only(top: 4, bottom: 4),
+                            child: Text(
+                              '进入本站时自动选用；再次「动作编排」真实成功会覆盖本站默认。'
+                              '也可改选下方任意成功套路借用到当前页。',
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: Colors.black54,
+                              ),
+                            ),
+                          ),
+                        ] else ...[
+                          const Text(
+                            '本站尚无默认成功动作。用「动作编排」跑通一次真实下载后，会记入下方列表并设为本站默认；'
+                            '也可先借用其他站的成功套路。',
+                            style: TextStyle(
+                              fontSize: 11,
                               color: Colors.black54,
                             ),
                           ),
+                          const SizedBox(height: 8),
+                        ],
+                        const Text(
+                          '全部成功动作套路',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
+                        const SizedBox(height: 6),
+                        if (allSuccessRecipes.isEmpty)
+                          const Text(
+                            '暂无成功动作套路。请先在任意站用「动作编排」跑通真实下载。',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: Colors.black54,
+                            ),
+                          )
+                        else
+                          Wrap(
+                            spacing: 6,
+                            runSpacing: 4,
+                            children: [
+                              for (final recipe in allSuccessRecipes)
+                                ChoiceChip(
+                                  label: Text(
+                                    successRecipeChipLabel(recipe),
+                                    style: const TextStyle(fontSize: 12),
+                                  ),
+                                  selected:
+                                      reuseSource == 'action_recipe' &&
+                                      selectedReuseRecipe?.id == recipe.id,
+                                  onSelected: (on) {
+                                    if (!on) return;
+                                    setDialogState(() {
+                                      reuseSource = 'action_recipe';
+                                      selectedReuseRecipe = recipe;
+                                      selectedRecipe = recipe;
+                                      advanceAxisHint = axisHintFromRecipe(
+                                        recipe,
+                                      );
+                                      advanceMode = modeFromRecipe(recipe);
+                                    });
+                                  },
+                                ),
+                            ],
+                          ),
+                        if (reuseSource == 'action_recipe' &&
+                            selectedReuseRecipe != null) ...[
+                          const SizedBox(height: 8),
+                          Text(
+                            SmartActionRecipeStore.keyForHost(
+                                      selectedReuseRecipe!.host,
+                                    ) ==
+                                    SmartActionRecipeStore.keyForHost(
+                                      dialogHost,
+                                    )
+                                ? '已选用「${selectedReuseRecipe!.name}」，将按该套路步骤在当前页执行。'
+                                : '已借用「${selectedReuseRecipe!.name}」（来自 ${selectedReuseRecipe!.host}），'
+                                    '将在当前页执行其步骤与等待/切条设置，无需重配。',
+                            style: const TextStyle(
+                              fontSize: 11,
+                              color: Colors.black54,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Wrap(
+                            spacing: 4,
+                            runSpacing: 0,
+                            children: [
+                              TextButton(
+                                onPressed: () async {
+                                  final controller = TextEditingController(
+                                    text: selectedReuseRecipe!.name,
+                                  );
+                                  final ok = await showDialog<bool>(
+                                    context: dialogContext,
+                                    builder:
+                                        (ctx) => AlertDialog(
+                                          title: const Text('重命名套路'),
+                                          content: TextField(
+                                            controller: controller,
+                                            autofocus: true,
+                                            decoration: const InputDecoration(
+                                              labelText: '套路名称',
+                                              border: OutlineInputBorder(),
+                                              isDense: true,
+                                            ),
+                                          ),
+                                          actions: [
+                                            TextButton(
+                                              onPressed:
+                                                  () =>
+                                                      Navigator.pop(ctx, false),
+                                              child: const Text('取消'),
+                                            ),
+                                            FilledButton(
+                                              onPressed:
+                                                  () =>
+                                                      Navigator.pop(ctx, true),
+                                              child: const Text('保存'),
+                                            ),
+                                          ],
+                                        ),
+                                  );
+                                  final name = controller.text.trim();
+                                  controller.dispose();
+                                  if (ok != true || name.isEmpty) return;
+                                  final renamed =
+                                      await SmartActionRecipeStore.renameRecipe(
+                                    selectedReuseRecipe!.id,
+                                    name,
+                                  );
+                                  if (!renamed || !dialogContext.mounted) {
+                                    return;
+                                  }
+                                  await refreshSuccessRecipes();
+                                  if (!dialogContext.mounted) return;
+                                  setDialogState(() {});
+                                  ScaffoldMessenger.of(
+                                    dialogContext,
+                                  ).showSnackBar(
+                                    SnackBar(content: Text('已重命名为「$name」')),
+                                  );
+                                },
+                                child: const Text(
+                                  '重命名',
+                                  style: TextStyle(fontSize: 12),
+                                ),
+                              ),
+                              TextButton(
+                                onPressed: () async {
+                                  final target = selectedReuseRecipe!;
+                                  final ok = await showDialog<bool>(
+                                    context: dialogContext,
+                                    builder:
+                                        (ctx) => AlertDialog(
+                                          title: const Text('删除成功套路'),
+                                          content: Text(
+                                            '确定删除「${target.name}」？\n'
+                                            '各站若以其为默认也会一并清除'
+                                            '（不影响 X / 91 等内置管线）。',
+                                          ),
+                                          actions: [
+                                            TextButton(
+                                              onPressed:
+                                                  () =>
+                                                      Navigator.pop(ctx, false),
+                                              child: const Text('取消'),
+                                            ),
+                                            FilledButton(
+                                              onPressed:
+                                                  () =>
+                                                      Navigator.pop(ctx, true),
+                                              child: const Text('删除'),
+                                            ),
+                                          ],
+                                        ),
+                                  );
+                                  if (ok != true) return;
+                                  await SmartActionRecipeStore.deleteById(
+                                    target.id,
+                                  );
+                                  if (!dialogContext.mounted) return;
+                                  await refreshSuccessRecipes();
+                                  if (!dialogContext.mounted) return;
+                                  setDialogState(() {
+                                    if (selectedReuseRecipe == null) {
+                                      reuseSource = 'pattern';
+                                      selectedRecipe =
+                                          hostRecipes.isEmpty
+                                              ? null
+                                              : hostRecipes.first;
+                                    } else {
+                                      selectedRecipe = selectedReuseRecipe;
+                                      advanceAxisHint = axisHintFromRecipe(
+                                        selectedReuseRecipe,
+                                      );
+                                      advanceMode = modeFromRecipe(
+                                        selectedReuseRecipe,
+                                      );
+                                    }
+                                  });
+                                  ScaffoldMessenger.of(
+                                    dialogContext,
+                                  ).showSnackBar(
+                                    const SnackBar(
+                                      content: Text('已删除成功动作套路'),
+                                    ),
+                                  );
+                                },
+                                child: const Text(
+                                  '删除',
+                                  style: TextStyle(fontSize: 12),
+                                ),
+                              ),
+                              if (siteSuccessRecipe?.id !=
+                                  selectedReuseRecipe!.id)
+                                TextButton(
+                                  onPressed: () async {
+                                    await SmartActionRecipeStore
+                                        .setAsHostDefault(
+                                      dialogHost,
+                                      selectedReuseRecipe!.id,
+                                    );
+                                    if (!dialogContext.mounted) return;
+                                    await refreshSuccessRecipes();
+                                    if (!dialogContext.mounted) return;
+                                    setDialogState(() {
+                                      reuseSource = 'action_recipe';
+                                      selectedReuseRecipe = siteSuccessRecipe;
+                                      selectedRecipe = siteSuccessRecipe;
+                                      advanceAxisHint = axisHintFromRecipe(
+                                        siteSuccessRecipe,
+                                      );
+                                      advanceMode = modeFromRecipe(
+                                        siteSuccessRecipe,
+                                      );
+                                    });
+                                    ScaffoldMessenger.of(
+                                      dialogContext,
+                                    ).showSnackBar(
+                                      SnackBar(
+                                        content: Text(
+                                          '已设为「${dialogHost.isEmpty ? '当前站' : dialogHost}」默认套路',
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                  child: const Text(
+                                    '设为当前站默认',
+                                    style: TextStyle(fontSize: 12),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ],
                       ] else ...[
                         const Padding(
                           padding: EdgeInsets.only(top: 6),
@@ -11054,11 +12078,11 @@ class _BrowserPageState extends State<BrowserPage>
                         ],
                         decoration: InputDecoration(
                           labelText: runMode == 'sniff' ? '下载数量（可留空）' : '下载数量',
-                          hintText: runMode == 'sniff' ? '不限' : '默认 5',
+                          hintText: runMode == 'sniff' ? '不限' : '默认 50',
                           helperText:
                               runMode == 'sniff'
                                   ? '留空=所选层级全部（最多 $_kPaginatedSniffSoftMaxTarget）'
-                                  : '1～100；留空按 5',
+                                  : '1～$_kSmartDownloadMaxTarget；留空按 50',
                           border: const OutlineInputBorder(),
                           isDense: true,
                         ),
@@ -11118,58 +12142,96 @@ class _BrowserPageState extends State<BrowserPage>
                     child: const Text('取消'),
                   ),
                   FilledButton(
-                    onPressed: () {
-                      final rawCount = countController.text.trim();
-                      if (runMode == 'sniff') {
-                        if (rawCount.isNotEmpty) {
-                          final count = int.tryParse(rawCount);
-                          if (count == null ||
-                              count < 1 ||
-                              count > _kPaginatedSniffSoftMaxTarget) {
-                            ScaffoldMessenger.of(dialogContext).showSnackBar(
-                              SnackBar(
-                                content: Text(
-                                  '请输入 1～$_kPaginatedSniffSoftMaxTarget，或留空表示不限',
-                                ),
-                              ),
-                            );
-                            return;
-                          }
-                        }
-                      } else {
-                        final count = int.tryParse(rawCount) ?? 5;
-                        if (count < 1 || count > 100) {
-                          ScaffoldMessenger.of(dialogContext).showSnackBar(
-                            const SnackBar(content: Text('请输入 1～100 的数量')),
-                          );
-                          return;
-                        }
-                      }
-                      final minMb = int.tryParse(
-                        minVideoSizeController.text.trim(),
-                      );
-                      final maxMb = int.tryParse(
-                        maxVideoSizeController.text.trim(),
-                      );
-                      if (minMb != null && maxMb != null && minMb > maxMb) {
-                        ScaffoldMessenger.of(dialogContext).showSnackBar(
-                          const SnackBar(content: Text('最小大小不能大于最大大小')),
-                        );
-                        return;
-                      }
-                      if (runMode == 'reuse' &&
-                          !_confirmedSmartPatternIds.contains(
-                            selectedPatternId,
-                          )) {
-                        ScaffoldMessenger.of(dialogContext).showSnackBar(
-                          const SnackBar(
-                            content: Text('请选择一个网站套路（专有或通用）'),
-                          ),
-                        );
-                        return;
-                      }
-                      Navigator.pop(dialogContext, runMode);
-                    },
+                    onPressed:
+                        (runMode == 'reuse' &&
+                                reuseSource == 'action_recipe' &&
+                                (selectedReuseRecipe == null ||
+                                    selectedReuseRecipe!.steps.isEmpty))
+                            ? null
+                            : () {
+                              final rawCount = countController.text.trim();
+                              if (runMode == 'sniff') {
+                                if (rawCount.isNotEmpty) {
+                                  final count = int.tryParse(rawCount);
+                                  if (count == null ||
+                                      count < 1 ||
+                                      count > _kPaginatedSniffSoftMaxTarget) {
+                                    ScaffoldMessenger.of(
+                                      dialogContext,
+                                    ).showSnackBar(
+                                      SnackBar(
+                                        content: Text(
+                                          '请输入 1～$_kPaginatedSniffSoftMaxTarget，或留空表示不限',
+                                        ),
+                                      ),
+                                    );
+                                    return;
+                                  }
+                                }
+                              } else {
+                                final count = int.tryParse(rawCount) ?? 50;
+                                if (count < 1 ||
+                                    count > _kSmartDownloadMaxTarget) {
+                                  ScaffoldMessenger.of(
+                                    dialogContext,
+                                  ).showSnackBar(
+                                    SnackBar(
+                                      content: Text(
+                                        '请输入 1～$_kSmartDownloadMaxTarget 的数量',
+                                      ),
+                                    ),
+                                  );
+                                  return;
+                                }
+                              }
+                              final minMb = int.tryParse(
+                                minVideoSizeController.text.trim(),
+                              );
+                              final maxMb = int.tryParse(
+                                maxVideoSizeController.text.trim(),
+                              );
+                              if (minMb != null &&
+                                  maxMb != null &&
+                                  minMb > maxMb) {
+                                ScaffoldMessenger.of(
+                                  dialogContext,
+                                ).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('最小大小不能大于最大大小'),
+                                  ),
+                                );
+                                return;
+                              }
+                              if (runMode == 'reuse') {
+                                if (reuseSource == 'action_recipe') {
+                                  if (selectedReuseRecipe == null ||
+                                      selectedReuseRecipe!.steps.isEmpty) {
+                                    ScaffoldMessenger.of(
+                                      dialogContext,
+                                    ).showSnackBar(
+                                      const SnackBar(
+                                        content: Text(
+                                          '请选择一套成功动作套路，或先用「动作编排」跑通一次',
+                                        ),
+                                      ),
+                                    );
+                                    return;
+                                  }
+                                } else if (!_confirmedSmartPatternIds.contains(
+                                  selectedPatternId,
+                                )) {
+                                  ScaffoldMessenger.of(
+                                    dialogContext,
+                                  ).showSnackBar(
+                                    const SnackBar(
+                                      content: Text('请选择一个网站套路（专有或通用）'),
+                                    ),
+                                  );
+                                  return;
+                                }
+                              }
+                              Navigator.pop(dialogContext, runMode);
+                            },
                     child: const Text('开始'),
                   ),
                 ],
@@ -11317,6 +12379,8 @@ class _BrowserPageState extends State<BrowserPage>
         );
       }
       if (next != null && mounted) {
+        next.advanceAxisHint = advanceAxisHint;
+        next.advanceMode = advanceMode;
         await SmartActionRecipeStore.save(next);
         await SmartActionRecipeStore.markUsed(next);
         await _startActionRecipeDownload(
@@ -11335,7 +12399,25 @@ class _BrowserPageState extends State<BrowserPage>
     }
 
     if (confirmed == 'reuse') {
-      await startReusePattern();
+      if (reuseSource == 'action_recipe') {
+        final recipe = selectedReuseRecipe;
+        if (recipe == null || recipe.steps.isEmpty) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('请选择一套成功动作套路，或先用「动作编排」跑通一次'),
+              ),
+            );
+          }
+        } else {
+          // 借用他站套路：步骤与等待/切条设置原样用于当前页，不改写其来源 host。
+          advanceAxisHint = axisHintFromRecipe(recipe);
+          advanceMode = modeFromRecipe(recipe);
+          await startAction(recipe);
+        }
+      } else {
+        await startReusePattern();
+      }
     } else if (confirmed == 'sniff') {
       await startSniff();
     } else if (confirmed == 'action') {
@@ -11418,6 +12500,21 @@ class _BrowserPageState extends State<BrowserPage>
         : modeRaw == 'verify'
         ? 'verify'
         : (advanceMode == null ? 'verify' : 'distance');
+    final boundRecipe = recipe.copyWith(
+      host: host,
+      advanceAxisHint: resolvedAxisHint,
+      advanceMode: resolvedAdvanceMode,
+    );
+    // 从套路里「等待下载完成」步骤带出等待方式（沿用套路 / lastSuccess 会一起恢复）
+    var actionWaitMode = 'library';
+    var actionWaitSeconds = 30;
+    for (final step in boundRecipe.steps) {
+      if (step.kind == SmartActionKind.waitDownload) {
+        actionWaitMode = step.waitMode;
+        actionWaitSeconds = step.waitSeconds;
+        break;
+      }
+    }
     _smartDownloadTask = <String, dynamic>{
       'mode': 'action_recipe',
       'phase': 'action_running',
@@ -11427,14 +12524,22 @@ class _BrowserPageState extends State<BrowserPage>
       'keyword': '',
       'mediaType': mediaType,
       'allowMixedMedia': allowMixedMedia,
-      'target': targetCount.clamp(1, 100),
+      'target': targetCount.clamp(1, _kSmartDownloadMaxTarget),
       'minVideoBytes': minVideoBytes,
       'maxVideoBytes': maxVideoBytes,
       'success': 0,
       'failed': 0,
-      'matchStage': '动作套路 · ${recipe.name}',
+      'matchStage': '动作套路 · ${boundRecipe.name}',
       'demoPhase': 'auto',
       'gestureDownloadPending': false,
+      'actionAwaitingLibrarySave': false,
+      'actionLibrarySaveOk': false,
+      'actionLongPressNeedsConfirm': false,
+      'actionFixedWaitReleased': false,
+      'actionForceSkipReleased': false,
+      'actionWaitMode': actionWaitMode,
+      'actionWaitSeconds': actionWaitSeconds,
+      'actionDownloadEpoch': 0,
       'startedAt': startedAt,
       'deadlineAt': deadlineAt,
       'originUrl': _currentUrl,
@@ -11446,7 +12551,8 @@ class _BrowserPageState extends State<BrowserPage>
       'reservedMediaNameKeys': <String>{},
       'reservedMediaTitleKeys': <String>{},
       'allowBroadenDiscovery': false,
-      'recipeName': recipe.name,
+      'recipeName': boundRecipe.name,
+      'actionRecipeJson': boundRecipe.toJson(),
       'gestureActionFailures': <String, int>{},
       'gestureConsecutiveFailures': 0,
       'gestureEngineFailures': 0,
@@ -11477,8 +12583,8 @@ class _BrowserPageState extends State<BrowserPage>
     final axisLabel = _advanceAxisSpec(task).$3;
     final modeLabel =
         _advanceModeIsDistance(task) ? '按距离滑动' : '确认切到新媒体';
-    _showSmartOperation('开始执行套路「${recipe.name}」· $axisLabel · $modeLabel');
-    unawaited(_runActionRecipeLoop(task, recipe));
+    _showSmartOperation('开始执行套路「${boundRecipe.name}」· $axisLabel · $modeLabel');
+    unawaited(_runActionRecipeLoop(task, boundRecipe));
   }
 
   Set<String> _handledMediaKeysOf(Map<String, dynamic> task) {
@@ -11507,12 +12613,85 @@ class _BrowserPageState extends State<BrowserPage>
     return created;
   }
 
+  /// 指纹必须足够具体：空 src / none 标签 / 仅几何位的 key 不得参与「已处理」判定。
+  bool _isReliableActionMediaIdentity(Map<String, dynamic>? identity) {
+    if (identity == null) return false;
+    final key = (identity['key'] ?? '').toString().trim();
+    final src = (identity['src'] ?? '').toString().trim();
+    final tag = (identity['tag'] ?? '').toString().trim().toUpperCase();
+    if (key.isEmpty || key.startsWith('none|')) return false;
+    if (tag == 'NONE') return false;
+    if (src.isEmpty ||
+        src == 'about:blank' ||
+        src == 'null' ||
+        src == 'undefined') {
+      return false;
+    }
+    if (src.startsWith('data:') && src.length < 64) return false;
+    final parts = key.split('|');
+    // key 形如 TAG|src|left|top|… — src 段为空时全屏信息流极易误匹配
+    if (parts.length >= 2 && parts[1].trim().isEmpty) return false;
+    return true;
+  }
+
+  void _clearHandledMediaIdentity(
+    Map<String, dynamic> task,
+    Map<String, dynamic>? identity,
+  ) {
+    if (identity == null) return;
+    final key = (identity['key'] ?? '').toString();
+    final src = (identity['src'] ?? '').toString().trim();
+    if (key.isNotEmpty) _handledMediaKeysOf(task).remove(key);
+    if (src.isNotEmpty) _handledMediaSrcsOf(task).remove(src);
+    if ((task['lastHandledMediaKey'] ?? '').toString() == key) {
+      task['lastHandledMediaKey'] = '';
+    }
+    if ((task['lastHandledMediaSrc'] ?? '').toString() == src) {
+      task['lastHandledMediaSrc'] = '';
+    }
+  }
+
+  Future<bool> _libraryConfirmsMediaSource(String src) async {
+    final s = src.trim();
+    if (s.isEmpty || s.startsWith('blob:') || s.startsWith('data:')) {
+      return false;
+    }
+    final row = await _findExistingVideoBySourceUrl(s);
+    return row != null;
+  }
+
+  Future<bool> _libraryConfirmsFileHash(String fileHash) async {
+    final hash = fileHash.trim();
+    if (hash.isEmpty) return false;
+    try {
+      final row = await _databaseService.findDuplicateMediaItem(hash, '');
+      return row != null;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<bool> _libraryConfirmsExistingMediaRow(
+    Map<String, dynamic>? row,
+  ) async {
+    if (row == null) return false;
+    final directory = (row['directory'] ?? '').toString();
+    if (directory == 'recycle_bin') return false;
+    final path = (row['path'] ?? '').toString();
+    if (path.isEmpty) return false;
+    try {
+      return await File(path).exists();
+    } catch (_) {
+      return false;
+    }
+  }
+
   bool _isHandledMediaIdentity(
     Map<String, dynamic> task,
     Map<String, dynamic>? identity,
   ) {
-    if (identity == null) return false;
-    final key = (identity['key'] ?? '').toString();
+    if (!_isReliableActionMediaIdentity(identity)) return false;
+    final key = (identity!['key'] ?? '').toString();
     final src = (identity['src'] ?? '').toString().trim();
     final keys = _handledMediaKeysOf(task);
     final srcs = _handledMediaSrcsOf(task);
@@ -11522,15 +12701,77 @@ class _BrowserPageState extends State<BrowserPage>
     return false;
   }
 
+  /// 会话「已处理」仅作切条辅助；动作编排下载前绝不凭此跳过。
+  /// 可查源地址时必须媒体库文件仍在磁盘，否则清掉误标。
+  Future<bool> _shouldSkipAsHandledMedia(
+    Map<String, dynamic> task,
+    Map<String, dynamic>? identity,
+  ) async {
+    // 动作编排：下载前禁用会话已处理跳过。仅在「本轮已入库成功/库内确认重复」
+    // 或看门狗强制跳过且 needAdvancePastCurrent 时，允许卡住补推切条。
+    if (_actionRecipeDisablesPreSkip(task)) {
+      if (task['needAdvancePastCurrent'] != true) return false;
+      final outcome = (task['actionDownloadOutcome'] ?? '').toString();
+      final libraryOk = task['actionLibrarySaveOk'] == true;
+      final forceSkipped =
+          task['actionForceSkipReleased'] == true ||
+          outcome == 'already_in_library' ||
+          outcome == 'library_saved' ||
+          outcome == 'stagnant_timeout' ||
+          outcome == 'loop_timeout' ||
+          outcome == 'force_skip_timeout' ||
+          outcome == 'step_watchdog_timeout' ||
+          _actionRecipeIsInvalidMediaOutcome(outcome);
+      if (!libraryOk && !forceSkipped && outcome != 'already_in_library') {
+        return false;
+      }
+    }
+    if (!_isHandledMediaIdentity(task, identity)) return false;
+    final src = (identity!['src'] ?? '').toString().trim();
+    if (!src.startsWith('blob:') && !src.startsWith('data:')) {
+      final inLibrary = await _libraryConfirmsMediaSource(src);
+      if (!inLibrary) {
+        debugPrint(
+          'action handled false-positive: src not in library, clear flag',
+        );
+        _clearHandledMediaIdentity(task, identity);
+        return false;
+      }
+      // 源地址命中还不够：必须磁盘文件仍在
+      final row = await _findExistingVideoBySourceUrl(src);
+      if (!await _libraryConfirmsExistingMediaRow(row)) {
+        debugPrint(
+          'action handled false-positive: library row missing file, clear',
+        );
+        _clearHandledMediaIdentity(task, identity);
+        return false;
+      }
+      return true;
+    }
+    // blob/data：动作编排仅在真实入库成功后才可凭会话标记切条，不能当下载前跳过
+    if (_actionRecipeDisablesPreSkip(task)) {
+      return task['actionLibrarySaveOk'] == true ||
+          (task['actionDownloadOutcome'] ?? '').toString() ==
+              'already_in_library';
+    }
+    // 非编排：blob/data 仅信任「入库成功 / 库内确认重复」后写入的会话标记
+    return true;
+  }
+
+  /// 仅在媒体库落盘成功或库内确认重复后调用；软失败不得写入。
   Future<void> _markCurrentMediaHandled(Map<String, dynamic> task) async {
     final identity = await _actionCaptureMediaIdentity(task);
-    final key = (identity?['key'] ?? '').toString();
-    final src = (identity?['src'] ?? '').toString().trim();
+    task['needAdvancePastCurrent'] = true;
+    if (!_isReliableActionMediaIdentity(identity)) {
+      debugPrint('action markHandled skipped: unreliable identity');
+      return;
+    }
+    final key = (identity!['key'] ?? '').toString();
+    final src = (identity['src'] ?? '').toString().trim();
     if (key.isNotEmpty) _handledMediaKeysOf(task).add(key);
     if (src.isNotEmpty) _handledMediaSrcsOf(task).add(src);
     task['lastHandledMediaKey'] = key;
     task['lastHandledMediaSrc'] = src;
-    task['needAdvancePastCurrent'] = true;
     debugPrint(
       'action markHandled key=${key.length > 80 ? key.substring(0, 80) : key} src=$src',
     );
@@ -11562,9 +12803,14 @@ class _BrowserPageState extends State<BrowserPage>
       return false;
     }
     // 下载进行中绝不切条（避免与 waitDownload / findNext 抢跑）
-    if (_actionRecipeHasDownloadWork(task)) return false;
+    // 固定等待 / 强制跳过已放行时允许推走已处理媒体（下载可在后台继续）
+    if (_actionRecipeHasDownloadWork(task) &&
+        task['actionFixedWaitReleased'] != true &&
+        task['actionForceSkipReleased'] != true) {
+      return false;
+    }
     final identity = await _actionCaptureMediaIdentity(task);
-    if (!_isHandledMediaIdentity(task, identity)) {
+    if (!await _shouldSkipAsHandledMedia(task, identity)) {
       task['needAdvancePastCurrent'] = false;
       return true;
     }
@@ -11590,7 +12836,7 @@ class _BrowserPageState extends State<BrowserPage>
           return false;
         }
         final again = await _actionCaptureMediaIdentity(task);
-        if (!_isHandledMediaIdentity(task, again)) {
+        if (!await _shouldSkipAsHandledMedia(task, again)) {
           task['needAdvancePastCurrent'] = false;
           return true;
         }
@@ -11608,7 +12854,7 @@ class _BrowserPageState extends State<BrowserPage>
         await Future<void>.delayed(const Duration(milliseconds: 240));
       }
       task['needAdvancePastCurrent'] = false;
-      return !_isHandledMediaIdentity(
+      return !await _shouldSkipAsHandledMedia(
         task,
         await _actionCaptureMediaIdentity(task),
       );
@@ -11625,25 +12871,432 @@ class _BrowserPageState extends State<BrowserPage>
         task['actionHealthyStreak'] == true;
   }
 
+  /// 动作编排 / 沿用套路：禁用一切「下载前查重 / 已处理」预跳过。
+  /// 策略：先强制尝试入库，再靠文件哈希做库内去重。
+  bool _actionRecipeDisablesPreSkip([Map<String, dynamic>? task]) {
+    final t = task ?? _smartDownloadTask;
+    return t != null && t['mode'] == 'action_recipe';
+  }
+
+  /// 固定等待模式：强制下载，彻底关闭 detect-and-skip。
+  bool _actionRecipeIsFixedWaitForce([Map<String, dynamic>? task]) {
+    final t = task ?? _smartDownloadTask;
+    if (t == null || t['mode'] != 'action_recipe') return false;
+    return (t['actionWaitMode'] ?? '').toString().toLowerCase() == 'fixed';
+  }
+
+  /// 智能手势/稳健下载是否应跳过下载前查重，强制走下载队列。
+  bool _smartForceDownloadNoPreSkip([Map<String, dynamic>? task]) {
+    final t = task ?? _smartDownloadTask;
+    if (t == null) return false;
+    if (t['mode'] == 'action_recipe') return true;
+    return false;
+  }
+
+  /// 动作套路媒体库等待看门狗（库确认模式）：超时无进展则强制跳过。
+  static const Duration _kActionRecipeLibraryWatchdog = Duration(seconds: 105);
+
+  /// 识别到无效/非媒体后的快速跳过窗口（不应干等到满库确认超时）。
+  static const Duration _kActionRecipeInvalidMediaFastSkip =
+      Duration(seconds: 3);
+
+  /// 回合级看门狗：同一媒体长时间无进展则强制跳过并切下一条。
+  static const Duration _kActionRecipeStepWatchdog = Duration(seconds: 120);
+
+  bool _isActionRecipePlaceholderRow(Map row) {
+    return (row['url']?.toString() ?? '').startsWith('action-recipe://');
+  }
+
+  /// 真实智能批量下载（排除 action-recipe:// 占位条）。
+  bool _actionRecipeHasRealSmartDownloading() {
+    return _downloadTasks.any(
+      (row) =>
+          row['isSmartBatchMedia'] == true &&
+          row['status'] == 'downloading' &&
+          !_isActionRecipePlaceholderRow(row),
+    );
+  }
+
   /// 动作套路：当前是否仍有未完成的手势下载（pending / Completer / 真实在途任务）。
+  /// 含 [actionAwaitingLibrarySave] / [actionLongPressNeedsConfirm]：入库确认前绝不视为可切条。
+  /// 占位条不算「真实在途」，避免 loop_timeout 后因占位永远挡住 findNext。
   bool _actionRecipeHasDownloadWork(Map<String, dynamic> task) {
+    if (task['actionForceSkipReleased'] == true &&
+        task['actionLongPressNeedsConfirm'] != true) {
+      return false;
+    }
+    if (task['actionLongPressNeedsConfirm'] == true) return true;
+    if (task['actionAwaitingLibrarySave'] == true) return true;
     if (task['gestureDownloadPending'] == true) return true;
     final completer = task['actionDownloadCompleter'];
     if (completer is Completer<bool> && !completer.isCompleted) return true;
     if (_longPressVideoDownloadInProgress) return true;
-    return _downloadTasks.any(
-      (row) =>
-          row['isSmartBatchMedia'] == true && row['status'] == 'downloading',
-    );
+    return _actionRecipeHasRealSmartDownloading();
   }
 
   bool _hasActiveSmartBatchDownload() {
     return _longPressVideoDownloadInProgress ||
-        _downloadTasks.any(
-          (row) =>
-              row['isSmartBatchMedia'] == true &&
-              row['status'] == 'downloading',
+        _downloadingUrls.isNotEmpty ||
+        _actionRecipeHasRealSmartDownloading();
+  }
+
+  bool _actionRecipeIsInvalidMediaOutcome(String outcome) {
+    final o = outcome.trim().toLowerCase();
+    return o == 'invalid_smart_media_content' ||
+        o.contains('invalid_smart_media') ||
+        o.contains('不是有效') ||
+        o.contains('无效媒体');
+  }
+
+  String _actionRecipeForceSkipStatusText(String outcome) {
+    if (_actionRecipeIsInvalidMediaOutcome(outcome)) {
+      return '无效媒体，已跳过';
+    }
+    if (outcome == 'stagnant_timeout' ||
+        outcome == 'loop_timeout' ||
+        outcome == 'force_skip_timeout' ||
+        outcome == 'step_watchdog_timeout') {
+      return '超时无进展，强制跳过';
+    }
+    return '已强制跳过，继续下一条';
+  }
+
+  /// 仅取消动作编排占位条；不动用户手动下载、也不动其它真实 URL 在途任务。
+  void _actionRecipeCancelPlaceholdersOnly(Map<String, dynamic> task) {
+    final placeholderId = (task['actionProgressTaskId'] ?? '').toString();
+    final ids = <String>{
+      if (placeholderId.isNotEmpty) placeholderId,
+      ..._downloadTasks
+          .where(_isActionRecipePlaceholderRow)
+          .map((row) => (row['id'] ?? '').toString())
+          .where((id) => id.isNotEmpty),
+    };
+    for (final id in ids) {
+      final idx = _downloadTasks.indexWhere((row) => row['id'] == id);
+      if (idx < 0) continue;
+      final token = _downloadTasks[idx]['cancelToken'];
+      if (token is CancelToken && !token.isCancelled) {
+        token.cancel('action_recipe_force_skip');
+      }
+      _removeDownloadTask(id);
+    }
+    task.remove('actionProgressTaskId');
+  }
+
+  /// 强制跳过当前长按/等待：关闸、清占位、放行 findNext；不取消无关用户下载。
+  Future<void> _actionRecipeForceSkipCurrent(
+    Map<String, dynamic> task, {
+    required String outcome,
+    String? statusText,
+    bool incrementFailed = true,
+  }) async {
+    if (!identical(_smartDownloadTask, task) && task['actionProbe'] != true) {
+      return;
+    }
+    final resolved =
+        outcome.trim().isEmpty ? 'force_skip_timeout' : outcome.trim();
+    final label =
+        (statusText != null && statusText.trim().isNotEmpty)
+            ? statusText.trim()
+            : _actionRecipeForceSkipStatusText(resolved);
+    task['gestureDownloadPending'] = false;
+    task['actionHealthyStreak'] = false;
+    task['actionForceSkipReleased'] = true;
+    task['needAdvancePastCurrent'] = true;
+    _actionRecipeCancelPlaceholdersOnly(task);
+    _actionRecipeFinishAwaitLibrarySave(
+      task,
+      libraryOk: false,
+      outcome: resolved,
+    );
+    final pendingCompleter = task.remove('actionDownloadCompleter');
+    if (pendingCompleter is Completer<bool> &&
+        !pendingCompleter.isCompleted) {
+      pendingCompleter.complete(false);
+    }
+    if (incrementFailed) {
+      task['failed'] = ((task['failed'] as int?) ?? 0) + 1;
+    }
+    if (_actionRecipeIsInvalidMediaOutcome(resolved)) {
+      task['invalidSkipped'] = ((task['invalidSkipped'] as int?) ?? 0) + 1;
+    }
+    task['matchStage'] = label;
+    _showSmartOperation(label);
+    // 尽量标记当前条，便于回合保轨推走；找不到可靠指纹也不阻塞切条
+    try {
+      await _markCurrentMediaHandled(task);
+    } catch (_) {}
+    debugPrint(
+      'action recipe FORCE-SKIP outcome=$resolved '
+      'epoch=${task['actionDownloadEpoch']} label=$label',
+    );
+  }
+
+  /// 长按会话开始：在媒体库落盘确认前，套路不得 findNext / 切条。
+  void _actionRecipeBeginAwaitLibrarySave(Map<String, dynamic> task) {
+    task['actionAwaitingLibrarySave'] = true;
+    task['actionLongPressNeedsConfirm'] = true;
+    task['actionLibrarySaveOk'] = false;
+    task['actionDownloadOutcome'] = null;
+    task['actionFixedWaitReleased'] = false;
+    task['actionForceSkipReleased'] = false;
+    task.remove('lastGestureFailureType');
+    task['actionDownloadEpoch'] =
+        ((task['actionDownloadEpoch'] as int?) ?? 0) + 1;
+    // 强制下载立刻出现在进度条，避免「看起来被跳过」且固定等待后仍可追踪
+    _actionRecipeEnsureProgressPlaceholder(task);
+    debugPrint(
+      'action recipe library-gate OPEN epoch=${task['actionDownloadEpoch']} '
+      'waitMode=${task['actionWaitMode']}',
+    );
+  }
+
+  /// 入库成功 / 明确失败或库内重复跳过：结束等待，允许后续 waitDownload/findNext。
+  void _actionRecipeFinishAwaitLibrarySave(
+    Map<String, dynamic> task, {
+    required bool libraryOk,
+    String outcome = '',
+  }) {
+    final resolved =
+        outcome.isEmpty ? (libraryOk ? 'library_saved' : 'done') : outcome;
+    task['actionAwaitingLibrarySave'] = false;
+    task['actionLibrarySaveOk'] = libraryOk;
+    task['actionDownloadOutcome'] = resolved;
+    // finish = 终态：此后才允许 waitDownload 放行 / findNext 切条
+    task['actionLongPressNeedsConfirm'] = false;
+    // 占位任务：若真实下载已进队列则只清占位；勿动其它 downloading 任务
+    _actionRecipeResolveProgressPlaceholder(
+      task,
+      libraryOk: libraryOk,
+      outcome: resolved,
+    );
+    debugPrint(
+      'action recipe library-gate CLOSE ok=$libraryOk outcome=$resolved',
+    );
+  }
+
+  /// 固定等待到点：放行切条，不取消在途下载、不要求媒体库确认。
+  void _actionRecipeReleaseFixedWait(Map<String, dynamic> task) {
+    task['actionFixedWaitReleased'] = true;
+    task['actionAwaitingLibrarySave'] = false;
+    task['actionLongPressNeedsConfirm'] = false;
+    if ((task['actionDownloadOutcome'] ?? '').toString().isEmpty) {
+      task['actionDownloadOutcome'] = 'fixed_wait_elapsed';
+    }
+    // 到点只放行切条：保留进度条中的真实下载与占位（若仍无真实任务）
+    final placeholderId = (task['actionProgressTaskId'] ?? '').toString();
+    if (placeholderId.isNotEmpty && mounted) {
+      final hasReal = _downloadTasks.any(
+        (row) =>
+            row['isSmartBatchMedia'] == true &&
+            row['status'] == 'downloading' &&
+            row['id'] != placeholderId &&
+            !(row['url']?.toString() ?? '').startsWith('action-recipe://'),
+      );
+      if (hasReal) {
+        _removeDownloadTask(placeholderId);
+        task.remove('actionProgressTaskId');
+      } else {
+        _updateDownloadTask(
+          placeholderId,
+          progressDetail: '固定等待已结束，下载仍在继续…',
         );
+      }
+    }
+    debugPrint(
+      'action recipe fixed-wait RELEASE epoch=${task['actionDownloadEpoch']} '
+      'seconds=${task['actionWaitSeconds']}',
+    );
+  }
+
+  void _actionRecipeEnsureProgressPlaceholder(Map<String, dynamic> task) {
+    if (!mounted) return;
+    final existingId = (task['actionProgressTaskId'] ?? '').toString();
+    if (existingId.isNotEmpty &&
+        _downloadTasks.any((row) => row['id'] == existingId)) {
+      _updateDownloadTask(
+        existingId,
+        status: 'downloading',
+        progress: 0.0,
+        progressDetail: '长按已触发，强制下载中…',
+      );
+      return;
+    }
+    final id = const Uuid().v4();
+    task['actionProgressTaskId'] = id;
+    _addDownloadTask(
+      id,
+      'action-recipe://force-download/$id',
+      MediaType.video,
+      CancelToken(),
+      displayName: '动作编排 · 强制下载',
+      isSmartBatchMedia: true,
+    );
+    _updateDownloadTask(
+      id,
+      progress: 0.0,
+      progressDetail: '长按已触发，强制下载中…',
+    );
+  }
+
+  void _actionRecipeResolveProgressPlaceholder(
+    Map<String, dynamic> task, {
+    required bool libraryOk,
+    required String outcome,
+  }) {
+    final id = (task['actionProgressTaskId'] ?? '').toString();
+    if (id.isEmpty) return;
+    final idx = _downloadTasks.indexWhere((t) => t['id'] == id);
+    if (idx < 0) {
+      task.remove('actionProgressTaskId');
+      return;
+    }
+    final url = (_downloadTasks[idx]['url'] ?? '').toString();
+    final isPlaceholder = url.startsWith('action-recipe://');
+    final hasRealDownloading = _downloadTasks.any(
+      (t) =>
+          t['isSmartBatchMedia'] == true &&
+          t['status'] == 'downloading' &&
+          t['id'] != id &&
+          !(t['url']?.toString() ?? '').startsWith('action-recipe://'),
+    );
+    // 真实下载已在进度条：去掉占位，让真实任务继续可追踪
+    if (hasRealDownloading && isPlaceholder) {
+      _removeDownloadTask(id);
+      task.remove('actionProgressTaskId');
+      return;
+    }
+    if (!isPlaceholder) return;
+    if (libraryOk || outcome == 'library_saved') {
+      _updateDownloadTask(
+        id,
+        status: 'completed',
+        progress: 1.0,
+        progressDetail: '已保存到媒体库',
+      );
+      task.remove('actionProgressTaskId');
+      return;
+    }
+    if (outcome == 'already_in_library') {
+      _updateDownloadTask(
+        id,
+        status: 'completed',
+        progress: 1.0,
+        progressDetail: '库内已有相同文件',
+      );
+      task.remove('actionProgressTaskId');
+      return;
+    }
+    if (outcome == 'fixed_wait_elapsed') {
+      // 固定等待到点：占位保留为 downloading，便于用户看到仍在队列
+      _updateDownloadTask(id, progressDetail: '固定等待已结束，下载仍在继续…');
+      return;
+    }
+    if (_actionRecipeIsInvalidMediaOutcome(outcome)) {
+      _updateDownloadTask(
+        id,
+        status: 'failed',
+        progressDetail: '无效媒体，已跳过',
+      );
+      task.remove('actionProgressTaskId');
+      return;
+    }
+    if (outcome == 'stagnant_timeout' ||
+        outcome == 'loop_timeout' ||
+        outcome == 'force_skip_timeout' ||
+        outcome == 'step_watchdog_timeout') {
+      _updateDownloadTask(
+        id,
+        status: 'failed',
+        progressDetail: '超时无进展，强制跳过',
+      );
+      task.remove('actionProgressTaskId');
+      return;
+    }
+    // 明确失败：标记失败但不在切条时清掉其它真实任务
+    _updateDownloadTask(
+      id,
+      status: 'failed',
+      progressDetail: outcome.isEmpty ? '下载未完成' : outcome,
+    );
+    task.remove('actionProgressTaskId');
+  }
+
+  /// 真实智能下载任务入队时，清掉动作编排占位条，避免重复显示。
+  void _actionRecipePromoteProgressPlaceholder() {
+    final task = _smartDownloadTask;
+    if (task == null || task['mode'] != 'action_recipe') return;
+    final id = (task['actionProgressTaskId'] ?? '').toString();
+    if (id.isEmpty) return;
+    final idx = _downloadTasks.indexWhere((t) => t['id'] == id);
+    if (idx < 0) {
+      task.remove('actionProgressTaskId');
+      return;
+    }
+    final url = (_downloadTasks[idx]['url'] ?? '').toString();
+    if (url.startsWith('action-recipe://')) {
+      _removeDownloadTask(id);
+      task.remove('actionProgressTaskId');
+    }
+  }
+
+  /// 是否允许在长按下载会话之后切条（入库成功 / 明确跳过失败 / 固定等待到点 / 强制跳过）。
+  bool _actionRecipeMayAdvancePastDownload(Map<String, dynamic> task) {
+    // 固定等待已到点：允许切条，即使下载仍在后台进行
+    if (task['actionFixedWaitReleased'] == true) return true;
+    // 看门狗强制跳过：允许切条；真实下载若仍在途则后台继续，不挡 findNext
+    if (task['actionForceSkipReleased'] == true) return true;
+    if (task['actionLongPressNeedsConfirm'] == true) return false;
+    if (_actionRecipeHasDownloadWork(task)) return false;
+    return true;
+  }
+
+  /// 真实媒体库落盘成功（非软跳过 / already_in_library）。
+  bool _actionRecipeDidLibrarySave(Map<String, dynamic> task) {
+    return task['actionLibrarySaveOk'] == true &&
+        (task['actionDownloadOutcome'] ?? '').toString() == 'library_saved';
+  }
+
+  /// 固定等待期间：是否已出现可提前切条的真实入库成功。
+  /// [successAtStart] 用于捕捉 complete(true) 已加成功计数、但 outcome 偶发未读到的情况。
+  bool _actionRecipeFixedWaitShouldEarlyAdvance(
+    Map<String, dynamic> task, {
+    required int successAtStart,
+  }) {
+    if (_actionRecipeDidLibrarySave(task)) return true;
+    final successNow = (task['success'] as int?) ?? 0;
+    if (successNow > successAtStart) return true;
+    return false;
+  }
+
+  /// already_downloading / 尚无直链 等「同一次长按连发」：绝不能放行 Completer / 切条。
+  bool _actionRecipeShouldSuppressEarlyComplete(
+    Map<String, dynamic> task,
+    String failureType,
+  ) {
+    // 无效媒体必须立刻放行，绝不能当噪声压制（否则闸门永不关 → 卡死）
+    if (_actionRecipeIsInvalidMediaOutcome(failureType)) {
+      return false;
+    }
+    final awaiting =
+        task['actionAwaitingLibrarySave'] == true ||
+        task['actionLongPressNeedsConfirm'] == true ||
+        task['gestureDownloadPending'] == true;
+    // already_downloading：同一次长按连发，入库确认前绝不能放行。
+    if (failureType == 'already_downloading') {
+      return awaiting || _hasActiveSmartBatchDownload();
+    }
+    // 会话/备案软重复：绝不能当「已处理」放行切条；有在途或仍在等入库时一律压制。
+    if (failureType == 'already_in_smart_task' ||
+        failureType == 'duplicate_name_in_smart_task') {
+      return awaiting || _hasActiveSmartBatchDownload();
+    }
+    // 流引用 / 尚无直链：长按后常先到噪声消息，入库闸门打开时必须继续等真下载。
+    if (awaiting &&
+        (failureType.isEmpty || failureType == 'no_direct_url')) {
+      return true;
+    }
+    return false;
   }
 
   /// 轻量保轨：仅卡死/异常时介入。健康路径应跳过本函数。
@@ -11686,7 +13339,7 @@ class _BrowserPageState extends State<BrowserPage>
       // 2) 仅当前确是已处理媒体且允许切走时才切（不因标记标志抢先切）
       if (allowAdvance) {
         final identity = await _actionCaptureMediaIdentity(task);
-        if (_isHandledMediaIdentity(task, identity)) {
+        if (await _shouldSkipAsHandledMedia(task, identity)) {
           await _advancePastHandledMedia(task);
         }
       }
@@ -11711,10 +13364,16 @@ class _BrowserPageState extends State<BrowserPage>
           forceHide: true,
         );
       }
-      // 卡死很久：才把当前条记入已处理再切，避免同一条死循环
+      // 卡死很久：只强切，绝不无入库确认写入「已处理」（否则假跳过会永久挡住真下载）
       if (stallLevel >= 5) {
-        await _markCurrentMediaHandled(task);
-        await _advancePastHandledMedia(task);
+        task['needAdvancePastCurrent'] = false;
+        await _actionFingerFlick(
+          task,
+          axisHint: spec.$1,
+          label: '自愈强切',
+          distanceFraction: (0.45 + stallLevel * 0.02).clamp(0.4, 0.7),
+          durationMs: 320,
+        );
       }
       if (stallLevel >= 8) {
         final origin = (task['originUrl'] ?? '').toString();
@@ -11783,7 +13442,7 @@ class _BrowserPageState extends State<BrowserPage>
       'keyword': '',
       'mediaType': mediaType,
       'allowMixedMedia': allowMixedMedia,
-      'target': targetCount.clamp(1, 100),
+      'target': targetCount.clamp(1, _kSmartDownloadMaxTarget),
       'minVideoBytes': minVideoBytes,
       'maxVideoBytes': maxVideoBytes,
       'success': 0,
@@ -11829,9 +13488,10 @@ class _BrowserPageState extends State<BrowserPage>
       return;
     }
     final depth = (task['scopeDepth'] as int?) ?? 0;
-    final target = (task['target'] as int?) ?? 5;
+    final target = (task['target'] as int?) ?? 50;
     final remaining =
-        (target - ((task['success'] as int?) ?? 0)).clamp(1, 100);
+        (target - ((task['success'] as int?) ?? 0))
+            .clamp(1, _kSmartDownloadMaxTarget);
     final allowMixed = task['allowMixedMedia'] == true;
     final mediaType = task['mediaType'] as MediaType?;
     final imagesOnly = !allowMixed && mediaType == MediaType.image;
@@ -12061,8 +13721,13 @@ class _BrowserPageState extends State<BrowserPage>
                 : const <String>[]),
           ].where((u) => u.trim().isNotEmpty && !_isLikelyAdUrl(u)).toSet().toList();
           var failureType = '';
-          if (!_reserveSmartMediaName(task, url, pageUrl: pageUrl)) {
-            return (ok: false, failureType: 'duplicate_name_in_smart_task');
+          if (!await _reserveSmartMediaName(task, url, pageUrl: pageUrl)) {
+            return (
+              ok: false,
+              failureType:
+                  (task['lastSmartReserveBlockReason'] ?? 'already_in_library')
+                      .toString(),
+            );
           }
           _showSmartOperation(
             isVideo ? '下载同层视频…' : '下载同层图片…',
@@ -13418,7 +15083,7 @@ class _BrowserPageState extends State<BrowserPage>
       } else if (task['needAdvancePastCurrent'] == true) {
         // 上轮已下载但可能未切走：只做廉价已处理检查，不探广告/自愈
         final stuck = await _actionCaptureMediaIdentity(task);
-        if (_isHandledMediaIdentity(task, stuck)) {
+        if (await _shouldSkipAsHandledMedia(task, stuck)) {
           await _advancePastHandledMedia(task);
         } else {
           task['needAdvancePastCurrent'] = false;
@@ -13428,6 +15093,7 @@ class _BrowserPageState extends State<BrowserPage>
       final beforeSuccess = success;
       final beforeIdentity = await _actionCaptureMediaIdentity(task);
       final beforeKey = (beforeIdentity?['key'] ?? '').toString();
+      final roundStartedAt = DateTime.now();
       // 本轮已成功下载后：后续步骤（含 findNext）不再保轨，避免成功后再清障/双切
       var roundDownloadOk = false;
 
@@ -13437,6 +15103,33 @@ class _BrowserPageState extends State<BrowserPage>
         final step = recipe.steps[i];
         task['matchStage'] =
             '动作 ${i + 1}/${recipe.steps.length} · ${step.kind.label}';
+
+        // 回合级看门狗：同一媒体长时间无进展 → 强制跳过并继续后续 findNext
+        final roundElapsed = DateTime.now().difference(roundStartedAt);
+        final successNow = (task['success'] as int?) ?? 0;
+        if (roundElapsed >= _kActionRecipeStepWatchdog &&
+            successNow <= beforeSuccess &&
+            task['actionForceSkipReleased'] != true) {
+          await _actionRecipeForceSkipCurrent(
+            task,
+            outcome: 'step_watchdog_timeout',
+            statusText: '超时无进展，强制跳过',
+          );
+          healthyStreak = false;
+          task['actionHealthyStreak'] = false;
+          // 跳到找下一条步骤（若后面还有）；否则本轮结束后保轨切条
+          final nextFindIdx = recipe.steps.indexWhere(
+            (s) =>
+                s.kind == SmartActionKind.findNextMedia ||
+                s.kind == SmartActionKind.findNextMediaRight,
+            i,
+          );
+          if (nextFindIdx >= 0) {
+            i = nextFindIdx - 1;
+            continue;
+          }
+          break;
+        }
 
         // 长按前：仅非健康时保轨（绝不预标记已处理；切条交给 findNext）
         if (step.kind == SmartActionKind.longPressDownload && !healthyStreak) {
@@ -13489,7 +15182,8 @@ class _BrowserPageState extends State<BrowserPage>
       final gotProgress =
           gotNewDownload ||
           ((task['duplicateSkipped'] as int?) ?? 0) >
-              ((task['duplicateSkippedBeforeRound'] as int?) ?? 0);
+              ((task['duplicateSkippedBeforeRound'] as int?) ?? 0) ||
+          task['actionForceSkipReleased'] == true;
 
       if (gotNewDownload || (gotProgress && mediaMoved)) {
         idleRounds = 0;
@@ -13611,6 +15305,31 @@ class _BrowserPageState extends State<BrowserPage>
         break;
       case SmartActionKind.findNextMedia:
       case SmartActionKind.findNextMediaRight: {
+        // 入库未确认前禁止切条（健康连胜也不得跳过等待）
+        if (task['mode'] == 'action_recipe' && task['actionProbe'] != true) {
+          final needsGate =
+              task['actionLongPressNeedsConfirm'] == true ||
+              _actionRecipeHasDownloadWork(task);
+          if (needsGate) {
+            await _actionWaitDownload(task);
+          }
+          if (!_actionRecipeMayAdvancePastDownload(task)) {
+            debugPrint(
+              'action recipe switch BLOCKED findNext '
+              'needsConfirm=${task['actionLongPressNeedsConfirm']} '
+              'awaiting=${task['actionAwaitingLibrarySave']} '
+              'outcome=${task['actionDownloadOutcome']} '
+              'libraryOk=${task['actionLibrarySaveOk']}',
+            );
+            _showSmartOperation('下载未入库确认，本步不切条');
+            break;
+          }
+          debugPrint(
+            'action recipe switch ALLOWED findNext '
+            'outcome=${task['actionDownloadOutcome']} '
+            'libraryOk=${task['actionLibrarySaveOk']}',
+          );
+        }
         // 用户选定的切条方向优先于零件默认轴
         final spec = _advanceAxisSpec(task);
         await _actionSwitchAdjacentMedia(
@@ -13693,6 +15412,9 @@ class _BrowserPageState extends State<BrowserPage>
         await _actionWaitPageSettle(task);
         break;
       case SmartActionKind.waitDownload:
+        // 步骤参数覆盖任务级等待方式（同一套路内多处 wait 时以后执行为准）
+        task['actionWaitMode'] = step.waitMode;
+        task['actionWaitSeconds'] = step.waitSeconds;
         await _actionWaitDownload(task);
         break;
       case SmartActionKind.nextPage:
@@ -13969,15 +15691,28 @@ class _BrowserPageState extends State<BrowserPage>
     int durationMs = 280,
   }) async {
     // 下载未完成时禁止切条：先等到成功/失败落定
-    if (task['mode'] == 'action_recipe' &&
-        task['actionProbe'] != true &&
-        _actionRecipeHasDownloadWork(task)) {
-      _showSmartOperation('下载进行中，等待完成后再切条');
-      await _actionWaitDownload(task);
-      if (_actionRecipeHasDownloadWork(task)) {
+    if (task['mode'] == 'action_recipe' && task['actionProbe'] != true) {
+      final needsGate =
+          task['actionLongPressNeedsConfirm'] == true ||
+          _actionRecipeHasDownloadWork(task);
+      if (needsGate) {
+        _showSmartOperation('下载进行中，等待完成后再切条');
+        await _actionWaitDownload(task);
+      }
+      if (!_actionRecipeMayAdvancePastDownload(task)) {
+        debugPrint(
+          'action recipe switch BLOCKED distanceFlick '
+          'needsConfirm=${task['actionLongPressNeedsConfirm']} '
+          'outcome=${task['actionDownloadOutcome']}',
+        );
         _showSmartOperation('下载仍在进行，本步暂不切条');
         return;
       }
+      debugPrint(
+        'action recipe switch ALLOWED distanceFlick '
+        'outcome=${task['actionDownloadOutcome']} '
+        'libraryOk=${task['actionLibrarySaveOk']}',
+      );
     }
     if (!identical(_smartDownloadTask, task) && task['actionProbe'] != true) {
       return;
@@ -14017,15 +15752,28 @@ class _BrowserPageState extends State<BrowserPage>
     final controller = _controller;
     if (controller == null) return;
     // 下载未完成时禁止切条：先等到成功/失败落定，再由套路继续
-    if (task['mode'] == 'action_recipe' &&
-        task['actionProbe'] != true &&
-        _actionRecipeHasDownloadWork(task)) {
-      _showSmartOperation('下载进行中，等待完成后再切条');
-      await _actionWaitDownload(task);
-      if (_actionRecipeHasDownloadWork(task)) {
+    if (task['mode'] == 'action_recipe' && task['actionProbe'] != true) {
+      final needsGate =
+          task['actionLongPressNeedsConfirm'] == true ||
+          _actionRecipeHasDownloadWork(task);
+      if (needsGate) {
+        _showSmartOperation('下载进行中，等待完成后再切条');
+        await _actionWaitDownload(task);
+      }
+      if (!_actionRecipeMayAdvancePastDownload(task)) {
+        debugPrint(
+          'action recipe switch BLOCKED switchAdjacent '
+          'needsConfirm=${task['actionLongPressNeedsConfirm']} '
+          'outcome=${task['actionDownloadOutcome']}',
+        );
         _showSmartOperation('下载仍在进行，本步暂不切条');
         return;
       }
+      debugPrint(
+        'action recipe switch ALLOWED switchAdjacent '
+        'outcome=${task['actionDownloadOutcome']} '
+        'libraryOk=${task['actionLibrarySaveOk']}',
+      );
     }
     final goNext = direction != 'prev';
     final axisHint =
@@ -14498,7 +16246,11 @@ class _BrowserPageState extends State<BrowserPage>
     // 验证/编排默认混合识别：避免「只找视频」时漏掉当前图，或挑到边角小图
     final imagesOnly = !allowMixed && mediaType == MediaType.image;
     final videosOnly = !allowMixed && mediaType == MediaType.video;
-    final excludeSrcs = _handledMediaSrcsOf(task).take(30).toList();
+    // 动作编排：不排除「已处理」src，避免中心条被软标记误排除后点到边角小图/空点
+    final excludeSrcs =
+        _actionRecipeDisablesPreSkip(task)
+            ? const <String>[]
+            : _handledMediaSrcsOf(task).take(30).toList();
     try {
       final raw = await controller.evaluateJavascript(
         source: SmartActionJs.findCenterMedia(
@@ -14567,18 +16319,28 @@ class _BrowserPageState extends State<BrowserPage>
   Future<void> _actionLongPressDownload(Map<String, dynamic> task) async {
     final probe = task['actionProbe'] == true;
     final healthy = !probe && _actionRecipeHealthySkipGuard(task);
+    final disablePreSkip = !probe && _actionRecipeDisablesPreSkip(task);
+    final fixedForce = !probe && _actionRecipeIsFixedWaitForce(task);
     // 健康路径：跳过清障/已处理探测，直接长按当前新媒体
-    // 非健康：有广告才清；仅当停在已处理媒体上才切走（绝不在长按前标记已处理）
+    // 动作编排（含固定等待）：长按前绝不「已处理」预跳过，强制触发下载
     if (!healthy) {
       if (await _probeSmartBlockersPresent()) {
         await _clearSmartInterruptions(task, forceHide: true);
       }
-      if (!probe && task['mode'] == 'action_recipe') {
+      if (!probe &&
+          task['mode'] == 'action_recipe' &&
+          !disablePreSkip) {
         final identity = await _actionCaptureMediaIdentity(task);
-        if (_isHandledMediaIdentity(task, identity)) {
+        if (await _shouldSkipAsHandledMedia(task, identity)) {
           await _advancePastHandledMedia(task);
         }
       }
+    }
+    if (disablePreSkip || fixedForce) {
+      debugPrint(
+        'action longPressDownload: force download '
+        'fixedWait=$fixedForce disablePreSkip=$disablePreSkip',
+      );
     }
     // 验证/编排时混合识别，优先屏幕中心大媒体，避免右下角小图
     final prevMixed = task['allowMixedMedia'];
@@ -14587,13 +16349,15 @@ class _BrowserPageState extends State<BrowserPage>
     }
     var hit = await _actionFindCenterMedia(task);
     // 若中心仍是已处理媒体（全屏信息流只有一条 DOM），再切一次
+    // 动作编排禁用预跳过：不再因会话已处理集合切走，直接长按中心媒体
     if (!healthy &&
         !probe &&
+        !disablePreSkip &&
         task['mode'] == 'action_recipe' &&
         hit != null &&
         hit['found'] != false) {
       final identity = await _actionCaptureMediaIdentity(task);
-      if (_isHandledMediaIdentity(task, identity)) {
+      if (await _shouldSkipAsHandledMedia(task, identity)) {
         await _advancePastHandledMedia(task);
         hit = await _actionFindCenterMedia(task);
       }
@@ -14619,12 +16383,23 @@ class _BrowserPageState extends State<BrowserPage>
     final useJsCenter = !(cx.isFinite && cy.isFinite && cx > 0 && cy > 0);
     task['gestureDownloadPending'] = true;
     task['gestureDownloadStartedAt'] = DateTime.now();
+    // 入库闸门：仅媒体库确认成功（或库内重复/明确失败）后才允许切下一条
+    if (!probe && task['mode'] == 'action_recipe') {
+      _actionRecipeBeginAwaitLibrarySave(task);
+    }
     final completer = Completer<bool>();
     task['actionDownloadCompleter'] = completer;
     final found = hit['found'] != false && hit['type'] != 'none';
     for (var i = 0; i < 5; i++) {
       if (!identical(_smartDownloadTask, task)) {
         task['gestureDownloadPending'] = false;
+        if (!probe) {
+          _actionRecipeFinishAwaitLibrarySave(
+            task,
+            libraryOk: false,
+            outcome: 'task_replaced',
+          );
+        }
         task.remove('actionDownloadCompleter');
         if (!completer.isCompleted) completer.complete(false);
         return;
@@ -14663,6 +16438,13 @@ class _BrowserPageState extends State<BrowserPage>
           point: point,
         );
         task['gestureDownloadPending'] = false;
+        if (!probe && task['mode'] == 'action_recipe') {
+          _actionRecipeFinishAwaitLibrarySave(
+            task,
+            libraryOk: false,
+            outcome: 'longpress_not_triggered',
+          );
+        }
         task.remove('actionDownloadCompleter');
         task['failed'] = ((task['failed'] as int?) ?? 0) + 1;
         if (!completer.isCompleted) completer.complete(false);
@@ -14671,6 +16453,13 @@ class _BrowserPageState extends State<BrowserPage>
     } catch (e) {
       debugPrint('action longPressDownload failed: $e');
       task['gestureDownloadPending'] = false;
+      if (!probe && task['mode'] == 'action_recipe') {
+        _actionRecipeFinishAwaitLibrarySave(
+          task,
+          libraryOk: false,
+          outcome: 'longpress_exception',
+        );
+      }
       task.remove('actionDownloadCompleter');
       task['failed'] = ((task['failed'] as int?) ?? 0) + 1;
       if (!completer.isCompleted) completer.complete(false);
@@ -14685,17 +16474,20 @@ class _BrowserPageState extends State<BrowserPage>
       _showSmartOperation('验证：长按已触发', point: point);
       return;
     }
-    // 关键按成功触发后：必须等到本地下载成功/失败落定，才允许后续 waitDownload/findNext
-    try {
-      await completer.future.timeout(const Duration(minutes: 6));
-    } on TimeoutException {
-      _showSmartOperation('长按下载超时，继续确认在途任务', point: point);
-      // 仅超时：若真实下载仍在途，留给 waitDownload 继续等（勿在成功路径重设 pending）
-      if (_hasActiveSmartBatchDownload() &&
-          task['gestureDownloadPending'] != true) {
-        task['gestureDownloadPending'] = true;
-      }
+    // 硬等待交给 waitDownload：长按步骤只负责触发并保持入库闸门。
+    // 若在此 await Completer，waitDownload 会变成「文案闪一下就放行」，findNext 抢跑。
+    await Future<void>.delayed(const Duration(milliseconds: 480));
+    if (task['actionAwaitingLibrarySave'] != true &&
+        task['actionLongPressNeedsConfirm'] == true) {
+      task['actionAwaitingLibrarySave'] = true;
     }
+    debugPrint(
+      'action longPressDownload: trigger done, defer hard wait '
+      'needsConfirm=${task['actionLongPressNeedsConfirm']} '
+      'awaiting=${task['actionAwaitingLibrarySave']} '
+      'pending=${task['gestureDownloadPending']} '
+      'activeDownload=${_hasActiveSmartBatchDownload()}',
+    );
   }
 
   Future<void> _actionWaitDownload(Map<String, dynamic> task) async {
@@ -14704,13 +16496,231 @@ class _BrowserPageState extends State<BrowserPage>
       await Future<void>.delayed(const Duration(milliseconds: 400));
       return;
     }
-    _showSmartOperation('等待下载完成');
+    final waitMode =
+        (task['actionWaitMode'] ?? 'library').toString().toLowerCase() ==
+                'fixed'
+            ? 'fixed'
+            : 'library';
+    final waitSeconds =
+        ((task['actionWaitSeconds'] as num?)?.toInt() ?? 30).clamp(1, 600);
+    final epoch = task['actionDownloadEpoch'];
+    final needsConfirmAtEnter = task['actionLongPressNeedsConfirm'] == true;
+    final hasWorkAtEnter = _actionRecipeHasDownloadWork(task);
+    debugPrint(
+      'action waitDownload: ENTER epoch=$epoch mode=$waitMode '
+      'seconds=$waitSeconds needsConfirm=$needsConfirmAtEnter '
+      'hasWork=$hasWorkAtEnter outcome=${task['actionDownloadOutcome']} '
+      'libraryOk=${task['actionLibrarySaveOk']} '
+      'fixedReleased=${task['actionFixedWaitReleased']} '
+      'forceSkipReleased=${task['actionForceSkipReleased']}',
+    );
+
+    // 看门狗已放行：不再因残留真实下载重新卡住
+    if (task['actionForceSkipReleased'] == true &&
+        task['actionLongPressNeedsConfirm'] != true) {
+      debugPrint('action waitDownload: EXIT reason=force_skip_already_released');
+      return;
+    }
+
+    // —— 模式 2：固定等待 —— 时长为上限；真实入库成功可提前切条；禁用 detect-and-skip
+    if (waitMode == 'fixed') {
+      if (task['actionFixedWaitReleased'] == true) {
+        debugPrint('action waitDownload: EXIT reason=fixed_already_released');
+        return;
+      }
+      // 本轮从未长按/无在途工作：无需假装等待
+      if (!needsConfirmAtEnter && !hasWorkAtEnter) {
+        // 进入时若已真实入库，直接放行（不必空等满时长）
+        if (_actionRecipeDidLibrarySave(task)) {
+          task['actionFixedWaitReleased'] = true;
+          _showSmartOperation('已入库，提前继续');
+          debugPrint(
+            'action waitDownload: EXIT reason=library_ok_at_enter(fixed)',
+          );
+          return;
+        }
+        debugPrint('action waitDownload: EXIT reason=no_pending_work(fixed)');
+        return;
+      }
+      // 固定等待 = 最大等待：仅 library_saved / success 计数增加可提前结束；
+      // already_in_library / 软「已处理」绝不提前放行；到点不取消进度条在途任务。
+      final started = DateTime.now();
+      final deadline = started.add(Duration(seconds: waitSeconds));
+      final successAtStart = (task['success'] as int?) ?? 0;
+      var invalidSeenAt = DateTime.fromMillisecondsSinceEpoch(0);
+      while (identical(_smartDownloadTask, task) &&
+          DateTime.now().isBefore(deadline)) {
+        // 固定模式：挂起在 wait 开始前 / 无效媒体路径时仍可看门狗强制跳过
+        final peekOutcome =
+            (task['actionDownloadOutcome'] ?? '').toString();
+        final peekFailure =
+            (task['lastGestureFailureType'] ?? '').toString();
+        if (_actionRecipeIsInvalidMediaOutcome(peekOutcome) ||
+            _actionRecipeIsInvalidMediaOutcome(peekFailure)) {
+          if (invalidSeenAt.millisecondsSinceEpoch <= 0) {
+            invalidSeenAt = DateTime.now();
+          }
+          if (DateTime.now().difference(invalidSeenAt) >=
+              _kActionRecipeInvalidMediaFastSkip) {
+            await _actionRecipeForceSkipCurrent(
+              task,
+              outcome: 'invalid_smart_media_content',
+              statusText: '无效媒体，已跳过',
+              incrementFailed: peekOutcome.isEmpty,
+            );
+            debugPrint(
+              'action waitDownload: EXIT reason=invalid_media_fast_skip(fixed)',
+            );
+            return;
+          }
+        } else {
+          invalidSeenAt = DateTime.fromMillisecondsSinceEpoch(0);
+        }
+        // 固定等待开始前若整轮卡住超过看门狗：强制跳过（仍保留 library_saved 提前退出）
+        if (DateTime.now().difference(started) >=
+                _kActionRecipeLibraryWatchdog &&
+            !_actionRecipeFixedWaitShouldEarlyAdvance(
+              task,
+              successAtStart: successAtStart,
+            ) &&
+            !_actionRecipeHasRealSmartDownloading() &&
+            !_longPressVideoDownloadInProgress) {
+          await _actionRecipeForceSkipCurrent(
+            task,
+            outcome: 'force_skip_timeout',
+            statusText: '超时无进展，强制跳过',
+          );
+          debugPrint(
+            'action waitDownload: EXIT reason=watchdog_before_progress(fixed)',
+          );
+          return;
+        }
+        if (_actionRecipeFixedWaitShouldEarlyAdvance(
+          task,
+          successAtStart: successAtStart,
+        )) {
+          // 补齐闸门终态，避免 findNext 仍被 needsConfirm 挡住
+          if (!_actionRecipeDidLibrarySave(task) &&
+              ((task['success'] as int?) ?? 0) > successAtStart) {
+            _actionRecipeFinishAwaitLibrarySave(
+              task,
+              libraryOk: true,
+              outcome: 'library_saved',
+            );
+          }
+          task['actionFixedWaitReleased'] = true;
+          task['actionLongPressNeedsConfirm'] = false;
+          task['actionAwaitingLibrarySave'] = false;
+          debugPrint(
+            'action waitDownload: EXIT reason=library_ok_during_fixed '
+            'outcome=${task['actionDownloadOutcome']} '
+            'success=${task['success']}/$successAtStart',
+          );
+          _showSmartOperation('已入库，提前继续');
+          return;
+        }
+        final leftMs = deadline.difference(DateTime.now()).inMilliseconds;
+        if (leftMs <= 0) break;
+        final leftSec =
+            (leftMs / 1000).ceil().clamp(0, waitSeconds);
+        final activeCount = _downloadTasks
+            .where(
+              (row) =>
+                  row['isSmartBatchMedia'] == true &&
+                  row['status'] == 'downloading' &&
+                  !_isActionRecipePlaceholderRow(row),
+            )
+            .length;
+        _showSmartOperation(
+          activeCount > 0
+              ? '固定等待切条 · 还剩 ${leftSec}s · 下载中 $activeCount'
+              : '固定等待切条 · 还剩 ${leftSec}s',
+        );
+        // 优先挂起在入库 Completer 上，落盘成功立刻醒来；否则最多睡 1s 再轮询
+        final completer = task['actionDownloadCompleter'];
+        final sliceMs = leftMs < 1000 ? leftMs : 1000;
+        if (completer is Completer<bool> && !completer.isCompleted) {
+          try {
+            await completer.future.timeout(
+              Duration(milliseconds: sliceMs),
+            );
+          } on TimeoutException {
+            // 继续 while：检查 library_saved / 倒计时
+          }
+        } else {
+          await Future<void>.delayed(Duration(milliseconds: sliceMs));
+        }
+      }
+      if (!identical(_smartDownloadTask, task)) {
+        debugPrint('action waitDownload: EXIT reason=task_replaced(fixed)');
+        return;
+      }
+      // 循环结束前再看一眼：刚好在 deadline 附近入库
+      if (_actionRecipeFixedWaitShouldEarlyAdvance(
+        task,
+        successAtStart: successAtStart,
+      )) {
+        if (!_actionRecipeDidLibrarySave(task) &&
+            ((task['success'] as int?) ?? 0) > successAtStart) {
+          _actionRecipeFinishAwaitLibrarySave(
+            task,
+            libraryOk: true,
+            outcome: 'library_saved',
+          );
+        }
+        task['actionFixedWaitReleased'] = true;
+        task['actionLongPressNeedsConfirm'] = false;
+        task['actionAwaitingLibrarySave'] = false;
+        _showSmartOperation('已入库，提前继续');
+        debugPrint(
+          'action waitDownload: EXIT reason=library_ok_at_deadline(fixed)',
+        );
+        return;
+      }
+      // 到点放行切条：不取消进度条中的在途下载，任务继续后台完成
+      _actionRecipeReleaseFixedWait(task);
+      final lingering = _downloadTasks
+          .where(
+            (row) =>
+                row['isSmartBatchMedia'] == true &&
+                row['status'] == 'downloading' &&
+                !_isActionRecipePlaceholderRow(row),
+          )
+          .length;
+      _showSmartOperation(
+        lingering > 0
+            ? '固定等待结束，继续切条（$lingering 个下载仍在进度条）'
+            : '固定等待结束，继续切条',
+      );
+      debugPrint(
+        'action waitDownload: EXIT reason=fixed_elapsed lingering=$lingering',
+      );
+      return;
+    }
+
+    // —— 模式 1：媒体库确认（默认，保持原硬闸门 + 看门狗）——
+    // 本轮从未长按/无在途工作：无需假装等待
+    if (!needsConfirmAtEnter && !hasWorkAtEnter) {
+      debugPrint('action waitDownload: EXIT reason=no_pending_work');
+      return;
+    }
+    // 进入时已是无效媒体终态：立刻放行
+    final enterOutcome = (task['actionDownloadOutcome'] ?? '').toString();
+    if (_actionRecipeIsInvalidMediaOutcome(enterOutcome) &&
+        task['actionLongPressNeedsConfirm'] != true) {
+      _showSmartOperation('无效媒体，已跳过');
+      task['actionForceSkipReleased'] = true;
+      debugPrint('action waitDownload: EXIT reason=invalid_already_finished');
+      return;
+    }
+    _showSmartOperation('等待下载完成（媒体库确认）');
 
     // 主路径：若长按创建的 Completer 仍在，必须先 await（健康连胜也绝不跳过）
+    // 但加上看门狗上限，避免无效媒体被 suppress 后干等 6 分钟
     final existingCompleter = task['actionDownloadCompleter'];
     if (existingCompleter is Completer<bool> && !existingCompleter.isCompleted) {
       try {
-        await existingCompleter.future.timeout(const Duration(minutes: 6));
+        await existingCompleter.future.timeout(_kActionRecipeLibraryWatchdog);
       } on TimeoutException {
         debugPrint('action waitDownload: completer timeout, continue poll');
       }
@@ -14721,31 +16731,115 @@ class _BrowserPageState extends State<BrowserPage>
     var stagnantSince = DateTime.now();
     var lastHadWork = true;
     var quietRounds = 0;
+    var invalidSeenAt = DateTime.fromMillisecondsSinceEpoch(0);
+    var lastProgressFingerprint = '';
+    var progressSince = DateTime.now();
     final healthy = _actionRecipeHealthySkipGuard(task);
     while (identical(_smartDownloadTask, task) &&
-        DateTime.now().difference(started) < const Duration(minutes: 6)) {
+        DateTime.now().difference(started) < _kActionRecipeLibraryWatchdog) {
+      if (task['actionForceSkipReleased'] == true &&
+          task['actionLongPressNeedsConfirm'] != true) {
+        debugPrint('action waitDownload: EXIT reason=force_skip_released');
+        return;
+      }
+      final needsConfirm = task['actionLongPressNeedsConfirm'] == true;
+      final awaitingLibrary = task['actionAwaitingLibrarySave'] == true;
       final pending = task['gestureDownloadPending'] == true;
       final completer = task['actionDownloadCompleter'];
       final completerPending =
           completer is Completer<bool> && !completer.isCompleted;
-      final downloading = _downloadTasks.any(
-        (row) =>
-            row['isSmartBatchMedia'] == true && row['status'] == 'downloading',
-      );
+      final downloading = _actionRecipeHasRealSmartDownloading();
       final longPressBusy = _longPressVideoDownloadInProgress;
-      final activelyDownloading = downloading || longPressBusy;
+      final urlInFlight = _downloadingUrls.isNotEmpty;
+      final activelyDownloading =
+          downloading || longPressBusy || urlInFlight;
+      final outcomeNow = (task['actionDownloadOutcome'] ?? '').toString();
+      final failurePeek =
+          (task['lastGestureFailureType'] ?? '').toString();
+      // 无效媒体：数秒内强制跳过，绝不干等满看门狗
+      if (_actionRecipeIsInvalidMediaOutcome(outcomeNow) ||
+          _actionRecipeIsInvalidMediaOutcome(failurePeek)) {
+        if (invalidSeenAt.millisecondsSinceEpoch <= 0) {
+          invalidSeenAt = DateTime.now();
+          _showSmartOperation('无效媒体，准备跳过…');
+        }
+        if (!needsConfirm &&
+            !awaitingLibrary &&
+            _actionRecipeIsInvalidMediaOutcome(outcomeNow)) {
+          task['actionForceSkipReleased'] = true;
+          _showSmartOperation('无效媒体，已跳过');
+          debugPrint(
+            'action waitDownload: EXIT reason=invalid_media_terminal',
+          );
+          return;
+        }
+        if (DateTime.now().difference(invalidSeenAt) >=
+            _kActionRecipeInvalidMediaFastSkip) {
+          await _actionRecipeForceSkipCurrent(
+            task,
+            outcome: 'invalid_smart_media_content',
+            statusText: '无效媒体，已跳过',
+            incrementFailed:
+                !_actionRecipeIsInvalidMediaOutcome(outcomeNow),
+          );
+          debugPrint(
+            'action waitDownload: EXIT reason=invalid_media_fast_skip',
+          );
+          return;
+        }
+      } else {
+        invalidSeenAt = DateTime.fromMillisecondsSinceEpoch(0);
+      }
+      // 入库闸门未落定前一律视为有工作（健康连胜也不得跳过）
       final hasWork =
-          pending || completerPending || activelyDownloading;
+          needsConfirm ||
+          awaitingLibrary ||
+          pending ||
+          completerPending ||
+          activelyDownloading;
+      // 进度指纹：真实下载数 / URL 在途 / 闸门 / outcome，变则刷新看门狗
+      final progressFingerprint =
+          '${activelyDownloading ? 1 : 0}|${_downloadingUrls.length}|'
+          '${needsConfirm ? 1 : 0}|$awaitingLibrary|$pending|'
+          '$completerPending|$outcomeNow|${task['success']}';
+      if (progressFingerprint != lastProgressFingerprint) {
+        lastProgressFingerprint = progressFingerprint;
+        progressSince = DateTime.now();
+      }
       if (!hasWork) {
-        // 防止「pending 被误清 ↔ 下载任务尚未登记」竞态：连续安静几次才放行
+        // 仅在长按会话已 finish（needsConfirm=false）后才允许 quiet 放行
         quietRounds++;
         if (quietRounds >= 3) {
+          final outcome = (task['actionDownloadOutcome'] ?? '').toString();
+          final libraryOk = task['actionLibrarySaveOk'] == true;
+          if (_actionRecipeIsInvalidMediaOutcome(outcome)) {
+            task['actionForceSkipReleased'] = true;
+            _showSmartOperation('无效媒体，已跳过');
+          }
+          debugPrint(
+            'action waitDownload: EXIT reason=quiet_after_terminal '
+            'outcome=$outcome libraryOk=$libraryOk',
+          );
           return;
         }
         await Future<void>.delayed(const Duration(milliseconds: 220));
         continue;
       }
       quietRounds = 0;
+      // 标志被误清但仍需确认：重新拉起闸门，绝不空转放行
+      if (needsConfirm &&
+          !awaitingLibrary &&
+          !pending &&
+          !completerPending &&
+          !activelyDownloading) {
+        debugPrint(
+          'action waitDownload: re-assert gate (needsConfirm without flags)',
+        );
+        task['actionAwaitingLibrarySave'] = true;
+        if (task['gestureDownloadPending'] != true) {
+          task['gestureDownloadPending'] = true;
+        }
+      }
       if (hasWork != lastHadWork) {
         stagnantSince = DateTime.now();
         lastHadWork = hasWork;
@@ -14755,6 +16849,8 @@ class _BrowserPageState extends State<BrowserPage>
           DateTime.now().difference(stagnantSince).inMilliseconds;
       final shouldProbeClear = !activelyDownloading &&
           !completerPending &&
+          !awaitingLibrary &&
+          !needsConfirm &&
           ((!healthy && stagnantMs > 1600) || stagnantMs > 4000);
       if (shouldProbeClear &&
           DateTime.now().difference(lastClearAt) >
@@ -14769,9 +16865,9 @@ class _BrowserPageState extends State<BrowserPage>
             _showSmartOperation('等待下载·已关掉干扰弹窗');
             // 仅在确认没有在途下载时，才允许推走已处理媒体
             if (task['mode'] == 'action_recipe' &&
-                !_actionRecipeHasDownloadWork(task)) {
+                _actionRecipeMayAdvancePastDownload(task)) {
               final identity = await _actionCaptureMediaIdentity(task);
-              if (_isHandledMediaIdentity(task, identity)) {
+              if (await _shouldSkipAsHandledMedia(task, identity)) {
                 await _advancePastHandledMedia(task);
               }
             }
@@ -14779,20 +16875,52 @@ class _BrowserPageState extends State<BrowserPage>
         }
       }
       // pending/Completer 一直为 true、却没有任何真实下载任务：多半点到广告或未触发
-      if ((pending || completerPending) &&
-          !downloading &&
-          !longPressBusy &&
-          DateTime.now().difference(stagnantSince) >
-              const Duration(seconds: 12)) {
-        task['gestureDownloadPending'] = false;
-        task['actionHealthyStreak'] = false;
-        final pendingCompleter = task.remove('actionDownloadCompleter');
-        if (pendingCompleter is Completer<bool> &&
-            !pendingCompleter.isCompleted) {
-          pendingCompleter.complete(false);
-        }
-        _showSmartOperation('下载无进展，已跳过并继续');
+      // 占位条不再算 activelyDownloading，避免假「在下」导致干等满看门狗
+      final stagnantLimit = (awaitingLibrary || needsConfirm) &&
+              activelyDownloading
+          ? _kActionRecipeLibraryWatchdog
+          : ((awaitingLibrary || needsConfirm)
+              ? const Duration(seconds: 45)
+              : const Duration(seconds: 12));
+      if ((pending || completerPending || awaitingLibrary || needsConfirm) &&
+          !activelyDownloading &&
+          DateTime.now().difference(stagnantSince) > stagnantLimit) {
+        await _actionRecipeForceSkipCurrent(
+          task,
+          outcome: 'stagnant_timeout',
+          statusText: '超时无进展，强制跳过',
+        );
         await _clearSmartInterruptions(task, silent: false, label: '跳过前清障');
+        debugPrint('action waitDownload: EXIT reason=stagnant_timeout');
+        return;
+      }
+      // 有真实下载但长时间无指纹变化：看门狗强制跳过
+      if ((awaitingLibrary || needsConfirm) &&
+          DateTime.now().difference(progressSince) >
+              _kActionRecipeLibraryWatchdog) {
+        await _actionRecipeForceSkipCurrent(
+          task,
+          outcome: 'force_skip_timeout',
+          statusText: '超时无进展，强制跳过',
+        );
+        debugPrint('action waitDownload: EXIT reason=progress_watchdog');
+        return;
+      }
+      // 终态已至（finish 清掉 needsConfirm）且无在途：可以退出
+      if (!needsConfirm &&
+          !awaitingLibrary &&
+          !pending &&
+          !completerPending &&
+          !activelyDownloading) {
+        if (_actionRecipeIsInvalidMediaOutcome(outcomeNow)) {
+          task['actionForceSkipReleased'] = true;
+          _showSmartOperation('无效媒体，已跳过');
+        }
+        debugPrint(
+          'action waitDownload: EXIT reason=terminal '
+          'outcome=${task['actionDownloadOutcome']} '
+          'libraryOk=${task['actionLibrarySaveOk']}',
+        );
         return;
       }
       // 有 Completer 未完成时优先挂起在 future 上，避免空转轮询抢跑
@@ -14800,12 +16928,21 @@ class _BrowserPageState extends State<BrowserPage>
         try {
           await completer.future.timeout(const Duration(seconds: 8));
         } on TimeoutException {
-          // 继续 while 检查在途任务
+          // 继续 while 检查在途任务 / 入库闸门
         }
         continue;
       }
       await Future<void>.delayed(const Duration(milliseconds: 350));
     }
+    // 审计缺口修复：loop_timeout 必须关闸 + 清占位，否则 findNext 永久被挡
+    if (identical(_smartDownloadTask, task)) {
+      await _actionRecipeForceSkipCurrent(
+        task,
+        outcome: 'loop_timeout',
+        statusText: '超时无进展，强制跳过',
+      );
+    }
+    debugPrint('action waitDownload: EXIT reason=loop_timeout');
   }
 
   /// 零件验证：在当前页单独跑一步/一类动作，便于定位哪一步无效。
@@ -16880,12 +19017,16 @@ class _BrowserPageState extends State<BrowserPage>
     return value;
   }
 
-  bool _reserveSmartMediaName(
+  Future<bool> _reserveSmartMediaName(
     Map<String, dynamic> task,
     String mediaUrl, {
     String title = '',
     String pageUrl = '',
-  }) {
+  }) async {
+    // 动作编排 / 固定等待：彻底关闭 24h/标题/源地址软预约预跳过，强制下载
+    if (_smartForceDownloadNoPreSkip(task)) {
+      return true;
+    }
     final key = _smartMediaNameKey(mediaUrl, title: title, pageUrl: pageUrl);
     final titleKey = _smartMediaTitleKey(title);
     if (key.isEmpty && titleKey.isEmpty) return true;
@@ -16894,22 +19035,46 @@ class _BrowserPageState extends State<BrowserPage>
     final pageKey = _smartStablePageKey(pageUrl);
     final allowTitleIdentity = !_isElementBoundFeedPage(pageUrl);
     final cutoff = DateTime.now().subtract(const Duration(hours: 24));
-    final foundIn24hRegistry = _smartDownload24hRegistry.any((row) {
-      if ((row['siteHost'] ?? '').toString() != siteHost) return false;
-      final savedAt = DateTime.tryParse((row['savedAt'] ?? '').toString());
-      if (savedAt == null || savedAt.isBefore(cutoff)) return false;
-      return (key.isNotEmpty && (row['nameKey'] ?? '').toString() == key) ||
-          (allowTitleIdentity &&
-              titleKey.isNotEmpty &&
-              (row['titleKey'] ?? '').toString() == titleKey) ||
-          (sourceKey.isNotEmpty &&
-              (row['sourceKey'] ?? '').toString() == sourceKey) ||
-          (pageKey.isNotEmpty && (row['pageKey'] ?? '').toString() == pageKey);
-    });
-    if (foundIn24hRegistry) {
-      task['duplicateSkipped'] = ((task['duplicateSkipped'] as int?) ?? 0) + 1;
-      task['recent24hSkipped'] = ((task['recent24hSkipped'] as int?) ?? 0) + 1;
-      return false;
+    final registryHits =
+        _smartDownload24hRegistry.where((row) {
+          if ((row['siteHost'] ?? '').toString() != siteHost) return false;
+          final savedAt = DateTime.tryParse((row['savedAt'] ?? '').toString());
+          if (savedAt == null || savedAt.isBefore(cutoff)) return false;
+          return (key.isNotEmpty && (row['nameKey'] ?? '').toString() == key) ||
+              (allowTitleIdentity &&
+                  titleKey.isNotEmpty &&
+                  (row['titleKey'] ?? '').toString() == titleKey) ||
+              (sourceKey.isNotEmpty &&
+                  (row['sourceKey'] ?? '').toString() == sourceKey) ||
+              (pageKey.isNotEmpty &&
+                  (row['pageKey'] ?? '').toString() == pageKey);
+        }).toList();
+    for (final row in registryHits) {
+      final hash = (row['fileHash'] ?? '').toString();
+      final rowSource = (row['sourceKey'] ?? '').toString();
+      var inLibrary = false;
+      if (hash.isNotEmpty && await _libraryConfirmsFileHash(hash)) {
+        inLibrary = true;
+      } else if (rowSource.isNotEmpty &&
+          await _libraryConfirmsMediaSource(rowSource)) {
+        inLibrary = true;
+      } else if (sourceKey.isNotEmpty &&
+          await _libraryConfirmsMediaSource(sourceKey)) {
+        inLibrary = true;
+      }
+      if (inLibrary) {
+        task['lastSmartReserveBlockReason'] = 'already_in_library';
+        task['duplicateSkipped'] =
+            ((task['duplicateSkipped'] as int?) ?? 0) + 1;
+        task['recent24hSkipped'] =
+            ((task['recent24hSkipped'] as int?) ?? 0) + 1;
+        return false;
+      }
+      // 备案有、媒体库无：清掉过期软标记，允许真正下载
+      _smartDownload24hRegistry.remove(row);
+      debugPrint(
+        'Smart reserve: stale 24h registry hit without library file, cleared',
+      );
     }
     final reservedNames = task['reservedMediaNameKeys'] as Set<String>;
     final reservedTitles = task['reservedMediaTitleKeys'] as Set<String>;
@@ -16926,8 +19091,16 @@ class _BrowserPageState extends State<BrowserPage>
         titleKey.isNotEmpty &&
         reservedTitles.contains(titleKey)) {
       // Different URL but same title already claimed by another item.
-      task['duplicateSkipped'] = ((task['duplicateSkipped'] as int?) ?? 0) + 1;
-      return false;
+      // 仅当标题对应源已在媒体库时才拦截；否则放行，避免软预约挡住未入库项。
+      if (sourceKey.isNotEmpty && await _libraryConfirmsMediaSource(sourceKey)) {
+        task['lastSmartReserveBlockReason'] = 'already_in_library';
+        task['duplicateSkipped'] =
+            ((task['duplicateSkipped'] as int?) ?? 0) + 1;
+        return false;
+      }
+      debugPrint(
+        'Smart reserve: same-title reservation without library file, allow',
+      );
     }
     if (key.isNotEmpty) reservedNames.add(key);
     if (allowTitleIdentity && titleKey.isNotEmpty) {
@@ -18328,8 +20501,13 @@ class _BrowserPageState extends State<BrowserPage>
         cappedUrls.sublist(start, end).map((url) async {
           var failureType = '';
           final pageUrl = _currentUrl;
-          if (!_reserveSmartMediaName(task, url, pageUrl: pageUrl)) {
-            return (ok: false, failureType: 'duplicate_name_in_smart_task');
+          if (!await _reserveSmartMediaName(task, url, pageUrl: pageUrl)) {
+            return (
+              ok: false,
+              failureType:
+                  (task['lastSmartReserveBlockReason'] ?? 'already_in_library')
+                      .toString(),
+            );
           }
           _showSmartOperation('模拟长按当前图片，开始下载');
           final ok = await _performBackgroundDownload(
@@ -19124,6 +21302,12 @@ class _BrowserPageState extends State<BrowserPage>
         task['demoPhase'] == 'auto') {
       unawaited(_persistSmartDemoRecipe(task));
     }
+    // 动作编排：至少一次真实入库成功 → 写入全局可借用列表，并覆盖本站默认。
+    if (actionRecipeMode && success > 0) {
+      unawaited(_persistSiteSuccessActionRecipe(task));
+    }
+    task['actionAwaitingLibrarySave'] = false;
+    task['actionLongPressNeedsConfirm'] = false;
     final pendingCompleter = task.remove('actionDownloadCompleter');
     if (pendingCompleter is Completer<bool> && !pendingCompleter.isCompleted) {
       pendingCompleter.complete(false);
@@ -19141,7 +21325,15 @@ class _BrowserPageState extends State<BrowserPage>
     if (discoveryToken != null && !discoveryToken.isCancelled) {
       discoveryToken.cancel(reason ?? '智能下载已完成');
     }
-    _cancelSmartBatchDownloads(reason ?? '智能下载已完成');
+    // 动作编排：结束任务时不取消/移除仍在进度条中的强制下载，允许固定等待后继续完成
+    if (!actionRecipeMode) {
+      _cancelSmartBatchDownloads(reason ?? '智能下载已完成');
+    } else {
+      debugPrint(
+        'action recipe finish: keep ${_downloadTasks.where((r) => r['isSmartBatchMedia'] == true && r['status'] == 'downloading').length} '
+        'forced downloads in progress bar',
+      );
+    }
     if (discoveryTaskId.isNotEmpty) {
       _removeDownloadTask(discoveryTaskId);
     }
@@ -19178,12 +21370,49 @@ class _BrowserPageState extends State<BrowserPage>
     }
   }
 
+  void _openCommonWebsiteCard(Map<String, dynamic> website, int index) {
+    final rawUrl = (website['url'] ?? '').toString();
+    // Open the stored URL as-is. Only migrate clearly dead legacy /m once.
+    if (BrowserService.isDeadGoogleMobileUrl(rawUrl) &&
+        index >= 0 &&
+        index < _commonWebsites.length) {
+      final fixed = BrowserService.normalizeCommonWebsiteUrl(rawUrl);
+      if (fixed != rawUrl) {
+        setState(() {
+          _commonWebsites[index]['url'] = fixed;
+        });
+        unawaited(_saveCommonWebsites());
+        _loadUrl(fixed);
+        return;
+      }
+    }
+    _loadUrl(rawUrl);
+  }
+
+  void _openBookmarkAt(int index) {
+    if (index < 0 || index >= _bookmarks.length) return;
+    final bookmark = _bookmarks[index];
+    final rawUrl = bookmark['url']?.toString() ?? '';
+    if (BrowserService.isDeadGoogleMobileUrl(rawUrl)) {
+      final fixed = BrowserService.normalizeCommonWebsiteUrl(rawUrl);
+      if (fixed != rawUrl) {
+        setState(() {
+          _bookmarks[index]['url'] = fixed;
+        });
+        unawaited(_saveBookmarks());
+        _loadUrl(fixed);
+        return;
+      }
+    }
+    _loadUrl(rawUrl);
+  }
+
   Widget _buildWebsiteCard(Map<String, dynamic> website, int index) {
     final color = _candyCardColors[index % _candyCardColors.length];
     return _buildCandyShortcutShell(
       key: ValueKey(website['url']),
       color: color,
-      onTap: () => _loadUrl((website['url'] ?? '').toString()),
+      onTap: () => _openCommonWebsiteCard(website, index),
       onDoubleTap: () => _showWebsiteOptionsDialog(context, website, index),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 4.0, vertical: 2.0),
@@ -19206,6 +21435,133 @@ class _BrowserPageState extends State<BrowserPage>
     );
   }
 
+  void _showViewWebsiteUrlDialog(
+    BuildContext pageContext,
+    Map<String, dynamic> website,
+  ) {
+    final url = website['url']?.toString() ?? '';
+    final name = website['name']?.toString() ?? '';
+    showDialog(
+      context: pageContext,
+      builder:
+          (ctx) => AlertDialog(
+            title: Text(name.isEmpty ? '查看网址' : '查看网址 · $name'),
+            content: SelectableText(
+              url.isEmpty ? '（无网址）' : url,
+              style: const TextStyle(fontSize: 14),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () {
+                  if (url.isNotEmpty) {
+                    Clipboard.setData(ClipboardData(text: url));
+                    ScaffoldMessenger.of(pageContext).showSnackBar(
+                      const SnackBar(
+                        content: Text('网址已复制到剪贴板'),
+                        duration: Duration(seconds: 1),
+                      ),
+                    );
+                  }
+                },
+                child: const Text('复制'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('关闭'),
+              ),
+            ],
+          ),
+    );
+  }
+
+  void _showEditWebsiteUrlDialog(
+    BuildContext pageContext,
+    Map<String, dynamic> website,
+    int index,
+  ) {
+    // Prefill with exact stored URL; save with preserve-user-URL policy only.
+    final urlController = TextEditingController(
+      text: website['url']?.toString() ?? '',
+    );
+    final name = website['name']?.toString() ?? '';
+    showDialog(
+      context: pageContext,
+      builder:
+          (dialogContext) => AlertDialog(
+            title: Text(name.isEmpty ? '修改网址' : '修改网址 · $name'),
+            content: TextField(
+              controller: urlController,
+              decoration: const InputDecoration(
+                labelText: '网址',
+                hintText: '输入完整网址',
+              ),
+              keyboardType: TextInputType.url,
+              autofocus: true,
+              maxLines: 3,
+              minLines: 1,
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('取消'),
+              ),
+              TextButton(
+                onPressed: () async {
+                  final trimmed = urlController.text.trim();
+                  if (trimmed.isEmpty) {
+                    ScaffoldMessenger.of(pageContext).showSnackBar(
+                      const SnackBar(
+                        content: Text('请输入网址'),
+                        duration: Duration(seconds: 2),
+                      ),
+                    );
+                    return;
+                  }
+                  // Same as add: trim + optional https / dead-/m only; no host rewrite.
+                  final storedUrl =
+                      BrowserService.normalizeCommonWebsiteUrl(trimmed);
+                  if (storedUrl == (website['url']?.toString() ?? '')) {
+                    Navigator.pop(dialogContext);
+                    return;
+                  }
+                  showDialog(
+                    context: dialogContext,
+                    barrierDismissible: false,
+                    builder:
+                        (_) => const AlertDialog(
+                          content: Row(
+                            children: [
+                              CircularProgressIndicator(),
+                              SizedBox(width: 20),
+                              Text('保存中...'),
+                            ],
+                          ),
+                        ),
+                  );
+                  int idx = index;
+                  if (idx < 0 || idx >= _commonWebsites.length) {
+                    idx = _commonWebsites.indexWhere(
+                      (s) => s['url'] == website['url'],
+                    );
+                  }
+                  if (idx >= 0) {
+                    setState(() {
+                      _commonWebsites[idx]['url'] = storedUrl;
+                    });
+                    await _saveCommonWebsites();
+                  }
+                  if (dialogContext.mounted) {
+                    Navigator.of(dialogContext).pop(); // loading
+                    Navigator.of(dialogContext).pop(); // edit dialog
+                  }
+                },
+                child: const Text('保存'),
+              ),
+            ],
+          ),
+    );
+  }
+
   void _showWebsiteOptionsDialog(
     BuildContext pageContext,
     Map<String, dynamic> website,
@@ -19223,6 +21579,24 @@ class _BrowserPageState extends State<BrowserPage>
                 onTap: () {
                   Navigator.pop(sheetContext);
                   _showRenameWebsiteDialog(pageContext, website, index);
+                },
+              ),
+              const Divider(height: 1),
+              ListTile(
+                leading: const Icon(Icons.visibility, color: Colors.teal),
+                title: const Text('查看网址'),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  _showViewWebsiteUrlDialog(pageContext, website);
+                },
+              ),
+              const Divider(height: 1),
+              ListTile(
+                leading: const Icon(Icons.edit_note, color: Colors.indigo),
+                title: const Text('修改网址'),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  _showEditWebsiteUrlDialog(pageContext, website, index);
                 },
               ),
               const Divider(height: 1),
@@ -19314,41 +21688,52 @@ class _BrowserPageState extends State<BrowserPage>
     try {
       final prefs = await SharedPreferences.getInstance();
       final bookmarksJsonString = prefs.getString('bookmarks');
-      setState(() {
-        _bookmarks.clear();
-        if (bookmarksJsonString != null && bookmarksJsonString.isNotEmpty) {
-          final decoded = jsonDecode(bookmarksJsonString);
-          if (decoded.isNotEmpty &&
-              decoded[0] is Map<String, dynamic> &&
-              decoded[0].containsKey('name') &&
-              decoded[0].containsKey('url')) {
-            _bookmarks =
-                (decoded as List)
-                    .map(
-                      (item) => {
-                        'name': item['name']?.toString() ?? '',
-                        'url': item['url']?.toString() ?? '',
-                      },
-                    )
-                    .toList();
-          } else if (decoded.isNotEmpty && decoded[0] is String) {
-            _bookmarks =
-                (decoded as List<String>)
-                    .map(
-                      (url) => {'name': url, 'url': url} as Map<String, String>,
-                    )
-                    .toList();
-            _saveBookmarks();
+      var migrated = false;
+      final loaded = <Map<String, String>>[];
+      if (bookmarksJsonString != null && bookmarksJsonString.isNotEmpty) {
+        final decoded = jsonDecode(bookmarksJsonString);
+        if (decoded is List && decoded.isNotEmpty) {
+          if (decoded[0] is Map &&
+              (decoded[0] as Map).containsKey('name') &&
+              (decoded[0] as Map).containsKey('url')) {
+            for (final item in decoded) {
+              final rawUrl = (item['url'] ?? '').toString();
+              final name = (item['name'] ?? '').toString();
+              var url = rawUrl;
+              if (BrowserService.isDeadGoogleMobileUrl(rawUrl)) {
+                final fixed = BrowserService.normalizeCommonWebsiteUrl(rawUrl);
+                if (fixed != rawUrl) {
+                  url = fixed;
+                  migrated = true;
+                }
+              }
+              loaded.add({'name': name, 'url': url});
+            }
+          } else if (decoded[0] is String) {
+            migrated = true;
+            for (final raw in decoded.cast<String>()) {
+              final url = BrowserService.normalizeCommonWebsiteUrl(raw);
+              loaded.add({'name': url, 'url': url});
+            }
           }
         }
-        if (_bookmarks.isEmpty) {
-          _bookmarks = [
-            {'name': '百度', 'url': 'https://www.baidu.com'},
-            {'name': 'Bilibili', 'url': 'https://www.bilibili.com'},
-          ];
-          _saveBookmarks();
-        }
+      }
+      if (loaded.isEmpty) {
+        loaded.addAll([
+          {'name': '百度', 'url': 'https://www.baidu.com'},
+          {'name': 'Bilibili', 'url': 'https://www.bilibili.com'},
+        ]);
+        migrated = true;
+      }
+      setState(() {
+        _bookmarks
+          ..clear()
+          ..addAll(loaded);
       });
+      if (migrated) {
+        await _saveBookmarks();
+        debugPrint('已迁移书签中的旧版 Google /m 等 URL');
+      }
     } catch (e) {
       debugPrint('Error loading bookmarks: $e');
     }
@@ -19362,7 +21747,7 @@ class _BrowserPageState extends State<BrowserPage>
         _commonWebsites.addAll([
           {
             'name': 'Google',
-            'url': 'https://www.google.com',
+            'url': BrowserService.kGoogleHomeUrl,
             'iconCode': Icons.public.codePoint,
           },
           {
@@ -22461,8 +24846,8 @@ class _BrowserPageState extends State<BrowserPage>
                             key: ValueKey('bookmark_$url$index'),
                             title: Text(name),
                             onTap: () {
-                              _loadUrl(url);
                               Navigator.pop(context);
+                              _openBookmarkAt(index);
                             },
                             trailing: Row(
                               mainAxisSize: MainAxisSize.min,
@@ -22646,21 +25031,34 @@ class _BrowserPageState extends State<BrowserPage>
         final List<dynamic> websitesList = decoded is List ? decoded : [];
 
         if (websitesList.isNotEmpty) {
+          var migrated = false;
+          final mapped =
+              websitesList.map((item) {
+                final rawUrl = (item['url'] ?? '').toString();
+                var url = rawUrl;
+                // Only migrate known dead Google /m; never rewrite user .hk / query URLs.
+                if (BrowserService.isDeadGoogleMobileUrl(rawUrl)) {
+                  final fixed = BrowserService.normalizeCommonWebsiteUrl(rawUrl);
+                  if (fixed != rawUrl) {
+                    url = fixed;
+                    migrated = true;
+                  }
+                }
+                return {
+                  'name': item['name'],
+                  'url': url,
+                  'iconCode': Icons.public.codePoint,
+                };
+              }).toList();
           setState(() {
             _commonWebsites.clear();
-            final mapped =
-                websitesList
-                    .map(
-                      (item) => {
-                        'name': item['name'],
-                        'url': item['url'],
-                        'iconCode': Icons.public.codePoint,
-                      },
-                    )
-                    .toList();
             _commonWebsites.addAll(mapped);
           });
           debugPrint('从SharedPreferences加载了${_commonWebsites.length}个常用网站');
+          if (migrated) {
+            await _saveCommonWebsites();
+            debugPrint('已迁移旧版 Google /m 常用网站 URL 并写回');
+          }
           return;
         }
       }
@@ -22671,7 +25069,7 @@ class _BrowserPageState extends State<BrowserPage>
         _commonWebsites.addAll([
           {
             'name': 'Google',
-            'url': 'https://www.google.com',
+            'url': BrowserService.kGoogleHomeUrl,
             'iconCode': Icons.public.codePoint,
           },
           {
@@ -22691,7 +25089,7 @@ class _BrowserPageState extends State<BrowserPage>
         _commonWebsites.addAll([
           {
             'name': 'Google',
-            'url': 'https://www.google.com',
+            'url': BrowserService.kGoogleHomeUrl,
             'iconCode': Icons.public.codePoint,
           },
           {
@@ -22712,7 +25110,23 @@ class _BrowserPageState extends State<BrowserPage>
     final prefs = await SharedPreferences.getInstance();
     final historyString = prefs.getString('browser_history');
     if (historyString != null) {
-      _history = List<Map<String, dynamic>>.from(json.decode(historyString));
+      var migrated = false;
+      final rows = List<Map<String, dynamic>>.from(json.decode(historyString));
+      for (final row in rows) {
+        final rawUrl = (row['url'] ?? '').toString();
+        if (rawUrl.isEmpty) continue;
+        if (!BrowserService.isDeadGoogleMobileUrl(rawUrl)) continue;
+        final url = BrowserService.normalizeCommonWebsiteUrl(rawUrl);
+        if (url != rawUrl) {
+          row['url'] = url;
+          migrated = true;
+        }
+      }
+      _history = rows;
+      if (migrated) {
+        await _saveHistory();
+        debugPrint('已迁移历史记录中的旧版 Google /m URL');
+      }
     }
   }
 
@@ -23015,11 +25429,19 @@ class _BrowserPageState extends State<BrowserPage>
                               javaScriptEnabled: true,
                               useHybridComposition: true,
                               useOnLoadResource: true,
+                              useShouldOverrideUrlLoading: true,
                               allowFileAccess: true,
                               domStorageEnabled: true,
                               databaseEnabled: true,
                               cacheEnabled: true,
+                              // 正常浏览：持久 cookie / 本地存储；勿用无痕，否则退出即丢登录
+                              incognito: false,
+                              clearCache: false,
+                              clearSessionCache: false,
                               thirdPartyCookiesEnabled: true,
+                              // iOS：与系统 HTTPCookieStorage 共享，利于跨次冷启动保持登录
+                              sharedCookiesEnabled: true,
+                              saveFormData: true,
                               javaScriptCanOpenWindowsAutomatically: true,
                               supportMultipleWindows: true,
                               mixedContentMode:
@@ -23048,6 +25470,51 @@ class _BrowserPageState extends State<BrowserPage>
                               );
                             },
                             onLoadStart: (ctrl, url) {
+                              if (url != null) {
+                                final urlStr = url.toString();
+                                // 自定义协议若仍进到 onLoadStart：解开深链或立刻停住，避免「无法打开」页。
+                                if (!urlStr.startsWith('http://') &&
+                                    !urlStr.startsWith('https://') &&
+                                    !urlStr.startsWith('about:') &&
+                                    !urlStr.startsWith('data:') &&
+                                    !urlStr.startsWith('blob:')) {
+                                  final extracted =
+                                      _extractHttpUrlFromAppDeepLink(urlStr);
+                                  if (extracted != null) {
+                                    unawaited(
+                                      ctrl.loadUrl(
+                                        urlRequest: URLRequest(
+                                          url: WebUri(extracted),
+                                        ),
+                                      ),
+                                    );
+                                  } else {
+                                    unawaited(ctrl.stopLoading());
+                                  }
+                                  return;
+                                }
+                                // Google 若仍跳到失效 /m，立刻拉回可用首页。
+                                final googleFixed =
+                                    _rewriteDeadGoogleMobileNavigation(urlStr);
+                                if (googleFixed != null) {
+                                  unawaited(
+                                    ctrl.loadUrl(
+                                      urlRequest: URLRequest(
+                                        url: WebUri(googleFixed),
+                                      ),
+                                    ),
+                                  );
+                                  return;
+                                }
+                              }
+                              if (url != null) {
+                                final urlStr = url.toString();
+                                if (urlStr.startsWith('http://') ||
+                                    urlStr.startsWith('https://')) {
+                                  // 尽早记入干净后退栈，避免陷阱页抢在 onLoadStop 前冲掉搜索结果。
+                                  _noteMeaningfulWebNavigation(urlStr);
+                                }
+                              }
                               setState(() {
                                 _isLoading = true;
                                 if (url != null) {
@@ -23074,6 +25541,24 @@ class _BrowserPageState extends State<BrowserPage>
                             onLoadStop: (ctrl, url) {
                               if (url != null) _onPageFinished(url.toString());
                             },
+                            onUpdateVisitedHistory: (ctrl, url, isReload) {
+                              if (url == null) return;
+                              final urlStr = url.toString();
+                              if (_isBlankHistoryUrl(urlStr)) return;
+                              if (!urlStr.startsWith('http://') &&
+                                  !urlStr.startsWith('https://')) {
+                                return;
+                              }
+                              _noteMeaningfulWebNavigation(
+                                urlStr,
+                                fromHistoryUpdate: true,
+                              );
+                              if (!mounted) return;
+                              setState(() {
+                                _currentUrl = urlStr;
+                                _urlController.text = urlStr;
+                              });
+                            },
                             onLoadResource: (ctrl, resource) {
                               _recordLoadedWebResource(resource);
                             },
@@ -23081,6 +25566,21 @@ class _BrowserPageState extends State<BrowserPage>
                               final popupUrl = action.request.url?.toString();
                               if (popupUrl == null || popupUrl.isEmpty) {
                                 debugPrint('网页请求打开新窗口，但没有提供目标地址');
+                                return false;
+                              }
+                              if (!popupUrl.startsWith('http://') &&
+                                  !popupUrl.startsWith('https://')) {
+                                await _handleNonHttpNavigation(ctrl, popupUrl);
+                                return false;
+                              }
+                              final googleFixed =
+                                  _rewriteDeadGoogleMobileNavigation(popupUrl);
+                              if (googleFixed != null) {
+                                await ctrl.loadUrl(
+                                  urlRequest: URLRequest(
+                                    url: WebUri(googleFixed),
+                                  ),
+                                );
                                 return false;
                               }
                               if (_smartDownloadTask != null &&
@@ -23110,16 +25610,19 @@ class _BrowserPageState extends State<BrowserPage>
                               }
                               if (!url.startsWith('http://') &&
                                   !url.startsWith('https://')) {
-                                if (url.startsWith('data:') ||
-                                    url.startsWith('blob:')) {
-                                  return NavigationActionPolicy.ALLOW;
-                                }
-                                final lower = url.toLowerCase();
-                                if (_isNoisyExternalAppScheme(lower)) {
-                                  return NavigationActionPolicy.CANCEL;
-                                }
-                                debugPrint('检测到自定义URL协议: $url');
-                                _launchExternalApp(url);
+                                return _handleNonHttpNavigation(ctrl, url);
+                              }
+                              final googleFixed =
+                                  _rewriteDeadGoogleMobileNavigation(url);
+                              if (googleFixed != null) {
+                                debugPrint(
+                                  '拦截失效 Google /m 导航: $url -> $googleFixed',
+                                );
+                                await ctrl.loadUrl(
+                                  urlRequest: URLRequest(
+                                    url: WebUri(googleFixed),
+                                  ),
+                                );
                                 return NavigationActionPolicy.CANCEL;
                               }
                               if (_smartDownloadTask != null &&
@@ -23727,6 +26230,8 @@ class _BrowserPageState extends State<BrowserPage>
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    unawaited(_flushBrowserCookies());
     final smartTask = _smartDownloadTask;
     (smartTask?['deadlineTimer'] as Timer?)?.cancel();
     (smartTask?['watchdogTimer'] as Timer?)?.cancel();
@@ -24138,6 +26643,10 @@ class _BrowserPageState extends State<BrowserPage>
     bool isFavoriteBatch = false,
   }) {
     final resolvedDisplayName = displayName ?? _getShortDisplayName(url);
+    // 真实媒体任务入队时，替换动作编排占位条（进度条保持可追踪）
+    if (isSmartBatchMedia && !url.startsWith('action-recipe://')) {
+      _actionRecipePromoteProgressPlaceholder();
+    }
     _downloadTasks.insert(0, {
       'id': id,
       'url': url,
@@ -24677,9 +27186,19 @@ class _BrowserPageState extends State<BrowserPage>
           final List<dynamic> bookmarksData = browserData['bookmarks'];
           setState(() {
             _bookmarks =
-                bookmarksData
-                    .map((item) => Map<String, String>.from(item))
-                    .toList();
+                bookmarksData.map((item) {
+                  final map = Map<String, String>.from(
+                    (item as Map).map(
+                      (k, v) => MapEntry(k.toString(), v?.toString() ?? ''),
+                    ),
+                  );
+                  final rawUrl = map['url'] ?? '';
+                  if (BrowserService.isDeadGoogleMobileUrl(rawUrl)) {
+                    map['url'] =
+                        BrowserService.normalizeCommonWebsiteUrl(rawUrl);
+                  }
+                  return map;
+                }).toList();
           });
           await _saveBookmarks();
         }
@@ -24696,6 +27215,14 @@ class _BrowserPageState extends State<BrowserPage>
               // 只保存 iconCode，不动态创建 IconData 实例
               if (website['iconCode'] == null) {
                 website['iconCode'] = Icons.public.codePoint;
+              }
+              final rawUrl = (website['url'] ?? '').toString();
+              // Import verbatim except known dead Google /m shortcuts.
+              if (BrowserService.isDeadGoogleMobileUrl(rawUrl)) {
+                website['url'] =
+                    BrowserService.normalizeCommonWebsiteUrl(rawUrl);
+              } else {
+                website['url'] = rawUrl;
               }
               _commonWebsites.add(website);
             }
@@ -24808,7 +27335,11 @@ class _BrowserPageState extends State<BrowserPage>
                                 child: InkWell(
                                   onTap: () {
                                     Navigator.pop(context);
-                                    _loadUrl(url);
+                                    _loadUrl(
+                                      BrowserService.normalizeCommonWebsiteUrl(
+                                        url,
+                                      ),
+                                    );
                                   },
                                   onLongPress: () async {
                                     _history.removeAt(index);
@@ -25035,7 +27566,8 @@ class _BrowserPageState extends State<BrowserPage>
           return;
         }
       }
-      if (_isXPlatformPage(actualUrl)) {
+      // Google / X 等登录站点：页面完成后立刻落盘 cookie，避免仅依赖进程暂停回调
+      if (_shouldPersistCookiesForUrl(actualUrl)) {
         unawaited(_flushBrowserCookies());
       }
       if (!mediaHandlersReady && _smartDownloadTask != null) {
@@ -25050,11 +27582,13 @@ class _BrowserPageState extends State<BrowserPage>
       }
       String title = ctrl != null ? (await ctrl.getTitle() ?? url) : url;
       await _addHistory(title, url);
+      final committedUrl = actualUrl.isNotEmpty ? actualUrl : url;
+      _noteMeaningfulWebNavigation(committedUrl);
 
       // 更新状态：仅当加载真实网页时切换到 WebView
       setState(() {
         _isLoading = false;
-        _currentUrl = actualUrl.isNotEmpty ? actualUrl : url;
+        _currentUrl = committedUrl;
         _urlController.text = _currentUrl;
         _showHomePage = false;
       });
@@ -25129,7 +27663,7 @@ class _BrowserPageState extends State<BrowserPage>
       'keyword': kw,
       'mediaType': mediaType,
       'allowMixedMedia': false,
-      'target': targetCount.clamp(1, 100),
+      'target': targetCount.clamp(1, _kSmartDownloadMaxTarget),
       'minVideoBytes': minVideoBytes,
       'maxVideoBytes': maxVideoBytes,
       'autoVideoSizeRange': autoVideoSizeRange,
@@ -26002,7 +28536,7 @@ class _BrowserPageState extends State<BrowserPage>
       'keyword': kw,
       'mediaType': mediaType,
       'allowMixedMedia': false,
-      'target': targetCount.clamp(1, 100),
+      'target': targetCount.clamp(1, _kSmartDownloadMaxTarget),
       'minVideoBytes': minVideoBytes,
       'maxVideoBytes': maxVideoBytes,
       'autoVideoSizeRange': autoVideoSizeRange,

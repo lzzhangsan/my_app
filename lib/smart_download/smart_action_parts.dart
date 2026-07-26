@@ -260,7 +260,7 @@ extension SmartActionKindX on SmartActionKind {
       case SmartActionKind.waitPageSettle:
         return '等滚动停稳、页面大致就绪';
       case SmartActionKind.waitDownload:
-        return '等到本次下载结束再继续';
+        return '媒体库确认后再切条，或按固定秒数等待后切条';
       case SmartActionKind.nextPage:
         return '点击「下一页 / Next」';
       case SmartActionKind.loadMore:
@@ -387,6 +387,12 @@ extension SmartActionKindX on SmartActionKind {
         return <String, dynamic>{'distanceFraction': 0.85};
       case SmartActionKind.waitBrief:
         return <String, dynamic>{'ms': 1000};
+      case SmartActionKind.waitDownload:
+        // library：入库确认后切条（默认）；fixed：最多等 waitSeconds，入库成功可提前切条
+        return <String, dynamic>{
+          'waitMode': 'library',
+          'waitSeconds': 30,
+        };
       case SmartActionKind.findNextMedia:
       case SmartActionKind.findPrevMedia:
         return <String, dynamic>{
@@ -509,6 +515,22 @@ class SmartActionStep {
     return fallback;
   }
 
+  String paramString(String key, String fallback) {
+    final v = params[key];
+    if (v == null) return fallback;
+    final s = v.toString().trim();
+    return s.isEmpty ? fallback : s;
+  }
+
+  /// `library`（默认）或 `fixed`。
+  String get waitMode {
+    final mode = paramString('waitMode', 'library').toLowerCase();
+    return mode == 'fixed' ? 'fixed' : 'library';
+  }
+
+  /// 固定等待秒数（仅 waitMode=fixed 使用）。
+  int get waitSeconds => paramInt('waitSeconds', 30).clamp(1, 600);
+
   Map<String, dynamic> toJson() => <String, dynamic>{
     'id': id,
     'kind': kind.id,
@@ -540,6 +562,9 @@ class SmartActionRecipe {
     String? id,
     this.updatedAt,
     this.lastUsedAt,
+    this.advanceAxisHint,
+    this.advanceMode,
+    this.lastSuccessAt,
   }) : id = id ?? _newRecipeId();
 
   final String id;
@@ -548,6 +573,12 @@ class SmartActionRecipe {
   final List<SmartActionStep> steps;
   DateTime? updatedAt;
   DateTime? lastUsedAt;
+  /// 成功实跑时的切条方向：`up` / `down` / `left`。
+  String? advanceAxisHint;
+  /// 成功实跑时的滑动方式：`distance` / `verify`。
+  String? advanceMode;
+  /// 最近一次「动作编排」真实入库成功的时间。
+  DateTime? lastSuccessAt;
 
   bool get isEmpty => steps.isEmpty;
 
@@ -557,6 +588,9 @@ class SmartActionRecipe {
     List<SmartActionStep>? steps,
     DateTime? updatedAt,
     DateTime? lastUsedAt,
+    String? advanceAxisHint,
+    String? advanceMode,
+    DateTime? lastSuccessAt,
   }) {
     return SmartActionRecipe(
       id: id,
@@ -565,6 +599,9 @@ class SmartActionRecipe {
       steps: steps ?? List<SmartActionStep>.from(this.steps),
       updatedAt: updatedAt ?? this.updatedAt,
       lastUsedAt: lastUsedAt ?? this.lastUsedAt,
+      advanceAxisHint: advanceAxisHint ?? this.advanceAxisHint,
+      advanceMode: advanceMode ?? this.advanceMode,
+      lastSuccessAt: lastSuccessAt ?? this.lastSuccessAt,
     );
   }
 
@@ -575,6 +612,12 @@ class SmartActionRecipe {
     'steps': steps.map((s) => s.toJson()).toList(),
     'updatedAt': (updatedAt ?? DateTime.now()).toIso8601String(),
     if (lastUsedAt != null) 'lastUsedAt': lastUsedAt!.toIso8601String(),
+    if (advanceAxisHint != null && advanceAxisHint!.isNotEmpty)
+      'advanceAxisHint': advanceAxisHint,
+    if (advanceMode != null && advanceMode!.isNotEmpty)
+      'advanceMode': advanceMode,
+    if (lastSuccessAt != null)
+      'lastSuccessAt': lastSuccessAt!.toIso8601String(),
   };
 
   factory SmartActionRecipe.fromJson(Map<String, dynamic> json) {
@@ -594,6 +637,17 @@ class SmartActionRecipe {
       steps: steps,
       updatedAt: DateTime.tryParse((json['updatedAt'] ?? '').toString()),
       lastUsedAt: DateTime.tryParse((json['lastUsedAt'] ?? '').toString()),
+      advanceAxisHint: () {
+        final v = (json['advanceAxisHint'] ?? '').toString().trim();
+        return v.isEmpty ? null : v;
+      }(),
+      advanceMode: () {
+        final v = (json['advanceMode'] ?? '').toString().trim();
+        return v.isEmpty ? null : v;
+      }(),
+      lastSuccessAt: DateTime.tryParse(
+        (json['lastSuccessAt'] ?? '').toString(),
+      ),
     );
   }
 
@@ -680,6 +734,7 @@ String _newRecipeId() =>
 int _recipeSeq = 0;
 
 /// 多套路库：同一站点可保存多套命名动作，并记住上次使用的一套。
+/// [userActionRecipes]：跨站可借用的「成功动作套路」id 列表（最近成功在前）。
 class SmartActionRecipeStore {
   static const _prefsKeyV2 = 'browser_smart_action_recipes_v2';
   static const _prefsKeyV1 = 'browser_smart_action_recipes_v1';
@@ -690,22 +745,101 @@ class SmartActionRecipeStore {
 
   static String keyForHost(String host) => normalizeHost(host);
 
+  static Map<String, dynamic> _emptyRaw() => <String, dynamic>{
+    'recipes': <String, dynamic>{},
+    'lastByHost': <String, dynamic>{},
+    'lastSuccessByHost': <String, dynamic>{},
+    'userActionRecipes': <String>[],
+  };
+
+  static List<String> _migrateUserActionRecipeIds(Map<String, dynamic> raw) {
+    final recipesMap =
+        (raw['recipes'] is Map)
+            ? Map<String, dynamic>.from(raw['recipes'] as Map)
+            : <String, dynamic>{};
+    final ids = <String>[];
+    void addId(String id) {
+      if (id.isEmpty || ids.contains(id) || !recipesMap.containsKey(id)) {
+        return;
+      }
+      ids.add(id);
+    }
+
+    final rawList = raw['userActionRecipes'];
+    if (rawList is List) {
+      for (final e in rawList) {
+        addId(e.toString());
+      }
+    }
+    if (ids.isNotEmpty) return ids;
+
+    // 旧数据迁移：本站默认 + 曾标记 lastSuccessAt 的套路 → 全局可借用列表。
+    final lastSuccessByHost = raw['lastSuccessByHost'];
+    if (lastSuccessByHost is Map) {
+      for (final value in lastSuccessByHost.values) {
+        addId(value.toString());
+      }
+    }
+    final scored = <({String id, DateTime at})>[];
+    for (final entry in recipesMap.entries) {
+      final row = entry.value;
+      if (row is! Map) continue;
+      final recipe = SmartActionRecipe.fromJson(
+        Map<String, dynamic>.from(row),
+      );
+      if (recipe.lastSuccessAt == null || recipe.steps.isEmpty) continue;
+      if (ids.contains(recipe.id)) continue;
+      scored.add((
+        id: recipe.id,
+        at: recipe.lastSuccessAt ??
+            recipe.updatedAt ??
+            DateTime.fromMillisecondsSinceEpoch(0),
+      ));
+    }
+    scored.sort((a, b) => b.at.compareTo(a.at));
+    for (final row in scored) {
+      addId(row.id);
+    }
+    return ids;
+  }
+
+  static Map<String, dynamic> _normalizeRaw(Map<String, dynamic> raw) {
+    final normalized = <String, dynamic>{
+      'recipes':
+          (raw['recipes'] is Map)
+              ? Map<String, dynamic>.from(raw['recipes'] as Map)
+              : <String, dynamic>{},
+      'lastByHost':
+          (raw['lastByHost'] is Map)
+              ? Map<String, dynamic>.from(raw['lastByHost'] as Map)
+              : <String, dynamic>{},
+      'lastSuccessByHost':
+          (raw['lastSuccessByHost'] is Map)
+              ? Map<String, dynamic>.from(raw['lastSuccessByHost'] as Map)
+              : <String, dynamic>{},
+    };
+    normalized['userActionRecipes'] = _migrateUserActionRecipeIds({
+      ...normalized,
+      'userActionRecipes': raw['userActionRecipes'],
+    });
+    return normalized;
+  }
+
   static Future<Map<String, dynamic>> _loadRaw() async {
     final prefs = await SharedPreferences.getInstance();
     final rawV2 = prefs.getString(_prefsKeyV2);
     if (rawV2 != null && rawV2.isNotEmpty) {
       try {
         final decoded = jsonDecode(rawV2);
-        if (decoded is Map) return Map<String, dynamic>.from(decoded);
+        if (decoded is Map) {
+          return _normalizeRaw(Map<String, dynamic>.from(decoded));
+        }
       } catch (_) {}
     }
     // 迁移 v1：每站只有一套 → 写入 v2
     final rawV1 = prefs.getString(_prefsKeyV1);
     if (rawV1 == null || rawV1.isEmpty) {
-      return <String, dynamic>{
-        'recipes': <String, dynamic>{},
-        'lastByHost': <String, dynamic>{},
-      };
+      return _emptyRaw();
     }
     try {
       final decoded = jsonDecode(rawV1);
@@ -726,14 +860,13 @@ class SmartActionRecipeStore {
       final migrated = <String, dynamic>{
         'recipes': recipes,
         'lastByHost': lastByHost,
+        'lastSuccessByHost': <String, dynamic>{},
+        'userActionRecipes': <String>[],
       };
       await prefs.setString(_prefsKeyV2, jsonEncode(migrated));
-      return migrated;
+      return _normalizeRaw(migrated);
     } catch (_) {
-      return <String, dynamic>{
-        'recipes': <String, dynamic>{},
-        'lastByHost': <String, dynamic>{},
-      };
+      return _emptyRaw();
     }
   }
 
@@ -787,62 +920,270 @@ class SmartActionRecipeStore {
     return list.isEmpty ? null : list.first;
   }
 
-  static Future<void> save(SmartActionRecipe recipe) async {
+  /// 本站「沿用套路」默认成功动作；没有则返回 null（不静默回退）。
+  /// 可为他站来源的借用套路（以 [lastSuccessByHost] 指针为准，不强制 recipe.host 同源）。
+  static Future<SmartActionRecipe?> loadLastSuccessForHost(String host) async {
+    final want = keyForHost(host);
+    if (want.isEmpty) return null;
     final raw = await _loadRaw();
-    final recipes = Map<String, dynamic>.from(
-      (raw['recipes'] is Map)
-          ? Map<String, dynamic>.from(raw['recipes'] as Map)
-          : <String, dynamic>{},
+    final lastSuccessByHost = raw['lastSuccessByHost'];
+    final recipesMap = raw['recipes'];
+    if (lastSuccessByHost is! Map || recipesMap is! Map) return null;
+    final id = (lastSuccessByHost[want] ?? '').toString();
+    if (id.isEmpty) return null;
+    final row = recipesMap[id];
+    if (row is! Map) return null;
+    final recipe = SmartActionRecipe.fromJson(Map<String, dynamic>.from(row));
+    if (recipe.steps.isEmpty) return null;
+    return recipe;
+  }
+
+  static Map<String, dynamic> _bundle(
+    Map<String, dynamic> recipes,
+    Map<String, dynamic> lastByHost,
+    Map<String, dynamic> lastSuccessByHost,
+    List<String> userActionRecipes,
+  ) =>
+      <String, dynamic>{
+        'recipes': recipes,
+        'lastByHost': lastByHost,
+        'lastSuccessByHost': lastSuccessByHost,
+        'userActionRecipes': userActionRecipes,
+      };
+
+  static List<String> _upsertUserActionRecipeId(
+    List<String> ids,
+    String id,
+  ) {
+    final next = List<String>.from(ids)..remove(id);
+    next.insert(0, id);
+    return next;
+  }
+
+  /// 全部「成功动作套路」（跨站可借用；不含 X/91 内置管线）。
+  static Future<List<SmartActionRecipe>> loadUserActionRecipes() async {
+    final raw = _normalizeRaw(await _loadRaw());
+    final recipesMap = raw['recipes'] as Map;
+    final ids = List<String>.from(raw['userActionRecipes'] as List);
+    final out = <SmartActionRecipe>[];
+    for (final id in ids) {
+      final row = recipesMap[id];
+      if (row is! Map) continue;
+      final recipe = SmartActionRecipe.fromJson(
+        Map<String, dynamic>.from(row),
+      );
+      if (recipe.steps.isEmpty) continue;
+      out.add(recipe);
+    }
+    return out;
+  }
+
+  static Future<void> save(SmartActionRecipe recipe) async {
+    final raw = _normalizeRaw(await _loadRaw());
+    final recipes = Map<String, dynamic>.from(raw['recipes'] as Map);
+    final lastByHost = Map<String, dynamic>.from(raw['lastByHost'] as Map);
+    final lastSuccessByHost = Map<String, dynamic>.from(
+      raw['lastSuccessByHost'] as Map,
     );
-    final lastByHost = Map<String, dynamic>.from(
-      (raw['lastByHost'] is Map)
-          ? Map<String, dynamic>.from(raw['lastByHost'] as Map)
-          : <String, dynamic>{},
+    final userActionRecipes = List<String>.from(
+      raw['userActionRecipes'] as List,
     );
     recipe.updatedAt = DateTime.now();
     recipes[recipe.id] = recipe.toJson();
     lastByHost[keyForHost(recipe.host)] = recipe.id;
-    await _saveRaw(<String, dynamic>{
-      'recipes': recipes,
-      'lastByHost': lastByHost,
-    });
+    await _saveRaw(
+      _bundle(recipes, lastByHost, lastSuccessByHost, userActionRecipes),
+    );
   }
 
   static Future<void> markUsed(SmartActionRecipe recipe) async {
-    final raw = await _loadRaw();
-    final recipes = Map<String, dynamic>.from(
-      (raw['recipes'] is Map)
-          ? Map<String, dynamic>.from(raw['recipes'] as Map)
-          : <String, dynamic>{},
+    final raw = _normalizeRaw(await _loadRaw());
+    final recipes = Map<String, dynamic>.from(raw['recipes'] as Map);
+    final lastByHost = Map<String, dynamic>.from(raw['lastByHost'] as Map);
+    final lastSuccessByHost = Map<String, dynamic>.from(
+      raw['lastSuccessByHost'] as Map,
     );
-    final lastByHost = Map<String, dynamic>.from(
-      (raw['lastByHost'] is Map)
-          ? Map<String, dynamic>.from(raw['lastByHost'] as Map)
-          : <String, dynamic>{},
+    final userActionRecipes = List<String>.from(
+      raw['userActionRecipes'] as List,
     );
     recipe.lastUsedAt = DateTime.now();
     recipe.updatedAt = recipe.updatedAt ?? DateTime.now();
     recipes[recipe.id] = recipe.toJson();
     lastByHost[keyForHost(recipe.host)] = recipe.id;
-    await _saveRaw(<String, dynamic>{
-      'recipes': recipes,
-      'lastByHost': lastByHost,
-    });
+    await _saveRaw(
+      _bundle(recipes, lastByHost, lastSuccessByHost, userActionRecipes),
+    );
+  }
+
+  /// 将「动作编排」成功经验写入全局可借用列表，并设为某站「本站默认」。
+  /// [defaultForHost]：默认指针写入的站点（当前浏览站）；[recipe.host] 保留来源站标签。
+  /// 同一 defaultForHost 的默认指针会**覆盖**；旧成功套路仍保留在 [userActionRecipes]。
+  static Future<void> markLastSuccess(
+    SmartActionRecipe recipe, {
+    String? advanceAxisHint,
+    String? advanceMode,
+    String? defaultForHost,
+  }) async {
+    final defaultHostKey = keyForHost(
+      (defaultForHost ?? recipe.host).trim(),
+    );
+    if (defaultHostKey.isEmpty || recipe.steps.isEmpty) return;
+    final now = DateTime.now();
+    final axis = (advanceAxisHint ?? recipe.advanceAxisHint ?? '').trim();
+    final mode = (advanceMode ?? recipe.advanceMode ?? '').trim();
+    recipe.advanceAxisHint =
+        (axis == 'up' || axis == 'down' || axis == 'left') ? axis : null;
+    recipe.advanceMode =
+        (mode == 'distance' || mode == 'verify') ? mode : null;
+    recipe.lastSuccessAt = now;
+    recipe.lastUsedAt = now;
+    recipe.updatedAt = now;
+    // 来源 host：已有则保留（跨站借用成功不改写）；空则记为当前默认站。
+    if (keyForHost(recipe.host).isEmpty) {
+      recipe = recipe.copyWith(host: defaultHostKey);
+    }
+
+    final raw = _normalizeRaw(await _loadRaw());
+    final recipes = Map<String, dynamic>.from(raw['recipes'] as Map);
+    final lastByHost = Map<String, dynamic>.from(raw['lastByHost'] as Map);
+    final lastSuccessByHost = Map<String, dynamic>.from(
+      raw['lastSuccessByHost'] as Map,
+    );
+    final userActionRecipes = _upsertUserActionRecipeId(
+      List<String>.from(raw['userActionRecipes'] as List),
+      recipe.id,
+    );
+    // 若同 id 已有条目，合并保留其来源 host（避免被调用方误改）。
+    final prevRow = recipes[recipe.id];
+    if (prevRow is Map) {
+      final prevHost =
+          keyForHost((prevRow['host'] ?? '').toString());
+      if (prevHost.isNotEmpty && keyForHost(recipe.host) != prevHost) {
+        recipe = recipe.copyWith(host: prevHost);
+      }
+    }
+    recipes[recipe.id] = recipe.toJson();
+    lastByHost[defaultHostKey] = recipe.id;
+    lastSuccessByHost[defaultHostKey] = recipe.id; // 本站默认覆盖
+    await _saveRaw(
+      _bundle(recipes, lastByHost, lastSuccessByHost, userActionRecipes),
+    );
+  }
+
+  /// 将已有成功套路设为某站「本站默认」（跨站借用后可落盘为当前站默认）。
+  static Future<void> setAsHostDefault(String host, String recipeId) async {
+    final hostKey = keyForHost(host);
+    final id = recipeId.trim();
+    if (hostKey.isEmpty || id.isEmpty) return;
+    final raw = _normalizeRaw(await _loadRaw());
+    final recipes = Map<String, dynamic>.from(raw['recipes'] as Map);
+    final lastByHost = Map<String, dynamic>.from(raw['lastByHost'] as Map);
+    final lastSuccessByHost = Map<String, dynamic>.from(
+      raw['lastSuccessByHost'] as Map,
+    );
+    final row = recipes[id];
+    if (row is! Map) return;
+    final recipe = SmartActionRecipe.fromJson(Map<String, dynamic>.from(row));
+    if (recipe.steps.isEmpty) return;
+    recipe.lastSuccessAt = recipe.lastSuccessAt ?? DateTime.now();
+    recipe.updatedAt = DateTime.now();
+    recipes[id] = recipe.toJson();
+    lastByHost[hostKey] = id;
+    lastSuccessByHost[hostKey] = id;
+    final userActionRecipes = _upsertUserActionRecipeId(
+      List<String>.from(raw['userActionRecipes'] as List),
+      id,
+    );
+    await _saveRaw(
+      _bundle(recipes, lastByHost, lastSuccessByHost, userActionRecipes),
+    );
+  }
+
+  /// 重命名用户动作套路（不影响 X/91 内置管线）。
+  static Future<bool> renameRecipe(String id, String name) async {
+    final trimmed = name.trim();
+    if (id.isEmpty || trimmed.isEmpty) return false;
+    final raw = _normalizeRaw(await _loadRaw());
+    final recipes = Map<String, dynamic>.from(raw['recipes'] as Map);
+    final row = recipes[id];
+    if (row is! Map) return false;
+    final recipe = SmartActionRecipe.fromJson(Map<String, dynamic>.from(row));
+    recipe.name = trimmed;
+    recipe.updatedAt = DateTime.now();
+    recipes[id] = recipe.toJson();
+    await _saveRaw(
+      _bundle(
+        recipes,
+        Map<String, dynamic>.from(raw['lastByHost'] as Map),
+        Map<String, dynamic>.from(raw['lastSuccessByHost'] as Map),
+        List<String>.from(raw['userActionRecipes'] as List),
+      ),
+    );
+    return true;
+  }
+
+  /// 清除本站「沿用套路」自动选用的成功经验（不影响 X/91 等内置管线）。
+  /// [deleteRecipe] 为 true 时同时删除该套路实体；否则仅取消本站默认指针。
+  static Future<void> clearLastSuccessForHost(
+    String host, {
+    bool deleteRecipe = true,
+  }) async {
+    final hostKey = keyForHost(host);
+    if (hostKey.isEmpty) return;
+    final raw = _normalizeRaw(await _loadRaw());
+    final recipes = Map<String, dynamic>.from(raw['recipes'] as Map);
+    final lastByHost = Map<String, dynamic>.from(raw['lastByHost'] as Map);
+    final lastSuccessByHost = Map<String, dynamic>.from(
+      raw['lastSuccessByHost'] as Map,
+    );
+    final userActionRecipes = List<String>.from(
+      raw['userActionRecipes'] as List,
+    );
+    final id = (lastSuccessByHost.remove(hostKey) ?? '').toString();
+    if (id.isNotEmpty) {
+      if (deleteRecipe) {
+        recipes.remove(id);
+        userActionRecipes.remove(id);
+        // 其他站若也指向同一套路 id，一并清掉默认指针。
+        lastSuccessByHost.removeWhere((_, value) => value.toString() == id);
+        if (lastByHost[hostKey] == id) {
+          lastByHost.remove(hostKey);
+          SmartActionRecipe? fallback;
+          for (final value in recipes.values) {
+            if (value is! Map) continue;
+            final r = SmartActionRecipe.fromJson(
+              Map<String, dynamic>.from(value),
+            );
+            if (keyForHost(r.host) != hostKey) continue;
+            if (fallback == null ||
+                (r.updatedAt ?? DateTime.fromMillisecondsSinceEpoch(0))
+                    .isAfter(
+                  fallback.updatedAt ?? DateTime.fromMillisecondsSinceEpoch(0),
+                )) {
+              fallback = r;
+            }
+          }
+          if (fallback != null) lastByHost[hostKey] = fallback.id;
+        }
+      }
+    }
+    await _saveRaw(
+      _bundle(recipes, lastByHost, lastSuccessByHost, userActionRecipes),
+    );
   }
 
   static Future<void> deleteById(String id) async {
-    final raw = await _loadRaw();
-    final recipes = Map<String, dynamic>.from(
-      (raw['recipes'] is Map)
-          ? Map<String, dynamic>.from(raw['recipes'] as Map)
-          : <String, dynamic>{},
+    final raw = _normalizeRaw(await _loadRaw());
+    final recipes = Map<String, dynamic>.from(raw['recipes'] as Map);
+    final lastByHost = Map<String, dynamic>.from(raw['lastByHost'] as Map);
+    final lastSuccessByHost = Map<String, dynamic>.from(
+      raw['lastSuccessByHost'] as Map,
     );
-    final lastByHost = Map<String, dynamic>.from(
-      (raw['lastByHost'] is Map)
-          ? Map<String, dynamic>.from(raw['lastByHost'] as Map)
-          : <String, dynamic>{},
+    final userActionRecipes = List<String>.from(
+      raw['userActionRecipes'] as List,
     );
     final removed = recipes.remove(id);
+    userActionRecipes.remove(id);
     if (removed is Map) {
       final host = keyForHost((removed['host'] ?? '').toString());
       if (lastByHost[host] == id) {
@@ -862,11 +1203,12 @@ class SmartActionRecipeStore {
         }
         if (fallback != null) lastByHost[host] = fallback.id;
       }
+      // 任一站默认指向该套路则清空（不回退旧默认，避免错套路复活）。
+      lastSuccessByHost.removeWhere((_, value) => value.toString() == id);
     }
-    await _saveRaw(<String, dynamic>{
-      'recipes': recipes,
-      'lastByHost': lastByHost,
-    });
+    await _saveRaw(
+      _bundle(recipes, lastByHost, lastSuccessByHost, userActionRecipes),
+    );
   }
 
   /// 兼容旧调用：返回本站上次套路。

@@ -21,9 +21,6 @@
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
 
-    <!--  如果需要支持非 HTTPS 网站（谨慎使用，仅在调试时启用）  -->
-    <!--  <application android:usesCleartextTraffic="true">  -->
-
     <!--  Required to query activities that can process text  -->
     <queries>
         <intent>
@@ -37,10 +34,13 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
+    <!-- Browser: allow HTTP (cleartext) as well as HTTPS -->
     <application
         android:label="@string/app_name"
         android:icon="@mipmap/ic_launcher"
-        android:requestLegacyExternalStorage="true">
+        android:requestLegacyExternalStorage="true"
+        android:usesCleartextTraffic="true"
+        android:networkSecurityConfig="@xml/network_security_config">
 
         <!--  主 Activity 配置  -->
         <activity

@@ -484,6 +484,19 @@ class MainActivity: FlutterActivity() {
     private fun persistWebCookies() {
         val manager = CookieManager.getInstance()
         manager.setAcceptCookie(true)
+        // 确保当前 WebView 实例接受第三方 cookie（Google 登录常跨 accounts.google.com）
+        try {
+            val decor = window?.decorView
+            if (decor != null) {
+                findWebView(decor)?.let { webView ->
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                        manager.setAcceptThirdPartyCookies(webView, true)
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            // WebView 尚未挂载时忽略
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             manager.flush()
         }
@@ -497,6 +510,11 @@ class MainActivity: FlutterActivity() {
     override fun onStop() {
         persistWebCookies()
         super.onStop()
+    }
+
+    override fun onDestroy() {
+        persistWebCookies()
+        super.onDestroy()
     }
 
     private fun findTrack(extractor: MediaExtractor, prefix: String): Int {
