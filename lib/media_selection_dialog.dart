@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'core/service_locator.dart';
+import 'services/browser_session_preview.dart';
 import 'services/database_service.dart';
 import 'services/logger.dart';
 
@@ -29,7 +30,22 @@ class _MediaSelectionDialogState extends State<MediaSelectionDialog> {
   void initState() {
     super.initState();
     _databaseService = getService<DatabaseService>();
+    BrowserSessionPreview.instance.availabilityNotifier.addListener(
+      _onBrowserAvailabilityChanged,
+    );
     _loadMediaItems();
+  }
+
+  @override
+  void dispose() {
+    BrowserSessionPreview.instance.availabilityNotifier.removeListener(
+      _onBrowserAvailabilityChanged,
+    );
+    super.dispose();
+  }
+
+  void _onBrowserAvailabilityChanged() {
+    if (mounted) setState(() {});
   }
 
   Future<void> _loadMediaItems() async {
@@ -59,17 +75,10 @@ class _MediaSelectionDialogState extends State<MediaSelectionDialog> {
     }
   }
 
-  Future<void> _navigateToDirectory(String directoryId) async {
-    setState(() {
-      _currentDirectory = directoryId;
-    });
-    await _loadMediaItems();
-  }
-
   Future<void> _navigateUp() async {
     if (_currentDirectory != 'root') {
       final parentDir =
-      await _databaseService.getMediaItemParentDirectory(_currentDirectory);
+          await _databaseService.getMediaItemParentDirectory(_currentDirectory);
       setState(() {
         _currentDirectory = parentDir ?? 'root';
       });
@@ -79,7 +88,7 @@ class _MediaSelectionDialogState extends State<MediaSelectionDialog> {
 
   String _getFolderNameById(String id) {
     final item = _mediaItems.firstWhere(
-          (item) => item['id'] == id,
+      (item) => item['id'] == id,
       orElse: () => {'name': '未知文件夹'},
     );
     return item['name'];
@@ -89,9 +98,53 @@ class _MediaSelectionDialogState extends State<MediaSelectionDialog> {
     return widget.selectedDirectory == directoryId;
   }
 
+  Widget _buildBrowserLiveTile() {
+    final available = BrowserSessionPreview.instance.isAvailable;
+    final selected = _isSelected(kMediaSourceBrowserLive);
+    final url = BrowserSessionPreview.instance.pageUrl;
+
+    return ListTile(
+      leading: Icon(
+        Icons.language,
+        color: !available
+            ? Colors.grey
+            : (selected ? Colors.blue : Colors.teal),
+      ),
+      title: Text(
+        '当前的浏览页面',
+        style: TextStyle(
+          color: !available
+              ? Colors.grey
+              : (selected ? Colors.blue : null),
+          fontWeight: selected ? FontWeight.bold : null,
+        ),
+      ),
+      subtitle: Text(
+        available
+            ? (url != null && url.isNotEmpty ? url : '实时预览浏览器页面与下载进度')
+            : '请从浏览器目录入口进入',
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          fontSize: 12,
+          color: available ? null : Colors.grey,
+        ),
+      ),
+      enabled: available,
+      tileColor: selected ? Colors.blue.withOpacity(0.1) : null,
+      onTap: available
+          ? () {
+              if (widget.onDirectorySelected != null) {
+                widget.onDirectorySelected!(kMediaSourceBrowserLive);
+              }
+            }
+          : null,
+    );
+  }
+
   Widget _buildDirectoryItem(Map<String, dynamic> item) {
     final bool isSelected = _isSelected(item['id']);
-    
+
     return ListTile(
       leading: Icon(
         Icons.folder,
@@ -143,7 +196,9 @@ class _MediaSelectionDialogState extends State<MediaSelectionDialog> {
               ],
             ),
             SizedBox(height: 16),
-            if (widget.onDirectorySelected != null)
+            if (widget.onDirectorySelected != null &&
+                _currentDirectory == 'root') ...[
+              _buildBrowserLiveTile(),
               ListTile(
                 leading: Icon(
                   Icons.library_music,
@@ -156,11 +211,13 @@ class _MediaSelectionDialogState extends State<MediaSelectionDialog> {
                     fontWeight: _isSelected('root') ? FontWeight.bold : null,
                   ),
                 ),
-                tileColor: _isSelected('root') ? Colors.blue.withOpacity(0.1) : null,
+                tileColor:
+                    _isSelected('root') ? Colors.blue.withOpacity(0.1) : null,
                 onTap: () {
                   widget.onDirectorySelected!('root');
                 },
               ),
+            ],
             Expanded(
               child: _isLoading
                   ? Center(child: CircularProgressIndicator())

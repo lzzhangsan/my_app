@@ -3474,6 +3474,12 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
           await _saveContent();
           Logger.log('退出页面前保存文档内容...');
         }
+        // 归还浏览器 WebView 后再 pop，避免 PlatformView 在卸载时被 dispose。
+        final released =
+            _mediaPlayerKey.currentState?.releaseBrowserLiveLoan() ?? false;
+        if (released) {
+          await WidgetsBinding.instance.endOfFrame;
+        }
         return true;
       },
       child: Stack(

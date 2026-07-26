@@ -176,229 +176,37 @@ class _SmartActionEditorSheetState extends State<_SmartActionEditorSheet> {
   Future<void> _editStepParams(int index) async {
     final step = _steps[index];
     if (!_stepHasTunableParams(step.kind)) return;
-    double distance = step.paramDouble('distanceFraction', 0.34);
-    double fraction = step.paramDouble('fraction', 0.85);
-    int duration = step.paramInt('durationMs', 280);
-    int waitMs = step.paramInt('ms', 1000);
-    int maxAttempts = step.paramInt('maxAttempts', 4);
-    String waitMode = step.waitMode;
-    int waitSeconds = step.waitSeconds;
-    final customSecondsController = TextEditingController(
-      text: '$waitSeconds',
-    );
-    final ok = await showDialog<bool>(
+    // 用 StatefulWidget 托管 TextEditingController：showDialog 返回时退场动画
+    // 可能尚未结束，此时 dispose controller 会触发 InheritedWidget 断言红屏。
+    final result = await showDialog<_EditStepParamsResult>(
       context: context,
-      builder: (ctx) {
-        return StatefulBuilder(
-          builder: (context, setLocal) {
-            final isFlick =
-                step.kind == SmartActionKind.flickUp ||
-                step.kind == SmartActionKind.flickDown ||
-                step.kind == SmartActionKind.flickLeft ||
-                step.kind == SmartActionKind.flickRight;
-            final isSwitch = _isSwitchMediaKind(step.kind);
-            final isPage =
-                step.kind == SmartActionKind.scrollPageUp ||
-                step.kind == SmartActionKind.scrollPageDown ||
-                step.kind == SmartActionKind.scrollPageLeft ||
-                step.kind == SmartActionKind.scrollPageRight;
-            final isWait = step.kind == SmartActionKind.waitBrief;
-            final isWaitDownload = step.kind == SmartActionKind.waitDownload;
-            void applyWaitSeconds(int seconds) {
-              waitSeconds = seconds.clamp(1, 600);
-              customSecondsController.text = '$waitSeconds';
-              setLocal(() {});
-            }
-
-            return AlertDialog(
-              title: Text('调整 · ${step.kind.label}'),
-              content: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    if (isSwitch) ...[
-                      const Text(
-                        '目标：真正切换到相邻媒体（会校验是否换了）。',
-                        style: TextStyle(fontSize: 12, color: Colors.black54),
-                      ),
-                      const SizedBox(height: 8),
-                      Text('最多重试：$maxAttempts 次'),
-                      Slider(
-                        value: maxAttempts.toDouble(),
-                        min: 1,
-                        max: 8,
-                        divisions: 7,
-                        onChanged:
-                            (v) => setLocal(() => maxAttempts = v.round()),
-                      ),
-                      Text('起始轻扫距离：${(distance * 100).round()}%（失败会自动加大）'),
-                      Slider(
-                        value: distance,
-                        min: 0.22,
-                        max: 0.6,
-                        onChanged: (v) => setLocal(() => distance = v),
-                      ),
-                      Text('单次轻扫时长：${duration}ms'),
-                      Slider(
-                        value: duration.toDouble(),
-                        min: 180,
-                        max: 480,
-                        divisions: 15,
-                        onChanged: (v) => setLocal(() => duration = v.round()),
-                      ),
-                    ],
-                    if (isFlick) ...[
-                      Text('轻扫距离：${(distance * 100).round()}%（不校验是否切条）'),
-                      Slider(
-                        value: distance,
-                        min: 0.18,
-                        max: 0.7,
-                        onChanged: (v) => setLocal(() => distance = v),
-                      ),
-                      Text('轻扫时长：${duration}ms'),
-                      Slider(
-                        value: duration.toDouble(),
-                        min: 160,
-                        max: 600,
-                        divisions: 22,
-                        onChanged: (v) => setLocal(() => duration = v.round()),
-                      ),
-                    ],
-                    if (isPage) ...[
-                      Text('滚动比例：${(fraction * 100).round()}%'),
-                      Slider(
-                        value: fraction,
-                        min: 0.5,
-                        max: 1.0,
-                        onChanged: (v) => setLocal(() => fraction = v),
-                      ),
-                    ],
-                    if (isWait) ...[
-                      Text('等待：${waitMs}ms'),
-                      Slider(
-                        value: waitMs.toDouble(),
-                        min: 300,
-                        max: 5000,
-                        divisions: 47,
-                        onChanged: (v) => setLocal(() => waitMs = v.round()),
-                      ),
-                    ],
-                    if (isWaitDownload) ...[
-                      const Text(
-                        '长按下载后，用哪种方式再切下一条：',
-                        style: TextStyle(fontSize: 12, color: Colors.black54),
-                      ),
-                      const SizedBox(height: 10),
-                      Wrap(
-                        spacing: 8,
-                        runSpacing: 8,
-                        children: [
-                          ChoiceChip(
-                            label: const Text('媒体库确认'),
-                            selected: waitMode == 'library',
-                            onSelected: (_) => setLocal(() => waitMode = 'library'),
-                          ),
-                          ChoiceChip(
-                            label: const Text('固定等待'),
-                            selected: waitMode == 'fixed',
-                            onSelected: (_) => setLocal(() => waitMode = 'fixed'),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 10),
-                      if (waitMode == 'library')
-                        const Text(
-                          '确认当前媒体已成功写入媒体库后，再切下一条（默认）。',
-                          style: TextStyle(fontSize: 12, color: Colors.black54),
-                        ),
-                      if (waitMode == 'fixed') ...[
-                        const Text(
-                          '最长等待此时长；期间若已成功写入媒体库则立刻切条。'
-                          '到点仍未入库也可切条，下载在后台继续。',
-                          style: TextStyle(fontSize: 12, color: Colors.black54),
-                        ),
-                        const SizedBox(height: 10),
-                        Wrap(
-                          spacing: 8,
-                          runSpacing: 8,
-                          children: [
-                            for (final sec in const [15, 30, 60])
-                              ChoiceChip(
-                                label: Text('$sec秒'),
-                                selected: waitSeconds == sec,
-                                onSelected: (_) => applyWaitSeconds(sec),
-                              ),
-                          ],
-                        ),
-                        const SizedBox(height: 12),
-                        TextField(
-                          controller: customSecondsController,
-                          keyboardType: TextInputType.number,
-                          decoration: const InputDecoration(
-                            labelText: '自定义秒数',
-                            hintText: '例如 45',
-                            isDense: true,
-                            border: OutlineInputBorder(),
-                            suffixText: '秒',
-                          ),
-                          onChanged: (raw) {
-                            final n = int.tryParse(raw.trim());
-                            if (n != null && n >= 1) {
-                              setLocal(() => waitSeconds = n.clamp(1, 600));
-                            }
-                          },
-                        ),
-                        const SizedBox(height: 6),
-                        Text(
-                          '当前：固定等待 $waitSeconds 秒',
-                          style: const TextStyle(
-                            fontSize: 12,
-                            color: Colors.black54,
-                          ),
-                        ),
-                      ],
-                    ],
-                  ],
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(ctx, false),
-                  child: const Text('取消'),
-                ),
-                FilledButton(
-                  onPressed: () => Navigator.pop(ctx, true),
-                  child: const Text('确定'),
-                ),
-              ],
-            );
-          },
-        );
-      },
+      builder: (ctx) => _EditStepParamsDialog(
+        step: step,
+        isSwitchMedia: _isSwitchMediaKind(step.kind),
+      ),
     );
-    customSecondsController.dispose();
-    if (ok != true || !mounted) return;
+    if (result == null || !mounted) return;
     setState(() {
       final params = Map<String, dynamic>.from(step.params);
       if (step.kind == SmartActionKind.waitBrief) {
-        params['ms'] = waitMs;
+        params['ms'] = result.waitMs;
       } else if (step.kind == SmartActionKind.waitDownload) {
-        params['waitMode'] = waitMode == 'fixed' ? 'fixed' : 'library';
-        params['waitSeconds'] = waitSeconds.clamp(1, 600);
+        params['waitMode'] =
+            result.waitMode == 'fixed' ? 'fixed' : 'library';
+        params['waitSeconds'] = result.waitSeconds.clamp(1, 600);
       } else if (step.kind == SmartActionKind.scrollPageUp ||
           step.kind == SmartActionKind.scrollPageDown ||
           step.kind == SmartActionKind.scrollPageLeft ||
           step.kind == SmartActionKind.scrollPageRight) {
-        params['fraction'] = fraction;
-        params['distanceFraction'] = fraction;
+        params['fraction'] = result.fraction;
+        params['distanceFraction'] = result.fraction;
       } else if (_isSwitchMediaKind(step.kind)) {
-        params['maxAttempts'] = maxAttempts;
-        params['distanceFraction'] = distance;
-        params['durationMs'] = duration;
+        params['maxAttempts'] = result.maxAttempts;
+        params['distanceFraction'] = result.distance;
+        params['durationMs'] = result.duration;
       } else {
-        params['distanceFraction'] = distance;
-        params['durationMs'] = duration;
+        params['distanceFraction'] = result.distance;
+        params['durationMs'] = result.duration;
       }
       _steps[index] = step.copyWith(params: params);
     });
@@ -1064,6 +872,278 @@ class _SmartActionEditorSheetState extends State<_SmartActionEditorSheet> {
         ),
         ),
       ),
+    );
+  }
+}
+
+class _EditStepParamsResult {
+  const _EditStepParamsResult({
+    required this.distance,
+    required this.fraction,
+    required this.duration,
+    required this.waitMs,
+    required this.maxAttempts,
+    required this.waitMode,
+    required this.waitSeconds,
+  });
+
+  final double distance;
+  final double fraction;
+  final int duration;
+  final int waitMs;
+  final int maxAttempts;
+  final String waitMode;
+  final int waitSeconds;
+}
+
+/// 步骤参数弹窗：自行托管 TextEditingController，在 State.dispose 中释放，
+/// 避免 showDialog Future 返回后立即 dispose 导致退场动画期间红屏。
+class _EditStepParamsDialog extends StatefulWidget {
+  const _EditStepParamsDialog({
+    required this.step,
+    required this.isSwitchMedia,
+  });
+
+  final SmartActionStep step;
+  final bool isSwitchMedia;
+
+  @override
+  State<_EditStepParamsDialog> createState() => _EditStepParamsDialogState();
+}
+
+class _EditStepParamsDialogState extends State<_EditStepParamsDialog> {
+  late double _distance;
+  late double _fraction;
+  late int _duration;
+  late int _waitMs;
+  late int _maxAttempts;
+  late String _waitMode;
+  late int _waitSeconds;
+  late final TextEditingController _customSecondsController;
+
+  @override
+  void initState() {
+    super.initState();
+    final step = widget.step;
+    _distance = step.paramDouble('distanceFraction', 0.34);
+    _fraction = step.paramDouble('fraction', 0.85);
+    _duration = step.paramInt('durationMs', 280);
+    _waitMs = step.paramInt('ms', 1000);
+    _maxAttempts = step.paramInt('maxAttempts', 4);
+    _waitMode = step.waitMode;
+    _waitSeconds = step.waitSeconds;
+    _customSecondsController = TextEditingController(text: '$_waitSeconds');
+  }
+
+  @override
+  void dispose() {
+    _customSecondsController.dispose();
+    super.dispose();
+  }
+
+  void _applyWaitSeconds(int seconds) {
+    setState(() {
+      _waitSeconds = seconds.clamp(1, 600);
+      _customSecondsController.text = '$_waitSeconds';
+    });
+  }
+
+  void _confirm() {
+    if (_waitMode == 'fixed') {
+      final n = int.tryParse(_customSecondsController.text.trim());
+      if (n != null && n >= 1) {
+        _waitSeconds = n.clamp(1, 600);
+      }
+    }
+    FocusScope.of(context).unfocus();
+    Navigator.pop(
+      context,
+      _EditStepParamsResult(
+        distance: _distance,
+        fraction: _fraction,
+        duration: _duration,
+        waitMs: _waitMs,
+        maxAttempts: _maxAttempts,
+        waitMode: _waitMode,
+        waitSeconds: _waitSeconds.clamp(1, 600),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final step = widget.step;
+    final isFlick =
+        step.kind == SmartActionKind.flickUp ||
+        step.kind == SmartActionKind.flickDown ||
+        step.kind == SmartActionKind.flickLeft ||
+        step.kind == SmartActionKind.flickRight;
+    final isPage =
+        step.kind == SmartActionKind.scrollPageUp ||
+        step.kind == SmartActionKind.scrollPageDown ||
+        step.kind == SmartActionKind.scrollPageLeft ||
+        step.kind == SmartActionKind.scrollPageRight;
+    final isWait = step.kind == SmartActionKind.waitBrief;
+    final isWaitDownload = step.kind == SmartActionKind.waitDownload;
+
+    return AlertDialog(
+      title: Text('调整 · ${step.kind.label}'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (widget.isSwitchMedia) ...[
+              const Text(
+                '目标：真正切换到相邻媒体（会校验是否换了）。',
+                style: TextStyle(fontSize: 12, color: Colors.black54),
+              ),
+              const SizedBox(height: 8),
+              Text('最多重试：$_maxAttempts 次'),
+              Slider(
+                value: _maxAttempts.toDouble(),
+                min: 1,
+                max: 8,
+                divisions: 7,
+                onChanged: (v) => setState(() => _maxAttempts = v.round()),
+              ),
+              Text('起始轻扫距离：${(_distance * 100).round()}%（失败会自动加大）'),
+              Slider(
+                value: _distance,
+                min: 0.22,
+                max: 0.6,
+                onChanged: (v) => setState(() => _distance = v),
+              ),
+              Text('单次轻扫时长：${_duration}ms'),
+              Slider(
+                value: _duration.toDouble(),
+                min: 180,
+                max: 480,
+                divisions: 15,
+                onChanged: (v) => setState(() => _duration = v.round()),
+              ),
+            ],
+            if (isFlick) ...[
+              Text('轻扫距离：${(_distance * 100).round()}%（不校验是否切条）'),
+              Slider(
+                value: _distance,
+                min: 0.18,
+                max: 0.7,
+                onChanged: (v) => setState(() => _distance = v),
+              ),
+              Text('轻扫时长：${_duration}ms'),
+              Slider(
+                value: _duration.toDouble(),
+                min: 160,
+                max: 600,
+                divisions: 22,
+                onChanged: (v) => setState(() => _duration = v.round()),
+              ),
+            ],
+            if (isPage) ...[
+              Text('滚动比例：${(_fraction * 100).round()}%'),
+              Slider(
+                value: _fraction,
+                min: 0.5,
+                max: 1.0,
+                onChanged: (v) => setState(() => _fraction = v),
+              ),
+            ],
+            if (isWait) ...[
+              Text('等待：${_waitMs}ms'),
+              Slider(
+                value: _waitMs.toDouble(),
+                min: 300,
+                max: 5000,
+                divisions: 47,
+                onChanged: (v) => setState(() => _waitMs = v.round()),
+              ),
+            ],
+            if (isWaitDownload) ...[
+              const Text(
+                '长按下载后，用哪种方式再切下一条：',
+                style: TextStyle(fontSize: 12, color: Colors.black54),
+              ),
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  ChoiceChip(
+                    label: const Text('媒体库确认'),
+                    selected: _waitMode == 'library',
+                    onSelected: (_) => setState(() => _waitMode = 'library'),
+                  ),
+                  ChoiceChip(
+                    label: const Text('固定等待'),
+                    selected: _waitMode == 'fixed',
+                    onSelected: (_) => setState(() => _waitMode = 'fixed'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              if (_waitMode == 'library')
+                const Text(
+                  '确认当前媒体已成功写入媒体库后，再切下一条（默认）。',
+                  style: TextStyle(fontSize: 12, color: Colors.black54),
+                ),
+              if (_waitMode == 'fixed') ...[
+                const Text(
+                  '最长等待此时长；期间若已成功写入媒体库则立刻切条。'
+                  '到点仍未入库也可切条，下载在后台继续。',
+                  style: TextStyle(fontSize: 12, color: Colors.black54),
+                ),
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final sec in const [15, 30, 60])
+                      ChoiceChip(
+                        label: Text('$sec秒'),
+                        selected: _waitSeconds == sec,
+                        onSelected: (_) => _applyWaitSeconds(sec),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _customSecondsController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: '自定义秒数',
+                    hintText: '例如 45',
+                    isDense: true,
+                    border: OutlineInputBorder(),
+                    suffixText: '秒',
+                  ),
+                  onChanged: (raw) {
+                    final n = int.tryParse(raw.trim());
+                    if (n != null && n >= 1) {
+                      setState(() => _waitSeconds = n.clamp(1, 600));
+                    }
+                  },
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  '当前：固定等待 $_waitSeconds 秒',
+                  style: const TextStyle(fontSize: 12, color: Colors.black54),
+                ),
+              ],
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () {
+            FocusScope.of(context).unfocus();
+            Navigator.pop(context);
+          },
+          child: const Text('取消'),
+        ),
+        FilledButton(onPressed: _confirm, child: const Text('确定')),
+      ],
     );
   }
 }

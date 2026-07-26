@@ -46,6 +46,7 @@ import 'smart_download/smart_scope_batch.dart';
 import 'smart_download/smart_paginated_sniff.dart';
 import 'widgets/safe_modal_sheet_body.dart';
 import 'services/browser_service.dart';
+import 'services/browser_session_preview.dart';
 import 'services/logger.dart';
 import 'services/network_service.dart';
 
@@ -1192,9 +1193,9 @@ class _BrowserPageState extends State<BrowserPage>
 
   // 1. 新增历史记录变量
   List<Map<String, dynamic>> _history = [];
+
   /// 本会话近期访问页（最新在前），供「分页嗅探」取邻近页。
-  final List<Map<String, dynamic>> _sessionPageTrail =
-      <Map<String, dynamic>>[];
+  final List<Map<String, dynamic>> _sessionPageTrail = <Map<String, dynamic>>[];
   static const int _kSessionPageTrailMax = 80;
 
   /// 应用侧干净后退栈（旧→新）：忽略 hash / 重复 pushState，供历史劫持时逃生。
@@ -1209,6 +1210,7 @@ class _BrowserPageState extends State<BrowserPage>
   DateTime? _navSpamWindowStart;
   int _navSpamCount = 0;
   bool _historyLikelyHijacked = false;
+
   /// 分层嗅探页数：第1层当前页，第2层最近3页，第3层最近5页…逐层扩大。
   static const List<int> _kPaginatedSniffLayerSizes = <int>[
     1,
@@ -1220,8 +1222,10 @@ class _BrowserPageState extends State<BrowserPage>
     30,
   ];
   static int get _kPaginatedSniffMaxPages => _kPaginatedSniffLayerSizes.last;
+
   /// 分页嗅探「不限」数量软上限，避免一次任务过大。
   static const int _kPaginatedSniffSoftMaxTarget = 500;
+
   /// 智能下载（沿用套路 / 动作编排 / 通用·91 管线）数量上限。
   static const int _kSmartDownloadMaxTarget = 300;
   static const String _kSharedFavoriteVideosPrefsKey =
@@ -1413,8 +1417,7 @@ class _BrowserPageState extends State<BrowserPage>
       'browser_smart_download_24h_registry_v1';
   static const String _kSmartStrategyProfilesKey =
       'browser_smart_strategy_profiles_v1';
-  static const String _kSmartDemoRecipesKey =
-      'browser_smart_demo_recipes_v1';
+  static const String _kSmartDemoRecipesKey = 'browser_smart_demo_recipes_v1';
   final List<Map<String, dynamic>> _smartDownload24hRegistry = [];
   final Map<String, Map<String, dynamic>> _smartStrategyProfiles = {};
   final Map<String, Map<String, dynamic>> _smartDemoRecipes = {};
@@ -1476,6 +1479,9 @@ class _BrowserPageState extends State<BrowserPage>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    BrowserSessionPreview.instance.attachWebViewBuilder(
+      _buildLiveSessionWebView,
+    );
     _databaseService = getService<DatabaseService>();
     _initializeDownloader();
     _loadBookmarks();
@@ -3522,6 +3528,8 @@ class _BrowserPageState extends State<BrowserPage>
   void _openDirectoryPage() {
     if (!mounted) return;
     Logger.log('[BrowserPage] 目录页按钮被点击');
+    // 进入目录前绑定会话，供文档编辑器「当前的浏览页面」预览使用。
+    _syncBrowserSessionPreview(bindForDirectory: true);
     // 进入目录后不再被浏览器下载成功提示打扰。
     ScaffoldMessenger.of(context).clearSnackBars();
     Navigator.of(context).push(
@@ -3801,6 +3809,256 @@ class _BrowserPageState extends State<BrowserPage>
           _handleJavaScriptMessage(args[0].toString());
         }
       },
+    );
+    _syncBrowserSessionPreview();
+  }
+
+  /// Same [InAppWebView] instance (via GlobalKey) for BrowserPage or document loan host.
+  Widget _buildLiveSessionWebView() {
+    return InAppWebView(
+      key: BrowserSessionPreview.instance.webViewKey,
+      initialUrlRequest: URLRequest(url: WebUri('about:blank')),
+      initialSettings: InAppWebViewSettings(
+        javaScriptEnabled: true,
+        useHybridComposition: true,
+        useOnLoadResource: true,
+        useShouldOverrideUrlLoading: true,
+        allowFileAccess: true,
+        domStorageEnabled: true,
+        databaseEnabled: true,
+        cacheEnabled: true,
+        // 正常浏览：持久 cookie / 本地存储；勿用无痕，否则退出即丢登录
+        incognito: false,
+        clearCache: false,
+        clearSessionCache: false,
+        thirdPartyCookiesEnabled: true,
+        // iOS：与系统 HTTPCookieStorage 共享，利于跨次冷启动保持登录
+        sharedCookiesEnabled: true,
+        saveFormData: true,
+        javaScriptCanOpenWindowsAutomatically: true,
+        supportMultipleWindows: true,
+        mixedContentMode: MixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
+      ),
+      initialUserScripts: UnmodifiableListView([
+        UserScript(
+          source: _kEarlyMediaSnifferScript,
+          injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+        ),
+      ]),
+      onWebViewCreated: (ctrl) => _setupWebViewController(ctrl),
+      shouldAllowDeprecatedTLS: (ctrl, challenge) async {
+        return ShouldAllowDeprecatedTLSAction.ALLOW;
+      },
+      // 注意：PROCEED 会跳过证书校验，存在中间人攻击风险。
+      // 若需更高安全性，可改为 DENY 或实现白名单校验。
+      onReceivedServerTrustAuthRequest: (ctrl, challenge) async {
+        return ServerTrustAuthResponse(
+          action: ServerTrustAuthResponseAction.PROCEED,
+        );
+      },
+      onLoadStart: (ctrl, url) {
+        if (url != null) {
+          final urlStr = url.toString();
+          // 自定义协议若仍进到 onLoadStart：解开深链或立刻停住，避免「无法打开」页。
+          if (!urlStr.startsWith('http://') &&
+              !urlStr.startsWith('https://') &&
+              !urlStr.startsWith('about:') &&
+              !urlStr.startsWith('data:') &&
+              !urlStr.startsWith('blob:')) {
+            final extracted = _extractHttpUrlFromAppDeepLink(urlStr);
+            if (extracted != null) {
+              unawaited(
+                ctrl.loadUrl(urlRequest: URLRequest(url: WebUri(extracted))),
+              );
+            } else {
+              unawaited(ctrl.stopLoading());
+            }
+            return;
+          }
+          // Google 若仍跳到失效 /m，立刻拉回可用首页。
+          final googleFixed = _rewriteDeadGoogleMobileNavigation(urlStr);
+          if (googleFixed != null) {
+            unawaited(
+              ctrl.loadUrl(urlRequest: URLRequest(url: WebUri(googleFixed))),
+            );
+            return;
+          }
+        }
+        if (url != null) {
+          final urlStr = url.toString();
+          if (urlStr.startsWith('http://') || urlStr.startsWith('https://')) {
+            // 尽早记入干净后退栈，避免陷阱页抢在 onLoadStop 前冲掉搜索结果。
+            _noteMeaningfulWebNavigation(urlStr);
+          }
+        }
+        setState(() {
+          _isLoading = true;
+          if (url != null) {
+            final urlStr = url.toString();
+            _currentUrl = urlStr;
+            _urlController.text = _currentUrl;
+            // 仅当加载真实网页时切换到 WebView，about:blank 不切换（保持主界面）
+            if (urlStr.startsWith('http://') || urlStr.startsWith('https://')) {
+              _showHomePage = false;
+              _isBrowsingWebPage = true;
+              widget.onBrowserHomePageChanged?.call(false);
+            }
+          }
+        });
+        _syncBrowserSessionPreview();
+      },
+      onProgressChanged: (ctrl, progress) {
+        setState(() {
+          _loadingProgress = progress / 100;
+          _isLoading = _loadingProgress < 1.0;
+        });
+      },
+      onLoadStop: (ctrl, url) {
+        if (url != null) _onPageFinished(url.toString());
+      },
+      onUpdateVisitedHistory: (ctrl, url, isReload) {
+        if (url == null) return;
+        final urlStr = url.toString();
+        if (_isBlankHistoryUrl(urlStr)) return;
+        if (!urlStr.startsWith('http://') && !urlStr.startsWith('https://')) {
+          return;
+        }
+        _noteMeaningfulWebNavigation(urlStr, fromHistoryUpdate: true);
+        if (!mounted) return;
+        setState(() {
+          _currentUrl = urlStr;
+          _urlController.text = urlStr;
+        });
+      },
+      onLoadResource: (ctrl, resource) {
+        _recordLoadedWebResource(resource);
+      },
+      onCreateWindow: (ctrl, action) async {
+        final popupUrl = action.request.url?.toString();
+        if (popupUrl == null || popupUrl.isEmpty) {
+          debugPrint('网页请求打开新窗口，但没有提供目标地址');
+          return false;
+        }
+        if (!popupUrl.startsWith('http://') &&
+            !popupUrl.startsWith('https://')) {
+          await _handleNonHttpNavigation(ctrl, popupUrl);
+          return false;
+        }
+        final googleFixed = _rewriteDeadGoogleMobileNavigation(popupUrl);
+        if (googleFixed != null) {
+          await ctrl.loadUrl(urlRequest: URLRequest(url: WebUri(googleFixed)));
+          return false;
+        }
+        if (_smartDownloadTask != null &&
+            !_isWithinSmartDownloadSite(popupUrl)) {
+          debugPrint('智能下载已阻止跨站弹窗: $popupUrl');
+          _showSmartOperation('已阻止外部网站弹窗');
+          return false;
+        }
+        debugPrint('接管网页新窗口并在当前页打开: $popupUrl');
+        await ctrl.loadUrl(urlRequest: URLRequest(url: WebUri(popupUrl)));
+        return false;
+      },
+      onReceivedError:
+          (ctrl, req, err) => debugPrint('WebView错误: ${err?.description}'),
+      shouldOverrideUrlLoading: (ctrl, nav) async {
+        final url = nav.request.url?.toString() ?? '';
+        debugPrint('导航请求: $url');
+        if (_isDownloadableLink(url) || _isYouTubeLink(url)) {
+          debugPrint('检测到可能的下载链接: $url');
+          _handleDownload(url, '', _guessMimeType(url));
+          return NavigationActionPolicy.CANCEL;
+        }
+        if (!url.startsWith('http://') && !url.startsWith('https://')) {
+          return _handleNonHttpNavigation(ctrl, url);
+        }
+        final googleFixed = _rewriteDeadGoogleMobileNavigation(url);
+        if (googleFixed != null) {
+          debugPrint('拦截失效 Google /m 导航: $url -> $googleFixed');
+          await ctrl.loadUrl(urlRequest: URLRequest(url: WebUri(googleFixed)));
+          return NavigationActionPolicy.CANCEL;
+        }
+        if (_smartDownloadTask != null && !_isWithinSmartDownloadSite(url)) {
+          debugPrint('智能下载已阻止跳出当前网站: $url');
+          final task = _smartDownloadTask!;
+          final id = (task['discoveryTaskId'] ?? '').toString();
+          if (id.isNotEmpty) {
+            _updateDownloadTask(
+              id,
+              progressDetail:
+                  '已阻止外部网站跳转，继续在当前网站内寻找 · 已保存 ${task['success']}/${task['target']}',
+            );
+          }
+          return NavigationActionPolicy.CANCEL;
+        }
+        return NavigationActionPolicy.ALLOW;
+      },
+    );
+  }
+
+  Widget _buildWebViewLoanedPlaceholder() {
+    return Container(
+      color: const Color(0xFF1A1A1A),
+      alignment: Alignment.center,
+      child: const Padding(
+        padding: EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.cast_connected, color: Colors.tealAccent, size: 40),
+            SizedBox(height: 16),
+            Text(
+              '画面预览中',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 18,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            SizedBox(height: 8),
+            Text(
+              '返回浏览器可继续操作',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.white70, fontSize: 14),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 向 [BrowserSessionPreview] 同步当前 WebView / 下载任务，供文档页实时预览。
+  void _syncBrowserSessionPreview({bool bindForDirectory = false}) {
+    final ctrl = _controller;
+    if (ctrl == null) return;
+    if (bindForDirectory) {
+      BrowserSessionPreview.instance.bindForDirectoryEntry(
+        owner: this,
+        controller: ctrl,
+        downloadTasks: _downloadTasksNotifier,
+        pageUrl: _currentUrl,
+        isBrowsingWebPage: _isBrowsingWebPage,
+        showHomePage: _showHomePage,
+      );
+      return;
+    }
+    if (!BrowserSessionPreview.instance.isRegistered) {
+      BrowserSessionPreview.instance.register(
+        owner: this,
+        controller: ctrl,
+        downloadTasks: _downloadTasksNotifier,
+        pageUrl: _currentUrl,
+        isBrowsingWebPage: _isBrowsingWebPage,
+        showHomePage: _showHomePage,
+      );
+      return;
+    }
+    BrowserSessionPreview.instance.updateSession(
+      owner: this,
+      controller: ctrl,
+      pageUrl: _currentUrl,
+      isBrowsingWebPage: _isBrowsingWebPage,
+      showHomePage: _showHomePage,
     );
   }
 
@@ -5752,7 +6010,8 @@ class _BrowserPageState extends State<BrowserPage>
       final dynamic urlValue = data['url'];
       final bool isBase64 = data['isBase64'] ?? false;
       final bool isStreamReference = data['isStreamReference'] == true;
-      final bool isSmartGesture = data['isSmartGesture'] == true || _isSmartDemoLearningActive();
+      final bool isSmartGesture =
+          data['isSmartGesture'] == true || _isSmartDemoLearningActive();
       final String? action = data['action'];
       final dynamic candidateValue = data['candidates'];
       final String mediaType =
@@ -5983,7 +6242,10 @@ class _BrowserPageState extends State<BrowserPage>
             'candidateUrls': candidateUrls,
             'downloadOrigin': 'long_press',
             'isSmartGesture': isSmartGesture || _isSmartDemoLearningActive(),
-            'smartTask': (isSmartGesture || _isSmartDemoLearningActive()) ? _smartDownloadTask : null,
+            'smartTask':
+                (isSmartGesture || _isSmartDemoLearningActive())
+                    ? _smartDownloadTask
+                    : null,
             'sessionId': mediaSessionId,
             'durationSec': messageDurationSeconds,
           };
@@ -6082,8 +6344,12 @@ class _BrowserPageState extends State<BrowserPage>
                       'candidateUrls': xCandidates.skip(1).toList(),
                       'title': (data['title'] ?? '').toString(),
                       'downloadOrigin': 'long_press',
-                      'isSmartGesture': isSmartGesture || _isSmartDemoLearningActive(),
-                      'smartTask': (isSmartGesture || _isSmartDemoLearningActive()) ? _smartDownloadTask : null,
+                      'isSmartGesture':
+                          isSmartGesture || _isSmartDemoLearningActive(),
+                      'smartTask':
+                          (isSmartGesture || _isSmartDemoLearningActive())
+                              ? _smartDownloadTask
+                              : null,
                       'sessionId': mediaSessionId,
                       'durationSec': messageDurationSeconds,
                     },
@@ -6125,8 +6391,12 @@ class _BrowserPageState extends State<BrowserPage>
                   'candidateUrls': boundStreamCandidates,
                   'title': (data['title'] ?? '').toString(),
                   'downloadOrigin': 'long_press',
-                  'isSmartGesture': isSmartGesture || _isSmartDemoLearningActive(),
-                  'smartTask': (isSmartGesture || _isSmartDemoLearningActive()) ? _smartDownloadTask : null,
+                  'isSmartGesture':
+                      isSmartGesture || _isSmartDemoLearningActive(),
+                  'smartTask':
+                      (isSmartGesture || _isSmartDemoLearningActive())
+                          ? _smartDownloadTask
+                          : null,
                   'sessionId': mediaSessionId,
                   'durationSec': messageDurationSeconds,
                 },
@@ -6209,8 +6479,12 @@ class _BrowserPageState extends State<BrowserPage>
                   ],
                   'title': (data['title'] ?? '').toString(),
                   'downloadOrigin': 'long_press',
-                  'isSmartGesture': isSmartGesture || _isSmartDemoLearningActive(),
-                  'smartTask': (isSmartGesture || _isSmartDemoLearningActive()) ? _smartDownloadTask : null,
+                  'isSmartGesture':
+                      isSmartGesture || _isSmartDemoLearningActive(),
+                  'smartTask':
+                      (isSmartGesture || _isSmartDemoLearningActive())
+                          ? _smartDownloadTask
+                          : null,
                   'sessionId': mediaSessionId,
                   'durationSec': messageDurationSeconds,
                 },
@@ -6298,12 +6572,14 @@ class _BrowserPageState extends State<BrowserPage>
           selectedType = MediaType.video;
         }
         if (selectedType == MediaType.video) {
-          final forceNoPreSkip =
-              _smartForceDownloadNoPreSkip(_smartDownloadTask);
+          final forceNoPreSkip = _smartForceDownloadNoPreSkip(
+            _smartDownloadTask,
+          );
           // 动作编排：绝不在下载前因源地址映射跳过，强制进入进度队列下载
           if (!forceNoPreSkip) {
-            final existing =
-                await _findExistingVideoBeforeDownload(resolvedUrl);
+            final existing = await _findExistingVideoBeforeDownload(
+              resolvedUrl,
+            );
             if (existing != null) {
               if (isSmartGesture) {
                 // 仅磁盘文件仍在时才可视为库内重复
@@ -6577,8 +6853,7 @@ class _BrowserPageState extends State<BrowserPage>
               (smartTask['gestureDownloadPending'] == true ||
                   smartTask['actionAwaitingLibrarySave'] == true ||
                   smartTask['actionLongPressNeedsConfirm'] == true)) {
-            smartTask['lastGestureFailureType'] =
-                'invalid_smart_media_content';
+            smartTask['lastGestureFailureType'] = 'invalid_smart_media_content';
           }
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
@@ -6597,8 +6872,7 @@ class _BrowserPageState extends State<BrowserPage>
               (smartTask['gestureDownloadPending'] == true ||
                   smartTask['actionAwaitingLibrarySave'] == true ||
                   smartTask['actionLongPressNeedsConfirm'] == true)) {
-            smartTask['lastGestureFailureType'] =
-                'invalid_smart_media_content';
+            smartTask['lastGestureFailureType'] = 'invalid_smart_media_content';
           }
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
@@ -6618,8 +6892,7 @@ class _BrowserPageState extends State<BrowserPage>
               (smartTask['gestureDownloadPending'] == true ||
                   smartTask['actionAwaitingLibrarySave'] == true ||
                   smartTask['actionLongPressNeedsConfirm'] == true)) {
-            smartTask['lastGestureFailureType'] =
-                'invalid_smart_media_content';
+            smartTask['lastGestureFailureType'] = 'invalid_smart_media_content';
           }
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
@@ -6760,6 +7033,7 @@ class _BrowserPageState extends State<BrowserPage>
       _lastBrowsedUrl = processedUrl;
     });
     widget.onBrowserHomePageChanged?.call(_showHomePage);
+    _syncBrowserSessionPreview();
   }
 
   bool _isWithinSmartDownloadSite(String url) {
@@ -6774,11 +7048,10 @@ class _BrowserPageState extends State<BrowserPage>
       RegExp(r'^www\.'),
       '',
     );
-    final siteHost =
-        (task['host'] ?? '')
-            .toString()
-            .toLowerCase()
-            .replaceFirst(RegExp(r'^www\.'), '');
+    final siteHost = (task['host'] ?? '').toString().toLowerCase().replaceFirst(
+      RegExp(r'^www\.'),
+      '',
+    );
     if (targetHost.isEmpty || siteHost.isEmpty) return false;
     // 用站点根域判断，避免 www/m 子域误伤；同时禁止完全不同的外站。
     return _sameSmartSite(targetHost, siteHost);
@@ -6792,10 +7065,9 @@ class _BrowserPageState extends State<BrowserPage>
   }) async {
     final taskHost = (task['host'] ?? '').toString();
     final actualHost =
-        Uri.tryParse(actualLoadedUrl)?.host.toLowerCase().replaceFirst(
-              RegExp(r'^www\.'),
-              '',
-            ) ??
+        Uri.tryParse(
+          actualLoadedUrl,
+        )?.host.toLowerCase().replaceFirst(RegExp(r'^www\.'), '') ??
         '';
     if (actualHost.isEmpty ||
         taskHost.isEmpty ||
@@ -6885,6 +7157,7 @@ class _BrowserPageState extends State<BrowserPage>
       _clearWebBackStack();
       setState(() => _showHomePage = true);
       widget.onBrowserHomePageChanged?.call(_showHomePage);
+      _syncBrowserSessionPreview();
     }
   }
 
@@ -7055,7 +7328,10 @@ class _BrowserPageState extends State<BrowserPage>
     return null;
   }
 
-  Future<void> _loadWebBackEscapeUrl(InAppWebViewController c, String url) async {
+  Future<void> _loadWebBackEscapeUrl(
+    InAppWebViewController c,
+    String url,
+  ) async {
     if (_isBlankHistoryUrl(url)) return;
     _webBackNavigating = true;
     try {
@@ -7192,6 +7468,7 @@ class _BrowserPageState extends State<BrowserPage>
     if (_showHomePage && _isBrowsingWebPage && _shouldKeepWebPageState) {
       setState(() => _showHomePage = false);
       widget.onBrowserHomePageChanged?.call(_showHomePage);
+      _syncBrowserSessionPreview();
     }
   }
 
@@ -7207,6 +7484,7 @@ class _BrowserPageState extends State<BrowserPage>
       _urlController.text = _currentUrl;
     });
     widget.onBrowserHomePageChanged?.call(_showHomePage);
+    _syncBrowserSessionPreview();
   }
 
   Widget _buildHomePage() {
@@ -7847,9 +8125,7 @@ class _BrowserPageState extends State<BrowserPage>
                 ),
               TextButton(
                 onPressed: () => Navigator.pop(ctx, 'stop'),
-                child: Text(
-                  (isSniffScan || isSniffDownload) ? '彻底退出' : '停止退出',
-                ),
+                child: Text((isSniffScan || isSniffDownload) ? '彻底退出' : '停止退出'),
               ),
               if (!isSniffMode)
                 FilledButton(
@@ -8312,24 +8588,17 @@ class _BrowserPageState extends State<BrowserPage>
   }
 
   /// 候选用尽时：X/91 继续扩大探索；91 关键词模式只翻搜索页。
-  void _onSmartCandidatesExhausted(
-    Map<String, dynamic> task,
-    String reason,
-  ) {
+  void _onSmartCandidatesExhausted(Map<String, dynamic> task, String reason) {
     if (task['strict91KeywordMode'] == true) {
       if (_tryAdvance91KeywordSearchPage(task)) return;
-      unawaited(
-        _finishSmartDownload('关键词搜索结果已尝试完毕（$reason）'),
-      );
+      unawaited(_finishSmartDownload('关键词搜索结果已尝试完毕（$reason）'));
       return;
     }
     if (task['allowBroadenDiscovery'] == true) {
       _broadenSmartDiscovery(task, reason);
       return;
     }
-    unawaited(
-      _finishSmartDownload('当前候选已尝试完毕，已停止扩大探索（$reason）'),
-    );
+    unawaited(_finishSmartDownload('当前候选已尝试完毕，已停止扩大探索（$reason）'));
   }
 
   /// V1 通用站：优先用页面已暴露的媒体直链下载；成功则计入智能下载进度。
@@ -8368,7 +8637,10 @@ class _BrowserPageState extends State<BrowserPage>
   Future<void> _saveSmartDemoRecipes() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_kSmartDemoRecipesKey, jsonEncode(_smartDemoRecipes));
+      await prefs.setString(
+        _kSmartDemoRecipesKey,
+        jsonEncode(_smartDemoRecipes),
+      );
     } catch (e) {
       debugPrint('保存智能下载示范记忆失败: $e');
     }
@@ -8386,17 +8658,16 @@ class _BrowserPageState extends State<BrowserPage>
         (_isXStatusDetailPage(url) || _isXMediaViewerPage(url))) {
       return 'detail';
     }
-    if (RegExp(r'/video|/watch|/play|/v/|/status/', caseSensitive: false)
-        .hasMatch(lower)) {
+    if (RegExp(
+      r'/video|/watch|/play|/v/|/status/',
+      caseSensitive: false,
+    ).hasMatch(lower)) {
       return 'detail';
     }
     return 'feed';
   }
 
-  String _smartDemoRecipeKey({
-    required String host,
-    required String pageType,
-  }) {
+  String _smartDemoRecipeKey({required String host, required String pageType}) {
     return '${host.toLowerCase().replaceFirst(RegExp(r'^www\.'), '')}|$pageType';
   }
 
@@ -8617,9 +8888,7 @@ class _BrowserPageState extends State<BrowserPage>
         (value == 'sniff' || value == 'site_address')) {
       final preferred = (task['preferredAcquisition'] ?? '').toString();
       final allowAlt = task['allowLegacyAlternateAcquire'] == true;
-      if (!allowAlt &&
-          preferred != 'sniff' &&
-          preferred != 'site_address') {
+      if (!allowAlt && preferred != 'sniff' && preferred != 'site_address') {
         value = siteProfile == 'x' ? 'legacy_x' : 'legacy_91';
       } else {
         task['allowLegacyAlternateAcquire'] = true;
@@ -8636,9 +8905,7 @@ class _BrowserPageState extends State<BrowserPage>
     task['matchStage'] = '沿用 · $label';
     if (announce && previous != value) {
       _showSmartOperation(
-        previous.isEmpty
-            ? '已锁定本任务方式：$label（成功前不再换）'
-            : '改沿用方式：$label',
+        previous.isEmpty ? '已锁定本任务方式：$label（成功前不再换）' : '改沿用方式：$label',
       );
     }
   }
@@ -8719,8 +8986,7 @@ class _BrowserPageState extends State<BrowserPage>
 ''',
       );
     } catch (_) {}
-    task['matchStage'] =
-        '沿用直链 · 滚动寻找（${task['sniffEmptyScrolls']}/5）';
+    task['matchStage'] = '沿用直链 · 滚动寻找（${task['sniffEmptyScrolls']}/5）';
     Future<void>.delayed(const Duration(milliseconds: 450), () {
       if (identical(_smartDownloadTask, task)) {
         unawaited(_advanceSmartDownload(_currentUrl));
@@ -8745,8 +9011,7 @@ class _BrowserPageState extends State<BrowserPage>
         'updatedAt': DateTime.now().toIso8601String(),
         'nameCustom': true,
       };
-      recipe['name'] =
-          siteProfile == 'x' ? 'X·原智能（已验证）' : '91·原智能（已验证）';
+      recipe['name'] = siteProfile == 'x' ? 'X·原智能（已验证）' : '91·原智能（已验证）';
       return recipe;
     }
     final recipe = <String, dynamic>{
@@ -8759,8 +9024,7 @@ class _BrowserPageState extends State<BrowserPage>
       'updatedAt': DateTime.now().toIso8601String(),
       'nameCustom': true,
     };
-    recipe['name'] =
-        '${_smartStrategyDisplaySite(host)}·通用套路';
+    recipe['name'] = '${_smartStrategyDisplaySite(host)}·通用套路';
     return recipe;
   }
 
@@ -8826,10 +9090,12 @@ class _BrowserPageState extends State<BrowserPage>
     task['strategyFailStreak'] = 0;
     // 把可执行字段真正应用到任务（不再只当标签）。
     final traversal = (bound['traversal'] ?? '').toString();
-    if (traversal == 'list' || traversal == 'nearby' || traversal == 'nearby_scroll') {
+    if (traversal == 'list' ||
+        traversal == 'nearby' ||
+        traversal == 'nearby_scroll') {
       task['smartRunMode'] = traversal == 'list' ? 'list' : 'nearby';
-      task['preferScrollBetween'] = traversal == 'nearby_scroll' ||
-          bound['scrollBetween'] == true;
+      task['preferScrollBetween'] =
+          traversal == 'nearby_scroll' || bound['scrollBetween'] == true;
     } else if (bound['scrollBetween'] == true) {
       task['preferScrollBetween'] = true;
     }
@@ -8839,9 +9105,7 @@ class _BrowserPageState extends State<BrowserPage>
     task['lockedFailStreak'] = 0;
     final isBuiltin = strategyKey.startsWith('__builtin__');
     task['matchStage'] =
-        isBuiltin
-            ? '内置默认 · ${bound['name']}'
-            : '成功经验优先 · ${bound['name']}';
+        isBuiltin ? '内置默认 · ${bound['name']}' : '成功经验优先 · ${bound['name']}';
   }
 
   void _noteSmartTaskAcquisitionFailure(Map<String, dynamic> task) {
@@ -8885,10 +9149,7 @@ class _BrowserPageState extends State<BrowserPage>
     if (layer == 'preferred' && streak >= 4) {
       task['strategyLayer'] = 'default';
       task['strategyFailStreak'] = 0;
-      _clearSmartTaskAcquisitionLock(
-        task,
-        reason: '当前成功经验暂未奏效，改用本站默认可靠方式继续',
-      );
+      _clearSmartTaskAcquisitionLock(task, reason: '当前成功经验暂未奏效，改用本站默认可靠方式继续');
       _applySiteDefaultAcquisition(task);
       // X/91 默认可靠方式就是原智能管线。
       if (_smartUsesLegacyPriorityPipeline(siteProfile)) {
@@ -8902,10 +9163,7 @@ class _BrowserPageState extends State<BrowserPage>
     if (layer == 'default' && streak >= 6) {
       task['strategyLayer'] = 'fallback';
       task['strategyFailStreak'] = 0;
-      _clearSmartTaskAcquisitionLock(
-        task,
-        reason: '默认方式受阻，正在启用更多尝试以继续完成数量',
-      );
+      _clearSmartTaskAcquisitionLock(task, reason: '默认方式受阻，正在启用更多尝试以继续完成数量');
       if (_smartUsesLegacyPriorityPipeline(siteProfile)) {
         // X/91：原管线之外再开放直链等备用获取，仍保留扩大探索。
         task['allowLegacyAlternateAcquire'] = true;
@@ -8942,9 +9200,7 @@ class _BrowserPageState extends State<BrowserPage>
       return;
     }
     if (layer == 'fallback' && streak >= 5) {
-      unawaited(
-        _tryEnterSmartDemoAfterExhaustion(task, '多种自动方式连续未成功'),
-      );
+      unawaited(_tryEnterSmartDemoAfterExhaustion(task, '多种自动方式连续未成功'));
     }
   }
 
@@ -9090,12 +9346,12 @@ class _BrowserPageState extends State<BrowserPage>
     final previous = _smartDemoRecipes[key];
     // 自动收尾只累计成功次数，避免浅层推断覆盖示范学到的强经验。
     if (previous != null && !allowRewrite) {
-      final prevAcq =
-          _normalizeSmartAcquisition((previous['acquisition'] ?? '').toString());
-      final lastAcq =
-          _normalizeSmartAcquisition(
-            (task['lastSuccessAcquisition'] ?? '').toString(),
-          );
+      final prevAcq = _normalizeSmartAcquisition(
+        (previous['acquisition'] ?? '').toString(),
+      );
+      final lastAcq = _normalizeSmartAcquisition(
+        (task['lastSuccessAcquisition'] ?? '').toString(),
+      );
       final bump = 1;
       previous['successes'] = ((previous['successes'] as int?) ?? 0) + bump;
       previous['updatedAt'] = DateTime.now().toIso8601String();
@@ -9123,7 +9379,9 @@ class _BrowserPageState extends State<BrowserPage>
     recipe['host'] = host;
     recipe['pageType'] = pageType;
     recipe['successes'] = ((previous?['successes'] as int?) ?? 0) + 1;
-    if (allowRewrite || task['demoPhase'] == 'demo' || task['userRequestedDemo'] == true) {
+    if (allowRewrite ||
+        task['demoPhase'] == 'demo' ||
+        task['userRequestedDemo'] == true) {
       recipe['source'] = 'user_demo';
       recipe['demoTaught'] = true;
     } else if (previous != null &&
@@ -9148,16 +9406,16 @@ class _BrowserPageState extends State<BrowserPage>
   }
 
   /// 动作编排真实入库成功后：写入全局可借用成功列表，并设为本站默认。
-  Future<void> _persistSiteSuccessActionRecipe(Map<String, dynamic> task) async {
+  Future<void> _persistSiteSuccessActionRecipe(
+    Map<String, dynamic> task,
+  ) async {
     try {
       final host = _normalizeSmartHost((task['host'] ?? '').toString());
       if (host.isEmpty) return;
       final raw = task['actionRecipeJson'];
       if (raw is! Map) return;
       // 保留套路来源 host；本站默认指针用 defaultForHost=当前站。
-      final recipe = SmartActionRecipe.fromJson(
-        Map<String, dynamic>.from(raw),
-      );
+      final recipe = SmartActionRecipe.fromJson(Map<String, dynamic>.from(raw));
       if (recipe.steps.isEmpty) return;
       final axis = (task['advanceAxisHint'] ?? '').toString().trim();
       final mode = (task['advanceMode'] ?? '').toString().trim();
@@ -9253,7 +9511,6 @@ class _BrowserPageState extends State<BrowserPage>
         reason.contains('地址无效');
   }
 
-
   Future<bool> _tryV1SmartSniffAcquire(Map<String, dynamic> task) async {
     if (!identical(_smartDownloadTask, task) || _controller == null) {
       return false;
@@ -9300,14 +9557,18 @@ class _BrowserPageState extends State<BrowserPage>
         r'\.(jpg|jpeg|png|gif|webp|bmp)(\?|#|$)',
         caseSensitive: false,
       ).hasMatch(url);
-      final looksVideo = RegExp(
-        r'\.(mp4|webm|mov|m3u8|m3u|mpd)(\?|#|$)',
-        caseSensitive: false,
-      ).hasMatch(url) ||
+      final looksVideo =
+          RegExp(
+            r'\.(mp4|webm|mov|m3u8|m3u|mpd)(\?|#|$)',
+            caseSensitive: false,
+          ).hasMatch(url) ||
           url.toLowerCase().contains('m3u8') ||
           url.toLowerCase().contains('/video');
       if (!allowMixed && mediaType == MediaType.image && looksVideo) continue;
-      if (!allowMixed && mediaType == MediaType.video && looksImage && !looksVideo) {
+      if (!allowMixed &&
+          mediaType == MediaType.video &&
+          looksImage &&
+          !looksVideo) {
         continue;
       }
       final downloadType =
@@ -9470,9 +9731,7 @@ class _BrowserPageState extends State<BrowserPage>
       if (preferVideo || videosOnly) {
         filtered = [
           ...filtered.where((u) => _isSniffVideoStreamUrl(u) || isVideo(u)),
-          ...filtered.where(
-            (u) => !_isSniffVideoStreamUrl(u) && !isVideo(u),
-          ),
+          ...filtered.where((u) => !_isSniffVideoStreamUrl(u) && !isVideo(u)),
         ];
       }
       return filtered;
@@ -9781,9 +10040,7 @@ class _BrowserPageState extends State<BrowserPage>
       final need = (task['demoRequired'] as int?) ?? 2;
       final done = (task['success'] as int?) ?? 0;
       task['matchStage'] = '示范学习 · 等待手动长按';
-      _showSmartOperation(
-        '请手动长按下载第 ${done + 1}/$need 个媒体（示范中）',
-      );
+      _showSmartOperation('请手动长按下载第 ${done + 1}/$need 个媒体（示范中）');
       _updateSmartDiscoveryProgress(task, 'demo_waiting_user');
       return true;
     }
@@ -9833,10 +10090,9 @@ class _BrowserPageState extends State<BrowserPage>
     // V1：非 X/91 优先尝试页面已暴露的直链，失败再走页内长按（不改 X/91 路径）。
     // 本任务若已锁定某方式：只沿用该方式，成功前不改道。
     final siteProfile = (task['siteProfile'] ?? '').toString();
-    final lockedAcquisition =
-        _normalizeSmartAcquisition(
-          (task['lockedAcquisition'] ?? '').toString(),
-        );
+    final lockedAcquisition = _normalizeSmartAcquisition(
+      (task['lockedAcquisition'] ?? '').toString(),
+    );
     // 通用站：优先直链（或锁定直链）。
     // X/91：默认走原智能；仅在 fallback 备用阶段才开放直链等额外尝试。
     final isLegacy = _smartUsesLegacyPriorityPipeline(siteProfile);
@@ -10503,10 +10759,9 @@ class _BrowserPageState extends State<BrowserPage>
         (result['y'] as num?)?.toDouble() ?? 0.5,
       );
       if (action == 'longpress') {
-        final lockedForPress =
-            _normalizeSmartAcquisition(
-              (task['lockedAcquisition'] ?? '').toString(),
-            );
+        final lockedForPress = _normalizeSmartAcquisition(
+          (task['lockedAcquisition'] ?? '').toString(),
+        );
         // 本任务已锁定直链成功经验：不要再改成长按，继续找可直链项。
         if (lockedForPress == 'sniff') {
           await _scrollPageForLockedSniff(task);
@@ -10703,8 +10958,7 @@ class _BrowserPageState extends State<BrowserPage>
             noMove ? ((task['gestureNoMoveCount'] as int?) ?? 0) + 1 : 0;
         // 91 详情页通常只有一个主视频：空滚太多次就别空转，改为结束本页尝试。
         if (task['siteProfile'] == '91' && _is91ContentPage(_currentUrl)) {
-          final detailScrolls =
-              ((task['91DetailScrolls'] as int?) ?? 0) + 1;
+          final detailScrolls = ((task['91DetailScrolls'] as int?) ?? 0) + 1;
           task['91DetailScrolls'] = detailScrolls;
           if (detailScrolls >= 10 || (task['gestureNoMoveCount'] as int) >= 2) {
             task['91DetailScrolls'] = 0;
@@ -10823,8 +11077,7 @@ class _BrowserPageState extends State<BrowserPage>
     // 失败/跳过类 complete：同一次长按的 already_downloading 绝不能放行。
     // 成功路径仅由「媒体库落盘确认」后的 owner 调用（success 计数 / 入库同一路径）。
     if (!success && (actionRecipeMode || simpleGenericMode)) {
-      final peekFailure =
-          (task['lastGestureFailureType'] ?? '').toString();
+      final peekFailure = (task['lastGestureFailureType'] ?? '').toString();
       if (_actionRecipeShouldSuppressEarlyComplete(task, peekFailure)) {
         debugPrint(
           'Smart gesture: suppress early complete ($peekFailure); '
@@ -10841,12 +11094,10 @@ class _BrowserPageState extends State<BrowserPage>
     // 仅媒体库确认的重复可自动跳过。
     // already_in_smart_task / duplicate_name_in_smart_task 是会话/备案软标记，
     // 绝不能当成「已经处理过」放行切条（否则未入库也会狂滑下一条）。
-    final skippedDuplicate =
-        !success && failureType == 'already_in_library';
+    final skippedDuplicate = !success && failureType == 'already_in_library';
     final activeKey = (task['gestureActiveKey'] ?? '').toString();
     final actionFailures =
-        (task['gestureActionFailures'] as Map<String, int>?) ??
-        <String, int>{};
+        (task['gestureActionFailures'] as Map<String, int>?) ?? <String, int>{};
     task['gestureActionFailures'] = actionFailures;
     // 重复媒体视为「已处理」，不计入连续失败，避免 X 沉浸模式遇重复后卡死。
     if (success || skippedDuplicate) {
@@ -10893,19 +11144,13 @@ class _BrowserPageState extends State<BrowserPage>
       if ((task['lastSuccessAcquisition'] ?? '').toString().isEmpty) {
         task['lastSuccessAcquisition'] = 'longpress_inplace';
       }
-      _showSmartOperation(
-        '下载成功 ${task['success']}/${task['target']}',
-      );
+      _showSmartOperation('下载成功 ${task['success']}/${task['target']}');
     } else if (skippedDuplicate) {
       // 仅入库后哈希查重 / 磁盘文件确认的库内重复可走此文案；预跳过路径已对动作编排关闭
       task['matchStage'] =
-          actionRecipeMode
-              ? '库内确认重复 · 已标记，交由套路切下一条'
-              : '发现重复媒体 · 已自动跳过并切换下一项';
+          actionRecipeMode ? '库内确认重复 · 已标记，交由套路切下一条' : '发现重复媒体 · 已自动跳过并切换下一项';
       _showSmartOperation(
-        actionRecipeMode
-            ? '媒体库已有相同文件（磁盘确认），交由套路切下一条'
-            : '当前媒体已经处理过，自动跳过',
+        actionRecipeMode ? '媒体库已有相同文件（磁盘确认），交由套路切下一条' : '当前媒体已经处理过，自动跳过',
       );
     } else {
       task['failed'] = ((task['failed'] as int?) ?? 0) + 1;
@@ -10916,10 +11161,8 @@ class _BrowserPageState extends State<BrowserPage>
           '(not library-confirmed)',
         );
       }
-      if (actionRecipeMode &&
-          _actionRecipeIsInvalidMediaOutcome(failureType)) {
-        task['invalidSkipped'] =
-            ((task['invalidSkipped'] as int?) ?? 0) + 1;
+      if (actionRecipeMode && _actionRecipeIsInvalidMediaOutcome(failureType)) {
+        task['invalidSkipped'] = ((task['invalidSkipped'] as int?) ?? 0) + 1;
         task['matchStage'] = '无效媒体，已跳过';
         _showSmartOperation('无效媒体，已跳过');
       }
@@ -11109,9 +11352,7 @@ class _BrowserPageState extends State<BrowserPage>
       task['gestureReturnUrl'] = '';
       task['phase'] = 'scanning_feed';
       task['matchStage'] =
-          skippedDuplicate
-              ? 'X 沉浸模式 · 跳过重复并上滑下一条'
-              : 'X 沉浸模式 · 上滑到下一条视频';
+          skippedDuplicate ? 'X 沉浸模式 · 跳过重复并上滑下一条' : 'X 沉浸模式 · 上滑到下一条视频';
       _continueSmartFeed(task, madeProgress: true);
       return;
     }
@@ -11239,7 +11480,8 @@ class _BrowserPageState extends State<BrowserPage>
     final maxVideoSizeController = TextEditingController();
     final dialogRawUrl = (website['url'] ?? '').toString().trim();
     final dialogNormalized =
-        dialogRawUrl.startsWith('http://') || dialogRawUrl.startsWith('https://')
+        dialogRawUrl.startsWith('http://') ||
+                dialogRawUrl.startsWith('https://')
             ? dialogRawUrl
             : (dialogRawUrl.isEmpty ? _currentUrl : 'https://$dialogRawUrl');
     final dialogHost = _normalizeSmartHost(
@@ -11270,8 +11512,7 @@ class _BrowserPageState extends State<BrowserPage>
       await SmartActionRecipeStore.loadUserActionRecipes(),
     );
     // reuse 子源：action_recipe（用户成功动作，可跨站）或 pattern（X/91/通用管线）。
-    var reuseSource =
-        siteSuccessRecipe != null ? 'action_recipe' : 'pattern';
+    var reuseSource = siteSuccessRecipe != null ? 'action_recipe' : 'pattern';
     SmartActionRecipe? selectedReuseRecipe = siteSuccessRecipe;
     String axisHintFromRecipe(SmartActionRecipe? recipe) {
       if (recipe == null) return 'up';
@@ -11308,8 +11549,9 @@ class _BrowserPageState extends State<BrowserPage>
     }
 
     Future<void> refreshSuccessRecipes() async {
-      siteSuccessRecipe =
-          await SmartActionRecipeStore.loadLastSuccessForHost(dialogHost);
+      siteSuccessRecipe = await SmartActionRecipeStore.loadLastSuccessForHost(
+        dialogHost,
+      );
       allSuccessRecipes = List<SmartActionRecipe>.from(
         await SmartActionRecipeStore.loadUserActionRecipes(),
       );
@@ -11342,6 +11584,7 @@ class _BrowserPageState extends State<BrowserPage>
       if (origin.isEmpty || origin == current) return recipe.name;
       return '${recipe.name} · $origin';
     }
+
     // 编辑器在智能下载对话框关闭后打开，避免挡住网页导致「验证零件」看不见效果
     SmartActionRecipe? editorSeed;
 
@@ -11426,8 +11669,7 @@ class _BrowserPageState extends State<BrowserPage>
                                     onSelected: (_) {
                                       setDialogState(() {
                                         selectedRecipe = r;
-                                        advanceAxisHint =
-                                            axisHintFromRecipe(r);
+                                        advanceAxisHint = axisHintFromRecipe(r);
                                       });
                                     },
                                   );
@@ -11467,9 +11709,10 @@ class _BrowserPageState extends State<BrowserPage>
                               if (waitStep == null) {
                                 return const SizedBox.shrink();
                               }
-                              final hint = waitStep.waitMode == 'fixed'
-                                  ? '等待方式：最多 ${waitStep.waitSeconds}s，入库成功提前切条'
-                                  : '等待方式：媒体库确认后再切条';
+                              final hint =
+                                  waitStep.waitMode == 'fixed'
+                                      ? '等待方式：最多 ${waitStep.waitSeconds}s，入库成功提前切条'
+                                      : '等待方式：媒体库确认后再切条';
                               return Padding(
                                 padding: const EdgeInsets.only(top: 4),
                                 child: Text(
@@ -11571,9 +11814,7 @@ class _BrowserPageState extends State<BrowserPage>
                           onPressed: () => openEditor(),
                           icon: const Icon(Icons.edit_note, size: 18),
                           label: Text(
-                            selectedRecipe == null
-                                ? '编辑动作编排'
-                                : '编辑 / 管理动作',
+                            selectedRecipe == null ? '编辑动作编排' : '编辑 / 管理动作',
                           ),
                         ),
                       ] else if (runMode == 'reuse') ...[
@@ -11809,9 +12050,9 @@ class _BrowserPageState extends State<BrowserPage>
                                   if (ok != true || name.isEmpty) return;
                                   final renamed =
                                       await SmartActionRecipeStore.renameRecipe(
-                                    selectedReuseRecipe!.id,
-                                    name,
-                                  );
+                                        selectedReuseRecipe!.id,
+                                        name,
+                                      );
                                   if (!renamed || !dialogContext.mounted) {
                                     return;
                                   }
@@ -11885,9 +12126,7 @@ class _BrowserPageState extends State<BrowserPage>
                                   ScaffoldMessenger.of(
                                     dialogContext,
                                   ).showSnackBar(
-                                    const SnackBar(
-                                      content: Text('已删除成功动作套路'),
-                                    ),
+                                    const SnackBar(content: Text('已删除成功动作套路')),
                                   );
                                 },
                                 child: const Text(
@@ -11899,8 +12138,7 @@ class _BrowserPageState extends State<BrowserPage>
                                   selectedReuseRecipe!.id)
                                 TextButton(
                                   onPressed: () async {
-                                    await SmartActionRecipeStore
-                                        .setAsHostDefault(
+                                    await SmartActionRecipeStore.setAsHostDefault(
                                       dialogHost,
                                       selectedReuseRecipe!.id,
                                     );
@@ -11959,9 +12197,11 @@ class _BrowserPageState extends State<BrowserPage>
                           spacing: 6,
                           runSpacing: 4,
                           children: [
-                            for (var i = 0;
-                                i < _kPaginatedSniffLayerSizes.length;
-                                i++)
+                            for (
+                              var i = 0;
+                              i < _kPaginatedSniffLayerSizes.length;
+                              i++
+                            )
                               ChoiceChip(
                                 label: Text(
                                   i == 0
@@ -12007,9 +12247,7 @@ class _BrowserPageState extends State<BrowserPage>
                                   ? null
                                   : IconButton(
                                     tooltip:
-                                        historyExpanded
-                                            ? '收起历史关键词'
-                                            : '展开历史关键词',
+                                        historyExpanded ? '收起历史关键词' : '展开历史关键词',
                                     onPressed:
                                         () => setDialogState(
                                           () =>
@@ -12051,8 +12289,7 @@ class _BrowserPageState extends State<BrowserPage>
                                         ),
                                       ),
                                       onPressed:
-                                          () =>
-                                              keywordController.text = value,
+                                          () => keywordController.text = value,
                                       onDeleted: () async {
                                         await _removeSmartKeyword(value);
                                         if (dialogContext.mounted) {
@@ -12196,9 +12433,7 @@ class _BrowserPageState extends State<BrowserPage>
                                 ScaffoldMessenger.of(
                                   dialogContext,
                                 ).showSnackBar(
-                                  const SnackBar(
-                                    content: Text('最小大小不能大于最大大小'),
-                                  ),
+                                  const SnackBar(content: Text('最小大小不能大于最大大小')),
                                 );
                                 return;
                               }
@@ -12295,15 +12530,14 @@ class _BrowserPageState extends State<BrowserPage>
       final id = selectedPatternId.trim();
       if (id.isEmpty || !_confirmedSmartPatternIds.contains(id)) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('未选择有效的网站套路')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('未选择有效的网站套路')));
         }
         return;
       }
       final native = _smartSiteProfile(dialogHost);
-      final crossSite =
-          _dedicatedSmartPatternIds.contains(id) && id != native;
+      final crossSite = _dedicatedSmartPatternIds.contains(id) && id != native;
       // 91：实测独立管线（有关键词走搜索；无关键词从当前列表/详情批量）。
       // 跨站借用时仍走 91 管线，但以当前浏览 origin/host 为站点上下文。
       if (id == '91') {
@@ -12404,9 +12638,7 @@ class _BrowserPageState extends State<BrowserPage>
         if (recipe == null || recipe.steps.isEmpty) {
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('请选择一套成功动作套路，或先用「动作编排」跑通一次'),
-              ),
+              const SnackBar(content: Text('请选择一套成功动作套路，或先用「动作编排」跑通一次')),
             );
           }
         } else {
@@ -12463,9 +12695,7 @@ class _BrowserPageState extends State<BrowserPage>
         rawUrl.startsWith('http://') || rawUrl.startsWith('https://')
             ? rawUrl
             : (rawUrl.isEmpty ? _currentUrl : 'https://$rawUrl');
-    final uri = Uri.tryParse(
-      startFromCurrentPage ? _currentUrl : normalized,
-    );
+    final uri = Uri.tryParse(startFromCurrentPage ? _currentUrl : normalized);
     final host = _normalizeSmartHost(uri?.host ?? recipe.host);
     if (host.isEmpty) return;
     if (!startFromCurrentPage && normalized.startsWith('http')) {
@@ -12495,11 +12725,12 @@ class _BrowserPageState extends State<BrowserPage>
     }
     final modeRaw = (advanceMode ?? '').trim();
     // 新任务默认按距离滑动；未显式传入时仍走指纹确认（兼容旧调用）
-    final resolvedAdvanceMode = modeRaw == 'distance'
-        ? 'distance'
-        : modeRaw == 'verify'
-        ? 'verify'
-        : (advanceMode == null ? 'verify' : 'distance');
+    final resolvedAdvanceMode =
+        modeRaw == 'distance'
+            ? 'distance'
+            : modeRaw == 'verify'
+            ? 'verify'
+            : (advanceMode == null ? 'verify' : 'distance');
     final boundRecipe = recipe.copyWith(
       host: host,
       advanceAxisHint: resolvedAxisHint,
@@ -12581,8 +12812,7 @@ class _BrowserPageState extends State<BrowserPage>
       }
     });
     final axisLabel = _advanceAxisSpec(task).$3;
-    final modeLabel =
-        _advanceModeIsDistance(task) ? '按距离滑动' : '确认切到新媒体';
+    final modeLabel = _advanceModeIsDistance(task) ? '按距离滑动' : '确认切到新媒体';
     _showSmartOperation('开始执行套路「${boundRecipe.name}」· $axisLabel · $modeLabel');
     unawaited(_runActionRecipeLoop(task, boundRecipe));
   }
@@ -12897,8 +13127,9 @@ class _BrowserPageState extends State<BrowserPage>
   static const Duration _kActionRecipeLibraryWatchdog = Duration(seconds: 105);
 
   /// 识别到无效/非媒体后的快速跳过窗口（不应干等到满库确认超时）。
-  static const Duration _kActionRecipeInvalidMediaFastSkip =
-      Duration(seconds: 3);
+  static const Duration _kActionRecipeInvalidMediaFastSkip = Duration(
+    seconds: 3,
+  );
 
   /// 回合级看门狗：同一媒体长时间无进展则强制跳过并切下一条。
   static const Duration _kActionRecipeStepWatchdog = Duration(seconds: 120);
@@ -13010,8 +13241,7 @@ class _BrowserPageState extends State<BrowserPage>
       outcome: resolved,
     );
     final pendingCompleter = task.remove('actionDownloadCompleter');
-    if (pendingCompleter is Completer<bool> &&
-        !pendingCompleter.isCompleted) {
+    if (pendingCompleter is Completer<bool> && !pendingCompleter.isCompleted) {
       pendingCompleter.complete(false);
     }
     if (incrementFailed) {
@@ -13097,10 +13327,7 @@ class _BrowserPageState extends State<BrowserPage>
         _removeDownloadTask(placeholderId);
         task.remove('actionProgressTaskId');
       } else {
-        _updateDownloadTask(
-          placeholderId,
-          progressDetail: '固定等待已结束，下载仍在继续…',
-        );
+        _updateDownloadTask(placeholderId, progressDetail: '固定等待已结束，下载仍在继续…');
       }
     }
     debugPrint(
@@ -13132,11 +13359,7 @@ class _BrowserPageState extends State<BrowserPage>
       displayName: '动作编排 · 强制下载',
       isSmartBatchMedia: true,
     );
-    _updateDownloadTask(
-      id,
-      progress: 0.0,
-      progressDetail: '长按已触发，强制下载中…',
-    );
+    _updateDownloadTask(id, progress: 0.0, progressDetail: '长按已触发，强制下载中…');
   }
 
   void _actionRecipeResolveProgressPlaceholder(
@@ -13193,11 +13416,7 @@ class _BrowserPageState extends State<BrowserPage>
       return;
     }
     if (_actionRecipeIsInvalidMediaOutcome(outcome)) {
-      _updateDownloadTask(
-        id,
-        status: 'failed',
-        progressDetail: '无效媒体，已跳过',
-      );
+      _updateDownloadTask(id, status: 'failed', progressDetail: '无效媒体，已跳过');
       task.remove('actionProgressTaskId');
       return;
     }
@@ -13205,11 +13424,7 @@ class _BrowserPageState extends State<BrowserPage>
         outcome == 'loop_timeout' ||
         outcome == 'force_skip_timeout' ||
         outcome == 'step_watchdog_timeout') {
-      _updateDownloadTask(
-        id,
-        status: 'failed',
-        progressDetail: '超时无进展，强制跳过',
-      );
+      _updateDownloadTask(id, status: 'failed', progressDetail: '超时无进展，强制跳过');
       task.remove('actionProgressTaskId');
       return;
     }
@@ -13292,8 +13507,7 @@ class _BrowserPageState extends State<BrowserPage>
       return awaiting || _hasActiveSmartBatchDownload();
     }
     // 流引用 / 尚无直链：长按后常先到噪声消息，入库闸门打开时必须继续等真下载。
-    if (awaiting &&
-        (failureType.isEmpty || failureType == 'no_direct_url')) {
+    if (awaiting && (failureType.isEmpty || failureType == 'no_direct_url')) {
       return true;
     }
     return false;
@@ -13316,9 +13530,7 @@ class _BrowserPageState extends State<BrowserPage>
       return;
     }
     // 健康路径：上一轮成功且已切到新媒体 → 不探测、不清障、不自愈
-    if (!allowHeavy &&
-        stallLevel <= 0 &&
-        _actionRecipeHealthySkipGuard(task)) {
+    if (!allowHeavy && stallLevel <= 0 && _actionRecipeHealthySkipGuard(task)) {
       return;
     }
     task['recoveringTrack'] = true;
@@ -13358,11 +13570,7 @@ class _BrowserPageState extends State<BrowserPage>
         durationMs: 300,
       );
       if (await _probeSmartBlockersPresent()) {
-        await _clearSmartInterruptions(
-          task,
-          silent: false,
-          forceHide: true,
-        );
+        await _clearSmartInterruptions(task, silent: false, forceHide: true);
       }
       // 卡死很久：只强切，绝不无入库确认写入「已处理」（否则假跳过会永久挡住真下载）
       if (stallLevel >= 5) {
@@ -13422,9 +13630,7 @@ class _BrowserPageState extends State<BrowserPage>
         rawUrl.startsWith('http://') || rawUrl.startsWith('https://')
             ? rawUrl
             : (rawUrl.isEmpty ? _currentUrl : 'https://$rawUrl');
-    final uri = Uri.tryParse(
-      startFromCurrentPage ? _currentUrl : normalized,
-    );
+    final uri = Uri.tryParse(startFromCurrentPage ? _currentUrl : normalized);
     final host = _normalizeSmartHost(uri?.host ?? '');
     if (host.isEmpty && _currentUrl.isEmpty) return;
     if (!startFromCurrentPage && normalized.startsWith('http')) {
@@ -13489,18 +13695,20 @@ class _BrowserPageState extends State<BrowserPage>
     }
     final depth = (task['scopeDepth'] as int?) ?? 0;
     final target = (task['target'] as int?) ?? 50;
-    final remaining =
-        (target - ((task['success'] as int?) ?? 0))
-            .clamp(1, _kSmartDownloadMaxTarget);
+    final remaining = (target - ((task['success'] as int?) ?? 0)).clamp(
+      1,
+      _kSmartDownloadMaxTarget,
+    );
     final allowMixed = task['allowMixedMedia'] == true;
     final mediaType = task['mediaType'] as MediaType?;
     final imagesOnly = !allowMixed && mediaType == MediaType.image;
     final videosOnly = !allowMixed && mediaType == MediaType.video;
     final minBytes = task['minVideoBytes'] as int?;
     final maxBytes = task['maxVideoBytes'] as int?;
-    final startedAt = task['startedAt'] is DateTime
-        ? task['startedAt'] as DateTime
-        : DateTime.now().subtract(const Duration(minutes: 5));
+    final startedAt =
+        task['startedAt'] is DateTime
+            ? task['startedAt'] as DateTime
+            : DateTime.now().subtract(const Duration(minutes: 5));
 
     task['matchStage'] = '本页同层 · 预热嗅探';
     _showSmartOperation(
@@ -13547,11 +13755,13 @@ class _BrowserPageState extends State<BrowserPage>
 
     final pageCaptures =
         _recentCapturedMediaCandidates(
-          MediaType.video,
-          pageUrl: _currentUrl,
-          notBefore: startedAt.subtract(const Duration(minutes: 2)),
-          limit: 32,
-        ).where((u) => !_isLikelyAdUrl(u) && _isLikelyDirectMediaUrl(u)).toList();
+              MediaType.video,
+              pageUrl: _currentUrl,
+              notBefore: startedAt.subtract(const Duration(minutes: 2)),
+              limit: 32,
+            )
+            .where((u) => !_isLikelyAdUrl(u) && _isLikelyDirectMediaUrl(u))
+            .toList();
 
     final itemsRaw = collected?['items'];
     final items = <Map<String, dynamic>>[];
@@ -13581,9 +13791,10 @@ class _BrowserPageState extends State<BrowserPage>
             caseSensitive: false,
           ).firstMatch(raw);
           if (uuid != null &&
-              RegExp(r'(thumbs\.xfree\.com|cdn\.xfree\.com|xfree\.com)',
-                      caseSensitive: false)
-                  .hasMatch(raw)) {
+              RegExp(
+                r'(thumbs\.xfree\.com|cdn\.xfree\.com|xfree\.com)',
+                caseSensitive: false,
+              ).hasMatch(raw)) {
             final id = uuid.group(1)!.toLowerCase();
             return 'https://cdn.xfree.com/xfree-prod/${id[0]}/${id[1]}/${id[2]}/$id/full.mp4';
           }
@@ -13623,11 +13834,10 @@ class _BrowserPageState extends State<BrowserPage>
                 }
               }
             }
-            better ??=
-                candidates.cast<String?>().firstWhere(
-                  (c) => c != null && _isLikelyDirectMediaUrl(c),
-                  orElse: () => null,
-                );
+            better ??= candidates.cast<String?>().firstWhere(
+              (c) => c != null && _isLikelyDirectMediaUrl(c),
+              orElse: () => null,
+            );
             if (better != null && better.isNotEmpty) {
               if (url.isNotEmpty && !candidates.contains(url)) {
                 candidates.insert(0, url);
@@ -13690,8 +13900,7 @@ class _BrowserPageState extends State<BrowserPage>
 
     final videoN = queue.where((e) => e['kind'] == 'video').length;
     final imageN = queue.length - videoN;
-    task['matchStage'] =
-        '本页同层 · 待下载 ${queue.length}（视频 $videoN / 图片 $imageN）';
+    task['matchStage'] = '本页同层 · 待下载 ${queue.length}（视频 $videoN / 图片 $imageN）';
     _showSmartOperation(
       '开始批量：视频 $videoN · 图片 $imageN',
       point: const Offset(0.5, 0.1),
@@ -13700,8 +13909,7 @@ class _BrowserPageState extends State<BrowserPage>
 
     for (var start = 0; start < queue.length; start += 3) {
       if (!identical(_smartDownloadTask, task)) return;
-      final left =
-          (target - ((task['success'] as int?) ?? 0)).clamp(0, 3);
+      final left = (target - ((task['success'] as int?) ?? 0)).clamp(0, 3);
       if (left <= 0) break;
       final end = min(start + left, queue.length);
       final batch = queue.sublist(start, end);
@@ -13714,12 +13922,16 @@ class _BrowserPageState extends State<BrowserPage>
           final kind = (it['kind'] ?? '').toString();
           final isVideo = kind == 'video';
           final pageUrl = _currentUrl;
-          final candidateUrls = <String>[
-            url,
-            ...((it['candidates'] is List)
-                ? (it['candidates'] as List).map((e) => e.toString())
-                : const <String>[]),
-          ].where((u) => u.trim().isNotEmpty && !_isLikelyAdUrl(u)).toSet().toList();
+          final candidateUrls =
+              <String>[
+                    url,
+                    ...((it['candidates'] is List)
+                        ? (it['candidates'] as List).map((e) => e.toString())
+                        : const <String>[]),
+                  ]
+                  .where((u) => u.trim().isNotEmpty && !_isLikelyAdUrl(u))
+                  .toSet()
+                  .toList();
           var failureType = '';
           if (!await _reserveSmartMediaName(task, url, pageUrl: pageUrl)) {
             return (
@@ -13790,15 +14002,12 @@ class _BrowserPageState extends State<BrowserPage>
         } else if (!skippedDuplicate) {
           task['failed'] = (task['failed'] as int) + 1;
         }
-        task['matchStage'] =
-            '本页同层 · 已完成 ${task['success']}/$target';
+        task['matchStage'] = '本页同层 · 已完成 ${task['success']}/$target';
       }
     }
 
     if (!identical(_smartDownloadTask, task)) return;
-    await _finishSmartDownload(
-      '同层批量结束（成功 ${task['success']}/$target）',
-    );
+    await _finishSmartDownload('同层批量结束（成功 ${task['success']}/$target）');
   }
 
   Future<void> _startPaginatedSniffDownload({
@@ -13818,9 +14027,7 @@ class _BrowserPageState extends State<BrowserPage>
         rawUrl.startsWith('http://') || rawUrl.startsWith('https://')
             ? rawUrl
             : (rawUrl.isEmpty ? _currentUrl : 'https://$rawUrl');
-    final uri = Uri.tryParse(
-      startFromCurrentPage ? _currentUrl : normalized,
-    );
+    final uri = Uri.tryParse(startFromCurrentPage ? _currentUrl : normalized);
     final host = _normalizeSmartHost(uri?.host ?? '');
     if (host.isEmpty && _currentUrl.isEmpty) return;
     if (!startFromCurrentPage && normalized.startsWith('http')) {
@@ -13895,16 +14102,15 @@ class _BrowserPageState extends State<BrowserPage>
       return;
     }
     final host = (task['host'] ?? '').toString();
-    final maxPages =
-        ((task['sniffPageLimit'] as int?) ?? _kPaginatedSniffMaxPages)
-            .clamp(1, _kPaginatedSniffMaxPages);
+    final maxPages = ((task['sniffPageLimit'] as int?) ??
+            _kPaginatedSniffMaxPages)
+        .clamp(1, _kPaginatedSniffMaxPages);
     final originUrl = (task['originUrl'] ?? _currentUrl).toString();
     final mediaType = task['mediaType'] as MediaType? ?? MediaType.video;
     final allowMixed = task['allowMixedMedia'] == true;
     final imagesOnly = !allowMixed && mediaType == MediaType.image;
     final videosOnly = !allowMixed && mediaType == MediaType.video;
-    final target =
-        (task['target'] as int?) ?? _kPaginatedSniffSoftMaxTarget;
+    final target = (task['target'] as int?) ?? _kPaginatedSniffSoftMaxTarget;
     final collectLimit = min(80, max(32, target));
     final minBytes = task['minVideoBytes'] as int?;
     final maxBytes = task['maxVideoBytes'] as int?;
@@ -13958,8 +14164,7 @@ class _BrowserPageState extends State<BrowserPage>
       }
       final layerHint = _paginatedSniffLayerLabelForPageIndex(i);
       task['phase'] = 'paginated_sniff_scanning';
-      task['matchStage'] =
-          '分页嗅探 · $layerHint · ${i + 1}/${pageTargets.length}';
+      task['matchStage'] = '分页嗅探 · $layerHint · ${i + 1}/${pageTargets.length}';
       _showSmartOperation(
         '分层嗅探 ${i + 1}/${pageTargets.length}：$label',
         point: const Offset(0.5, 0.1),
@@ -14041,8 +14246,7 @@ class _BrowserPageState extends State<BrowserPage>
         if (norm.isNotEmpty && !globalSeenUrls.add('norm:$norm')) continue;
         downloadable.add(prepared);
       }
-      final videoCount =
-          downloadable.where((e) => e['kind'] == 'video').length;
+      final videoCount = downloadable.where((e) => e['kind'] == 'video').length;
       final imageCount = downloadable.length - videoCount;
       debugPrint(
         'paginatedSniff: page#$i label=$label '
@@ -14096,9 +14300,7 @@ class _BrowserPageState extends State<BrowserPage>
     );
     if (totalVideos + totalImages <= 0) {
       await _finishSmartDownload(
-        abortedDuringScan
-            ? '已停止嗅探，尚未收集到可下载媒体'
-            : '未嗅探到可真实下载的媒体（已过滤广告/海报）',
+        abortedDuringScan ? '已停止嗅探，尚未收集到可下载媒体' : '未嗅探到可真实下载的媒体（已过滤广告/海报）',
       );
       return;
     }
@@ -14126,8 +14328,7 @@ class _BrowserPageState extends State<BrowserPage>
 
     var takePages = pageResults.length;
     if (choice.startsWith('layer:')) {
-      takePages =
-          int.tryParse(choice.substring('layer:'.length)) ?? takePages;
+      takePages = int.tryParse(choice.substring('layer:'.length)) ?? takePages;
     }
     takePages = takePages.clamp(1, pageResults.length);
     final selectedPages = pageResults.take(takePages).toList();
@@ -14162,8 +14363,7 @@ class _BrowserPageState extends State<BrowserPage>
     task['phase'] = 'paginated_sniff_downloading';
     final videoN = queue.where((e) => e['kind'] == 'video').length;
     final imageN = queue.length - videoN;
-    task['matchStage'] =
-        '分页嗅探 · 下载中（视频 $videoN / 图片 $imageN）';
+    task['matchStage'] = '分页嗅探 · 下载中（视频 $videoN / 图片 $imageN）';
     _showSmartOperation(
       '开始下载：视频 $videoN · 图片 $imageN',
       point: const Offset(0.5, 0.1),
@@ -14212,11 +14412,7 @@ class _BrowserPageState extends State<BrowserPage>
         return;
       }
       seen.add(url);
-      pages.add({
-        'url': url,
-        'source': source,
-        'label': resolvedLabel,
-      });
+      pages.add({'url': url, 'source': source, 'label': resolvedLabel});
     }
 
     final current = _currentUrl.trim().split('#').first;
@@ -14271,9 +14467,7 @@ class _BrowserPageState extends State<BrowserPage>
     if (_controller == null || pages.length >= maxPages) return;
     try {
       final raw = await _controller!.evaluateJavascript(
-        source: SmartPaginatedSniffJs.discoverNearbyPages(
-          limit: maxPages * 3,
-        ),
+        source: SmartPaginatedSniffJs.discoverNearbyPages(limit: maxPages * 3),
       );
       final map = _coerceJsMap(raw);
       final list = map?['pages'];
@@ -14293,11 +14487,7 @@ class _BrowserPageState extends State<BrowserPage>
         if (pageHost.isEmpty) continue;
         if (host.isNotEmpty && !_sameSmartSite(pageHost, host)) continue;
         seen.add(url);
-        pages.add({
-          'url': url,
-          'source': source,
-          'label': label,
-        });
+        pages.add({'url': url, 'source': source, 'label': label});
       }
     } catch (e) {
       debugPrint('paginatedSniff: expand pages failed: $e');
@@ -14313,8 +14503,10 @@ class _BrowserPageState extends State<BrowserPage>
       );
       if (junkLabel.hasMatch(text)) return true;
       if (text.length <= 16 &&
-          RegExp(r'合作|经纪|伙伴|语言|語言|地区|地區|playlist', caseSensitive: false)
-              .hasMatch(text)) {
+          RegExp(
+            r'合作|经纪|伙伴|语言|語言|地区|地區|playlist',
+            caseSensitive: false,
+          ).hasMatch(text)) {
         return true;
       }
     }
@@ -14379,12 +14571,16 @@ class _BrowserPageState extends State<BrowserPage>
   String? _pickBestSniffDownloadUrl(Map<String, dynamic> item) {
     final kind = (item['kind'] ?? '').toString();
     final primary = (item['url'] ?? '').toString().trim();
-    final candidates = <String>[
-      if (primary.isNotEmpty) primary,
-      ...((item['candidates'] is List)
-          ? (item['candidates'] as List).map((e) => e.toString())
-          : const <String>[]),
-    ].map((e) => e.trim()).where((e) => e.isNotEmpty && !_isLikelyAdUrl(e)).toList();
+    final candidates =
+        <String>[
+              if (primary.isNotEmpty) primary,
+              ...((item['candidates'] is List)
+                  ? (item['candidates'] as List).map((e) => e.toString())
+                  : const <String>[]),
+            ]
+            .map((e) => e.trim())
+            .where((e) => e.isNotEmpty && !_isLikelyAdUrl(e))
+            .toList();
     if (candidates.isEmpty) return null;
     if (kind == 'video' || candidates.any(_isSniffVideoStreamUrl)) {
       String? best;
@@ -14421,21 +14617,25 @@ class _BrowserPageState extends State<BrowserPage>
     final best = _pickBestSniffDownloadUrl(it);
     if (best == null || best.isEmpty) return null;
     final kind =
-        _isSniffVideoStreamUrl(best) ? 'video' : ((it['kind'] ?? 'image').toString());
+        _isSniffVideoStreamUrl(best)
+            ? 'video'
+            : ((it['kind'] ?? 'image').toString());
     // 视频必须以真实流为主键；海报/页面地址不得进入队列。
     if (kind == 'video' && !_isSniffVideoStreamUrl(best)) return null;
     if (kind == 'image' &&
-        (_isLikelyPosterOrThumbImageUrl(best) || _isLikelyDirectMediaUrl(best))) {
+        (_isLikelyPosterOrThumbImageUrl(best) ||
+            _isLikelyDirectMediaUrl(best))) {
       return null;
     }
-    final candidates = <String>{
-      best,
-      ...((it['candidates'] is List)
-          ? (it['candidates'] as List).map((e) => e.toString())
-          : const <String>[]),
-      if ((it['url'] ?? '').toString().trim().isNotEmpty)
-        (it['url'] ?? '').toString().trim(),
-    }.where((u) => u.trim().isNotEmpty && !_isLikelyAdUrl(u)).toList();
+    final candidates =
+        <String>{
+          best,
+          ...((it['candidates'] is List)
+              ? (it['candidates'] as List).map((e) => e.toString())
+              : const <String>[]),
+          if ((it['url'] ?? '').toString().trim().isNotEmpty)
+            (it['url'] ?? '').toString().trim(),
+        }.where((u) => u.trim().isNotEmpty && !_isLikelyAdUrl(u)).toList();
     it['url'] = best;
     it['kind'] = kind;
     it['candidates'] = candidates.take(12).toList();
@@ -14455,12 +14655,17 @@ class _BrowserPageState extends State<BrowserPage>
       final it = Map<String, dynamic>.from(raw);
       var url = (it['url'] ?? '').toString().trim();
       var kind = (it['kind'] ?? '').toString();
-      final candidates = <String>[
-        if (url.isNotEmpty) url,
-        ...((it['candidates'] is List)
-            ? (it['candidates'] as List).map((e) => e.toString())
-            : const <String>[]),
-      ].map((e) => e.trim()).where((e) => e.isNotEmpty && !_isLikelyAdUrl(e)).toSet().toList();
+      final candidates =
+          <String>[
+                if (url.isNotEmpty) url,
+                ...((it['candidates'] is List)
+                    ? (it['candidates'] as List).map((e) => e.toString())
+                    : const <String>[]),
+              ]
+              .map((e) => e.trim())
+              .where((e) => e.isNotEmpty && !_isLikelyAdUrl(e))
+              .toSet()
+              .toList();
 
       // 候选里若有真实视频流，升级为 video，避免海报图冒充主媒体。
       String? videoCandidate;
@@ -14686,11 +14891,13 @@ class _BrowserPageState extends State<BrowserPage>
 
     final pageCaptures =
         _recentCapturedMediaCandidates(
-          MediaType.video,
-          pageUrl: pageUrl,
-          notBefore: notBefore,
-          limit: 32,
-        ).where((u) => !_isLikelyAdUrl(u) && _isLikelyDirectMediaUrl(u)).toList();
+              MediaType.video,
+              pageUrl: pageUrl,
+              notBefore: notBefore,
+              limit: 32,
+            )
+            .where((u) => !_isLikelyAdUrl(u) && _isLikelyDirectMediaUrl(u))
+            .toList();
 
     final items = <Map<String, dynamic>>[];
     final itemsRaw = collected?['items'];
@@ -14959,11 +15166,11 @@ class _BrowserPageState extends State<BrowserPage>
       final pageUrl = (prepared['pageUrl'] ?? _currentUrl).toString();
       final candidateUrls =
           <String>[
-            url,
-            ...((prepared['candidates'] is List)
-                ? (prepared['candidates'] as List).map((e) => e.toString())
-                : const <String>[]),
-          ]
+                url,
+                ...((prepared['candidates'] is List)
+                    ? (prepared['candidates'] as List).map((e) => e.toString())
+                    : const <String>[]),
+              ]
               .where((u) => u.trim().isNotEmpty && !_isLikelyAdUrl(u))
               .toSet()
               .toList();
@@ -15048,9 +15255,7 @@ class _BrowserPageState extends State<BrowserPage>
       'paginatedSniff: download done success=${task['success']}/$target '
       'failed=${task['failed']}',
     );
-    await _finishSmartDownload(
-      '分页嗅探结束（成功 ${task['success']}/$target）',
-    );
+    await _finishSmartDownload('分页嗅探结束（成功 ${task['success']}/$target）');
   }
 
   Future<void> _runActionRecipeLoop(
@@ -15075,11 +15280,7 @@ class _BrowserPageState extends State<BrowserPage>
 
       // 回合开始：健康连胜则跳过保轨；仅首轮/卡住才探测清障
       if (!healthyStreak) {
-        await _guardActionRecipeTrack(
-          task,
-          reason: '回合开始',
-          allowAdvance: true,
-        );
+        await _guardActionRecipeTrack(task, reason: '回合开始', allowAdvance: true);
       } else if (task['needAdvancePastCurrent'] == true) {
         // 上轮已下载但可能未切走：只做廉价已处理检查，不探广告/自愈
         final stuck = await _actionCaptureMediaIdentity(task);
@@ -15196,8 +15397,7 @@ class _BrowserPageState extends State<BrowserPage>
       } else {
         healthyStreak = false;
         task['actionHealthyStreak'] = false;
-        final noSuccess =
-            ((task['noSuccessRounds'] as int?) ?? 0) + 1;
+        final noSuccess = ((task['noSuccessRounds'] as int?) ?? 0) + 1;
         task['noSuccessRounds'] = noSuccess;
         if (!mediaMoved) {
           idleRounds++;
@@ -15304,49 +15504,50 @@ class _BrowserPageState extends State<BrowserPage>
         );
         break;
       case SmartActionKind.findNextMedia:
-      case SmartActionKind.findNextMediaRight: {
-        // 入库未确认前禁止切条（健康连胜也不得跳过等待）
-        if (task['mode'] == 'action_recipe' && task['actionProbe'] != true) {
-          final needsGate =
-              task['actionLongPressNeedsConfirm'] == true ||
-              _actionRecipeHasDownloadWork(task);
-          if (needsGate) {
-            await _actionWaitDownload(task);
-          }
-          if (!_actionRecipeMayAdvancePastDownload(task)) {
+      case SmartActionKind.findNextMediaRight:
+        {
+          // 入库未确认前禁止切条（健康连胜也不得跳过等待）
+          if (task['mode'] == 'action_recipe' && task['actionProbe'] != true) {
+            final needsGate =
+                task['actionLongPressNeedsConfirm'] == true ||
+                _actionRecipeHasDownloadWork(task);
+            if (needsGate) {
+              await _actionWaitDownload(task);
+            }
+            if (!_actionRecipeMayAdvancePastDownload(task)) {
+              debugPrint(
+                'action recipe switch BLOCKED findNext '
+                'needsConfirm=${task['actionLongPressNeedsConfirm']} '
+                'awaiting=${task['actionAwaitingLibrarySave']} '
+                'outcome=${task['actionDownloadOutcome']} '
+                'libraryOk=${task['actionLibrarySaveOk']}',
+              );
+              _showSmartOperation('下载未入库确认，本步不切条');
+              break;
+            }
             debugPrint(
-              'action recipe switch BLOCKED findNext '
-              'needsConfirm=${task['actionLongPressNeedsConfirm']} '
-              'awaiting=${task['actionAwaitingLibrarySave']} '
+              'action recipe switch ALLOWED findNext '
               'outcome=${task['actionDownloadOutcome']} '
               'libraryOk=${task['actionLibrarySaveOk']}',
             );
-            _showSmartOperation('下载未入库确认，本步不切条');
-            break;
           }
-          debugPrint(
-            'action recipe switch ALLOWED findNext '
-            'outcome=${task['actionDownloadOutcome']} '
-            'libraryOk=${task['actionLibrarySaveOk']}',
+          // 用户选定的切条方向优先于零件默认轴
+          final spec = _advanceAxisSpec(task);
+          await _actionSwitchAdjacentMedia(
+            task,
+            label: spec.$3,
+            preferHorizontal: spec.$2,
+            direction: spec.$4,
+            axisHintOverride: spec.$1,
+            maxAttempts: step.paramInt('maxAttempts', 4),
+            distanceFraction: step.paramDouble(
+              'distanceFraction',
+              spec.$2 ? 0.36 : 0.34,
+            ),
+            durationMs: step.paramInt('durationMs', 280),
           );
+          break;
         }
-        // 用户选定的切条方向优先于零件默认轴
-        final spec = _advanceAxisSpec(task);
-        await _actionSwitchAdjacentMedia(
-          task,
-          label: spec.$3,
-          preferHorizontal: spec.$2,
-          direction: spec.$4,
-          axisHintOverride: spec.$1,
-          maxAttempts: step.paramInt('maxAttempts', 4),
-          distanceFraction: step.paramDouble(
-            'distanceFraction',
-            spec.$2 ? 0.36 : 0.34,
-          ),
-          durationMs: step.paramInt('durationMs', 280),
-        );
-        break;
-      }
       case SmartActionKind.findPrevMedia:
         await _actionSwitchAdjacentMedia(
           task,
@@ -15402,11 +15603,7 @@ class _BrowserPageState extends State<BrowserPage>
         await _actionScrollEdge(task, toTop: true);
         break;
       case SmartActionKind.waitBrief:
-        await _actionWaitMs(
-          task,
-          step.paramInt('ms', 1000),
-          '等待片刻',
-        );
+        await _actionWaitMs(task, step.paramInt('ms', 1000), '等待片刻');
         break;
       case SmartActionKind.waitPageSettle:
         await _actionWaitPageSettle(task);
@@ -15431,10 +15628,8 @@ class _BrowserPageState extends State<BrowserPage>
   ) {
     final allowMixed = task['allowMixedMedia'] == true;
     final mediaType = task['mediaType'];
-    final imagesOnly =
-        !allowMixed && mediaType == MediaType.image;
-    final videosOnly =
-        !allowMixed && mediaType == MediaType.video;
+    final imagesOnly = !allowMixed && mediaType == MediaType.image;
+    final videosOnly = !allowMixed && mediaType == MediaType.video;
     return (imagesOnly, videosOnly);
   }
 
@@ -15469,14 +15664,26 @@ class _BrowserPageState extends State<BrowserPage>
     final f = distanceFraction.clamp(0.12, 0.85);
     switch (axisHint) {
       case 'down':
-        return (const Offset(0.5, 0.38), Offset(0.5, (0.38 + f).clamp(0.0, 0.92)));
+        return (
+          const Offset(0.5, 0.38),
+          Offset(0.5, (0.38 + f).clamp(0.0, 0.92)),
+        );
       case 'left':
-        return (const Offset(0.72, 0.5), Offset((0.72 - f).clamp(0.06, 1.0), 0.5));
+        return (
+          const Offset(0.72, 0.5),
+          Offset((0.72 - f).clamp(0.06, 1.0), 0.5),
+        );
       case 'right':
-        return (const Offset(0.28, 0.5), Offset((0.28 + f).clamp(0.0, 0.94), 0.5));
+        return (
+          const Offset(0.28, 0.5),
+          Offset((0.28 + f).clamp(0.0, 0.94), 0.5),
+        );
       case 'up':
       default:
-        return (const Offset(0.5, 0.62), Offset(0.5, (0.62 - f).clamp(0.08, 1.0)));
+        return (
+          const Offset(0.5, 0.62),
+          Offset(0.5, (0.62 - f).clamp(0.08, 1.0)),
+        );
     }
   }
 
@@ -15496,18 +15703,17 @@ class _BrowserPageState extends State<BrowserPage>
       );
       final f = from ?? ends.$1;
       final t = to ?? ends.$2;
-      final ok = await const MethodChannel('webview_touch').invokeMethod<bool>(
-        'flick',
-        <String, dynamic>{
-          'axisHint': axisHint,
-          'distanceFraction': distanceFraction,
-          'durationMs': durationMs,
-          'fromX': f.dx,
-          'fromY': f.dy,
-          'toX': t.dx,
-          'toY': t.dy,
-        },
-      );
+      final ok = await const MethodChannel(
+        'webview_touch',
+      ).invokeMethod<bool>('flick', <String, dynamic>{
+        'axisHint': axisHint,
+        'distanceFraction': distanceFraction,
+        'durationMs': durationMs,
+        'fromX': f.dx,
+        'fromY': f.dy,
+        'toX': t.dx,
+        'toY': t.dy,
+      });
       debugPrint('native fingerFlick ok=$ok axis=$axisHint');
       return ok == true;
     } catch (e) {
@@ -15517,10 +15723,7 @@ class _BrowserPageState extends State<BrowserPage>
   }
 
   /// 原生 MotionEvent 点击（关广告「取消」必须用这个，JS click 无效）。
-  Future<bool> _nativeWebViewTap(
-    Offset point, {
-    int holdMs = 70,
-  }) async {
+  Future<bool> _nativeWebViewTap(Offset point, {int holdMs = 70}) async {
     if (!Platform.isAndroid) return false;
     try {
       final ok = await const MethodChannel('webview_touch').invokeMethod<bool>(
@@ -15616,7 +15819,11 @@ class _BrowserPageState extends State<BrowserPage>
   }) async {
     final controller = _controller;
     if (controller == null) return;
-    _showSmartOperation(label, point: const Offset(0.5, 0.45), showFinger: false);
+    _showSmartOperation(
+      label,
+      point: const Offset(0.5, 0.45),
+      showFinger: false,
+    );
     // 整屏翻页优先原生滑动（信息流/Swiper）；再辅以 JS scrollBy
     final nativeOk = await _nativeWebViewFlick(
       axisHint: axisHint,
@@ -15637,8 +15844,10 @@ class _BrowserPageState extends State<BrowserPage>
       debugPrint('action screenPage failed: $e');
     }
     final moved = ((result?['moved'] as num?)?.toDouble() ?? 0);
-    final waitMs =
-        ((result?['scheduledMs'] as num?)?.toInt() ?? 480).clamp(350, 800);
+    final waitMs = ((result?['scheduledMs'] as num?)?.toInt() ?? 480).clamp(
+      350,
+      800,
+    );
     await Future<void>.delayed(Duration(milliseconds: waitMs));
     if (!identical(_smartDownloadTask, task)) return;
     _showSmartOperation(
@@ -15980,10 +16189,7 @@ class _BrowserPageState extends State<BrowserPage>
     for (var i = 1; i <= frames; i++) {
       if (!identical(_smartDownloadTask, task)) return;
       final t = i / frames;
-      _showSmartOperation(
-        '下拉刷新',
-        point: Offset(0.5, 0.15 + 0.28 * t),
-      );
+      _showSmartOperation('下拉刷新', point: Offset(0.5, 0.15 + 0.28 * t));
       await Future<void>.delayed(const Duration(milliseconds: 42));
     }
     await Future<void>.delayed(const Duration(milliseconds: 600));
@@ -16030,11 +16236,7 @@ class _BrowserPageState extends State<BrowserPage>
   }
 
   Future<void> _actionClickCloseOverlay(Map<String, dynamic> task) async {
-    await _clearSmartInterruptions(
-      task,
-      label: '关闭弹层',
-      silent: false,
-    );
+    await _clearSmartInterruptions(task, label: '关闭弹层', silent: false);
   }
 
   Future<bool> _probeSmartBlockersPresent() async {
@@ -16219,8 +16421,10 @@ class _BrowserPageState extends State<BrowserPage>
     } catch (e) {
       debugPrint('action doubleTap failed: $e');
     }
-    final waitMs =
-        ((result?['scheduledMs'] as num?)?.toInt() ?? 240).clamp(180, 500);
+    final waitMs = ((result?['scheduledMs'] as num?)?.toInt() ?? 240).clamp(
+      180,
+      500,
+    );
     await Future<void>.delayed(Duration(milliseconds: waitMs + 200));
   }
 
@@ -16311,8 +16515,10 @@ class _BrowserPageState extends State<BrowserPage>
     } catch (e) {
       debugPrint('action tapMedia failed: $e');
     }
-    final waitMs =
-        ((result?['scheduledMs'] as num?)?.toInt() ?? 90).clamp(60, 300);
+    final waitMs = ((result?['scheduledMs'] as num?)?.toInt() ?? 90).clamp(
+      60,
+      300,
+    );
     await Future<void>.delayed(Duration(milliseconds: waitMs + 700));
   }
 
@@ -16327,9 +16533,7 @@ class _BrowserPageState extends State<BrowserPage>
       if (await _probeSmartBlockersPresent()) {
         await _clearSmartInterruptions(task, forceHide: true);
       }
-      if (!probe &&
-          task['mode'] == 'action_recipe' &&
-          !disablePreSkip) {
+      if (!probe && task['mode'] == 'action_recipe' && !disablePreSkip) {
         final identity = await _actionCaptureMediaIdentity(task);
         if (await _shouldSkipAsHandledMedia(task, identity)) {
           await _advancePastHandledMedia(task);
@@ -16404,16 +16608,10 @@ class _BrowserPageState extends State<BrowserPage>
         if (!completer.isCompleted) completer.complete(false);
         return;
       }
-      _showSmartOperation(
-        found ? '长按媒体中心…' : '长按屏幕中心…',
-        point: point,
-      );
+      _showSmartOperation(found ? '长按媒体中心…' : '长按屏幕中心…', point: point);
       await Future<void>.delayed(const Duration(milliseconds: 90));
     }
-    _showSmartOperation(
-      found ? '长按媒体中心，触发下载' : '长按屏幕中心，触发下载',
-      point: point,
-    );
+    _showSmartOperation(found ? '长按媒体中心，触发下载' : '长按屏幕中心，触发下载', point: point);
     try {
       final raw = await _controller?.evaluateJavascript(
         source: '''
@@ -16430,7 +16628,9 @@ class _BrowserPageState extends State<BrowserPage>
 })()
 ''',
       );
-      final parsed = _coerceJsMap(raw) ?? (raw is Map ? Map<String, dynamic>.from(raw) : null);
+      final parsed =
+          _coerceJsMap(raw) ??
+          (raw is Map ? Map<String, dynamic>.from(raw) : null);
       debugPrint('action longPressDownload: $parsed');
       if (parsed != null && parsed['ok'] == false) {
         _showSmartOperation(
@@ -16501,8 +16701,8 @@ class _BrowserPageState extends State<BrowserPage>
                 'fixed'
             ? 'fixed'
             : 'library';
-    final waitSeconds =
-        ((task['actionWaitSeconds'] as num?)?.toInt() ?? 30).clamp(1, 600);
+    final waitSeconds = ((task['actionWaitSeconds'] as num?)?.toInt() ?? 30)
+        .clamp(1, 600);
     final epoch = task['actionDownloadEpoch'];
     final needsConfirmAtEnter = task['actionLongPressNeedsConfirm'] == true;
     final hasWorkAtEnter = _actionRecipeHasDownloadWork(task);
@@ -16518,7 +16718,9 @@ class _BrowserPageState extends State<BrowserPage>
     // 看门狗已放行：不再因残留真实下载重新卡住
     if (task['actionForceSkipReleased'] == true &&
         task['actionLongPressNeedsConfirm'] != true) {
-      debugPrint('action waitDownload: EXIT reason=force_skip_already_released');
+      debugPrint(
+        'action waitDownload: EXIT reason=force_skip_already_released',
+      );
       return;
     }
 
@@ -16551,10 +16753,8 @@ class _BrowserPageState extends State<BrowserPage>
       while (identical(_smartDownloadTask, task) &&
           DateTime.now().isBefore(deadline)) {
         // 固定模式：挂起在 wait 开始前 / 无效媒体路径时仍可看门狗强制跳过
-        final peekOutcome =
-            (task['actionDownloadOutcome'] ?? '').toString();
-        final peekFailure =
-            (task['lastGestureFailureType'] ?? '').toString();
+        final peekOutcome = (task['actionDownloadOutcome'] ?? '').toString();
+        final peekFailure = (task['lastGestureFailureType'] ?? '').toString();
         if (_actionRecipeIsInvalidMediaOutcome(peekOutcome) ||
             _actionRecipeIsInvalidMediaOutcome(peekFailure)) {
           if (invalidSeenAt.millisecondsSinceEpoch <= 0) {
@@ -16621,16 +16821,16 @@ class _BrowserPageState extends State<BrowserPage>
         }
         final leftMs = deadline.difference(DateTime.now()).inMilliseconds;
         if (leftMs <= 0) break;
-        final leftSec =
-            (leftMs / 1000).ceil().clamp(0, waitSeconds);
-        final activeCount = _downloadTasks
-            .where(
-              (row) =>
-                  row['isSmartBatchMedia'] == true &&
-                  row['status'] == 'downloading' &&
-                  !_isActionRecipePlaceholderRow(row),
-            )
-            .length;
+        final leftSec = (leftMs / 1000).ceil().clamp(0, waitSeconds);
+        final activeCount =
+            _downloadTasks
+                .where(
+                  (row) =>
+                      row['isSmartBatchMedia'] == true &&
+                      row['status'] == 'downloading' &&
+                      !_isActionRecipePlaceholderRow(row),
+                )
+                .length;
         _showSmartOperation(
           activeCount > 0
               ? '固定等待切条 · 还剩 ${leftSec}s · 下载中 $activeCount'
@@ -16641,9 +16841,7 @@ class _BrowserPageState extends State<BrowserPage>
         final sliceMs = leftMs < 1000 ? leftMs : 1000;
         if (completer is Completer<bool> && !completer.isCompleted) {
           try {
-            await completer.future.timeout(
-              Duration(milliseconds: sliceMs),
-            );
+            await completer.future.timeout(Duration(milliseconds: sliceMs));
           } on TimeoutException {
             // 继续 while：检查 library_saved / 倒计时
           }
@@ -16679,18 +16877,17 @@ class _BrowserPageState extends State<BrowserPage>
       }
       // 到点放行切条：不取消进度条中的在途下载，任务继续后台完成
       _actionRecipeReleaseFixedWait(task);
-      final lingering = _downloadTasks
-          .where(
-            (row) =>
-                row['isSmartBatchMedia'] == true &&
-                row['status'] == 'downloading' &&
-                !_isActionRecipePlaceholderRow(row),
-          )
-          .length;
+      final lingering =
+          _downloadTasks
+              .where(
+                (row) =>
+                    row['isSmartBatchMedia'] == true &&
+                    row['status'] == 'downloading' &&
+                    !_isActionRecipePlaceholderRow(row),
+              )
+              .length;
       _showSmartOperation(
-        lingering > 0
-            ? '固定等待结束，继续切条（$lingering 个下载仍在进度条）'
-            : '固定等待结束，继续切条',
+        lingering > 0 ? '固定等待结束，继续切条（$lingering 个下载仍在进度条）' : '固定等待结束，继续切条',
       );
       debugPrint(
         'action waitDownload: EXIT reason=fixed_elapsed lingering=$lingering',
@@ -16718,7 +16915,8 @@ class _BrowserPageState extends State<BrowserPage>
     // 主路径：若长按创建的 Completer 仍在，必须先 await（健康连胜也绝不跳过）
     // 但加上看门狗上限，避免无效媒体被 suppress 后干等 6 分钟
     final existingCompleter = task['actionDownloadCompleter'];
-    if (existingCompleter is Completer<bool> && !existingCompleter.isCompleted) {
+    if (existingCompleter is Completer<bool> &&
+        !existingCompleter.isCompleted) {
       try {
         await existingCompleter.future.timeout(_kActionRecipeLibraryWatchdog);
       } on TimeoutException {
@@ -16751,11 +16949,9 @@ class _BrowserPageState extends State<BrowserPage>
       final downloading = _actionRecipeHasRealSmartDownloading();
       final longPressBusy = _longPressVideoDownloadInProgress;
       final urlInFlight = _downloadingUrls.isNotEmpty;
-      final activelyDownloading =
-          downloading || longPressBusy || urlInFlight;
+      final activelyDownloading = downloading || longPressBusy || urlInFlight;
       final outcomeNow = (task['actionDownloadOutcome'] ?? '').toString();
-      final failurePeek =
-          (task['lastGestureFailureType'] ?? '').toString();
+      final failurePeek = (task['lastGestureFailureType'] ?? '').toString();
       // 无效媒体：数秒内强制跳过，绝不干等满看门狗
       if (_actionRecipeIsInvalidMediaOutcome(outcomeNow) ||
           _actionRecipeIsInvalidMediaOutcome(failurePeek)) {
@@ -16768,9 +16964,7 @@ class _BrowserPageState extends State<BrowserPage>
             _actionRecipeIsInvalidMediaOutcome(outcomeNow)) {
           task['actionForceSkipReleased'] = true;
           _showSmartOperation('无效媒体，已跳过');
-          debugPrint(
-            'action waitDownload: EXIT reason=invalid_media_terminal',
-          );
+          debugPrint('action waitDownload: EXIT reason=invalid_media_terminal');
           return;
         }
         if (DateTime.now().difference(invalidSeenAt) >=
@@ -16779,8 +16973,7 @@ class _BrowserPageState extends State<BrowserPage>
             task,
             outcome: 'invalid_smart_media_content',
             statusText: '无效媒体，已跳过',
-            incrementFailed:
-                !_actionRecipeIsInvalidMediaOutcome(outcomeNow),
+            incrementFailed: !_actionRecipeIsInvalidMediaOutcome(outcomeNow),
           );
           debugPrint(
             'action waitDownload: EXIT reason=invalid_media_fast_skip',
@@ -16847,7 +17040,8 @@ class _BrowserPageState extends State<BrowserPage>
       // 真实下载进行中：绝不探广告、绝不切条。健康路径只放宽清障频率，不停等下载
       final stagnantMs =
           DateTime.now().difference(stagnantSince).inMilliseconds;
-      final shouldProbeClear = !activelyDownloading &&
+      final shouldProbeClear =
+          !activelyDownloading &&
           !completerPending &&
           !awaitingLibrary &&
           !needsConfirm &&
@@ -16857,10 +17051,7 @@ class _BrowserPageState extends State<BrowserPage>
               const Duration(milliseconds: 2000)) {
         lastClearAt = DateTime.now();
         if (await _probeSmartBlockersPresent()) {
-          final cleared = await _clearSmartInterruptions(
-            task,
-            forceHide: true,
-          );
+          final cleared = await _clearSmartInterruptions(task, forceHide: true);
           if (cleared) {
             _showSmartOperation('等待下载·已关掉干扰弹窗');
             // 仅在确认没有在途下载时，才允许推走已处理媒体
@@ -16876,12 +17067,12 @@ class _BrowserPageState extends State<BrowserPage>
       }
       // pending/Completer 一直为 true、却没有任何真实下载任务：多半点到广告或未触发
       // 占位条不再算 activelyDownloading，避免假「在下」导致干等满看门狗
-      final stagnantLimit = (awaitingLibrary || needsConfirm) &&
-              activelyDownloading
-          ? _kActionRecipeLibraryWatchdog
-          : ((awaitingLibrary || needsConfirm)
-              ? const Duration(seconds: 45)
-              : const Duration(seconds: 12));
+      final stagnantLimit =
+          (awaitingLibrary || needsConfirm) && activelyDownloading
+              ? _kActionRecipeLibraryWatchdog
+              : ((awaitingLibrary || needsConfirm)
+                  ? const Duration(seconds: 45)
+                  : const Duration(seconds: 12));
       if ((pending || completerPending || awaitingLibrary || needsConfirm) &&
           !activelyDownloading &&
           DateTime.now().difference(stagnantSince) > stagnantLimit) {
@@ -16978,9 +17169,10 @@ class _BrowserPageState extends State<BrowserPage>
           break;
         }
         final step = steps[i];
-        final prefix = title == null
-            ? '${i + 1}/${steps.length}'
-            : '$title ${i + 1}/${steps.length}';
+        final prefix =
+            title == null
+                ? '${i + 1}/${steps.length}'
+                : '$title ${i + 1}/${steps.length}';
         probeTask['matchStage'] = '验证 $prefix · ${step.kind.label}';
         _showSmartOperation('验证：${step.kind.label}');
         await _clearSmartInterruptions(probeTask);
@@ -17047,6 +17239,7 @@ class _BrowserPageState extends State<BrowserPage>
     String? preferredStrategyKey,
     bool strategyManualPick = false,
     bool strategyExplicitNone = false,
+
     /// 「沿用套路」手动指定的站点管线（如 x）。仅用户显式选择时传入；
     /// 默认不会自动把专有套路套到其他站；手动借用时配合 strategyManualPick。
     String? forceSiteProfile,
@@ -17117,9 +17310,7 @@ class _BrowserPageState extends State<BrowserPage>
             : '';
     final strictBaiduSearchUrl =
         strictBaiduVideoMode ? _baiduVideoSearchUrl(keyword) : '';
-    if (startFromCurrentPage &&
-        keyword.trim().isEmpty &&
-        siteProfile != '91') {
+    if (startFromCurrentPage && keyword.trim().isEmpty && siteProfile != '91') {
       await _anchorSmartSeedForType(mediaType);
     }
     _smartDownloadTask = <String, dynamic>{
@@ -17209,9 +17400,7 @@ class _BrowserPageState extends State<BrowserPage>
       // 91 专有套路（a00c4bd）：关键词走 ordered-card FSM；无关键词走邻近/信息流，
       // 不与通用手势引擎混用，避免回归。
       'gestureMode':
-          startFromCurrentPage &&
-          !keywordFirstOn91 &&
-          siteProfile != '91',
+          startFromCurrentPage && !keywordFirstOn91 && siteProfile != '91',
       'gestureAttemptedKeys': <String>{},
       'gestureDownloadPending': false,
       'gestureKeywordSubmitted':
@@ -17231,9 +17420,7 @@ class _BrowserPageState extends State<BrowserPage>
       'gestureResultUrl': _currentUrl,
       'gestureRecoveryCount': 0,
       'protectVisibleGestureFlow':
-          startFromCurrentPage &&
-          !keywordFirstOn91 &&
-          siteProfile != '91',
+          startFromCurrentPage && !keywordFirstOn91 && siteProfile != '91',
       'originUrl': _currentUrl,
       'strict91KeywordMode': keywordFirstOn91,
       'strict91SearchUrl': strict91SearchUrl,
@@ -17303,9 +17490,7 @@ class _BrowserPageState extends State<BrowserPage>
         manualPick: selectedManual,
       );
       if (!selectedManual) {
-        _showSmartOperation(
-          '已自动选用同站成功经验「${selectedRecipe['name']}」',
-        );
+        _showSmartOperation('已自动选用同站成功经验「${selectedRecipe['name']}」');
       } else {
         _showSmartOperation('已选用策略「${selectedRecipe['name']}」');
       }
@@ -17365,9 +17550,7 @@ class _BrowserPageState extends State<BrowserPage>
         activeTask['preferSniffFirst'] = false;
         activeTask['allowLegacyAlternateAcquire'] = false;
         activeTask['matchStage'] = '示范学习 · 请手动长按下载';
-        _showSmartOperation(
-          '请手动长按下载第 1/$requiredDemos 个媒体（示范学习）',
-        );
+        _showSmartOperation('请手动长按下载第 1/$requiredDemos 个媒体（示范学习）');
       }
     }
     try {
@@ -17487,14 +17670,10 @@ class _BrowserPageState extends State<BrowserPage>
       _showSmartOperation('91 关键词搜索 · 按结果卡片顺序进入详情下载');
     } else if (siteProfile == '91') {
       _showSmartOperation(
-        keyword.trim().isEmpty
-            ? '91 · 邻近媒体查找'
-            : '91 · 站内搜索下载',
+        keyword.trim().isEmpty ? '91 · 邻近媒体查找' : '91 · 站内搜索下载',
       );
     } else {
-      _showSmartOperation(
-        allowMixedMedia ? '正在识别屏幕中心的图片或视频' : '正在定位屏幕中心媒体',
-      );
+      _showSmartOperation(allowMixedMedia ? '正在识别屏幕中心的图片或视频' : '正在定位屏幕中心媒体');
     }
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -17567,9 +17746,7 @@ class _BrowserPageState extends State<BrowserPage>
       final done = (task['success'] as int?) ?? 0;
       task['matchStage'] = '示范学习 · 等待手动长按';
       _showSmartOperation(
-        done >= need
-            ? '示范已完成，正在切换自动下载'
-            : '请手动长按下载第 ${done + 1}/$need 个媒体（示范中）',
+        done >= need ? '示范已完成，正在切换自动下载' : '请手动长按下载第 ${done + 1}/$need 个媒体（示范中）',
       );
       _updateSmartDiscoveryProgress(task, 'demo_waiting_user');
       return;
@@ -17584,8 +17761,7 @@ class _BrowserPageState extends State<BrowserPage>
           taskHost == '91cg1.com' || taskHost.endsWith('.91cg1.com');
       final is91KeywordTask =
           (task['strict91KeywordMode'] == true) ||
-          (is91Host &&
-              (task['keyword'] ?? '').toString().trim().isNotEmpty);
+          (is91Host && (task['keyword'] ?? '').toString().trim().isNotEmpty);
       final is91Dedicated =
           (task['siteProfile'] ?? '').toString() == '91' || is91Host;
       final strict91Mode = task['strict91KeywordMode'] == true;
@@ -17939,8 +18115,7 @@ class _BrowserPageState extends State<BrowserPage>
             if (row is Map && row['url'] != null) {
               final rowUrl = row['url'].toString();
               // 91 专有套路（a00c4bd）：不额外用站内域名过滤裁掉搜索卡片。
-              if (!isKeywordFirst91 &&
-                  !_isWithinSmartDownloadSite(rowUrl)) {
+              if (!isKeywordFirst91 && !_isWithinSmartDownloadSite(rowUrl)) {
                 continue;
               }
               if (isKeywordFirst91 && !_is91ContentPage(rowUrl)) continue;
@@ -18067,9 +18242,7 @@ class _BrowserPageState extends State<BrowserPage>
         // 旧逻辑只在 uniqueUrls 为空时才滚，顶部若有广告/封面 video 就永远不往下找。
         if (phase == 'visiting_clicked_card' &&
             is91Dedicated &&
-            _is91ContentPage(
-              loadedUrl.isNotEmpty ? loadedUrl : _currentUrl,
-            )) {
+            _is91ContentPage(loadedUrl.isNotEmpty ? loadedUrl : _currentUrl)) {
           final prep = (task['91DetailPrepScrolls'] as int?) ?? 0;
           if (prep < 3) {
             final prepResult = await controller.evaluateJavascript(
@@ -19092,7 +19265,8 @@ class _BrowserPageState extends State<BrowserPage>
         reservedTitles.contains(titleKey)) {
       // Different URL but same title already claimed by another item.
       // 仅当标题对应源已在媒体库时才拦截；否则放行，避免软预约挡住未入库项。
-      if (sourceKey.isNotEmpty && await _libraryConfirmsMediaSource(sourceKey)) {
+      if (sourceKey.isNotEmpty &&
+          await _libraryConfirmsMediaSource(sourceKey)) {
         task['lastSmartReserveBlockReason'] = 'already_in_library';
         task['duplicateSkipped'] =
             ((task['duplicateSkipped'] as int?) ?? 0) + 1;
@@ -20487,14 +20661,17 @@ class _BrowserPageState extends State<BrowserPage>
             .toList();
     if (urls.isEmpty) return;
     // 严格按剩余目标切片，避免并发批把数量下超。
-    final remainingAtStart =
-        ((task['target'] as int) - (task['success'] as int)).clamp(0, urls.length);
+    final remainingAtStart = ((task['target'] as int) -
+            (task['success'] as int))
+        .clamp(0, urls.length);
     if (remainingAtStart <= 0) return;
     final cappedUrls = urls.take(remainingAtStart).toList();
     for (var start = 0; start < cappedUrls.length; start += 3) {
       if (_smartDownloadTask == null) return;
-      final left =
-          ((task['target'] as int) - (task['success'] as int)).clamp(0, 3);
+      final left = ((task['target'] as int) - (task['success'] as int)).clamp(
+        0,
+        3,
+      );
       if (left <= 0) return;
       final end = min(start + left, cappedUrls.length);
       final outcomes = await Future.wait(
@@ -20557,9 +20734,7 @@ class _BrowserPageState extends State<BrowserPage>
     if (!identical(_smartDownloadTask, task)) return;
     if (task['strict91KeywordMode'] == true) {
       if (_tryAdvance91KeywordSearchPage(task)) return;
-      unawaited(
-        _finishSmartDownload('关键词搜索已穷尽，未继续扩大探索（$exhaustedReason）'),
-      );
+      unawaited(_finishSmartDownload('关键词搜索已穷尽，未继续扩大探索（$exhaustedReason）'));
       return;
     }
     task.remove('nextMediaPreheated');
@@ -20811,8 +20986,7 @@ class _BrowserPageState extends State<BrowserPage>
     while (index < candidates.length) {
       final url = candidates[index]['url'] ?? '';
       final alreadyVisited = !visited.add(url);
-      final offsiteBlocked =
-          !strict91 && !_isWithinSmartDownloadSite(url);
+      final offsiteBlocked = !strict91 && !_isWithinSmartDownloadSite(url);
       if (!alreadyVisited && !offsiteBlocked) break;
       index++;
     }
@@ -20894,10 +21068,7 @@ class _BrowserPageState extends State<BrowserPage>
           (candidate['title'] ?? '').trim().isEmpty
               ? '下一个关键词视频'
               : (candidate['title'] ?? '').trim();
-      _showSmartOperation(
-        '进入详情页，向下寻找真正视频',
-        point: const Offset(0.5, 0.72),
-      );
+      _showSmartOperation('进入详情页，向下寻找真正视频', point: const Offset(0.5, 0.72));
       task['nextMediaStatus'] = '正在直接进入关键词视频详情';
       final clicked = await _clickSmartCandidateLink(initialPageUrl);
       if (!identical(_smartDownloadTask, task)) return;
@@ -21286,8 +21457,7 @@ class _BrowserPageState extends State<BrowserPage>
         _broadenSmartDiscovery(task, '数量尚未达标，继续扩大站内探索');
         return;
       }
-      final demoReason =
-          reason ?? '已完成当前页尝试（成功 $success/$target）';
+      final demoReason = reason ?? '已完成当前页尝试（成功 $success/$target）';
       if (await _tryEnterSmartDemoAfterExhaustion(task, demoReason)) {
         return;
       }
@@ -21518,8 +21688,9 @@ class _BrowserPageState extends State<BrowserPage>
                     return;
                   }
                   // Same as add: trim + optional https / dead-/m only; no host rewrite.
-                  final storedUrl =
-                      BrowserService.normalizeCommonWebsiteUrl(trimmed);
+                  final storedUrl = BrowserService.normalizeCommonWebsiteUrl(
+                    trimmed,
+                  );
                   if (storedUrl == (website['url']?.toString() ?? '')) {
                     Navigator.pop(dialogContext);
                     return;
@@ -25038,7 +25209,9 @@ class _BrowserPageState extends State<BrowserPage>
                 var url = rawUrl;
                 // Only migrate known dead Google /m; never rewrite user .hk / query URLs.
                 if (BrowserService.isDeadGoogleMobileUrl(rawUrl)) {
-                  final fixed = BrowserService.normalizeCommonWebsiteUrl(rawUrl);
+                  final fixed = BrowserService.normalizeCommonWebsiteUrl(
+                    rawUrl,
+                  );
                   if (fixed != rawUrl) {
                     url = fixed;
                     migrated = true;
@@ -25419,242 +25592,29 @@ class _BrowserPageState extends State<BrowserPage>
                     if (_isLoading)
                       LinearProgressIndicator(value: _loadingProgress),
                     Expanded(
-                      child: Stack(
-                        children: [
-                          InAppWebView(
-                            initialUrlRequest: URLRequest(
-                              url: WebUri('about:blank'),
-                            ),
-                            initialSettings: InAppWebViewSettings(
-                              javaScriptEnabled: true,
-                              useHybridComposition: true,
-                              useOnLoadResource: true,
-                              useShouldOverrideUrlLoading: true,
-                              allowFileAccess: true,
-                              domStorageEnabled: true,
-                              databaseEnabled: true,
-                              cacheEnabled: true,
-                              // 正常浏览：持久 cookie / 本地存储；勿用无痕，否则退出即丢登录
-                              incognito: false,
-                              clearCache: false,
-                              clearSessionCache: false,
-                              thirdPartyCookiesEnabled: true,
-                              // iOS：与系统 HTTPCookieStorage 共享，利于跨次冷启动保持登录
-                              sharedCookiesEnabled: true,
-                              saveFormData: true,
-                              javaScriptCanOpenWindowsAutomatically: true,
-                              supportMultipleWindows: true,
-                              mixedContentMode:
-                                  MixedContentMode.MIXED_CONTENT_ALWAYS_ALLOW,
-                            ),
-                            initialUserScripts: UnmodifiableListView([
-                              UserScript(
-                                source: _kEarlyMediaSnifferScript,
-                                injectionTime:
-                                    UserScriptInjectionTime.AT_DOCUMENT_START,
-                              ),
-                            ]),
-                            onWebViewCreated:
-                                (ctrl) => _setupWebViewController(ctrl),
-                            shouldAllowDeprecatedTLS: (ctrl, challenge) async {
-                              return ShouldAllowDeprecatedTLSAction.ALLOW;
-                            },
-                            // 注意：PROCEED 会跳过证书校验，存在中间人攻击风险。
-                            // 若需更高安全性，可改为 DENY 或实现白名单校验。
-                            onReceivedServerTrustAuthRequest: (
-                              ctrl,
-                              challenge,
-                            ) async {
-                              return ServerTrustAuthResponse(
-                                action: ServerTrustAuthResponseAction.PROCEED,
-                              );
-                            },
-                            onLoadStart: (ctrl, url) {
-                              if (url != null) {
-                                final urlStr = url.toString();
-                                // 自定义协议若仍进到 onLoadStart：解开深链或立刻停住，避免「无法打开」页。
-                                if (!urlStr.startsWith('http://') &&
-                                    !urlStr.startsWith('https://') &&
-                                    !urlStr.startsWith('about:') &&
-                                    !urlStr.startsWith('data:') &&
-                                    !urlStr.startsWith('blob:')) {
-                                  final extracted =
-                                      _extractHttpUrlFromAppDeepLink(urlStr);
-                                  if (extracted != null) {
-                                    unawaited(
-                                      ctrl.loadUrl(
-                                        urlRequest: URLRequest(
-                                          url: WebUri(extracted),
-                                        ),
-                                      ),
-                                    );
-                                  } else {
-                                    unawaited(ctrl.stopLoading());
-                                  }
-                                  return;
-                                }
-                                // Google 若仍跳到失效 /m，立刻拉回可用首页。
-                                final googleFixed =
-                                    _rewriteDeadGoogleMobileNavigation(urlStr);
-                                if (googleFixed != null) {
-                                  unawaited(
-                                    ctrl.loadUrl(
-                                      urlRequest: URLRequest(
-                                        url: WebUri(googleFixed),
-                                      ),
-                                    ),
-                                  );
-                                  return;
-                                }
-                              }
-                              if (url != null) {
-                                final urlStr = url.toString();
-                                if (urlStr.startsWith('http://') ||
-                                    urlStr.startsWith('https://')) {
-                                  // 尽早记入干净后退栈，避免陷阱页抢在 onLoadStop 前冲掉搜索结果。
-                                  _noteMeaningfulWebNavigation(urlStr);
-                                }
-                              }
-                              setState(() {
-                                _isLoading = true;
-                                if (url != null) {
-                                  final urlStr = url.toString();
-                                  _currentUrl = urlStr;
-                                  _urlController.text = _currentUrl;
-                                  // 仅当加载真实网页时切换到 WebView，about:blank 不切换（保持主界面）
-                                  if (urlStr.startsWith('http://') ||
-                                      urlStr.startsWith('https://')) {
-                                    _showHomePage = false;
-                                    widget.onBrowserHomePageChanged?.call(
-                                      false,
-                                    );
-                                  }
-                                }
-                              });
-                            },
-                            onProgressChanged: (ctrl, progress) {
-                              setState(() {
-                                _loadingProgress = progress / 100;
-                                _isLoading = _loadingProgress < 1.0;
-                              });
-                            },
-                            onLoadStop: (ctrl, url) {
-                              if (url != null) _onPageFinished(url.toString());
-                            },
-                            onUpdateVisitedHistory: (ctrl, url, isReload) {
-                              if (url == null) return;
-                              final urlStr = url.toString();
-                              if (_isBlankHistoryUrl(urlStr)) return;
-                              if (!urlStr.startsWith('http://') &&
-                                  !urlStr.startsWith('https://')) {
-                                return;
-                              }
-                              _noteMeaningfulWebNavigation(
-                                urlStr,
-                                fromHistoryUpdate: true,
-                              );
-                              if (!mounted) return;
-                              setState(() {
-                                _currentUrl = urlStr;
-                                _urlController.text = urlStr;
-                              });
-                            },
-                            onLoadResource: (ctrl, resource) {
-                              _recordLoadedWebResource(resource);
-                            },
-                            onCreateWindow: (ctrl, action) async {
-                              final popupUrl = action.request.url?.toString();
-                              if (popupUrl == null || popupUrl.isEmpty) {
-                                debugPrint('网页请求打开新窗口，但没有提供目标地址');
-                                return false;
-                              }
-                              if (!popupUrl.startsWith('http://') &&
-                                  !popupUrl.startsWith('https://')) {
-                                await _handleNonHttpNavigation(ctrl, popupUrl);
-                                return false;
-                              }
-                              final googleFixed =
-                                  _rewriteDeadGoogleMobileNavigation(popupUrl);
-                              if (googleFixed != null) {
-                                await ctrl.loadUrl(
-                                  urlRequest: URLRequest(
-                                    url: WebUri(googleFixed),
-                                  ),
-                                );
-                                return false;
-                              }
+                      child: ValueListenableBuilder<bool>(
+                        valueListenable:
+                            BrowserSessionPreview.instance.loanedNotifier,
+                        builder: (context, loaned, _) {
+                          if (loaned) {
+                            return _buildWebViewLoanedPlaceholder();
+                          }
+                          return Stack(
+                            children: [
+                              BrowserSessionPreview.instance
+                                      .buildLoanedWebView() ??
+                                  const SizedBox.shrink(),
                               if (_smartDownloadTask != null &&
-                                  !_isWithinSmartDownloadSite(popupUrl)) {
-                                debugPrint('智能下载已阻止跨站弹窗: $popupUrl');
-                                _showSmartOperation('已阻止外部网站弹窗');
-                                return false;
-                              }
-                              debugPrint('接管网页新窗口并在当前页打开: $popupUrl');
-                              await ctrl.loadUrl(
-                                urlRequest: URLRequest(url: WebUri(popupUrl)),
-                              );
-                              return false;
-                            },
-                            onReceivedError:
-                                (ctrl, req, err) => debugPrint(
-                                  'WebView错误: ${err?.description}',
-                                ),
-                            shouldOverrideUrlLoading: (ctrl, nav) async {
-                              final url = nav.request.url?.toString() ?? '';
-                              debugPrint('导航请求: $url');
-                              if (_isDownloadableLink(url) ||
-                                  _isYouTubeLink(url)) {
-                                debugPrint('检测到可能的下载链接: $url');
-                                _handleDownload(url, '', _guessMimeType(url));
-                                return NavigationActionPolicy.CANCEL;
-                              }
-                              if (!url.startsWith('http://') &&
-                                  !url.startsWith('https://')) {
-                                return _handleNonHttpNavigation(ctrl, url);
-                              }
-                              final googleFixed =
-                                  _rewriteDeadGoogleMobileNavigation(url);
-                              if (googleFixed != null) {
-                                debugPrint(
-                                  '拦截失效 Google /m 导航: $url -> $googleFixed',
-                                );
-                                await ctrl.loadUrl(
-                                  urlRequest: URLRequest(
-                                    url: WebUri(googleFixed),
-                                  ),
-                                );
-                                return NavigationActionPolicy.CANCEL;
-                              }
-                              if (_smartDownloadTask != null &&
-                                  !_isWithinSmartDownloadSite(url)) {
-                                debugPrint('智能下载已阻止跳出当前网站: $url');
-                                final task = _smartDownloadTask!;
-                                final id =
-                                    (task['discoveryTaskId'] ?? '').toString();
-                                if (id.isNotEmpty) {
-                                  _updateDownloadTask(
-                                    id,
-                                    progressDetail:
-                                        '已阻止外部网站跳转，继续在当前网站内寻找 · 已保存 ${task['success']}/${task['target']}',
-                                  );
-                                }
-                                return NavigationActionPolicy.CANCEL;
-                              }
-                              return NavigationActionPolicy.ALLOW;
-                            },
-                          ),
-                          if (_smartDownloadTask != null &&
-                              _smartOperationPoint != null)
-                            _buildSmartOperationOverlay(),
-                        ],
+                                  _smartOperationPoint != null)
+                                _buildSmartOperationOverlay(),
+                            ],
+                          );
+                        },
                       ),
                     ),
                   ],
                 ),
-                if (_showHomePage)
-                  Positioned.fill(
-                    child: _buildHomePage(),
-                  ),
+                if (_showHomePage) Positioned.fill(child: _buildHomePage()),
                 // 下载任务面板：可拖动，打开网站时常驻；主页面仅在有下载任务时显示（Positioned 必须是 Stack 的直接子项）
                 ValueListenableBuilder<List<Map<String, dynamic>>>(
                   valueListenable: _downloadTasksNotifier,
@@ -25724,14 +25684,11 @@ class _BrowserPageState extends State<BrowserPage>
     final matchStage = (task['matchStage'] ?? '').toString().trim();
     final learned = task['learnedRecipe'];
     final strategyName =
-        learned is Map
-            ? (learned['name'] ?? '').toString().trim()
-            : '';
+        learned is Map ? (learned['name'] ?? '').toString().trim() : '';
     final strategyLayer = (task['strategyLayer'] ?? '').toString();
-    final lockedAcquisition =
-        _normalizeSmartAcquisition(
-          (task['lockedAcquisition'] ?? '').toString(),
-        );
+    final lockedAcquisition = _normalizeSmartAcquisition(
+      (task['lockedAcquisition'] ?? '').toString(),
+    );
     String sizeLabel;
     if (mediaType != MediaType.video) {
       sizeLabel = '不限制';
@@ -25850,24 +25807,21 @@ class _BrowserPageState extends State<BrowserPage>
                       unawaited(_finishSmartDownload('用户已停止任务'));
                     }
                   },
-                  child: Text(
-                    () {
-                      final t = _smartDownloadTask;
-                      final phase = (t?['phase'] ?? '').toString();
-                      if (t?['mode'] != 'paginated_sniff') return '退出';
-                      if (phase == 'paginated_sniff_downloading') {
-                        return '停止下载';
-                      }
-                      if (<String>{
-                        'paginated_sniff_scanning',
-                        'paginated_sniff_discover',
-                      }.contains(phase)) {
-                        return '停止嗅探';
-                      }
-                      return '退出';
-                    }(),
-                    style: const TextStyle(fontSize: 11),
-                  ),
+                  child: Text(() {
+                    final t = _smartDownloadTask;
+                    final phase = (t?['phase'] ?? '').toString();
+                    if (t?['mode'] != 'paginated_sniff') return '退出';
+                    if (phase == 'paginated_sniff_downloading') {
+                      return '停止下载';
+                    }
+                    if (<String>{
+                      'paginated_sniff_scanning',
+                      'paginated_sniff_discover',
+                    }.contains(phase)) {
+                      return '停止嗅探';
+                    }
+                    return '退出';
+                  }(), style: const TextStyle(fontSize: 11)),
                 ),
               ),
               const SizedBox(width: 6),
@@ -26230,6 +26184,10 @@ class _BrowserPageState extends State<BrowserPage>
 
   @override
   void dispose() {
+    BrowserSessionPreview.instance.detachWebViewBuilder(
+      _buildLiveSessionWebView,
+    );
+    BrowserSessionPreview.instance.unregister(this);
     WidgetsBinding.instance.removeObserver(this);
     unawaited(_flushBrowserCookies());
     final smartTask = _smartDownloadTask;
@@ -27194,8 +27152,9 @@ class _BrowserPageState extends State<BrowserPage>
                   );
                   final rawUrl = map['url'] ?? '';
                   if (BrowserService.isDeadGoogleMobileUrl(rawUrl)) {
-                    map['url'] =
-                        BrowserService.normalizeCommonWebsiteUrl(rawUrl);
+                    map['url'] = BrowserService.normalizeCommonWebsiteUrl(
+                      rawUrl,
+                    );
                   }
                   return map;
                 }).toList();
@@ -27219,8 +27178,9 @@ class _BrowserPageState extends State<BrowserPage>
               final rawUrl = (website['url'] ?? '').toString();
               // Import verbatim except known dead Google /m shortcuts.
               if (BrowserService.isDeadGoogleMobileUrl(rawUrl)) {
-                website['url'] =
-                    BrowserService.normalizeCommonWebsiteUrl(rawUrl);
+                website['url'] = BrowserService.normalizeCommonWebsiteUrl(
+                  rawUrl,
+                );
               } else {
                 website['url'] = rawUrl;
               }
@@ -27642,9 +27602,9 @@ class _BrowserPageState extends State<BrowserPage>
     final uri = Uri.tryParse(seedBrowse);
     if (uri == null || uri.host.isEmpty) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('通用套路：当前页面地址无效')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('通用套路：当前页面地址无效')));
       }
       return;
     }
@@ -27669,8 +27629,7 @@ class _BrowserPageState extends State<BrowserPage>
       'autoVideoSizeRange': autoVideoSizeRange,
       'success': 0,
       'failed': 0,
-      'matchStage':
-          kw.isEmpty ? '通用 · 当前页/信息流' : '通用 · 关键词搜索',
+      'matchStage': kw.isEmpty ? '通用 · 当前页/信息流' : '通用 · 关键词搜索',
       'demoPhase': 'auto',
       'gestureDownloadPending': false,
       'startedAt': startedAt,
@@ -27768,9 +27727,7 @@ class _BrowserPageState extends State<BrowserPage>
     String feedUrl,
   ) async {
     final host = (task['host'] ?? '').toString();
-    final curHost = _normalizeSmartHost(
-      Uri.tryParse(_currentUrl)?.host ?? '',
-    );
+    final curHost = _normalizeSmartHost(Uri.tryParse(_currentUrl)?.host ?? '');
     if (_currentUrl.startsWith('http') &&
         host.isNotEmpty &&
         _sameSmartSite(curHost, host)) {
@@ -27780,16 +27737,12 @@ class _BrowserPageState extends State<BrowserPage>
     task['matchStage'] = '通用 · 打开站点';
     _showSmartOperation('打开站点…', showFinger: false);
     _loadUrl(feedUrl);
-    return _simpleGenericWaitUntil(
-      task,
-      () {
-        final h = _normalizeSmartHost(Uri.tryParse(_currentUrl)?.host ?? '');
-        return _currentUrl.startsWith('http') &&
-            host.isNotEmpty &&
-            _sameSmartSite(h, host);
-      },
-      timeout: const Duration(seconds: 28),
-    );
+    return _simpleGenericWaitUntil(task, () {
+      final h = _normalizeSmartHost(Uri.tryParse(_currentUrl)?.host ?? '');
+      return _currentUrl.startsWith('http') &&
+          host.isNotEmpty &&
+          _sameSmartSite(h, host);
+    }, timeout: const Duration(seconds: 28));
   }
 
   Future<bool> _simpleGenericSubmitKeyword(
@@ -27968,7 +27921,9 @@ class _BrowserPageState extends State<BrowserPage>
       }
     }
 
-    out.sort((a, b) => _scoreFavoriteVideoUrl(b).compareTo(_scoreFavoriteVideoUrl(a)));
+    out.sort(
+      (a, b) => _scoreFavoriteVideoUrl(b).compareTo(_scoreFavoriteVideoUrl(a)),
+    );
     return out;
   }
 
@@ -28346,11 +28301,12 @@ class _BrowserPageState extends State<BrowserPage>
           return;
         }
         round += 1;
-        task['matchStage'] =
-            '通用 · 第 $round 轮（${task['success']}/$target）';
+        task['matchStage'] = '通用 · 第 $round 轮（${task['success']}/$target）';
         var progress = 0;
         final pageBefore = _currentUrl;
-        final captureSince = DateTime.now().subtract(const Duration(minutes: 3));
+        final captureSince = DateTime.now().subtract(
+          const Duration(minutes: 3),
+        );
 
         // A) 当前页真实流
         if (mediaType != MediaType.image) {
@@ -28459,17 +28415,13 @@ class _BrowserPageState extends State<BrowserPage>
           }
         }
         if (idleRounds >= 8) {
-          await _finishSmartDownload(
-            '当前页已扫完（成功 ${task['success']}/$target）',
-          );
+          await _finishSmartDownload('当前页已扫完（成功 ${task['success']}/$target）');
           return;
         }
       }
 
       if (identical(_smartDownloadTask, task)) {
-        await _finishSmartDownload(
-          '任务结束（成功 ${task['success']}/$target）',
-        );
+        await _finishSmartDownload('任务结束（成功 ${task['success']}/$target）');
       }
     } catch (e, st) {
       debugPrint('simpleGeneric loop error: $e\n$st');
@@ -28488,6 +28440,7 @@ class _BrowserPageState extends State<BrowserPage>
     int? minVideoBytes,
     int? maxVideoBytes,
     bool autoVideoSizeRange = false,
+
     /// 用户在非 91 站手动借用 91 套路时为 true；不拦截启动，仅作标记。
     bool strategyManualPick = false,
   }) async {
@@ -28525,8 +28478,7 @@ class _BrowserPageState extends State<BrowserPage>
     await _loadSmartDownload24hRegistry();
     final startedAt = DateTime.now();
     final deadlineAt = startedAt.add(const Duration(hours: 5));
-    final native91 =
-        host == '91cg1.com' || host.endsWith('.91cg1.com');
+    final native91 = host == '91cg1.com' || host.endsWith('.91cg1.com');
     _smartDownloadTask = <String, dynamic>{
       'mode': 'simple_91_keyword',
       'phase': 'simple_91_running',
@@ -28542,8 +28494,7 @@ class _BrowserPageState extends State<BrowserPage>
       'autoVideoSizeRange': autoVideoSizeRange,
       'success': 0,
       'failed': 0,
-      'matchStage':
-          browseMode ? '91 实测 · 当前页批量' : '91 实测 · 关键词搜索',
+      'matchStage': browseMode ? '91 实测 · 当前页批量' : '91 实测 · 关键词搜索',
       'demoPhase': 'auto',
       'gestureDownloadPending': false,
       'startedAt': startedAt,
@@ -28577,18 +28528,12 @@ class _BrowserPageState extends State<BrowserPage>
     if (browseMode) {
       _showSmartOperation(
         seedDetailFirst
-            ? (native91
-                ? '91：先下载当前详情，再批量列表'
-                : '91 套路（借用）：先下载当前详情，再批量列表')
-            : (native91
-                ? '91：从当前页批量下载'
-                : '91 套路（借用）：从当前页批量下载'),
+            ? (native91 ? '91：先下载当前详情，再批量列表' : '91 套路（借用）：先下载当前详情，再批量列表')
+            : (native91 ? '91：从当前页批量下载' : '91 套路（借用）：从当前页批量下载'),
       );
     } else {
       _showSmartOperation(
-        native91
-            ? '91 实测管线：打开「$kw」搜索结果'
-            : '91 套路（借用）：打开「$kw」搜索结果',
+        native91 ? '91 实测管线：打开「$kw」搜索结果' : '91 套路（借用）：打开「$kw」搜索结果',
       );
     }
     debugPrint(
@@ -28729,10 +28674,11 @@ class _BrowserPageState extends State<BrowserPage>
         );
         return const <String>[];
       }
-      final urls = decoded
-          .map((e) => e.toString().trim())
-          .where((e) => e.startsWith('http'))
-          .toList();
+      final urls =
+          decoded
+              .map((e) => e.toString().trim())
+              .where((e) => e.startsWith('http'))
+              .toList();
       debugPrint(
         'simple91: collect url=$_currentUrl cardCount=${urls.length} via=$via',
       );
@@ -28800,8 +28746,9 @@ class _BrowserPageState extends State<BrowserPage>
       return decoded
           .map((e) => e.toString().trim())
           .where((e) => e.startsWith('http'))
-          .where((e) =>
-              excludeKey.isEmpty || _simple91ArchiveKey(e) != excludeKey)
+          .where(
+            (e) => excludeKey.isEmpty || _simple91ArchiveKey(e) != excludeKey,
+          )
           .toList();
     } catch (e) {
       debugPrint('simple91: collectRelated error err=$e');
@@ -28814,9 +28761,7 @@ class _BrowserPageState extends State<BrowserPage>
     if (controller == null) return '';
     // 详情页「下一篇」在 span.next，不在 .page-navigator；绝不能误跟。
     if (_is91StyleArchivePage(_currentUrl)) {
-      debugPrint(
-        'simple91: nextPage skip — on detail url=$_currentUrl',
-      );
+      debugPrint('simple91: nextPage skip — on detail url=$_currentUrl');
       return '';
     }
     try {
@@ -29080,10 +29025,7 @@ class _BrowserPageState extends State<BrowserPage>
     final target = (task['target'] as int?) ?? 1;
     if (ok) {
       task['success'] = ((task['success'] as int?) ?? 0) + 1;
-      _showSmartOperation(
-        '下载成功 ${task['success']}/$target',
-        showFinger: false,
-      );
+      _showSmartOperation('下载成功 ${task['success']}/$target', showFinger: false);
       return 'downloaded';
     }
     if (downloadFailureType == 'already_in_library' ||
@@ -29116,8 +29058,7 @@ class _BrowserPageState extends State<BrowserPage>
           (override ?? (task['strict91SearchUrl'] ?? listUrl0).toString())
               .trim();
       if (!url.startsWith('http')) return false;
-      task['matchStage'] =
-          browseMode ? '91 实测 · 卡片列表' : '91 实测 · 搜索列表';
+      task['matchStage'] = browseMode ? '91 实测 · 卡片列表' : '91 实测 · 搜索列表';
       _showSmartOperation(
         browseMode ? '回到卡片列表' : '回到关键词搜索列表',
         showFinger: false,
@@ -29125,22 +29066,18 @@ class _BrowserPageState extends State<BrowserPage>
       debugPrint('simple91: openList url=$url');
       _loadUrl(url);
       final wantHost = _normalizeSmartHost(Uri.tryParse(url)?.host ?? '');
-      final ok = await _simple91WaitUntil(
-        task,
-        () {
-          if (_is91StyleArchivePage(_currentUrl)) return false;
-          final curHost = _normalizeSmartHost(
-            Uri.tryParse(_currentUrl)?.host ?? '',
-          );
-          if (wantHost.isEmpty || curHost != wantHost) return false;
-          // 关键词模式仍要求落在 /search/
-          if (!browseMode && !_currentUrl.toLowerCase().contains('/search/')) {
-            return false;
-          }
-          return _currentUrl.startsWith('http');
-        },
-        timeout: const Duration(seconds: 35),
-      );
+      final ok = await _simple91WaitUntil(task, () {
+        if (_is91StyleArchivePage(_currentUrl)) return false;
+        final curHost = _normalizeSmartHost(
+          Uri.tryParse(_currentUrl)?.host ?? '',
+        );
+        if (wantHost.isEmpty || curHost != wantHost) return false;
+        // 关键词模式仍要求落在 /search/
+        if (!browseMode && !_currentUrl.toLowerCase().contains('/search/')) {
+          return false;
+        }
+        return _currentUrl.startsWith('http');
+      }, timeout: const Duration(seconds: 35));
       if (!ok) {
         debugPrint('simple91: openList timeout current=$_currentUrl');
         return false;
@@ -29186,15 +29123,14 @@ class _BrowserPageState extends State<BrowserPage>
       // 搜索结果首张常为推广；首页/分类不默认跳过。
       final shouldSkip =
           skipFirstCard ||
-          (!browseMode && (task['strict91SearchUrl'] ?? '')
-              .toString()
-              .toLowerCase()
-              .contains('/search/'));
+          (!browseMode &&
+              (task['strict91SearchUrl'] ?? '')
+                  .toString()
+                  .toLowerCase()
+                  .contains('/search/'));
       if (shouldSkip && urls.length > 1) {
         urls = urls.sublist(1);
-        debugPrint(
-          'simple91: skipPromo page=$pageNo remaining=${urls.length}',
-        );
+        debugPrint('simple91: skipPromo page=$pageNo remaining=${urls.length}');
       }
       return urls;
     }
@@ -29250,9 +29186,7 @@ class _BrowserPageState extends State<BrowserPage>
       }
 
       if (!await openList()) {
-        await _finishSmartDownload(
-          browseMode ? '无法打开卡片列表页' : '无法打开关键词搜索页',
-        );
+        await _finishSmartDownload(browseMode ? '无法打开卡片列表页' : '无法打开关键词搜索页');
         return;
       }
 
@@ -29281,21 +29215,15 @@ class _BrowserPageState extends State<BrowserPage>
 
         if (cardIndex >= archiveUrls.length) {
           if (_is91StyleArchivePage(_currentUrl)) {
-            debugPrint(
-              'simple91: need next page but on detail — reopen list',
-            );
+            debugPrint('simple91: need next page but on detail — reopen list');
             if (!await openList()) {
-              await _finishSmartDownload(
-                '列表已用尽（成功 $success/$target）',
-              );
+              await _finishSmartDownload('列表已用尽（成功 $success/$target）');
               return;
             }
           }
           final next = await _simple91NextListPageUrl();
           if (next.isEmpty) {
-            await _finishSmartDownload(
-              '列表已用尽（成功 $success/$target）',
-            );
+            await _finishSmartDownload('列表已用尽（成功 $success/$target）');
             return;
           }
           pageNo += 1;
@@ -29312,9 +29240,7 @@ class _BrowserPageState extends State<BrowserPage>
           }
           archiveUrls = await collectOnListWithRetry(pageNo: pageNo);
           if (archiveUrls.isEmpty) {
-            await _finishSmartDownload(
-              '第 $pageNo 页无卡片（成功 $success/$target）',
-            );
+            await _finishSmartDownload('第 $pageNo 页无卡片（成功 $success/$target）');
             return;
           }
           continue;
@@ -29569,7 +29495,6 @@ class _BrowserPageState extends State<BrowserPage>
     }
   }
 
-
   Future<void> _advanceSmartDownload91A00(String loadedUrl) async {
     final task = _smartDownloadTask;
     final controller = _controller;
@@ -29772,9 +29697,9 @@ class _BrowserPageState extends State<BrowserPage>
           // 以真实落地的搜索页为准，避免 www/尾斜杠导致后续 currentlyOnCandidateList 失败。
           final landedSearch =
               actualLoadedUrl.contains('/search/') ||
-              (Uri.tryParse(actualLoadedUrl)?.pathSegments.any(
-                    (s) => s.toLowerCase() == 'search',
-                  ) ??
+              (Uri.tryParse(
+                    actualLoadedUrl,
+                  )?.pathSegments.any((s) => s.toLowerCase() == 'search') ??
                   false);
           if (landedSearch) {
             task['strict91SearchUrl'] = actualLoadedUrl;
@@ -30344,7 +30269,8 @@ class _BrowserPageState extends State<BrowserPage>
         // 91 详情页首屏常抓到 spinner.svg / 图片，不能当视频地址，否则会跳过下翻深挖。
         bool isJunk91Media(String raw) {
           final lower = raw.toLowerCase();
-          if (lower.contains('spinner') || lower.contains('/emoji')) return true;
+          if (lower.contains('spinner') || lower.contains('/emoji'))
+            return true;
           return lower.endsWith('.svg') ||
               lower.endsWith('.png') ||
               lower.endsWith('.jpg') ||
@@ -30356,6 +30282,7 @@ class _BrowserPageState extends State<BrowserPage>
               lower.contains('.png?') ||
               lower.contains('.jpg?');
         }
+
         urls.removeWhere(isJunk91Media);
         final duplicateUrlKeys = task['duplicateVideoUrlKeys'] as Set<String>;
         final uniqueUrls =
@@ -30685,7 +30612,6 @@ class _BrowserPageState extends State<BrowserPage>
     }
   }
 
-
   void _visitNextSmartCandidate91A00(Map<String, dynamic> task) {
     final candidates = task['candidates'] as List<Map<String, String>>;
     if (task['strict91KeywordMode'] == true) {
@@ -30728,11 +30654,8 @@ class _BrowserPageState extends State<BrowserPage>
       return;
     }
     task['phase'] = 'resolving_candidate_background';
-    unawaited(
-      _resolveAndDownloadSmartCandidate91A00(task, candidates[index]),
-    );
+    unawaited(_resolveAndDownloadSmartCandidate91A00(task, candidates[index]));
   }
-
 
   Future<void> _resolveAndDownloadSmartCandidate91A00(
     Map<String, dynamic> task,
@@ -31041,7 +30964,6 @@ class _BrowserPageState extends State<BrowserPage>
     }
   }
 
-
   Future<void> _returnFromSmartMediaCard91A00(
     Map<String, dynamic> task, {
     required bool madeProgress,
@@ -31091,7 +31013,6 @@ class _BrowserPageState extends State<BrowserPage>
     }
     _continueSmartFeed91A00(task, madeProgress: madeProgress);
   }
-
 
   // ----- a00c4bd helper snapshots used only by 91 a00 pipeline -----
 
@@ -31270,7 +31191,6 @@ class _BrowserPageState extends State<BrowserPage>
       return false;
     }
   }
-
 
   void _broadenSmartDiscovery91A00(
     Map<String, dynamic> task,
@@ -31507,7 +31427,6 @@ class _BrowserPageState extends State<BrowserPage>
       });
     }
   }
-
 
   void _continueSmartFeed91A00(
     Map<String, dynamic> task, {
@@ -31879,6 +31798,4 @@ class _BrowserPageState extends State<BrowserPage>
           }),
     );
   }
-
-
 }

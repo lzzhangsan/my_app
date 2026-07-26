@@ -10,6 +10,7 @@ import 'models/video_view_params.dart';
 import 'widgets/video_player_widget.dart'; // 确保正确导入 VideoPlayerWidget
 import 'core/service_locator.dart';
 import 'services/database_service.dart';
+import 'services/browser_session_preview.dart';
 import 'media_selection_dialog.dart'; // 导入媒体选择对话框
 import 'models/media_item.dart'; // 添加MediaItem类的导入
 import 'services/logger.dart';
@@ -73,6 +74,12 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
 
   /// 每条成功展示的媒体递增；自动切换回调仅当 [sessionForAutoAdvance] 仍等于当前值时才执行，避免过期定时器/重复动画结束误切下一条。
   int _mediaSessionId = 0;
+
+  /// 「当前的浏览页面」是否正在文档底栏托管真实 WebView（loan）。
+  bool _browserLivePreviewActive = false;
+
+  bool get _isBrowserLiveSource =>
+      _selectedDirectory == kMediaSourceBrowserLive;
 
   String _sequentialIndexPrefsKey() {
     final d = _selectedDirectory ?? 'root';
@@ -150,7 +157,9 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
     final id = _currentPlayingMedia?['id']?.toString();
     if (id == null || id.isEmpty) return;
     final c = _currentVideoWidget?.controller;
-    if (c == null || !c.value.isInitialized || c.value.duration <= Duration.zero) {
+    if (c == null ||
+        !c.value.isInitialized ||
+        c.value.duration <= Duration.zero) {
       return;
     }
     _videoResumeSnapshotSave(
@@ -236,6 +245,20 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
   }
 
   Future<void> _loadMediaList({bool restartPlaybackIfActive = true}) async {
+    if (_isBrowserLiveSource) {
+      _mediaList = [];
+      if (_mediaMode != MediaMode.none && restartPlaybackIfActive) {
+        _startBrowserLivePreview();
+      } else if (mounted) {
+        setState(() {
+          _mediaWidget = null;
+          _currentPlayingMedia = null;
+        });
+      }
+      Logger.i('媒体来源为当前浏览页面（WebView loan 预览，不加载本地库）');
+      return;
+    }
+
     setState(() {
       _mediaList = []; // 先清空列表，避免在加载过程中显示旧的媒体
     });
@@ -285,6 +308,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
   }
 
   Future<List<Map<String, dynamic>>> _getMediaList() async {
+    if (_isBrowserLiveSource) return [];
     try {
       await _databaseService.ensureMediaItemsTableExists();
       final List<Map<String, dynamic>> mediaFiles = [];
@@ -377,6 +401,13 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
   }
 
   void playManual() {
+    if (_isBrowserLiveSource) {
+      setState(() {
+        _mediaMode = MediaMode.manual;
+      });
+      _startBrowserLivePreview();
+      return;
+    }
     _sequentialToolbarPlayExplicitNextVideoIfPlaying();
     setState(() {
       _mediaMode = MediaMode.manual;
@@ -385,6 +416,13 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
   }
 
   void playAuto() {
+    if (_isBrowserLiveSource) {
+      setState(() {
+        _mediaMode = MediaMode.auto;
+      });
+      _startBrowserLivePreview();
+      return;
+    }
     _sequentialToolbarPlayExplicitNextVideoIfPlaying();
     setState(() {
       _mediaMode = MediaMode.auto;
@@ -394,6 +432,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
 
   void stop() {
     _flushSequentialVideoResumeProgress();
+    _stopBrowserLivePreview();
     setState(() {
       _mediaMode = MediaMode.none;
       _mediaWidget = null;
@@ -402,6 +441,282 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
       _mediaTimer?.cancel();
       _mediaTimer = null;
     });
+  }
+
+  void _startBrowserLivePreview() {
+    final preview = BrowserSessionPreview.instance;
+    if (!preview.isAvailable) {
+      _browserLivePreviewActive = false;
+      preview.setLoaned(false);
+      setState(() {
+        _mediaWidget = const Center(
+          child: Padding(
+            padding: EdgeInsets.all(16),
+            child: Text(
+              '浏览器会话不可用。请先在浏览器打开网页，再通过「目录」进入文档后选择「当前的浏览页面」。',
+              textAlign: TextAlign.center,
+            ),
+          ),
+        );
+        _currentPlayingMedia = null;
+      });
+      return;
+    }
+
+    _currentPlayingMedia = {
+      'id': kMediaSourceBrowserLive,
+      'name': '当前的浏览页面',
+      'type': -1,
+      'path': preview.pageUrl ?? '',
+    };
+    _mediaSessionId++;
+    // 同一帧内：BrowserPage 让出 GlobalKey WebView，底栏接管（无截图轮询）。
+    _browserLivePreviewActive = true;
+    preview.setLoaned(true);
+    setState(() {
+      _mediaWidget = null; // build() 直接绘制 loan 面板，避免缓存旧树
+    });
+  }
+
+  void _stopBrowserLivePreview() {
+    _browserLivePreviewActive = false;
+    // 先归还 BrowserPage，再由 stop()/setState 卸下底栏宿主，保证同帧只有一处挂载。
+    BrowserSessionPreview.instance.setLoaned(false);
+  }
+
+  /// 退出文档前归还 WebView；返回是否曾占用 loan（调用方应 await endOfFrame）。
+  bool releaseBrowserLiveLoan() {
+    if (!_browserLivePreviewActive &&
+        !BrowserSessionPreview.instance.isLoaned) {
+      return false;
+    }
+    _browserLivePreviewActive = false;
+    BrowserSessionPreview.instance.setLoaned(false);
+    if (mounted) {
+      setState(() {
+        if (_isBrowserLiveSource) {
+          _mediaMode = MediaMode.none;
+          _mediaWidget = null;
+          _currentPlayingMedia = null;
+        }
+      });
+    }
+    return true;
+  }
+
+  Widget _buildBrowserLivePreviewPanel() {
+    final preview = BrowserSessionPreview.instance;
+    final webView = preview.buildLoanedWebView();
+
+    return ColoredBox(
+      color: Colors.black,
+      child: Column(
+        children: [
+          Expanded(
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                // 真实 WebView；IgnorePointer 避免与文档编辑抢焦点/手势。
+                if (webView != null)
+                  Positioned.fill(child: IgnorePointer(child: webView))
+                else
+                  const Center(
+                    child: Text(
+                      '浏览器画面暂不可用',
+                      style: TextStyle(color: Colors.white70),
+                    ),
+                  ),
+                Positioned(
+                  left: 8,
+                  right: 8,
+                  top: 8,
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: Colors.black54,
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 6,
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(
+                            Icons.language,
+                            color: Colors.tealAccent,
+                            size: 16,
+                          ),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: ValueListenableBuilder<String?>(
+                              valueListenable: preview.pageUrlNotifier,
+                              builder: (context, url, _) {
+                                return Text(
+                                  url != null && url.isNotEmpty
+                                      ? url
+                                      : '当前的浏览页面（观看模式，文档可继续编辑）',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 12,
+                                  ),
+                                );
+                              },
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          _buildBrowserDownloadProgressStrip(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBrowserDownloadProgressStrip() {
+    return ValueListenableBuilder<List<Map<String, dynamic>>>(
+      valueListenable: BrowserSessionPreview.instance.downloadTasks,
+      builder: (context, tasks, _) {
+        final active =
+            tasks.where((t) {
+              final status = (t['status'] ?? '').toString();
+              return status == 'downloading' ||
+                  status == 'paused' ||
+                  status == 'failed';
+            }).toList();
+        // 无进行中任务时仍展示最近若干条，便于查看已完成/失败。
+        final shown =
+            active.isNotEmpty
+                ? active.take(4).toList()
+                : tasks.take(3).toList();
+
+        return Container(
+          width: double.infinity,
+          constraints: const BoxConstraints(maxHeight: 132),
+          color: const Color(0xE6121212),
+          padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+          child:
+              shown.isEmpty
+                  ? const Text(
+                    '暂无浏览器下载任务',
+                    style: TextStyle(color: Colors.white54, fontSize: 12),
+                  )
+                  : ListView.separated(
+                    shrinkWrap: true,
+                    itemCount: shown.length,
+                    separatorBuilder: (_, _) => const SizedBox(height: 6),
+                    itemBuilder: (context, index) {
+                      final task = shown[index];
+                      final name =
+                          (task['displayName'] ?? task['url'] ?? '下载任务')
+                              .toString();
+                      final status = (task['status'] ?? '').toString();
+                      final progress =
+                          (task['progress'] as num?)?.toDouble() ?? 0.0;
+                      final detail = (task['progressDetail'] ?? '').toString();
+                      final statusLabel = _browserDownloadStatusLabel(status);
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  name,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                statusLabel,
+                                style: TextStyle(
+                                  color: _browserDownloadStatusColor(status),
+                                  fontSize: 11,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 4),
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(3),
+                            child: LinearProgressIndicator(
+                              value:
+                                  status == 'completed'
+                                      ? 1.0
+                                      : progress.clamp(0.0, 1.0),
+                              minHeight: 4,
+                              backgroundColor: Colors.white12,
+                              valueColor: AlwaysStoppedAnimation<Color>(
+                                _browserDownloadStatusColor(status),
+                              ),
+                            ),
+                          ),
+                          if (detail.isNotEmpty) ...[
+                            const SizedBox(height: 2),
+                            Text(
+                              detail,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: Colors.white54,
+                                fontSize: 10,
+                              ),
+                            ),
+                          ],
+                        ],
+                      );
+                    },
+                  ),
+        );
+      },
+    );
+  }
+
+  String _browserDownloadStatusLabel(String status) {
+    switch (status) {
+      case 'downloading':
+        return '下载中';
+      case 'paused':
+        return '已暂停';
+      case 'completed':
+        return '已完成';
+      case 'cancelled':
+        return '已取消';
+      case 'failed':
+        return '失败';
+      default:
+        return status.isEmpty ? '未知' : status;
+    }
+  }
+
+  Color _browserDownloadStatusColor(String status) {
+    switch (status) {
+      case 'downloading':
+        return Colors.lightBlueAccent;
+      case 'paused':
+        return Colors.orangeAccent;
+      case 'completed':
+        return Colors.greenAccent;
+      case 'cancelled':
+        return Colors.white54;
+      case 'failed':
+        return Colors.redAccent;
+      default:
+        return Colors.white70;
+    }
   }
 
   Future<MediaItem?> getCurrentMedia() async {
@@ -524,8 +839,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
     }
 
     if (typeIdx == 1) {
-      final bool sequential =
-          _playbackOrder == MediaPlaybackOrder.sequential;
+      final bool sequential = _playbackOrder == MediaPlaybackOrder.sequential;
       final String vid = currentId;
       Duration? initialSeek;
       var seqResumeActive = false;
@@ -748,6 +1062,10 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
   }
 
   Future<void> _showNextMedia() async {
+    if (_isBrowserLiveSource) {
+      _startBrowserLivePreview();
+      return;
+    }
     if (_mediaList.isEmpty) {
       setState(() {
         _mediaWidget = Center(child: Text('没有可用的媒体文件'));
@@ -917,9 +1235,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
             final prefs = await SharedPreferences.getInstance();
             final saved = await readVideoResumePositionMs(prefs, vid);
             if (saved != null && saved > 0) {
-              initialSeek = Duration(
-                milliseconds: max(0, saved - 5000),
-              );
+              initialSeek = Duration(milliseconds: max(0, saved - 5000));
               seqResumeActive = true;
             }
           }
@@ -1048,16 +1364,24 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
               Navigator.of(dialogContext).pop();
               if (!mounted) return;
 
-              final presetScope = await _loadScopeForDirectory(directory);
-              final scope = await _showFavoriteScopeDialog(
-                initialScope: presetScope,
-              );
-              if (!mounted || scope == null) return;
+              final MediaSourceFavoriteFilter scope;
+              if (directory == kMediaSourceBrowserLive) {
+                // 浏览页面预览不区分收藏范围
+                scope = MediaSourceFavoriteFilter.all;
+              } else {
+                final presetScope = await _loadScopeForDirectory(directory);
+                final picked = await _showFavoriteScopeDialog(
+                  initialScope: presetScope,
+                );
+                if (!mounted || picked == null) return;
+                scope = picked;
+              }
 
               final changed =
                   directory != _selectedDirectory || scope != _favoriteFilter;
               if (!changed) return;
 
+              _stopBrowserLivePreview();
               setState(() {
                 _selectedDirectory = directory;
                 _favoriteFilter = scope;
@@ -1071,7 +1395,9 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
               await _saveMediaSourceSelection(directory, scope);
               await _loadMediaList();
               Logger.i(
-                '已选择媒体来源: $directory，范围: ${scope.displayLabel}',
+                directory == kMediaSourceBrowserLive
+                    ? '已选择媒体来源: 当前的浏览页面'
+                    : '已选择媒体来源: $directory，范围: ${scope.displayLabel}',
               );
             },
           ),
@@ -1101,7 +1427,9 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
             subtitle: Text(subtitle),
             selected: isSelected,
             trailing:
-                isSelected ? const Icon(Icons.check_circle, color: Colors.blue) : null,
+                isSelected
+                    ? const Icon(Icons.check_circle, color: Colors.blue)
+                    : null,
             onTap: () => Navigator.of(ctx).pop(value),
           );
         }
@@ -1157,6 +1485,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _flushSequentialVideoResumeProgress();
+    _stopBrowserLivePreview();
     _mediaTimer?.cancel();
     super.dispose();
   }
@@ -1214,7 +1543,9 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
                             horizontal: 0,
                             vertical: -3,
                           ),
-                          contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                          ),
                           title: Text(
                             '根目录',
                             style: TextStyle(
@@ -1225,30 +1556,33 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
                           ),
                           onTap: () => Navigator.of(context).pop('root'),
                         ),
-                      ...availableFolders.where((folder) {
-                        final id = folder['id']?.toString() ?? '';
-                        return id.isNotEmpty && id != currentDirectory;
-                      }).map((folder) {
-                        return ListTile(
-                          dense: true,
-                          visualDensity: const VisualDensity(
-                            horizontal: 0,
-                            vertical: -3,
-                          ),
-                          contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 8,
-                          ),
-                          title: Text(
-                            folder['name'],
-                            style: TextStyle(
-                              fontSize: 15.6,
-                              fontWeight: FontWeight.w700,
-                              color: Colors.black.withValues(alpha: 0.8),
-                            ),
-                          ),
-                          onTap: () => Navigator.of(context).pop(folder['id']),
-                        );
-                      }),
+                      ...availableFolders
+                          .where((folder) {
+                            final id = folder['id']?.toString() ?? '';
+                            return id.isNotEmpty && id != currentDirectory;
+                          })
+                          .map((folder) {
+                            return ListTile(
+                              dense: true,
+                              visualDensity: const VisualDensity(
+                                horizontal: 0,
+                                vertical: -3,
+                              ),
+                              contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                              ),
+                              title: Text(
+                                folder['name'],
+                                style: TextStyle(
+                                  fontSize: 15.6,
+                                  fontWeight: FontWeight.w700,
+                                  color: Colors.black.withValues(alpha: 0.8),
+                                ),
+                              ),
+                              onTap:
+                                  () => Navigator.of(context).pop(folder['id']),
+                            );
+                          }),
                     ],
                   ),
                 ),
@@ -1703,7 +2037,9 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
         }
       }
       // 仅一条、找不到目标 id 等：只刷新当前条与游标。
-      final idx = _mediaList.indexWhere((m) => m['id']?.toString() == currentId);
+      final idx = _mediaList.indexWhere(
+        (m) => m['id']?.toString() == currentId,
+      );
       if (idx < 0) {
         stop();
         return;
@@ -1731,18 +2067,32 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
 
   @override
   Widget build(BuildContext context) {
+    final browserLivePlaying =
+        _browserLivePreviewActive &&
+        _mediaMode != MediaMode.none &&
+        _isBrowserLiveSource;
     final sync = widget.syncForegroundObscuringBackground;
     if (sync != null) {
-      final obscuring = _mediaMode != MediaMode.none && _mediaWidget != null;
+      final obscuring =
+          _mediaMode != MediaMode.none &&
+          (_mediaWidget != null || browserLivePlaying);
       if (sync.value != obscuring) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (!mounted) return;
-          final o = _mediaMode != MediaMode.none && _mediaWidget != null;
+          final live =
+              _browserLivePreviewActive &&
+              _mediaMode != MediaMode.none &&
+              _isBrowserLiveSource;
+          final o =
+              _mediaMode != MediaMode.none && (_mediaWidget != null || live);
           if (sync.value != o) {
             sync.value = o;
           }
         });
       }
+    }
+    if (browserLivePlaying) {
+      return SizedBox.expand(child: _buildBrowserLivePreviewPanel());
     }
     return _mediaWidget != null
         ? SizedBox.expand(child: _mediaWidget!)
