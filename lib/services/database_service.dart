@@ -1088,7 +1088,7 @@ class DatabaseService {
   }
 
   /// 若 `media_items` 缺少渐进放大中心列则补全（与版本迁移互补，避免旧库/旁路建表漏列）。
-  Future<void> _ensureMediaItemsKenBurnsColumns(Database db) async {
+  Future<void> _ensureMediaItemsKenBurnsColumns(DatabaseExecutor db) async {
     try {
       final tables = await db.rawQuery(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='media_items';",
@@ -1121,7 +1121,7 @@ class DatabaseService {
   }
 
   /// 若 `media_items` 缺少视频视窗变换列则补全。
-  Future<void> _ensureMediaItemsVideoViewColumns(Database db) async {
+  Future<void> _ensureMediaItemsVideoViewColumns(DatabaseExecutor db) async {
     try {
       final tables = await db.rawQuery(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='media_items';",
@@ -1178,7 +1178,7 @@ class DatabaseService {
   }
 
   /// Ensure soft-delete metadata exists for media recycle-bin restore.
-  Future<void> _ensureMediaItemsRecycleColumns(Database db) async {
+  Future<void> _ensureMediaItemsRecycleColumns(DatabaseExecutor db) async {
     try {
       final tables = await db.rawQuery(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='media_items';",
@@ -7881,6 +7881,52 @@ class DatabaseService {
     }
   }
 
+  /// 按当前 `media_items` 表结构创建同构空表（含主键）。
+  ///
+  /// 导入用临时表若手写 CREATE 会落后于迁移新增列（如 `sort_order`），
+  /// 导致 INSERT 报 no column named ...。从 PRAGMA 派生可避免再次漂移。
+  Future<void> _createMediaItemsSchemaClone(
+    DatabaseExecutor db,
+    String tableName,
+  ) async {
+    await _ensureMediaItemsKenBurnsColumns(db);
+    await _ensureMediaItemsVideoViewColumns(db);
+    await _ensureMediaItemsRecycleColumns(db);
+    await _ensureMediaItemsInsertColumns(db);
+
+    final info = await db.rawQuery('PRAGMA table_info(media_items)');
+    if (info.isEmpty) {
+      throw StateError('media_items 表不存在，无法创建 $tableName');
+    }
+
+    final columnDefs = <String>[];
+    final pkOrdered = <MapEntry<int, String>>[];
+    for (final col in info) {
+      final name = col['name']?.toString() ?? '';
+      if (name.isEmpty) continue;
+      final type = (col['type']?.toString() ?? '').trim();
+      final notNull = (col['notnull'] as int?) == 1;
+      final dflt = col['dflt_value'];
+      final pk = (col['pk'] as int?) ?? 0;
+
+      final parts = <String>[name];
+      if (type.isNotEmpty) parts.add(type);
+      if (notNull) parts.add('NOT NULL');
+      if (dflt != null) parts.add('DEFAULT $dflt');
+      columnDefs.add(parts.join(' '));
+      if (pk > 0) pkOrdered.add(MapEntry(pk, name));
+    }
+
+    pkOrdered.sort((a, b) => a.key.compareTo(b.key));
+    final pkNames = pkOrdered.map((e) => e.value).toList();
+    final pkSql =
+        pkNames.isEmpty ? '' : ', PRIMARY KEY (${pkNames.join(', ')})';
+
+    await db.execute(
+      'CREATE TABLE $tableName (${columnDefs.join(', ')}$pkSql)',
+    );
+  }
+
   /// 替换所有媒体项（分块读取，不一次性加载）- 用于大容量导入
   Future<void> replaceAllMediaItemsFromChunks(
     Future<List<dynamic>?> Function() getNextChunk,
@@ -7889,45 +7935,23 @@ class DatabaseService {
     const tempTable = 'media_items_temp';
     await db.transaction((txn) async {
       await txn.execute('DROP TABLE IF EXISTS $tempTable');
-      await txn.execute('''
-        CREATE TABLE $tempTable (
-          id TEXT PRIMARY KEY,
-          name TEXT NOT NULL,
-          path TEXT NOT NULL,
-          type INTEGER NOT NULL,
-          directory TEXT NOT NULL,
-          date_added TEXT NOT NULL,
-          file_size INTEGER DEFAULT 0,
-          duration INTEGER DEFAULT 0,
-          thumbnail_path TEXT,
-          file_hash TEXT,
-          telegram_file_id TEXT,
-          is_favorite INTEGER DEFAULT 0,
-          ken_burns_center_x REAL,
-          ken_burns_center_y REAL,
-          video_view_scale REAL DEFAULT 1,
-          video_view_tx REAL DEFAULT 0,
-          video_view_ty REAL DEFAULT 0,
-          video_view_rot INTEGER DEFAULT 0,
-          video_view_basis_w REAL,
-          video_view_basis_h REAL,
-          video_view_anchor_x REAL,
-          video_view_anchor_y REAL,
-          deleted_from_directory TEXT,
-          deleted_at INTEGER,
-          created_at INTEGER NOT NULL,
-          updated_at INTEGER NOT NULL
-        )
-      ''');
+      await _createMediaItemsSchemaClone(txn, tempTable);
+      final columnInfo = await txn.rawQuery('PRAGMA table_info($tempTable)');
+      final allowedColumns = columnInfo
+          .map((c) => c['name']?.toString() ?? '')
+          .where((n) => n.isNotEmpty)
+          .toSet();
       List<dynamic>? chunk;
       while (true) {
         chunk = await getNextChunk();
         if (chunk == null || chunk.isEmpty) break;
         final batch = txn.batch();
         for (var item in chunk) {
+          final row = Map<String, dynamic>.from(item)
+            ..removeWhere((key, _) => !allowedColumns.contains(key));
           batch.insert(
             tempTable,
-            Map<String, dynamic>.from(item),
+            row,
             conflictAlgorithm: ConflictAlgorithm.replace,
           );
         }
@@ -7946,42 +7970,20 @@ class DatabaseService {
 
     await db.transaction((txn) async {
       await txn.execute('DROP TABLE IF EXISTS $tempTable');
-      await txn.execute('''
-        CREATE TABLE $tempTable (
-          id TEXT PRIMARY KEY,
-          name TEXT NOT NULL,
-          path TEXT NOT NULL,
-          type INTEGER NOT NULL,
-          directory TEXT NOT NULL,
-          date_added TEXT NOT NULL,
-          file_size INTEGER DEFAULT 0,
-          duration INTEGER DEFAULT 0,
-          thumbnail_path TEXT,
-          file_hash TEXT,
-          telegram_file_id TEXT,
-          is_favorite INTEGER DEFAULT 0,
-          ken_burns_center_x REAL,
-          ken_burns_center_y REAL,
-          video_view_scale REAL DEFAULT 1,
-          video_view_tx REAL DEFAULT 0,
-          video_view_ty REAL DEFAULT 0,
-          video_view_rot INTEGER DEFAULT 0,
-          video_view_basis_w REAL,
-          video_view_basis_h REAL,
-          video_view_anchor_x REAL,
-          video_view_anchor_y REAL,
-          deleted_from_directory TEXT,
-          deleted_at INTEGER,
-          created_at INTEGER NOT NULL,
-          updated_at INTEGER NOT NULL
-        )
-      ''');
+      await _createMediaItemsSchemaClone(txn, tempTable);
+      final columnInfo = await txn.rawQuery('PRAGMA table_info($tempTable)');
+      final allowedColumns = columnInfo
+          .map((c) => c['name']?.toString() ?? '')
+          .where((n) => n.isNotEmpty)
+          .toSet();
 
       final batch = txn.batch();
       for (var item in items) {
+        final row = Map<String, dynamic>.from(item)
+          ..removeWhere((key, _) => !allowedColumns.contains(key));
         batch.insert(
           tempTable,
-          Map<String, dynamic>.from(item),
+          row,
           conflictAlgorithm: ConflictAlgorithm.replace,
         );
       }
