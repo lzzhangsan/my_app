@@ -246,11 +246,108 @@ class MainActivity: FlutterActivity() {
                                     toX = px(norms.c, w),
                                     toY = px(norms.d, h),
                                     durationMs = durationMs.toLong(),
+                                    linear = false,
                                 ) { ok ->
                                     result.success(ok)
                                 }
                             } catch (e: Exception) {
                                 result.error("FLICK_FAILED", e.message, null)
+                            }
+                        }
+                    }
+                    // 整屏高度 fling：用 Display/Window 屏高算起止点，再经 locationOnScreen
+                    // 换算成 WebView 局部坐标注入（避免仅按 WebView 高度比例导致 dy/速度不够被 Reels 弹回）
+                    "fullScreenVerticalFling" -> {
+                        val direction = call.argument<String>("direction") ?: "up"
+                        val xNorm =
+                            (call.argument<Number>("xNorm")?.toDouble() ?: 0.5)
+                                .coerceIn(0.22, 0.78)
+                        val durationMs =
+                            (call.argument<Number>("durationMs")?.toInt() ?: 180)
+                                .coerceIn(140, 240)
+                        val fromScreenY =
+                            (call.argument<Number>("fromScreenY")?.toDouble() ?: 0.90)
+                                .coerceIn(0.78, 0.96)
+                        val toScreenY =
+                            (call.argument<Number>("toScreenY")?.toDouble() ?: 0.08)
+                                .coerceIn(0.04, 0.18)
+                        runOnUiThread {
+                            try {
+                                val webView = findWebView(window.decorView)
+                                if (webView == null || webView.width <= 0 || webView.height <= 0) {
+                                    result.error("NO_WEBVIEW", "WebView not found or not laid out", null)
+                                    return@runOnUiThread
+                                }
+                                val (screenW, screenH) = displaySizePx()
+                                if (screenW <= 0 || screenH <= 0) {
+                                    result.error("NO_DISPLAY", "Display metrics unavailable", null)
+                                    return@runOnUiThread
+                                }
+                                val loc = IntArray(2)
+                                webView.getLocationOnScreen(loc)
+                                val up = direction != "down"
+                                val screenFromY =
+                                    ((if (up) fromScreenY else toScreenY) * screenH).toFloat()
+                                val screenToY =
+                                    ((if (up) toScreenY else fromScreenY) * screenH).toFloat()
+                                val screenX = (xNorm * screenW).toFloat()
+
+                                var fromX = screenX - loc[0]
+                                var fromY = screenFromY - loc[1]
+                                var toX = screenX - loc[0]
+                                var toY = screenToY - loc[1]
+
+                                val w = webView.width.toFloat()
+                                val h = webView.height.toFloat()
+                                fromX = fromX.coerceIn(2f, w - 2f)
+                                toX = toX.coerceIn(2f, w - 2f)
+                                fromY = fromY.coerceIn(2f, h - 2f)
+                                toY = toY.coerceIn(2f, h - 2f)
+
+                                // clamp 后若 dy 仍远小于屏高，强制吃满 WebView 竖向（等价整屏翻页）
+                                val minDy = screenH * 0.55f
+                                if (kotlin.math.abs(toY - fromY) < minDy) {
+                                    if (up) {
+                                        fromY = h - 2f
+                                        toY = 2f
+                                    } else {
+                                        fromY = 2f
+                                        toY = h - 2f
+                                    }
+                                }
+
+                                android.util.Log.i(
+                                    "webview_touch",
+                                    "fullScreenVerticalFling dir=$direction " +
+                                        "screen=${screenW}x$screenH loc=${loc[0]},${loc[1]} " +
+                                        "wv=${w.toInt()}x${h.toInt()} " +
+                                        "from=($fromX,$fromY) to=($toX,$toY) " +
+                                        "dy=${kotlin.math.abs(toY - fromY)} dur=${durationMs}ms",
+                                )
+
+                                injectFlick(
+                                    target = webView,
+                                    fromX = fromX,
+                                    fromY = fromY,
+                                    toX = toX,
+                                    toY = toY,
+                                    durationMs = durationMs.toLong(),
+                                    linear = true,
+                                ) { ok ->
+                                    result.success(
+                                        mapOf(
+                                            "ok" to ok,
+                                            "screenH" to screenH,
+                                            "webViewH" to webView.height,
+                                            "dy" to kotlin.math.abs(toY - fromY).toDouble(),
+                                            "fromY" to fromY.toDouble(),
+                                            "toY" to toY.toDouble(),
+                                            "locY" to loc[1],
+                                        ),
+                                    )
+                                }
+                            } catch (e: Exception) {
+                                result.error("FULLSCREEN_FLING_FAILED", e.message, null)
                             }
                         }
                     }
@@ -338,6 +435,18 @@ class MainActivity: FlutterActivity() {
             ?: found.maxByOrNull { it.width * it.height }
     }
 
+    /** 物理屏（或当前窗口）宽高，用于整屏 fling 的屏坐标基准。 */
+    private fun displaySizePx(): Pair<Int, Int> {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val bounds = windowManager.currentWindowMetrics.bounds
+            Pair(bounds.width(), bounds.height())
+        } else {
+            @Suppress("DEPRECATION")
+            val metrics = resources.displayMetrics
+            Pair(metrics.widthPixels, metrics.heightPixels)
+        }
+    }
+
     private fun obtainTouch(
         downTime: Long,
         eventTime: Long,
@@ -423,11 +532,17 @@ class MainActivity: FlutterActivity() {
         toX: Float,
         toY: Float,
         durationMs: Long,
+        linear: Boolean = false,
         onDone: (Boolean) -> Unit,
     ) {
         val handler = Handler(Looper.getMainLooper())
         val downTime = SystemClock.uptimeMillis()
-        val steps = maxOf(8, minOf(20, (durationMs / 16L).toInt()))
+        // 线性整屏甩：更密 MOVE，给 VelocityTracker 稳定高速度；普通 flick 仍用原节奏
+        val steps = if (linear) {
+            maxOf(12, minOf(24, (durationMs / 12L).toInt()))
+        } else {
+            maxOf(8, minOf(20, (durationMs / 16L).toInt()))
+        }
         var finished = false
 
         fun finish(ok: Boolean) {
@@ -452,10 +567,14 @@ class MainActivity: FlutterActivity() {
                 handler.postDelayed({
                     if (finished) return@postDelayed
                     val t = step.toFloat() / steps
-                    // ease-out cubic，贴近真手指轻扫末段加速感
-                    val eased = 1f - (1f - t) * (1f - t) * (1f - t)
-                    val x = fromX + (toX - fromX) * eased
-                    val y = fromY + (toY - fromY) * eased
+                    // linear：恒速高 velocity（Reels fling 判定）；否则 ease-out 贴近轻扫
+                    val progress = if (linear) {
+                        t
+                    } else {
+                        1f - (1f - t) * (1f - t) * (1f - t)
+                    }
+                    val x = fromX + (toX - fromX) * progress
+                    val y = fromY + (toY - fromY) * progress
                     val eventTime = downTime + durationMs * step / steps
                     if (step < steps) {
                         dispatch(MotionEvent.ACTION_MOVE, x, y, eventTime)
@@ -467,10 +586,10 @@ class MainActivity: FlutterActivity() {
                                 MotionEvent.ACTION_UP,
                                 toX,
                                 toY,
-                                eventTime + 16,
+                                eventTime + 12,
                             )
                             finish(true)
-                        }, 16L)
+                        }, 12L)
                     }
                 }, durationMs * step / steps)
             }

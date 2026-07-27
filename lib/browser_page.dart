@@ -174,6 +174,14 @@ const Duration _kMediaUrlInFlightTtl = Duration(seconds: 45);
 /// the page blocks capture. Do not import that as a black, unplayable video.
 const int _kMinBase64VideoBytes = 16 * 1024;
 
+/// Reject stub/init-segment/HTML responses before inserting into the media library.
+const int _kMinSavedVideoBytes = 10 * 1024;
+
+/// Facebook Reels progressive stubs often land at tens of KB; real shorts are MB+.
+/// Facebook pipeline uses [kFacebookMinVideoBytes] (2MB) as the hard floor.
+const int _kMinFacebookSavedVideoBytes = kFacebookMinVideoBytes;
+const int _kMinSavedImageBytes = 512;
+
 const int _kMaxCapturedWebResources = 600;
 
 const String _kBrowserMediaUserAgent =
@@ -472,7 +480,10 @@ function isMediaFragmentUrl(url) {
     const parsed = new URL(url, baseUrl);
     const range = parsed.searchParams.get('range') || '';
     const sequence = parsed.searchParams.get('sq') || '';
-    return /^\d+-\d+$/.test(range) || /^\d+$/.test(sequence);
+    const byteStart = parsed.searchParams.get('bytestart') || '';
+    const byteEnd = parsed.searchParams.get('byteend') || '';
+    return /^\d+-\d+$/.test(range) || /^\d+$/.test(sequence) ||
+      (byteStart !== '' && byteEnd !== '');
   } catch (_) {
     return false;
   }
@@ -500,7 +511,7 @@ function normalizeMediaCandidateUrl(url) {
     return null;
   }
   let changed = false;
-  for (const key of ['range', 'sq', 'rn', 'rbuf']) {
+  for (const key of ['range', 'sq', 'rn', 'rbuf', 'bytestart', 'byteend']) {
     if (parsed.searchParams.has(key)) {
       parsed.searchParams.delete(key);
       changed = true;
@@ -661,17 +672,31 @@ class _BrowserPageState extends State<BrowserPage>
           uri.host.isEmpty) {
         return '';
       }
-      final cookies = await CookieManager.instance().getCookies(
-        url: WebUri(absolute),
-      );
-      final parts = <String>[];
-      for (final c in cookies) {
-        final name = c.name.trim();
-        final value = c.value.trim();
-        if (name.isEmpty) continue;
-        parts.add('$name=$value');
+      final byName = <String, String>{};
+      Future<void> collectFrom(String cookieUrl) async {
+        try {
+          final cookies = await CookieManager.instance().getCookies(
+            url: WebUri(cookieUrl),
+          );
+          for (final c in cookies) {
+            final name = c.name.trim();
+            if (name.isEmpty) continue;
+            byName[name] = c.value.trim();
+          }
+        } catch (_) {}
       }
-      return parts.join('; ');
+
+      await collectFrom(absolute);
+      // fbcdn is a separate host; progressive media often still needs the
+      // facebook.com session cookies from the logged-in WebView.
+      if (_isFacebookCdnUrl(absolute) || _isFacebookPlatformPage(absolute)) {
+        await collectFrom('https://www.facebook.com');
+        await collectFrom('https://www.facebook.com/');
+        await collectFrom('https://m.facebook.com');
+        await collectFrom('https://m.facebook.com/');
+      }
+      if (byName.isEmpty) return '';
+      return byName.entries.map((e) => '${e.key}=${e.value}').join('; ');
     } catch (e) {
       debugPrint('读取 WebView Cookie 失败: $e');
       return '';
@@ -771,10 +796,32 @@ class _BrowserPageState extends State<BrowserPage>
 
   bool _urlLooksLikeImageResource(String url) {
     final lower = url.toLowerCase();
-    return RegExp(
+    if (RegExp(
       r'\.(jpe?g|png|gif|webp|bmp|svg|ico|tiff?|avif|heic|heif|jxl)(\?|#|$)',
       caseSensitive: false,
-    ).hasMatch(lower);
+    ).hasMatch(lower)) {
+      return true;
+    }
+    // Facebook photo CDN often omits a clear extension in some variants.
+    if ((lower.contains('scontent.') || lower.contains('fbcdn.net')) &&
+        !lower.contains('.mp4') &&
+        !lower.contains('video.') &&
+        !RegExp(r'(^|[./])video\.[a-z0-9.-]*fbcdn').hasMatch(lower) &&
+        (lower.contains('/t39.') ||
+            lower.contains('/t15.') ||
+            lower.contains('/t51.') ||
+            lower.contains('/t45.') ||
+            lower.contains('/v/t') ||
+            lower.contains('_n.jpg') ||
+            lower.contains('_o.jpg') ||
+            lower.contains('_s.jpg') ||
+            lower.contains('stp=') ||
+            lower.contains('p1080x1080') ||
+            lower.contains('p960x960') ||
+            lower.contains('scontent'))) {
+      return true;
+    }
+    return false;
   }
 
   bool _capturedResourceMatchesType(
@@ -832,6 +879,9 @@ class _BrowserPageState extends State<BrowserPage>
         score += _scoreFavoriteVideoUrl(resource.url);
       } else if (_urlLooksLikeImageResource(resource.url)) {
         score += 1200;
+        if (_isFacebookCdnUrl(resource.url)) {
+          score += _scoreFacebookImageCandidate(resource.url);
+        }
       }
       scored.add((resource, score));
     }
@@ -852,9 +902,714 @@ class _BrowserPageState extends State<BrowserPage>
         host.endsWith('.twitter.com');
   }
 
+  bool _isFacebookPlatformPage(String? url) {
+    final host = Uri.tryParse((url ?? '').trim())?.host.toLowerCase() ?? '';
+    if (host.isEmpty) return false;
+    return host == 'facebook.com' ||
+        host.endsWith('.facebook.com') ||
+        host == 'fb.com' ||
+        host.endsWith('.fb.com') ||
+        host == 'fb.watch' ||
+        host.endsWith('.fb.watch') ||
+        host == 'messenger.com' ||
+        host.endsWith('.messenger.com');
+  }
+
+  bool _isFacebookCdnUrl(String url) {
+    final lower = url.toLowerCase();
+    return lower.contains('fbcdn.net') ||
+        lower.contains('fbcdn.com') ||
+        lower.contains('scontent.') ||
+        RegExp(r'(^|[./])video\.[a-z0-9.-]*fbcdn').hasMatch(lower);
+  }
+
+  /// Facebook media strategy (dedicated site profile, parallel to X/91):
+  /// - Capture: WebView LoadedResource + JS XHR/fetch/performance sniff
+  ///   (fbcdn / scontent / video.*.fbcdn).
+  /// - Prefer progressive MP4 (`*.mp4` with `oe=`/`oh=` signatures) over
+  ///   blob:/MSE stubs. Range fragments (`bytestart`/`byteend`) are recovered
+  ///   to the whole URL via [recoverWholeMediaUrlFromFragment], never saved as
+  ///   tiny stubs. Auth: facebook.com cookies + Referer www/m.facebook.com.
+  /// - Bind current reel via [facebookMediaIdentity] + active bytestart keys
+  ///   (not the next-reel prefetch).
+  /// - After download: reject files under [kFacebookMinVideoBytes] and
+  ///   init-only MP4 stubs ([looksLikeIncompleteMp4Stub]); retry next candidate.
+  /// - Images: scontent CDN (`/t39.` `/t15.` `_n.jpg`/`_o.jpg` / srcset).
+  /// - Hard limit: DRM / SAMPLE-AES / live MediaStream cannot be saved as a
+  ///   standalone playable file; surface a clear user message instead.
+  bool _isFacebookProgressiveMp4Url(String url) {
+    final lower = url.trim().toLowerCase();
+    if (lower.isEmpty || lower.startsWith('blob:') || isMediaFragmentUrl(url)) {
+      return false;
+    }
+    if (!_isFacebookCdnUrl(url) && !lower.contains('facebook.com')) {
+      return false;
+    }
+    return lower.contains('.mp4') &&
+        !lower.contains('.m3u8') &&
+        !lower.contains('.mpd');
+  }
+
+  String? _normalizeFacebookMediaCandidate(String raw, {required bool video}) {
+    var value = raw.trim();
+    if (value.isEmpty ||
+        value.startsWith('blob:') ||
+        value.startsWith('data:')) {
+      return null;
+    }
+    if (isMediaFragmentUrl(value)) {
+      final recovered = recoverWholeMediaUrlFromFragment(value);
+      if (recovered == null || recovered.trim().isEmpty) return null;
+      value = recovered.trim();
+    }
+    if (isMediaFragmentUrl(value)) return null;
+    final facebookMetadata = facebookMediaMetadata(value);
+    if (video && facebookMetadata?.isAudioOnly == true) {
+      debugPrint(
+        'FB pipeline: ignored audio-only DASH track '
+        'videoId=${facebookMetadata!.videoId} '
+        'tag=${facebookMetadata.encodeTag}',
+      );
+      return null;
+    }
+    final lower = value.toLowerCase();
+    if (_isFacebookCdnUrl(value)) {
+      if (video) {
+        if (lower.contains('.mp4') ||
+            lower.contains('.m3u8') ||
+            lower.contains('.mpd') ||
+            lower.contains('video.') ||
+            lower.contains('/v/t') ||
+            lower.contains('/v/s')) {
+          return value;
+        }
+        return null;
+      }
+      if (_urlLooksLikeImageResource(value) ||
+          lower.contains('scontent.') ||
+          RegExp(
+            r'\.(jpe?g|png|gif|webp)(\?|#|$)',
+            caseSensitive: false,
+          ).hasMatch(lower)) {
+        return value;
+      }
+      return null;
+    }
+    if (video) {
+      return _isLikelyDirectMediaUrl(value) ? value : null;
+    }
+    return _urlLooksLikeImageResource(value) ? value : null;
+  }
+
+  int _scoreFacebookVideoCandidate(
+    String url, {
+    String expectedVideoKey = '',
+    bool isReels = false,
+    DateTime? captureTime,
+    DateTime? playbackStartedAt,
+    Set<String> activelyStreamedKeys = const <String>{},
+  }) {
+    final lower = url.toLowerCase();
+    var score = _scoreFavoriteVideoUrl(url);
+    final facebookMetadata = facebookMediaMetadata(url);
+    if (facebookMetadata?.isAudioOnly == true) return -100000;
+    if (isMediaFragmentUrl(url)) return -100000;
+    if (!_isFacebookCdnUrl(url) && !lower.contains('facebook.com')) {
+      return score - 400;
+    }
+    if (lower.contains('bytestart') || lower.contains('byteend')) {
+      score -= 50000;
+    }
+    // Progressive CDN MP4 with FB edge signatures (oe=/oh=) is the golden path.
+    if (lower.contains('.mp4')) score += 8000;
+    if (lower.contains('oe=') || lower.contains('oh=')) score += 3500;
+    if (lower.contains('_nc_') || lower.contains('efg=')) score += 800;
+    if (lower.contains('video.') && lower.contains('fbcdn')) score += 5000;
+    if (lower.contains('scontent.') && lower.contains('.mp4')) score += 4500;
+    // Adaptive playlists are fallback only; prefer progressive when present.
+    if (lower.contains('.m3u8') || lower.contains('mpegurl')) score += 1200;
+    if (lower.contains('.mpd')) score += 900;
+    if (lower.contains('_hd') ||
+        lower.contains('hd_src') ||
+        lower.contains('quality=hd') ||
+        lower.contains('oe_hd')) {
+      score += 1500;
+    }
+    if (lower.contains('_sd') || lower.contains('sd_src')) score += 400;
+    if (lower.contains('audio') || lower.contains('/aud/')) score -= 20000;
+    if (facebookMetadata?.isVideoTrack == true) {
+      score += 30000;
+      // Same video_id may expose 144p..1080p DASH renditions. Keep identity
+      // binding dominant, then prefer the highest resolution/bitrate.
+      score += (facebookMetadata!.qualityScore ~/ 1000).clamp(0, 2000000);
+    }
+    if (_looksLikePreviewClipUrl(lower)) score -= 8000;
+
+    final identity = facebookMediaIdentity(url);
+    final expected = expectedVideoKey.trim();
+    if (expected.isNotEmpty && identity.isNotEmpty) {
+      if (facebookIdentitiesMatch(identity, expected)) {
+        // Bound to the pressed / currently playing reel — beat any neighbor
+        // prefetch that only wins on "newest capture".
+        score += 250000;
+      } else {
+        score -= isReels ? 180000 : 40000;
+      }
+    }
+    if (identity.isNotEmpty &&
+        activelyStreamedKeys.any(
+          (key) => facebookIdentitiesMatch(identity, key),
+        )) {
+      // Range activity while watching marks the current item; full-file
+      // prefetch of the next reel usually has little/no bytestart traffic.
+      score += isReels ? 90000 : 25000;
+    }
+    if (isReels && captureTime != null && playbackStartedAt != null) {
+      final deltaMs = captureTime.difference(playbackStartedAt).inMilliseconds;
+      // Prefetch of the *next* reel often arrives late during playback.
+      // Prefer media that appeared near session start / early playback.
+      if (deltaMs >= -2000 && deltaMs <= 8000) {
+        score += 20000;
+      } else if (deltaMs > 20000) {
+        score -= 35000;
+      }
+    }
+    return score;
+  }
+
+  int _scoreFacebookImageCandidate(String url) {
+    final lower = url.toLowerCase();
+    var score = 0;
+    if (!_isFacebookCdnUrl(url)) return score - 200;
+    if (lower.contains('scontent.')) score += 2000;
+    if (lower.contains('_o.') || lower.contains('_o.jpg')) score += 1800;
+    if (lower.contains('_n.') || lower.contains('_n.jpg')) score += 900;
+    if (lower.contains('p1080x1080') || lower.contains('p960x960')) {
+      score += 1200;
+    }
+    if (lower.contains('p720x720') || lower.contains('s720x720')) score += 600;
+    if (lower.contains('/t39.') ||
+        lower.contains('/t15.') ||
+        lower.contains('/t51.') ||
+        lower.contains('/t45.')) {
+      score += 700;
+    }
+    if (RegExp(
+      r'(avatar|profile|emoji|sprite|sticker|icon|safe_image)',
+    ).hasMatch(lower)) {
+      score -= 5000;
+    }
+    if (lower.contains('.mp4') || lower.contains('video.')) score -= 8000;
+    return score;
+  }
+
+  String _facebookUnsupportedMediaMessage({required bool forVideo}) {
+    if (forVideo) {
+      return 'Facebook 当前未捕获到可单独保存的渐进式 MP4（可能为 DRM/加密 HLS、直播流或仅分片）。'
+          '请继续播放几秒后再长按；若仍失败则该内容无法保存为可播放文件';
+    }
+    return 'Facebook 当前未捕获到可用图片地址（叠层/懒加载）。请对准图片本体再长按';
+  }
+
+  Set<String> _facebookActivelyStreamedVideoKeys({
+    String? pageUrl,
+    DateTime? notBefore,
+  }) {
+    final keys = <String>{};
+    final now = DateTime.now();
+    final requestedPage = Uri.tryParse((pageUrl ?? _currentUrl).trim());
+    for (final resource in _capturedWebResources.values) {
+      if (notBefore != null && resource.capturedAt.isBefore(notBefore)) {
+        continue;
+      }
+      if (now.difference(resource.capturedAt) > const Duration(minutes: 10)) {
+        continue;
+      }
+      final lower = resource.url.toLowerCase();
+      final isRange =
+          lower.contains('bytestart') ||
+          lower.contains('byteend') ||
+          isMediaFragmentUrl(resource.url);
+      if (!isRange || !_isFacebookCdnUrl(resource.url)) continue;
+      final capturedPage = Uri.tryParse(resource.pageUrl);
+      if (requestedPage != null &&
+          capturedPage != null &&
+          requestedPage.host.isNotEmpty &&
+          capturedPage.host.isNotEmpty &&
+          requestedPage.host != capturedPage.host) {
+        continue;
+      }
+      final whole =
+          recoverWholeMediaUrlFromFragment(resource.url) ?? resource.url;
+      final identity = facebookMediaIdentity(whole);
+      if (identity.isNotEmpty) keys.add(identity);
+    }
+    return keys;
+  }
+
+  DateTime? _facebookCaptureTimeForUrl(String url) {
+    final absolute = _toAbsoluteUrl(url);
+    final direct = _capturedWebResources[absolute]?.capturedAt;
+    if (direct != null) return direct;
+    final identity = facebookMediaIdentity(absolute);
+    if (identity.isEmpty) return _trustedMediaCandidateUrls[absolute];
+    DateTime? best;
+    for (final entry in _capturedWebResources.entries) {
+      final key = facebookMediaIdentity(entry.key);
+      if (key.isEmpty || !facebookIdentitiesMatch(key, identity)) continue;
+      final at = entry.value.capturedAt;
+      if (best == null || at.isAfter(best)) best = at;
+    }
+    return best ?? _trustedMediaCandidateUrls[absolute];
+  }
+
+  /// Keep only URLs that share [boundKey]. Empty boundKey → unchanged.
+  List<String> _facebookCandidatesMatchingBound(
+    Iterable<String> urls,
+    String boundKey,
+  ) {
+    final key = boundKey.trim();
+    if (key.isEmpty || key.startsWith('reel:')) {
+      // reel:id never equals CDN stems; callers must upgrade to CDN identity.
+      return urls.where((u) => u.trim().isNotEmpty).toList(growable: false);
+    }
+    return urls
+        .where((url) {
+          final id = facebookMediaIdentity(url);
+          return id.isNotEmpty && facebookIdentitiesMatch(id, key);
+        })
+        .toList(growable: false);
+  }
+
+  /// Prefer a CDN stem identity over reel:page-id (which cannot match captures).
+  String _facebookUpgradeBoundKey({
+    required String expectedVideoKey,
+    required String primaryUrl,
+    required List<String> inputCandidates,
+    required Set<String> activeKeys,
+    required String pageUrl,
+  }) {
+    var boundKey = expectedVideoKey.trim();
+    bool isCdnStem(String key) => key.isNotEmpty && !key.startsWith('reel:');
+
+    void consider(String key) {
+      if (isCdnStem(key)) boundKey = key;
+    }
+
+    if (!isCdnStem(boundKey)) {
+      consider(facebookMediaIdentity(primaryUrl));
+    }
+    if (!isCdnStem(boundKey)) {
+      for (final candidate in inputCandidates) {
+        final key = facebookMediaIdentity(candidate);
+        if (isCdnStem(key)) {
+          boundKey = key;
+          break;
+        }
+      }
+    }
+    if (!isCdnStem(boundKey) && activeKeys.length == 1) {
+      consider(activeKeys.first);
+    }
+    if (boundKey.isEmpty) {
+      boundKey = facebookMediaIdentity(pageUrl);
+    }
+    return boundKey;
+  }
+
+  /// Drop stale FB progressive captures that belong to other reels so later
+  /// resolves cannot drain browse history before the current item.
+  void _pruneStaleFacebookProgressiveCaptures(String boundKey) {
+    final key = boundKey.trim();
+    if (key.isEmpty || key.startsWith('reel:')) return;
+    final staleUrls = <String>[];
+    for (final entry in _capturedWebResources.entries) {
+      if (!_isFacebookProgressiveMp4Url(entry.key)) continue;
+      final id = facebookMediaIdentity(entry.key);
+      if (id.isEmpty) continue;
+      if (!facebookIdentitiesMatch(id, key)) {
+        staleUrls.add(entry.key);
+      }
+    }
+    for (final url in staleUrls) {
+      _capturedWebResources.remove(url);
+    }
+    final staleTrusted = <String>[];
+    for (final entry in _trustedMediaCandidateUrls.entries) {
+      if (!_isFacebookProgressiveMp4Url(entry.key)) continue;
+      final id = facebookMediaIdentity(entry.key);
+      if (id.isEmpty) continue;
+      if (!facebookIdentitiesMatch(id, key)) {
+        staleTrusted.add(entry.key);
+      }
+    }
+    for (final url in staleTrusted) {
+      _trustedMediaCandidateUrls.remove(url);
+    }
+    if (staleUrls.isNotEmpty || staleTrusted.isNotEmpty) {
+      debugPrint(
+        'FB bind: pruned stale progressive '
+        'captures=${staleUrls.length} trusted=${staleTrusted.length} '
+        'boundKey=$key',
+      );
+    }
+  }
+
+  /// Cancel in-flight *smart/action-recipe* FB downloads that are not the
+  /// current bound reel. Never touches user manual downloads.
+  void _cancelStaleSmartFacebookDownloads(String boundKey) {
+    final key = boundKey.trim();
+    if (key.isEmpty || key.startsWith('reel:')) return;
+    final staleIds = <String>[];
+    for (final row in _downloadTasks) {
+      if (row['isSmartBatchMedia'] != true) continue;
+      if (row['status'] != 'downloading') continue;
+      final url = (row['url'] ?? '').toString();
+      if (url.startsWith('action-recipe://')) continue;
+      if (!_isFacebookCdnUrl(url) &&
+          !url.toLowerCase().contains('facebook.com')) {
+        continue;
+      }
+      final id = facebookMediaIdentity(url);
+      if (id.isEmpty) continue;
+      if (facebookIdentitiesMatch(id, key)) continue;
+      final idStr = (row['id'] ?? '').toString();
+      if (idStr.isNotEmpty) staleIds.add(idStr);
+    }
+    for (final id in staleIds) {
+      final idx = _downloadTasks.indexWhere((row) => row['id'] == id);
+      if (idx < 0) continue;
+      final token = _downloadTasks[idx]['cancelToken'];
+      if (token is CancelToken && !token.isCancelled) {
+        token.cancel('stale_fb_smart_candidate');
+      }
+      _downloadingUrls.remove((_downloadTasks[idx]['url'] ?? '').toString());
+      _removeDownloadTask(id);
+    }
+    if (staleIds.isNotEmpty) {
+      debugPrint(
+        'FB bind: cancelled ${staleIds.length} stale smart FB downloads '
+        'boundKey=$key',
+      );
+    }
+  }
+
+  /// Facebook 常只在真正播放后才请求当前视频的 progressive/DASH/range 资源。
+  /// 直接调用可见视频的 play()，不点击页面其它区域，避免误进详情或切换相邻视频。
+  Future<Map<String, dynamic>?> _primeFacebookCurrentVideoForDownload() async {
+    try {
+      final raw = await _controller?.evaluateJavascript(
+        source: r'''
+(async () => {
+  const videos = Array.from(document.querySelectorAll('video'));
+  const vw = window.innerWidth || 1;
+  const vh = window.innerHeight || 1;
+  const visible = videos
+    .map((video) => {
+      const r = video.getBoundingClientRect();
+      const area = Math.max(0, Math.min(r.right, vw) - Math.max(r.left, 0)) *
+        Math.max(0, Math.min(r.bottom, vh) - Math.max(r.top, 0));
+      const cx = r.left + r.width / 2;
+      const cy = r.top + r.height / 2;
+      const centerPenalty = Math.abs(cx - vw / 2) + Math.abs(cy - vh / 2);
+      return {video, r, area, centerPenalty};
+    })
+    .filter((x) => x.area > 4096 && x.r.width > 80 && x.r.height > 80)
+    .sort((a, b) => (b.area - a.area) || (a.centerPenalty - b.centerPenalty));
+  const picked = visible[0];
+  if (!picked) return {ok:false, reason:'no_visible_video'};
+  const video = picked.video;
+  const before = {
+    paused: !!video.paused,
+    currentTime: Number(video.currentTime || 0),
+    readyState: Number(video.readyState || 0),
+    src: String(video.currentSrc || video.src || '')
+  };
+  try {
+    const promise = video.play();
+    if (promise && typeof promise.then === 'function') await promise;
+    // A video that is already buffered may only keep requesting its small
+    // audio representation. A tiny seek forces Facebook/MSE to expose the
+    // matching video range without switching to another reel.
+    const duration = Number(video.duration);
+    const current = Number(video.currentTime || 0);
+    if (Number.isFinite(duration) && duration > 1) {
+      const target = Math.min(Math.max(0, current + 0.35), duration - 0.1);
+      if (Math.abs(target - current) > 0.05) video.currentTime = target;
+    }
+  } catch (e) {
+    return {...before, ok:false, reason:'play_rejected', error:String(e)};
+  }
+  return {
+    ok:true,
+    paused: !!video.paused,
+    currentTime: Number(video.currentTime || 0),
+    readyState: Number(video.readyState || 0),
+    duration: Number.isFinite(video.duration) ? Number(video.duration) : null,
+    src: String(video.currentSrc || video.src || '')
+  };
+})()
+''',
+      );
+      final result = _coerceJsMap(raw);
+      debugPrint('FB current-video prime: $result');
+      return result;
+    } catch (e) {
+      debugPrint('FB current-video prime failed: $e');
+      return null;
+    }
+  }
+
+  Future<List<String>> _resolveFacebookLongPressVideoCandidates({
+    required String primaryUrl,
+    required List<String> candidates,
+    required String pageUrl,
+    DateTime? notBefore,
+    String expectedVideoKey = '',
+    bool isReels = false,
+  }) async {
+    final onFacebook =
+        _isFacebookPlatformPage(pageUrl) ||
+        _isFacebookPlatformPage(_currentUrl) ||
+        _isFacebookCdnUrl(primaryUrl) ||
+        candidates.any(_isFacebookCdnUrl);
+    if (!onFacebook) {
+      return <String>[
+        primaryUrl,
+        ...candidates,
+      ].where((url) => url.trim().isNotEmpty).toSet().toList();
+    }
+    final reelsContext =
+        isReels ||
+        isFacebookReelsPageUrl(pageUrl) ||
+        isFacebookReelsPageUrl(_currentUrl);
+    // Explicit long-press / gesture inputs only — never treat page history as
+    // the seed list when identity binding is still unresolved.
+    final inputOnly = <String>[
+      primaryUrl,
+      ...candidates,
+    ].where((url) => url.trim().isNotEmpty).toList(growable: false);
+
+    var effectiveNotBefore = notBefore;
+    var activeKeys = _facebookActivelyStreamedVideoKeys(
+      pageUrl: pageUrl,
+      notBefore: effectiveNotBefore,
+    );
+    // 无论手动还是智能长按，都先确保当前可见视频真正开始播放。Facebook
+    // 往往在此后才暴露当前条目的完整 progressive/DASH/range 地址。
+    final primeStartedAt = DateTime.now().subtract(
+      const Duration(milliseconds: 400),
+    );
+    final primed = await _primeFacebookCurrentVideoForDownload();
+    if (primed?['ok'] == true) {
+      await Future<void>.delayed(const Duration(milliseconds: 1800));
+      effectiveNotBefore = primeStartedAt;
+      activeKeys = _facebookActivelyStreamedVideoKeys(
+        pageUrl: pageUrl,
+        notBefore: effectiveNotBefore,
+      );
+    }
+    var boundKey = _facebookUpgradeBoundKey(
+      expectedVideoKey: expectedVideoKey,
+      primaryUrl: primaryUrl,
+      inputCandidates: inputOnly,
+      activeKeys: activeKeys,
+      pageUrl: pageUrl,
+    );
+    if (boundKey.isNotEmpty && !boundKey.startsWith('reel:')) {
+      _pruneStaleFacebookProgressiveCaptures(boundKey);
+      _cancelStaleSmartFacebookDownloads(boundKey);
+    }
+
+    int scoreOf(String url) => _scoreFacebookVideoCandidate(
+      url,
+      expectedVideoKey: boundKey,
+      isReels: reelsContext,
+      captureTime: _facebookCaptureTimeForUrl(url),
+      playbackStartedAt: effectiveNotBefore,
+      activelyStreamedKeys: activeKeys,
+    );
+
+    List<String> normalizeAll(Iterable<String> raw) {
+      final out = <String>[];
+      final seen = <String>{};
+      for (final value in raw) {
+        final normalized = _normalizeFacebookMediaCandidate(value, video: true);
+        if (normalized == null || !seen.add(normalized)) continue;
+        out.add(normalized);
+      }
+      return out;
+    }
+
+    /// Same-identity progressive variants only — never a multi-reel drain list.
+    List<String> bindOnlyCurrent(List<String> ranked) {
+      final progressive = ranked
+          .where(_isFacebookProgressiveMp4Url)
+          .toList(growable: false);
+      if (progressive.isEmpty) {
+        return ranked;
+      }
+      final top = progressive.first;
+      final topKey = facebookMediaIdentity(top);
+      final sameIdentity =
+          topKey.isEmpty
+              ? <String>[top]
+              : progressive
+                  .where(
+                    (url) => facebookIdentitiesMatch(
+                      facebookMediaIdentity(url),
+                      topKey,
+                    ),
+                  )
+                  .toList(growable: false);
+      final playlists = ranked
+          .where((url) {
+            final lower = url.toLowerCase();
+            if (!lower.contains('.m3u8') && !lower.contains('.mpd')) {
+              return false;
+            }
+            if (topKey.isEmpty) return true;
+            final id = facebookMediaIdentity(url);
+            return id.isEmpty || facebookIdentitiesMatch(id, topKey);
+          })
+          .toList(growable: false);
+      return <String>[...sameIdentity, ...playlists];
+    }
+
+    var merged = List<String>.from(inputOnly);
+    for (var attempt = 0; attempt < 12; attempt++) {
+      // Captures may include neighbor/history progressive MP4s. Only merge
+      // them as *sources to score*; output is always same-identity only.
+      merged = <String>[
+        ...merged,
+        ..._recentCapturedMediaCandidates(
+          MediaType.video,
+          pageUrl: pageUrl,
+          notBefore: effectiveNotBefore,
+          limit: reelsContext ? 32 : 48,
+        ),
+      ];
+      for (final entry in _trustedMediaCandidateUrls.entries) {
+        if (!_isFacebookCdnUrl(entry.key)) continue;
+        if (DateTime.now().difference(entry.value) >
+            const Duration(minutes: 30)) {
+          continue;
+        }
+        merged.add(entry.key);
+      }
+      // Re-upgrade bound key once captures arrive (primary may have been blob).
+      boundKey = _facebookUpgradeBoundKey(
+        expectedVideoKey: boundKey.isNotEmpty ? boundKey : expectedVideoKey,
+        primaryUrl: primaryUrl,
+        inputCandidates: normalizeAll(merged),
+        activeKeys: _facebookActivelyStreamedVideoKeys(
+          pageUrl: pageUrl,
+          notBefore: effectiveNotBefore,
+        ),
+        pageUrl: pageUrl,
+      );
+
+      final usable = normalizeAll(merged);
+      usable.sort((left, right) => scoreOf(right).compareTo(scoreOf(left)));
+
+      List<String> scoped = usable;
+      final hasCdnBound = boundKey.isNotEmpty && !boundKey.startsWith('reel:');
+      if (hasCdnBound) {
+        final matched = _facebookCandidatesMatchingBound(usable, boundKey);
+        if (matched.isNotEmpty) {
+          scoped = matched;
+        } else {
+          // Bound identity known but captures not ready — do NOT fall back to
+          // browse history. Stay on explicit inputs / wait another tick.
+          scoped = normalizeAll(inputOnly);
+          final inputMatched = _facebookCandidatesMatchingBound(
+            scoped,
+            boundKey,
+          );
+          if (inputMatched.isNotEmpty) scoped = inputMatched;
+        }
+      } else if (activeKeys.length == 1) {
+        final matched = _facebookCandidatesMatchingBound(
+          usable,
+          activeKeys.first,
+        );
+        if (matched.isNotEmpty) {
+          scoped = matched;
+          boundKey = activeKeys.first;
+        } else {
+          scoped = normalizeAll(inputOnly);
+        }
+      } else {
+        // No reliable CDN bind yet: never drain page-wide history.
+        scoped = normalizeAll(inputOnly);
+        if (scoped.isEmpty) scoped = usable.take(1).toList(growable: false);
+      }
+
+      final progressive = scoped
+          .where(_isFacebookProgressiveMp4Url)
+          .toList(growable: false);
+      final hasPlaylist = scoped.any((url) {
+        final lower = url.toLowerCase();
+        return lower.contains('.m3u8') || lower.contains('.mpd');
+      });
+      if (progressive.isNotEmpty) {
+        final boundOnly = bindOnlyCurrent(scoped);
+        final top = boundOnly.first;
+        final topKey = facebookMediaIdentity(top);
+        final reason =
+            hasCdnBound && facebookIdentitiesMatch(topKey, boundKey)
+                ? 'bound_current'
+                : (activeKeys.any((key) => facebookIdentitiesMatch(topKey, key))
+                    ? 'active_stream'
+                    : (reelsContext ? 'reels_fallback' : 'quality'));
+        final skippedNeighbor = usable
+            .where(_isFacebookProgressiveMp4Url)
+            .where(
+              (url) =>
+                  topKey.isNotEmpty &&
+                  !facebookIdentitiesMatch(facebookMediaIdentity(url), topKey),
+            )
+            .take(1)
+            .toList(growable: false);
+        debugPrint(
+          'FB media strategy: reason=$reason reels=$reelsContext '
+          'boundKey=${boundKey.isEmpty ? "(none)" : boundKey} '
+          'topKey=${topKey.isEmpty ? "(none)" : topKey} '
+          'activeKeys=${activeKeys.length} '
+          'progressive=${boundOnly.where(_isFacebookProgressiveMp4Url).length} '
+          'playlist=$hasPlaylist '
+          'total=${usable.length} bindOnly=${boundOnly.length} top=$top'
+          '${skippedNeighbor.isEmpty ? "" : " skippedNeighbor=${skippedNeighbor.first}"}',
+        );
+        if (topKey.isNotEmpty && !topKey.startsWith('reel:')) {
+          _pruneStaleFacebookProgressiveCaptures(topKey);
+          _cancelStaleSmartFacebookDownloads(topKey);
+        }
+        return boundOnly;
+      }
+      if (hasPlaylist) {
+        final playlists = bindOnlyCurrent(scoped);
+        debugPrint(
+          'FB media strategy: no progressive MP4; falling back to '
+          'HLS/DASH candidates (${playlists.length}) boundKey=$boundKey',
+        );
+        return playlists;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+    }
+    final fallback = normalizeAll(inputOnly.isNotEmpty ? inputOnly : merged);
+    fallback.sort((left, right) => scoreOf(right).compareTo(scoreOf(left)));
+    final boundOnly = bindOnlyCurrent(fallback);
+    debugPrint(
+      'FB media strategy: resolve exhausted; usable=${boundOnly.length} '
+      'boundKey=$boundKey reels=$reelsContext',
+    );
+    return boundOnly;
+  }
+
   /// Google / X 等登录后需要尽快把 cookie 落盘的站点。
   bool _shouldPersistCookiesForUrl(String? url) {
-    if (_isXPlatformPage(url)) return true;
+    if (_isXPlatformPage(url) || _isFacebookPlatformPage(url)) return true;
     final host = Uri.tryParse((url ?? '').trim())?.host.toLowerCase() ?? '';
     if (host.isEmpty) return false;
     return host == 'google.com' ||
@@ -1252,7 +2007,20 @@ class _BrowserPageState extends State<BrowserPage>
     unawaited(
       c.evaluateJavascript(
         source:
-            'try{window.processedMediaUrls&&window.processedMediaUrls.delete($encoded);}catch(e){}',
+            'try{window.__appReleaseProcessedMediaUrl&&window.__appReleaseProcessedMediaUrl($encoded);'
+            'window.processedMediaUrls&&window.processedMediaUrls.delete($encoded);}catch(e){}',
+      ),
+    );
+  }
+
+  void _clearJsProcessedMediaUrls() {
+    final c = _controller;
+    if (c == null) return;
+    unawaited(
+      c.evaluateJavascript(
+        source:
+            'try{window.__appClearProcessedMediaUrls&&window.__appClearProcessedMediaUrls();'
+            'window.processedMediaUrls&&window.processedMediaUrls.clear();}catch(e){}',
       ),
     );
   }
@@ -1560,9 +2328,7 @@ class _BrowserPageState extends State<BrowserPage>
   }
 
   /// After loan reparent / route return: keep address bar on real URL and reload if blank.
-  Future<void> _recoverBrowsingSurfaceIfBlank({
-    required String reason,
-  }) async {
+  Future<void> _recoverBrowsingSurfaceIfBlank({required String reason}) async {
     if (!mounted || _recoveringBrowsingSurface) return;
     if (!_isBrowsingWebPage) return;
 
@@ -1612,9 +2378,7 @@ class _BrowserPageState extends State<BrowserPage>
         return;
       }
 
-      debugPrint(
-        '[BrowserPage] WebView blank after $reason; restoring $saved',
-      );
+      debugPrint('[BrowserPage] WebView blank after $reason; restoring $saved');
       await ctrl.loadUrl(urlRequest: URLRequest(url: WebUri(saved)));
       _rememberLastBrowsingUrl(saved);
       if (mounted) {
@@ -2504,6 +3268,14 @@ class _BrowserPageState extends State<BrowserPage>
     if (u.isEmpty) return false;
     if (!(u.startsWith('http://') || u.startsWith('https://'))) return false;
     if (u.startsWith('blob:') || u.startsWith('data:')) return false;
+    if (_isFacebookCdnUrl(url) &&
+        (u.contains('.mp4') ||
+            u.contains('.m3u8') ||
+            u.contains('.mpd') ||
+            u.contains('video.') ||
+            u.contains('/v/'))) {
+      return !isMediaFragmentUrl(url);
+    }
     return u.contains('.m3u8') ||
         u.contains('.mpd') ||
         u.contains('.mp4') ||
@@ -2680,7 +3452,13 @@ class _BrowserPageState extends State<BrowserPage>
         host == 'x.com' ||
         host.endsWith('.x.com') ||
         host == 'twitter.com' ||
-        host.endsWith('.twitter.com');
+        host.endsWith('.twitter.com') ||
+        host == 'facebook.com' ||
+        host.endsWith('.facebook.com') ||
+        host == 'fb.com' ||
+        host.endsWith('.fb.com') ||
+        host == 'fb.watch' ||
+        host.endsWith('.fb.watch');
   }
 
   bool _looksLikePreviewClipUrl(String u) {
@@ -2724,6 +3502,7 @@ class _BrowserPageState extends State<BrowserPage>
     if (s.contains('.mp4')) score += 900;
     if (s.contains('.webm')) score += 450;
     if (_isXVideoLikeHost(s)) score += 500;
+    if (_isFacebookCdnUrl(s)) score += 600;
     if (s.contains('setvideourlhigh') || s.contains('high')) score += 220;
     if (_looksLikePreviewClipUrl(s)) score -= 1200;
     return score;
@@ -2762,11 +3541,15 @@ class _BrowserPageState extends State<BrowserPage>
       final aScore =
           _xMediaIdentity(a).isNotEmpty
               ? _scoreXVideoCandidate(a)
-              : _scoreFavoriteVideoUrl(a);
+              : (_isFacebookCdnUrl(a)
+                  ? _scoreFacebookVideoCandidate(a)
+                  : _scoreFavoriteVideoUrl(a));
       final bScore =
           _xMediaIdentity(b).isNotEmpty
               ? _scoreXVideoCandidate(b)
-              : _scoreFavoriteVideoUrl(b);
+              : (_isFacebookCdnUrl(b)
+                  ? _scoreFacebookVideoCandidate(b)
+                  : _scoreFavoriteVideoUrl(b));
       final scoreOrder = bScore.compareTo(aScore);
       if (scoreOrder != 0) return scoreOrder;
       return insertionOrder[a]!.compareTo(insertionOrder[b]!);
@@ -2905,21 +3688,12 @@ class _BrowserPageState extends State<BrowserPage>
             : null;
     if (isSmartGesture) smartTask?.remove('lastGestureFailureType');
     final forceNoPreSkip = _smartForceDownloadNoPreSkip(smartTask);
-    // 动作编排：下载前绝不查重跳过；先强制进下载队列，入库后再按文件哈希去重。
-    final existingMedia =
-        forceNoPreSkip ? null : await _findExistingMediaForItem(item);
+    // 智能/动作编排：下载前禁止按 URL/src/磁盘路径宣称「库内已有」。
+    // 仅入库后内容哈希匹配（或 24h 备案带 fileHash 且库内哈希仍在）才可跳过。
+    final existingMedia = await _findExistingMediaForItem(item);
     if (existingMedia != null && item['allowSourceUrlReuse'] != true) {
-      // 智能下载：仅当库内行对应磁盘文件仍存在时才可跳过（禁止软映射误杀）
       if (isSmartDownload) {
-        if (!await _libraryConfirmsExistingMediaRow(existingMedia)) {
-          debugPrint('智能下载：源地址映射失效（库中无文件），继续下载');
-        } else {
-          if (isSmartGesture) {
-            smartTask?['lastGestureFailureType'] = 'already_in_library';
-          }
-          onFailureType?.call('already_in_library');
-          return false;
-        }
+        debugPrint('智能下载：忽略源地址预命中，继续下载并以内容哈希查重');
       } else {
         final downloadAnyway = await _confirmSourceUrlDuplicateBeforeDownload(
           existingMedia,
@@ -2933,6 +3707,12 @@ class _BrowserPageState extends State<BrowserPage>
       // URL matches are only hints. The downloaded content hash remains the
       // authoritative duplicate check for dynamic and signed media URLs.
     }
+    if (forceNoPreSkip) {
+      debugPrint(
+        'Smart download: forceNoPreSkip on '
+        '(URL/disk pre-skip disabled; hash-only duplicate gate)',
+      );
+    }
     final pageUrl = (item['pageUrl'] ?? '').toString().trim();
     final videoUrl = (item['videoUrl'] ?? '').toString().trim();
     final candidateRaw = item['candidateUrls'];
@@ -2944,7 +3724,19 @@ class _BrowserPageState extends State<BrowserPage>
         }
       }
     }
-    if (!isLongPress) {
+    final looksFacebookItem =
+        item['facebookPipeline'] == true ||
+        smartTask?['facebookPipeline'] == true ||
+        _smartUsesFacebookPipeline(
+          (smartTask?['siteProfile'] ?? '').toString(),
+        ) ||
+        _isFacebookPlatformPage(pageUrl) ||
+        _isFacebookPlatformPage(_currentUrl) ||
+        _isFacebookCdnUrl(videoUrl) ||
+        candidateUrls.any(_isFacebookCdnUrl);
+    // Facebook / Reels: never re-inject page-wide capture history here —
+    // that drains previously browsed progressives before the bound current.
+    if (!isLongPress && !looksFacebookItem) {
       candidateUrls.addAll(
         _recentCapturedMediaCandidates(MediaType.video, pageUrl: pageUrl),
       );
@@ -2989,6 +3781,16 @@ class _BrowserPageState extends State<BrowserPage>
       }
       return false;
     }
+    final isFacebookPipeline =
+        looksFacebookItem ||
+        _isFacebookCdnUrl(downloadUrl) ||
+        candidateUrls.any(_isFacebookCdnUrl);
+    // Facebook 视频必须保留最小体积闸门，避免把 init/stub 黑色视频占位保存入库。
+    final effectiveMinFileBytes =
+        isFacebookPipeline
+            ? max(minFileBytes ?? 0, _kMinFacebookSavedVideoBytes)
+            : minFileBytes;
+    final effectiveMaxFileBytes = maxFileBytes;
     final progress = ValueNotifier<double?>(null);
     final detailNotifier = ValueNotifier<String>('准备下载...');
     var shownDialog = false;
@@ -3092,10 +3894,12 @@ class _BrowserPageState extends State<BrowserPage>
       // just like a long press. Fallback candidates are tried only on failure.
       preservePrimary:
           isLongPress ||
+          isFacebookPipeline ||
           (isSmartBatch &&
               (downloadUrl.startsWith('http://') ||
                   downloadUrl.startsWith('https://'))),
     );
+    String? pairedFacebookAudioUrl;
     // X exposes a master playlist together with separate audio/video streams.
     // Keep one media ID per smart-download step and prefer the complete master.
     final smartXMediaId =
@@ -3131,28 +3935,12 @@ class _BrowserPageState extends State<BrowserPage>
             'id=$smartXMediaId prev=$prev (force download)',
           );
         } else {
-          // completed/failed/stale downloading：仅当媒体库仍有该条才视为重复
-          var libraryConfirmed = false;
-          if (prev == 'completed') {
-            for (final u in <String>[downloadUrl, videoUrl, ...attempts]) {
-              if (u.trim().isEmpty) continue;
-              if (await _libraryConfirmsMediaSource(u)) {
-                libraryConfirmed = true;
-                break;
-              }
-            }
-          }
-          if (libraryConfirmed) {
-            if (isSmartGesture) {
-              smartTask?['lastGestureFailureType'] = 'already_in_library';
-            }
-            onFailureType?.call('already_in_library');
-            return false;
-          }
+          // completed/failed/stale：会话态 / URL 映射绝不能当「库内已有」；
+          // 清掉后强制再下，由入库内容哈希判定真实重复。
           smartVideoStates.remove(smartXMediaId);
           debugPrint(
-            'Smart download: cleared stale videoMediaState '
-            'id=$smartXMediaId prev=$prev (not in library)',
+            'Smart download: cleared videoMediaState '
+            'id=$smartXMediaId prev=$prev (hash-only duplicate gate)',
           );
         }
       }
@@ -3166,11 +3954,113 @@ class _BrowserPageState extends State<BrowserPage>
       );
       smartVideoStates[smartXMediaId] = 'downloading';
     }
-    if (isLongPress && attempts.length > 3) {
-      attempts.removeRange(3, attempts.length);
-    } else if (isSmartBatch && attempts.length > 3) {
+    // Facebook: bind-only-current — quality/stub fallbacks must share the same
+    // CDN identity as the primary. Never drain previously browsed reels.
+    if (isFacebookPipeline) {
+      final expectedFbKey =
+          (item['expectedFbVideoKey'] ?? smartTask?['expectedFbVideoKey'] ?? '')
+              .toString()
+              .trim();
+      var boundFbKey =
+          expectedFbKey.isNotEmpty && !expectedFbKey.startsWith('reel:')
+              ? expectedFbKey
+              : facebookMediaIdentity(downloadUrl);
+      if (boundFbKey.startsWith('reel:') || boundFbKey.isEmpty) {
+        boundFbKey = facebookMediaIdentity(downloadUrl);
+      }
+      if (boundFbKey.isNotEmpty && !boundFbKey.startsWith('reel:')) {
+        final before = attempts.length;
+        attempts.removeWhere((url) {
+          final id = facebookMediaIdentity(url);
+          return id.isNotEmpty && !facebookIdentitiesMatch(id, boundFbKey);
+        });
+        if (before != attempts.length) {
+          debugPrint(
+            'FB pipeline: filtered attempts $before→${attempts.length} '
+            'boundKey=$boundFbKey',
+          );
+        }
+        _cancelStaleSmartFacebookDownloads(boundFbKey);
+        if (smartTask != null) {
+          smartTask['expectedFbVideoKey'] = boundFbKey;
+        }
+      } else if (isSmartDownload && attempts.isNotEmpty) {
+        // 无法提取稳定 Facebook 身份时只允许尝试本次长按得到的首选地址，
+        // 禁止混入页面历史捕获候选，避免下载到其它视频。
+        final primary = attempts.first;
+        attempts
+          ..clear()
+          ..add(primary);
+        debugPrint(
+          'FB pipeline: no stable current-media identity; '
+          'restricted to the long-press primary candidate',
+        );
+      }
+      FacebookMediaMetadata? selectedVideoMetadata;
+      for (final candidate in attempts) {
+        final metadata = facebookMediaMetadata(candidate);
+        if (metadata?.isVideoTrack == true && metadata!.videoId.isNotEmpty) {
+          selectedVideoMetadata = metadata;
+          break;
+        }
+      }
+      if (selectedVideoMetadata != null) {
+        for (final candidate in <String>[
+          videoUrl,
+          downloadUrl,
+          ...candidateUrls,
+          ...attempts,
+        ]) {
+          final metadata = facebookMediaMetadata(candidate);
+          if (metadata?.isAudioOnly == true &&
+              metadata!.videoId == selectedVideoMetadata.videoId) {
+            pairedFacebookAudioUrl = candidate;
+            break;
+          }
+        }
+      }
+      final beforeAudioFilter = attempts.length;
+      attempts.removeWhere(
+        (url) => facebookMediaMetadata(url)?.isAudioOnly == true,
+      );
+      if (beforeAudioFilter != attempts.length) {
+        debugPrint(
+          'FB pipeline: removed ${beforeAudioFilter - attempts.length} '
+          'audio-only fallback candidate(s) before download',
+        );
+      }
+      if (attempts.isEmpty) {
+        if (isSmartGesture) {
+          smartTask?['lastGestureFailureType'] =
+              'fb_video_track_not_captured';
+        }
+        onFailureType?.call('fb_video_track_not_captured');
+        debugPrint(
+          'FB pipeline: abort download because only an audio DASH track was '
+          'captured; wait for the matching video track instead',
+        );
+        if (shownDialog && mounted) {
+          final nav = Navigator.of(context, rootNavigator: true);
+          if (nav.canPop()) nav.pop();
+        }
+        progress.dispose();
+        detailNotifier.dispose();
+        return false;
+      }
+    }
+    if (isLongPress && attempts.length > (isFacebookPipeline ? 8 : 3)) {
+      // Facebook: keep more progressive candidates so stub/size rejects can
+      // fall through to the next URL instead of saving a black placeholder.
+      attempts.removeRange(isFacebookPipeline ? 8 : 3, attempts.length);
+    } else if (isSmartBatch && attempts.length > (isFacebookPipeline ? 8 : 3)) {
       // 智能批量任务应快速换媒体，不能在同一候选上无限消耗时间。
-      attempts.removeRange(3, attempts.length);
+      attempts.removeRange(isFacebookPipeline ? 8 : 3, attempts.length);
+    }
+    if (isFacebookPipeline) {
+      debugPrint(
+        'FB pipeline: robust download candidates=${attempts.length} '
+        'minBytes=$effectiveMinFileBytes primary=$downloadUrl',
+      );
     }
     detailNotifier.value = '已获取下载地址，准备开始...';
     if (_favoriteDownloadDiagnosticsEnabled) {
@@ -3184,24 +4074,28 @@ class _BrowserPageState extends State<BrowserPage>
     for (int i = 0; i < attempts.length; i++) {
       final sw = Stopwatch()..start();
       var failureType = 'unknown';
+      final facebookMetadata = facebookMediaMetadata(attempts[i]);
+      final attemptMinFileBytes =
+          isFacebookPipeline && facebookMetadata?.isVideoTrack == true
+              ? facebookVideoMinimumBytes(attempts[i])
+              : effectiveMinFileBytes;
       progress.value = null;
       detailNotifier.value = '候选 ${i + 1}/${attempts.length}：正在连接...';
       if (smartTask != null &&
-          !forceNoPreSkip &&
           !await _reserveSmartMediaName(
             smartTask,
             attempts[i],
             title: (item['title'] ?? '').toString(),
             pageUrl: pageUrl,
           )) {
-        // 预约拦截仅在媒体库确认后发生；映射为 already_in_library 以便正确跳过
-        // 动作编排 forceNoPreSkip 时已绕过本分支，避免 24h/标题软预约误杀
+        // 预约拦截仅在「24h 备案 fileHash 且库内哈希仍在」时发生；
+        // URL/标题软预约在 forceNoPreSkip 下已放行，不会误杀
         failureType =
             (smartTask['lastSmartReserveBlockReason'] ?? 'already_in_library')
                 .toString();
         if (failureType.isEmpty) failureType = 'already_in_library';
         lastFailureType = failureType;
-        detailNotifier.value = '媒体库已有相同媒体，正在换下一个';
+        detailNotifier.value = '媒体库已有相同内容（哈希），正在换下一个';
         if (_favoriteDownloadDiagnosticsEnabled) {
           Logger.log(
             '[稳健下载诊断] 尝试#${i + 1}/${attempts.length}: 跳过 | failureType=$failureType | url=${attempts[i]}',
@@ -3228,13 +4122,22 @@ class _BrowserPageState extends State<BrowserPage>
                 : null,
         showSuccessPrompt: false,
         showDuplicatePrompt: !isSmartDownload,
-        validateSmartMedia: isSmartDownload,
+        validateSmartMedia: isSmartDownload || isFacebookPipeline,
         isSmartBatchMedia: isSmartDownload,
         smartTask: smartTask,
         smartMediaTitle: (item['title'] ?? '').toString(),
         smartPageUrl: pageUrl,
-        minFileBytes: minFileBytes,
-        maxFileBytes: maxFileBytes,
+        minFileBytes: attemptMinFileBytes,
+        maxFileBytes: effectiveMaxFileBytes,
+        rejectIncompleteMp4Stub: isFacebookPipeline,
+        pairedAudioUrl:
+            isFacebookPipeline &&
+                    facebookIdentitiesMatch(
+                      facebookMediaIdentity(attempts[i]),
+                      facebookMediaIdentity(pairedFacebookAudioUrl ?? ''),
+                    )
+                ? pairedFacebookAudioUrl
+                : null,
         onProgress: (fraction, {String? detail}) {
           progress.value = fraction.clamp(0.0, 1.0);
           if (detail != null && detail.trim().isNotEmpty) {
@@ -3264,9 +4167,21 @@ class _BrowserPageState extends State<BrowserPage>
       if (failureType == 'library_save_failed' ||
           failureType == 'already_in_library' ||
           (failureType == 'outside_requested_size_range' &&
-              item['downloadOrigin'] != 'smart_batch') ||
+              item['downloadOrigin'] != 'smart_batch' &&
+              !isFacebookPipeline) ||
           failureType == 'cancelled') {
         break;
+      }
+      if (isFacebookPipeline &&
+          (failureType == 'outside_requested_size_range' ||
+              failureType == 'invalid_smart_media_content' ||
+              failureType == 'fb_stub_rejected')) {
+        detailNotifier.value = '候选 ${i + 1} 为 stub/过小，正在换下一个…';
+        debugPrint(
+          'FB pipeline: reject candidate #${i + 1} failure=$failureType, '
+          'trying next',
+        );
+        continue;
       }
       if (smartXMediaId.isNotEmpty &&
           failureType == 'invalid_smart_media_content') {
@@ -3379,6 +4294,12 @@ class _BrowserPageState extends State<BrowserPage>
     }
     if (showResultHint && mounted && lastFailureType != 'already_in_library') {
       final canView = ok || lastFailureType == 'already_in_library';
+      final fbStubFail =
+          isFacebookPipeline &&
+          !ok &&
+          (lastFailureType == 'outside_requested_size_range' ||
+              lastFailureType == 'fb_stub_rejected' ||
+              lastFailureType == 'invalid_smart_media_content');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -3388,9 +4309,11 @@ class _BrowserPageState extends State<BrowserPage>
                     ? '文件已下载，但写入媒体库失败；已停止重复下载'
                     : lastFailureType == 'already_in_library'
                     ? '媒体库中已存在相同文件，未重复保存'
+                    : fbStubFail
+                    ? 'Facebook 当前播放窗口未捕获到完整可播放视频（仅收到初始化分片或请求受限）'
                     : (isLongPress ? '当前长按的媒体保存失败，已停止尝试' : '下载失败，请稍后重试')),
           ),
-          duration: Duration(seconds: canView ? 3 : 2),
+          duration: Duration(seconds: canView ? 3 : (fbStubFail ? 4 : 2)),
           action:
               canView
                   ? SnackBarAction(label: '查看', onPressed: _openMediaLibrary)
@@ -3718,37 +4641,18 @@ class _BrowserPageState extends State<BrowserPage>
     Map<String, dynamic> existingRow,
   ) async {
     final smartTask = _smartDownloadTask;
-    // 智能下载 / 动作编排期间：仅当媒体库文件仍存在才自动跳过
-    // （调用方应为入库后哈希查重；动作编排下载前预跳过已关闭）
+    // 智能下载 / 动作编排：仅内容哈希命中且磁盘文件仍在时可跳过
+    // （调用方应为入库后 insertMediaItemIfContentUnique 抛出的哈希重复）
     if (smartTask != null) {
-      if (!await _libraryConfirmsExistingMediaRow(existingRow)) {
-        debugPrint('智能下载：重复行无效（库中无文件），不跳过，继续下载');
+      final hash = (existingRow['file_hash'] ?? '').toString().trim();
+      if (hash.isEmpty || !await _libraryConfirmsFileHash(hash)) {
+        debugPrint('智能下载：重复行无有效内容哈希，不跳过');
         return;
       }
-      smartTask['lastGestureFailureType'] = 'already_in_library';
-      smartTask['duplicateSkipped'] =
-          ((smartTask['duplicateSkipped'] as int?) ?? 0) + 1;
       await _markCurrentMediaHandled(smartTask);
-      // 库内已存在：视为本条已处理完毕，可交由 findNext（非「下载中」抢跑）
-      _actionRecipeFinishAwaitLibrarySave(
-        smartTask,
-        libraryOk: false,
-        outcome: 'already_in_library',
-      );
-      final pendingCompleter = smartTask.remove('actionDownloadCompleter');
-      if (pendingCompleter is Completer<bool> &&
-          !pendingCompleter.isCompleted) {
-        pendingCompleter.complete(false);
-      }
-      smartTask['gestureDownloadPending'] = false;
-      debugPrint('智能下载检测到重复媒体：自动跳过，不显示阻塞弹窗');
-      if (identical(_smartDownloadTask, smartTask)) {
-        _showSmartOperation(
-          smartTask['mode'] == 'action_recipe'
-              ? '库内确认重复（磁盘文件存在），交由套路切下一条'
-              : '重复媒体，已跳过并准备切下一条',
-        );
-      }
+      // 哈希确认库内已存在：关闸 + Completer 完成，立刻允许 waitDownload/findNext
+      _actionRecipeReleaseAlreadyInLibrary(smartTask);
+      debugPrint('智能下载哈希查重命中：自动跳过，不显示阻塞弹窗');
       // 动作编排：只标记，切条交给套路 findNext（此处再切会双切跳条）
       return;
     }
@@ -3836,33 +4740,12 @@ class _BrowserPageState extends State<BrowserPage>
   ) async {
     final smartTask = _smartDownloadTask;
     if (smartTask != null) {
-      // 动作编排：下载前强制继续下载，不做源地址预跳过
-      if (_smartForceDownloadNoPreSkip(smartTask)) {
-        debugPrint('智能下载：action_recipe force download, ignore source pre-skip');
-        return true;
-      }
-      if (!await _libraryConfirmsExistingMediaRow(existingRow)) {
-        debugPrint('智能下载：源地址映射失效（库中无文件），允许继续下载');
-        return true;
-      }
-      smartTask['duplicateSkipped'] =
-          ((smartTask['duplicateSkipped'] as int?) ?? 0) + 1;
-      smartTask['lastGestureFailureType'] = 'already_in_library';
-      await _markCurrentMediaHandled(smartTask);
-      _actionRecipeFinishAwaitLibrarySave(
-        smartTask,
-        libraryOk: false,
-        outcome: 'already_in_library',
+      // URL/src/磁盘路径绝不能宣称「库内已有」；强制下载后由内容哈希判定。
+      debugPrint(
+        '智能下载：忽略源地址预跳过（row=${existingRow['id']}），'
+        '强制走下载+哈希查重',
       );
-      final pendingCompleter = smartTask.remove('actionDownloadCompleter');
-      if (pendingCompleter is Completer<bool> &&
-          !pendingCompleter.isCompleted) {
-        pendingCompleter.complete(false);
-      }
-      smartTask['gestureDownloadPending'] = false;
-      debugPrint('智能下载：源地址已在媒体库确认存在，自动跳过');
-      // 动作编排：只标记，切条交给套路 findNext（此处再切会双切跳条）
-      return false;
+      return true;
     }
     if (!mounted || _mediaDuplicateDialogActive) return false;
     _mediaDuplicateDialogActive = true;
@@ -3949,17 +4832,14 @@ class _BrowserPageState extends State<BrowserPage>
     _syncBrowserSessionPreview();
     // Remount after GlobalKey loan/return: native surface starts at about:blank.
     if (_isBrowsingWebPage) {
-      unawaited(
-        _recoverBrowsingSurfaceIfBlank(reason: 'webview_created'),
-      );
+      unawaited(_recoverBrowsingSurfaceIfBlank(reason: 'webview_created'));
     }
   }
 
   /// Same [InAppWebView] instance (via GlobalKey) for BrowserPage or document loan host.
   Widget _buildLiveSessionWebView() {
     // If PlatformView State is recreated after loan, prefer last real URL over about:blank.
-    final restoreUrl =
-        _isBrowsingWebPage ? _resolvedLastBrowsingUrl() : null;
+    final restoreUrl = _isBrowsingWebPage ? _resolvedLastBrowsingUrl() : null;
     final initialUrl =
         (restoreUrl != null && BrowserSessionPreview.isHttpUrl(restoreUrl))
             ? restoreUrl
@@ -4273,7 +5153,7 @@ class _BrowserPageState extends State<BrowserPage>
       await controller.evaluateJavascript(
         source: '''
       (() => {
-      const handlerVersion = 'media-download-v18';
+          const handlerVersion = 'media-download-v26';
       if (window.__appMediaDownloadHandlersVersion === handlerVersion) return true;
       window.Flutter = window.Flutter || { postMessage: function(m){ try { if(window.flutter_inappwebview && window.flutter_inappwebview.callHandler) window.flutter_inappwebview.callHandler('Flutter', m); } catch(e){} } };
       window.MediaInterceptor = window.MediaInterceptor || {
@@ -4324,7 +5204,7 @@ class _BrowserPageState extends State<BrowserPage>
           const host = u.hostname.toLowerCase();
           const hasMediaExt = /\\.(jpg|jpeg|png|gif|webp|mp4|webm|mov|m3u8|mpd|ts|mp3|m4a)(\\?|\$)/.test(path);
           if (hasMediaExt) return false;
-          const videoSiteHosts = ['tik.', 'porn', 'xvideos', 'xhamster', 'pornhub', 'redtube', 'cdn.', 'stream', 'video.', 'media.'];
+          const videoSiteHosts = ['tik.', 'porn', 'xvideos', 'xhamster', 'pornhub', 'redtube', 'cdn.', 'stream', 'video.', 'media.', 'fbcdn', 'scontent', 'facebook'];
           if (videoSiteHosts.some(h => host.includes(h))) return false;
           const apiPatterns = [
             'detailrecommend', 'wisesearchsetpic', 'wisejson',
@@ -4377,7 +5257,8 @@ class _BrowserPageState extends State<BrowserPage>
           '/img/', '/video/', '/videopage/', '/thumb/', '/preview.', '/thumbnail.', '/stream',
           'youtube.com', 'youtu.be', 'vimeo.com', 'dailymotion.com', 'bilibili.com',
           'videopress', '/mp4', '/webm', '/m3u8', '/hls/', '/manifest', '/segment',
-          'tik.', 'xvideos', 'xhamster', 'pornhub', 'redtube', 'eporner', 'streamable'
+          'tik.', 'xvideos', 'xhamster', 'pornhub', 'redtube', 'eporner', 'streamable',
+          'fbcdn.net', 'scontent.', 'facebook.com', 'fb.watch'
         ];
         if (trustedPatterns.some(p => lowerUrl.includes(p))) return true;
         
@@ -4661,6 +5542,16 @@ class _BrowserPageState extends State<BrowserPage>
         }, 45000);
         return true;
       }
+      // Allow a fresh long-press to retry a different candidate after a wrong
+      // / stub save. Facebook Reels especially must not soft-lock the page.
+      window.__appReleaseProcessedMediaUrl = function(url) {
+        try {
+          if (url) window.processedMediaUrls && window.processedMediaUrls.delete(url);
+        } catch (_) {}
+      };
+      window.__appClearProcessedMediaUrls = function() {
+        try { window.processedMediaUrls && window.processedMediaUrls.clear(); } catch (_) {}
+      };
 
       let pressTimer;
       let pressedElement = null;
@@ -4753,6 +5644,9 @@ class _BrowserPageState extends State<BrowserPage>
           // 社交媒体
           '[data-testid="tweetPhoto"]', '[data-testid="tweetVideo"]',
           '[data-testid="instagram-media"]', '[data-testid="ig-media"]',
+          // Facebook：图片常包在 role=img / 无 src 匹配的容器里
+          '[role="img"]', 'img[srcset]', 'image',
+          'div[style*="background-image"]', 'span[style*="background-image"]',
           // 下载按钮（长按可获取页面视频）
           '[aria-label*="ownload"]', '[aria-label*="下载"]', 'button[class*="download"]', 'a[class*="download"]'
         ];
@@ -4830,11 +5724,109 @@ class _BrowserPageState extends State<BrowserPage>
             const v = root.querySelector && root.querySelector('video');
             const i = root.querySelector && root.querySelector('img');
             if (v && (v.currentSrc || v.src)) return v;
-            if (i && (i.src || i.currentSrc || i.getAttribute('data-src'))) return i;
+            if (i && (i.src || i.currentSrc || i.getAttribute('data-src') || i.getAttribute('srcset'))) return i;
             return null;
           };
           const inner = findMedia(foundElement) || (foundElement.shadowRoot && findMedia(foundElement.shadowRoot));
           if (inner) foundElement = inner;
+        }
+
+        // 方法5: Facebook — 叠层常挡住 img/video，按触点扫描 fbcdn/scontent
+        try {
+          const host = String(location.hostname || '').toLowerCase();
+          const isFb = host.includes('facebook.com') || host === 'fb.com' ||
+            host.endsWith('.fb.com') || host.includes('fb.watch') || host.includes('messenger.com');
+          if (isFb) {
+            const touch = e.touches && e.touches[0];
+            const px = touch ? touch.clientX : (e.target && e.target.getBoundingClientRect
+              ? (e.target.getBoundingClientRect().left + e.target.getBoundingClientRect().width / 2) : 0);
+            const py = touch ? touch.clientY : (e.target && e.target.getBoundingClientRect
+              ? (e.target.getBoundingClientRect().top + e.target.getBoundingClientRect().height / 2) : 0);
+            const looksFbMediaUrl = (u) => {
+              const s = String(u || '').toLowerCase();
+              return s.includes('fbcdn') || s.includes('scontent.') ||
+                /\\.(jpe?g|png|gif|webp|mp4|webm)(\\?|#|\$)/.test(s);
+            };
+            const stack = document.elementsFromPoint(px, py) || [];
+            let fbVideo = null;
+            let fbImage = null;
+            for (const el of stack) {
+              if (!el) continue;
+              const tag = String(el.tagName || '').toLowerCase();
+              if (tag === 'video' && (el.currentSrc || el.src || el.srcObject)) {
+                fbVideo = el;
+                break;
+              }
+              const nestedVideo = el.querySelector && el.querySelector('video');
+              if (nestedVideo && (nestedVideo.currentSrc || nestedVideo.src || nestedVideo.srcObject)) {
+                fbVideo = nestedVideo;
+                break;
+              }
+            }
+            if (!fbVideo) {
+              for (const el of stack) {
+                if (!el) continue;
+                const tag = String(el.tagName || '').toLowerCase();
+                const src = el.currentSrc || el.src || el.getAttribute && (
+                  el.getAttribute('src') || el.getAttribute('data-src') || el.getAttribute('srcset') || ''
+                );
+                if ((tag === 'img' || tag === 'image') && looksFbMediaUrl(src)) {
+                  fbImage = el;
+                  break;
+                }
+                const style = (el.style && (el.style.backgroundImage || el.style.background)) || '';
+                const bgMatch = String(style).match(/url\\(['"]?([^'")]+)['"]?\\)/);
+                if (bgMatch && looksFbMediaUrl(bgMatch[1])) {
+                  fbImage = el;
+                  break;
+                }
+                const nestedImg = el.querySelector && el.querySelector('img[src], img[srcset], img[data-src]');
+                if (nestedImg) {
+                  const nsrc = nestedImg.currentSrc || nestedImg.src ||
+                    nestedImg.getAttribute('data-src') || nestedImg.getAttribute('srcset') || '';
+                  if (looksFbMediaUrl(nsrc)) {
+                    fbImage = nestedImg;
+                    break;
+                  }
+                }
+              }
+            }
+            if (fbVideo) foundElement = fbVideo;
+            else if (fbImage) foundElement = fbImage;
+          }
+        } catch (_) {}
+
+        // Facebook frequently places transparent interaction layers above an
+        // MSE video. If hit-testing misses the underlying element, bind the
+        // long press to the largest visible video instead of ending silently.
+        if (!foundElement) {
+          try {
+            const host = String(location.hostname || '').toLowerCase();
+            const isFb = host.includes('facebook.com') || host === 'fb.com' ||
+              host.endsWith('.fb.com') || host.includes('fb.watch');
+            if (isFb) {
+              const vw = window.innerWidth || 1;
+              const vh = window.innerHeight || 1;
+              const visibleVideos = Array.from(document.querySelectorAll('video'))
+                .map((video) => {
+                  const r = video.getBoundingClientRect();
+                  const width = Math.max(0, Math.min(r.right, vw) - Math.max(r.left, 0));
+                  const height = Math.max(0, Math.min(r.bottom, vh) - Math.max(r.top, 0));
+                  const area = width * height;
+                  const centerPenalty =
+                    Math.abs(r.left + r.width / 2 - vw / 2) +
+                    Math.abs(r.top + r.height / 2 - vh / 2);
+                  return {video, area, centerPenalty};
+                })
+                .filter((row) => row.area > 4096)
+                .sort((a, b) => (b.area - a.area) ||
+                  (a.centerPenalty - b.centerPenalty));
+              if (visibleVideos.length) foundElement = visibleVideos[0].video;
+              // Still acknowledge the gesture on Facebook overlays. The
+              // resolver can then surface a concrete "no media URL" error.
+              if (!foundElement) foundElement = e.target;
+            }
+          } catch (_) {}
         }
         
         pressedElement = foundElement;
@@ -4847,6 +5839,14 @@ class _BrowserPageState extends State<BrowserPage>
           window._lastTouchY = touchY;
           pressTimer = setTimeout(function() {
             createFeedbackElement(touchX, touchY);
+            try {
+              Flutter.postMessage(JSON.stringify({
+                type: 'long_press_status',
+                target: String((pressedElement && pressedElement.tagName) || ''),
+                isSmartGesture: !!(pressedElement && pressedElement.getAttribute &&
+                  pressedElement.getAttribute('data-app-smart-gesture') === '1')
+              }));
+            } catch (_) {}
             handleMediaDownload(pressedElement, e);
           }, 400);
         }
@@ -4861,6 +5861,18 @@ class _BrowserPageState extends State<BrowserPage>
             (e.target && e.target.closest &&
               e.target.closest('[data-app-smart-gesture="1"]'));
           if (smart) return;
+        } catch (_) {}
+        // Facebook 信息流易抖动手指；允许小幅滑动仍触发长按。
+        try {
+          const host = String(location.hostname || '').toLowerCase();
+          const isFb = host.includes('facebook.com') || host === 'fb.com' ||
+            host.endsWith('.fb.com') || host.includes('fb.watch');
+          if (isFb && pressedElement && e.touches && e.touches[0] &&
+              typeof window._lastTouchX === 'number') {
+            const dx = e.touches[0].clientX - window._lastTouchX;
+            const dy = e.touches[0].clientY - window._lastTouchY;
+            if (Math.hypot(dx, dy) < 22) return;
+          }
         } catch (_) {}
         clearTimeout(pressTimer);
         removeFeedbackElement();
@@ -5041,6 +6053,7 @@ class _BrowserPageState extends State<BrowserPage>
         let isPinPornContext = false;
         let isTikPornContext = false;
         let isXPlatformContext = false;
+        let isFacebookContext = false;
         try {
           const hosts = [location.hostname || ''];
           if (document.referrer) hosts.push(new URL(document.referrer).hostname || '');
@@ -5056,6 +6069,13 @@ class _BrowserPageState extends State<BrowserPage>
             const normalized = String(host).toLowerCase();
             return normalized === 'x.com' || normalized.endsWith('.x.com') ||
               normalized === 'twitter.com' || normalized.endsWith('.twitter.com');
+          });
+          isFacebookContext = hosts.some(host => {
+            const normalized = String(host).toLowerCase();
+            return normalized === 'facebook.com' || normalized.endsWith('.facebook.com') ||
+              normalized === 'fb.com' || normalized.endsWith('.fb.com') ||
+              normalized === 'fb.watch' || normalized.endsWith('.fb.watch') ||
+              normalized === 'messenger.com' || normalized.endsWith('.messenger.com');
           });
         } catch (_) {}
         
@@ -5440,6 +6460,257 @@ class _BrowserPageState extends State<BrowserPage>
             }
           } catch (_) {}
         }
+
+        // Facebook: re-resolve media under the finger (overlays hide img/video).
+        // Reels prefetch the *next* progressive MP4 into the interceptor; never
+        // pick "newest fbcdn" blindly — bind to the playing / pressed video.
+        let isFacebookReelsContext = false;
+        try {
+          const path = String(location.pathname || '').toLowerCase();
+          const href = String(location.href || '').toLowerCase();
+          isFacebookReelsContext = isFacebookContext && (
+            path.includes('/reel/') || path.includes('/reels') ||
+            href.includes('/reel/') || href.includes('/reels') ||
+            !!document.querySelector('[data-video-id], [aria-label*="Reel" i], [aria-label*="Reels" i]')
+          );
+        } catch (_) {}
+        const facebookMediaKey = (u) => {
+          const raw = String(u || '').trim();
+          if (!raw || raw.startsWith('blob:') || raw.startsWith('data:')) return '';
+          try {
+            const lower = raw.toLowerCase();
+            const reel = lower.match(/(?:facebook\\.com|fb\\.watch)\\/(?:reel|reels|videos?)\\/(\\d{6,})/);
+            if (reel) return 'reel:' + reel[1];
+            const parsed = new URL(raw, location.href);
+            const encodedEfg = parsed.searchParams.get('efg') || '';
+            if (encodedEfg) {
+              try {
+                const normalized = decodeURIComponent(encodedEfg)
+                  .replace(/-/g, '+').replace(/_/g, '/');
+                const padded = normalized + '='.repeat((4 - normalized.length % 4) % 4);
+                const metadata = JSON.parse(atob(padded));
+                const videoId = String(metadata.video_id || '').trim();
+                if (videoId) return 'fbvideo:' + videoId.toLowerCase();
+              } catch (_) {}
+            }
+            const path = parsed.pathname || '';
+            const file = path.match(/\\/(\\d+(?:_\\d+){1,6}_[a-z0-9]+)\\.(?:mp4|webm|mov)(?:\$|\\/)/i);
+            if (file) return String(file[1] || '').toLowerCase();
+            const stem = path.match(/\\/(\\d{6,}(?:_\\d+)*)\\.(?:mp4|webm|mov)(?:\$|\\/)/i);
+            if (stem) return String(stem[1] || '').toLowerCase();
+            const seg = (path.split('/').filter(Boolean).pop() || '');
+            const opaque = seg.match(/^([A-Za-z0-9_-]{12,})\\.(?:mp4|webm|mov)\$/i);
+            if (opaque) return String(opaque[1] || '').toLowerCase();
+          } catch (_) {}
+          return '';
+        };
+        const facebookTrackMetadata = (u) => {
+          try {
+            const parsed = new URL(String(u || ''), location.href);
+            const encodedEfg = parsed.searchParams.get('efg') || '';
+            if (!encodedEfg) return null;
+            const normalized = decodeURIComponent(encodedEfg)
+              .replace(/-/g, '+').replace(/_/g, '/');
+            const padded = normalized + '='.repeat((4 - normalized.length % 4) % 4);
+            const metadata = JSON.parse(atob(padded));
+            const tag = String(metadata.vencode_tag || '').toLowerCase();
+            return {
+              videoId: String(metadata.video_id || '').trim(),
+              tag: tag,
+              bitrate: Number(metadata.bitrate || 0),
+              height: Number((tag.match(/(?:^|_)(\\d{3,4})p(?:_|\$)/) || [])[1] || 0),
+              audioOnly: tag.includes('audio') || tag.includes('heaac') ||
+                tag.includes('aac_') || tag.endsWith('_aac'),
+              videoTrack: !tag.includes('audio') && !tag.includes('heaac') &&
+                (tag.includes('h264') || tag.includes('avc') ||
+                  tag.includes('video') || /(?:^|_)\\d{3,4}p(?:_|\$)/.test(tag))
+            };
+          } catch (_) {
+            return null;
+          }
+        };
+        const facebookKeysMatch = (a, b) => {
+          const left = String(a || '').toLowerCase();
+          const right = String(b || '').toLowerCase();
+          if (!left || !right) return false;
+          if (left === right) return true;
+          if (left.startsWith('reel:') || right.startsWith('reel:')) return left === right;
+          const core = (v) => v.replace(/_[a-z]\\d*\$/i, '').replace(/_[a-z]+\$/i, '');
+          const ca = core(left), cb = core(right);
+          if (ca.length >= 8 && ca === cb) return true;
+          if (left.length >= 12 && right.includes(left)) return true;
+          if (right.length >= 12 && left.includes(right)) return true;
+          return false;
+        };
+        if (isFacebookContext &&
+            typeof window._lastTouchX === 'number' &&
+            typeof window._lastTouchY === 'number') {
+          try {
+            const looksFbUrl = (u) => {
+              const s = String(u || '').toLowerCase();
+              return s.includes('fbcdn') || s.includes('scontent.') ||
+                /\\.(jpe?g|png|gif|webp|mp4|webm)(\\?|#|\$)/.test(s);
+            };
+            const looksFbPhoto = (u) => {
+              const s = String(u || '').toLowerCase();
+              if (!looksFbUrl(u)) return false;
+              if (s.includes('.mp4') || s.includes('video.')) return false;
+              if (/(avatar|profile|emoji|sprite|sticker|icon|safe_image)/.test(s)) return false;
+              return true;
+            };
+            const tx = window._lastTouchX, ty = window._lastTouchY;
+            const stack = document.elementsFromPoint(tx, ty) || [];
+            for (const el of stack) {
+              if (!el) continue;
+              const tag = String(el.tagName || '').toLowerCase();
+              if (tag === 'video') { target = el; break; }
+              const v = el.querySelector && el.querySelector('video');
+              if (v) { target = v; break; }
+            }
+            // Prefer the playing / largest visible reel under (or near) the finger.
+            const pickedVideo = pickCurrentVideo(tx, ty);
+            if (pickedVideo) target = pickedVideo;
+            const tTag = String((target && target.tagName) || '').toLowerCase();
+            if (tTag !== 'video' && tTag !== 'img' && tTag !== 'image') {
+              for (const el of stack) {
+                if (!el) continue;
+                const tag = String(el.tagName || '').toLowerCase();
+                if (tag === 'img' || tag === 'image') {
+                  const src = el.currentSrc || el.src ||
+                    (el.getAttribute && (el.getAttribute('srcset') || el.getAttribute('data-src'))) || '';
+                  if (looksFbPhoto(src)) { target = el; break; }
+                }
+                const roleImg = el.closest && el.closest('[role="img"]');
+                const nested = (roleImg && roleImg.querySelector &&
+                  roleImg.querySelector('img[src], img[srcset], img[data-src]')) ||
+                  (el.querySelector && el.querySelector('img[src], img[srcset], img[data-src]'));
+                if (nested) {
+                  const src = nested.currentSrc || nested.src ||
+                    nested.getAttribute('srcset') || nested.getAttribute('data-src') || '';
+                  if (looksFbPhoto(src)) { target = nested; break; }
+                }
+              }
+            }
+            if (String((target && target.tagName) || '').toLowerCase() === 'video') {
+              const videoElBound = target;
+              const playingSrc = String(videoElBound.currentSrc || videoElBound.src || '').trim();
+              let boundKey = facebookMediaKey(playingSrc);
+              if (!boundKey) {
+                try {
+                  const reelLink = videoElBound.closest &&
+                    videoElBound.closest('a[href*="/reel/"], a[href*="/reels/"]');
+                  if (reelLink && reelLink.href) boundKey = facebookMediaKey(reelLink.href);
+                } catch (_) {}
+              }
+              if (!boundKey) boundKey = facebookMediaKey(location.href);
+              const looksFbProgressiveRaw = (u) => {
+                const s = String(u || '').toLowerCase();
+                return (s.includes('fbcdn') || s.includes('scontent.')) &&
+                  s.includes('.mp4') && !s.includes('bytestart') && !s.includes('byteend');
+              };
+              // Keys that show active byte-range streaming = currently watching.
+              const activeKeys = new Set();
+              try {
+                if (window.MediaInterceptor && window.MediaInterceptor.interceptedRequests) {
+                  const now = Date.now();
+                  for (const [u, info] of window.MediaInterceptor.interceptedRequests) {
+                    if (!u || (now - (info.timestamp || 0)) > 600000) continue;
+                    const lower = String(u).toLowerCase();
+                    if (!(lower.includes('bytestart') || lower.includes('byteend'))) continue;
+                    if (!(lower.includes('fbcdn') || lower.includes('scontent.'))) continue;
+                    let whole = u;
+                    try {
+                      const parsed = new URL(u, location.href);
+                      parsed.searchParams.delete('bytestart');
+                      parsed.searchParams.delete('byteend');
+                      whole = parsed.toString();
+                    } catch (_) {}
+                    const key = facebookMediaKey(whole);
+                    if (key) activeKeys.add(key);
+                  }
+                }
+              } catch (_) {}
+              if (!boundKey && activeKeys.size === 1) boundKey = Array.from(activeKeys)[0];
+              let bestFb = null, bestFbScore = -1e18, bestFbReason = '';
+              try {
+                if (window.MediaInterceptor && window.MediaInterceptor.interceptedRequests) {
+                  const now = Date.now();
+                  const playbackMs = Math.max(0, Number(videoElBound.currentTime || 0) * 1000);
+                  const sessionStart = now - playbackMs;
+                  for (const [u, info] of window.MediaInterceptor.interceptedRequests) {
+                    if (!u || (now - (info.timestamp || 0)) > 600000) continue;
+                    if (!looksFbProgressiveRaw(u) && !(String(u).toLowerCase().includes('bytestart'))) continue;
+                    let whole = u;
+                    const lowerRaw = String(u).toLowerCase();
+                    if (lowerRaw.includes('bytestart') || lowerRaw.includes('byteend')) {
+                      try {
+                        const parsed = new URL(u, location.href);
+                        parsed.searchParams.delete('bytestart');
+                        parsed.searchParams.delete('byteend');
+                        whole = parsed.toString();
+                      } catch (_) { continue; }
+                    }
+                    if (!looksFbProgressiveRaw(whole)) continue;
+                    const track = facebookTrackMetadata(whole);
+                    if (track && track.audioOnly) continue;
+                    const key = facebookMediaKey(whole);
+                    const ts = Number(info.timestamp || 0);
+                    let score = 0;
+                    let reason = 'capture';
+                    if (boundKey && key && facebookKeysMatch(key, boundKey)) {
+                      score += 5e12; reason = 'bound_current';
+                    } else if (boundKey && key) {
+                      score -= isFacebookReelsContext ? 4e12 : 5e11;
+                    }
+                    if (key && activeKeys.has(key)) {
+                      score += isFacebookReelsContext ? 2e12 : 5e11;
+                      if (reason === 'capture') reason = 'active_stream';
+                    }
+                    // Recency is a weak signal on Reels — newest is often *next*.
+                    if (isFacebookReelsContext) {
+                      const delta = ts - sessionStart;
+                      if (delta >= -2000 && delta <= 8000) score += 2e10;
+                      else if (delta > 20000) score -= 3e10;
+                      score += Math.min(1e9, Math.max(0, ts - (now - 120000)) / 120);
+                    } else {
+                      score += ts;
+                    }
+                    const lower = String(whole).toLowerCase();
+                    if (lower.includes('oe=') || lower.includes('oh=')) score += 1e9;
+                    if (lower.includes('_hd') || lower.includes('hd_src') || lower.includes('oe_hd')) score += 5e8;
+                    if (track && track.videoTrack) {
+                      score += 3e12;
+                      score += Math.max(0, track.height || 0) * 1e9;
+                      score += Math.max(0, track.bitrate || 0) * 100;
+                    }
+                    if (score > bestFbScore) {
+                      bestFbScore = score; bestFb = whole; bestFbReason = reason;
+                    }
+                  }
+                }
+              } catch (_) {}
+              if (playingSrc && !playingSrc.startsWith('blob:') && looksFbProgressiveRaw(playingSrc)) {
+                target.__appFbBoundDownloadUrl = playingSrc;
+                target.__appFbBindReason = 'dom_currentSrc';
+              } else if (bestFb) {
+                target.__appFbBoundDownloadUrl = bestFb;
+                target.__appFbBindReason = bestFbReason || 'ranked_capture';
+              }
+              target.__appFbVideoKey = boundKey || facebookMediaKey(target.__appFbBoundDownloadUrl || '') || '';
+              target.__appFbIsReels = !!isFacebookReelsContext;
+              try {
+                console.log('[FB long-press] bind', {
+                  reels: isFacebookReelsContext,
+                  reason: target.__appFbBindReason || '',
+                  key: target.__appFbVideoKey || '',
+                  url: String(target.__appFbBoundDownloadUrl || '').slice(0, 160),
+                  playing: playingSrc.slice(0, 80),
+                  activeKeys: Array.from(activeKeys)
+                });
+              } catch (_) {}
+            }
+          } catch (_) {}
+        }
         
         // 懒加载/预加载触发 - 视频常需 load() 或短暂 play 才能获取 currentSrc
         try {
@@ -5490,6 +6761,52 @@ class _BrowserPageState extends State<BrowserPage>
             window.MediaInterceptor &&
             window.MediaInterceptor.interceptedRequests &&
             !(isTikPornContext && target.__appTikDownloadUrl)) {
+          // Recover Facebook video representations embedded in Relay JSON.
+          // Native media requests do not always appear in fetch/performance,
+          // especially when the picture is buffered and only audio stays live.
+          if (isFacebookContext) {
+            try {
+              let inspectedChars = 0;
+              const decodeEmbeddedUrl = (value) => String(value || '')
+                .replace(/\\\\u0025/gi, '%')
+                .replace(/\\\\u0026/gi, '&')
+                .replace(/\\\\u003d/gi, '=')
+                .replace(/\\\\u002f/gi, '/')
+                .replace(/\\\\\//g, '/')
+                .replace(/&amp;/g, '&');
+              const scripts = Array.from(document.scripts || []);
+              for (const script of scripts) {
+                const text = String(script.textContent || '');
+                if (!text || !text.includes('.mp4') ||
+                    (!text.includes('playable_url') &&
+                     !text.includes('browser_native') &&
+                     !text.includes('vencode_tag') &&
+                     !text.includes('video_id'))) {
+                  continue;
+                }
+                inspectedChars += text.length;
+                if (inspectedChars > 12000000) break;
+                const matches = [
+                  ...(text.match(/https?:\\/\\/[^"'\\s<>]+?\\.mp4[^"'\\s<>]*/gi) || []),
+                  ...(text.match(/https?:\\\\\\/\\\\\\/[^"'\\s<>]+?\\.mp4[^"'\\s<>]*/gi) || [])
+                ];
+                for (const rawMatch of matches.slice(0, 80)) {
+                  const recovered = decodeEmbeddedUrl(rawMatch);
+                  try {
+                    const parsed = new URL(recovered, location.href).toString();
+                    if (!window.MediaInterceptor.interceptedRequests.has(parsed)) {
+                      window.MediaInterceptor.interceptedRequests.set(parsed, {
+                        method: 'GET',
+                        timestamp: Date.now(),
+                        type: 'facebook_relay_json',
+                        contentType: 'video/mp4'
+                      });
+                    }
+                  } catch (_) {}
+                }
+              }
+            } catch (_) {}
+          }
           // 补充扫描性能条目，防止 Hook 遗漏（例如缓存命中或某些特殊的加载方式）
           try {
             performance.getEntriesByType('resource').forEach(entry => {
@@ -5525,15 +6842,38 @@ class _BrowserPageState extends State<BrowserPage>
 
             const ct = (info.contentType || '').toLowerCase();
             const lower = String(u).toLowerCase();
-            const isStream = (ct.startsWith('video/') || ct.includes('mpegurl') || ct.includes('m3u8') || ct.includes('dash') || /\\.(mp4|webm|mov|m3u8|m3u|mpd)(\\?|\$)/.test(lower)) && !isApiUrl(u);
+            const isFbCdn = lower.includes('fbcdn') || lower.includes('scontent.');
+            const fbTrack = isFacebookContext && isFbCdn
+              ? facebookTrackMetadata(u)
+              : null;
+            if (fbTrack && fbTrack.audioOnly) continue;
+            const isStream = (ct.startsWith('video/') || ct.includes('mpegurl') || ct.includes('m3u8') || ct.includes('dash') || /\\.(mp4|webm|mov|m3u8|m3u|mpd)(\\?|\$)/.test(lower) || (isFacebookContext && isFbCdn && lower.includes('video.'))) && !isApiUrl(u);
             
             if (isStream) {
               // 优先级策略：
               // 1. 如果有当前视频的时长信息，且大于 60s，优先选它（通常广告 < 60s）
               // 2. 否则选时间戳最新的（假设用户正在看的就是最新加载的）
+              // Facebook Reels: newest progressive is often the *next* reel prefetch.
               let score = Number(info.timestamp || 0);
               if (ct.includes('mpegurl') || ct.includes('dash') || lower.includes('.m3u8') || lower.includes('.m3u') || lower.includes('.mpd')) score += 1000000000;
               else if (ct.startsWith('video/') || lower.includes('.mp4') || lower.includes('.webm') || lower.includes('.mov')) score += 500000000;
+              if (isFacebookContext && isFbCdn && lower.includes('.mp4') && !lower.includes('bytestart') && !lower.includes('byteend')) score += 800000000;
+              if (isFacebookContext && isFbCdn && (lower.includes('oe=') || lower.includes('oh=')) && lower.includes('.mp4')) score += 400000000;
+              if (fbTrack && fbTrack.videoTrack) {
+                score += 3000000000000;
+                score += Math.max(0, fbTrack.height || 0) * 1000000000;
+                score += Math.max(0, fbTrack.bitrate || 0) * 100;
+              }
+              if (isFacebookContext && (lower.includes('bytestart') || lower.includes('byteend'))) score -= 1500000000;
+              if (isFacebookContext && target && target.__appFbVideoKey) {
+                const candKey = facebookMediaKey(u);
+                if (candKey && facebookKeysMatch(candKey, target.__appFbVideoKey)) score += 5000000000;
+                else if (candKey) score -= (isFacebookReelsContext ? 4000000000 : 800000000);
+              }
+              if (isFacebookReelsContext) {
+                // Keep quality bonuses, but crush pure-recency so prefetch loses.
+                score = score - Number(info.timestamp || 0) + Math.min(500000000, Number(info.timestamp || 0) * 0.05);
+              }
               if (lower.includes('preview') || lower.includes('trailer') || lower.includes('poster') || lower.includes('thumb')) score -= 1500000000;
               if (lower.includes('.m4s') || lower.includes('/segment') || lower.includes('/chunk')) score -= 1200000000;
               if (score > bestScore) {
@@ -5552,6 +6892,7 @@ class _BrowserPageState extends State<BrowserPage>
         const urlSources = [
           () => target.__appPinnedDownloadUrl,
           () => target.__appTikDownloadUrl,
+          () => target.__appFbBoundDownloadUrl,
           () => target.currentSrc || target.src,
           () => videoEl && (videoEl.currentSrc || videoEl.src),
           () => videoEl && Array.from(videoEl.querySelectorAll('source')).map(s => s.src || s.getAttribute('src')).find(u => u),
@@ -5646,7 +6987,10 @@ class _BrowserPageState extends State<BrowserPage>
             return normalized === 'tik.porn' || normalized.endsWith('.tik.porn') ||
                    normalized === 'pin.porn' || normalized.endsWith('.pin.porn') ||
                    normalized === 'x.com' || normalized.endsWith('.x.com') ||
-                   normalized === 'twitter.com' || normalized.endsWith('.twitter.com');
+                   normalized === 'twitter.com' || normalized.endsWith('.twitter.com') ||
+                   normalized === 'facebook.com' || normalized.endsWith('.facebook.com') ||
+                   normalized === 'fb.com' || normalized.endsWith('.fb.com') ||
+                   normalized === 'fb.watch' || normalized.endsWith('.fb.watch');
           });
         } catch (_) {}
         const preserveBoundBlob = isElementBoundFeedContext && String(url || '').startsWith('blob:');
@@ -5674,6 +7018,82 @@ class _BrowserPageState extends State<BrowserPage>
           // it or participate as retry candidates.
           url = target.__appTikDownloadUrl;
           interceptedStreamUrl = null;
+        }
+        if (isFacebookContext && target.__appFbBoundDownloadUrl) {
+          // Bound to the pressed / playing reel. Do not let the newest
+          // prefetched progressive (usually the next reel) replace it.
+          url = target.__appFbBoundDownloadUrl;
+          interceptedStreamUrl = target.__appFbBoundDownloadUrl;
+        }
+        if (isFacebookContext) {
+          const looksFbProgressive = (u) => {
+            const s = String(u || '').toLowerCase();
+            return (s.includes('fbcdn') || s.includes('scontent.')) &&
+              s.includes('.mp4') && !s.includes('bytestart') && !s.includes('byteend');
+          };
+          if (!(target && target.__appFbBoundDownloadUrl) &&
+              videoEl && interceptedStreamUrl && looksFbProgressive(interceptedStreamUrl)) {
+            url = interceptedStreamUrl;
+          } else if (!(target && target.__appFbBoundDownloadUrl) &&
+                     videoEl && (!url || String(url).startsWith('blob:') ||
+                     domUrlLooksLikePosterOrThumb(url) || url === videoEl.poster)) {
+            try {
+              if (window.MediaInterceptor && window.MediaInterceptor.interceptedRequests) {
+                const now = Date.now();
+                let bestFb = null, bestFbScore = -1;
+                const boundKey = String((target && target.__appFbVideoKey) || '');
+                for (const [u, info] of window.MediaInterceptor.interceptedRequests) {
+                  if (!u || (now - info.timestamp) > 600000 || isMediaFragmentUrl(u)) continue;
+                  if (!looksFbProgressive(u)) continue;
+                  const track = facebookTrackMetadata(u);
+                  if (track && track.audioOnly) continue;
+                  let score = isFacebookReelsContext ? 0 : Number(info.timestamp || 0);
+                  const lower = String(u).toLowerCase();
+                  const key = facebookMediaKey(u);
+                  if (boundKey && key && facebookKeysMatch(key, boundKey)) score += 5e12;
+                  else if (boundKey && key && isFacebookReelsContext) score -= 4e12;
+                  if (lower.includes('oe=') || lower.includes('oh=')) score += 2e9;
+                  if (lower.includes('_hd') || lower.includes('hd_src') || lower.includes('oe_hd')) score += 1e9;
+                  if (track && track.videoTrack) {
+                    score += 3e12;
+                    score += Math.max(0, track.height || 0) * 1e9;
+                    score += Math.max(0, track.bitrate || 0) * 100;
+                  }
+                  if (!isFacebookReelsContext) score += Number(info.timestamp || 0) * 0;
+                  else score += Math.min(1e9, Number(info.timestamp || 0) * 0.01);
+                  if (score > bestFbScore) { bestFbScore = score; bestFb = u; }
+                }
+                if (bestFb) url = bestFb;
+              }
+            } catch (_) {}
+          }
+          // Images: lift largest fbcdn/scontent candidate from srcset / nearby attrs.
+          const tagNow = (target.tagName || '').toLowerCase();
+          if ((tagNow === 'img' || tagNow === 'image' || !videoEl) && url) {
+            try {
+              const srcset = target.srcset || (target.getAttribute && target.getAttribute('srcset')) || '';
+              if (srcset) {
+                let bestUrl = url, bestW = 0, bestBonus = 0;
+                srcset.split(',').forEach(part => {
+                  const trimmed = part.trim();
+                  const u = trimmed.split(/\\s+/)[0];
+                  const wm = trimmed.match(/(\\d+)w/);
+                  const w = wm ? parseInt(wm[1], 10) : 0;
+                  const lower = String(u || '').toLowerCase();
+                  let bonus = 0;
+                  if (lower.includes('_o.') || lower.includes('_o.jpg')) bonus += 2000;
+                  else if (lower.includes('_n.') || lower.includes('_n.jpg')) bonus += 800;
+                  if (lower.includes('p1080x1080') || lower.includes('p960x960')) bonus += 1000;
+                  if (u && (w + bonus >= bestW + bestBonus)) {
+                    bestW = w; bestBonus = bonus; bestUrl = u;
+                  }
+                });
+                if (bestUrl) {
+                  url = bestUrl.startsWith('http') ? bestUrl : new URL(bestUrl, location.href).href;
+                }
+              }
+            } catch (_) {}
+          }
         }
         if (!url) {
           if (videoEl && videoEl.srcObject) {
@@ -5730,10 +7150,14 @@ class _BrowserPageState extends State<BrowserPage>
                   : String(location.href || ''),
                 siteMediaId: isXPlatformContext
                   ? String(target.__appXStatusId || '')
-                  : '',
+                  : (isFacebookContext ? String(target.__appFbVideoKey || '') : ''),
                 expectedXMediaId: isXPlatformContext
                   ? String(target.__appXMediaId || '')
                   : '',
+                expectedFbVideoKey: isFacebookContext
+                  ? String(target.__appFbVideoKey || '')
+                  : '',
+                isFacebookReels: !!(isFacebookContext && (target.__appFbIsReels || isFacebookReelsContext)),
                 title: document.title || '',
                 positionSec: videoEl && isFinite(Number(videoEl.currentTime)) ? Number(videoEl.currentTime) : 0,
                 durationSec: effectiveVideoDuration(videoEl),
@@ -5872,14 +7296,36 @@ class _BrowserPageState extends State<BrowserPage>
           try { push(el && el.getAttribute && el.getAttribute(name)); } catch (_) {}
         };
         push(url);
+        const fbBoundExclusive = isFacebookContext && !!(target && target.__appFbBoundDownloadUrl);
         if (isTikPornContext && target.__appTikDownloadUrl) {
           // The exact source is intentionally the only TikPORN candidate.
         } else if (isPinPornContext && target.__appPinPlayingFallbackUrl) {
           push(target.__appPinPlayingFallbackUrl);
+        } else if (fbBoundExclusive) {
+          // Bound to the pressed/playing reel only — never push historical
+          // interceptor progressives from previously browsed items.
+          push(target.__appFbBoundDownloadUrl);
+          const boundKey = String(target.__appFbVideoKey || facebookMediaKey(target.__appFbBoundDownloadUrl) || '');
+          try {
+            if (window.MediaInterceptor && window.MediaInterceptor.interceptedRequests && boundKey) {
+              const now = Date.now();
+              for (const [u, info] of window.MediaInterceptor.interceptedRequests) {
+                if (!u || (now - (info.timestamp || 0)) > 600000) continue;
+                const lower = String(u).toLowerCase();
+                if (!(lower.includes('fbcdn') || lower.includes('scontent.'))) continue;
+                if (!(lower.includes('.mp4') || lower.includes('.m3u8') || lower.includes('.mpd'))) continue;
+                if (lower.includes('bytestart') || lower.includes('byteend')) continue;
+                const track = facebookTrackMetadata(u);
+                if (track && track.audioOnly) continue;
+                const key = facebookMediaKey(u);
+                if (key && facebookKeysMatch(key, boundKey)) push(u);
+              }
+            }
+          } catch (_) {}
         } else if (interceptedStreamUrl) {
           push(interceptedStreamUrl);
         }
-        if (!(isTikPornContext && target.__appTikDownloadUrl)) try {
+        if (!(isTikPornContext && target.__appTikDownloadUrl) && !fbBoundExclusive) try {
           push(target.currentSrc || target.src || target.href);
           pushAttr(target, 'src');
           pushAttr(target, 'href');
@@ -5899,7 +7345,7 @@ class _BrowserPageState extends State<BrowserPage>
           const bgMatches = String(bg).matchAll(/url\(['"]?([^'")]+)['"]?\)/g);
           for (const m of bgMatches) push(m[1]);
         } catch (_) {}
-        if (videoEl && !isPinPornContext && !(isTikPornContext && target.__appTikDownloadUrl)) {
+        if (videoEl && !isPinPornContext && !(isTikPornContext && target.__appTikDownloadUrl) && !fbBoundExclusive) {
           try {
             const srcs = Array.from(videoEl.querySelectorAll('source')).map(s => s.src || s.getAttribute('src'));
             for (const s of srcs) push(s || '');
@@ -5908,7 +7354,7 @@ class _BrowserPageState extends State<BrowserPage>
         }
         try {
           const mediaInside = target.querySelectorAll && target.querySelectorAll('img, video, source, a[href]');
-          if (mediaInside && !isPinPornContext) {
+          if (mediaInside && !isPinPornContext && !fbBoundExclusive) {
             Array.from(mediaInside).slice(0, 30).forEach(el => {
               push(el.currentSrc || el.src || el.href);
               pushAttr(el, 'src');
@@ -5921,6 +7367,59 @@ class _BrowserPageState extends State<BrowserPage>
             });
           }
         } catch (_) {}
+        if (isFacebookContext && window.MediaInterceptor && window.MediaInterceptor.interceptedRequests && !fbBoundExclusive) {
+          try {
+            const now = Date.now();
+            const ranked = [];
+            const boundKey = String((target && target.__appFbVideoKey) || '');
+            for (const [u, info] of window.MediaInterceptor.interceptedRequests) {
+              if (!u || (now - info.timestamp) > 600000 || isMediaFragmentUrl(u)) continue;
+              const lower = String(u).toLowerCase();
+              const isFb = lower.includes('fbcdn') || lower.includes('scontent.');
+              if (!isFb) continue;
+              if (videoEl) {
+                if (!(lower.includes('.mp4') || lower.includes('.m3u8') || lower.includes('.mpd') || lower.includes('video.'))) continue;
+                const track = facebookTrackMetadata(u);
+                if (track && track.audioOnly) continue;
+                let score = isFacebookReelsContext ? 0 : Number(info.timestamp || 0);
+                const key = facebookMediaKey(u);
+                if (boundKey && key && facebookKeysMatch(key, boundKey)) score += 5e12;
+                else if (boundKey && key && isFacebookReelsContext) score -= 4e12;
+                if (lower.includes('.mp4') && !lower.includes('bytestart')) score += 2e9;
+                if (lower.includes('oe=') || lower.includes('oh=')) score += 1e9;
+                if (track && track.videoTrack) {
+                  score += 3e12;
+                  score += Math.max(0, track.height || 0) * 1e9;
+                  score += Math.max(0, track.bitrate || 0) * 100;
+                }
+                if (isFacebookReelsContext) score += Math.min(1e9, Number(info.timestamp || 0) * 0.01);
+                ranked.push({ u, score });
+              } else if (lower.includes('scontent.') || /\\.(jpe?g|png|webp)(\\?|#|\$)/.test(lower)) {
+                let score = Number(info.timestamp || 0);
+                if (lower.includes('_o.') || lower.includes('p1080x1080')) score += 1e9;
+                ranked.push({ u, score });
+              }
+            }
+            ranked.sort((a, b) => b.score - a.score);
+            ranked.slice(0, 8).forEach(item => push(item.u));
+          } catch (_) {}
+        }
+        if (isFacebookContext && videoEl && String(url || '').startsWith('blob:')) {
+          const boundKey = String((target && target.__appFbVideoKey) || '');
+          const progressive = cands.find(u => {
+            const s = String(u || '').toLowerCase();
+            if (!((s.includes('fbcdn') || s.includes('scontent.')) &&
+              s.includes('.mp4') && !s.includes('bytestart') && !s.includes('byteend'))) return false;
+            if (!boundKey) return true;
+            const key = facebookMediaKey(u);
+            return !key || facebookKeysMatch(key, boundKey);
+          }) || cands.find(u => {
+            const s = String(u || '').toLowerCase();
+            return (s.includes('fbcdn') || s.includes('scontent.')) &&
+              s.includes('.mp4') && !s.includes('bytestart') && !s.includes('byteend');
+          });
+          if (progressive) url = progressive;
+        }
         if (tryBlobOrDataUrl(url, mediaType)) {
           e.preventDefault();
           return;
@@ -5940,7 +7439,13 @@ class _BrowserPageState extends State<BrowserPage>
             ? String(target.__appPinSlideId || '')
             : (isTikPornContext
               ? String(target.__appTikVideoId || '')
-              : (isXPlatformContext ? String(target.__appXStatusId || '') : '')),
+              : (isXPlatformContext
+                ? String(target.__appXStatusId || '')
+                : (isFacebookContext ? String(target.__appFbVideoKey || '') : ''))),
+          expectedFbVideoKey: isFacebookContext
+            ? String(target.__appFbVideoKey || '')
+            : '',
+          isFacebookReels: !!(isFacebookContext && (target.__appFbIsReels || isFacebookReelsContext)),
           sourcePageUrl: isXPlatformContext
             ? String(target.__appXStatusUrl || location.href || '')
             : String(location.href || ''),
@@ -6131,7 +7636,7 @@ class _BrowserPageState extends State<BrowserPage>
       );
       final ready = await controller.evaluateJavascript(
         source:
-            "window.__appMediaDownloadHandlersVersion === 'media-download-v18'",
+            "window.__appMediaDownloadHandlersVersion === 'media-download-v26'",
       );
       if (ready == true || ready.toString().toLowerCase() == 'true') {
         if (_lastMediaHandlerFailureUrl == injectionUrl) {
@@ -6180,6 +7685,21 @@ class _BrowserPageState extends State<BrowserPage>
     try {
       final data = jsonDecode(message);
       if (data is! Map || !data.containsKey('type')) return;
+      if (data['type'] == 'long_press_status') {
+        if (mounted && data['isSmartGesture'] != true) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('已识别长按，正在解析当前媒体…'),
+              duration: Duration(milliseconds: 900),
+            ),
+          );
+        }
+        debugPrint(
+          'media long press acknowledged: '
+          'target=${data['target'] ?? 'unknown'}',
+        );
+        return;
+      }
 
       final dynamic urlValue = data['url'];
       final bool isBase64 = data['isBase64'] ?? false;
@@ -6244,7 +7764,13 @@ class _BrowserPageState extends State<BrowserPage>
       final downloadCandidateUrls = normalizeMediaCandidateUrls(
         rawDownloadCandidateUrls,
         video: requestedMediaType == MediaType.video,
-        maxCandidates: action == 'download' ? 4 : 12,
+        maxCandidates:
+            action == 'download'
+                ? (_isFacebookPlatformPage(messagePageUrl) ||
+                        _isFacebookPlatformPage(_currentUrl)
+                    ? 12
+                    : 4)
+                : 12,
       );
       for (final candidate in downloadCandidateUrls) {
         _trustMediaCandidate(candidate);
@@ -6356,20 +7882,28 @@ class _BrowserPageState extends State<BrowserPage>
           return;
         }
         _longPressVideoDownloadInProgress = true;
+        var downloaded = false;
+        var primaryVideoUrl = '';
+        var candidateUrls = <String>[];
+        var isFacebookDownload = false;
         try {
           final pageUrl = (data['pageUrl'] ?? '').toString().trim();
           final sourcePageUrl = (data['sourcePageUrl'] ?? '').toString().trim();
           final title = (data['title'] ?? '').toString().trim();
-          var candidateUrls = List<String>.from(downloadCandidateUrls);
+          candidateUrls = List<String>.from(downloadCandidateUrls);
           final normalizedPrimary = normalizeMediaCandidateUrls(
             <String>[_toAbsoluteUrl(urlValue)],
             video: true,
             maxCandidates: 1,
           );
-          var primaryVideoUrl =
+          primaryVideoUrl =
               normalizedPrimary.isEmpty ? '' : normalizedPrimary.first;
           final isXDownload =
               _isXPlatformPage(pageUrl) || _isXPlatformPage(_currentUrl);
+          isFacebookDownload =
+              _isFacebookPlatformPage(pageUrl) ||
+              _isFacebookPlatformPage(_currentUrl) ||
+              _isFacebookCdnUrl(primaryVideoUrl);
           final expectedXMediaId =
               (data['expectedXMediaId'] ?? '').toString().trim();
 
@@ -6386,6 +7920,40 @@ class _BrowserPageState extends State<BrowserPage>
           } else if (isXDownload && expectedXMediaId.isNotEmpty) {
             primaryVideoUrl = '';
             candidateUrls = <String>[];
+          } else if (isFacebookDownload) {
+            final expectedFbVideoKey =
+                (data['expectedFbVideoKey'] ?? data['siteMediaId'] ?? '')
+                    .toString()
+                    .trim();
+            final isFbReels =
+                data['isFacebookReels'] == true ||
+                isFacebookReelsPageUrl(
+                  pageUrl.isNotEmpty ? pageUrl : _currentUrl,
+                ) ||
+                isFacebookReelsPageUrl(sourcePageUrl);
+            final fbCandidates = await _resolveFacebookLongPressVideoCandidates(
+              primaryUrl: primaryVideoUrl,
+              candidates: candidateUrls,
+              pageUrl: pageUrl.isNotEmpty ? pageUrl : _currentUrl,
+              notBefore: sessionNotBefore,
+              expectedVideoKey: expectedFbVideoKey,
+              isReels: isFbReels,
+            );
+            if (fbCandidates.isNotEmpty) {
+              primaryVideoUrl = fbCandidates.first;
+              candidateUrls = fbCandidates.skip(1).toList();
+            }
+            final boundKey =
+                facebookMediaIdentity(primaryVideoUrl).isNotEmpty
+                    ? facebookMediaIdentity(primaryVideoUrl)
+                    : expectedFbVideoKey;
+            if (boundKey.isNotEmpty && !boundKey.startsWith('reel:')) {
+              final task = _smartDownloadTask;
+              if (task != null &&
+                  (isSmartGesture || _isSmartDemoLearningActive())) {
+                task['expectedFbVideoKey'] = boundKey;
+              }
+            }
           }
 
           if (primaryVideoUrl.isEmpty && candidateUrls.isEmpty) {
@@ -6397,9 +7965,13 @@ class _BrowserPageState extends State<BrowserPage>
               await _completeSmartGestureDownload(false);
             } else if (mounted) {
               ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('当前仅检测到无法单独保存的视频分片，请继续播放后再长按重试'),
-                  duration: Duration(seconds: 2),
+                SnackBar(
+                  content: Text(
+                    isFacebookDownload
+                        ? _facebookUnsupportedMediaMessage(forVideo: true)
+                        : '当前仅检测到无法单独保存的视频分片，请继续播放后再长按重试',
+                  ),
+                  duration: Duration(seconds: isFacebookDownload ? 4 : 2),
                 ),
               );
             }
@@ -6415,6 +7987,13 @@ class _BrowserPageState extends State<BrowserPage>
             'title': title,
             'candidateUrls': candidateUrls,
             'downloadOrigin': 'long_press',
+            'facebookPipeline': isFacebookDownload,
+            'expectedFbVideoKey':
+                facebookMediaIdentity(primaryVideoUrl).isNotEmpty
+                    ? facebookMediaIdentity(primaryVideoUrl)
+                    : (data['expectedFbVideoKey'] ?? data['siteMediaId'] ?? '')
+                        .toString()
+                        .trim(),
             'isSmartGesture': isSmartGesture || _isSmartDemoLearningActive(),
             'smartTask':
                 (isSmartGesture || _isSmartDemoLearningActive())
@@ -6424,9 +8003,11 @@ class _BrowserPageState extends State<BrowserPage>
             'durationSec': messageDurationSeconds,
           };
 
-          final downloaded = await _downloadMediaRobustly(
+          downloaded = await _downloadMediaRobustly(
             item: itemMap,
             showResultHint: !isSmartGesture,
+            minFileBytes:
+                isFacebookDownload ? _kMinFacebookSavedVideoBytes : null,
           );
           if (isSmartGesture) {
             await _completeSmartGestureDownload(downloaded);
@@ -6435,6 +8016,18 @@ class _BrowserPageState extends State<BrowserPage>
         } finally {
           _longPressVideoDownloadInProgress = false;
           _releaseJsProcessedUrl(urlValue);
+          if (primaryVideoUrl.isNotEmpty && primaryVideoUrl != urlValue) {
+            _releaseJsProcessedUrl(primaryVideoUrl);
+            _processedMediaUrlsSince.remove(primaryVideoUrl);
+          }
+          // Failed / stub saves must not soft-block a correct Reels retry.
+          if (!downloaded && isFacebookDownload) {
+            _clearJsProcessedMediaUrls();
+            _processedMediaUrlsSince.remove(urlValue);
+            for (final candidate in candidateUrls) {
+              _processedMediaUrlsSince.remove(candidate);
+            }
+          }
         }
       }
 
@@ -6535,6 +8128,90 @@ class _BrowserPageState extends State<BrowserPage>
                   return;
                 }
               }
+            }
+            if (isStreamReference &&
+                (_isFacebookPlatformPage(messagePageUrl) ||
+                    _isFacebookPlatformPage(_currentUrl) ||
+                    downloadCandidateUrls.any(_isFacebookCdnUrl))) {
+              final expectedFbVideoKey =
+                  (data['expectedFbVideoKey'] ?? data['siteMediaId'] ?? '')
+                      .toString()
+                      .trim();
+              final isFbReels =
+                  data['isFacebookReels'] == true ||
+                  isFacebookReelsPageUrl(messagePageUrl) ||
+                  isFacebookReelsPageUrl(_currentUrl);
+              final fbCandidates =
+                  await _resolveFacebookLongPressVideoCandidates(
+                    primaryUrl:
+                        downloadCandidateUrls.isNotEmpty
+                            ? downloadCandidateUrls.first
+                            : '',
+                    candidates: downloadCandidateUrls,
+                    pageUrl:
+                        messagePageUrl.isNotEmpty
+                            ? messagePageUrl
+                            : _currentUrl,
+                    notBefore: sessionNotBefore,
+                    expectedVideoKey: expectedFbVideoKey,
+                    isReels: isFbReels,
+                  );
+              if (fbCandidates.isNotEmpty) {
+                final sourcePageUrl =
+                    (data['sourcePageUrl'] ?? messagePageUrl).toString().trim();
+                final boundKey = facebookMediaIdentity(fbCandidates.first);
+                if (boundKey.isNotEmpty &&
+                    !boundKey.startsWith('reel:') &&
+                    (isSmartGesture || _isSmartDemoLearningActive())) {
+                  _smartDownloadTask?['expectedFbVideoKey'] = boundKey;
+                }
+                final downloaded = await _downloadMediaRobustly(
+                  item: <String, dynamic>{
+                    'pageUrl':
+                        sourcePageUrl.isNotEmpty
+                            ? sourcePageUrl
+                            : messagePageUrl,
+                    'videoUrl': fbCandidates.first,
+                    'candidateUrls': fbCandidates.skip(1).toList(),
+                    'title': (data['title'] ?? '').toString(),
+                    'downloadOrigin': 'long_press',
+                    'facebookPipeline': true,
+                    'expectedFbVideoKey':
+                        boundKey.isNotEmpty ? boundKey : expectedFbVideoKey,
+                    'isSmartGesture':
+                        isSmartGesture || _isSmartDemoLearningActive(),
+                    'smartTask':
+                        (isSmartGesture || _isSmartDemoLearningActive())
+                            ? _smartDownloadTask
+                            : null,
+                    'sessionId': mediaSessionId,
+                    'durationSec': messageDurationSeconds,
+                  },
+                  showResultHint: !isSmartGesture,
+                );
+                if (isSmartGesture) {
+                  await _completeSmartGestureDownload(downloaded);
+                }
+                return;
+              }
+              // Blob/MSE only — no recoverable progressive/playlist URL.
+              if (isSmartGesture) {
+                final task = _smartDownloadTask;
+                if (task != null) {
+                  task['lastGestureFailureType'] = 'no_direct_url';
+                }
+                await _completeSmartGestureDownload(false);
+              } else if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      _facebookUnsupportedMediaMessage(forVideo: true),
+                    ),
+                    duration: const Duration(seconds: 4),
+                  ),
+                );
+              }
+              return;
             }
             final boundFragmentValue = data['boundFragments'];
             final boundFragmentUrls = <String>[];
@@ -6714,7 +8391,7 @@ class _BrowserPageState extends State<BrowserPage>
                 (task['lastGestureFailureType'] ?? '').toString().isEmpty) {
               // blob/base64 路径未写入 failureType 时，空 failure 会被
               // suppressEarlyComplete 当成噪声压制，导致入库闸门永不关闭。
-              task['lastGestureFailureType'] = 'invalid_smart_media_content';
+              task['lastGestureFailureType'] = 'download_failed_retryable';
             }
             await _completeSmartGestureDownload(_mediaDownloadSaveResolved);
           }
@@ -6746,34 +8423,18 @@ class _BrowserPageState extends State<BrowserPage>
           selectedType = MediaType.video;
         }
         if (selectedType == MediaType.video) {
-          final forceNoPreSkip = _smartForceDownloadNoPreSkip(
-            _smartDownloadTask,
-          );
-          // 动作编排：绝不在下载前因源地址映射跳过，强制进入进度队列下载
-          if (!forceNoPreSkip) {
-            final existing = await _findExistingVideoBeforeDownload(
-              resolvedUrl,
-            );
-            if (existing != null) {
-              if (isSmartGesture) {
-                // 仅磁盘文件仍在时才可视为库内重复
-                if (!await _libraryConfirmsExistingMediaRow(existing)) {
-                  debugPrint(
-                    'Smart gesture: source map stale (no file), force download',
-                  );
-                } else {
-                  final task = _smartDownloadTask;
-                  if (task != null) {
-                    task['lastGestureFailureType'] = 'already_in_library';
-                  }
-                  await _completeSmartGestureDownload(false);
-                  return;
-                }
-              } else if (!await _confirmSourceUrlDuplicateBeforeDownload(
-                existing,
-              )) {
-                return;
-              }
+          // 智能手势/动作编排：禁止 URL+磁盘预跳过；仅入库后内容哈希可 already_in_library
+          final existing = await _findExistingVideoBeforeDownload(resolvedUrl);
+          if (existing != null) {
+            if (isSmartGesture) {
+              debugPrint(
+                'Smart gesture: ignore source-map pre-skip, '
+                'force download+hash',
+              );
+            } else if (!await _confirmSourceUrlDuplicateBeforeDownload(
+              existing,
+            )) {
+              return;
             }
           }
         }
@@ -6803,8 +8464,79 @@ class _BrowserPageState extends State<BrowserPage>
         for (final candidate in downloadCandidateUrls) {
           pushAttempt(candidate);
         }
-        if (attempts.length > 3) {
-          attempts.removeRange(3, attempts.length);
+        if (selectedType == MediaType.image &&
+            (_isFacebookPlatformPage(messagePageUrl) ||
+                _isFacebookPlatformPage(_currentUrl) ||
+                _isFacebookCdnUrl(resolvedUrl))) {
+          final fbImageAttempts = <String>[];
+          final fbSeen = <String>{};
+          void pushFbImage(String? raw) {
+            final normalized = _normalizeFacebookMediaCandidate(
+              raw ?? '',
+              video: false,
+            );
+            if (normalized == null || !fbSeen.add(normalized)) return;
+            fbImageAttempts.add(normalized);
+          }
+
+          pushFbImage(resolvedUrl);
+          for (final candidate in downloadCandidateUrls) {
+            pushFbImage(candidate);
+          }
+          for (final candidate in _recentCapturedMediaCandidates(
+            MediaType.image,
+            pageUrl: messagePageUrl,
+            notBefore: sessionNotBefore,
+            limit: 24,
+          )) {
+            if (_isFacebookCdnUrl(candidate) ||
+                candidate.toLowerCase().contains('scontent')) {
+              pushFbImage(candidate);
+            }
+          }
+          fbImageAttempts.sort(
+            (a, b) => _scoreFacebookImageCandidate(
+              b,
+            ).compareTo(_scoreFacebookImageCandidate(a)),
+          );
+          attempts
+            ..clear()
+            ..addAll(fbImageAttempts);
+          seenAttempts
+            ..clear()
+            ..addAll(fbImageAttempts);
+        }
+        final maxImageAttempts =
+            selectedType == MediaType.image &&
+                    (_isFacebookPlatformPage(messagePageUrl) ||
+                        _isFacebookPlatformPage(_currentUrl))
+                ? 8
+                : 3;
+        if (attempts.length > maxImageAttempts) {
+          attempts.removeRange(maxImageAttempts, attempts.length);
+        }
+        if (selectedType == MediaType.image &&
+            attempts.isEmpty &&
+            (_isFacebookPlatformPage(messagePageUrl) ||
+                _isFacebookPlatformPage(_currentUrl) ||
+                _isFacebookCdnUrl(resolvedUrl))) {
+          if (isSmartGesture) {
+            final task = _smartDownloadTask;
+            if (task != null) {
+              task['lastGestureFailureType'] = 'no_direct_url';
+            }
+            await _completeSmartGestureDownload(false);
+          } else if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  _facebookUnsupportedMediaMessage(forVideo: false),
+                ),
+                duration: const Duration(seconds: 3),
+              ),
+            );
+          }
+          return;
         }
         var success = false;
         var lastFailureType = 'unknown';
@@ -6904,9 +8636,7 @@ class _BrowserPageState extends State<BrowserPage>
                     !_mediaDownloadSaveResolved &&
                     (task['lastGestureFailureType'] ?? '').toString().isEmpty) {
                   task['lastGestureFailureType'] =
-                      recovered
-                          ? 'invalid_smart_media_content'
-                          : lastFailureType;
+                      'download_failed_retryable';
                 }
                 await _completeSmartGestureDownload(_mediaDownloadSaveResolved);
               }
@@ -7115,6 +8845,8 @@ class _BrowserPageState extends State<BrowserPage>
             : (normalizedMediaType == 'audio'
                 ? MediaType.audio
                 : MediaType.video),
+        allowDuplicate: false,
+        relaxValidation: false,
       );
       _notifyMediaDownloadSaved();
       if (mounted) {
@@ -8653,6 +10385,16 @@ class _BrowserPageState extends State<BrowserPage>
       return 'x';
     }
     if (value == '91cg1.com' || value.endsWith('.91cg1.com')) return '91';
+    if (value == 'facebook.com' ||
+        value.endsWith('.facebook.com') ||
+        value == 'fb.com' ||
+        value.endsWith('.fb.com') ||
+        value == 'fb.watch' ||
+        value.endsWith('.fb.watch') ||
+        value == 'messenger.com' ||
+        value.endsWith('.messenger.com')) {
+      return 'facebook';
+    }
     if (value == 'tik.porn' || value.endsWith('.tik.porn')) return 'tikporn';
     if (value == 'pin.porn' || value.endsWith('.pin.porn')) return 'pinporn';
     if (value.contains('xvideos') ||
@@ -8670,9 +10412,18 @@ class _BrowserPageState extends State<BrowserPage>
   bool _smartUsesLegacyPriorityPipeline(String siteProfile) =>
       siteProfile == 'x' || siteProfile == '91';
 
+  /// Facebook / Reels：仅保留下载引擎侧质量策略（绑当前 reel、拒 stub）。
+  /// 不再提供任何内置/专用下载套路，操作步骤完全由用户动作编排决定。
+  bool _smartUsesFacebookPipeline(String siteProfile) =>
+      siteProfile == 'facebook' || siteProfile == 'facebook_image';
+
   /// 已固化的「专有」站点套路（重要常用站逐个加入）。
   /// 默认只对本站自动选用；用户可在「沿用套路」里手动借用到其他站。
-  static const Set<String> _dedicatedSmartPatternIds = <String>{'x', '91'};
+  /// Facebook 芯片启动的是简单动作循环，不是复杂智能 FSM。
+  static const Set<String> _dedicatedSmartPatternIds = <String>{
+    'x',
+    '91',
+  };
 
   /// 「沿用套路」可选列表：全部专有站 + 普适通用套路（不按当前 host 隐藏）。
   static const List<Map<String, String>> _confirmedSmartPatterns =
@@ -8685,15 +10436,36 @@ class _BrowserPageState extends State<BrowserPage>
   static final Set<String> _confirmedSmartPatternIds =
       _confirmedSmartPatterns.map((e) => e['id']!).toSet();
 
-  /// 默认选用：有本站专有套路 → 专有；否则 → 通用套路。
-  String _defaultConfirmedPatternIdForHost(String host) {
+  /// 默认选用：有本站专有套路 → 专有；否则 → 通用。
+  String _defaultConfirmedPatternIdForHost(
+    String host, {
+    MediaType mediaType = MediaType.video,
+  }) {
     final profile = _smartSiteProfile(host);
     if (_dedicatedSmartPatternIds.contains(profile)) return profile;
     return 'generic';
   }
 
-  bool _hostHasDedicatedSmartPattern(String host) =>
-      _dedicatedSmartPatternIds.contains(_smartSiteProfile(host));
+  bool _hostHasDedicatedSmartPattern(String host) {
+    final profile = _smartSiteProfile(host);
+    return _dedicatedSmartPatternIds.contains(profile);
+  }
+
+  /// 专有芯片对应的可编辑种子（内置管线仍保留；重新编排后可覆盖为本站默认）。
+  SmartActionRecipe _dedicatedPatternEditableSeed(
+    String patternId,
+    String host,
+  ) {
+    final hostKey = host.isEmpty ? 'unknown' : host;
+    switch (patternId) {
+      case 'x':
+        return SmartActionRecipe.xEditableSeedTemplate(hostKey);
+      case '91':
+        return SmartActionRecipe.ninetyOneEditableSeedTemplate(hostKey);
+      default:
+        return SmartActionRecipe.feedTemplate(hostKey);
+    }
+  }
 
   String _confirmedPatternLabel(String patternId) {
     for (final row in _confirmedSmartPatterns) {
@@ -8852,6 +10624,8 @@ class _BrowserPageState extends State<BrowserPage>
       case 'legacy_x':
       case 'legacy_91':
         return '原智能';
+      case 'legacy_facebook':
+        return 'FB长按→上滑';
       case 'site_address':
         return '站内地址';
       case 'longpress_inplace':
@@ -8964,6 +10738,8 @@ class _BrowserPageState extends State<BrowserPage>
               ? acquisition
               : _smartUsesLegacyPriorityPipeline(profile)
               ? (profile == 'x' ? 'legacy_x' : 'legacy_91')
+              : _smartUsesFacebookPipeline(profile)
+              ? 'legacy_facebook'
               : ((task['gestureMode'] == true)
                   ? 'longpress_inplace'
                   : 'site_address');
@@ -8986,6 +10762,7 @@ class _BrowserPageState extends State<BrowserPage>
       case 'detail_longpress':
       case 'legacy_x':
       case 'legacy_91':
+      case 'legacy_facebook':
       case 'site_address':
         return acquisition;
       case 'longpress':
@@ -9000,7 +10777,9 @@ class _BrowserPageState extends State<BrowserPage>
 
   bool _isLongpressAcquisition(String acquisition) {
     final value = _normalizeSmartAcquisition(acquisition);
-    return value == 'longpress_inplace' || value == 'detail_longpress';
+    return value == 'longpress_inplace' ||
+        value == 'detail_longpress' ||
+        value == 'legacy_facebook';
   }
 
   void _applyAcquisitionLockPrefs(
@@ -9039,6 +10818,16 @@ class _BrowserPageState extends State<BrowserPage>
         task['allowLegacyAlternateAcquire'] = true;
       }
     }
+    if (_smartUsesFacebookPipeline(siteProfile) &&
+        (value == 'sniff' || value == 'site_address')) {
+      final preferred = (task['preferredAcquisition'] ?? '').toString();
+      final allowAlt = task['allowLegacyAlternateAcquire'] == true;
+      if (!allowAlt && preferred != 'sniff' && preferred != 'site_address') {
+        value = 'legacy_facebook';
+      } else {
+        task['allowLegacyAlternateAcquire'] = true;
+      }
+    }
     final previous = (task['lockedAcquisition'] ?? '').toString();
     task['lockedAcquisition'] = value;
     task['lockedFailStreak'] = 0;
@@ -9066,6 +10855,15 @@ class _BrowserPageState extends State<BrowserPage>
       _applyAcquisitionLockPrefs(task, acq);
       task['preferSniffFirst'] = false;
       task['skipSniffAcquire'] = true;
+    } else if (_smartUsesFacebookPipeline(siteProfile)) {
+      // Facebook：下载引擎绑当前 reel + stub 闸门；编排默认已改为动作套路循环。
+      _applyAcquisitionLockPrefs(task, 'legacy_facebook');
+      task['preferSniffFirst'] = false;
+      task['skipSniffAcquire'] = true;
+      task['gestureMode'] = true;
+      task['protectVisibleGestureFlow'] = true;
+      task['facebookPipeline'] = true;
+      task['allowBroadenDiscovery'] = false;
     } else {
       task['preferSniffFirst'] = true;
       task['skipSniffAcquire'] = false;
@@ -9158,6 +10956,20 @@ class _BrowserPageState extends State<BrowserPage>
       };
       recipe['name'] = siteProfile == 'x' ? 'X·原智能（已验证）' : '91·原智能（已验证）';
       return recipe;
+    }
+    if (_smartUsesFacebookPipeline(siteProfile)) {
+      return <String, dynamic>{
+        'host': host,
+        'pageType': pageType,
+        // 仅保留下载引擎策略画像；操作步骤完全由用户动作编排提供。
+        'acquisition': 'action_recipe',
+        'traversal': 'nearby',
+        'scrollBetween': true,
+        'successes': 0,
+        'updatedAt': DateTime.now().toIso8601String(),
+        'nameCustom': true,
+        'name': 'Facebook·动作编排',
+      };
     }
     final recipe = <String, dynamic>{
       'host': host,
@@ -9622,6 +11434,14 @@ class _BrowserPageState extends State<BrowserPage>
       if (learnedAcq == 'sniff' || learnedAcq == 'site_address') {
         task['allowLegacyAlternateAcquire'] = true;
       }
+    } else if (_smartUsesFacebookPipeline(siteProfile)) {
+      task['gestureMode'] = true;
+      task['protectVisibleGestureFlow'] = true;
+      task['facebookPipeline'] = true;
+      task['allowBroadenDiscovery'] = false;
+      if (learnedAcq == 'sniff' || learnedAcq == 'site_address') {
+        task['allowLegacyAlternateAcquire'] = true;
+      }
     } else {
       task['gestureMode'] = true;
       task['protectVisibleGestureFlow'] = true;
@@ -9629,6 +11449,8 @@ class _BrowserPageState extends State<BrowserPage>
     final fallbackAcq =
         isLegacy
             ? (siteProfile == 'x' ? 'legacy_x' : 'legacy_91')
+            : _smartUsesFacebookPipeline(siteProfile)
+            ? 'legacy_facebook'
             : 'longpress_inplace';
     _lockSmartTaskAcquisition(
       task,
@@ -11291,12 +13113,10 @@ class _BrowserPageState extends State<BrowserPage>
       }
       _showSmartOperation('下载成功 ${task['success']}/${task['target']}');
     } else if (skippedDuplicate) {
-      // 仅入库后哈希查重 / 磁盘文件确认的库内重复可走此文案；预跳过路径已对动作编排关闭
+      // 仅入库后哈希查重 / 内容哈希确认的库内重复可走此文案
       task['matchStage'] =
-          actionRecipeMode ? '库内确认重复 · 已标记，交由套路切下一条' : '发现重复媒体 · 已自动跳过并切换下一项';
-      _showSmartOperation(
-        actionRecipeMode ? '媒体库已有相同文件（磁盘确认），交由套路切下一条' : '当前媒体已经处理过，自动跳过',
-      );
+          actionRecipeMode ? '库内已有，跳过' : '发现重复媒体 · 已自动跳过并切换下一项';
+      _showSmartOperation(actionRecipeMode ? '库内已有，跳过' : '当前媒体已经处理过，自动跳过');
     } else {
       task['failed'] = ((task['failed'] as int?) ?? 0) + 1;
       if (failureType == 'already_in_smart_task' ||
@@ -11330,6 +13150,9 @@ class _BrowserPageState extends State<BrowserPage>
           libraryOk: false,
           outcome: failureType,
         );
+        // 库内重复：立刻放行 findNext，勿被残留下载标志卡死
+        task['actionForceSkipReleased'] = true;
+        task['needAdvancePastCurrent'] = true;
       } else {
         _actionRecipeFinishAwaitLibrarySave(
           task,
@@ -11640,8 +13463,13 @@ class _BrowserPageState extends State<BrowserPage>
     var historyExpanded = false;
     // 分页嗅探：预先选择最多嗅探到哪一层（页数上限）；嗅探中可软停止并保留已结果。
     var selectedSniffMaxPages = _kPaginatedSniffMaxPages;
+    // 媒体类型：可改；Facebook 的操作步骤完全由动作编排决定。
+    var selectedMediaType = initialMediaType;
     // 沿用套路：本站有专有套路则默认专有；否则默认通用；均可手动改选。
-    String selectedPatternId = _defaultConfirmedPatternIdForHost(dialogHost);
+    String selectedPatternId = _defaultConfirmedPatternIdForHost(
+      dialogHost,
+      mediaType: selectedMediaType,
+    );
     final nativePatternId = _smartSiteProfile(dialogHost);
     final hostHasDedicated = _hostHasDedicatedSmartPattern(dialogHost);
     SmartActionRecipe? selectedRecipe =
@@ -11650,12 +13478,50 @@ class _BrowserPageState extends State<BrowserPage>
       await SmartActionRecipeStore.loadForHost(dialogHost),
     );
     // 本站默认：供「沿用套路」自动选用；全局成功列表可跨站借用（类似 X/91 芯片）。
-    // 可重命名/删除/覆盖；X/91 内置管线不在此列。
+    // 可重命名/删除/覆盖；删除后回退内置专有芯片。
     SmartActionRecipe? siteSuccessRecipe =
         await SmartActionRecipeStore.loadLastSuccessForHost(dialogHost);
     var allSuccessRecipes = List<SmartActionRecipe>.from(
       await SmartActionRecipeStore.loadUserActionRecipes(),
     );
+    final facebookHost = _smartUsesFacebookPipeline(
+      _smartSiteProfile(dialogHost),
+    );
+    if (facebookHost) {
+      const removedBuiltInNames = <String>{
+        'Facebook · 视频/Reels · 长按→等完成→上滑',
+        'Facebook · 图片 · 长按→等完成→左滑',
+      };
+      final staleCandidates = <SmartActionRecipe>[
+        ...hostRecipes,
+        ...allSuccessRecipes,
+      ];
+      if (selectedRecipe case final recipe?) staleCandidates.add(recipe);
+      if (siteSuccessRecipe case final recipe?) staleCandidates.add(recipe);
+      final staleIds = <String>{
+        for (final recipe in staleCandidates)
+          if (removedBuiltInNames.contains(recipe.name)) recipe.id,
+      };
+      for (final id in staleIds) {
+        await SmartActionRecipeStore.deleteById(id);
+      }
+      if (staleIds.isNotEmpty) {
+        final selectedId = selectedRecipe?.id;
+        if (selectedId != null && staleIds.contains(selectedId)) {
+          selectedRecipe = null;
+        }
+        final successId = siteSuccessRecipe?.id;
+        if (successId != null && staleIds.contains(successId)) {
+          siteSuccessRecipe = null;
+        }
+        hostRecipes.removeWhere((recipe) => staleIds.contains(recipe.id));
+        allSuccessRecipes.removeWhere((recipe) => staleIds.contains(recipe.id));
+      }
+    }
+    // Facebook 不再使用任何默认/专用套路，直接进入动作编排模式。
+    if (facebookHost) {
+      runMode = 'action';
+    }
     // reuse 子源：action_recipe（用户成功动作，可跨站）或 pattern（X/91/通用管线）。
     var reuseSource = siteSuccessRecipe != null ? 'action_recipe' : 'pattern';
     SmartActionRecipe? selectedReuseRecipe = siteSuccessRecipe;
@@ -11692,7 +13558,6 @@ class _BrowserPageState extends State<BrowserPage>
     if (siteSuccessRecipe != null) {
       selectedRecipe = siteSuccessRecipe;
     }
-
     Future<void> refreshSuccessRecipes() async {
       siteSuccessRecipe = await SmartActionRecipeStore.loadLastSuccessForHost(
         dialogHost,
@@ -11732,6 +13597,9 @@ class _BrowserPageState extends State<BrowserPage>
 
     // 编辑器在智能下载对话框关闭后打开，避免挡住网页导致「验证零件」看不见效果
     SmartActionRecipe? editorSeed;
+    SmartActionRecipe defaultActionTemplate() {
+      return SmartActionRecipe.feedTemplate(dialogHost);
+    }
 
     final confirmed = await showDialog<String>(
       context: context,
@@ -11739,10 +13607,7 @@ class _BrowserPageState extends State<BrowserPage>
           (dialogContext) => StatefulBuilder(
             builder: (context, setDialogState) {
               void openEditor({SmartActionRecipe? seed}) {
-                editorSeed =
-                    seed ??
-                    selectedRecipe ??
-                    SmartActionRecipe.feedTemplate(dialogHost);
+                editorSeed = seed ?? selectedRecipe ?? defaultActionTemplate();
                 Navigator.pop(dialogContext, 'edit_action');
               }
 
@@ -11799,6 +13664,56 @@ class _BrowserPageState extends State<BrowserPage>
                           });
                         },
                       ),
+                      const SizedBox(height: 10),
+                      const Text(
+                        '媒体类型',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Wrap(
+                        spacing: 6,
+                        runSpacing: 4,
+                        children: [
+                          ChoiceChip(
+                            label: const Text(
+                              '视频',
+                              style: TextStyle(fontSize: 12),
+                            ),
+                            selected: selectedMediaType == MediaType.video,
+                            onSelected: (_) {
+                              setDialogState(() {
+                                selectedMediaType = MediaType.video;
+                              });
+                            },
+                          ),
+                          ChoiceChip(
+                            label: const Text(
+                              '图片',
+                              style: TextStyle(fontSize: 12),
+                            ),
+                            selected: selectedMediaType == MediaType.image,
+                            onSelected: (_) {
+                              setDialogState(() {
+                                selectedMediaType = MediaType.image;
+                              });
+                            },
+                          ),
+                        ],
+                      ),
+                      if (facebookHost)
+                        const Padding(
+                          padding: EdgeInsets.only(top: 4),
+                          child: Text(
+                            'Facebook 不再提供默认或专用套路，请使用下方动作编排。',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: Colors.black54,
+                            ),
+                          ),
+                        ),
                       if (runMode == 'action') ...[
                         const SizedBox(height: 8),
                         if (hostRecipes.isNotEmpty)
@@ -11976,7 +13891,7 @@ class _BrowserPageState extends State<BrowserPage>
                           hostHasDedicated &&
                                   selectedPatternId == nativePatternId &&
                                   reuseSource == 'pattern'
-                              ? '本站有专有套路，可直接用；也可改选通用、其他站专有管线，或下方成功动作套路。'
+                              ? '本站有专有套路，可直接用；也可改选通用、其他站专有管线，或下方成功动作套路。专有芯片可点「重新编排」改成你的覆盖版。'
                               : selectedPatternId == 'generic' &&
                                   reuseSource == 'pattern'
                               ? '可选用通用管线，或手动借用 X / 91；也可选用下方跨站成功动作套路。'
@@ -11999,7 +13914,10 @@ class _BrowserPageState extends State<BrowserPage>
                           children: [
                             for (final row in _confirmedSmartPatterns)
                               ChoiceChip(
-                                label: Text(row['label'] ?? row['id']!),
+                                label: Text(
+                                  row['label'] ?? row['id']!,
+                                  style: const TextStyle(fontSize: 11),
+                                ),
                                 selected:
                                     reuseSource == 'pattern' &&
                                     selectedPatternId == row['id'],
@@ -12014,13 +13932,68 @@ class _BrowserPageState extends State<BrowserPage>
                               ),
                           ],
                         ),
+                        if (reuseSource == 'pattern' &&
+                            _dedicatedSmartPatternIds.contains(
+                              selectedPatternId,
+                            )) ...[
+                          const SizedBox(height: 6),
+                          Align(
+                            alignment: Alignment.centerLeft,
+                            child: TextButton.icon(
+                              onPressed: () {
+                                editorSeed = _dedicatedPatternEditableSeed(
+                                  selectedPatternId,
+                                  dialogHost.isEmpty
+                                      ? 'unknown'
+                                      : dialogHost,
+                                );
+                                // 若本站已有覆盖，优先拿来编辑
+                                if (siteSuccessRecipe != null &&
+                                    siteSuccessRecipe!.steps.isNotEmpty) {
+                                  final seedAxis = axisHintFromRecipe(
+                                    siteSuccessRecipe,
+                                  );
+                                  final wantUp =
+                                      selectedPatternId == 'x' ||
+                                      selectedPatternId == '91';
+                                  if ((wantUp && seedAxis != 'left') ||
+                                      selectedPatternId == 'x' ||
+                                      selectedPatternId == '91') {
+                                    editorSeed = siteSuccessRecipe!.copyWith(
+                                      steps:
+                                          siteSuccessRecipe!.steps
+                                              .map((s) => s.copyWith())
+                                              .toList(),
+                                    );
+                                  }
+                                }
+                                Navigator.pop(dialogContext, 'edit_action');
+                              },
+                              icon: const Icon(Icons.edit_note, size: 18),
+                              label: const Text(
+                                '重新编排此专有套路',
+                                style: TextStyle(fontSize: 12),
+                              ),
+                            ),
+                          ),
+                          const Padding(
+                            padding: EdgeInsets.only(bottom: 4),
+                            child: Text(
+                              '打开动作编辑器；保存并用「覆盖为本站默认」或跑通真实下载后，下次「沿用套路」优先用你的覆盖版。删除覆盖后回退内置。',
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: Colors.black54,
+                              ),
+                            ),
+                          ),
+                        ],
                         if (reuseSource == 'pattern')
                           Padding(
                             padding: const EdgeInsets.only(top: 6),
                             child: Text(
                               '当前套路：${_confirmedPatternLabel(selectedPatternId)}'
-                              '${selectedPatternId == 'x' ? '（完整保留 X 旧版智能下载）' : ''}'
-                              '${selectedPatternId == '91' ? '（完整保留 91 已验证智能下载）' : ''}'
+                              '${selectedPatternId == 'x' ? '（完整保留 X 旧版智能下载；可点重新编排克隆为可编辑动作）' : ''}'
+                              '${selectedPatternId == '91' ? '（完整保留 91 已验证智能下载；可点重新编排克隆为可编辑动作）' : ''}'
                               '${selectedPatternId == 'generic' ? '（任意站：关键词搜/当前信息流 → 真实视频流下载；海报封面会跳过）' : ''}',
                               style: const TextStyle(
                                 fontSize: 12,
@@ -12666,11 +14639,13 @@ class _BrowserPageState extends State<BrowserPage>
       }
     }
 
-    final mediaType = initialMediaType;
+    final mediaType = selectedMediaType;
 
     /// 「沿用套路」：按所选站点固化管线启动。
     /// 专有套路（91 / X / 未来站点）均可手动借用到当前浏览站；默认仍为本站专有或通用。
-    /// 91 = 实测独立管线；通用 = simple_generic；其余专有（含 X）= _startSmartDownload。
+    /// 91 = 实测独立管线；通用 = simple_generic；
+    /// Facebook 视频 = 长按→等完成→上滑；Facebook 图片 = 长按→等完成→左滑；
+    /// 其余专有（含 X）= _startSmartDownload。
     Future<void> startReusePattern() async {
       final id = selectedPatternId.trim();
       if (id.isEmpty || !_confirmedSmartPatternIds.contains(id)) {
@@ -12682,7 +14657,9 @@ class _BrowserPageState extends State<BrowserPage>
         return;
       }
       final native = _smartSiteProfile(dialogHost);
-      final crossSite = _dedicatedSmartPatternIds.contains(id) && id != native;
+      final crossSite =
+          _dedicatedSmartPatternIds.contains(id) &&
+          id != native;
       // 91：实测独立管线（有关键词走搜索；无关键词从当前列表/详情批量）。
       // 跨站借用时仍走 91 管线，但以当前浏览 origin/host 为站点上下文。
       if (id == '91') {
@@ -12753,18 +14730,28 @@ class _BrowserPageState extends State<BrowserPage>
         next = await showSmartActionEditor(
           context: context,
           host: dialogHost.isEmpty ? 'unknown' : dialogHost,
-          initial: SmartActionRecipe.feedTemplate(dialogHost),
+          initial: defaultActionTemplate(),
           onVerifySteps: (steps) => _probeSmartActionSteps(steps),
         );
       }
       if (next != null && mounted) {
+        // 运行时按切条轴对齐步骤；落盘只写 hint/mode，避免把左滑成功套路改写成上滑。
+        final runRecipe = next.copyWith(
+          steps: next.steps.map((s) => s.copyWith()).toList(),
+        );
+        if (advanceAxisHint == 'up' ||
+            advanceAxisHint == 'down' ||
+            advanceAxisHint == 'left') {
+          SmartActionRecipe.alignAdvanceAxis(runRecipe, advanceAxisHint);
+        }
         next.advanceAxisHint = advanceAxisHint;
         next.advanceMode = advanceMode;
+        runRecipe.advanceMode = advanceMode;
         await SmartActionRecipeStore.save(next);
         await SmartActionRecipeStore.markUsed(next);
         await _startActionRecipeDownload(
           website: website,
-          recipe: next,
+          recipe: runRecipe,
           targetCount: enteredCount,
           mediaType: mediaType,
           allowMixedMedia: false,
@@ -12787,8 +14774,13 @@ class _BrowserPageState extends State<BrowserPage>
             );
           }
         } else {
-          // 借用他站套路：步骤与等待/切条设置原样用于当前页，不改写其来源 host。
-          advanceAxisHint = axisHintFromRecipe(recipe);
+          final recipeAxis = axisHintFromRecipe(recipe);
+          // 用户显式上滑/左滑时对齐步骤；否则按套路推断。
+          if (advanceAxisHint != 'up' &&
+              advanceAxisHint != 'down' &&
+              advanceAxisHint != 'left') {
+            advanceAxisHint = recipeAxis;
+          }
           advanceMode = modeFromRecipe(recipe);
           await startAction(recipe);
         }
@@ -12804,10 +14796,7 @@ class _BrowserPageState extends State<BrowserPage>
       final edited = await showSmartActionEditor(
         context: context,
         host: dialogHost.isEmpty ? 'unknown' : dialogHost,
-        initial:
-            editorSeed ??
-            selectedRecipe ??
-            SmartActionRecipe.feedTemplate(dialogHost),
+        initial: editorSeed ?? selectedRecipe ?? defaultActionTemplate(),
         onVerifySteps: (steps) => _probeSmartActionSteps(steps),
       );
       if (edited != null && mounted) {
@@ -12876,7 +14865,13 @@ class _BrowserPageState extends State<BrowserPage>
             : modeRaw == 'verify'
             ? 'verify'
             : (advanceMode == null ? 'verify' : 'distance');
-    final boundRecipe = recipe.copyWith(
+    // 启动前再对齐一次步骤轴，杜绝残留左滑零件在上滑任务里执行
+    final alignedSteps = recipe.steps
+        .map((s) => s.copyWith())
+        .toList(growable: true);
+    final alignedRecipe = recipe.copyWith(steps: alignedSteps);
+    SmartActionRecipe.alignAdvanceAxis(alignedRecipe, resolvedAxisHint);
+    final boundRecipe = alignedRecipe.copyWith(
       host: host,
       advanceAxisHint: resolvedAxisHint,
       advanceMode: resolvedAdvanceMode,
@@ -12891,21 +14886,38 @@ class _BrowserPageState extends State<BrowserPage>
         break;
       }
     }
+    final siteProfile = _smartSiteProfile(host);
+    final usesFacebookPipeline = _smartUsesFacebookPipeline(siteProfile);
+    // Facebook 视频保留 stub 下限；这是防止黑色视频占位入库的必要校验。
+    var resolvedMinVideoBytes = minVideoBytes;
+    if (usesFacebookPipeline && mediaType == MediaType.video) {
+      resolvedMinVideoBytes = max(
+        resolvedMinVideoBytes ?? 0,
+        _kMinFacebookSavedVideoBytes,
+      );
+    }
+    final resolvedMaxVideoBytes = maxVideoBytes;
     _smartDownloadTask = <String, dynamic>{
       'mode': 'action_recipe',
       'phase': 'action_running',
       'siteUrl': normalized,
       'host': host,
-      'siteProfile': _smartSiteProfile(host),
+      'siteProfile': siteProfile,
+      'facebookPipeline': usesFacebookPipeline,
       'keyword': '',
       'mediaType': mediaType,
       'allowMixedMedia': allowMixedMedia,
       'target': targetCount.clamp(1, _kSmartDownloadMaxTarget),
-      'minVideoBytes': minVideoBytes,
-      'maxVideoBytes': maxVideoBytes,
+      'minVideoBytes': resolvedMinVideoBytes,
+      'maxVideoBytes': resolvedMaxVideoBytes,
+      'effectiveMinVideoBytes': resolvedMinVideoBytes,
+      'effectiveMaxVideoBytes': resolvedMaxVideoBytes,
       'success': 0,
       'failed': 0,
-      'matchStage': '动作套路 · ${boundRecipe.name}',
+      'matchStage':
+          usesFacebookPipeline
+              ? 'Facebook · 动作编排 · ${boundRecipe.name}'
+              : '动作套路 · ${boundRecipe.name}',
       'demoPhase': 'auto',
       'gestureDownloadPending': false,
       'actionAwaitingLibrarySave': false,
@@ -12937,6 +14949,7 @@ class _BrowserPageState extends State<BrowserPage>
       'handledMediaKeys': <String>{},
       'handledMediaSrcs': <String>{},
       'needAdvancePastCurrent': false,
+      'actionAdvanceFailed': false,
       'advancingPastHandled': false,
       'recoveringTrack': false,
       'stallMediaKey': '',
@@ -13027,6 +15040,7 @@ class _BrowserPageState extends State<BrowserPage>
   }
 
   Future<bool> _libraryConfirmsMediaSource(String src) async {
+    // 仅作提示/清理映射；绝不可单独作为「库内已有」跳过依据。
     final s = src.trim();
     if (s.isEmpty || s.startsWith('blob:') || s.startsWith('data:')) {
       return false;
@@ -13035,6 +15049,7 @@ class _BrowserPageState extends State<BrowserPage>
     return row != null;
   }
 
+  /// 内容哈希命中且库内对应文件仍在磁盘 → 唯一合法的「库内已有」确认。
   Future<bool> _libraryConfirmsFileHash(String fileHash) async {
     final hash = fileHash.trim();
     if (hash.isEmpty) return false;
@@ -13077,12 +15092,12 @@ class _BrowserPageState extends State<BrowserPage>
   }
 
   /// 会话「已处理」仅作切条辅助；动作编排下载前绝不凭此跳过。
-  /// 可查源地址时必须媒体库文件仍在磁盘，否则清掉误标。
+  /// 「库内已有」文案只能由内容哈希路径写入；此处不得用 URL/磁盘二次确认触发跳过。
   Future<bool> _shouldSkipAsHandledMedia(
     Map<String, dynamic> task,
     Map<String, dynamic>? identity,
   ) async {
-    // 动作编排：下载前禁用会话已处理跳过。仅在「本轮已入库成功/库内确认重复」
+    // 动作编排：下载前禁用会话已处理跳过。仅在「本轮已入库成功/哈希确认重复」
     // 或看门狗强制跳过且 needAdvancePastCurrent 时，允许卡住补推切条。
     if (_actionRecipeDisablesPreSkip(task)) {
       if (task['needAdvancePastCurrent'] != true) return false;
@@ -13100,10 +15115,13 @@ class _BrowserPageState extends State<BrowserPage>
       if (!libraryOk && !forceSkipped && outcome != 'already_in_library') {
         return false;
       }
+      // 编排：仅会话身份匹配即可推条；禁止再凭 URL/磁盘「二次确认」
+      return _isHandledMediaIdentity(task, identity);
     }
     if (!_isHandledMediaIdentity(task, identity)) return false;
     final src = (identity!['src'] ?? '').toString().trim();
     if (!src.startsWith('blob:') && !src.startsWith('data:')) {
+      // 非编排：URL 映射仅用于清掉过期会话标记，不能单独宣称库内已有
       final inLibrary = await _libraryConfirmsMediaSource(src);
       if (!inLibrary) {
         debugPrint(
@@ -13112,7 +15130,6 @@ class _BrowserPageState extends State<BrowserPage>
         _clearHandledMediaIdentity(task, identity);
         return false;
       }
-      // 源地址命中还不够：必须磁盘文件仍在
       final row = await _findExistingVideoBySourceUrl(src);
       if (!await _libraryConfirmsExistingMediaRow(row)) {
         debugPrint(
@@ -13129,7 +15146,7 @@ class _BrowserPageState extends State<BrowserPage>
           (task['actionDownloadOutcome'] ?? '').toString() ==
               'already_in_library';
     }
-    // 非编排：blob/data 仅信任「入库成功 / 库内确认重复」后写入的会话标记
+    // 非编排：blob/data 仅信任「入库成功 / 哈希确认重复」后写入的会话标记
     return true;
   }
 
@@ -13177,6 +15194,12 @@ class _BrowserPageState extends State<BrowserPage>
     if (task['mode'] != 'action_recipe' && task['actionProbe'] != true) {
       return false;
     }
+    if (_actionRecipeRequiresSuccessfulVideoSave(task) &&
+        !_actionRecipeMayAdvancePastDownload(task)) {
+      task['needAdvancePastCurrent'] = false;
+      _showSmartOperation('视频尚未成功入库，保持当前视频等待重试');
+      return false;
+    }
     // 下载进行中绝不切条（避免与 waitDownload / findNext 抢跑）
     // 固定等待 / 强制跳过已放行时允许推走已处理媒体（下载可在后台继续）
     if (_actionRecipeHasDownloadWork(task) &&
@@ -13192,18 +15215,26 @@ class _BrowserPageState extends State<BrowserPage>
     task['advancingPastHandled'] = true;
     try {
       final spec = _advanceAxisSpec(task);
-      // 按距离模式：滑一次即继续，不做指纹重试环
+      // 按距离模式：竖向整屏屏高 fling + 身份未变则偏 X 再甩
       if (_advanceModeIsDistance(task)) {
         _showSmartOperation('已处理过，${spec.$3}', point: const Offset(0.5, 0.5));
-        await _actionDistanceFlickOnly(
+        final ok = await _actionDistanceFlickOnly(
           task,
           axisHint: spec.$1,
           label: spec.$3,
-          distanceFraction: spec.$2 ? 0.36 : 0.34,
-          durationMs: 260,
+          distanceFraction:
+              spec.$2
+                  ? ((task['actionHorizontalLearnedDistance'] as num?)
+                          ?.toDouble() ??
+                      0.67)
+                  : 0.7,
+          durationMs: spec.$2 ? 380 : 600,
+          maxAttempts: spec.$2 ? 3 : 4,
         );
-        task['needAdvancePastCurrent'] = false;
-        return true;
+        if (ok) {
+          task['needAdvancePastCurrent'] = false;
+        }
+        return ok;
       }
       for (var i = 0; i < 4; i++) {
         if (!identical(_smartDownloadTask, task) &&
@@ -13223,8 +15254,11 @@ class _BrowserPageState extends State<BrowserPage>
           direction: spec.$4,
           axisHintOverride: spec.$1,
           maxAttempts: 2,
-          distanceFraction: (0.34 + i * 0.06).clamp(0.28, 0.62),
-          durationMs: 260,
+          distanceFraction:
+              spec.$2
+                  ? (0.50 + i * 0.04).clamp(0.48, 0.58)
+                  : (0.48 + i * 0.08).clamp(0.42, 0.78),
+          durationMs: 380,
         );
         await Future<void>.delayed(const Duration(milliseconds: 240));
       }
@@ -13260,12 +15294,48 @@ class _BrowserPageState extends State<BrowserPage>
     return (t['actionWaitMode'] ?? '').toString().toLowerCase() == 'fixed';
   }
 
+  /// Facebook 视频/Reels 必须等真实文件落盘后才能切到下一条。
+  /// 图片仍可使用既有等待策略；动作验证也不启用这道严格闸门。
+  bool _actionRecipeRequiresSuccessfulVideoSave(Map<String, dynamic> task) {
+    if (task['actionProbe'] == true) return false;
+    return task['mode'] == 'action_recipe' &&
+        task['facebookPipeline'] == true &&
+        task['mediaType'] == MediaType.video &&
+        (task['advanceAxisHint'] ?? 'up').toString() != 'left';
+  }
+
+  /// 严格视频模式下可安全跳过的终态：必须已经明确失败/无效/超时，
+  /// 且当前没有任何真实视频下载仍在进行。already_downloading 不属于终态。
+  bool _actionRecipeCanSafelySkipStuckVideo(Map<String, dynamic> task) {
+    if (task['actionForceSkipReleased'] != true) return false;
+    if (_longPressVideoDownloadInProgress ||
+        _actionRecipeHasRealSmartDownloading() ||
+        _downloadingUrls.isNotEmpty) {
+      return false;
+    }
+    final outcome = (task['actionDownloadOutcome'] ?? '').toString();
+    return _actionRecipeIsInvalidMediaOutcome(outcome) ||
+        outcome == 'stagnant_timeout' ||
+        outcome == 'loop_timeout' ||
+        outcome == 'force_skip_timeout' ||
+        outcome == 'step_watchdog_timeout';
+  }
+
+  /// 旧版曾把 Facebook 的“固定等待”再次解释成最低等待，导致文件已经
+  /// 入库后仍强制倒计时。固定等待现在统一由 waitDownload 作为最长时限
+  /// 管理；该步骤会在 library_saved 到达时立即唤醒并切条。
+  Future<void> _actionWaitStrictVideoMinimum(
+    Map<String, dynamic> task,
+  ) async {
+    return;
+  }
+
   /// 智能手势/稳健下载是否应跳过下载前查重，强制走下载队列。
   bool _smartForceDownloadNoPreSkip([Map<String, dynamic>? task]) {
     final t = task ?? _smartDownloadTask;
     if (t == null) return false;
-    if (t['mode'] == 'action_recipe') return true;
-    return false;
+    // 动作编排禁用 URL/文件名软查重，但仍保留内容哈希查重。
+    return t['mode'] == 'action_recipe';
   }
 
   /// 动作套路媒体库等待看门狗（库确认模式）：超时无进展则强制跳过。
@@ -13293,12 +15363,23 @@ class _BrowserPageState extends State<BrowserPage>
     );
   }
 
+  /// 哈希确认的库内重复：闸门已关，允许立刻切条（勿被残留 longPress/进度条挡住）。
+  bool _actionRecipeIsLibraryDuplicateReleased(Map<String, dynamic> task) {
+    if (task['actionLongPressNeedsConfirm'] == true) return false;
+    final outcome = (task['actionDownloadOutcome'] ?? '').toString();
+    return outcome == 'already_in_library';
+  }
+
   /// 动作套路：当前是否仍有未完成的手势下载（pending / Completer / 真实在途任务）。
   /// 含 [actionAwaitingLibrarySave] / [actionLongPressNeedsConfirm]：入库确认前绝不视为可切条。
   /// 占位条不算「真实在途」，避免 loop_timeout 后因占位永远挡住 findNext。
   bool _actionRecipeHasDownloadWork(Map<String, dynamic> task) {
     if (task['actionForceSkipReleased'] == true &&
         task['actionLongPressNeedsConfirm'] != true) {
+      return false;
+    }
+    // 真实库内重复已关闸：立刻视为无待办，避免残留下载标志卡死 waitDownload/findNext
+    if (_actionRecipeIsLibraryDuplicateReleased(task)) {
       return false;
     }
     if (task['actionLongPressNeedsConfirm'] == true) return true;
@@ -13319,7 +15400,10 @@ class _BrowserPageState extends State<BrowserPage>
   bool _actionRecipeIsInvalidMediaOutcome(String outcome) {
     final o = outcome.trim().toLowerCase();
     return o == 'invalid_smart_media_content' ||
+        o == 'fb_stub_rejected' ||
+        o == 'outside_requested_size_range' ||
         o.contains('invalid_smart_media') ||
+        o.contains('stub') ||
         o.contains('不是有效') ||
         o.contains('无效媒体');
   }
@@ -13602,10 +15686,20 @@ class _BrowserPageState extends State<BrowserPage>
 
   /// 是否允许在长按下载会话之后切条（入库成功 / 明确跳过失败 / 固定等待到点 / 强制跳过）。
   bool _actionRecipeMayAdvancePastDownload(Map<String, dynamic> task) {
+    if (_actionRecipeRequiresSuccessfulVideoSave(task)) {
+      // Facebook 视频严格模式：固定等待到点、看门狗跳过、地址已解析等状态
+      // 均不能直接放行。只接受真实入库、哈希确认库内已有，或确认没有
+      // 真实下载在途的无效/超时终态，避免永久卡在坏视频页面。
+      return _actionRecipeDidLibrarySave(task) ||
+          _actionRecipeIsLibraryDuplicateReleased(task) ||
+          _actionRecipeCanSafelySkipStuckVideo(task);
+    }
     // 固定等待已到点：允许切条，即使下载仍在后台进行
     if (task['actionFixedWaitReleased'] == true) return true;
     // 看门狗强制跳过：允许切条；真实下载若仍在途则后台继续，不挡 findNext
     if (task['actionForceSkipReleased'] == true) return true;
+    // 哈希确认库内重复：立刻允许上滑切条
+    if (_actionRecipeIsLibraryDuplicateReleased(task)) return true;
     if (task['actionLongPressNeedsConfirm'] == true) return false;
     if (_actionRecipeHasDownloadWork(task)) return false;
     return true;
@@ -13617,16 +15711,44 @@ class _BrowserPageState extends State<BrowserPage>
         (task['actionDownloadOutcome'] ?? '').toString() == 'library_saved';
   }
 
-  /// 固定等待期间：是否已出现可提前切条的真实入库成功。
-  /// [successAtStart] 用于捕捉 complete(true) 已加成功计数、但 outcome 偶发未读到的情况。
+  /// 固定等待期间：真实入库成功，或哈希确认的库内重复，均可提前切条。
+  /// 软「已处理」不得走此路径；[successAtStart] 捕捉 complete(true) 已加计数的情况。
   bool _actionRecipeFixedWaitShouldEarlyAdvance(
     Map<String, dynamic> task, {
     required int successAtStart,
   }) {
     if (_actionRecipeDidLibrarySave(task)) return true;
+    if (_actionRecipeIsLibraryDuplicateReleased(task)) return true;
     final successNow = (task['success'] as int?) ?? 0;
     if (successNow > successAtStart) return true;
     return false;
+  }
+
+  /// 库内重复终态：关闸、完成 Completer、放行切条（供 dialog / complete 共用）。
+  void _actionRecipeReleaseAlreadyInLibrary(
+    Map<String, dynamic> task, {
+    String statusText = '库内已有，跳过',
+  }) {
+    task['duplicateSkipped'] = ((task['duplicateSkipped'] as int?) ?? 0) + 1;
+    task['lastGestureFailureType'] = 'already_in_library';
+    task['gestureDownloadPending'] = false;
+    task['needAdvancePastCurrent'] = true;
+    task['actionForceSkipReleased'] = true;
+    task['matchStage'] = statusText;
+    _actionRecipeFinishAwaitLibrarySave(
+      task,
+      libraryOk: false,
+      outcome: 'already_in_library',
+    );
+    final pendingCompleter = task.remove('actionDownloadCompleter');
+    if (pendingCompleter is Completer<bool> && !pendingCompleter.isCompleted) {
+      pendingCompleter.complete(false);
+    }
+    _showSmartOperation(statusText);
+    debugPrint(
+      'action recipe already_in_library RELEASE '
+      'epoch=${task['actionDownloadEpoch']} status=$statusText',
+    );
   }
 
   /// already_downloading / 尚无直链 等「同一次长按连发」：绝不能放行 Completer / 切条。
@@ -13702,6 +15824,13 @@ class _BrowserPageState extends State<BrowserPage>
       }
 
       if (!allowHeavy || stallLevel < 3) return;
+      if (_actionRecipeRequiresSuccessfulVideoSave(task) &&
+          !_actionRecipeMayAdvancePastDownload(task)) {
+        // Facebook 视频失败/未入库时禁止重自愈直接滑走当前页面。
+        task['needAdvancePastCurrent'] = false;
+        _showSmartOperation('视频尚未成功入库，禁止自愈上滑');
+        return;
+      }
 
       // 3) 重自愈：仅空转多次后才升级（未到极高 stall 不标记已处理）
       final spec = _advanceAxisSpec(task);
@@ -15581,41 +17710,67 @@ class _BrowserPageState extends State<BrowserPage>
   ) async {
     switch (step.kind) {
       case SmartActionKind.flickUp:
-        await _actionFingerFlick(
-          task,
-          axisHint: 'up',
-          label: '轻扫上',
-          distanceFraction: step.paramDouble('distanceFraction', 0.34),
-          durationMs: step.paramInt('durationMs', 280),
-        );
-        break;
       case SmartActionKind.flickDown:
-        await _actionFingerFlick(
-          task,
-          axisHint: 'down',
-          label: '轻扫下',
-          distanceFraction: step.paramDouble('distanceFraction', 0.34),
-          durationMs: step.paramInt('durationMs', 280),
-        );
-        break;
       case SmartActionKind.flickLeft:
-        await _actionFingerFlick(
-          task,
-          axisHint: 'left',
-          label: '轻扫左',
-          distanceFraction: step.paramDouble('distanceFraction', 0.36),
-          durationMs: step.paramInt('durationMs', 280),
-        );
-        break;
       case SmartActionKind.flickRight:
-        await _actionFingerFlick(
-          task,
-          axisHint: 'right',
-          label: '轻扫右',
-          distanceFraction: step.paramDouble('distanceFraction', 0.36),
-          durationMs: step.paramInt('durationMs', 280),
-        );
-        break;
+        {
+          if (task['mode'] == 'action_recipe' && task['actionProbe'] != true) {
+            final needsGate =
+                task['actionLongPressNeedsConfirm'] == true ||
+                _actionRecipeHasDownloadWork(task);
+            if (needsGate) {
+              await _actionWaitDownload(task);
+            }
+            await _actionWaitStrictVideoMinimum(task);
+            if (!_actionRecipeMayAdvancePastDownload(task)) {
+              _showSmartOperation('媒体尚未成功入库，本步不切换');
+              debugPrint(
+                'action recipe switch BLOCKED flick '
+                'outcome=${task['actionDownloadOutcome']} '
+                'libraryOk=${task['actionLibrarySaveOk']}',
+              );
+              break;
+            }
+          }
+          // 用户选定切条轴优先：显式上滑时绝不执行左滑零件
+          final spec = _advanceAxisSpec(task);
+          final forced = (task['advanceAxisHint'] ?? '').toString().trim();
+          final axis =
+              (forced == 'up' || forced == 'down' || forced == 'left')
+                  ? forced
+                  : (step.kind == SmartActionKind.flickUp
+                      ? 'up'
+                      : step.kind == SmartActionKind.flickDown
+                      ? 'down'
+                      : step.kind == SmartActionKind.flickLeft
+                      ? 'left'
+                      : 'right');
+          final horizontal = axis == 'left' || axis == 'right';
+          // 横向禁止套用竖向近全屏参数；竖向禁止套用图片 0.50
+          final rawDist = step.paramDouble(
+            'distanceFraction',
+            horizontal ? 0.67 : 0.7,
+          );
+          final rawDur = step.paramInt('durationMs', horizontal ? 380 : 600);
+          final dist =
+              horizontal
+                  ? rawDist.clamp(0.55, 0.88)
+                  : (rawDist < 0.5 ? 0.7 : rawDist.clamp(0.55, 0.92));
+          final dur =
+              horizontal
+                  ? (rawDur >= 500 ? 380 : rawDur.clamp(320, 400))
+                  : (rawDur <= 350 && rawDist < 0.5
+                      ? 600
+                      : rawDur.clamp(240, 600));
+          await _actionFingerFlick(
+            task,
+            axisHint: axis,
+            label: spec.$3,
+            distanceFraction: dist,
+            durationMs: dur,
+          );
+          break;
+        }
       case SmartActionKind.scrollPageUp:
         await _actionScreenSwipe(
           task,
@@ -15659,6 +17814,7 @@ class _BrowserPageState extends State<BrowserPage>
             if (needsGate) {
               await _actionWaitDownload(task);
             }
+            await _actionWaitStrictVideoMinimum(task);
             if (!_actionRecipeMayAdvancePastDownload(task)) {
               debugPrint(
                 'action recipe switch BLOCKED findNext '
@@ -15676,20 +17832,35 @@ class _BrowserPageState extends State<BrowserPage>
               'libraryOk=${task['actionLibrarySaveOk']}',
             );
           }
-          // 用户选定的切条方向优先于零件默认轴
+          // 用户选定的切条方向优先于零件默认轴；参数也按轴隔离
           final spec = _advanceAxisSpec(task);
+          final horizontal = spec.$2;
+          final rawDist = step.paramDouble(
+            'distanceFraction',
+            horizontal ? 0.67 : 0.7,
+          );
+          final rawDur = step.paramInt('durationMs', horizontal ? 380 : 600);
+          // 竖向：丢掉图片左滑 0.50；横向：丢掉视频近全屏 ≥0.65/600
+          final dist =
+              horizontal
+                  ? rawDist.clamp(0.55, 0.88)
+                  : (rawDist < 0.5 ? 0.7 : rawDist.clamp(0.55, 0.92));
+          final dur =
+              horizontal
+                  ? (rawDur >= 500 ? 380 : rawDur.clamp(320, 400))
+                  : (rawDur <= 350 && rawDist < 0.5
+                      ? 600
+                      : rawDur.clamp(240, 600));
+          final attempts = step.paramInt('maxAttempts', horizontal ? 1 : 5);
           await _actionSwitchAdjacentMedia(
             task,
             label: spec.$3,
-            preferHorizontal: spec.$2,
+            preferHorizontal: horizontal,
             direction: spec.$4,
             axisHintOverride: spec.$1,
-            maxAttempts: step.paramInt('maxAttempts', 4),
-            distanceFraction: step.paramDouble(
-              'distanceFraction',
-              spec.$2 ? 0.36 : 0.34,
-            ),
-            durationMs: step.paramInt('durationMs', 280),
+            maxAttempts: horizontal ? attempts.clamp(1, 3) : attempts,
+            distanceFraction: dist,
+            durationMs: dur,
           );
           break;
         }
@@ -15712,9 +17883,9 @@ class _BrowserPageState extends State<BrowserPage>
           preferHorizontal: true,
           direction: 'prev',
           axisHintOverride: 'right',
-          maxAttempts: step.paramInt('maxAttempts', 4),
-          distanceFraction: step.paramDouble('distanceFraction', 0.36),
-          durationMs: step.paramInt('durationMs', 280),
+          maxAttempts: step.paramInt('maxAttempts', 1),
+          distanceFraction: step.paramDouble('distanceFraction', 0.50),
+          durationMs: step.paramInt('durationMs', 380),
         );
         break;
       case SmartActionKind.focusMedia:
@@ -15802,34 +17973,57 @@ class _BrowserPageState extends State<BrowserPage>
   }
 
   /// 计算轻扫起止点（归一化 0~1），与原生注入 / 手指动画共用。
+  /// 竖向大幅度：近全屏（约 85–92% → 8–12%），Reels 慢拖会回弹，必须划满。
   (Offset from, Offset to) _fingerFlickEndpoints(
     String axisHint, {
     double distanceFraction = 0.32,
+    double startX = 0.5,
   }) {
-    final f = distanceFraction.clamp(0.12, 0.85);
+    final f = distanceFraction.clamp(0.12, 0.92);
+    final x = startX.clamp(0.28, 0.72);
     switch (axisHint) {
       case 'down':
-        return (
-          const Offset(0.5, 0.38),
-          Offset(0.5, (0.38 + f).clamp(0.0, 0.92)),
-        );
+        if (f >= 0.50) {
+          // 近顶起手 → 近底松手（几乎一屏）
+          final fromY = (0.12 - (f - 0.78) * 0.05).clamp(0.08, 0.15);
+          final toY = (fromY + f).clamp(0.85, 0.94);
+          return (Offset(x, fromY), Offset(x, toY));
+        }
+        return (Offset(x, 0.38), Offset(x, (0.38 + f).clamp(0.0, 0.92)));
       case 'left':
-        return (
-          const Offset(0.72, 0.5),
-          Offset((0.72 - f).clamp(0.06, 1.0), 0.5),
-        );
+        return (Offset(0.72, 0.5), Offset((0.72 - f).clamp(0.06, 1.0), 0.5));
       case 'right':
-        return (
-          const Offset(0.28, 0.5),
-          Offset((0.28 + f).clamp(0.0, 0.94), 0.5),
-        );
+        return (Offset(0.28, 0.5), Offset((0.28 + f).clamp(0.0, 0.94), 0.5));
       case 'up':
       default:
-        return (
-          const Offset(0.5, 0.62),
-          Offset(0.5, (0.62 - f).clamp(0.08, 1.0)),
-        );
+        if (f >= 0.50) {
+          // 近底起手 → 近顶松手（几乎一屏）；避免 0.62 中段慢拖被 Reels 橡皮筋弹回
+          final fromY = (0.88 + (f - 0.78) * 0.05).clamp(0.85, 0.92);
+          final toY = (fromY - f).clamp(0.08, 0.12);
+          return (Offset(x, fromY), Offset(x, toY));
+        }
+        return (Offset(x, 0.62), Offset(x, (0.62 - f).clamp(0.08, 1.0)));
     }
+  }
+
+  /// Reels / 竖向切条专用：近全屏 + 可变起点 X（避开死区）。
+  (Offset from, Offset to) _reelsFlingEndpoints(
+    String axisHint, {
+    double startX = 0.5,
+    double fromY = 0.90,
+    double toY = 0.10,
+  }) {
+    final x = startX.clamp(0.28, 0.72);
+    if (axisHint == 'down') {
+      return (
+        Offset(x, fromY.clamp(0.08, 0.15)),
+        Offset(x, toY.clamp(0.85, 0.94)),
+      );
+    }
+    return (
+      Offset(x, fromY.clamp(0.85, 0.92)),
+      Offset(x, toY.clamp(0.08, 0.12)),
+    );
   }
 
   /// Android：向 WebView 注入真实 MotionEvent（站点能响应）。失败时再退回 JS。
@@ -15867,6 +18061,50 @@ class _BrowserPageState extends State<BrowserPage>
     }
   }
 
+  /// 整屏高度竖向 fling：原生用 Display/Window 屏高算 90%→8%，
+  /// 经 locationOnScreen 换算进 Facebook WebView（非 WebView 局部比例）。
+  Future<bool> _nativeFullScreenVerticalFling({
+    required String direction,
+    double xNorm = 0.5,
+    int durationMs = 180,
+    double fromScreenY = 0.90,
+    double toScreenY = 0.08,
+  }) async {
+    if (!Platform.isAndroid) return false;
+    try {
+      final raw = await const MethodChannel(
+        'webview_touch',
+      ).invokeMethod<dynamic>('fullScreenVerticalFling', <String, dynamic>{
+        'direction': direction,
+        'xNorm': xNorm.clamp(0.22, 0.78),
+        'durationMs': durationMs.clamp(140, 240),
+        'fromScreenY': fromScreenY.clamp(0.78, 0.96),
+        'toScreenY': toScreenY.clamp(0.04, 0.18),
+      });
+      var ok = false;
+      if (raw is bool) {
+        ok = raw;
+      } else if (raw is Map) {
+        ok = raw['ok'] == true;
+        debugPrint(
+          'native fullScreenVerticalFling ok=$ok '
+          'screenH=${raw['screenH']} wvH=${raw['webViewH']} '
+          'dy=${raw['dy']} fromY=${raw['fromY']} toY=${raw['toY']} '
+          'locY=${raw['locY']} x=$xNorm dur=${durationMs}ms',
+        );
+      }
+      if (raw is! Map) {
+        debugPrint(
+          'native fullScreenVerticalFling ok=$ok dir=$direction x=$xNorm',
+        );
+      }
+      return ok;
+    } catch (e) {
+      debugPrint('native fullScreenVerticalFling failed: $e');
+      return false;
+    }
+  }
+
   /// 原生 MotionEvent 点击（关广告「取消」必须用这个，JS click 无效）。
   Future<bool> _nativeWebViewTap(Offset point, {int holdMs = 70}) async {
     if (!Platform.isAndroid) return false;
@@ -15893,15 +18131,20 @@ class _BrowserPageState extends State<BrowserPage>
     required String label,
     double distanceFraction = 0.32,
     int durationMs = 260,
+    bool announceDone = true,
+    Offset? fromOverride,
+    Offset? toOverride,
+    double startX = 0.5,
   }) async {
     final controller = _controller;
     if (controller == null) return;
     final ends = _fingerFlickEndpoints(
       axisHint,
       distanceFraction: distanceFraction,
+      startX: startX,
     );
-    final from = ends.$1;
-    final to = ends.$2;
+    final from = fromOverride ?? ends.$1;
+    final to = toOverride ?? ends.$2;
     final waitMs = (durationMs + 80).clamp(160, 900);
 
     // 先播手指轨迹 UI，同时注入原生触摸（与真人手势同源）
@@ -15952,8 +18195,10 @@ class _BrowserPageState extends State<BrowserPage>
     }
 
     if (!identical(_smartDownloadTask, task)) return;
-    _showSmartOperation('已$label', point: to);
-    await Future<void>.delayed(const Duration(milliseconds: 120));
+    if (announceDone) {
+      _showSmartOperation('已$label', point: to);
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+    }
   }
 
   Future<void> _actionScreenSwipe(
@@ -16036,13 +18281,52 @@ class _BrowserPageState extends State<BrowserPage>
     }
   }
 
-  /// 按距离轻扫一次：不读指纹、不重试校验，滑完短暂落地后交给后续长按。
-  Future<void> _actionDistanceFlickOnly(
+  /// 媒体身份是否已相对 [before] 变化（key / src / 中心点 / 滚动弱判定）。
+  /// 横向相邻图常只改 src 或中心 X，key 全等时也要能检出。
+  Future<bool> _actionMediaIdentityChanged(
+    Map<String, dynamic> task,
+    Map<String, dynamic>? before,
+  ) async {
+    final after = await _actionCaptureMediaIdentity(task);
+    final beforeKey = (before?['key'] ?? '').toString();
+    final afterKey = (after?['key'] ?? '').toString();
+    if (beforeKey.isNotEmpty && afterKey.isNotEmpty && afterKey != beforeKey) {
+      return true;
+    }
+    final bSrc = (before?['src'] ?? '').toString();
+    final aSrc = (after?['src'] ?? '').toString();
+    if (aSrc.isNotEmpty && bSrc.isNotEmpty && aSrc != bSrc) {
+      return true;
+    }
+    final bX = (before?['x'] as num?)?.toDouble();
+    final aX = (after?['x'] as num?)?.toDouble();
+    final bY = (before?['y'] as num?)?.toDouble();
+    final aY = (after?['y'] as num?)?.toDouble();
+    if (bX != null && aX != null && (aX - bX).abs() > 0.08) {
+      return true;
+    }
+    if (bY != null && aY != null && (aY - bY).abs() > 0.08) {
+      return true;
+    }
+    final bScrollY = (before?['scrollTop'] as num?)?.toInt() ?? 0;
+    final aScrollY = (after?['scrollTop'] as num?)?.toInt() ?? 0;
+    final bScrollX = (before?['scrollLeft'] as num?)?.toInt() ?? 0;
+    final aScrollX = (after?['scrollLeft'] as num?)?.toInt() ?? 0;
+    return (aSrc.isNotEmpty && aSrc != bSrc) ||
+        (aScrollY - bScrollY).abs() > 40 ||
+        (aScrollX - bScrollX).abs() > 40;
+  }
+
+  /// 按距离轻扫：竖向（Reels）优先整屏屏高 fling + 身份校验；
+  /// 横向从基础幅度开始智能加大，并记住本任务已成功的幅度。
+  /// 返回是否确认切到新媒体。失败时保留 [needAdvancePastCurrent]，禁止长按同条。
+  Future<bool> _actionDistanceFlickOnly(
     Map<String, dynamic> task, {
     required String axisHint,
     required String label,
-    double distanceFraction = 0.34,
+    double distanceFraction = 0.50,
     int durationMs = 280,
+    int maxAttempts = 5,
   }) async {
     // 下载未完成时禁止切条：先等到成功/失败落定
     if (task['mode'] == 'action_recipe' && task['actionProbe'] != true) {
@@ -16053,6 +18337,7 @@ class _BrowserPageState extends State<BrowserPage>
         _showSmartOperation('下载进行中，等待完成后再切条');
         await _actionWaitDownload(task);
       }
+      await _actionWaitStrictVideoMinimum(task);
       if (!_actionRecipeMayAdvancePastDownload(task)) {
         debugPrint(
           'action recipe switch BLOCKED distanceFlick '
@@ -16060,7 +18345,7 @@ class _BrowserPageState extends State<BrowserPage>
           'outcome=${task['actionDownloadOutcome']}',
         );
         _showSmartOperation('下载仍在进行，本步暂不切条');
-        return;
+        return false;
       }
       debugPrint(
         'action recipe switch ALLOWED distanceFlick '
@@ -16069,25 +18354,338 @@ class _BrowserPageState extends State<BrowserPage>
       );
     }
     if (!identical(_smartDownloadTask, task) && task['actionProbe'] != true) {
-      return;
+      return false;
     }
-    _showSmartOperation(label, point: const Offset(0.5, 0.5));
-    await _actionFingerFlick(
-      task,
-      axisHint: axisHint,
-      label: label,
-      distanceFraction: distanceFraction.clamp(0.22, 0.72),
-      durationMs: durationMs.clamp(200, 480),
-    );
+
+    final vertical = axisHint == 'up' || axisHint == 'down';
+    final prevMixed = task['allowMixedMedia'];
+    if (vertical) task['allowMixedMedia'] = true;
+
+    var switched = false;
+
+    if (vertical) {
+      // 竖向：编辑器近上限（距离≥0.55 且时长>240）时走原生 flick，完整尊重
+      // distanceFraction + durationMs（fullScreenVerticalFling 会被 Kotlin 截到 ≤240ms）。
+      // 较短默认仍用整屏屏高 fling。
+      final before = await _actionCaptureMediaIdentity(task);
+      final attempts = maxAttempts.clamp(2, 4);
+      const xOffsets = <double>[0.50, 0.42, 0.58, 0.46];
+      final preferParamFlick = distanceFraction >= 0.55 && durationMs > 240;
+
+      for (var i = 0; i < attempts; i++) {
+        if (!identical(_smartDownloadTask, task) &&
+            task['actionProbe'] != true) {
+          break;
+        }
+        final startX = xOffsets[i % xOffsets.length];
+        if (preferParamFlick) {
+          final dist = distanceFraction.clamp(0.55, 0.92);
+          // 略加重试：后几轮略加长，但不低于配方值、不超过编辑器上限
+          final dur = (durationMs + i * 20).clamp(durationMs, 600);
+          final status =
+              i == 0
+                  ? label
+                  : (axisHint == 'up'
+                      ? '上滑切条（轻扫重试 ${i + 1}/$attempts）'
+                      : '$label（轻扫重试 ${i + 1}/$attempts）');
+          final ends = _fingerFlickEndpoints(
+            axisHint,
+            distanceFraction: dist,
+            startX: startX,
+          );
+          _showSmartOperation(status, point: ends.$1);
+          debugPrint(
+            'action distanceFlick PARAM-FLICK attempt=${i + 1}/$attempts '
+            'axis=$axisHint dist=$dist dur=${dur}ms x=$startX',
+          );
+          await _actionFingerFlick(
+            task,
+            axisHint: axisHint,
+            label: status,
+            distanceFraction: dist,
+            durationMs: dur,
+            announceDone: false,
+            fromOverride: ends.$1,
+            toOverride: ends.$2,
+            startX: startX,
+          );
+          if (!identical(_smartDownloadTask, task) &&
+              task['actionProbe'] != true) {
+            break;
+          }
+          final settleMs = (550 + i * 40).clamp(500, 700);
+          await Future<void>.delayed(Duration(milliseconds: settleMs));
+          if (!identical(_smartDownloadTask, task) &&
+              task['actionProbe'] != true) {
+            break;
+          }
+          if (await _actionMediaIdentityChanged(task, before)) {
+            switched = true;
+            debugPrint(
+              'action distanceFlick switched on param-flick attempt ${i + 1}',
+            );
+            break;
+          }
+          // 未切：同轮再轻扫一次（略偏 X）
+          final retryX = (startX + 0.06).clamp(0.28, 0.72);
+          final retryEnds = _fingerFlickEndpoints(
+            axisHint,
+            distanceFraction: dist,
+            startX: retryX,
+          );
+          debugPrint(
+            'action distanceFlick PARAM-FLICK retry-alt-x '
+            'x=$retryX dur=${dur}ms after attempt ${i + 1}',
+          );
+          _showSmartOperation(
+            axisHint == 'up' ? '上滑切条（轻扫二次）' : '$label（轻扫二次）',
+            point: retryEnds.$1,
+          );
+          await _actionFingerFlick(
+            task,
+            axisHint: axisHint,
+            label: axisHint == 'up' ? '上滑切条（轻扫二次）' : '$label（轻扫二次）',
+            distanceFraction: dist,
+            durationMs: dur,
+            announceDone: false,
+            fromOverride: retryEnds.$1,
+            toOverride: retryEnds.$2,
+            startX: retryX,
+          );
+          await Future<void>.delayed(
+            Duration(milliseconds: (settleMs - 40).clamp(500, 680)),
+          );
+          if (!identical(_smartDownloadTask, task) &&
+              task['actionProbe'] != true) {
+            break;
+          }
+          if (await _actionMediaIdentityChanged(task, before)) {
+            switched = true;
+            debugPrint(
+              'action distanceFlick switched on param-flick retry of attempt ${i + 1}',
+            );
+            break;
+          }
+          debugPrint(
+            'action distanceFlick still same after param-flick double of attempt ${i + 1}',
+          );
+          continue;
+        }
+
+        // 较短默认：整屏高度原生 fling（屏坐标 90%→8%）
+        final dur = durationMs.clamp(140, 240);
+        final attemptDur = (dur - i * 12).clamp(140, dur);
+        final status =
+            i == 0
+                ? label
+                : (axisHint == 'up'
+                    ? '上滑切条（整屏重试 ${i + 1}/$attempts）'
+                    : '$label（整屏重试 ${i + 1}/$attempts）');
+        final fingerFrom =
+            axisHint == 'up' ? Offset(startX, 0.90) : Offset(startX, 0.08);
+        final fingerTo =
+            axisHint == 'up' ? Offset(startX, 0.08) : Offset(startX, 0.90);
+        _showSmartOperation(status, point: fingerFrom);
+        debugPrint(
+          'action distanceFlick FULLSCREEN attempt=${i + 1}/$attempts '
+          'axis=$axisHint x=$startX dur=${attemptDur}ms',
+        );
+        // 手指 UI 与原生整屏甩并行
+        final flingFuture = _nativeFullScreenVerticalFling(
+          direction: axisHint,
+          xNorm: startX,
+          durationMs: attemptDur,
+          fromScreenY: 0.90,
+          toScreenY: 0.08,
+        );
+        final frames = (attemptDur / 36).round().clamp(4, 10);
+        for (var f = 0; f <= frames; f++) {
+          if (!identical(_smartDownloadTask, task) &&
+              task['actionProbe'] != true) {
+            break;
+          }
+          final t = f / frames;
+          _showSmartOperation(
+            status,
+            point: Offset(
+              fingerFrom.dx + (fingerTo.dx - fingerFrom.dx) * t,
+              fingerFrom.dy + (fingerTo.dy - fingerFrom.dy) * t,
+            ),
+          );
+          await Future<void>.delayed(
+            Duration(milliseconds: attemptDur ~/ frames),
+          );
+        }
+        final flingOk = await flingFuture;
+        debugPrint(
+          'action distanceFlick FULLSCREEN attempt=${i + 1} nativeOk=$flingOk',
+        );
+        if (!identical(_smartDownloadTask, task) &&
+            task['actionProbe'] != true) {
+          break;
+        }
+
+        // 落地结算 500–700ms 再验身份
+        final settleMs = (550 + i * 40).clamp(500, 700);
+        await Future<void>.delayed(Duration(milliseconds: settleMs));
+        if (!identical(_smartDownloadTask, task) &&
+            task['actionProbe'] != true) {
+          break;
+        }
+        if (await _actionMediaIdentityChanged(task, before)) {
+          switched = true;
+          debugPrint(
+            'action distanceFlick switched on fullscreen attempt ${i + 1}',
+          );
+          break;
+        }
+
+        // 未切：同轮再整屏甩一次（略偏 X）
+        final retryX = (startX + 0.06).clamp(0.28, 0.72);
+        final retryDur = (attemptDur - 20).clamp(140, attemptDur);
+        debugPrint(
+          'action distanceFlick FULLSCREEN retry-alt-x '
+          'x=$retryX dur=${retryDur}ms after attempt ${i + 1}',
+        );
+        _showSmartOperation(
+          axisHint == 'up' ? '上滑切条（整屏二次）' : '$label（整屏二次）',
+          point: Offset(retryX, axisHint == 'up' ? 0.90 : 0.08),
+        );
+        await _nativeFullScreenVerticalFling(
+          direction: axisHint,
+          xNorm: retryX,
+          durationMs: retryDur,
+          fromScreenY: 0.91,
+          toScreenY: 0.07,
+        );
+        await Future<void>.delayed(
+          Duration(milliseconds: (settleMs - 40).clamp(500, 680)),
+        );
+        if (!identical(_smartDownloadTask, task) &&
+            task['actionProbe'] != true) {
+          break;
+        }
+        if (await _actionMediaIdentityChanged(task, before)) {
+          switched = true;
+          debugPrint(
+            'action distanceFlick switched on fullscreen retry of attempt ${i + 1}',
+          );
+          break;
+        }
+        debugPrint(
+          'action distanceFlick still same after fullscreen double of attempt ${i + 1}',
+        );
+      }
+    } else {
+      // 横向相册：基础 0.67（旧 0.50 的约 4/3），身份未变时逐级加大。
+      // 某档成功后写入任务，后续图片直接从该档开始，避免反复试小幅度。
+      final before = await _actionCaptureMediaIdentity(task);
+      final attempts = maxAttempts.clamp(1, 3);
+      final remembered =
+          (task['actionHorizontalLearnedDistance'] as num?)?.toDouble();
+      final baseDist = (remembered ?? distanceFraction).clamp(0.55, 0.88);
+      final rememberedDuration =
+          (task['actionHorizontalLearnedDurationMs'] as num?)?.toInt();
+      final dur = (rememberedDuration ?? durationMs).clamp(320, 440);
+      for (var i = 0; i < attempts; i++) {
+        if (!identical(_smartDownloadTask, task) &&
+            task['actionProbe'] != true) {
+          break;
+        }
+        final dist = (baseDist + i * 0.08).clamp(0.55, 0.88);
+        final attemptDur = (dur + i * 20).clamp(320, 440);
+        final startX = <double>[0.50, 0.54, 0.46][i];
+        final status = i == 0 ? label : '$label（加大 ${i + 1}/$attempts）';
+        final ends = _fingerFlickEndpoints(
+          axisHint,
+          distanceFraction: dist,
+          startX: startX,
+        );
+        _showSmartOperation(status, point: ends.$1);
+        debugPrint(
+          'action distanceFlick horizontal '
+          'attempt=${i + 1}/$attempts axis=$axisHint dist=$dist '
+          'dur=${attemptDur}ms',
+        );
+        await _actionFingerFlick(
+          task,
+          axisHint: axisHint,
+          label: status,
+          distanceFraction: dist,
+          durationMs: attemptDur,
+          announceDone: false,
+          fromOverride: ends.$1,
+          toOverride: ends.$2,
+          startX: startX,
+        );
+        if (!identical(_smartDownloadTask, task) &&
+            task['actionProbe'] != true) {
+          break;
+        }
+        await Future<void>.delayed(
+          Duration(milliseconds: (attemptDur + 120).clamp(320, 520)),
+        );
+        if (!identical(_smartDownloadTask, task) &&
+            task['actionProbe'] != true) {
+          break;
+        }
+        if (await _actionMediaIdentityChanged(task, before)) {
+          switched = true;
+          task['actionHorizontalLearnedDistance'] = dist;
+          task['actionHorizontalLearnedDurationMs'] = attemptDur;
+          debugPrint(
+            'action distanceFlick horizontal switched on attempt ${i + 1}; '
+            'learned dist=$dist dur=${attemptDur}ms',
+          );
+          break;
+        }
+        debugPrint(
+          'action distanceFlick horizontal identity unchanged '
+          'after attempt ${i + 1}',
+        );
+      }
+    }
+
+    if (prevMixed != null) {
+      task['allowMixedMedia'] = prevMixed;
+    } else {
+      task.remove('allowMixedMedia');
+    }
     if (!identical(_smartDownloadTask, task) && task['actionProbe'] != true) {
-      return;
+      return switched;
     }
-    task['needAdvancePastCurrent'] = false;
-    await Future<void>.delayed(const Duration(milliseconds: 160));
+    await Future<void>.delayed(const Duration(milliseconds: 120));
     if (!identical(_smartDownloadTask, task) && task['actionProbe'] != true) {
-      return;
+      return switched;
     }
-    _showSmartOperation('已$label', point: const Offset(0.5, 0.5));
+
+    if (switched) {
+      task['actionAdvanceFailed'] = false;
+      task['needAdvancePastCurrent'] = false;
+      _showSmartOperation('已$label', point: const Offset(0.5, 0.5));
+    } else if (vertical) {
+      // 身份未变：保留待切标志，后续长按不得再下同条
+      task['actionAdvanceFailed'] = true;
+      task['needAdvancePastCurrent'] = true;
+      debugPrint(
+        'action distanceFlick FAILED axis=$axisHint — '
+        'identity unchanged after fullscreen flings',
+      );
+      _showSmartOperation(
+        axisHint == 'up' ? '切条失败，重试上滑' : '切条失败，请重试',
+        point: const Offset(0.5, 0.5),
+      );
+    } else {
+      // 横向：身份未变也标失败，避免误报「已切」后继续长按同图
+      task['actionAdvanceFailed'] = true;
+      task['needAdvancePastCurrent'] = true;
+      debugPrint(
+        'action distanceFlick FAILED axis=$axisHint — '
+        'identity unchanged after horizontal flick(s)',
+      );
+      _showSmartOperation('切图失败，请重试', point: const Offset(0.5, 0.5));
+    }
+    return switched;
   }
 
   /// 真正切到相邻媒体：目标是「换了一条」，不是「滑了某段距离」。
@@ -16100,7 +18698,7 @@ class _BrowserPageState extends State<BrowserPage>
     required String direction,
     String? axisHintOverride,
     int maxAttempts = 4,
-    double distanceFraction = 0.34,
+    double distanceFraction = 0.50,
     int durationMs = 280,
   }) async {
     final controller = _controller;
@@ -16114,6 +18712,7 @@ class _BrowserPageState extends State<BrowserPage>
         _showSmartOperation('下载进行中，等待完成后再切条');
         await _actionWaitDownload(task);
       }
+      await _actionWaitStrictVideoMinimum(task);
       if (!_actionRecipeMayAdvancePastDownload(task)) {
         debugPrint(
           'action recipe switch BLOCKED switchAdjacent '
@@ -16136,7 +18735,7 @@ class _BrowserPageState extends State<BrowserPage>
             : (preferHorizontal
                 ? (goNext ? 'left' : 'right')
                 : (goNext ? 'up' : 'down'));
-    // 按距离模式：一次轻扫即返回，供后续长按
+    // 按距离模式：身份未变时加大重试；横向会记住成功幅度。
     if (_advanceModeIsDistance(task)) {
       await _actionDistanceFlickOnly(
         task,
@@ -16144,11 +18743,14 @@ class _BrowserPageState extends State<BrowserPage>
         label: label,
         distanceFraction: distanceFraction,
         durationMs: durationMs,
+        maxAttempts: maxAttempts,
       );
       return;
     }
     final horizontal = axisHint == 'left' || axisHint == 'right';
-    final attempts = maxAttempts.clamp(1, 8);
+    // 横向相册最多三档加幅；一旦身份变化立即停止，避免多滑一张。
+    final attempts =
+        horizontal ? maxAttempts.clamp(1, 2) : maxAttempts.clamp(1, 8);
     // 切换前混合识别，便于指纹覆盖图/视频
     final prevMixed = task['allowMixedMedia'];
     task['allowMixedMedia'] = true;
@@ -16170,26 +18772,9 @@ class _BrowserPageState extends State<BrowserPage>
     // 干净站：直接记指纹切条，首刀不探广告
     if (!skipInitialClear) await clearIfNeeded();
     final before = await _actionCaptureMediaIdentity(task);
-    final beforeKey = (before?['key'] ?? '').toString();
     _showSmartOperation(label, point: const Offset(0.5, 0.5));
 
-    Future<bool> changed() async {
-      final after = await _actionCaptureMediaIdentity(task);
-      final afterKey = (after?['key'] ?? '').toString();
-      if (beforeKey.isEmpty || afterKey.isEmpty) {
-        // 指纹不稳时，用滚动位置/src 弱判定
-        final bSrc = (before?['src'] ?? '').toString();
-        final aSrc = (after?['src'] ?? '').toString();
-        final bY = (before?['scrollTop'] as num?)?.toInt() ?? 0;
-        final aY = (after?['scrollTop'] as num?)?.toInt() ?? 0;
-        final bX = (before?['scrollLeft'] as num?)?.toInt() ?? 0;
-        final aX = (after?['scrollLeft'] as num?)?.toInt() ?? 0;
-        return (aSrc.isNotEmpty && aSrc != bSrc) ||
-            (aY - bY).abs() > 40 ||
-            (aX - bX).abs() > 40;
-      }
-      return afterKey != beforeKey;
-    }
+    Future<bool> changed() => _actionMediaIdentityChanged(task, before);
 
     void markSwitched() {
       // 切条成功：清除「待推走」标志，避免下一轮误判再切一次
@@ -16230,28 +18815,82 @@ class _BrowserPageState extends State<BrowserPage>
       debugPrint('action switchMedia locate failed: $e');
     }
 
-    // 2) 原生轻扫 + 校验；距离逐次加大，直到切走
+    // 2) 原生轻扫 + 校验；竖向用近全屏快扫，直到切走
+    final rememberedHorizontal =
+        (task['actionHorizontalLearnedDistance'] as num?)?.toDouble();
+    final baseDist =
+        horizontal
+            ? (rememberedHorizontal ?? distanceFraction).clamp(0.55, 0.88)
+            : distanceFraction.clamp(0.78, 0.88);
+    const xOffsets = <double>[0.50, 0.42, 0.58, 0.46, 0.54];
     for (var i = 0; i < attempts; i++) {
       if (!identical(_smartDownloadTask, task)) return;
       // 首刀失败后的重试才允许探广告
       await clearIfNeeded(force: i > 0);
-      final dist = (distanceFraction + i * 0.08).clamp(0.22, 0.72);
-      final dur = (durationMs + i * 30).clamp(200, 480);
-      _showSmartOperation(
-        '$label · 第${i + 1}/$attempts 次',
-        point: const Offset(0.5, 0.55),
-      );
+      final startX = xOffsets[i % xOffsets.length];
+      final dist =
+          horizontal
+              ? (baseDist + i * 0.08).clamp(0.55, 0.88)
+              : (baseDist + i * 0.02).clamp(0.78, 0.88);
+      // 竖向：越重试越快；横向加幅时略延长，增强 Facebook 相册接手概率。
+      final dur =
+          horizontal
+              ? (durationMs + i * 20).clamp(320, 440)
+              : (240 - i * 14).clamp(180, 280);
+      final status =
+          i == 0
+              ? '$label · 第${i + 1}/$attempts 次'
+              : (axisHint == 'up'
+                  ? '上滑切条（快扫重试）'
+                  : '$label · 补扫 ${i + 1}/$attempts');
+      late final Offset from;
+      late final Offset to;
+      if (horizontal) {
+        final ends = _fingerFlickEndpoints(
+          axisHint,
+          distanceFraction: dist,
+          startX: startX,
+        );
+        from = ends.$1;
+        to = ends.$2;
+      } else {
+        final ends = _reelsFlingEndpoints(
+          axisHint,
+          startX: startX,
+          fromY: axisHint == 'up' ? (0.90 - i * 0.01).clamp(0.85, 0.92) : 0.10,
+          toY:
+              axisHint == 'up'
+                  ? 0.10
+                  : (0.90 - (i % 3) * 0.01).clamp(0.88, 0.92),
+        );
+        from = ends.$1;
+        to = ends.$2;
+      }
+      _showSmartOperation(status, point: from);
       await _actionFingerFlick(
         task,
         axisHint: axisHint,
-        label: label,
+        label: status,
         distanceFraction: dist,
         durationMs: dur,
+        announceDone: false,
+        fromOverride: from,
+        toOverride: to,
+        startX: startX,
       );
       if (!identical(_smartDownloadTask, task)) return;
-      await Future<void>.delayed(const Duration(milliseconds: 420));
+      await Future<void>.delayed(
+        Duration(
+          milliseconds: horizontal ? 420 : (440 + i * 30).clamp(400, 600),
+        ),
+      );
       if (await changed()) {
         markSwitched();
+        task['actionAdvanceFailed'] = false;
+        if (horizontal) {
+          task['actionHorizontalLearnedDistance'] = dist;
+          task['actionHorizontalLearnedDurationMs'] = dur;
+        }
         _showSmartOperation('已$label', point: const Offset(0.5, 0.5));
         if (prevMixed != null) {
           task['allowMixedMedia'] = prevMixed;
@@ -16261,15 +18900,17 @@ class _BrowserPageState extends State<BrowserPage>
         await Future<void>.delayed(const Duration(milliseconds: 160));
         return;
       }
-      // 再试一次 DOM 定位（有的站滑一下才渲染下一条节点）
+      // 竖向：再试一次 DOM 定位（有的站滑一下才渲染下一条节点）
+      // 横向相册禁止二次 DOM 手势，避免首扫已切图却因身份滞后再滑一张
+      if (horizontal) continue;
       try {
         await controller.evaluateJavascript(
           source: SmartActionJs.fingerSwipe(
-            dxNorm: horizontal ? (goNext ? -1.0 : 1.0) : 0,
-            dyNorm: horizontal ? 0 : (goNext ? -1.0 : 1.0),
+            dxNorm: 0,
+            dyNorm: goNext ? -1.0 : 1.0,
             imagesOnly: filter.$1,
             videosOnly: filter.$2,
-            preferHorizontal: horizontal,
+            preferHorizontal: false,
             directionOverride: direction,
             axisHint: axisHint,
           ),
@@ -16277,6 +18918,7 @@ class _BrowserPageState extends State<BrowserPage>
         await Future<void>.delayed(const Duration(milliseconds: 360));
         if (await changed()) {
           markSwitched();
+          task['actionAdvanceFailed'] = false;
           _showSmartOperation('已$label', point: const Offset(0.5, 0.5));
           if (prevMixed != null) {
             task['allowMixedMedia'] = prevMixed;
@@ -16293,7 +18935,15 @@ class _BrowserPageState extends State<BrowserPage>
     } else {
       task.remove('allowMixedMedia');
     }
-    _showSmartOperation('未能确认切换，已尽力$label');
+    if (!horizontal) {
+      task['actionAdvanceFailed'] = true;
+      task['needAdvancePastCurrent'] = true;
+      _showSmartOperation(axisHint == 'up' ? '切条失败，重试上滑' : '切条失败，请重试');
+    } else {
+      task['actionAdvanceFailed'] = true;
+      task['needAdvancePastCurrent'] = true;
+      _showSmartOperation('切图失败，请重试');
+    }
     await Future<void>.delayed(const Duration(milliseconds: 200));
   }
 
@@ -16672,6 +19322,52 @@ class _BrowserPageState extends State<BrowserPage>
     final healthy = !probe && _actionRecipeHealthySkipGuard(task);
     final disablePreSkip = !probe && _actionRecipeDisablesPreSkip(task);
     final fixedForce = !probe && _actionRecipeIsFixedWaitForce(task);
+    // Facebook 视频一旦在本任务中成功入库或确认重复，就不得再次长按下载。
+    // 页面回弹/循环回到旧视频时，先切走再处理新的当前视频。
+    if (!probe && _actionRecipeRequiresSuccessfulVideoSave(task)) {
+      final currentIdentity = await _actionCaptureMediaIdentity(task);
+      if (_isHandledMediaIdentity(task, currentIdentity)) {
+        task['needAdvancePastCurrent'] = true;
+        final advanced = await _advancePastHandledMedia(task);
+        if (!advanced) {
+          task['actionAdvanceFailed'] = true;
+          _showSmartOperation('当前视频已下载，正在重试切到下一条');
+          return;
+        }
+        task['actionAdvanceFailed'] = false;
+        await Future<void>.delayed(const Duration(milliseconds: 420));
+      }
+    }
+    // 切条失败后：身份仍是已处理条时禁止再长按同条（否则 Reels 会反复下同一视频）
+    if (!probe &&
+        task['mode'] == 'action_recipe' &&
+        (task['actionAdvanceFailed'] == true ||
+            task['needAdvancePastCurrent'] == true)) {
+      final stuck = await _actionCaptureMediaIdentity(task);
+      if (await _shouldSkipAsHandledMedia(task, stuck)) {
+        _showSmartOperation('切条失败，重试上滑', point: const Offset(0.5, 0.5));
+        final advanced = await _advancePastHandledMedia(task);
+        final stillStuck = await _shouldSkipAsHandledMedia(
+          task,
+          await _actionCaptureMediaIdentity(task),
+        );
+        if (!advanced || stillStuck) {
+          debugPrint(
+            'action longPressDownload BLOCKED: advance failed, '
+            'same media still on screen',
+          );
+          _showSmartOperation('切条失败，重试上滑', point: const Offset(0.5, 0.5));
+          task['actionAdvanceFailed'] = true;
+          task['needAdvancePastCurrent'] = true;
+          task['failed'] = ((task['failed'] as int?) ?? 0) + 1;
+          return;
+        }
+        task['actionAdvanceFailed'] = false;
+      } else {
+        task['actionAdvanceFailed'] = false;
+        task['needAdvancePastCurrent'] = false;
+      }
+    }
     // 健康路径：跳过清障/已处理探测，直接长按当前新媒体
     // 动作编排（含固定等待）：长按前绝不「已处理」预跳过，强制触发下载
     if (!healthy) {
@@ -16841,11 +19537,15 @@ class _BrowserPageState extends State<BrowserPage>
       await Future<void>.delayed(const Duration(milliseconds: 400));
       return;
     }
-    final waitMode =
+    final configuredWaitMode =
         (task['actionWaitMode'] ?? 'library').toString().toLowerCase() ==
                 'fixed'
             ? 'fixed'
             : 'library';
+    final strictVideoSave = _actionRecipeRequiresSuccessfulVideoSave(task);
+    // 严格视频校验只负责阻止无效文件入库，不能覆盖用户编排的等待方式。
+    // 固定等待是最长时限；时限内真实入库成功仍会立即结束等待。
+    final waitMode = configuredWaitMode;
     final waitSeconds = ((task['actionWaitSeconds'] as num?)?.toInt() ?? 30)
         .clamp(1, 600);
     final epoch = task['actionDownloadEpoch'];
@@ -16853,6 +19553,7 @@ class _BrowserPageState extends State<BrowserPage>
     final hasWorkAtEnter = _actionRecipeHasDownloadWork(task);
     debugPrint(
       'action waitDownload: ENTER epoch=$epoch mode=$waitMode '
+      'configuredMode=$configuredWaitMode strictVideo=$strictVideoSave '
       'seconds=$waitSeconds needsConfirm=$needsConfirmAtEnter '
       'hasWork=$hasWorkAtEnter outcome=${task['actionDownloadOutcome']} '
       'libraryOk=${task['actionLibrarySaveOk']} '
@@ -16869,7 +19570,7 @@ class _BrowserPageState extends State<BrowserPage>
       return;
     }
 
-    // —— 模式 2：固定等待 —— 时长为上限；真实入库成功可提前切条；禁用 detect-and-skip
+    // —— 模式 2：固定等待 —— 时长为上限；真实入库成功 / 库内重复均可提前切条；禁用软 detect-and-skip
     if (waitMode == 'fixed') {
       if (task['actionFixedWaitReleased'] == true) {
         debugPrint('action waitDownload: EXIT reason=fixed_already_released');
@@ -16877,10 +19578,15 @@ class _BrowserPageState extends State<BrowserPage>
       }
       // 本轮从未长按/无在途工作：无需假装等待
       if (!needsConfirmAtEnter && !hasWorkAtEnter) {
-        // 进入时若已真实入库，直接放行（不必空等满时长）
-        if (_actionRecipeDidLibrarySave(task)) {
+        // 进入时若已真实入库或库内重复，直接放行（不必空等满时长）
+        if (_actionRecipeDidLibrarySave(task) ||
+            _actionRecipeIsLibraryDuplicateReleased(task)) {
           task['actionFixedWaitReleased'] = true;
-          _showSmartOperation('已入库，提前继续');
+          _showSmartOperation(
+            _actionRecipeIsLibraryDuplicateReleased(task)
+                ? '库内已有，跳过'
+                : '已入库，提前继续',
+          );
           debugPrint(
             'action waitDownload: EXIT reason=library_ok_at_enter(fixed)',
           );
@@ -16889,8 +19595,8 @@ class _BrowserPageState extends State<BrowserPage>
         debugPrint('action waitDownload: EXIT reason=no_pending_work(fixed)');
         return;
       }
-      // 固定等待 = 最大等待：仅 library_saved / success 计数增加可提前结束；
-      // already_in_library / 软「已处理」绝不提前放行；到点不取消进度条在途任务。
+      // 固定等待 = 最大等待：library_saved / 哈希确认 already_in_library 可提前结束；
+      // 软「已处理」绝不提前放行；到点不取消进度条在途任务。
       final started = DateTime.now();
       final deadline = started.add(Duration(seconds: waitSeconds));
       final successAtStart = (task['success'] as int?) ?? 0;
@@ -16921,7 +19627,7 @@ class _BrowserPageState extends State<BrowserPage>
         } else {
           invalidSeenAt = DateTime.fromMillisecondsSinceEpoch(0);
         }
-        // 固定等待开始前若整轮卡住超过看门狗：强制跳过（仍保留 library_saved 提前退出）
+        // 固定等待开始前若整轮卡住超过看门狗：强制跳过（仍保留 library_saved / 库内重复提前退出）
         if (DateTime.now().difference(started) >=
                 _kActionRecipeLibraryWatchdog &&
             !_actionRecipeFixedWaitShouldEarlyAdvance(
@@ -16944,8 +19650,10 @@ class _BrowserPageState extends State<BrowserPage>
           task,
           successAtStart: successAtStart,
         )) {
+          final isDup = _actionRecipeIsLibraryDuplicateReleased(task);
           // 补齐闸门终态，避免 findNext 仍被 needsConfirm 挡住
-          if (!_actionRecipeDidLibrarySave(task) &&
+          if (!isDup &&
+              !_actionRecipeDidLibrarySave(task) &&
               ((task['success'] as int?) ?? 0) > successAtStart) {
             _actionRecipeFinishAwaitLibrarySave(
               task,
@@ -16956,12 +19664,15 @@ class _BrowserPageState extends State<BrowserPage>
           task['actionFixedWaitReleased'] = true;
           task['actionLongPressNeedsConfirm'] = false;
           task['actionAwaitingLibrarySave'] = false;
+          if (isDup) {
+            task['actionForceSkipReleased'] = true;
+          }
           debugPrint(
             'action waitDownload: EXIT reason=library_ok_during_fixed '
             'outcome=${task['actionDownloadOutcome']} '
             'success=${task['success']}/$successAtStart',
           );
-          _showSmartOperation('已入库，提前继续');
+          _showSmartOperation(isDup ? '库内已有，跳过' : '已入库，提前继续');
           return;
         }
         final leftMs = deadline.difference(DateTime.now()).inMilliseconds;
@@ -16998,12 +19709,14 @@ class _BrowserPageState extends State<BrowserPage>
         debugPrint('action waitDownload: EXIT reason=task_replaced(fixed)');
         return;
       }
-      // 循环结束前再看一眼：刚好在 deadline 附近入库
+      // 循环结束前再看一眼：刚好在 deadline 附近入库 / 库内重复
       if (_actionRecipeFixedWaitShouldEarlyAdvance(
         task,
         successAtStart: successAtStart,
       )) {
-        if (!_actionRecipeDidLibrarySave(task) &&
+        final isDup = _actionRecipeIsLibraryDuplicateReleased(task);
+        if (!isDup &&
+            !_actionRecipeDidLibrarySave(task) &&
             ((task['success'] as int?) ?? 0) > successAtStart) {
           _actionRecipeFinishAwaitLibrarySave(
             task,
@@ -17014,7 +19727,10 @@ class _BrowserPageState extends State<BrowserPage>
         task['actionFixedWaitReleased'] = true;
         task['actionLongPressNeedsConfirm'] = false;
         task['actionAwaitingLibrarySave'] = false;
-        _showSmartOperation('已入库，提前继续');
+        if (isDup) {
+          task['actionForceSkipReleased'] = true;
+        }
+        _showSmartOperation(isDup ? '库内已有，跳过' : '已入库，提前继续');
         debugPrint(
           'action waitDownload: EXIT reason=library_ok_at_deadline(fixed)',
         );
@@ -17055,6 +19771,15 @@ class _BrowserPageState extends State<BrowserPage>
       debugPrint('action waitDownload: EXIT reason=invalid_already_finished');
       return;
     }
+    // 进入时已是哈希确认库内重复：立刻放行，绝不干等
+    if (_actionRecipeIsLibraryDuplicateReleased(task)) {
+      task['actionForceSkipReleased'] = true;
+      _showSmartOperation('库内已有，跳过');
+      debugPrint(
+        'action waitDownload: EXIT reason=already_in_library_at_enter',
+      );
+      return;
+    }
     _showSmartOperation('等待下载完成（媒体库确认）');
 
     // 主路径：若长按创建的 Completer 仍在，必须先 await（健康连胜也绝不跳过）
@@ -17070,6 +19795,13 @@ class _BrowserPageState extends State<BrowserPage>
     }
 
     final started = DateTime.now();
+    final taskDeadline = task['deadlineAt'] as DateTime?;
+    final strictWaitLimit =
+        taskDeadline != null && taskDeadline.isAfter(started)
+            ? taskDeadline.difference(started)
+            : const Duration(hours: 5);
+    final waitLimit =
+        strictVideoSave ? strictWaitLimit : _kActionRecipeLibraryWatchdog;
     var lastClearAt = DateTime.fromMillisecondsSinceEpoch(0);
     var stagnantSince = DateTime.now();
     var lastHadWork = true;
@@ -17079,10 +19811,19 @@ class _BrowserPageState extends State<BrowserPage>
     var progressSince = DateTime.now();
     final healthy = _actionRecipeHealthySkipGuard(task);
     while (identical(_smartDownloadTask, task) &&
-        DateTime.now().difference(started) < _kActionRecipeLibraryWatchdog) {
+        DateTime.now().difference(started) < waitLimit) {
       if (task['actionForceSkipReleased'] == true &&
           task['actionLongPressNeedsConfirm'] != true) {
         debugPrint('action waitDownload: EXIT reason=force_skip_released');
+        return;
+      }
+      // 哈希确认库内重复：立刻退出，勿被残留下载标志拖住
+      if (_actionRecipeIsLibraryDuplicateReleased(task)) {
+        task['actionForceSkipReleased'] = true;
+        _showSmartOperation('库内已有，跳过');
+        debugPrint(
+          'action waitDownload: EXIT reason=already_in_library_terminal',
+        );
         return;
       }
       final needsConfirm = task['actionLongPressNeedsConfirm'] == true;
@@ -17231,7 +19972,8 @@ class _BrowserPageState extends State<BrowserPage>
         return;
       }
       // 有真实下载但长时间无指纹变化：看门狗强制跳过
-      if ((awaitingLibrary || needsConfirm) &&
+      if (!strictVideoSave &&
+          (awaitingLibrary || needsConfirm) &&
           DateTime.now().difference(progressSince) >
               _kActionRecipeLibraryWatchdog) {
         await _actionRecipeForceSkipCurrent(
@@ -17418,6 +20160,14 @@ class _BrowserPageState extends State<BrowserPage>
     final forcedProfile = (forceSiteProfile ?? '').trim();
     final siteProfile =
         forcedProfile.isNotEmpty ? forcedProfile : nativeSiteProfile;
+    // Facebook dedicated floor: reject init stubs even when UI min is empty.
+    var resolvedMinVideoBytes = minVideoBytes;
+    if (_smartUsesFacebookPipeline(siteProfile)) {
+      resolvedMinVideoBytes = max(
+        resolvedMinVideoBytes ?? 0,
+        _kMinFacebookSavedVideoBytes,
+      );
+    }
     final keywordFirstOn91 =
         startFromCurrentPage &&
         keyword.trim().isNotEmpty &&
@@ -17482,16 +20232,19 @@ class _BrowserPageState extends State<BrowserPage>
       'mediaType': mediaType,
       'allowMixedMedia': allowMixedMedia,
       'target': targetCount,
-      'minVideoBytes': minVideoBytes,
+      'minVideoBytes': resolvedMinVideoBytes,
       'maxVideoBytes': maxVideoBytes,
       'autoVideoSizeRange': autoVideoSizeRange,
-      'effectiveMinVideoBytes': minVideoBytes,
+      'effectiveMinVideoBytes': resolvedMinVideoBytes,
       'effectiveMaxVideoBytes': maxVideoBytes,
+      'facebookPipeline': _smartUsesFacebookPipeline(siteProfile),
       'matchStage':
           keywordFirstOn91
               ? '关键词优先 · 站内搜索'
               : siteProfile == '91' && keyword.trim().isEmpty
               ? '无关键词 · 邻近媒体查找'
+              : _smartUsesFacebookPipeline(siteProfile)
+              ? 'Facebook · Reels长按绑定'
               : keyword.isEmpty
               ? '模式A · 中心起点 · 邻近依次'
               : _smartUsesLegacyPriorityPipeline(siteProfile)
@@ -17499,6 +20252,7 @@ class _BrowserPageState extends State<BrowserPage>
               : '模式B · 列表顺序',
       'smartRunMode': keyword.trim().isEmpty ? 'nearby' : 'list',
       // 91 关键词模式：严禁 broaden 乱逛；无关键词 X/91 仍可扩大探索。
+      // Facebook：禁止 broaden，只靠长按绑定当前 Reels。
       'allowBroadenDiscovery':
           _smartUsesLegacyPriorityPipeline(siteProfile) && !keywordFirstOn91,
       'demoPageType': _smartDemoPageType(
@@ -18808,6 +21562,38 @@ class _BrowserPageState extends State<BrowserPage>
             }
           }
         }
+        if ((_smartUsesFacebookPipeline(
+                  (task['siteProfile'] ?? '').toString(),
+                ) ||
+                _isFacebookPlatformPage(pageUrl)) &&
+            (urls.isNotEmpty || captured.isNotEmpty)) {
+          final expectedFbKey =
+              (task['expectedFbVideoKey'] ?? '').toString().trim();
+          final resolvedFb = await _resolveFacebookLongPressVideoCandidates(
+            primaryUrl: urls.isEmpty ? '' : urls.first,
+            candidates: <String>[...urls.skip(1), ...captured],
+            pageUrl: pageUrl,
+            notBefore: lastFeedMoveAt,
+            expectedVideoKey: expectedFbKey,
+            isReels:
+                isFacebookReelsPageUrl(pageUrl) ||
+                isFacebookReelsPageUrl(_currentUrl),
+          );
+          if (resolvedFb.isNotEmpty) {
+            urls
+              ..clear()
+              ..addAll(resolvedFb);
+            captured.clear();
+            final topKey = facebookMediaIdentity(resolvedFb.first);
+            if (topKey.isNotEmpty && !topKey.startsWith('reel:')) {
+              task['expectedFbVideoKey'] = topKey;
+            }
+            debugPrint(
+              'FB pipeline: smart resolve progressive=${resolvedFb.length} '
+              'top=${resolvedFb.first}',
+            );
+          }
+        }
         if ((strict91Mode || _isElementBoundFeedPage(pageUrl)) &&
             captured.isNotEmpty) {
           urls.insertAll(0, captured);
@@ -19077,6 +21863,16 @@ class _BrowserPageState extends State<BrowserPage>
                   'durationSec': durationSec,
                   'downloadOrigin': 'smart_batch',
                   'allowSourceUrlReuse': _isElementBoundFeedPage(pageUrl),
+                  'facebookPipeline':
+                      task['facebookPipeline'] == true ||
+                      _isFacebookPlatformPage(pageUrl),
+                  'expectedFbVideoKey':
+                      (task['expectedFbVideoKey'] ?? '')
+                              .toString()
+                              .trim()
+                              .isNotEmpty
+                          ? (task['expectedFbVideoKey'] ?? '').toString().trim()
+                          : facebookMediaIdentity(chosen),
                   'smartTask': task,
                 },
                 showModalDialog: false,
@@ -19341,10 +22137,7 @@ class _BrowserPageState extends State<BrowserPage>
     String title = '',
     String pageUrl = '',
   }) async {
-    // 动作编排 / 固定等待：彻底关闭 24h/标题/源地址软预约预跳过，强制下载
-    if (_smartForceDownloadNoPreSkip(task)) {
-      return true;
-    }
+    final forceNoPreSkip = _smartForceDownloadNoPreSkip(task);
     final key = _smartMediaNameKey(mediaUrl, title: title, pageUrl: pageUrl);
     final titleKey = _smartMediaTitleKey(title);
     if (key.isEmpty && titleKey.isEmpty) return true;
@@ -19369,18 +22162,8 @@ class _BrowserPageState extends State<BrowserPage>
         }).toList();
     for (final row in registryHits) {
       final hash = (row['fileHash'] ?? '').toString();
-      final rowSource = (row['sourceKey'] ?? '').toString();
-      var inLibrary = false;
+      // 仅内容哈希可宣称库内已有；URL/源地址映射一律不算。
       if (hash.isNotEmpty && await _libraryConfirmsFileHash(hash)) {
-        inLibrary = true;
-      } else if (rowSource.isNotEmpty &&
-          await _libraryConfirmsMediaSource(rowSource)) {
-        inLibrary = true;
-      } else if (sourceKey.isNotEmpty &&
-          await _libraryConfirmsMediaSource(sourceKey)) {
-        inLibrary = true;
-      }
-      if (inLibrary) {
         task['lastSmartReserveBlockReason'] = 'already_in_library';
         task['duplicateSkipped'] =
             ((task['duplicateSkipped'] as int?) ?? 0) + 1;
@@ -19388,12 +22171,12 @@ class _BrowserPageState extends State<BrowserPage>
             ((task['recent24hSkipped'] as int?) ?? 0) + 1;
         return false;
       }
-      // 备案有、媒体库无：清掉过期软标记，允许真正下载
+      // 备案无哈希或哈希未在库：清掉软标记，允许真正下载
       _smartDownload24hRegistry.remove(row);
-      debugPrint(
-        'Smart reserve: stale 24h registry hit without library file, cleared',
-      );
+      debugPrint('Smart reserve: 24h registry hit without hash proof, cleared');
     }
+    // 动作编排只忽略 URL、标题、文件名等软重复；内容哈希命中仍在上方拦截。
+    if (forceNoPreSkip) return true;
     final reservedNames = task['reservedMediaNameKeys'] as Set<String>;
     final reservedTitles = task['reservedMediaTitleKeys'] as Set<String>;
     // Same media name already reserved in this task: allow re-entry.
@@ -19408,17 +22191,9 @@ class _BrowserPageState extends State<BrowserPage>
     if (allowTitleIdentity &&
         titleKey.isNotEmpty &&
         reservedTitles.contains(titleKey)) {
-      // Different URL but same title already claimed by another item.
-      // 仅当标题对应源已在媒体库时才拦截；否则放行，避免软预约挡住未入库项。
-      if (sourceKey.isNotEmpty &&
-          await _libraryConfirmsMediaSource(sourceKey)) {
-        task['lastSmartReserveBlockReason'] = 'already_in_library';
-        task['duplicateSkipped'] =
-            ((task['duplicateSkipped'] as int?) ?? 0) + 1;
-        return false;
-      }
+      // 同标题软预约绝不能当「库内已有」；放行并由入库哈希判定。
       debugPrint(
-        'Smart reserve: same-title reservation without library file, allow',
+        'Smart reserve: same-title reservation without hash proof, allow',
       );
     }
     if (key.isNotEmpty) reservedNames.add(key);
@@ -22432,8 +25207,13 @@ class _BrowserPageState extends State<BrowserPage>
       return 'https://www.bing.com';
     if (lower.contains('twitter.com') || lower.contains('twimg.com'))
       return 'https://twitter.com';
-    if (lower.contains('facebook.com') || lower.contains('fbcdn.net'))
+    if (lower.contains('facebook.com') ||
+        lower.contains('fbcdn.net') ||
+        lower.contains('fbcdn.com') ||
+        lower.contains('scontent.') ||
+        lower.contains('fb.watch')) {
       return 'https://www.facebook.com';
+    }
     if (lower.contains('instagram.com') || lower.contains('cdninstagram.com'))
       return 'https://www.instagram.com';
     if (lower.contains('zhihu.com')) return 'https://www.zhihu.com';
@@ -22485,6 +25265,13 @@ class _BrowserPageState extends State<BrowserPage>
       } catch (_) {}
     }
     candidates.add(_getMediaReferer(mediaUrl));
+    if (_isFacebookCdnUrl(mediaUrl) ||
+        page.toLowerCase().contains('facebook.com') ||
+        page.toLowerCase().contains('fb.com')) {
+      candidates.add('https://www.facebook.com/');
+      candidates.add('https://www.facebook.com');
+      candidates.add('https://m.facebook.com/');
+    }
     if (_isXVideoLikeHost(mediaUrl) ||
         page.toLowerCase().contains('xvideos.')) {
       candidates.add('https://www.xvideos.com');
@@ -22829,16 +25616,14 @@ class _BrowserPageState extends State<BrowserPage>
     // Some valid HLS/TS containers are playable by ExoPlayer but Android's
     // metadata retriever reports 0. Treat 0 as unknown, not as a zero-length
     // video, otherwise smart download repeatedly fetches other renditions.
-    if (durationMs != null && durationMs > 0 && durationMs < 500) return false;
+    if (durationMs != null) {
+      // 能读到真实时长就是最可靠的可播放证据；不要再用“黑帧”颜色判断，
+      // Facebook 关键帧延迟/硬解码差异常会让有效视频抽到纯黑首帧。
+      return durationMs >= 500;
+    }
 
-    // If frame extraction is unsupported for this container/codec, retain the
-    // already format-validated video instead of creating a false negative.
-    final sampleTimes =
-        durationMs != null && durationMs > 3000
-            ? <int>[durationMs ~/ 5, durationMs ~/ 2, durationMs * 4 ~/ 5]
-            : const <int>[0];
-    var decodedFrames = 0;
-    for (final timeMs in sampleTimes) {
+    // 元数据读取不支持时，只确认能否解出任意帧；帧的颜色不是有效性标准。
+    for (final timeMs in const <int>[0, 1000, 3000]) {
       try {
         final bytes = await VideoThumbnail.thumbnailData(
           video: file.path,
@@ -22848,13 +25633,12 @@ class _BrowserPageState extends State<BrowserPage>
           timeMs: timeMs,
         );
         if (bytes == null || bytes.isEmpty) continue;
-        decodedFrames++;
-        if (await Isolate.run(() => _hasUsefulRasterContent(bytes))) {
-          return true;
-        }
+        return true;
       } catch (_) {}
     }
-    return decodedFrames == 0;
+    // 某些 DASH/HLS 容器可由播放器播放，但系统缩略图组件不支持。前面的
+    // 大小与 MP4 stub 检测已通过时保留，避免把真实视频误判为无效。
+    return true;
   }
 
   /// HLS 分片拼接后为 MPEG-TS，与 MP4 头不同；Android ExoPlayer 可播放 `.ts`。
@@ -23160,6 +25944,14 @@ class _BrowserPageState extends State<BrowserPage>
     if (size == 0) {
       await file.delete();
       throw Exception('[下载失败] 文件大小为0，服务器可能返回了空内容或需要特殊鉴权');
+    }
+    if (mediaType == MediaType.video && size < _kMinSavedVideoBytes) {
+      await file.delete();
+      throw Exception('[下载失败] 视频过小（${size}B），更像是分片/错误页而非可播放视频，已放弃入库');
+    }
+    if (mediaType == MediaType.image && size < _kMinSavedImageBytes) {
+      await file.delete();
+      throw Exception('[下载失败] 图片过小（${size}B），未保存到媒体库');
     }
     if (mediaType == MediaType.video && size < 2 * 1024 * 1024) {
       final peek = await file
@@ -24858,7 +27650,10 @@ class _BrowserPageState extends State<BrowserPage>
 
   Future<Map<String, dynamic>> _saveToMediaLibrary(
     File file,
-    MediaType mediaType,
+    MediaType mediaType, {
+    bool allowDuplicate = false,
+    bool relaxValidation = false,
+  }
   ) async {
     try {
       if (!await file.exists()) {
@@ -24868,8 +27663,25 @@ class _BrowserPageState extends State<BrowserPage>
       if (fileLength <= 0) {
         throw const FileSystemException('下载完成后的媒体文件为空');
       }
+      if (!relaxValidation &&
+          mediaType == MediaType.video &&
+          fileLength < _kMinSavedVideoBytes) {
+        try {
+          await file.delete();
+        } catch (_) {}
+        throw Exception('视频文件过小（${fileLength}B），未保存到媒体库');
+      }
+      if (!relaxValidation &&
+          mediaType == MediaType.image &&
+          fileLength < _kMinSavedImageBytes) {
+        try {
+          await file.delete();
+        } catch (_) {}
+        throw Exception('图片文件过小（${fileLength}B），未保存到媒体库');
+      }
       final fileName = p.basename(file.path);
-      if (mediaType == MediaType.video &&
+      if (!relaxValidation &&
+          mediaType == MediaType.video &&
           p.extension(fileName).toLowerCase() == '.webm' &&
           fileLength < _kMinBase64VideoBytes) {
         try {
@@ -24878,7 +27690,7 @@ class _BrowserPageState extends State<BrowserPage>
         throw Exception('视频数据不完整，未保存到媒体库');
       }
       final fileHash = await _calculateFileHash(file);
-      if (fileHash.isEmpty) {
+      if (fileHash.isEmpty && !allowDuplicate) {
         throw const FileSystemException('无法计算媒体内容哈希，已停止入库以避免产生重复文件');
       }
       final uuid = const Uuid().v4();
@@ -24895,6 +27707,10 @@ class _BrowserPageState extends State<BrowserPage>
 
       for (var attempt = 0; attempt < 3; attempt++) {
         try {
+          if (allowDuplicate) {
+            await _databaseService.insertMediaItem(mediaItemMap);
+            return mediaItemMap;
+          }
           final duplicate = await _databaseService
               .insertMediaItemIfContentUnique(mediaItemMap);
           if (duplicate != null) {
@@ -25012,10 +27828,7 @@ class _BrowserPageState extends State<BrowserPage>
     if (_showHomePage || rawUrl.isEmpty) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('请先打开网页'),
-          duration: Duration(seconds: 2),
-        ),
+        const SnackBar(content: Text('请先打开网页'), duration: Duration(seconds: 2)),
       );
       return;
     }
@@ -25024,10 +27837,7 @@ class _BrowserPageState extends State<BrowserPage>
     if (storedUrl.isEmpty) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('请先打开网页'),
-          duration: Duration(seconds: 2),
-        ),
+        const SnackBar(content: Text('请先打开网页'), duration: Duration(seconds: 2)),
       );
       return;
     }
@@ -25126,9 +27936,7 @@ class _BrowserPageState extends State<BrowserPage>
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
                       content: Text(
-                        name == '获取中...'
-                            ? '请等待网页标题获取完成，或输入自定义名称'
-                            : '请输入网站名称',
+                        name == '获取中...' ? '请等待网页标题获取完成，或输入自定义名称' : '请输入网站名称',
                       ),
                       duration: const Duration(seconds: 2),
                     ),
@@ -26604,6 +29412,8 @@ class _BrowserPageState extends State<BrowserPage>
     String smartPageUrl = '',
     int? minFileBytes,
     int? maxFileBytes,
+    bool rejectIncompleteMp4Stub = false,
+    String? pairedAudioUrl,
   }) async {
     // 仅下载图片和视频，不下载语音/音频
     if (mediaType == MediaType.audio) {
@@ -26615,7 +29425,23 @@ class _BrowserPageState extends State<BrowserPage>
       }
       return false;
     }
-    final absoluteUrl = _toAbsoluteUrl(url);
+    final appliedMinFileBytes = minFileBytes;
+    final appliedMaxFileBytes = maxFileBytes;
+    var absoluteUrl = _toAbsoluteUrl(url);
+    // Safety net: never download FB/CDN byte-range stubs as whole files.
+    if (mediaType == MediaType.video && isMediaFragmentUrl(absoluteUrl)) {
+      final recovered = recoverWholeMediaUrlFromFragment(absoluteUrl);
+      if (recovered == null || recovered.trim().isEmpty) {
+        debugPrint('FB/media fragment rejected (unrecoverable): $absoluteUrl');
+        onFailureType?.call('fb_stub_rejected');
+        return false;
+      }
+      debugPrint(
+        'FB/media progressive recover: fragment → whole url '
+        '(stripped bytestart/range)',
+      );
+      absoluteUrl = _toAbsoluteUrl(recovered.trim());
+    }
     if (_downloadingUrls.contains(absoluteUrl)) {
       onFailureType?.call('already_downloading');
       onProgress?.call(0.0, detail: '同一链接已在下载中');
@@ -26677,8 +29503,10 @@ class _BrowserPageState extends State<BrowserPage>
         onTotalBytesKnown: (totalBytes) {
           if (sizeRangeExceeded || cancelToken.isCancelled) return;
           final outsideRange =
-              (minFileBytes != null && totalBytes < minFileBytes) ||
-              (maxFileBytes != null && totalBytes > maxFileBytes);
+              (appliedMinFileBytes != null &&
+                  totalBytes < appliedMinFileBytes) ||
+              (appliedMaxFileBytes != null &&
+                  totalBytes > appliedMaxFileBytes);
           if (!outsideRange) return;
           sizeRangeExceeded = true;
           onProgress?.call(
@@ -26701,18 +29529,100 @@ class _BrowserPageState extends State<BrowserPage>
 
       if (downloadedFile != null) {
         debugPrint('文件下载成功: ');
-        final downloadedBytes = await downloadedFile.length();
-        if ((minFileBytes != null && downloadedBytes < minFileBytes) ||
-            (maxFileBytes != null && downloadedBytes > maxFileBytes)) {
-          await downloadedFile.delete();
+        if (mediaType == MediaType.video &&
+            pairedAudioUrl != null &&
+            pairedAudioUrl.trim().isNotEmpty) {
+          File? audioFile;
+          File? muxedFile;
+          try {
+            onProgress?.call(0.96, detail: '视频轨完成，正在合并 Facebook 音频轨…');
+            audioFile = await _downloadFile(
+              pairedAudioUrl,
+              MediaType.video,
+              cancelToken: cancelToken,
+              maxRequestAttempts: maxRequestAttempts,
+            );
+            if (audioFile != null && await audioFile.exists()) {
+              muxedFile = File('${downloadedFile.path}.fb-mux.mp4');
+              if (await muxedFile.exists()) await muxedFile.delete();
+              final muxed =
+                  await const MethodChannel(
+                    'media_muxer',
+                  ).invokeMethod<bool>('muxMp4', <String, String>{
+                    'videoPath': downloadedFile.path,
+                    'audioPath': audioFile.path,
+                    'outputPath': muxedFile.path,
+                  }) ==
+                  true;
+              if (muxed &&
+                  await muxedFile.exists() &&
+                  await muxedFile.length() > 0) {
+                final originalPath = downloadedFile.path;
+                await downloadedFile.delete();
+                downloadedFile = await muxedFile.rename(originalPath);
+                muxedFile = null;
+                debugPrint(
+                  'FB pipeline: paired DASH video+audio mux completed',
+                );
+              }
+            }
+          } catch (e) {
+            // Keep the playable video track when optional audio pairing fails.
+            debugPrint(
+              'FB pipeline: paired audio mux failed, keep video track: $e',
+            );
+          } finally {
+            for (final temporary in <File?>[audioFile, muxedFile]) {
+              try {
+                if (temporary != null && await temporary.exists()) {
+                  await temporary.delete();
+                }
+              } catch (_) {}
+            }
+          }
+        }
+        final completedDownload = downloadedFile!;
+        final downloadedBytes = await completedDownload.length();
+        if ((appliedMinFileBytes != null &&
+                downloadedBytes < appliedMinFileBytes) ||
+            (appliedMaxFileBytes != null &&
+                downloadedBytes > appliedMaxFileBytes)) {
+          debugPrint(
+            'FB/media size-gate reject: ${downloadedBytes}B '
+            'min=$appliedMinFileBytes max=$appliedMaxFileBytes url=$absoluteUrl',
+          );
+          await completedDownload.delete();
           downloadedFile = null;
           onFailureType?.call('outside_requested_size_range');
           if (mounted) _removeDownloadTask(taskId);
           return false;
         }
+        if (mediaType == MediaType.video &&
+            (rejectIncompleteMp4Stub ||
+                downloadedBytes < _kMinFacebookSavedVideoBytes)) {
+          // For small/FB downloads, probe enough of the file to see mdat.
+          final probeLen = min(
+            downloadedBytes,
+            max(8192, min(downloadedBytes, 64 * 1024)),
+          );
+          final probe = await completedDownload
+              .openRead(0, probeLen)
+              .fold<List<int>>(<int>[], (prev, chunk) => prev..addAll(chunk));
+          if (looksLikeIncompleteMp4Stub(probe, totalLength: downloadedBytes)) {
+            debugPrint(
+              'FB/media stub rejected: ${downloadedBytes}B incomplete MP4 '
+              '(ftyp/moov without mdat) url=$absoluteUrl',
+            );
+            await completedDownload.delete();
+            downloadedFile = null;
+            onFailureType?.call('fb_stub_rejected');
+            if (mounted) _removeDownloadTask(taskId);
+            return false;
+          }
+        }
         if (validateSmartMedia &&
-            !await _isUsefulSmartDownloadedMedia(downloadedFile, mediaType)) {
-          await downloadedFile.delete();
+            !await _isUsefulSmartDownloadedMedia(completedDownload, mediaType)) {
+          await completedDownload.delete();
           downloadedFile = null;
           onFailureType?.call('invalid_smart_media_content');
           if (mounted) _removeDownloadTask(taskId);
@@ -26720,7 +29630,12 @@ class _BrowserPageState extends State<BrowserPage>
         }
         final Map<String, dynamic> mediaMap;
         try {
-          mediaMap = await _saveToMediaLibrary(downloadedFile!, mediaType);
+          mediaMap = await _saveToMediaLibrary(
+            completedDownload,
+            mediaType,
+            allowDuplicate: false,
+            relaxValidation: false,
+          );
         } on _ExistingMediaDuplicateException {
           rethrow;
         } catch (e) {
@@ -26919,8 +29834,16 @@ class _BrowserPageState extends State<BrowserPage>
       if (mounted) {
         if (isLibraryDuplicate) {
           _removeDownloadTask(taskId);
-          // 智能下载进行中即使漏标 isSmartGesture，也不弹重复对话框以免卡死任务。
-          if (showDuplicatePrompt && _smartDownloadTask == null) {
+          // 内容哈希命中：动作编排立刻关闸放行 waitDownload（禁止仅靠 URL 宣称库内已有）
+          final hash = (duplicateRow?['file_hash'] ?? '').toString().trim();
+          if (smartTask != null &&
+              (smartTask['mode'] ?? '').toString() == 'action_recipe' &&
+              hash.isNotEmpty &&
+              await _libraryConfirmsFileHash(hash)) {
+            await _markCurrentMediaHandled(smartTask);
+            _actionRecipeReleaseAlreadyInLibrary(smartTask);
+          } else if (showDuplicatePrompt && _smartDownloadTask == null) {
+            // 非智能任务：弹重复对话框；智能任务不弹以免卡死
             await _showMediaDuplicateDialog(duplicateRow!);
           }
         } else if (!skipFailurePrompt || e is _MediaLibrarySaveException) {
@@ -27098,7 +30021,11 @@ class _BrowserPageState extends State<BrowserPage>
     var s = e.toString().replaceFirst(RegExp(r'^Exception:\s*'), '').trim();
     s = s.replaceAll('[下载失败]', '').trim();
     if (s.contains('SAMPLE-AES') || (s.contains('加密') && s.contains('不支持'))) {
-      return '下载失败：该视频为不支持的加密格式（如 SAMPLE-AES），无法合并保存';
+      return '下载失败：该视频为不支持的加密格式（如 SAMPLE-AES/DRM），无法合并保存';
+    }
+    if (s.contains('Facebook') &&
+        (s.contains('DRM') || s.contains('渐进式') || s.contains('加密 HLS'))) {
+      return s.startsWith('Facebook') ? s : '下载失败：$s';
     }
     if (s.contains('解密失败') || (s.contains('AES') && s.contains('失败'))) {
       return '下载失败：视频分片解密失败，请稍后重试或更换播放源';
@@ -27836,9 +30763,7 @@ class _BrowserPageState extends State<BrowserPage>
         debugPrint('页面加载完成(about:blank): 保持主界面');
         // Loan/reparent remount: blank stop while still browsing → restore.
         if (_isBrowsingWebPage) {
-          unawaited(
-            _recoverBrowsingSurfaceIfBlank(reason: 'load_stop_blank'),
-          );
+          unawaited(_recoverBrowsingSurfaceIfBlank(reason: 'load_stop_blank'));
         }
         final task = _smartDownloadTask;
         if (task != null && task['siteProfile'] == 'x') {
@@ -30617,6 +33542,38 @@ class _BrowserPageState extends State<BrowserPage>
             }
           }
         }
+        if ((_smartUsesFacebookPipeline(
+                  (task['siteProfile'] ?? '').toString(),
+                ) ||
+                _isFacebookPlatformPage(pageUrl)) &&
+            (urls.isNotEmpty || captured.isNotEmpty)) {
+          final expectedFbKey =
+              (task['expectedFbVideoKey'] ?? '').toString().trim();
+          final resolvedFb = await _resolveFacebookLongPressVideoCandidates(
+            primaryUrl: urls.isEmpty ? '' : urls.first,
+            candidates: <String>[...urls.skip(1), ...captured],
+            pageUrl: pageUrl,
+            notBefore: lastFeedMoveAt,
+            expectedVideoKey: expectedFbKey,
+            isReels:
+                isFacebookReelsPageUrl(pageUrl) ||
+                isFacebookReelsPageUrl(_currentUrl),
+          );
+          if (resolvedFb.isNotEmpty) {
+            urls
+              ..clear()
+              ..addAll(resolvedFb);
+            captured.clear();
+            final topKey = facebookMediaIdentity(resolvedFb.first);
+            if (topKey.isNotEmpty && !topKey.startsWith('reel:')) {
+              task['expectedFbVideoKey'] = topKey;
+            }
+            debugPrint(
+              'FB pipeline: smart resolve progressive=${resolvedFb.length} '
+              'top=${resolvedFb.first}',
+            );
+          }
+        }
         if ((strict91Mode || _isElementBoundFeedPage(pageUrl)) &&
             captured.isNotEmpty) {
           urls.insertAll(0, captured);
@@ -30894,6 +33851,16 @@ class _BrowserPageState extends State<BrowserPage>
                   'durationSec': durationSec,
                   'downloadOrigin': 'smart_batch',
                   'allowSourceUrlReuse': _isElementBoundFeedPage(pageUrl),
+                  'facebookPipeline':
+                      task['facebookPipeline'] == true ||
+                      _isFacebookPlatformPage(pageUrl),
+                  'expectedFbVideoKey':
+                      (task['expectedFbVideoKey'] ?? '')
+                              .toString()
+                              .trim()
+                              .isNotEmpty
+                          ? (task['expectedFbVideoKey'] ?? '').toString().trim()
+                          : facebookMediaIdentity(chosen),
                   'smartTask': task,
                 },
                 showModalDialog: false,

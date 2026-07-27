@@ -79,10 +79,8 @@ class _SmartActionEditorSheetState extends State<_SmartActionEditorSheet> {
     _nameController = TextEditingController(text: seed.name);
     _steps = seed.steps.map((s) => s.copyWith()).toList();
     if (_steps.isEmpty) {
-      _steps =
-          SmartActionRecipe.feedTemplate(
-            widget.host,
-          ).steps.map((s) => s.copyWith()).toList();
+      final template = SmartActionRecipe.feedTemplate(widget.host);
+      _steps = template.steps.map((s) => s.copyWith()).toList();
     }
     _reloadLibrary();
   }
@@ -145,15 +143,39 @@ class _SmartActionEditorSheetState extends State<_SmartActionEditorSheet> {
       case SmartActionKind.flickDown:
       case SmartActionKind.flickLeft:
       case SmartActionKind.flickRight:
-        final f = step.paramDouble('distanceFraction', 0.34);
-        final ms = step.paramInt('durationMs', 280);
+        final f = step.paramDouble(
+          'distanceFraction',
+          step.kind == SmartActionKind.flickLeft ||
+                  step.kind == SmartActionKind.flickRight
+              ? 0.50
+              : 0.34,
+        );
+        final ms = step.paramInt(
+          'durationMs',
+          step.kind == SmartActionKind.flickLeft ||
+                  step.kind == SmartActionKind.flickRight
+              ? 380
+              : 280,
+        );
         return '仅轻扫距离 ${(f * 100).round()}% · ${ms}ms（不保证切条）';
       case SmartActionKind.findNextMedia:
       case SmartActionKind.findPrevMedia:
       case SmartActionKind.findNextMediaRight:
       case SmartActionKind.findPrevMediaLeft:
-        final n = step.paramInt('maxAttempts', 4);
-        final f = step.paramDouble('distanceFraction', 0.34);
+        final n = step.paramInt(
+          'maxAttempts',
+          step.kind == SmartActionKind.findNextMediaRight ||
+                  step.kind == SmartActionKind.findPrevMediaLeft
+              ? 1
+              : 4,
+        );
+        final f = step.paramDouble(
+          'distanceFraction',
+          step.kind == SmartActionKind.findNextMediaRight ||
+                  step.kind == SmartActionKind.findPrevMediaLeft
+              ? 0.50
+              : 0.34,
+        );
         return '校验切换 · 最多重试 $n 次 · 起始距离 ${(f * 100).round()}%';
       case SmartActionKind.scrollPageUp:
       case SmartActionKind.scrollPageDown:
@@ -985,6 +1007,14 @@ class _EditStepParamsDialogState extends State<_EditStepParamsDialog> {
         step.kind == SmartActionKind.scrollPageRight;
     final isWait = step.kind == SmartActionKind.waitBrief;
     final isWaitDownload = step.kind == SmartActionKind.waitDownload;
+    final isHorizontalSwitch =
+        step.kind == SmartActionKind.findNextMediaRight ||
+        step.kind == SmartActionKind.findPrevMediaLeft;
+    final isHorizontalFlick =
+        step.kind == SmartActionKind.flickLeft ||
+        step.kind == SmartActionKind.flickRight;
+    final switchMaxDistance = isHorizontalSwitch ? 0.92 : 0.7;
+    final flickMaxDistance = isHorizontalFlick ? 0.92 : 0.7;
 
     return AlertDialog(
       title: Text('调整 · ${step.kind.label}'),
@@ -1007,33 +1037,39 @@ class _EditStepParamsDialogState extends State<_EditStepParamsDialog> {
                 divisions: 7,
                 onChanged: (v) => setState(() => _maxAttempts = v.round()),
               ),
-              Text('起始轻扫距离：${(_distance * 100).round()}%（失败会自动加大）'),
+              Text(
+                '起始轻扫距离：${(_distance * 100).round()}%'
+                '${isHorizontalSwitch ? '（左/右可近整屏）' : ''}（失败会自动加大）',
+              ),
               Slider(
-                value: _distance,
+                value: _distance.clamp(0.22, switchMaxDistance),
                 min: 0.22,
-                max: 0.6,
+                max: switchMaxDistance,
                 onChanged: (v) => setState(() => _distance = v),
               ),
               Text('单次轻扫时长：${_duration}ms'),
               Slider(
-                value: _duration.toDouble(),
+                value: _duration.toDouble().clamp(180, 600),
                 min: 180,
-                max: 480,
-                divisions: 15,
+                max: 600,
+                divisions: 21,
                 onChanged: (v) => setState(() => _duration = v.round()),
               ),
             ],
             if (isFlick) ...[
-              Text('轻扫距离：${(_distance * 100).round()}%（不校验是否切条）'),
+              Text(
+                '轻扫距离：${(_distance * 100).round()}%'
+                '${isHorizontalFlick ? '（左/右可近整屏）' : ''}（不校验是否切条）',
+              ),
               Slider(
-                value: _distance,
+                value: _distance.clamp(0.18, flickMaxDistance),
                 min: 0.18,
-                max: 0.7,
+                max: flickMaxDistance,
                 onChanged: (v) => setState(() => _distance = v),
               ),
               Text('轻扫时长：${_duration}ms'),
               Slider(
-                value: _duration.toDouble(),
+                value: _duration.toDouble().clamp(160, 600),
                 min: 160,
                 max: 600,
                 divisions: 22,

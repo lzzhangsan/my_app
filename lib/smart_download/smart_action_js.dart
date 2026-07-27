@@ -159,7 +159,7 @@ function __smartEaseInOut(t) {
     int durationMs = 220,
   }) {
     final axis = axisHint;
-    final f = distanceFraction.clamp(0.12, 0.75);
+    final f = distanceFraction.clamp(0.12, 0.92);
     final dur = durationMs.clamp(120, 700);
     return '''
 (() => {
@@ -174,25 +174,46 @@ function __smartEaseInOut(t) {
     72,
     Math.floor((vertical ? h : w) * fraction)
   );
-  // 手指轨迹：up = 手指从下往上滑
+  // 手指轨迹：up = 手指从下往上滑；大幅度时从近底起手，保证近一屏行程
   let fromX = Math.floor(w * 0.5);
   let fromY = Math.floor(h * 0.58);
   let toX = fromX;
   let toY = fromY;
   if (axisHint === 'up') {
-    fromY = Math.floor(h * 0.62);
-    toY = Math.max(16, fromY - distance);
+    if (fraction >= 0.5) {
+      fromY = Math.min(Math.floor(h * 0.92), Math.floor(h * (0.10 + fraction)));
+      toY = Math.max(16, fromY - distance);
+    } else {
+      fromY = Math.floor(h * 0.62);
+      toY = Math.max(16, fromY - distance);
+    }
   } else if (axisHint === 'down') {
-    fromY = Math.floor(h * 0.38);
-    toY = Math.min(h - 16, fromY + distance);
+    if (fraction >= 0.5) {
+      fromY = Math.max(Math.floor(h * 0.08), Math.floor(h * (0.90 - fraction)));
+      toY = Math.min(h - 16, fromY + distance);
+    } else {
+      fromY = Math.floor(h * 0.38);
+      toY = Math.min(h - 16, fromY + distance);
+    }
   } else if (axisHint === 'left') {
-    fromX = Math.floor(w * 0.72);
-    toX = Math.max(16, fromX - distance);
+    // 大幅度：从近右缘起手，保证接近一整屏行程（相册/图片查看器）
+    if (fraction >= 0.5) {
+      fromX = Math.min(Math.floor(w * 0.94), Math.floor(w * (0.10 + fraction)));
+      toX = Math.max(16, fromX - distance);
+    } else {
+      fromX = Math.floor(w * 0.72);
+      toX = Math.max(16, fromX - distance);
+    }
     fromY = Math.floor(h * 0.5);
     toY = fromY;
   } else {
-    fromX = Math.floor(w * 0.28);
-    toX = Math.min(w - 16, fromX + distance);
+    if (fraction >= 0.5) {
+      fromX = Math.max(Math.floor(w * 0.06), Math.floor(w * (0.90 - fraction)));
+      toX = Math.min(w - 16, fromX + distance);
+    } else {
+      fromX = Math.floor(w * 0.28);
+      toX = Math.min(w - 16, fromX + distance);
+    }
     fromY = Math.floor(h * 0.5);
     toY = fromY;
   }
@@ -1166,6 +1187,21 @@ function __smartEaseInOut(t) {
   const cy = h / 2;
   const vw = Math.max(1, w);
   const vh = Math.max(1, h);
+  let isFacebook = false;
+  let isFacebookReels = false;
+  try {
+    const host = String(location.hostname || '').toLowerCase();
+    isFacebook = host === 'facebook.com' || host.endsWith('.facebook.com') ||
+      host === 'fb.com' || host.endsWith('.fb.com') ||
+      host === 'fb.watch' || host.endsWith('.fb.watch') ||
+      host === 'messenger.com' || host.endsWith('.messenger.com');
+    const path = String(location.pathname || '').toLowerCase();
+    const href = String(location.href || '').toLowerCase();
+    isFacebookReels = isFacebook && (
+      path.includes('/reel/') || path.includes('/reels') ||
+      href.includes('/reel/') || href.includes('/reels')
+    );
+  } catch (_) {}
   const selector = imagesOnly ? 'img' : (videosOnly ? 'video' : 'video, img');
   function isExcludedSrc(src) {
     if (!src) return false;
@@ -1183,7 +1219,13 @@ function __smartEaseInOut(t) {
   function isJunkImg(el) {
     if (!el || el.tagName !== 'IMG') return false;
     const src = String(el.currentSrc || el.src || el.getAttribute('src') || '').toLowerCase();
-    return /(avatar|emoji|icon|logo|sprite|badge|profile_images|profile_banners|favicon)/.test(src);
+    return /(avatar|emoji|icon|logo|sprite|badge|profile_images|profile_banners|favicon|safe_image)/.test(src);
+  }
+
+  function looksFbMediaSrc(src) {
+    const s = String(src || '').toLowerCase();
+    return s.includes('fbcdn') || s.includes('scontent.') ||
+      /\\.(jpe?g|png|gif|webp|mp4|webm)(\\?|#|\$)/.test(s);
   }
 
   function visibleRect(el) {
@@ -1214,6 +1256,28 @@ function __smartEaseInOut(t) {
       const el = document.elementFromPoint(px, py);
       const media = el && el.closest ? el.closest(selector) : null;
       if (media) hitSet.add(media);
+      // Facebook overlays often sit above img/video; walk the stack.
+      if (isFacebook) {
+        const stack = document.elementsFromPoint(px, py) || [];
+        for (const node of stack) {
+          if (!node) continue;
+          const tag = String(node.tagName || '').toLowerCase();
+          if ((tag === 'video' && !imagesOnly) || ((tag === 'img' || tag === 'image') && !videosOnly)) {
+            hitSet.add(node);
+            break;
+          }
+          if (!videosOnly) {
+            const role = node.closest && node.closest('[role="img"]');
+            const nestedImg = (role && role.querySelector && role.querySelector('img')) ||
+              (node.querySelector && node.querySelector('img'));
+            if (nestedImg) hitSet.add(nestedImg);
+          }
+          if (!imagesOnly) {
+            const nestedVideo = node.querySelector && node.querySelector('video');
+            if (nestedVideo) hitSet.add(nestedVideo);
+          }
+        }
+      }
     } catch (_) {}
   }
 
@@ -1222,22 +1286,31 @@ function __smartEaseInOut(t) {
   const candidates = new Set(all);
   hitSet.forEach(el => candidates.add(el));
   if (marked) candidates.add(marked);
+  if (isFacebook && !videosOnly) {
+    try {
+      document.querySelectorAll('[role="img"] img, img[srcset]').forEach(el => candidates.add(el));
+    } catch (_) {}
+  }
 
   let best = null;
   let bestScore = -1e18;
+  const minIw = isFacebook ? 72 : 120;
+  const minIh = isFacebook ? 72 : 100;
+  const minAreaRatio = isFacebook ? 0.02 : 0.04;
   for (const el of candidates) {
     if (!el || !el.getBoundingClientRect) continue;
     if (imagesOnly && el.tagName !== 'IMG') continue;
     if (videosOnly && el.tagName !== 'VIDEO') continue;
     if (isJunkImg(el)) continue;
     const src = String(el.currentSrc || el.src || el.getAttribute('src') ||
-      el.getAttribute('data-src') || el.getAttribute('poster') || '');
+      el.getAttribute('data-src') || el.getAttribute('poster') ||
+      el.getAttribute('srcset') || '');
     const excluded = isExcludedSrc(src);
     // 已处理过的媒体：不当作首选（彻底排除），防止清障后回到旧条
     if (excluded) continue;
     const { r, iw, ih, area } = visibleRect(el);
-    if (iw < 120 || ih < 100) continue;
-    if (area < vw * vh * 0.04) continue; // 太小的角标/缩略图丢掉
+    if (iw < minIw || ih < minIh) continue;
+    if (area < vw * vh * minAreaRatio) continue; // 太小的角标/缩略图丢掉
     const mx = r.left + r.width / 2;
     const my = r.top + r.height / 2;
     // 中心点必须落在屏幕内，否则会漂到边缘/右下角
@@ -1248,12 +1321,24 @@ function __smartEaseInOut(t) {
     const isVideo = el.tagName === 'VIDEO' ? 1 : 0;
     const isMarked = (marked && el === marked) ? 1 : 0;
     const fromHitTest = hitSet.has(el) ? 1 : 0;
-    // 盖住中心 > 面积 > 命中探测 > 视频 > 标记 > 靠近中心
+    const fbBonus = (isFacebook && looksFbMediaSrc(src)) ? 1 : 0;
+    let playingBonus = 0;
+    if (isVideo && el.tagName === 'VIDEO') {
+      try {
+        if (!el.paused && !el.ended) playingBonus += isFacebookReels ? 80000 : 20000;
+        if (Number(el.currentTime || 0) > 0.2) playingBonus += isFacebookReels ? 20000 : 5000;
+        // Full-screen vertical reel player under center beats below-fold prefetch.
+        if (isFacebookReels && areaRatio >= 0.35) playingBonus += 40000;
+      } catch (_) {}
+    }
+    // 盖住中心 > 正在播放(Reels) > 面积 > 命中探测 > 视频 > FB CDN > 标记 > 靠近中心
     const score =
       cover * 50000 +
+      playingBonus +
       areaRatio * 20000 +
       fromHitTest * 8000 +
       isVideo * 3000 +
+      fbBonus * 2500 +
       isMarked * 1500 -
       dist * 2;
     if (score > bestScore) {

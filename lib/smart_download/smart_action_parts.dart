@@ -4,14 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// 智能下载「动作零件」分类（最小完备，按真人操作分组）。
-enum SmartActionCategory {
-  gesture,
-  media,
-  touch,
-  navigate,
-  wait,
-  page,
-}
+enum SmartActionCategory { gesture, media, touch, navigate, wait, page }
 
 extension SmartActionCategoryX on SmartActionCategory {
   String get label {
@@ -36,56 +29,82 @@ extension SmartActionCategoryX on SmartActionCategory {
 enum SmartActionKind {
   /// 手指向上轻扫（短距离 flick，默认约 28% 屏高）
   flickUp,
+
   /// 手指向下轻扫
   flickDown,
+
   /// 手指向左轻扫
   flickLeft,
+
   /// 手指向右轻扫
   flickRight,
+
   /// 向上滚约一屏（较长滚动，非手指轻扫）
   scrollPageUp,
+
   /// 向下滚约一屏
   scrollPageDown,
+
   /// 向左滚约一屏
   scrollPageLeft,
+
   /// 向右滚约一屏
   scrollPageRight,
+
   /// 上切到下一条媒体（验证切成功；失败则加重试轻扫）
   findNextMedia,
+
   /// 下切到上一条媒体
   findPrevMedia,
+
   /// 左切到下一条媒体
   findNextMediaRight,
+
   /// 右切到上一条/左侧媒体
   findPrevMediaLeft,
+
   /// 当前媒体滚到屏幕中心
   focusMedia,
+
   /// 点击当前媒体（进详情/卡片）
   tapMedia,
+
   /// 双击当前媒体
   doubleTapMedia,
+
   /// 长按当前媒体触发下载
   longPressDownload,
+
   /// 点播放
   clickPlay,
+
   /// 关弹层/广告
   closeOverlay,
+
   /// 浏览器返回
   goBack,
+
   /// 刷新页面
   reloadPage,
+
   /// 下拉刷新（真人下拉手势）
   pullRefresh,
+
   /// 滚到列表顶部
   scrollToTop,
+
   /// 短等待（默认约 1 秒）
   waitBrief,
+
   /// 等页面稳定
   waitPageSettle,
+
   /// 等本次下载完成
   waitDownload,
+
   /// 点「下一页」
   nextPage,
+
   /// 点「加载更多」
   loadMore,
 }
@@ -370,16 +389,10 @@ extension SmartActionKindX on SmartActionKind {
     switch (this) {
       case SmartActionKind.flickUp:
       case SmartActionKind.flickDown:
-        return <String, dynamic>{
-          'distanceFraction': 0.28,
-          'durationMs': 220,
-        };
+        return <String, dynamic>{'distanceFraction': 0.28, 'durationMs': 220};
       case SmartActionKind.flickLeft:
       case SmartActionKind.flickRight:
-        return <String, dynamic>{
-          'distanceFraction': 0.32,
-          'durationMs': 220,
-        };
+        return <String, dynamic>{'distanceFraction': 0.50, 'durationMs': 380};
       case SmartActionKind.scrollPageUp:
       case SmartActionKind.scrollPageDown:
       case SmartActionKind.scrollPageLeft:
@@ -389,23 +402,20 @@ extension SmartActionKindX on SmartActionKind {
         return <String, dynamic>{'ms': 1000};
       case SmartActionKind.waitDownload:
         // library：入库确认后切条（默认）；fixed：最多等 waitSeconds，入库成功可提前切条
-        return <String, dynamic>{
-          'waitMode': 'library',
-          'waitSeconds': 30,
-        };
+        return <String, dynamic>{'waitMode': 'library', 'waitSeconds': 30};
       case SmartActionKind.findNextMedia:
       case SmartActionKind.findPrevMedia:
         return <String, dynamic>{
-          'maxAttempts': 4,
-          'distanceFraction': 0.34,
-          'durationMs': 280,
+          'maxAttempts': 5,
+          'distanceFraction': 0.82,
+          'durationMs': 220,
         };
       case SmartActionKind.findNextMediaRight:
       case SmartActionKind.findPrevMediaLeft:
         return <String, dynamic>{
-          'maxAttempts': 4,
-          'distanceFraction': 0.36,
-          'durationMs': 280,
+          'maxAttempts': 1,
+          'distanceFraction': 0.50,
+          'durationMs': 380,
         };
       default:
         return <String, dynamic>{};
@@ -573,10 +583,13 @@ class SmartActionRecipe {
   final List<SmartActionStep> steps;
   DateTime? updatedAt;
   DateTime? lastUsedAt;
+
   /// 成功实跑时的切条方向：`up` / `down` / `left`。
   String? advanceAxisHint;
+
   /// 成功实跑时的滑动方式：`distance` / `verify`。
   String? advanceMode;
+
   /// 最近一次「动作编排」真实入库成功的时间。
   DateTime? lastSuccessAt;
 
@@ -661,7 +674,11 @@ class SmartActionRecipe {
         SmartActionStep(kind: SmartActionKind.waitDownload),
         SmartActionStep(
           kind: SmartActionKind.findNextMedia,
-          params: const {'maxAttempts': 4, 'distanceFraction': 0.34},
+          params: const {
+            'maxAttempts': 5,
+            'distanceFraction': 0.82,
+            'durationMs': 220,
+          },
         ),
         SmartActionStep(kind: SmartActionKind.waitBrief),
       ],
@@ -678,7 +695,11 @@ class SmartActionRecipe {
         SmartActionStep(kind: SmartActionKind.waitDownload),
         SmartActionStep(
           kind: SmartActionKind.findNextMediaRight,
-          params: const {'maxAttempts': 4, 'distanceFraction': 0.36},
+          params: const {
+            'maxAttempts': 1,
+            'distanceFraction': 0.50,
+            'durationMs': 380,
+          },
         ),
         SmartActionStep(kind: SmartActionKind.waitBrief),
       ],
@@ -695,11 +716,165 @@ class SmartActionRecipe {
         SmartActionStep(kind: SmartActionKind.waitDownload),
         SmartActionStep(
           kind: SmartActionKind.findNextMedia,
-          params: const {'maxAttempts': 5, 'distanceFraction': 0.38},
+          params: const {
+            'maxAttempts': 5,
+            'distanceFraction': 0.82,
+            'durationMs': 220,
+          },
         ),
         SmartActionStep(kind: SmartActionKind.waitBrief),
       ],
     );
+  }
+
+  /// X 专有管线的可编辑种子：长按→等完成→上滑（内置 FSM 仍可用；此套可供重新编排）。
+  static SmartActionRecipe xEditableSeedTemplate(String host) {
+    return SmartActionRecipe(
+      host: host,
+      name: 'X · 原智能（可编辑）',
+      advanceAxisHint: 'up',
+      advanceMode: 'distance',
+      steps: [
+        SmartActionStep(kind: SmartActionKind.longPressDownload),
+        SmartActionStep(kind: SmartActionKind.waitDownload),
+        SmartActionStep(
+          kind: SmartActionKind.findNextMedia,
+          params: const {
+            'maxAttempts': 5,
+            'distanceFraction': 0.7,
+            'durationMs': 600,
+          },
+        ),
+        SmartActionStep(kind: SmartActionKind.waitBrief),
+      ],
+    );
+  }
+
+  /// 91 专有管线的可编辑种子：点进→长按→返回→上切（内置管线仍可用；此套可供重新编排）。
+  static SmartActionRecipe ninetyOneEditableSeedTemplate(String host) {
+    return SmartActionRecipe(
+      host: host,
+      name: '91 · 原智能（可编辑）',
+      advanceAxisHint: 'up',
+      advanceMode: 'distance',
+      steps: detailTemplate(host).steps.map((s) => s.copyWith()).toList(),
+    );
+  }
+
+  /// 是否为「长按 → 等下载 → 上切」类简单循环（无详情进出等多余步骤）。
+  static bool isSimpleLongPressUpLoop(SmartActionRecipe recipe) {
+    if (recipe.steps.isEmpty) return false;
+    final kinds = recipe.steps.map((s) => s.kind).toSet();
+    if (kinds.contains(SmartActionKind.tapMedia) ||
+        kinds.contains(SmartActionKind.goBack) ||
+        kinds.contains(SmartActionKind.clickPlay) ||
+        kinds.contains(SmartActionKind.findNextMediaRight) ||
+        kinds.contains(SmartActionKind.flickLeft)) {
+      return false;
+    }
+    final hasLongPress = kinds.contains(SmartActionKind.longPressDownload);
+    final hasWait = kinds.contains(SmartActionKind.waitDownload);
+    final hasUp =
+        kinds.contains(SmartActionKind.findNextMedia) ||
+        kinds.contains(SmartActionKind.flickUp);
+    return hasLongPress && hasWait && hasUp;
+  }
+
+  /// 是否为「长按 → 等下载 → 左切」类简单循环（Facebook 图片等）。
+  static bool isSimpleLongPressLeftLoop(SmartActionRecipe recipe) {
+    if (recipe.steps.isEmpty) return false;
+    final kinds = recipe.steps.map((s) => s.kind).toSet();
+    if (kinds.contains(SmartActionKind.tapMedia) ||
+        kinds.contains(SmartActionKind.goBack) ||
+        kinds.contains(SmartActionKind.clickPlay) ||
+        kinds.contains(SmartActionKind.findNextMedia) ||
+        kinds.contains(SmartActionKind.flickUp) ||
+        kinds.contains(SmartActionKind.findPrevMedia) ||
+        kinds.contains(SmartActionKind.flickDown)) {
+      return false;
+    }
+    final hasLongPress = kinds.contains(SmartActionKind.longPressDownload);
+    final hasWait = kinds.contains(SmartActionKind.waitDownload);
+    final hasLeft =
+        kinds.contains(SmartActionKind.findNextMediaRight) ||
+        kinds.contains(SmartActionKind.flickLeft);
+    return hasLongPress && hasWait && hasLeft;
+  }
+
+  /// 专有芯片可沿用的简单循环（上滑视频或左滑图片）。
+  static bool isSimpleLongPressAdvanceLoop(SmartActionRecipe recipe) =>
+      isSimpleLongPressUpLoop(recipe) || isSimpleLongPressLeftLoop(recipe);
+
+  /// 将套路「切下一条」步骤强制对齐到 [axis]（`up`/`down`/`left`），避免视频上滑与图片左滑串参。
+  /// 只改 next 方向零件（findNext* / flickUp/Left）；不碰 prev/右滑等其它步骤。
+  /// - `up`：findNextMedia / flickUp，幅度 0.7 / 600ms（勿套 0.50）
+  /// - `left`：findNextMediaRight / flickLeft，基础幅度 0.67 / 380ms，失败后智能加大
+  static void alignAdvanceAxis(SmartActionRecipe recipe, String axis) {
+    final a = axis.trim();
+    if (a != 'up' && a != 'down' && a != 'left') return;
+    recipe.advanceAxisHint = a;
+    for (var i = 0; i < recipe.steps.length; i++) {
+      final step = recipe.steps[i];
+      final kind = step.kind;
+      final isNextAdvance =
+          kind == SmartActionKind.findNextMedia ||
+          kind == SmartActionKind.findNextMediaRight ||
+          kind == SmartActionKind.flickUp ||
+          kind == SmartActionKind.flickLeft;
+      final isPrevVertical =
+          kind == SmartActionKind.findPrevMedia ||
+          kind == SmartActionKind.flickDown;
+      if (a == 'down') {
+        if (!isNextAdvance && !isPrevVertical) continue;
+        final wasFlick =
+            kind == SmartActionKind.flickUp ||
+            kind == SmartActionKind.flickDown ||
+            kind == SmartActionKind.flickLeft;
+        recipe.steps[i] = step.copyWith(
+          kind:
+              wasFlick
+                  ? SmartActionKind.flickDown
+                  : SmartActionKind.findPrevMedia,
+          params: <String, dynamic>{
+            ...step.params,
+            'maxAttempts': 4,
+            'distanceFraction': 0.7,
+            'durationMs': 600,
+          },
+        );
+        continue;
+      }
+      if (!isNextAdvance) continue;
+      final wasFlick =
+          kind == SmartActionKind.flickUp || kind == SmartActionKind.flickLeft;
+      if (a == 'left') {
+        recipe.steps[i] = step.copyWith(
+          kind:
+              wasFlick
+                  ? SmartActionKind.flickLeft
+                  : SmartActionKind.findNextMediaRight,
+          params: <String, dynamic>{
+            ...step.params,
+            'maxAttempts': 3,
+            'distanceFraction': 0.67,
+            'durationMs': 380,
+          },
+        );
+      } else {
+        recipe.steps[i] = step.copyWith(
+          kind:
+              wasFlick
+                  ? SmartActionKind.flickUp
+                  : SmartActionKind.findNextMedia,
+          params: <String, dynamic>{
+            ...step.params,
+            'maxAttempts': 4,
+            'distanceFraction': 0.7,
+            'durationMs': 600,
+          },
+        );
+      }
+    }
   }
 
   /// 详情页：点进 → 长按 → 返回 → 上切下一条。
@@ -784,14 +959,13 @@ class SmartActionRecipeStore {
     for (final entry in recipesMap.entries) {
       final row = entry.value;
       if (row is! Map) continue;
-      final recipe = SmartActionRecipe.fromJson(
-        Map<String, dynamic>.from(row),
-      );
+      final recipe = SmartActionRecipe.fromJson(Map<String, dynamic>.from(row));
       if (recipe.lastSuccessAt == null || recipe.steps.isEmpty) continue;
       if (ids.contains(recipe.id)) continue;
       scored.add((
         id: recipe.id,
-        at: recipe.lastSuccessAt ??
+        at:
+            recipe.lastSuccessAt ??
             recipe.updatedAt ??
             DateTime.fromMillisecondsSinceEpoch(0),
       ));
@@ -887,8 +1061,10 @@ class SmartActionRecipeStore {
       }
     }
     out.sort((a, b) {
-      final aa = a.lastUsedAt ?? a.updatedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
-      final bb = b.lastUsedAt ?? b.updatedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+      final aa =
+          a.lastUsedAt ?? a.updatedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+      final bb =
+          b.lastUsedAt ?? b.updatedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
       return bb.compareTo(aa);
     });
     return out;
@@ -897,8 +1073,9 @@ class SmartActionRecipeStore {
   static Future<List<SmartActionRecipe>> loadForHost(String host) async {
     final want = keyForHost(host);
     final all = await loadAllRecipes();
-    final same =
-        all.where((r) => keyForHost(r.host) == want).toList(growable: false);
+    final same = all
+        .where((r) => keyForHost(r.host) == want)
+        .toList(growable: false);
     return same;
   }
 
@@ -943,18 +1120,14 @@ class SmartActionRecipeStore {
     Map<String, dynamic> lastByHost,
     Map<String, dynamic> lastSuccessByHost,
     List<String> userActionRecipes,
-  ) =>
-      <String, dynamic>{
-        'recipes': recipes,
-        'lastByHost': lastByHost,
-        'lastSuccessByHost': lastSuccessByHost,
-        'userActionRecipes': userActionRecipes,
-      };
+  ) => <String, dynamic>{
+    'recipes': recipes,
+    'lastByHost': lastByHost,
+    'lastSuccessByHost': lastSuccessByHost,
+    'userActionRecipes': userActionRecipes,
+  };
 
-  static List<String> _upsertUserActionRecipeId(
-    List<String> ids,
-    String id,
-  ) {
+  static List<String> _upsertUserActionRecipeId(List<String> ids, String id) {
     final next = List<String>.from(ids)..remove(id);
     next.insert(0, id);
     return next;
@@ -969,9 +1142,7 @@ class SmartActionRecipeStore {
     for (final id in ids) {
       final row = recipesMap[id];
       if (row is! Map) continue;
-      final recipe = SmartActionRecipe.fromJson(
-        Map<String, dynamic>.from(row),
-      );
+      final recipe = SmartActionRecipe.fromJson(Map<String, dynamic>.from(row));
       if (recipe.steps.isEmpty) continue;
       out.add(recipe);
     }
@@ -1024,17 +1195,14 @@ class SmartActionRecipeStore {
     String? advanceMode,
     String? defaultForHost,
   }) async {
-    final defaultHostKey = keyForHost(
-      (defaultForHost ?? recipe.host).trim(),
-    );
+    final defaultHostKey = keyForHost((defaultForHost ?? recipe.host).trim());
     if (defaultHostKey.isEmpty || recipe.steps.isEmpty) return;
     final now = DateTime.now();
     final axis = (advanceAxisHint ?? recipe.advanceAxisHint ?? '').trim();
     final mode = (advanceMode ?? recipe.advanceMode ?? '').trim();
     recipe.advanceAxisHint =
         (axis == 'up' || axis == 'down' || axis == 'left') ? axis : null;
-    recipe.advanceMode =
-        (mode == 'distance' || mode == 'verify') ? mode : null;
+    recipe.advanceMode = (mode == 'distance' || mode == 'verify') ? mode : null;
     recipe.lastSuccessAt = now;
     recipe.lastUsedAt = now;
     recipe.updatedAt = now;
@@ -1056,8 +1224,7 @@ class SmartActionRecipeStore {
     // 若同 id 已有条目，合并保留其来源 host（避免被调用方误改）。
     final prevRow = recipes[recipe.id];
     if (prevRow is Map) {
-      final prevHost =
-          keyForHost((prevRow['host'] ?? '').toString());
+      final prevHost = keyForHost((prevRow['host'] ?? '').toString());
       if (prevHost.isNotEmpty && keyForHost(recipe.host) != prevHost) {
         recipe = recipe.copyWith(host: prevHost);
       }
@@ -1156,8 +1323,7 @@ class SmartActionRecipeStore {
             );
             if (keyForHost(r.host) != hostKey) continue;
             if (fallback == null ||
-                (r.updatedAt ?? DateTime.fromMillisecondsSinceEpoch(0))
-                    .isAfter(
+                (r.updatedAt ?? DateTime.fromMillisecondsSinceEpoch(0)).isAfter(
                   fallback.updatedAt ?? DateTime.fromMillisecondsSinceEpoch(0),
                 )) {
               fallback = r;
@@ -1192,7 +1358,9 @@ class SmartActionRecipeStore {
         SmartActionRecipe? fallback;
         for (final value in recipes.values) {
           if (value is! Map) continue;
-          final r = SmartActionRecipe.fromJson(Map<String, dynamic>.from(value));
+          final r = SmartActionRecipe.fromJson(
+            Map<String, dynamic>.from(value),
+          );
           if (keyForHost(r.host) != host) continue;
           if (fallback == null ||
               (r.updatedAt ?? DateTime.fromMillisecondsSinceEpoch(0)).isAfter(

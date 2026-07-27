@@ -263,6 +263,20 @@ Write-Host ""
 Clear-DebugProxy
 & $adb -s $DeviceId forward --remove-all 2>$null | Out-Null
 
+# Preserve the interactive attach window (including I/flutter diagnostics)
+# without piping stdout, because a PowerShell pipeline would break r/R/q input.
+$debugLogDir = Join-Path $ProjectRoot "debug_logs"
+$attachLogPath = Join-Path $debugLogDir "flutter_attach_latest.log"
+$transcriptStarted = $false
+try {
+  New-Item -ItemType Directory -Path $debugLogDir -Force | Out-Null
+  Start-Transcript -Path $attachLogPath -Force | Out-Null
+  $transcriptStarted = $true
+  Write-Host "  Attach log: $attachLogPath" -ForegroundColor Green
+} catch {
+  Write-Host "  Could not start attach transcript: $($_.Exception.Message)" -ForegroundColor Yellow
+}
+
 $attachArgs = @(
   "attach",
   "-d", $DeviceId,
@@ -285,6 +299,10 @@ if ($code -ne 0 -and (Test-Path $apk)) {
     --use-application-binary="$apk" `
     -d $DeviceId
   $code = $LASTEXITCODE
+}
+
+if ($transcriptStarted) {
+  try { Stop-Transcript | Out-Null } catch {}
 }
 
 Write-Host ""
