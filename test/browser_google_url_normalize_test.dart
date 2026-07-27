@@ -1,5 +1,8 @@
+import 'dart:convert';
+
 import 'package:change_copy/services/browser_service.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   group('normalizeCommonWebsiteUrl', () {
@@ -109,6 +112,86 @@ void main() {
         ),
         isFalse,
       );
+    });
+  });
+
+  group('loadCommonWebsites / loadBookmarks migration', () {
+    const hkGood =
+        'https://www.google.com.hk/?sa=X&ved=2ahUKEwiC7eKmr_CVAxUsXesIHW7zMJAQO3oECAUQAA';
+
+    setUp(() {
+      SharedPreferences.setMockInitialValues({});
+    });
+
+    test('loadCommonWebsites keeps .hk?sa=X&ved=… unchanged and does not rewrite',
+        () async {
+      SharedPreferences.setMockInitialValues({
+        'common_websites': jsonEncode([
+          {
+            'name': 'Google',
+            'url': hkGood,
+            'iconCode': 0xe0c8,
+          },
+          {
+            'name': '百度',
+            'url': 'https://www.baidu.com',
+            'iconCode': 0xe0c8,
+          },
+        ]),
+      });
+
+      final service = BrowserService();
+      final list = await service.loadCommonWebsites();
+      expect(list.length, 2);
+      expect(list[0]['url'], hkGood);
+      expect(list[0]['name'], 'Google');
+
+      // Second load must still be exact (no silent write-back to google.com).
+      final again = await service.loadCommonWebsites();
+      expect(again[0]['url'], hkGood);
+
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString('common_websites')!;
+      expect(raw.contains(hkGood), isTrue);
+      expect(raw.contains('"url":"https://www.google.com"'), isFalse);
+      expect(raw.contains('"url":"https://www.google.com/"'), isFalse);
+    });
+
+    test('loadCommonWebsites migrates only exact /m and leaves .hk alone',
+        () async {
+      SharedPreferences.setMockInitialValues({
+        'common_websites': jsonEncode([
+          {
+            'name': 'Google',
+            'url': 'http://www.google.cn/m',
+            'iconCode': 0xe0c8,
+          },
+          {
+            'name': 'Google登录',
+            'url': hkGood,
+            'iconCode': 0xe0c8,
+          },
+        ]),
+      });
+
+      final list = await BrowserService().loadCommonWebsites();
+      expect(list[0]['url'], BrowserService.kGoogleHomeUrl);
+      expect(list[1]['url'], hkGood);
+    });
+
+    test('loadBookmarks keeps .hk query bookmark unchanged', () async {
+      SharedPreferences.setMockInitialValues({
+        'bookmarks': jsonEncode([
+          {'name': 'Google2', 'url': hkGood},
+        ]),
+      });
+
+      final list = await BrowserService().loadBookmarks();
+      expect(list.single['url'], hkGood);
+      expect(list.single['name'], 'Google2');
+
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getString('bookmarks')!.contains(hkGood), isTrue);
     });
   });
 }

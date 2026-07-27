@@ -49,6 +49,7 @@ import 'services/browser_service.dart';
 import 'services/browser_session_preview.dart';
 import 'services/logger.dart';
 import 'services/network_service.dart';
+import 'app_route_observer.dart';
 
 bool _hasUsefulRasterContent(Uint8List bytes) {
   final image = image_lib.decodeImage(bytes);
@@ -546,7 +547,7 @@ class BrowserPage extends StatefulWidget {
 }
 
 class _BrowserPageState extends State<BrowserPage>
-    with AutomaticKeepAliveClientMixin, WidgetsBindingObserver {
+    with AutomaticKeepAliveClientMixin, WidgetsBindingObserver, RouteAware {
   /// 将相对 URL 解析为绝对 URL（使用当前页面地址作为基准）
   String _toAbsoluteUrl(String url) {
     if (url.isEmpty) return url;
@@ -1396,15 +1397,17 @@ class _BrowserPageState extends State<BrowserPage>
 
   bool _shouldKeepWebPageState = false;
   String? _lastBrowsedUrl;
+  bool _recoveringBrowsingSurface = false;
+  bool _loanListenerAttached = false;
+  ModalRoute<void>? _browserRouteAwareRoute;
 
-  final List<Map<String, dynamic>> _commonWebsites = [
-    {
-      'name': 'Google',
-      'url': BrowserService.kGoogleHomeUrl,
-      'icon': Icons.search,
-    },
-    {'name': '百度', 'url': 'https://www.baidu.com', 'icon': Icons.search},
-  ];
+  /// Starts empty so we never save default Google → overwrite user prefs
+  /// before `_loadCommonWebsites` finishes.
+  final List<Map<String, dynamic>> _commonWebsites = [];
+  bool _commonWebsitesLoaded = false;
+  bool _bookmarksLoaded = false;
+  Future<void>? _commonWebsitesLoadFuture;
+  Future<void>? _bookmarksLoadFuture;
   Map<String, dynamic>? _smartDownloadTask;
   bool _smartDownloadAdvancing = false;
   Offset? _smartOperationPoint;
@@ -1435,6 +1438,8 @@ class _BrowserPageState extends State<BrowserPage>
   }
 
   Future<void> _removeWebsite(int index) async {
+    if (!_commonWebsitesLoaded) await _loadCommonWebsites();
+    if (index < 0 || index >= _commonWebsites.length) return;
     final removedSite = _commonWebsites[index]['name'];
     setState(() => _commonWebsites.removeAt(index));
     await _saveCommonWebsites();
@@ -1442,6 +1447,7 @@ class _BrowserPageState extends State<BrowserPage>
   }
 
   Future<void> _reorderWebsites(int oldIndex, int newIndex) async {
+    if (!_commonWebsitesLoaded) await _loadCommonWebsites();
     // 如果是添加网站按钮，不允许拖动
     if (oldIndex >= _commonWebsites.length ||
         newIndex > _commonWebsites.length) {
@@ -1461,6 +1467,7 @@ class _BrowserPageState extends State<BrowserPage>
   }
 
   Future<void> _addWebsite(String name, String url, IconData icon) async {
+    if (!_commonWebsitesLoaded) await _loadCommonWebsites();
     // Store user URL verbatim (trim + optional https if scheme missing).
     // Do not rewrite host/path/query of complete URLs.
     final storedUrl = BrowserService.normalizeCommonWebsiteUrl(url);
@@ -1482,6 +1489,10 @@ class _BrowserPageState extends State<BrowserPage>
     BrowserSessionPreview.instance.attachWebViewBuilder(
       _buildLiveSessionWebView,
     );
+    BrowserSessionPreview.instance.loanedNotifier.addListener(
+      _onBrowserWebViewLoanChanged,
+    );
+    _loanListenerAttached = true;
     _databaseService = getService<DatabaseService>();
     _initializeDownloader();
     _loadBookmarks();
@@ -1499,6 +1510,128 @@ class _BrowserPageState extends State<BrowserPage>
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final route = ModalRoute.of(context);
+    if (route is ModalRoute<void> &&
+        !identical(route, _browserRouteAwareRoute)) {
+      if (_browserRouteAwareRoute != null) {
+        appRouteObserver.unsubscribe(this);
+      }
+      _browserRouteAwareRoute = route;
+      appRouteObserver.subscribe(this, route);
+    }
+  }
+
+  @override
+  void didPopNext() {
+    // Directory / Document popped — PlatformView may have gone blank while covered.
+    unawaited(_recoverBrowsingSurfaceIfBlank(reason: 'did_pop_next'));
+  }
+
+  void _onBrowserWebViewLoanChanged() {
+    final preview = BrowserSessionPreview.instance;
+    if (preview.isLoaned) {
+      _rememberLastBrowsingUrl(_currentUrl);
+      return;
+    }
+    // GlobalKey reparent back to BrowserPage often remounts Android WebView as about:blank.
+    unawaited(_recoverBrowsingSurfaceIfBlank(reason: 'loan_returned'));
+  }
+
+  void _rememberLastBrowsingUrl(String? url) {
+    if (!BrowserSessionPreview.isHttpUrl(url)) return;
+    final trimmed = url!.trim();
+    _lastBrowsedUrl = trimmed;
+    _shouldKeepWebPageState = true;
+    BrowserSessionPreview.instance.rememberBrowsingUrl(trimmed);
+  }
+
+  String? _resolvedLastBrowsingUrl() {
+    if (BrowserSessionPreview.isHttpUrl(_lastBrowsedUrl)) {
+      return _lastBrowsedUrl!.trim();
+    }
+    final fromPreview = BrowserSessionPreview.instance.urlForRestore;
+    if (fromPreview != null) return fromPreview;
+    if (BrowserSessionPreview.isHttpUrl(_currentUrl)) {
+      return _currentUrl.trim();
+    }
+    return null;
+  }
+
+  /// After loan reparent / route return: keep address bar on real URL and reload if blank.
+  Future<void> _recoverBrowsingSurfaceIfBlank({
+    required String reason,
+  }) async {
+    if (!mounted || _recoveringBrowsingSurface) return;
+    if (!_isBrowsingWebPage) return;
+
+    final saved = _resolvedLastBrowsingUrl();
+    if (saved == null) return;
+
+    if (_isBlankHistoryUrl(_currentUrl) ||
+        _isBlankHistoryUrl(_urlController.text)) {
+      setState(() {
+        _currentUrl = saved;
+        _urlController.text = saved;
+        _showHomePage = false;
+        _isBrowsingWebPage = true;
+        _shouldKeepWebPageState = true;
+      });
+      widget.onBrowserHomePageChanged?.call(false);
+      _syncBrowserSessionPreview();
+    }
+
+    _recoveringBrowsingSurface = true;
+    try {
+      await WidgetsBinding.instance.endOfFrame;
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      if (!mounted || !_isBrowsingWebPage) return;
+
+      final ctrl = _controller;
+      if (ctrl == null) return;
+
+      String? actual;
+      try {
+        actual = (await ctrl.getUrl())?.toString();
+      } catch (_) {
+        actual = null;
+      }
+
+      if (!_isBlankHistoryUrl(actual)) {
+        if (BrowserSessionPreview.isHttpUrl(actual)) {
+          _rememberLastBrowsingUrl(actual);
+          if (mounted && actual != _currentUrl) {
+            setState(() {
+              _currentUrl = actual!;
+              _urlController.text = actual;
+            });
+            _syncBrowserSessionPreview();
+          }
+        }
+        return;
+      }
+
+      debugPrint(
+        '[BrowserPage] WebView blank after $reason; restoring $saved',
+      );
+      await ctrl.loadUrl(urlRequest: URLRequest(url: WebUri(saved)));
+      _rememberLastBrowsingUrl(saved);
+      if (mounted) {
+        setState(() {
+          _currentUrl = saved;
+          _urlController.text = saved;
+          _showHomePage = false;
+          _isBrowsingWebPage = true;
+        });
+        _syncBrowserSessionPreview();
+      }
+    } finally {
+      _recoveringBrowsingSurface = false;
+    }
+  }
+
+  @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
     if (state == AppLifecycleState.inactive ||
@@ -1506,6 +1639,8 @@ class _BrowserPageState extends State<BrowserPage>
         state == AppLifecycleState.hidden) {
       // 退到后台 / 划掉多任务前尽量把 WebView cookie 刷到磁盘（含 Google 登录态）
       unawaited(_flushBrowserCookies());
+    } else if (state == AppLifecycleState.resumed) {
+      unawaited(_recoverBrowsingSurfaceIfBlank(reason: 'app_resumed'));
     }
   }
 
@@ -3529,6 +3664,7 @@ class _BrowserPageState extends State<BrowserPage>
     if (!mounted) return;
     Logger.log('[BrowserPage] 目录页按钮被点击');
     // 进入目录前绑定会话，供文档编辑器「当前的浏览页面」预览使用。
+    _rememberLastBrowsingUrl(_currentUrl);
     _syncBrowserSessionPreview(bindForDirectory: true);
     // 进入目录后不再被浏览器下载成功提示打扰。
     ScaffoldMessenger.of(context).clearSnackBars();
@@ -3811,13 +3947,26 @@ class _BrowserPageState extends State<BrowserPage>
       },
     );
     _syncBrowserSessionPreview();
+    // Remount after GlobalKey loan/return: native surface starts at about:blank.
+    if (_isBrowsingWebPage) {
+      unawaited(
+        _recoverBrowsingSurfaceIfBlank(reason: 'webview_created'),
+      );
+    }
   }
 
   /// Same [InAppWebView] instance (via GlobalKey) for BrowserPage or document loan host.
   Widget _buildLiveSessionWebView() {
+    // If PlatformView State is recreated after loan, prefer last real URL over about:blank.
+    final restoreUrl =
+        _isBrowsingWebPage ? _resolvedLastBrowsingUrl() : null;
+    final initialUrl =
+        (restoreUrl != null && BrowserSessionPreview.isHttpUrl(restoreUrl))
+            ? restoreUrl
+            : 'about:blank';
     return InAppWebView(
       key: BrowserSessionPreview.instance.webViewKey,
-      initialUrlRequest: URLRequest(url: WebUri('about:blank')),
+      initialUrlRequest: URLRequest(url: WebUri(initialUrl)),
       initialSettings: InAppWebViewSettings(
         javaScriptEnabled: true,
         useHybridComposition: true,
@@ -3886,9 +4035,29 @@ class _BrowserPageState extends State<BrowserPage>
         }
         if (url != null) {
           final urlStr = url.toString();
+          // Remount / loan return often emits about:blank — do not clobber chrome.
+          if (_isBlankHistoryUrl(urlStr)) {
+            setState(() => _isLoading = true);
+            if (_isBrowsingWebPage) {
+              final saved = _resolvedLastBrowsingUrl();
+              if (saved != null &&
+                  (_isBlankHistoryUrl(_currentUrl) ||
+                      _isBlankHistoryUrl(_urlController.text))) {
+                setState(() {
+                  _currentUrl = saved;
+                  _urlController.text = saved;
+                });
+              }
+              unawaited(
+                _recoverBrowsingSurfaceIfBlank(reason: 'load_start_blank'),
+              );
+            }
+            return;
+          }
           if (urlStr.startsWith('http://') || urlStr.startsWith('https://')) {
             // 尽早记入干净后退栈，避免陷阱页抢在 onLoadStop 前冲掉搜索结果。
             _noteMeaningfulWebNavigation(urlStr);
+            _rememberLastBrowsingUrl(urlStr);
           }
         }
         setState(() {
@@ -3924,6 +4093,7 @@ class _BrowserPageState extends State<BrowserPage>
           return;
         }
         _noteMeaningfulWebNavigation(urlStr, fromHistoryUpdate: true);
+        _rememberLastBrowsingUrl(urlStr);
         if (!mounted) return;
         setState(() {
           _currentUrl = urlStr;
@@ -4031,12 +4201,16 @@ class _BrowserPageState extends State<BrowserPage>
   void _syncBrowserSessionPreview({bool bindForDirectory = false}) {
     final ctrl = _controller;
     if (ctrl == null) return;
+    final syncUrl =
+        BrowserSessionPreview.isHttpUrl(_currentUrl)
+            ? _currentUrl
+            : (_resolvedLastBrowsingUrl() ?? _currentUrl);
     if (bindForDirectory) {
       BrowserSessionPreview.instance.bindForDirectoryEntry(
         owner: this,
         controller: ctrl,
         downloadTasks: _downloadTasksNotifier,
-        pageUrl: _currentUrl,
+        pageUrl: syncUrl,
         isBrowsingWebPage: _isBrowsingWebPage,
         showHomePage: _showHomePage,
       );
@@ -4047,7 +4221,7 @@ class _BrowserPageState extends State<BrowserPage>
         owner: this,
         controller: ctrl,
         downloadTasks: _downloadTasksNotifier,
-        pageUrl: _currentUrl,
+        pageUrl: syncUrl,
         isBrowsingWebPage: _isBrowsingWebPage,
         showHomePage: _showHomePage,
       );
@@ -4056,7 +4230,7 @@ class _BrowserPageState extends State<BrowserPage>
     BrowserSessionPreview.instance.updateSession(
       owner: this,
       controller: ctrl,
-      pageUrl: _currentUrl,
+      pageUrl: syncUrl,
       isBrowsingWebPage: _isBrowsingWebPage,
       showHomePage: _showHomePage,
     );
@@ -7032,6 +7206,7 @@ class _BrowserPageState extends State<BrowserPage>
       _shouldKeepWebPageState = true;
       _lastBrowsedUrl = processedUrl;
     });
+    _rememberLastBrowsingUrl(processedUrl);
     widget.onBrowserHomePageChanged?.call(_showHomePage);
     _syncBrowserSessionPreview();
   }
@@ -7112,46 +7287,15 @@ class _BrowserPageState extends State<BrowserPage>
 
   Future<void> _goToHomePage() async {
     if (!_showHomePage) {
-      await _saveCommonWebsites();
-      await _loadBookmarks();
-
-      // 确保常用网站列表被正确加载
-      await _loadCommonWebsites();
-
-      // 如果常用网站列表为空，强制加载默认网站
-      if (_commonWebsites.isEmpty) {
-        debugPrint('常用网站列表为空，加载默认网站');
-        setState(() {
-          _commonWebsites.addAll([
-            {
-              'name': 'Google',
-              'url': BrowserService.kGoogleHomeUrl,
-              'iconCode': Icons.public.codePoint,
-            },
-            {
-              'name': 'Edge',
-              'url': 'https://www.bing.com',
-              'iconCode': Icons.public.codePoint,
-            },
-            {
-              'name': 'X',
-              'url': 'https://twitter.com',
-              'iconCode': Icons.public.codePoint,
-            },
-            {
-              'name': 'Facebook',
-              'url': 'https://www.facebook.com',
-              'iconCode': Icons.public.codePoint,
-            },
-            {
-              'name': '百度',
-              'url': 'https://www.baidu.com',
-              'iconCode': Icons.public.codePoint,
-            },
-          ]);
-        });
+      // Only persist after first successful load — never write defaults over
+      // user-stored .hk / query bookmarks during the startup race.
+      if (_commonWebsitesLoaded) {
         await _saveCommonWebsites();
       }
+      await _loadBookmarks();
+
+      // 确保常用网站列表被正确加载（缺省数据只在 load 内写入，不在此处塞默认 Google）
+      await _loadCommonWebsites();
 
       // 回主页不销毁 WebView，但后退栈从「主页再出发」更干净。
       _clearWebBackStack();
@@ -7483,6 +7627,7 @@ class _BrowserPageState extends State<BrowserPage>
       _currentUrl = 'https://www.baidu.com';
       _urlController.text = _currentUrl;
     });
+    BrowserSessionPreview.instance.clearLastBrowsingUrl();
     widget.onBrowserHomePageChanged?.call(_showHomePage);
     _syncBrowserSessionPreview();
   }
@@ -21542,12 +21687,13 @@ class _BrowserPageState extends State<BrowserPage>
 
   void _openCommonWebsiteCard(Map<String, dynamic> website, int index) {
     final rawUrl = (website['url'] ?? '').toString();
-    // Open the stored URL as-is. Only migrate clearly dead legacy /m once.
+    // Open the exact stored string. Only persist a rewrite when the *stored*
+    // URL itself is a dead legacy `/m` (session `/m` redirects never write back).
     if (BrowserService.isDeadGoogleMobileUrl(rawUrl) &&
         index >= 0 &&
         index < _commonWebsites.length) {
       final fixed = BrowserService.normalizeCommonWebsiteUrl(rawUrl);
-      if (fixed != rawUrl) {
+      if (fixed != rawUrl && fixed.isNotEmpty) {
         setState(() {
           _commonWebsites[index]['url'] = fixed;
         });
@@ -21565,7 +21711,7 @@ class _BrowserPageState extends State<BrowserPage>
     final rawUrl = bookmark['url']?.toString() ?? '';
     if (BrowserService.isDeadGoogleMobileUrl(rawUrl)) {
       final fixed = BrowserService.normalizeCommonWebsiteUrl(rawUrl);
-      if (fixed != rawUrl) {
+      if (fixed != rawUrl && fixed.isNotEmpty) {
         setState(() {
           _bookmarks[index]['url'] = fixed;
         });
@@ -21715,6 +21861,12 @@ class _BrowserPageState extends State<BrowserPage>
                       (s) => s['url'] == website['url'],
                     );
                   }
+                  if (!_commonWebsitesLoaded) await _loadCommonWebsites();
+                  if (idx < 0 || idx >= _commonWebsites.length) {
+                    idx = _commonWebsites.indexWhere(
+                      (s) => s['url'] == website['url'],
+                    );
+                  }
                   if (idx >= 0) {
                     setState(() {
                       _commonWebsites[idx]['url'] = storedUrl;
@@ -21856,6 +22008,20 @@ class _BrowserPageState extends State<BrowserPage>
   }
 
   Future<void> _loadBookmarks() async {
+    final existing = _bookmarksLoadFuture;
+    if (existing != null) return existing;
+    final future = _loadBookmarksImpl();
+    _bookmarksLoadFuture = future;
+    try {
+      await future;
+    } finally {
+      if (identical(_bookmarksLoadFuture, future)) {
+        _bookmarksLoadFuture = null;
+      }
+    }
+  }
+
+  Future<void> _loadBookmarksImpl() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final bookmarksJsonString = prefs.getString('bookmarks');
@@ -21901,33 +22067,25 @@ class _BrowserPageState extends State<BrowserPage>
           ..clear()
           ..addAll(loaded);
       });
+      _bookmarksLoaded = true;
       if (migrated) {
         await _saveBookmarks();
         debugPrint('已迁移书签中的旧版 Google /m 等 URL');
       }
     } catch (e) {
       debugPrint('Error loading bookmarks: $e');
+      _bookmarksLoaded = true;
     }
   }
 
   Future<void> _saveCommonWebsites() async {
+    if (!_commonWebsitesLoaded) {
+      debugPrint('跳过保存常用网站：尚未完成首次加载（避免默认 Google 覆盖用户网址）');
+      return;
+    }
     try {
-      // 确保_commonWebsites不为空
-      if (_commonWebsites.isEmpty) {
-        debugPrint('警告：尝试保存空的常用网站列表，将加载默认网站');
-        _commonWebsites.addAll([
-          {
-            'name': 'Google',
-            'url': BrowserService.kGoogleHomeUrl,
-            'iconCode': Icons.public.codePoint,
-          },
-          {
-            'name': '百度',
-            'url': 'https://www.baidu.com',
-            'iconCode': Icons.public.codePoint,
-          },
-        ]);
-      }
+      // Do NOT inject default Google here — empty list is a valid user state.
+      // Defaults are only written from `_loadCommonWebsites` when prefs are empty.
 
       final prefs = await SharedPreferences.getInstance();
       final cleanedWebsites =
@@ -21935,6 +22093,7 @@ class _BrowserPageState extends State<BrowserPage>
               .map(
                 (site) => {
                   'name': site['name'],
+                  // Persist exact stored URL string — never substitute _currentUrl.
                   'url': site['url'],
                   'iconCode': Icons.public.codePoint,
                 },
@@ -24831,9 +24990,198 @@ class _BrowserPageState extends State<BrowserPage>
     }
   }
 
+  /// 将当前浏览页添加为首页「常用网站」卡片。
+  Future<void> _addCurrentPageAsCommonWebsite() async {
+    String? realTimeUrl;
+    if (_controller != null) {
+      try {
+        final uri = await _controller!.getUrl();
+        realTimeUrl = uri?.toString();
+      } catch (e) {
+        debugPrint('获取当前网址失败: $e');
+      }
+    }
+
+    final rawUrl =
+        (realTimeUrl != null && realTimeUrl.isNotEmpty)
+            ? realTimeUrl
+            : (_urlController.text.trim().isNotEmpty
+                ? _urlController.text.trim()
+                : _currentUrl.trim());
+
+    if (_showHomePage || rawUrl.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('请先打开网页'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+
+    final storedUrl = BrowserService.normalizeCommonWebsiteUrl(rawUrl);
+    if (storedUrl.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('请先打开网页'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+
+    final alreadyExists = _commonWebsites.any((site) {
+      final existing = BrowserService.normalizeCommonWebsiteUrl(
+        site['url']?.toString() ?? '',
+      );
+      return existing == storedUrl;
+    });
+    if (alreadyExists) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('已在常用网站中'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+
+    final nameController = TextEditingController();
+    String hostFallback = storedUrl;
+    try {
+      final host = Uri.tryParse(storedUrl)?.host;
+      if (host != null && host.isNotEmpty) hostFallback = host;
+    } catch (_) {}
+
+    nameController.text = '获取中...';
+    final c = _controller;
+    if (c != null) {
+      c
+          .getTitle()
+          .then((title) {
+            if (title != null &&
+                title.isNotEmpty &&
+                nameController.text == '获取中...') {
+              nameController.text = title;
+              nameController.selection = TextSelection(
+                baseOffset: 0,
+                extentOffset: title.length,
+              );
+            } else if (nameController.text == '获取中...') {
+              nameController.text = hostFallback;
+              nameController.selection = TextSelection(
+                baseOffset: 0,
+                extentOffset: hostFallback.length,
+              );
+            }
+          })
+          .catchError((error) {
+            debugPrint('获取网页标题出错: $error');
+            if (nameController.text == '获取中...') {
+              nameController.text = hostFallback;
+            }
+          });
+    } else {
+      nameController.text = hostFallback;
+    }
+
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('添加常用网站'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              TextField(
+                controller: nameController,
+                decoration: const InputDecoration(
+                  labelText: '网站名称',
+                  hintText: '输入自定义名称',
+                  helperText: '为网站设置一个简短易记的名称',
+                ),
+                autofocus: true,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                '网址: $storedUrl',
+                style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('取消'),
+            ),
+            TextButton(
+              onPressed: () async {
+                final name = nameController.text.trim();
+                if (name.isEmpty || name == '获取中...') {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(
+                        name == '获取中...'
+                            ? '请等待网页标题获取完成，或输入自定义名称'
+                            : '请输入网站名称',
+                      ),
+                      duration: const Duration(seconds: 2),
+                    ),
+                  );
+                  return;
+                }
+
+                // 再次检查重复（对话框打开期间可能已添加）
+                final stillExists = _commonWebsites.any((site) {
+                  final existing = BrowserService.normalizeCommonWebsiteUrl(
+                    site['url']?.toString() ?? '',
+                  );
+                  return existing == storedUrl;
+                });
+                if (stillExists) {
+                  Navigator.pop(dialogContext);
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('已在常用网站中'),
+                        duration: Duration(seconds: 2),
+                      ),
+                    );
+                  }
+                  return;
+                }
+
+                await _addWebsite(name, storedUrl, Icons.web);
+                if (dialogContext.mounted) {
+                  Navigator.pop(dialogContext);
+                }
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('已添加常用网站「$name」'),
+                      duration: const Duration(seconds: 2),
+                    ),
+                  );
+                }
+              },
+              child: const Text('确认'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   void _addBookmark(String url) {
+    // Persist exact URL the caller passed (usually current page); do not rewrite.
+    final storedUrl = BrowserService.normalizeCommonWebsiteUrl(url);
     // 检查是否已存在相同URL的书签
-    if (_bookmarks.any((bookmark) => bookmark['url'] == url)) {
+    if (_bookmarks.any((bookmark) => bookmark['url'] == storedUrl)) {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('书签已存在')));
@@ -24889,7 +25237,7 @@ class _BrowserPageState extends State<BrowserPage>
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'URL: $url',
+                  'URL: $storedUrl',
                   style: TextStyle(fontSize: 12, color: Colors.grey[600]),
                 ),
               ],
@@ -24924,10 +25272,11 @@ class _BrowserPageState extends State<BrowserPage>
                       },
                     );
 
+                    if (!_bookmarksLoaded) await _loadBookmarks();
                     setState(
                       () => _bookmarks.insert(0, {
                         'name': nameController.text,
-                        'url': url,
+                        'url': storedUrl,
                       }),
                     );
                     await _saveBookmarks();
@@ -25184,6 +25533,10 @@ class _BrowserPageState extends State<BrowserPage>
   }
 
   Future<void> _saveBookmarks() async {
+    if (!_bookmarksLoaded) {
+      debugPrint('跳过保存书签：尚未完成首次加载');
+      return;
+    }
     try {
       final prefs = await SharedPreferences.getInstance();
       final jsonString = jsonEncode(_bookmarks);
@@ -25194,6 +25547,20 @@ class _BrowserPageState extends State<BrowserPage>
   }
 
   Future<void> _loadCommonWebsites() async {
+    final existing = _commonWebsitesLoadFuture;
+    if (existing != null) return existing;
+    final future = _loadCommonWebsitesImpl();
+    _commonWebsitesLoadFuture = future;
+    try {
+      await future;
+    } finally {
+      if (identical(_commonWebsitesLoadFuture, future)) {
+        _commonWebsitesLoadFuture = null;
+      }
+    }
+  }
+
+  Future<void> _loadCommonWebsitesImpl() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final commonWebsitesJson = prefs.getString('common_websites');
@@ -25227,6 +25594,7 @@ class _BrowserPageState extends State<BrowserPage>
             _commonWebsites.clear();
             _commonWebsites.addAll(mapped);
           });
+          _commonWebsitesLoaded = true;
           debugPrint('从SharedPreferences加载了${_commonWebsites.length}个常用网站');
           if (migrated) {
             await _saveCommonWebsites();
@@ -25252,11 +25620,12 @@ class _BrowserPageState extends State<BrowserPage>
           },
         ]);
       });
+      _commonWebsitesLoaded = true;
       debugPrint('加载了默认常用网站');
       await _saveCommonWebsites();
     } catch (e) {
       debugPrint('Error loading common websites: $e');
-      // 出错时加载默认网站
+      // 出错时加载默认网站（不 wipe prefs：避免用户网址被误删）
       setState(() {
         _commonWebsites.clear();
         _commonWebsites.addAll([
@@ -25272,9 +25641,8 @@ class _BrowserPageState extends State<BrowserPage>
           },
         ]);
       });
-      debugPrint('加载出错，使用默认常用网站');
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.remove('common_websites');
+      _commonWebsitesLoaded = true;
+      debugPrint('加载出错，使用默认常用网站（未清除 prefs）');
     }
   }
 
@@ -25461,36 +25829,10 @@ class _BrowserPageState extends State<BrowserPage>
                               onLongPress: _onBookmarkSmartLongPress,
                             ),
                             slot(
-                              tooltip: '复制当前网址',
-                              icon: const Icon(Icons.content_copy),
-                              onPressed: () async {
-                                String? realTimeUrl;
-                                if (_controller != null) {
-                                  final uri = await _controller!.getUrl();
-                                  realTimeUrl = uri?.toString();
-                                }
-
-                                final url =
-                                    (realTimeUrl != null &&
-                                            realTimeUrl.isNotEmpty)
-                                        ? realTimeUrl
-                                        : (_urlController.text.trim().isNotEmpty
-                                            ? _urlController.text.trim()
-                                            : _currentUrl);
-
-                                if (url.isNotEmpty) {
-                                  await Clipboard.setData(
-                                    ClipboardData(text: url),
-                                  );
-                                  if (mounted) {
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      const SnackBar(
-                                        content: Text('当前网址已复制到剪贴板'),
-                                        duration: Duration(seconds: 1),
-                                      ),
-                                    );
-                                  }
-                                }
+                              tooltip: '添加常用网站卡片',
+                              icon: const Icon(Icons.star_border),
+                              onPressed: () {
+                                unawaited(_addCurrentPageAsCommonWebsite());
                               },
                             ),
                             slot(
@@ -26184,6 +26526,16 @@ class _BrowserPageState extends State<BrowserPage>
 
   @override
   void dispose() {
+    if (_loanListenerAttached) {
+      BrowserSessionPreview.instance.loanedNotifier.removeListener(
+        _onBrowserWebViewLoanChanged,
+      );
+      _loanListenerAttached = false;
+    }
+    if (_browserRouteAwareRoute != null) {
+      appRouteObserver.unsubscribe(this);
+      _browserRouteAwareRoute = null;
+    }
     BrowserSessionPreview.instance.detachWebViewBuilder(
       _buildLiveSessionWebView,
     );
@@ -27482,6 +27834,12 @@ class _BrowserPageState extends State<BrowserPage>
           _loadingProgress = 0.0;
         });
         debugPrint('页面加载完成(about:blank): 保持主界面');
+        // Loan/reparent remount: blank stop while still browsing → restore.
+        if (_isBrowsingWebPage) {
+          unawaited(
+            _recoverBrowsingSurfaceIfBlank(reason: 'load_stop_blank'),
+          );
+        }
         final task = _smartDownloadTask;
         if (task != null && task['siteProfile'] == 'x') {
           final expected =
@@ -27544,6 +27902,7 @@ class _BrowserPageState extends State<BrowserPage>
       await _addHistory(title, url);
       final committedUrl = actualUrl.isNotEmpty ? actualUrl : url;
       _noteMeaningfulWebNavigation(committedUrl);
+      _rememberLastBrowsingUrl(committedUrl);
 
       // 更新状态：仅当加载真实网页时切换到 WebView
       setState(() {

@@ -34,18 +34,21 @@ class BrowserService {
   }
 
   /// True when URL is the dead Google mobile home (`…/m` or `…/m/…`).
-  /// Does **not** match `/maps`.
+  /// Does **not** match `/maps`, and never flags good `.hk` / query bookmarks.
   static bool isDeadGoogleMobileUrl(String rawUrl) {
     final trimmed = rawUrl.trim();
     if (trimmed.isEmpty) return false;
-    final lower = trimmed.toLowerCase();
-    if (RegExp(r'google\.(cn|com(\.[a-z]{2})?)/m([/?#]|$)').hasMatch(lower)) {
-      return true;
-    }
     final uri = _tryParseHttpish(trimmed);
-    if (uri == null || !isGoogleShortcutHost(uri.host)) return false;
-    final path = uri.path;
-    return path == '/m' || path.startsWith('/m/');
+    if (uri != null && isGoogleShortcutHost(uri.host)) {
+      final path = uri.path;
+      // Path-only: `/m` or `/m/...` — never query/fragment false positives.
+      return path == '/m' || path.startsWith('/m/');
+    }
+    // Unparseable fallback: only exact dead legacy patterns.
+    final lower = trimmed.toLowerCase();
+    return RegExp(
+      r'^(https?:\/\/)?(www\.|m\.)?google\.(cn|com(\.[a-z]{2})?)/m([/?#]|$)',
+    ).hasMatch(lower);
   }
 
   static Uri? _tryParseHttpish(String trimmed) {
@@ -84,21 +87,17 @@ class BrowserService {
     final trimmed = rawUrl.trim();
     if (trimmed.isEmpty) return trimmed;
 
-    final lower = trimmed.toLowerCase();
-    final looseDeadMobile =
-        RegExp(r'google\.(cn|com(\.[a-z]{2})?)/m([/?#]|$)').hasMatch(lower);
+    if (isDeadGoogleMobileUrl(trimmed)) {
+      final uri = _tryParseHttpish(trimmed);
+      if (uri != null && isGoogleShortcutHost(uri.host)) {
+        return _httpsGoogleHomeForHost(uri.host);
+      }
+      return kGoogleHomeUrl;
+    }
 
     final uri = _tryParseHttpish(trimmed);
     if (uri == null) {
-      return looseDeadMobile ? kGoogleHomeUrl : trimmed;
-    }
-
-    final host = uri.host.toLowerCase();
-    final path = uri.path;
-    final isDeadMobile = isGoogleShortcutHost(host) &&
-        (path == '/m' || path.startsWith('/m/') || looseDeadMobile);
-    if (isDeadMobile) {
-      return _httpsGoogleHomeForHost(host);
+      return trimmed;
     }
 
     // User / complete URLs: do not mutate host, path, or query.

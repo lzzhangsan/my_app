@@ -20,6 +20,8 @@ class BrowserSessionPreview {
   InAppWebViewController? _controller;
   ValueNotifier<List<Map<String, dynamic>>>? _downloadTasksNotifier;
   String? _pageUrl;
+  /// Last real http(s) URL; survives about:blank remounts from GlobalKey loan.
+  String? _lastBrowsingUrl;
   bool _isBrowsingWebPage = false;
   bool _showHomePage = true;
   BrowserLiveWebViewBuilder? _webViewBuilder;
@@ -51,8 +53,50 @@ class BrowserSessionPreview {
 
   String? get pageUrl => _pageUrl;
 
+  /// Last known real browsing URL (never about:blank).
+  String? get lastBrowsingUrl => _lastBrowsingUrl;
+
   ValueListenable<List<Map<String, dynamic>>> get downloadTasks =>
       _downloadTasksNotifier ?? _emptyTasks;
+
+  static bool isBlankUrl(String? url) {
+    if (url == null) return true;
+    final s = url.trim().toLowerCase();
+    if (s.isEmpty) return true;
+    return s == 'about:blank' ||
+        s.startsWith('about:blank#') ||
+        s == 'about://blank' ||
+        s.startsWith('about:srcdoc');
+  }
+
+  static bool isHttpUrl(String? url) {
+    if (url == null) return false;
+    final s = url.trim();
+    return s.startsWith('http://') || s.startsWith('https://');
+  }
+
+  /// Persist a real browsing URL for restore after PlatformView remount / loan.
+  void rememberBrowsingUrl(String? url) {
+    if (!isHttpUrl(url)) return;
+    final trimmed = url!.trim();
+    _lastBrowsingUrl = trimmed;
+    if (_pageUrl != trimmed) {
+      _pageUrl = trimmed;
+      _syncPageUrlNotifier();
+    }
+  }
+
+  /// Drop restore target (user exited the web session).
+  void clearLastBrowsingUrl() {
+    _lastBrowsingUrl = null;
+  }
+
+  /// Best URL to reload when the surface shows about:blank.
+  String? get urlForRestore {
+    if (isHttpUrl(_lastBrowsingUrl)) return _lastBrowsingUrl;
+    if (isHttpUrl(_pageUrl) && !isBlankUrl(_pageUrl)) return _pageUrl;
+    return null;
+  }
 
   void attachWebViewBuilder(BrowserLiveWebViewBuilder builder) {
     _webViewBuilder = builder;
@@ -74,6 +118,10 @@ class BrowserSessionPreview {
   /// Loan the WebView to the document panel (`true`) or return it to BrowserPage.
   void setLoaned(bool loaned) {
     if (loanedNotifier.value == loaned) return;
+    if (loaned) {
+      // Capture before reparent; Android Hybrid Composition often remounts blank.
+      rememberBrowsingUrl(_pageUrl);
+    }
     loanedNotifier.value = loaned;
   }
 
@@ -91,6 +139,7 @@ class BrowserSessionPreview {
     _pageUrl = pageUrl;
     _isBrowsingWebPage = isBrowsingWebPage;
     _showHomePage = showHomePage;
+    rememberBrowsingUrl(pageUrl);
     _syncPageUrlNotifier();
     _notifyAvailability();
   }
@@ -105,7 +154,10 @@ class BrowserSessionPreview {
     if (_owner == null) return;
     if (owner != null && !identical(owner, _owner)) return;
     if (controller != null) _controller = controller;
-    if (pageUrl != null) _pageUrl = pageUrl;
+    if (pageUrl != null) {
+      _pageUrl = pageUrl;
+      rememberBrowsingUrl(pageUrl);
+    }
     if (isBrowsingWebPage != null) _isBrowsingWebPage = isBrowsingWebPage;
     if (showHomePage != null) _showHomePage = showHomePage;
     _syncPageUrlNotifier();
@@ -122,6 +174,7 @@ class BrowserSessionPreview {
     required bool showHomePage,
   }) {
     if (controller == null) return;
+    rememberBrowsingUrl(pageUrl);
     register(
       owner: owner,
       controller: controller,
@@ -139,6 +192,7 @@ class BrowserSessionPreview {
     _controller = null;
     _downloadTasksNotifier = null;
     _pageUrl = null;
+    _lastBrowsingUrl = null;
     _isBrowsingWebPage = false;
     _showHomePage = true;
     _syncPageUrlNotifier();

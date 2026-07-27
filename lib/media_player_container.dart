@@ -471,6 +471,8 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
     };
     _mediaSessionId++;
     // 同一帧内：BrowserPage 让出 GlobalKey WebView，底栏接管（无截图轮询）。
+    // 先记下真实 URL：Android Hybrid Composition 归还时经常 remount 成 about:blank。
+    preview.rememberBrowsingUrl(preview.pageUrl ?? preview.lastBrowsingUrl);
     _browserLivePreviewActive = true;
     preview.setLoaned(true);
     setState(() {
