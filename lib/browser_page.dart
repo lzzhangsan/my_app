@@ -201,7 +201,8 @@ const String _kEarlyMediaSnifferScript = r'''
   } catch (_) {}
   const isElementBoundFeedPage = mediaHosts.some(mediaHost =>
     mediaHost === 'tik.porn' || mediaHost.endsWith('.tik.porn') ||
-    mediaHost === 'pin.porn' || mediaHost.endsWith('.pin.porn'));
+    mediaHost === 'pin.porn' || mediaHost.endsWith('.pin.porn') ||
+    mediaHost === 'instagram.com' || mediaHost.endsWith('.instagram.com'));
   const mediaBufferUrls = new WeakMap();
   const sourceBufferOwners = new WeakMap();
   const mediaSourceByBlobUrl = new Map();
@@ -917,10 +918,33 @@ class _BrowserPageState extends State<BrowserPage>
 
   bool _isFacebookCdnUrl(String url) {
     final lower = url.toLowerCase();
+    if (lower.contains('cdninstagram.com')) return false;
     return lower.contains('fbcdn.net') ||
         lower.contains('fbcdn.com') ||
         lower.contains('scontent.') ||
         RegExp(r'(^|[./])video\.[a-z0-9.-]*fbcdn').hasMatch(lower);
+  }
+
+  bool _isInstagramPlatformPage(String? url) {
+    final host = Uri.tryParse((url ?? '').trim())?.host.toLowerCase() ?? '';
+    return host == 'instagram.com' || host.endsWith('.instagram.com');
+  }
+
+  bool _isInstagramCdnUrl(String url) {
+    final host = Uri.tryParse(url.trim())?.host.toLowerCase() ?? '';
+    return host == 'cdninstagram.com' || host.endsWith('.cdninstagram.com');
+  }
+
+  int _scoreInstagramVideoCandidate(String url) {
+    final metadata = facebookMediaMetadata(url);
+    if (metadata?.isAudioOnly == true) return -100000;
+    var score = _scoreFavoriteVideoUrl(url);
+    if (_isInstagramCdnUrl(url)) score += 5000;
+    if (metadata?.isVideoTrack == true) {
+      score += 10000;
+      score += ((metadata!.bitrate ?? 0) ~/ 1000).clamp(0, 10000);
+    }
+    return score;
   }
 
   /// Facebook media strategy (dedicated site profile, parallel to X/91):
@@ -3458,7 +3482,9 @@ class _BrowserPageState extends State<BrowserPage>
         host == 'fb.com' ||
         host.endsWith('.fb.com') ||
         host == 'fb.watch' ||
-        host.endsWith('.fb.watch');
+        host.endsWith('.fb.watch') ||
+        host == 'instagram.com' ||
+        host.endsWith('.instagram.com');
   }
 
   bool _looksLikePreviewClipUrl(String u) {
@@ -3503,6 +3529,12 @@ class _BrowserPageState extends State<BrowserPage>
     if (s.contains('.webm')) score += 450;
     if (_isXVideoLikeHost(s)) score += 500;
     if (_isFacebookCdnUrl(s)) score += 600;
+    if (_isInstagramCdnUrl(s)) {
+      final metadata = facebookMediaMetadata(url);
+      if (metadata?.isAudioOnly == true) return -100000;
+      score += metadata?.isVideoTrack == true ? 2400 : 500;
+      score += ((metadata?.bitrate ?? 0) ~/ 1000).clamp(0, 5000);
+    }
     if (s.contains('setvideourlhigh') || s.contains('high')) score += 220;
     if (_looksLikePreviewClipUrl(s)) score -= 1200;
     return score;
@@ -3543,13 +3575,17 @@ class _BrowserPageState extends State<BrowserPage>
               ? _scoreXVideoCandidate(a)
               : (_isFacebookCdnUrl(a)
                   ? _scoreFacebookVideoCandidate(a)
-                  : _scoreFavoriteVideoUrl(a));
+                  : (_isInstagramCdnUrl(a)
+                      ? _scoreInstagramVideoCandidate(a)
+                      : _scoreFavoriteVideoUrl(a)));
       final bScore =
           _xMediaIdentity(b).isNotEmpty
               ? _scoreXVideoCandidate(b)
               : (_isFacebookCdnUrl(b)
                   ? _scoreFacebookVideoCandidate(b)
-                  : _scoreFavoriteVideoUrl(b));
+                  : (_isInstagramCdnUrl(b)
+                      ? _scoreInstagramVideoCandidate(b)
+                      : _scoreFavoriteVideoUrl(b)));
       final scoreOrder = bScore.compareTo(aScore);
       if (scoreOrder != 0) return scoreOrder;
       return insertionOrder[a]!.compareTo(insertionOrder[b]!);
@@ -3734,9 +3770,14 @@ class _BrowserPageState extends State<BrowserPage>
         _isFacebookPlatformPage(_currentUrl) ||
         _isFacebookCdnUrl(videoUrl) ||
         candidateUrls.any(_isFacebookCdnUrl);
+    final looksInstagramItem =
+        _isInstagramPlatformPage(pageUrl) ||
+        _isInstagramPlatformPage(_currentUrl) ||
+        _isInstagramCdnUrl(videoUrl) ||
+        candidateUrls.any(_isInstagramCdnUrl);
     // Facebook / Reels: never re-inject page-wide capture history here —
     // that drains previously browsed progressives before the bound current.
-    if (!isLongPress && !looksFacebookItem) {
+    if (!isLongPress && !looksFacebookItem && !looksInstagramItem) {
       candidateUrls.addAll(
         _recentCapturedMediaCandidates(MediaType.video, pageUrl: pageUrl),
       );
@@ -3785,6 +3826,10 @@ class _BrowserPageState extends State<BrowserPage>
         looksFacebookItem ||
         _isFacebookCdnUrl(downloadUrl) ||
         candidateUrls.any(_isFacebookCdnUrl);
+    final isInstagramPipeline =
+        looksInstagramItem ||
+        _isInstagramCdnUrl(downloadUrl) ||
+        candidateUrls.any(_isInstagramCdnUrl);
     // Facebook 视频必须保留最小体积闸门，避免把 init/stub 黑色视频占位保存入库。
     final effectiveMinFileBytes =
         isFacebookPipeline
@@ -3893,13 +3938,92 @@ class _BrowserPageState extends State<BrowserPage>
       // Once smart selection has bound a concrete media URL, keep it first
       // just like a long press. Fallback candidates are tried only on failure.
       preservePrimary:
-          isLongPress ||
+          (isLongPress && !isInstagramPipeline) ||
           isFacebookPipeline ||
           (isSmartBatch &&
               (downloadUrl.startsWith('http://') ||
                   downloadUrl.startsWith('https://'))),
     );
-    String? pairedFacebookAudioUrl;
+    String? pairedDashAudioUrl;
+    if (isInstagramPipeline) {
+      final targetDurationSeconds =
+          (item['durationSec'] as num?)?.toDouble() ?? 0.0;
+      FacebookMediaMetadata? selectedVideoMetadata;
+      final instagramVideoMetadata =
+          attempts
+              .map(facebookMediaMetadata)
+              .whereType<FacebookMediaMetadata>()
+              .where(
+                (metadata) =>
+                    metadata.isVideoTrack && metadata.videoId.isNotEmpty,
+              )
+              .toList()
+            ..sort((left, right) {
+              if (targetDurationSeconds > 0) {
+                final leftDelta =
+                    ((left.durationSeconds ?? 0) - targetDurationSeconds).abs();
+                final rightDelta =
+                    ((right.durationSeconds ?? 0) - targetDurationSeconds)
+                        .abs();
+                final durationOrder = leftDelta.compareTo(rightDelta);
+                if (durationOrder != 0) return durationOrder;
+              }
+              return right.qualityScore.compareTo(left.qualityScore);
+            });
+      if (instagramVideoMetadata.isNotEmpty) {
+        selectedVideoMetadata = instagramVideoMetadata.first;
+        final selectedAssetId = selectedVideoMetadata.videoId;
+        attempts.removeWhere((candidate) {
+          final metadata = facebookMediaMetadata(candidate);
+          return metadata != null &&
+              metadata.videoId.isNotEmpty &&
+              metadata.videoId != selectedAssetId;
+        });
+      }
+      if (selectedVideoMetadata != null) {
+        for (final candidate in <String>[
+          videoUrl,
+          downloadUrl,
+          ...candidateUrls,
+          ...attempts,
+        ]) {
+          final metadata = facebookMediaMetadata(candidate);
+          if (metadata?.isAudioOnly == true &&
+              metadata!.videoId == selectedVideoMetadata.videoId) {
+            pairedDashAudioUrl = recoverWholeMediaUrlFromFragment(candidate);
+            break;
+          }
+        }
+      }
+      final beforeAudioFilter = attempts.length;
+      attempts.removeWhere(
+        (url) => facebookMediaMetadata(url)?.isAudioOnly == true,
+      );
+      attempts.sort(
+        (left, right) => _scoreInstagramVideoCandidate(
+          right,
+        ).compareTo(_scoreInstagramVideoCandidate(left)),
+      );
+      debugPrint(
+        'Instagram pipeline: video candidates=${attempts.length}, '
+        'removedAudio=${beforeAudioFilter - attempts.length}, '
+        'pairedAudio=${pairedDashAudioUrl != null}',
+      );
+      if (attempts.isEmpty) {
+        onFailureType?.call('instagram_video_track_not_captured');
+        if (isSmartGesture) {
+          smartTask?['lastGestureFailureType'] =
+              'instagram_video_track_not_captured';
+        }
+        if (shownDialog && mounted) {
+          final nav = Navigator.of(context, rootNavigator: true);
+          if (nav.canPop()) nav.pop();
+        }
+        progress.dispose();
+        detailNotifier.dispose();
+        return false;
+      }
+    }
     // X exposes a master playlist together with separate audio/video streams.
     // Keep one media ID per smart-download step and prefer the complete master.
     final smartXMediaId =
@@ -4014,7 +4138,7 @@ class _BrowserPageState extends State<BrowserPage>
           final metadata = facebookMediaMetadata(candidate);
           if (metadata?.isAudioOnly == true &&
               metadata!.videoId == selectedVideoMetadata.videoId) {
-            pairedFacebookAudioUrl = candidate;
+            pairedDashAudioUrl = candidate;
             break;
           }
         }
@@ -4031,8 +4155,7 @@ class _BrowserPageState extends State<BrowserPage>
       }
       if (attempts.isEmpty) {
         if (isSmartGesture) {
-          smartTask?['lastGestureFailureType'] =
-              'fb_video_track_not_captured';
+          smartTask?['lastGestureFailureType'] = 'fb_video_track_not_captured';
         }
         onFailureType?.call('fb_video_track_not_captured');
         debugPrint(
@@ -4076,7 +4199,8 @@ class _BrowserPageState extends State<BrowserPage>
       var failureType = 'unknown';
       final facebookMetadata = facebookMediaMetadata(attempts[i]);
       final attemptMinFileBytes =
-          isFacebookPipeline && facebookMetadata?.isVideoTrack == true
+          (isFacebookPipeline || isInstagramPipeline) &&
+                  facebookMetadata?.isVideoTrack == true
               ? facebookVideoMinimumBytes(attempts[i])
               : effectiveMinFileBytes;
       progress.value = null;
@@ -4122,21 +4246,23 @@ class _BrowserPageState extends State<BrowserPage>
                 : null,
         showSuccessPrompt: false,
         showDuplicatePrompt: !isSmartDownload,
-        validateSmartMedia: isSmartDownload || isFacebookPipeline,
+        validateSmartMedia:
+            isSmartDownload || isFacebookPipeline || isInstagramPipeline,
         isSmartBatchMedia: isSmartDownload,
         smartTask: smartTask,
         smartMediaTitle: (item['title'] ?? '').toString(),
         smartPageUrl: pageUrl,
         minFileBytes: attemptMinFileBytes,
         maxFileBytes: effectiveMaxFileBytes,
-        rejectIncompleteMp4Stub: isFacebookPipeline,
+        rejectIncompleteMp4Stub: isFacebookPipeline || isInstagramPipeline,
+        rejectAudioOnlyMp4: isInstagramPipeline,
         pairedAudioUrl:
-            isFacebookPipeline &&
+            (isFacebookPipeline || isInstagramPipeline) &&
                     facebookIdentitiesMatch(
                       facebookMediaIdentity(attempts[i]),
-                      facebookMediaIdentity(pairedFacebookAudioUrl ?? ''),
+                      facebookMediaIdentity(pairedDashAudioUrl ?? ''),
                     )
-                ? pairedFacebookAudioUrl
+                ? pairedDashAudioUrl
                 : null,
         onProgress: (fraction, {String? detail}) {
           progress.value = fraction.clamp(0.0, 1.0);
@@ -4844,7 +4970,11 @@ class _BrowserPageState extends State<BrowserPage>
         (restoreUrl != null && BrowserSessionPreview.isHttpUrl(restoreUrl))
             ? restoreUrl
             : 'about:blank';
-    return InAppWebView(
+    final instagramBottomInset =
+        _isInstagramPlatformPage(_currentUrl)
+            ? max(MediaQuery.viewPaddingOf(context).bottom, 32.0)
+            : 0.0;
+    final webView = InAppWebView(
       key: BrowserSessionPreview.instance.webViewKey,
       initialUrlRequest: URLRequest(url: WebUri(initialUrl)),
       initialSettings: InAppWebViewSettings(
@@ -5044,6 +5174,11 @@ class _BrowserPageState extends State<BrowserPage>
         return NavigationActionPolicy.ALLOW;
       },
     );
+    if (instagramBottomInset <= 0) return webView;
+    return Padding(
+      padding: EdgeInsets.only(bottom: instagramBottomInset),
+      child: webView,
+    );
   }
 
   Widget _buildWebViewLoanedPlaceholder() {
@@ -5153,7 +5288,7 @@ class _BrowserPageState extends State<BrowserPage>
       await controller.evaluateJavascript(
         source: '''
       (() => {
-          const handlerVersion = 'media-download-v26';
+          const handlerVersion = 'media-download-v28';
       if (window.__appMediaDownloadHandlersVersion === handlerVersion) return true;
       window.Flutter = window.Flutter || { postMessage: function(m){ try { if(window.flutter_inappwebview && window.flutter_inappwebview.callHandler) window.flutter_inappwebview.callHandler('Flutter', m); } catch(e){} } };
       window.MediaInterceptor = window.MediaInterceptor || {
@@ -5736,7 +5871,8 @@ class _BrowserPageState extends State<BrowserPage>
           const host = String(location.hostname || '').toLowerCase();
           const isFb = host.includes('facebook.com') || host === 'fb.com' ||
             host.endsWith('.fb.com') || host.includes('fb.watch') || host.includes('messenger.com');
-          if (isFb) {
+          const isInstagram = host === 'instagram.com' || host.endsWith('.instagram.com');
+          if (isFb || isInstagram) {
             const touch = e.touches && e.touches[0];
             const px = touch ? touch.clientX : (e.target && e.target.getBoundingClientRect
               ? (e.target.getBoundingClientRect().left + e.target.getBoundingClientRect().width / 2) : 0);
@@ -5796,15 +5932,16 @@ class _BrowserPageState extends State<BrowserPage>
           }
         } catch (_) {}
 
-        // Facebook frequently places transparent interaction layers above an
-        // MSE video. If hit-testing misses the underlying element, bind the
-        // long press to the largest visible video instead of ending silently.
+        // Facebook and Instagram frequently place transparent interaction
+        // layers above an MSE video. If hit-testing misses the underlying
+        // element, bind the long press to the largest visible video.
         if (!foundElement) {
           try {
             const host = String(location.hostname || '').toLowerCase();
             const isFb = host.includes('facebook.com') || host === 'fb.com' ||
               host.endsWith('.fb.com') || host.includes('fb.watch');
-            if (isFb) {
+            const isInstagram = host === 'instagram.com' || host.endsWith('.instagram.com');
+            if (isFb || isInstagram) {
               const vw = window.innerWidth || 1;
               const vh = window.innerHeight || 1;
               const visibleVideos = Array.from(document.querySelectorAll('video'))
@@ -6054,6 +6191,7 @@ class _BrowserPageState extends State<BrowserPage>
         let isTikPornContext = false;
         let isXPlatformContext = false;
         let isFacebookContext = false;
+        let isInstagramContext = false;
         try {
           const hosts = [location.hostname || ''];
           if (document.referrer) hosts.push(new URL(document.referrer).hostname || '');
@@ -6076,6 +6214,11 @@ class _BrowserPageState extends State<BrowserPage>
               normalized === 'fb.com' || normalized.endsWith('.fb.com') ||
               normalized === 'fb.watch' || normalized.endsWith('.fb.watch') ||
               normalized === 'messenger.com' || normalized.endsWith('.messenger.com');
+          });
+          isInstagramContext = hosts.some(host => {
+            const normalized = String(host).toLowerCase();
+            return normalized === 'instagram.com' ||
+              normalized.endsWith('.instagram.com');
           });
         } catch (_) {}
         
@@ -6840,12 +6983,14 @@ class _BrowserPageState extends State<BrowserPage>
               if (boundId && candidateId !== boundId) continue;
             }
 
-            const ct = (info.contentType || '').toLowerCase();
-            const lower = String(u).toLowerCase();
-            const isFbCdn = lower.includes('fbcdn') || lower.includes('scontent.');
-            const fbTrack = isFacebookContext && isFbCdn
-              ? facebookTrackMetadata(u)
-              : null;
+              const ct = (info.contentType || '').toLowerCase();
+              const lower = String(u).toLowerCase();
+              const isFbCdn = lower.includes('fbcdn') || lower.includes('scontent.');
+              const isInstagramCdn = lower.includes('cdninstagram.com');
+              const fbTrack = ((isFacebookContext && isFbCdn) ||
+                  (isInstagramContext && isInstagramCdn))
+                ? facebookTrackMetadata(u)
+                : null;
             if (fbTrack && fbTrack.audioOnly) continue;
             const isStream = (ct.startsWith('video/') || ct.includes('mpegurl') || ct.includes('m3u8') || ct.includes('dash') || /\\.(mp4|webm|mov|m3u8|m3u|mpd)(\\?|\$)/.test(lower) || (isFacebookContext && isFbCdn && lower.includes('video.'))) && !isApiUrl(u);
             
@@ -6990,7 +7135,8 @@ class _BrowserPageState extends State<BrowserPage>
                    normalized === 'twitter.com' || normalized.endsWith('.twitter.com') ||
                    normalized === 'facebook.com' || normalized.endsWith('.facebook.com') ||
                    normalized === 'fb.com' || normalized.endsWith('.fb.com') ||
-                   normalized === 'fb.watch' || normalized.endsWith('.fb.watch');
+                   normalized === 'fb.watch' || normalized.endsWith('.fb.watch') ||
+                   normalized === 'instagram.com' || normalized.endsWith('.instagram.com');
           });
         } catch (_) {}
         const preserveBoundBlob = isElementBoundFeedContext && String(url || '').startsWith('blob:');
@@ -7636,7 +7782,7 @@ class _BrowserPageState extends State<BrowserPage>
       );
       final ready = await controller.evaluateJavascript(
         source:
-            "window.__appMediaDownloadHandlersVersion === 'media-download-v26'",
+            "window.__appMediaDownloadHandlersVersion === 'media-download-v28'",
       );
       if (ready == true || ready.toString().toLowerCase() == 'true') {
         if (_lastMediaHandlerFailureUrl == injectionUrl) {
@@ -8635,8 +8781,7 @@ class _BrowserPageState extends State<BrowserPage>
                 if (task != null &&
                     !_mediaDownloadSaveResolved &&
                     (task['lastGestureFailureType'] ?? '').toString().isEmpty) {
-                  task['lastGestureFailureType'] =
-                      'download_failed_retryable';
+                  task['lastGestureFailureType'] = 'download_failed_retryable';
                 }
                 await _completeSmartGestureDownload(_mediaDownloadSaveResolved);
               }
@@ -10395,6 +10540,9 @@ class _BrowserPageState extends State<BrowserPage>
         value.endsWith('.messenger.com')) {
       return 'facebook';
     }
+    if (value == 'instagram.com' || value.endsWith('.instagram.com')) {
+      return 'instagram';
+    }
     if (value == 'tik.porn' || value.endsWith('.tik.porn')) return 'tikporn';
     if (value == 'pin.porn' || value.endsWith('.pin.porn')) return 'pinporn';
     if (value.contains('xvideos') ||
@@ -10417,12 +10565,16 @@ class _BrowserPageState extends State<BrowserPage>
   bool _smartUsesFacebookPipeline(String siteProfile) =>
       siteProfile == 'facebook' || siteProfile == 'facebook_image';
 
+  bool _smartUsesInstagramGridPipeline(String siteProfile) =>
+      siteProfile == 'instagram' || siteProfile == 'instagram_grid';
+
   /// 已固化的「专有」站点套路（重要常用站逐个加入）。
   /// 默认只对本站自动选用；用户可在「沿用套路」里手动借用到其他站。
   /// Facebook 芯片启动的是简单动作循环，不是复杂智能 FSM。
   static const Set<String> _dedicatedSmartPatternIds = <String>{
     'x',
     '91',
+    'instagram_grid',
   };
 
   /// 「沿用套路」可选列表：全部专有站 + 普适通用套路（不按当前 host 隐藏）。
@@ -10430,6 +10582,11 @@ class _BrowserPageState extends State<BrowserPage>
       <Map<String, String>>[
         {'id': 'x', 'label': 'X · 原智能（已验证）', 'kind': 'dedicated'},
         {'id': '91', 'label': '91 · 原智能（已验证）', 'kind': 'dedicated'},
+        {
+          'id': 'instagram_grid',
+          'label': 'Instagram · 媒体网格专用',
+          'kind': 'dedicated',
+        },
         {'id': 'generic', 'label': '通用套路', 'kind': 'generic'},
       ];
 
@@ -10442,13 +10599,15 @@ class _BrowserPageState extends State<BrowserPage>
     MediaType mediaType = MediaType.video,
   }) {
     final profile = _smartSiteProfile(host);
+    if (profile == 'instagram') return 'instagram_grid';
     if (_dedicatedSmartPatternIds.contains(profile)) return profile;
     return 'generic';
   }
 
   bool _hostHasDedicatedSmartPattern(String host) {
     final profile = _smartSiteProfile(host);
-    return _dedicatedSmartPatternIds.contains(profile);
+    return profile == 'instagram' ||
+        _dedicatedSmartPatternIds.contains(profile);
   }
 
   /// 专有芯片对应的可编辑种子（内置管线仍保留；重新编排后可覆盖为本站默认）。
@@ -13184,6 +13343,17 @@ class _BrowserPageState extends State<BrowserPage>
       }
       return;
     }
+    if (task['instagramGridMode'] == true) {
+      if ((task['success'] as int) >= (task['target'] as int)) {
+        await _finishSmartDownload();
+        return;
+      }
+      await _returnFromInstagramGrid(
+        task,
+        handled: success || skippedDuplicate,
+      );
+      return;
+    }
     _updateSmartDiscoveryProgress(task, 'gesture_download_completed');
     if (!success && failureType == 'library_save_failed') {
       await _finishSmartDownload('写入媒体库失败，已停止任务；请检查存储空间和数据库状态');
@@ -13470,7 +13640,7 @@ class _BrowserPageState extends State<BrowserPage>
       dialogHost,
       mediaType: selectedMediaType,
     );
-    final nativePatternId = _smartSiteProfile(dialogHost);
+    final nativePatternId = _defaultConfirmedPatternIdForHost(dialogHost);
     final hostHasDedicated = _hostHasDedicatedSmartPattern(dialogHost);
     SmartActionRecipe? selectedRecipe =
         await SmartActionRecipeStore.loadLastForHost(dialogHost);
@@ -13950,9 +14120,7 @@ class _BrowserPageState extends State<BrowserPage>
                               onPressed: () {
                                 editorSeed = _dedicatedPatternEditableSeed(
                                   selectedPatternId,
-                                  dialogHost.isEmpty
-                                      ? 'unknown'
-                                      : dialogHost,
+                                  dialogHost.isEmpty ? 'unknown' : dialogHost,
                                 );
                                 // 若本站已有覆盖，优先拿来编辑
                                 if (siteSuccessRecipe != null &&
@@ -14001,6 +14169,7 @@ class _BrowserPageState extends State<BrowserPage>
                               '当前套路：${_confirmedPatternLabel(selectedPatternId)}'
                               '${selectedPatternId == 'x' ? '（完整保留 X 旧版智能下载；可点重新编排克隆为可编辑动作）' : ''}'
                               '${selectedPatternId == '91' ? '（完整保留 91 已验证智能下载；可点重新编排克隆为可编辑动作）' : ''}'
+                              '${selectedPatternId == 'instagram_grid' ? '（网格逐项打开 → 等待真实入库 → 返回原位置；可跨站借用）' : ''}'
                               '${selectedPatternId == 'generic' ? '（任意站：关键词搜/当前信息流 → 真实视频流下载；海报封面会跳过）' : ''}',
                               style: const TextStyle(
                                 fontSize: 12,
@@ -14663,10 +14832,8 @@ class _BrowserPageState extends State<BrowserPage>
         }
         return;
       }
-      final native = _smartSiteProfile(dialogHost);
-      final crossSite =
-          _dedicatedSmartPatternIds.contains(id) &&
-          id != native;
+      final native = _defaultConfirmedPatternIdForHost(dialogHost);
+      final crossSite = _dedicatedSmartPatternIds.contains(id) && id != native;
       // 91：实测独立管线（有关键词走搜索；无关键词从当前列表/详情批量）。
       // 跨站借用时仍走 91 管线，但以当前浏览 origin/host 为站点上下文。
       if (id == '91') {
@@ -14703,7 +14870,7 @@ class _BrowserPageState extends State<BrowserPage>
         keyword: enteredKeyword,
         targetCount: enteredCount,
         mediaType: mediaType,
-        allowMixedMedia: false,
+        allowMixedMedia: id == 'instagram_grid',
         startFromCurrentPage: startFromCurrentPage,
         minVideoBytes: minVideoBytes,
         maxVideoBytes: maxVideoBytes,
@@ -14857,9 +15024,7 @@ class _BrowserPageState extends State<BrowserPage>
         recipeKinds.contains(SmartActionKind.flickUp) ||
         recipeKinds.contains(SmartActionKind.scrollPageUp)) {
       resolvedAxisHint = 'up';
-    } else if (hintRaw == 'up' ||
-        hintRaw == 'down' ||
-        hintRaw == 'left') {
+    } else if (hintRaw == 'up' || hintRaw == 'down' || hintRaw == 'left') {
       resolvedAxisHint = hintRaw;
     } else {
       resolvedAxisHint = 'up';
@@ -15331,9 +15496,7 @@ class _BrowserPageState extends State<BrowserPage>
   /// 旧版曾把 Facebook 的“固定等待”再次解释成最低等待，导致文件已经
   /// 入库后仍强制倒计时。固定等待现在统一由 waitDownload 作为最长时限
   /// 管理；该步骤会在 library_saved 到达时立即唤醒并切条。
-  Future<void> _actionWaitStrictVideoMinimum(
-    Map<String, dynamic> task,
-  ) async {
+  Future<void> _actionWaitStrictVideoMinimum(Map<String, dynamic> task) async {
     return;
   }
 
@@ -17845,8 +18008,7 @@ class _BrowserPageState extends State<BrowserPage>
           final explicitAxis =
               step.kind == SmartActionKind.findNextMediaRight ? 'left' : 'up';
           final horizontal = explicitAxis == 'left';
-          final explicitLabel =
-              horizontal ? '左滑切到下一张' : '上滑切到下一条';
+          final explicitLabel = horizontal ? '左滑切到下一张' : '上滑切到下一条';
           final rawDist = step.paramDouble(
             'distanceFraction',
             horizontal ? 0.67 : 0.7,
@@ -20351,6 +20513,21 @@ class _BrowserPageState extends State<BrowserPage>
       'strictBaiduVideoMode': strictBaiduVideoMode,
       'strictBaiduSearchUrl': strictBaiduSearchUrl,
       'strictBaiduPage': 0,
+      // Instagram profile grids expose stable post/reel shortcodes.  Keep
+      // navigation state separate from generic feed gestures so a three-column
+      // grid is traversed exactly once in DOM order.
+      'instagramGridMode':
+          _smartUsesInstagramGridPipeline(siteProfile) &&
+          startFromCurrentPage &&
+          keyword.trim().isEmpty,
+      'instagramGridUrl': _currentUrl,
+      'instagramGridScrollY': 0.0,
+      'instagramGridProcessedKeys': <String>{},
+      'instagramGridRetryCounts': <String, int>{},
+      'instagramGridNoNewScans': 0,
+      'instagramGridMediaWaits': 0,
+      'instagramGridActiveHref': '',
+      'instagramGridActiveKey': '',
     };
     final activeTask = _smartDownloadTask!;
     final isLegacySite = _smartUsesLegacyPriorityPipeline(siteProfile);
@@ -20613,10 +20790,433 @@ class _BrowserPageState extends State<BrowserPage>
     }
   }
 
+  bool _isInstagramGridDetailUrl(String value) {
+    final uri = Uri.tryParse(value);
+    if (uri == null) return false;
+    final parts = uri.pathSegments.where((part) => part.isNotEmpty).toList();
+    if (parts.length < 2) return false;
+    final marker = parts[parts.length - 2].toLowerCase();
+    return marker == 'p' || marker == 'reel';
+  }
+
+  Future<void> _returnFromInstagramGrid(
+    Map<String, dynamic> task, {
+    required bool handled,
+  }) async {
+    final key = (task['instagramGridActiveKey'] ?? '').toString();
+    final retries =
+        task['instagramGridRetryCounts'] as Map<String, int>? ??
+        <String, int>{};
+    task['instagramGridRetryCounts'] = retries;
+    if (handled) {
+      if (key.isNotEmpty) {
+        (task['instagramGridProcessedKeys'] as Set<String>).add(key);
+      }
+    } else if (key.isNotEmpty) {
+      final count = (retries[key] ?? 0) + 1;
+      retries[key] = count;
+      // A transient Instagram player/request failure gets one fresh detail
+      // attempt.  The second failure is skipped so one post can never stall
+      // the whole profile traversal.
+      if (count >= 2) {
+        (task['instagramGridProcessedKeys'] as Set<String>).add(key);
+      }
+    }
+    task['gestureDownloadPending'] = false;
+    task['instagramGridMediaWaits'] = 0;
+    task['phase'] = 'instagram_grid_returning';
+    task['matchStage'] =
+        handled
+            ? 'Instagram 网格 · 当前媒体已处理，返回下一项'
+            : 'Instagram 网格 · 当前媒体未成功，返回后重试或跳过';
+    _showSmartOperation(handled ? '已处理当前媒体，返回网格' : '返回网格继续处理');
+
+    final gridUrl = (task['instagramGridUrl'] ?? '').toString();
+    final controller = _controller;
+    if (controller != null && await controller.canGoBack()) {
+      await controller.goBack();
+    } else if (gridUrl.startsWith('http')) {
+      _loadUrl(gridUrl);
+    }
+    Future<void>.delayed(const Duration(milliseconds: 900), () async {
+      if (!identical(_smartDownloadTask, task)) return;
+      final current = (await _controller?.getUrl())?.toString() ?? _currentUrl;
+      if (gridUrl.startsWith('http') &&
+          (_isInstagramGridDetailUrl(current) ||
+              !_isSameLoadedDocument(current, gridUrl))) {
+        _loadUrl(gridUrl);
+        Future<void>.delayed(const Duration(milliseconds: 900), () {
+          if (identical(_smartDownloadTask, task)) {
+            unawaited(_returnFromInstagramGridRestorePosition(task));
+          }
+        });
+        return;
+      }
+      await _returnFromInstagramGridRestorePosition(task);
+    });
+  }
+
+  Future<void> _returnFromInstagramGridRestorePosition(
+    Map<String, dynamic> task,
+  ) async {
+    if (!identical(_smartDownloadTask, task)) return;
+    final current = (await _controller?.getUrl())?.toString() ?? _currentUrl;
+    final gridUrl = (task['instagramGridUrl'] ?? '').toString();
+    if (_isInstagramGridDetailUrl(current) ||
+        (gridUrl.startsWith('http') &&
+            !_isSameLoadedDocument(current, gridUrl))) {
+      await _finishSmartDownload('Instagram 返回媒体网格失败，已安全停止');
+      return;
+    }
+    final restoreY = (task['instagramGridScrollY'] as num?)?.toDouble() ?? 0.0;
+    try {
+      await _controller?.evaluateJavascript(
+        source: 'window.scrollTo(0, ${restoreY.round()}); true;',
+      );
+    } catch (_) {}
+    if (!identical(_smartDownloadTask, task)) return;
+    task['instagramGridActiveKey'] = '';
+    task['instagramGridActiveHref'] = '';
+    task['phase'] = 'instagram_grid_scanning';
+    unawaited(_advanceSmartDownload(_currentUrl));
+  }
+
+  Future<void> _advanceInstagramGridDownload(Map<String, dynamic> task) async {
+    final controller = _controller;
+    if (controller == null || !identical(_smartDownloadTask, task)) return;
+    // onLoadStop may arrive before the explicit return/scroll restoration
+    // timer. Never open another card while that older timer is still pending.
+    if (task['phase'] == 'instagram_grid_returning') return;
+    if (task['instagramGridAdvancing'] == true) return;
+    if ((task['success'] as int) >= (task['target'] as int)) {
+      await _finishSmartDownload();
+      return;
+    }
+    if (task['gestureDownloadPending'] == true) {
+      final hasActiveDownload = _downloadTasks.any(
+        (row) =>
+            row['isSmartBatchMedia'] == true && row['status'] == 'downloading',
+      );
+      if (hasActiveDownload || _longPressVideoDownloadInProgress) {
+        task['matchStage'] = 'Instagram 网格 · 等待当前媒体真实写入媒体库';
+        return;
+      }
+      final startedAt = task['gestureDownloadStartedAt'] as DateTime?;
+      if (startedAt == null ||
+          DateTime.now().difference(startedAt) < const Duration(seconds: 45)) {
+        return;
+      }
+      task['lastGestureFailureType'] = 'instagram_download_timeout';
+      await _completeSmartGestureDownload(false);
+      return;
+    }
+
+    task['instagramGridAdvancing'] = true;
+    try {
+      final actualUrl = (await controller.getUrl())?.toString() ?? _currentUrl;
+      final phase = (task['phase'] ?? '').toString();
+      final activeGridKey = (task['instagramGridActiveKey'] ?? '').toString();
+      final nativeInstagram =
+          _smartSiteProfile((task['host'] ?? '').toString()) == 'instagram';
+      final gridUrl = (task['instagramGridUrl'] ?? '').toString();
+      final isDetail =
+          _isInstagramGridDetailUrl(actualUrl) ||
+          (!nativeInstagram &&
+              activeGridKey.isNotEmpty &&
+              (phase == 'instagram_grid_opening' ||
+                  (gridUrl.startsWith('http') &&
+                      !_isSameLoadedDocument(actualUrl, gridUrl))) &&
+              phase != 'instagram_grid_returning' &&
+              phase != 'instagram_grid_scanning' &&
+              phase != 'instagram_grid_scrolling');
+      if (isDetail) {
+        final waits = (task['instagramGridMediaWaits'] as int?) ?? 0;
+        final requestedType =
+            task['allowMixedMedia'] == true
+                ? 'mixed'
+                : task['mediaType'] == MediaType.video
+                ? 'video'
+                : 'image';
+        // Open the callback gate before dispatching the synthetic long press:
+        // a very fast image save can otherwise finish before Dart marks it as
+        // pending and its real library confirmation would be ignored.
+        task['gestureDownloadPending'] = true;
+        task['gestureDownloadStartedAt'] = DateTime.now();
+        task['gestureActiveKey'] =
+            (task['instagramGridActiveKey'] ?? '').toString();
+        final result = await controller.evaluateJavascript(
+          source: '''
+            (() => {
+              const requested = ${jsonEncode(requestedType)};
+              const visible = (el) => {
+                const r = el.getBoundingClientRect();
+                if (r.width < 100 || r.height < 100 || r.bottom <= 0 ||
+                    r.top >= innerHeight || r.right <= 0 || r.left >= innerWidth) {
+                  return false;
+                }
+                const s = getComputedStyle(el);
+                return s.display !== 'none' && s.visibility !== 'hidden' &&
+                  Number(s.opacity || 1) > 0.05;
+              };
+              const media = Array.from(document.querySelectorAll('video, img'))
+                .filter(el => visible(el))
+                .filter(el => {
+                  if (requested === 'video') return el.tagName === 'VIDEO';
+                  if (requested === 'image') return el.tagName === 'IMG';
+                  return true;
+                })
+                .map(el => {
+                  const r = el.getBoundingClientRect();
+                  const isVideo = el.tagName === 'VIDEO';
+                  const source = String(el.currentSrc || el.src || '');
+                  const badImage = !isVideo && (
+                    Number(el.naturalWidth || 0) < 240 ||
+                    Number(el.naturalHeight || 0) < 240 ||
+                    /(avatar|profile|emoji|icon|logo)/i.test(
+                      source + ' ' + String(el.alt || '')
+                    )
+                  );
+                  const centerPenalty =
+                    Math.abs(r.left + r.width / 2 - innerWidth / 2) * 10;
+                  return {
+                    el, r, isVideo, badImage,
+                    score: r.width * r.height - centerPenalty +
+                      (isVideo ? 100000 : 0)
+                  };
+                })
+                .filter(row => !row.badImage)
+                .sort((a, b) => b.score - a.score);
+              const row = media[0];
+              if (!row) return {action:'wait'};
+              if (row.isVideo) {
+                try {
+                  row.el.muted = true;
+                  const play = row.el.play();
+                  if (play && typeof play.catch === 'function') play.catch(() => {});
+                } catch (_) {}
+                const src = String(row.el.currentSrc || row.el.src || '');
+                if ((!src && row.el.readyState < 2) ||
+                    (!Number.isFinite(row.el.duration) && row.el.readyState < 2)) {
+                  return {action:'prepare'};
+                }
+              }
+              const x = Math.max(12, Math.min(innerWidth - 12,
+                row.r.left + row.r.width / 2));
+              const y = Math.max(12, Math.min(innerHeight - 12,
+                row.r.top + row.r.height / 2));
+              if (typeof window.__appTriggerSmartLongPress !== 'function') {
+                return {action:'wait'};
+              }
+              const ok = window.__appTriggerSmartLongPress(x, y);
+              return {
+                action: ok === false ? 'wait' : 'longpress',
+                x:x / Math.max(1, innerWidth),
+                y:y / Math.max(1, innerHeight),
+                video:row.isVideo
+              };
+            })()
+          ''',
+        );
+        final action =
+            result is Map ? (result['action'] ?? '').toString() : 'wait';
+        if (action == 'longpress') {
+          task['phase'] = 'instagram_grid_waiting_download';
+          task['matchStage'] = 'Instagram 网格 · 等待当前媒体真实入库';
+          final point =
+              result is Map
+                  ? Offset(
+                    (result['x'] as num?)?.toDouble() ?? 0.5,
+                    (result['y'] as num?)?.toDouble() ?? 0.5,
+                  )
+                  : const Offset(0.5, 0.5);
+          _showSmartOperation('长按当前详情媒体并等待下载完成', point: point);
+          return;
+        }
+        task['gestureDownloadPending'] = false;
+        task['gestureActiveKey'] = '';
+        final nextWait = waits + 1;
+        task['instagramGridMediaWaits'] = nextWait;
+        if (nextWait >= 10) {
+          task['failed'] = ((task['failed'] as int?) ?? 0) + 1;
+          await _returnFromInstagramGrid(task, handled: false);
+          return;
+        }
+        task['matchStage'] =
+            action == 'prepare'
+                ? 'Instagram 网格 · 播放预热以获取真实视频地址'
+                : 'Instagram 网格 · 等待详情媒体加载';
+        _showSmartOperation(action == 'prepare' ? '正在播放预热当前视频' : '等待当前媒体加载');
+        Future<void>.delayed(const Duration(milliseconds: 700), () {
+          if (identical(_smartDownloadTask, task)) {
+            unawaited(_advanceSmartDownload(_currentUrl));
+          }
+        });
+        return;
+      }
+
+      // We are on the profile grid. Restore position after SPA/history return,
+      // then select by stable shortcode rather than by a screen coordinate.
+      final processed =
+          task['instagramGridProcessedKeys'] as Set<String>? ?? <String>{};
+      task['instagramGridProcessedKeys'] = processed;
+      final processedJson = jsonEncode(processed.toList());
+      final result = await controller.evaluateJavascript(
+        source: '''
+          (() => {
+            const processed = new Set($processedJson);
+            const instagramNative =
+              ${jsonEncode(_smartSiteProfile((task['host'] ?? '').toString()))} ===
+              'instagram';
+            const requested = ${jsonEncode(task['allowMixedMedia'] == true
+            ? 'mixed'
+            : task['mediaType'] == MediaType.video
+            ? 'video'
+            : 'image')};
+            const rows = Array.from(document.querySelectorAll('a[href]'))
+              .map(anchor => {
+                let url;
+                try { url = new URL(anchor.href, location.href); }
+                catch (_) { return null; }
+                const match = url.pathname.match(
+                  /^\\/(?:[^/]+\\/)?(p|reel)\\/([^/]+)\\/?\$/
+                );
+                const rect = anchor.getBoundingClientRect();
+                if (rect.width < 70 || rect.height < 70) return null;
+                if (!match) {
+                  const media = anchor.querySelector('img, video');
+                  if (instagramNative || !media ||
+                      url.origin !== location.origin ||
+                      rect.width > innerWidth * 0.58 ||
+                      rect.height > innerHeight * 0.72) {
+                    return null;
+                  }
+                }
+                const key = match
+                  ? match[2]
+                  : (url.pathname + url.search).replace(/\\/\$/, '') ||
+                    ('grid-' + Math.round(scrollY + rect.top) + '-' +
+                      Math.round(rect.left));
+                return {
+                  anchor, href:url.href, key,
+                  kind:match ? match[1] : 'item',
+                  top:rect.top, left:rect.left,
+                  visible:rect.bottom > 8 && rect.top < innerHeight - 8
+                };
+              })
+              .filter(Boolean)
+              .filter(row =>
+                requested !== 'image' ||
+                row.kind === 'p' ||
+                row.kind === 'item'
+              )
+              .sort((a, b) => a.top - b.top || a.left - b.left);
+            const candidate = rows.find(row =>
+              row.visible && !processed.has(row.key)
+            );
+            if (candidate) {
+              candidate.anchor.scrollIntoView({block:'center', inline:'center'});
+              const savedY = scrollY;
+              candidate.anchor.click();
+              return {
+                action:'open', href:candidate.href, key:candidate.key,
+                kind:candidate.kind, scrollY:savedY, count:rows.length
+              };
+            }
+            const remaining = rows.filter(row => !processed.has(row.key));
+            if (remaining.length) {
+              const nextCard = remaining[0];
+              const before = scrollY;
+              nextCard.anchor.scrollIntoView({block:'center', inline:'center'});
+              return {
+                action:'scroll', before, after:scrollY,
+                count:rows.length, remaining:remaining.length
+              };
+            }
+            const before = scrollY;
+            const maxY = Math.max(0,
+              document.documentElement.scrollHeight - innerHeight);
+            const next = Math.min(maxY, before + innerHeight * 0.82);
+            window.scrollTo(0, next);
+            return {
+              action: Math.abs(next - before) < 3 ? 'end' : 'scroll',
+              before, after:next, count:rows.length
+            };
+          })()
+        ''',
+      );
+      final action =
+          result is Map ? (result['action'] ?? '').toString() : 'wait';
+      if (action == 'open' && result is Map) {
+        task['instagramGridUrl'] = actualUrl;
+        task['instagramGridScrollY'] =
+            (result['scrollY'] as num?)?.toDouble() ?? 0.0;
+        task['instagramGridActiveHref'] = (result['href'] ?? '').toString();
+        task['instagramGridActiveKey'] = (result['key'] ?? '').toString();
+        task['gestureActiveKey'] = (result['key'] ?? '').toString();
+        task['instagramGridMediaWaits'] = 0;
+        task['phase'] = 'instagram_grid_opening';
+        task['matchStage'] = 'Instagram 网格 · 打开指定媒体详情';
+        _showSmartOperation('打开下一项媒体');
+        Future<void>.delayed(const Duration(milliseconds: 1000), () {
+          if (identical(_smartDownloadTask, task)) {
+            unawaited(_advanceSmartDownload(_currentUrl));
+          }
+        });
+        return;
+      }
+      if (action == 'scroll') {
+        task['instagramGridNoNewScans'] = 0;
+        task['phase'] = 'instagram_grid_scrolling';
+        task['matchStage'] = 'Instagram 网格 · 加载下一行';
+        _showSmartOperation('向下浏览下一行网格媒体');
+        Future<void>.delayed(const Duration(milliseconds: 850), () {
+          if (identical(_smartDownloadTask, task)) {
+            unawaited(_advanceSmartDownload(_currentUrl));
+          }
+        });
+        return;
+      }
+      final noNew = ((task['instagramGridNoNewScans'] as int?) ?? 0) + 1;
+      task['instagramGridNoNewScans'] = noNew;
+      // Instagram may need several seconds to append the next virtualized
+      // batch at the bottom. A short three-pass window caused false completion.
+      if (noNew >= 8) {
+        await _finishSmartDownload(
+          'Instagram 网格已遍历完毕（成功 ${task['success']}/${task['target']}）',
+        );
+        return;
+      }
+      Future<void>.delayed(const Duration(milliseconds: 1200), () {
+        if (identical(_smartDownloadTask, task)) {
+          unawaited(_advanceSmartDownload(_currentUrl));
+        }
+      });
+    } catch (e) {
+      debugPrint('Instagram grid pipeline failed: $e');
+      final failures = ((task['instagramGridEngineFailures'] as int?) ?? 0) + 1;
+      task['instagramGridEngineFailures'] = failures;
+      if (failures >= 3) {
+        await _finishSmartDownload('Instagram 网格页面识别连续失败');
+      } else {
+        Future<void>.delayed(const Duration(milliseconds: 700), () {
+          if (identical(_smartDownloadTask, task)) {
+            unawaited(_advanceSmartDownload(_currentUrl));
+          }
+        });
+      }
+    } finally {
+      task['instagramGridAdvancing'] = false;
+    }
+  }
+
   Future<void> _advanceSmartDownload(String loadedUrl) async {
     final task = _smartDownloadTask;
     final controller = _controller;
     if (task == null || controller == null) return;
+    if (task['instagramGridMode'] == true) {
+      await _advanceInstagramGridDownload(task);
+      return;
+    }
     // 动作套路 / 本页同层批量 / 分页嗅探 / 91·通用实测管线 由独立循环驱动，不进入旧 FSM。
     if (task['mode'] == 'action_recipe' ||
         task['mode'] == 'scope_batch' ||
@@ -27665,8 +28265,7 @@ class _BrowserPageState extends State<BrowserPage>
     MediaType mediaType, {
     bool allowDuplicate = false,
     bool relaxValidation = false,
-  }
-  ) async {
+  }) async {
     try {
       if (!await file.exists()) {
         throw const FileSystemException('下载完成后的媒体文件不存在');
@@ -29425,6 +30024,7 @@ class _BrowserPageState extends State<BrowserPage>
     int? minFileBytes,
     int? maxFileBytes,
     bool rejectIncompleteMp4Stub = false,
+    bool rejectAudioOnlyMp4 = false,
     String? pairedAudioUrl,
   }) async {
     // 仅下载图片和视频，不下载语音/音频
@@ -29517,8 +30117,7 @@ class _BrowserPageState extends State<BrowserPage>
           final outsideRange =
               (appliedMinFileBytes != null &&
                   totalBytes < appliedMinFileBytes) ||
-              (appliedMaxFileBytes != null &&
-                  totalBytes > appliedMaxFileBytes);
+              (appliedMaxFileBytes != null && totalBytes > appliedMaxFileBytes);
           if (!outsideRange) return;
           sizeRangeExceeded = true;
           onProgress?.call(
@@ -29632,8 +30231,44 @@ class _BrowserPageState extends State<BrowserPage>
             return false;
           }
         }
+        if (mediaType == MediaType.video && rejectAudioOnlyMp4) {
+          // DASH sites such as Instagram expose audio-only MP4 renditions.
+          // They have a valid duration and mdat, so size/stub checks alone
+          // accept them and the media library displays a black video. Probe
+          // both ends because a progressive MP4 may place `moov` at EOF.
+          const edgeProbeBytes = 512 * 1024;
+          final headLength = min(downloadedBytes, edgeProbeBytes);
+          final trackProbe = await completedDownload
+              .openRead(0, headLength)
+              .fold<List<int>>(<int>[], (prev, chunk) => prev..addAll(chunk));
+          if (downloadedBytes > headLength) {
+            final tailStart = max(headLength, downloadedBytes - edgeProbeBytes);
+            trackProbe.addAll(
+              await completedDownload
+                  .openRead(tailStart, downloadedBytes)
+                  .fold<List<int>>(
+                    <int>[],
+                    (prev, chunk) => prev..addAll(chunk),
+                  ),
+            );
+          }
+          if (isClearlyAudioOnlyMp4(trackProbe)) {
+            debugPrint(
+              'Media pipeline: rejected audio-only MP4 video candidate '
+              '${downloadedBytes}B url=$absoluteUrl',
+            );
+            await completedDownload.delete();
+            downloadedFile = null;
+            onFailureType?.call('audio_only_mp4_rejected');
+            if (mounted) _removeDownloadTask(taskId);
+            return false;
+          }
+        }
         if (validateSmartMedia &&
-            !await _isUsefulSmartDownloadedMedia(completedDownload, mediaType)) {
+            !await _isUsefulSmartDownloadedMedia(
+              completedDownload,
+              mediaType,
+            )) {
           await completedDownload.delete();
           downloadedFile = null;
           onFailureType?.call('invalid_smart_media_content');

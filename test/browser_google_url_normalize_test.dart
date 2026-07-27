@@ -6,6 +6,29 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   group('normalizeCommonWebsiteUrl', () {
+    test('routes only the Telegram root shortcut to official Web K', () {
+      expect(
+        BrowserService.normalizeCommonWebsiteUrl('https://web.telegram.org'),
+        BrowserService.kTelegramWebKUrl,
+      );
+      expect(
+        BrowserService.normalizeCommonWebsiteUrl('web.telegram.org/'),
+        BrowserService.kTelegramWebKUrl,
+      );
+      expect(
+        BrowserService.prepareUrlForLoad('web.telegram.org'),
+        BrowserService.kTelegramWebKUrl,
+      );
+      expect(
+        BrowserService.normalizeCommonWebsiteUrl('https://web.telegram.org/a/'),
+        'https://web.telegram.org/a/',
+      );
+      expect(
+        BrowserService.normalizeCommonWebsiteUrl('https://web.telegram.org/k/'),
+        'https://web.telegram.org/k/',
+      );
+    });
+
     test('rewrites dead /m homes', () {
       expect(
         BrowserService.normalizeCommonWebsiteUrl('http://www.google.com/m'),
@@ -16,7 +39,9 @@ void main() {
         BrowserService.kGoogleHomeUrl,
       );
       expect(
-        BrowserService.normalizeCommonWebsiteUrl('https://www.google.com.hk/m/'),
+        BrowserService.normalizeCommonWebsiteUrl(
+          'https://www.google.com.hk/m/',
+        ),
         'https://www.google.com.hk/',
       );
       expect(
@@ -29,14 +54,8 @@ void main() {
       const good =
           'https://www.google.com.hk/?sa=X&ved=2ahUKEwiC7eKmr_CVAxUsXesIHW7zMJAQO3oECAUQAA';
       expect(BrowserService.normalizeCommonWebsiteUrl(good), good);
-      expect(
-        BrowserService.maybeForceGoogleShortcutUrl('Google', good),
-        good,
-      );
-      expect(
-        BrowserService.maybeForceGoogleShortcutUrl('Google2', good),
-        good,
-      );
+      expect(BrowserService.maybeForceGoogleShortcutUrl('Google', good), good);
+      expect(BrowserService.maybeForceGoogleShortcutUrl('Google2', good), good);
       expect(BrowserService.prepareUrlForLoad(good), good);
     });
 
@@ -101,15 +120,11 @@ void main() {
         isTrue,
       );
       expect(
-        BrowserService.isDeadGoogleMobileUrl(
-          'https://www.google.com.hk/?sa=X',
-        ),
+        BrowserService.isDeadGoogleMobileUrl('https://www.google.com.hk/?sa=X'),
         isFalse,
       );
       expect(
-        BrowserService.isDeadGoogleMobileUrl(
-          'https://www.google.com.hk/',
-        ),
+        BrowserService.isDeadGoogleMobileUrl('https://www.google.com.hk/'),
         isFalse,
       );
     });
@@ -123,61 +138,53 @@ void main() {
       SharedPreferences.setMockInitialValues({});
     });
 
-    test('loadCommonWebsites keeps .hk?sa=X&ved=… unchanged and does not rewrite',
-        () async {
-      SharedPreferences.setMockInitialValues({
-        'common_websites': jsonEncode([
-          {
-            'name': 'Google',
-            'url': hkGood,
-            'iconCode': 0xe0c8,
-          },
-          {
-            'name': '百度',
-            'url': 'https://www.baidu.com',
-            'iconCode': 0xe0c8,
-          },
-        ]),
-      });
+    test(
+      'loadCommonWebsites keeps .hk?sa=X&ved=… unchanged and does not rewrite',
+      () async {
+        SharedPreferences.setMockInitialValues({
+          'common_websites': jsonEncode([
+            {'name': 'Google', 'url': hkGood, 'iconCode': 0xe0c8},
+            {'name': '百度', 'url': 'https://www.baidu.com', 'iconCode': 0xe0c8},
+          ]),
+        });
 
-      final service = BrowserService();
-      final list = await service.loadCommonWebsites();
-      expect(list.length, 2);
-      expect(list[0]['url'], hkGood);
-      expect(list[0]['name'], 'Google');
+        final service = BrowserService();
+        final list = await service.loadCommonWebsites();
+        expect(list.length, 2);
+        expect(list[0]['url'], hkGood);
+        expect(list[0]['name'], 'Google');
 
-      // Second load must still be exact (no silent write-back to google.com).
-      final again = await service.loadCommonWebsites();
-      expect(again[0]['url'], hkGood);
+        // Second load must still be exact (no silent write-back to google.com).
+        final again = await service.loadCommonWebsites();
+        expect(again[0]['url'], hkGood);
 
-      final prefs = await SharedPreferences.getInstance();
-      final raw = prefs.getString('common_websites')!;
-      expect(raw.contains(hkGood), isTrue);
-      expect(raw.contains('"url":"https://www.google.com"'), isFalse);
-      expect(raw.contains('"url":"https://www.google.com/"'), isFalse);
-    });
+        final prefs = await SharedPreferences.getInstance();
+        final raw = prefs.getString('common_websites')!;
+        expect(raw.contains(hkGood), isTrue);
+        expect(raw.contains('"url":"https://www.google.com"'), isFalse);
+        expect(raw.contains('"url":"https://www.google.com/"'), isFalse);
+      },
+    );
 
-    test('loadCommonWebsites migrates only exact /m and leaves .hk alone',
-        () async {
-      SharedPreferences.setMockInitialValues({
-        'common_websites': jsonEncode([
-          {
-            'name': 'Google',
-            'url': 'http://www.google.cn/m',
-            'iconCode': 0xe0c8,
-          },
-          {
-            'name': 'Google登录',
-            'url': hkGood,
-            'iconCode': 0xe0c8,
-          },
-        ]),
-      });
+    test(
+      'loadCommonWebsites migrates only exact /m and leaves .hk alone',
+      () async {
+        SharedPreferences.setMockInitialValues({
+          'common_websites': jsonEncode([
+            {
+              'name': 'Google',
+              'url': 'http://www.google.cn/m',
+              'iconCode': 0xe0c8,
+            },
+            {'name': 'Google登录', 'url': hkGood, 'iconCode': 0xe0c8},
+          ]),
+        });
 
-      final list = await BrowserService().loadCommonWebsites();
-      expect(list[0]['url'], BrowserService.kGoogleHomeUrl);
-      expect(list[1]['url'], hkGood);
-    });
+        final list = await BrowserService().loadCommonWebsites();
+        expect(list[0]['url'], BrowserService.kGoogleHomeUrl);
+        expect(list[1]['url'], hkGood);
+      },
+    );
 
     test('loadBookmarks keeps .hk query bookmark unchanged', () async {
       SharedPreferences.setMockInitialValues({

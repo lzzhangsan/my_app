@@ -10,10 +10,12 @@ class BrowserService {
   static const String _kBookmarksKey = 'bookmarks';
   static const String _kHistoryKey = 'history';
   static const String _kCommonWebsitesKey = 'common_websites';
-  static const String _kVideoSourceUrlMapKey = 'browser_video_source_url_map_v1';
+  static const String _kVideoSourceUrlMapKey =
+      'browser_video_source_url_map_v1';
   static const String _kSharedFavoriteVideosKey = 'doc_web_video_favorites_v1';
 
   static const String kGoogleHomeUrl = 'https://www.google.com/';
+  static const String kTelegramWebKUrl = 'https://web.telegram.org/k/';
 
   /// Hosts that historically shipped broken 常用网站 / bookmark shortcuts.
   static bool isGoogleShortcutHost(String host) {
@@ -100,6 +102,20 @@ class BrowserService {
       return trimmed;
     }
 
+    // Telegram ships two independent official web clients. Web A has had
+    // login sessions where the UI keeps only five digits even though the
+    // delivered code contains six, and that screen exposes no submit control.
+    // Route only the ambiguous root shortcut to Web K. Explicit /a/ and /k/
+    // URLs are user choices and must remain untouched.
+    final telegramHost = uri.host.toLowerCase();
+    if ((telegramHost == 'web.telegram.org' ||
+            telegramHost == 'www.web.telegram.org') &&
+        (uri.path.isEmpty || uri.path == '/') &&
+        !uri.hasQuery &&
+        !uri.hasFragment) {
+      return kTelegramWebKUrl;
+    }
+
     // User / complete URLs: do not mutate host, path, or query.
     if (_hasUrlScheme(trimmed)) {
       return trimmed;
@@ -136,28 +152,29 @@ class BrowserService {
       final decoded = jsonDecode(jsonString);
       if (decoded is List) {
         var migrated = false;
-        final list = decoded.map((item) {
-          if (item is String) {
-            migrated = true;
-            final url = normalizeCommonWebsiteUrl(item);
-            return {'name': url, 'url': url};
-          }
-          final map = Map<String, String>.from(
-            (item as Map).map(
-              (k, v) => MapEntry(k.toString(), v?.toString() ?? ''),
-            ),
-          );
-          final rawUrl = map['url'] ?? '';
-          // Only migrate known dead Google /m shortcuts; keep user URLs intact.
-          if (isDeadGoogleMobileUrl(rawUrl)) {
-            final url = normalizeCommonWebsiteUrl(rawUrl);
-            if (url != rawUrl) {
-              map['url'] = url;
-              migrated = true;
-            }
-          }
-          return map;
-        }).toList();
+        final list =
+            decoded.map((item) {
+              if (item is String) {
+                migrated = true;
+                final url = normalizeCommonWebsiteUrl(item);
+                return {'name': url, 'url': url};
+              }
+              final map = Map<String, String>.from(
+                (item as Map).map(
+                  (k, v) => MapEntry(k.toString(), v?.toString() ?? ''),
+                ),
+              );
+              final rawUrl = map['url'] ?? '';
+              // Only migrate known dead Google /m shortcuts; keep user URLs intact.
+              if (isDeadGoogleMobileUrl(rawUrl)) {
+                final url = normalizeCommonWebsiteUrl(rawUrl);
+                if (url != rawUrl) {
+                  map['url'] = url;
+                  migrated = true;
+                }
+              }
+              return map;
+            }).toList();
         if (migrated) {
           await saveBookmarks(list);
         }
@@ -210,19 +227,20 @@ class BrowserService {
       final decoded = jsonDecode(jsonString);
       if (decoded is List) {
         var migrated = false;
-        final list = decoded.map((item) {
-          final map = Map<String, dynamic>.from(item as Map);
-          final rawUrl = (map['url'] ?? '').toString();
-          // Only migrate known dead Google /m shortcuts; keep user URLs intact.
-          if (isDeadGoogleMobileUrl(rawUrl)) {
-            final url = normalizeCommonWebsiteUrl(rawUrl);
-            if (url != rawUrl) {
-              map['url'] = url;
-              migrated = true;
-            }
-          }
-          return map;
-        }).toList();
+        final list =
+            decoded.map((item) {
+              final map = Map<String, dynamic>.from(item as Map);
+              final rawUrl = (map['url'] ?? '').toString();
+              // Only migrate known dead Google /m shortcuts; keep user URLs intact.
+              if (isDeadGoogleMobileUrl(rawUrl)) {
+                final url = normalizeCommonWebsiteUrl(rawUrl);
+                if (url != rawUrl) {
+                  map['url'] = url;
+                  migrated = true;
+                }
+              }
+              return map;
+            }).toList();
         if (migrated) {
           await saveCommonWebsites(list);
         }
@@ -274,7 +292,9 @@ class BrowserService {
     return [];
   }
 
-  Future<void> saveSharedFavoriteVideos(List<Map<String, dynamic>> items) async {
+  Future<void> saveSharedFavoriteVideos(
+    List<Map<String, dynamic>> items,
+  ) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_kSharedFavoriteVideosKey, jsonEncode(items));
   }

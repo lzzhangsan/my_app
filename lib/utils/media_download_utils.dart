@@ -29,6 +29,7 @@ class FacebookMediaMetadata {
     return tag.contains('h264') ||
         tag.contains('avc') ||
         tag.contains('video') ||
+        tag.contains('dash_baseline') ||
         RegExp(r'(?:^|_)\d{3,4}p(?:_|$)').hasMatch(tag);
   }
 
@@ -72,7 +73,10 @@ FacebookMediaMetadata? facebookMediaMetadata(String url) {
     int? asInt(Object? value) =>
         value is num ? value.round() : int.tryParse('$value');
     return FacebookMediaMetadata(
-      videoId: (json['video_id'] ?? '').toString().trim(),
+      // Instagram uses the same signed `efg` envelope but calls the stable
+      // media identity xpv_asset_id instead of video_id.
+      videoId:
+          (json['video_id'] ?? json['xpv_asset_id'] ?? '').toString().trim(),
       encodeTag: (json['vencode_tag'] ?? '').toString().trim(),
       durationSeconds: asInt(json['video_duration'] ?? json['duration_s']),
       bitrate: asInt(json['bitrate']),
@@ -154,6 +158,70 @@ bool looksLikeIncompleteMp4Stub(List<int> bytes, {int? totalLength}) {
   // Partial probe of a large progressive file: do not false-positive.
   if (fileLen >= kFacebookMinVideoBytes) return false;
   return true;
+}
+
+/// Returns true only when an ISO-BMFF/MP4 probe conclusively contains one or
+/// more audio track handlers but no video track handler.
+///
+/// Instagram (and other DASH sites) often exposes an `mp4a` audio rendition
+/// before the matching video rendition. Saving that response with an `.mp4`
+/// extension produces a black player with a working duration/progress bar.
+/// Inconclusive probes deliberately return false so a valid MP4 whose `moov`
+/// box was not sampled is never discarded.
+bool isClearlyAudioOnlyMp4(List<int> bytes) {
+  if (bytes.length < 20) return false;
+
+  bool containsAscii(String value) {
+    final needle = value.codeUnits;
+    for (var i = 0; i <= bytes.length - needle.length; i++) {
+      var matches = true;
+      for (var j = 0; j < needle.length; j++) {
+        if (bytes[i + j] != needle[j]) {
+          matches = false;
+          break;
+        }
+      }
+      if (matches) return true;
+    }
+    return false;
+  }
+
+  if (!containsAscii('ftyp') && !containsAscii('styp')) return false;
+
+  var sawAudioHandler = false;
+  var sawVideoHandler = false;
+  final hdlr = 'hdlr'.codeUnits;
+  for (var i = 0; i <= bytes.length - 20; i++) {
+    if (bytes[i] != hdlr[0] ||
+        bytes[i + 1] != hdlr[1] ||
+        bytes[i + 2] != hdlr[2] ||
+        bytes[i + 3] != hdlr[3]) {
+      continue;
+    }
+    // `i` points to the hdlr box type. Handler type follows version/flags and
+    // pre_defined, at i+12 in regular ISO-BMFF hdlr boxes.
+    final handler = String.fromCharCodes(bytes.sublist(i + 12, i + 16));
+    if (handler == 'soun') sawAudioHandler = true;
+    if (handler == 'vide') sawVideoHandler = true;
+  }
+
+  // Some generated files have unusual handler layouts. Sample-entry markers
+  // provide a safe fallback, while an explicit video marker always wins.
+  final sawVideoSample =
+      containsAscii('avc1') ||
+      containsAscii('avc3') ||
+      containsAscii('hvc1') ||
+      containsAscii('hev1') ||
+      containsAscii('av01') ||
+      containsAscii('vp09');
+  final sawAudioSample =
+      containsAscii('mp4a') ||
+      containsAscii('Opus') ||
+      containsAscii('ac-3') ||
+      containsAscii('ec-3');
+
+  if (sawVideoHandler || sawVideoSample) return false;
+  return sawAudioHandler || sawAudioSample;
 }
 
 bool isMediaFragmentUrl(String url) {
