@@ -13527,18 +13527,25 @@ class _BrowserPageState extends State<BrowserPage>
     SmartActionRecipe? selectedReuseRecipe = siteSuccessRecipe;
     String axisHintFromRecipe(SmartActionRecipe? recipe) {
       if (recipe == null) return 'up';
-      final stored = (recipe.advanceAxisHint ?? '').trim();
-      if (stored == 'up' || stored == 'down' || stored == 'left') {
-        return stored;
-      }
       final kinds = recipe.steps.map((s) => s.kind).toSet();
       if (kinds.contains(SmartActionKind.findNextMediaRight) ||
-          kinds.contains(SmartActionKind.flickLeft)) {
+          kinds.contains(SmartActionKind.flickLeft) ||
+          kinds.contains(SmartActionKind.scrollPageLeft)) {
         return 'left';
       }
       if (kinds.contains(SmartActionKind.findPrevMedia) ||
-          kinds.contains(SmartActionKind.flickDown)) {
+          kinds.contains(SmartActionKind.flickDown) ||
+          kinds.contains(SmartActionKind.scrollPageDown)) {
         return 'down';
+      }
+      if (kinds.contains(SmartActionKind.findNextMedia) ||
+          kinds.contains(SmartActionKind.flickUp) ||
+          kinds.contains(SmartActionKind.scrollPageUp)) {
+        return 'up';
+      }
+      final stored = (recipe.advanceAxisHint ?? '').trim();
+      if (stored == 'up' || stored == 'down' || stored == 'left') {
+        return stored;
       }
       return 'up';
     }
@@ -14735,15 +14742,12 @@ class _BrowserPageState extends State<BrowserPage>
         );
       }
       if (next != null && mounted) {
-        // 运行时按切条轴对齐步骤；落盘只写 hint/mode，避免把左滑成功套路改写成上滑。
+        // Explicitly arranged steps are authoritative. Refresh the fallback
+        // axis from those steps instead of rewriting them from a stale chip.
+        advanceAxisHint = axisHintFromRecipe(next);
         final runRecipe = next.copyWith(
           steps: next.steps.map((s) => s.copyWith()).toList(),
         );
-        if (advanceAxisHint == 'up' ||
-            advanceAxisHint == 'down' ||
-            advanceAxisHint == 'left') {
-          SmartActionRecipe.alignAdvanceAxis(runRecipe, advanceAxisHint);
-        }
         next.advanceAxisHint = advanceAxisHint;
         next.advanceMode = advanceMode;
         runRecipe.advanceMode = advanceMode;
@@ -14839,21 +14843,24 @@ class _BrowserPageState extends State<BrowserPage>
     final startedAt = DateTime.now();
     final deadlineAt = startedAt.add(const Duration(hours: 5));
     final hintRaw = (advanceAxisHint ?? '').trim();
+    final recipeKinds = recipe.steps.map((step) => step.kind).toSet();
     final String resolvedAxisHint;
-    if (hintRaw == 'up' || hintRaw == 'down' || hintRaw == 'left') {
-      resolvedAxisHint = hintRaw;
-    } else if (recipe.steps.any(
-      (s) =>
-          s.kind == SmartActionKind.findNextMediaRight ||
-          s.kind == SmartActionKind.flickLeft,
-    )) {
+    if (recipeKinds.contains(SmartActionKind.findNextMediaRight) ||
+        recipeKinds.contains(SmartActionKind.flickLeft) ||
+        recipeKinds.contains(SmartActionKind.scrollPageLeft)) {
       resolvedAxisHint = 'left';
-    } else if (recipe.steps.any(
-      (s) =>
-          s.kind == SmartActionKind.findPrevMedia ||
-          s.kind == SmartActionKind.flickDown,
-    )) {
+    } else if (recipeKinds.contains(SmartActionKind.findPrevMedia) ||
+        recipeKinds.contains(SmartActionKind.flickDown) ||
+        recipeKinds.contains(SmartActionKind.scrollPageDown)) {
       resolvedAxisHint = 'down';
+    } else if (recipeKinds.contains(SmartActionKind.findNextMedia) ||
+        recipeKinds.contains(SmartActionKind.flickUp) ||
+        recipeKinds.contains(SmartActionKind.scrollPageUp)) {
+      resolvedAxisHint = 'up';
+    } else if (hintRaw == 'up' ||
+        hintRaw == 'down' ||
+        hintRaw == 'left') {
+      resolvedAxisHint = hintRaw;
     } else {
       resolvedAxisHint = 'up';
     }
@@ -14865,12 +14872,12 @@ class _BrowserPageState extends State<BrowserPage>
             : modeRaw == 'verify'
             ? 'verify'
             : (advanceMode == null ? 'verify' : 'distance');
-    // 启动前再对齐一次步骤轴，杜绝残留左滑零件在上滑任务里执行
+    // Keep explicitly arranged directions intact. The global axis is only a
+    // fallback for automatic recovery/advance paths, never a step rewriter.
     final alignedSteps = recipe.steps
         .map((s) => s.copyWith())
         .toList(growable: true);
     final alignedRecipe = recipe.copyWith(steps: alignedSteps);
-    SmartActionRecipe.alignAdvanceAxis(alignedRecipe, resolvedAxisHint);
     final boundRecipe = alignedRecipe.copyWith(
       host: host,
       advanceAxisHint: resolvedAxisHint,
@@ -17732,20 +17739,23 @@ class _BrowserPageState extends State<BrowserPage>
               break;
             }
           }
-          // 用户选定切条轴优先：显式上滑时绝不执行左滑零件
-          final spec = _advanceAxisSpec(task);
-          final forced = (task['advanceAxisHint'] ?? '').toString().trim();
           final axis =
-              (forced == 'up' || forced == 'down' || forced == 'left')
-                  ? forced
-                  : (step.kind == SmartActionKind.flickUp
-                      ? 'up'
-                      : step.kind == SmartActionKind.flickDown
-                      ? 'down'
-                      : step.kind == SmartActionKind.flickLeft
-                      ? 'left'
-                      : 'right');
+              step.kind == SmartActionKind.flickUp
+                  ? 'up'
+                  : step.kind == SmartActionKind.flickDown
+                  ? 'down'
+                  : step.kind == SmartActionKind.flickLeft
+                  ? 'left'
+                  : 'right';
           final horizontal = axis == 'left' || axis == 'right';
+          final label =
+              axis == 'left'
+                  ? '左扫'
+                  : axis == 'right'
+                  ? '右扫'
+                  : axis == 'down'
+                  ? '下扫'
+                  : '上扫';
           // 横向禁止套用竖向近全屏参数；竖向禁止套用图片 0.50
           final rawDist = step.paramDouble(
             'distanceFraction',
@@ -17765,7 +17775,7 @@ class _BrowserPageState extends State<BrowserPage>
           await _actionFingerFlick(
             task,
             axisHint: axis,
-            label: spec.$3,
+            label: label,
             distanceFraction: dist,
             durationMs: dur,
           );
@@ -17832,9 +17842,11 @@ class _BrowserPageState extends State<BrowserPage>
               'libraryOk=${task['actionLibrarySaveOk']}',
             );
           }
-          // 用户选定的切条方向优先于零件默认轴；参数也按轴隔离
-          final spec = _advanceAxisSpec(task);
-          final horizontal = spec.$2;
+          final explicitAxis =
+              step.kind == SmartActionKind.findNextMediaRight ? 'left' : 'up';
+          final horizontal = explicitAxis == 'left';
+          final explicitLabel =
+              horizontal ? '左滑切到下一张' : '上滑切到下一条';
           final rawDist = step.paramDouble(
             'distanceFraction',
             horizontal ? 0.67 : 0.7,
@@ -17854,10 +17866,10 @@ class _BrowserPageState extends State<BrowserPage>
           final attempts = step.paramInt('maxAttempts', horizontal ? 1 : 5);
           await _actionSwitchAdjacentMedia(
             task,
-            label: spec.$3,
+            label: explicitLabel,
             preferHorizontal: horizontal,
-            direction: spec.$4,
-            axisHintOverride: spec.$1,
+            direction: 'next',
+            axisHintOverride: explicitAxis,
             maxAttempts: horizontal ? attempts.clamp(1, 3) : attempts,
             distanceFraction: dist,
             durationMs: dur,
