@@ -391,19 +391,39 @@ bool facebookIdentitiesMatch(String left, String right) {
   final b = right.trim().toLowerCase();
   if (a.isEmpty || b.isEmpty) return false;
   if (a == b) return true;
-  // CDN stem vs reel:id never equal directly; callers compare CDN-to-CDN.
-  if (a.startsWith('reel:') || b.startsWith('reel:')) return a == b;
-  // Same numeric core with different quality suffix (_n / _hd / …).
+  // fbvideo:123 ↔ 123 (exact numeric id only)
+  if (a.startsWith('fbvideo:') && !b.startsWith('fbvideo:')) {
+    if (a.substring('fbvideo:'.length) == b) return true;
+  }
+  if (b.startsWith('fbvideo:') && !a.startsWith('fbvideo:')) {
+    if (b.substring('fbvideo:'.length) == a) return true;
+  }
+  // Facebook Reels often reuse the same numeric id for reel URL and efg.video_id.
+  // Logs: softReel=reel:157927… + post-prime fbvideo:157927… (same digits).
+  String reelBare(String v) =>
+      v.startsWith('reel:') ? v.substring('reel:'.length) : '';
+  String fbBare(String v) =>
+      v.startsWith('fbvideo:') ? v.substring('fbvideo:'.length) : '';
+  final ra = reelBare(a);
+  final rb = reelBare(b);
+  final fa = fbBare(a);
+  final fb = fbBare(b);
+  if (ra.isNotEmpty && fb.isNotEmpty && ra == fb) return true;
+  if (rb.isNotEmpty && fa.isNotEmpty && rb == fa) return true;
+  // Other reel: forms never fuzzy-match CDN stems.
+  if (a.startsWith('reel:') || b.startsWith('reel:')) return false;
+  // Same numeric core with different quality suffix (_n / _hd / …) only.
   String core(String value) {
-    final stripped = value.replaceFirst(RegExp(r'_[a-z]\d*$'), '');
+    var v = value;
+    if (v.startsWith('fbvideo:')) v = v.substring('fbvideo:'.length);
+    final stripped = v.replaceFirst(RegExp(r'_[a-z]\d*$'), '');
     return stripped.replaceFirst(RegExp(r'_[a-z]+$'), '');
   }
 
   final ca = core(a);
   final cb = core(b);
-  if (ca.length >= 8 && ca == cb) return true;
-  if (a.length >= 12 && b.contains(a)) return true;
-  if (b.length >= 12 && a.contains(b)) return true;
+  // Require substantial shared core — never substring/contains (false dups).
+  if (ca.length >= 10 && ca == cb) return true;
   return false;
 }
 

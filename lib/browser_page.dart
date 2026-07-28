@@ -1015,9 +1015,13 @@ class _BrowserPageState extends State<BrowserPage>
     if (!_isFacebookCdnUrl(url) && !lower.contains('facebook.com')) {
       return false;
     }
-    return lower.contains('.mp4') &&
-        !lower.contains('.m3u8') &&
-        !lower.contains('.mpd');
+    if (lower.contains('.m3u8') || lower.contains('.mpd')) return false;
+    if (lower.contains('.mp4')) return true;
+    // Newer FBCDN progressive stems often omit ".mp4" in the path segment.
+    return lower.contains('/v/t') ||
+        lower.contains('/v/s') ||
+        lower.contains('video.') ||
+        lower.contains('efg=');
   }
 
   String? _normalizeFacebookMediaCandidate(String raw, {required bool video}) {
@@ -1143,6 +1147,14 @@ class _BrowserPageState extends State<BrowserPage>
       } else if (deltaMs > 20000) {
         score -= 35000;
       }
+      // Pressed reel already playing for a while + brand-new capture ⇒ neighbor.
+      final playedMs =
+          DateTime.now().difference(playbackStartedAt).inMilliseconds;
+      final captureAgeMs =
+          DateTime.now().difference(captureTime).inMilliseconds;
+      if (playedMs > 3000 && captureAgeMs < 2500) {
+        score -= 90000;
+      }
     }
     return score;
   }
@@ -1175,8 +1187,8 @@ class _BrowserPageState extends State<BrowserPage>
 
   String _facebookUnsupportedMediaMessage({required bool forVideo}) {
     if (forVideo) {
-      return 'Facebook 当前未捕获到可单独保存的渐进式 MP4（可能为 DRM/加密 HLS、直播流或仅分片）。'
-          '请继续播放几秒后再长按；若仍失败则该内容无法保存为可播放文件';
+      return 'Facebook 未能绑定当前长按的视频身份（邻条预加载会被拒绝）。'
+          '请对准正在播放的视频再试；若仍失败请继续播放几秒后再长按。';
     }
     return 'Facebook 当前未捕获到可用图片地址（叠层/懒加载）。请对准图片本体再长按';
   }
@@ -1293,16 +1305,14 @@ class _BrowserPageState extends State<BrowserPage>
     return selected;
   }
 
-  /// Keep only URLs that share [boundKey]. Empty boundKey → unchanged.
+  /// Keep only URLs that share [boundKey].
+  /// `reel:N` may match `fbvideo:N` when Facebook reuses the numeric id.
   List<String> _facebookCandidatesMatchingBound(
     Iterable<String> urls,
     String boundKey,
   ) {
     final key = boundKey.trim();
-    if (key.isEmpty || key.startsWith('reel:')) {
-      // reel:id never equals CDN stems; callers must upgrade to CDN identity.
-      return urls.where((u) => u.trim().isNotEmpty).toList(growable: false);
-    }
+    if (key.isEmpty) return const <String>[];
     return urls
         .where((url) {
           final id = facebookMediaIdentity(url);
@@ -1311,41 +1321,172 @@ class _BrowserPageState extends State<BrowserPage>
         .toList(growable: false);
   }
 
+  /// Recover downloadable whole-file URLs for a bound identity from captures,
+  /// including bytestart/byteend fragments (stripped to full progressive MP4).
+  ///
+  /// `_recentCapturedMediaCandidates` intentionally skips fragments — that
+  /// left us with a correct `fbvideo:` bind but zero progressive candidates
+  /// (FB_DL: resolve exhausted after strongSolo bind).
+  List<String> _facebookHarvestUrlsForBoundKey(
+    String boundKey, {
+    DateTime? notBefore,
+    bool includeOlder = true,
+  }) {
+    final key = boundKey.trim();
+    if (key.isEmpty) return const <String>[];
+    final keys = <String>{key};
+    if (key.startsWith('reel:')) {
+      final bare = key.substring('reel:'.length);
+      if (RegExp(r'^\d{6,}$').hasMatch(bare)) {
+        keys.add('fbvideo:$bare');
+      }
+    } else if (key.startsWith('fbvideo:')) {
+      final bare = key.substring('fbvideo:'.length);
+      if (RegExp(r'^\d{6,}$').hasMatch(bare)) {
+        keys.add('reel:$bare');
+      }
+    }
+    bool idMatches(String id) =>
+        keys.any((k) => facebookIdentitiesMatch(id, k));
+
+    final out = <String>[];
+    final seen = <String>{};
+    void consider(String raw, DateTime? at) {
+      if (notBefore != null &&
+          !includeOlder &&
+          at != null &&
+          at.isBefore(notBefore)) {
+        return;
+      }
+      final whole = recoverWholeMediaUrlFromFragment(raw) ?? raw;
+      final id = facebookMediaIdentity(whole);
+      if (id.isEmpty || !idMatches(id)) return;
+      final normalized = _normalizeFacebookMediaCandidate(whole, video: true);
+      if (normalized == null || !seen.add(normalized)) return;
+      out.add(normalized);
+    }
+
+    for (final entry in _capturedWebResources.entries) {
+      consider(entry.key, entry.value.capturedAt);
+    }
+    for (final entry in _trustedMediaCandidateUrls.entries) {
+      consider(entry.key, entry.value);
+    }
+    return out;
+  }
+
+  bool _isFacebookCdnIdentity(String key) {
+    final k = key.trim();
+    if (k.isEmpty || k.startsWith('reel:')) return false;
+    return k.startsWith('fbvideo:') ||
+        RegExp(r'^\d').hasMatch(k) ||
+        k.contains('_');
+  }
+
   /// Prefer a CDN stem identity over reel:page-id (which cannot match captures).
+  /// X-like rule: never invent a bind from "lone active prefetch" or arbitrary
+  /// input candidates — only from expected key, finger post-prime streams, or
+  /// the pressed element's own progressive URL.
   String _facebookUpgradeBoundKey({
     required String expectedVideoKey,
     required String primaryUrl,
     required List<String> inputCandidates,
     required Set<String> activeKeys,
     required String pageUrl,
+    /// Keys that streamed *because* we primed the finger video — strongest
+    /// CDN bind, like X's mediaId from the pressed tweet.
+    Map<String, int> postPrimeCounts = const {},
+    bool fingerUnderVideo = false,
   }) {
     var boundKey = expectedVideoKey.trim();
-    bool isCdnStem(String key) => key.isNotEmpty && !key.startsWith('reel:');
-
     void consider(String key) {
-      if (isCdnStem(key)) boundKey = key;
+      final k = key.trim();
+      if (_isFacebookCdnIdentity(k)) boundKey = k;
     }
 
-    // A reel page ID cannot be compared with CDN/DASH video_id. The one
-    // identity actively serving byte ranges is stronger than a primary URL,
-    // which Facebook may already have replaced with the next-reel prefetch.
-    if (!isCdnStem(boundKey) && activeKeys.length == 1) {
-      consider(activeKeys.first);
+    // Silence unused: callers still pass pre-prime activeKeys for API symmetry.
+    // Never promote activeKeys — neighbor prefetch often owns the lone stream.
+    // ignore: unused_local_variable
+    final _ = activeKeys;
+
+    // Keep a stable fbvideo: bind from JS/long-press if already known.
+    if (_isFacebookCdnIdentity(boundKey)) {
+      return boundKey;
     }
-    if (!isCdnStem(boundKey)) {
+
+    // Post-prime range traffic from the *finger* video.
+    // NEVER accept a lone identity (buffered current emits no ranges; next
+    // prefetch often owns the only bytestart stream). Require dominance.
+    if (postPrimeCounts.isNotEmpty &&
+        (fingerUnderVideo || boundKey.startsWith('reel:'))) {
+      final ranked =
+          postPrimeCounts.entries.toList()
+            ..sort((a, b) => b.value.compareTo(a.value));
+      final top = ranked.first;
+      final second = ranked.length > 1 ? ranked[1].value : 0;
+      final dominates =
+          ranked.length >= 2 && top.value >= 3 && top.value >= second * 2;
+      // After a real finger prime+seek, a single streaming identity is the
+      // current reel — require fewer hits than the old ">=5" guard (which was
+      // meant for the broken async-prime={} path).
+      final strongSolo =
+          ranked.length == 1 &&
+          (top.value >= 5 || (fingerUnderVideo && top.value >= 1));
+      if (dominates || strongSolo) {
+        consider(top.key);
+        debugPrint(
+          'FB_DL upgrade postPrime top=${top.key} count=${top.value} '
+          'second=$second dominates=$dominates strongSolo=$strongSolo '
+          'finger=$fingerUnderVideo',
+        );
+      } else {
+        debugPrint(
+          'FB_DL upgrade postPrime AMBIGUOUS counts=$postPrimeCounts '
+          '(refuse lone/weak prefetch bind)',
+        );
+      }
+    }
+
+    // Soft reel: MUST NOT promote primaryUrl / interceptor candidates.
+    // But Facebook often reuses reel numeric id as efg.video_id — try that.
+    if (boundKey.startsWith('reel:')) {
+      final bare = boundKey.substring('reel:'.length);
+      if (RegExp(r'^\d{6,}$').hasMatch(bare)) {
+        final sameId = 'fbvideo:$bare';
+        final harvested = _facebookHarvestUrlsForBoundKey(sameId);
+        if (harvested.isNotEmpty) {
+          debugPrint(
+            'FB_DL upgrade softReel→sameId $boundKey → $sameId '
+            'urls=${harvested.length}',
+          );
+          return sameId;
+        }
+      }
+      debugPrint(
+        'FB_DL upgrade keep softReel=$boundKey '
+        '(refuse primary/candidate CDN guess; harvest empty)',
+      );
+      return boundKey;
+    }
+    // Pressed element's own progressive URL (never browse-history candidates).
+    if (!_isFacebookCdnIdentity(boundKey)) {
       consider(facebookMediaIdentity(primaryUrl));
     }
-    if (!isCdnStem(boundKey)) {
+    // Explicit long-press candidates only when they already share expected key.
+    if (!_isFacebookCdnIdentity(boundKey)) {
       for (final candidate in inputCandidates) {
         final key = facebookMediaIdentity(candidate);
-        if (isCdnStem(key)) {
+        if (_isFacebookCdnIdentity(key) &&
+            (expectedVideoKey.isEmpty ||
+                facebookIdentitiesMatch(key, expectedVideoKey))) {
           boundKey = key;
           break;
         }
       }
     }
-    if (boundKey.isEmpty) {
-      boundKey = facebookMediaIdentity(pageUrl);
+    if (!_isFacebookCdnIdentity(boundKey)) {
+      final pageKey = facebookMediaIdentity(pageUrl);
+      if (_isFacebookCdnIdentity(pageKey)) boundKey = pageKey;
     }
     return boundKey;
   }
@@ -1428,69 +1569,167 @@ class _BrowserPageState extends State<BrowserPage>
   }
 
   /// Facebook 常只在真正播放后才请求当前视频的 progressive/DASH/range 资源。
-  /// 直接调用可见视频的 play()，不点击页面其它区域，避免误进详情或切换相邻视频。
+  /// 必须只 play/seek **手指下/正在播的那条**，绝不能挑「最大可见」——
+  /// 否则会把预加载的下一条当成当前条（与 X 按推文 mediaId 绑定同理）。
   Future<Map<String, dynamic>?> _primeFacebookCurrentVideoForDownload() async {
     try {
+      // MUST be sync IIFE. InAppWebView does not await async evaluateJavascript
+      // promises — async version returned {} and skipped post-prime bind, then
+      // Dart upgraded from a neighbor CDN URL (wrong reel + false duplicates).
       final raw = await _controller?.evaluateJavascript(
         source: r'''
-(async () => {
+(() => {
   const videos = Array.from(document.querySelectorAll('video'));
   const vw = window.innerWidth || 1;
   const vh = window.innerHeight || 1;
-  const visible = videos
+  const tx = (typeof window._lastTouchX === 'number') ? window._lastTouchX : (vw / 2);
+  const ty = (typeof window._lastTouchY === 'number') ? window._lastTouchY : (vh / 2);
+  const scored = videos
     .map((video) => {
       const r = video.getBoundingClientRect();
-      const area = Math.max(0, Math.min(r.right, vw) - Math.max(r.left, 0)) *
-        Math.max(0, Math.min(r.bottom, vh) - Math.max(r.top, 0));
+      const visibleW = Math.max(0, Math.min(r.right, vw) - Math.max(r.left, 0));
+      const visibleH = Math.max(0, Math.min(r.bottom, vh) - Math.max(r.top, 0));
+      const area = visibleW * visibleH;
+      const contains = tx >= r.left && tx <= r.right && ty >= r.top && ty <= r.bottom;
       const cx = r.left + r.width / 2;
       const cy = r.top + r.height / 2;
-      const centerPenalty = Math.abs(cx - vw / 2) + Math.abs(cy - vh / 2);
-      return {video, r, area, centerPenalty};
+      const distance = Math.hypot(cx - tx, cy - ty);
+      let score = area - distance * 200;
+      if (contains) score += 1e12;
+      if (!video.paused && !video.ended) score += 1e11;
+      if (Number(video.currentTime || 0) > 0.2) score += 1e9;
+      return {video, r, area, score, contains};
     })
     .filter((x) => x.area > 4096 && x.r.width > 80 && x.r.height > 80)
-    .sort((a, b) => (b.area - a.area) || (a.centerPenalty - b.centerPenalty));
-  const picked = visible[0];
+    .sort((a, b) => b.score - a.score);
+  const picked = scored[0];
   if (!picked) return {ok:false, reason:'no_visible_video'};
   const video = picked.video;
   const before = {
     paused: !!video.paused,
     currentTime: Number(video.currentTime || 0),
     readyState: Number(video.readyState || 0),
-    src: String(video.currentSrc || video.src || '')
+    src: String(video.currentSrc || video.src || ''),
+    finger: !!picked.contains
   };
   try {
-    const promise = video.play();
-    if (promise && typeof promise.then === 'function') await promise;
-    // A video that is already buffered may only keep requesting its small
-    // audio representation. A tiny seek forces Facebook/MSE to expose the
-    // matching video range without switching to another reel.
+    try { video.muted = false; } catch (_) {}
+    try { video.play(); } catch (_) {}
+    // Tiny seek forces MSE to expose *this* reel's ranges — not a neighbor.
     const duration = Number(video.duration);
     const current = Number(video.currentTime || 0);
     if (Number.isFinite(duration) && duration > 1) {
-      const target = Math.min(Math.max(0, current + 0.35), duration - 0.1);
+      const target = Math.min(Math.max(0, current + 0.45), duration - 0.1);
       if (Math.abs(target - current) > 0.05) video.currentTime = target;
+    } else if (Number.isFinite(current)) {
+      video.currentTime = Math.max(0, current + 0.25);
     }
   } catch (e) {
-    return {...before, ok:false, reason:'play_rejected', error:String(e)};
+    return Object.assign({}, before, {ok:false, reason:'play_rejected', error:String(e)});
   }
+  let reelId = '';
+  try {
+    const link = video.closest && video.closest('a[href*="/reel/"], a[href*="/reels/"], a[href*="/videos/"]');
+    if (link && link.href) {
+      const m = String(link.href).match(/\/(?:reel|reels|videos)\/(\d{6,})/i);
+      if (m) reelId = m[1];
+    }
+  } catch (_) {}
+  if (!reelId) {
+    try {
+      let node = video;
+      for (let depth = 0; !reelId && node && depth < 10; depth++, node = node.parentElement) {
+        const attr = node.getAttribute && (
+          node.getAttribute('data-video-id') ||
+          node.getAttribute('data-id') ||
+          node.getAttribute('data-reel-id')
+        );
+        if (attr && /^\d{6,}$/.test(String(attr))) {
+          reelId = String(attr);
+          break;
+        }
+      }
+    } catch (_) {}
+  }
+  if (!reelId) {
+    try {
+      const m = String(location.href || '').match(/\/(?:reel|reels|videos)\/(\d{6,})/i);
+      if (m) reelId = m[1];
+    } catch (_) {}
+  }
+  let videoId = '';
+  try {
+    const src = String(video.currentSrc || video.src || '');
+    const efgMatch = src.match(/[?&]efg=([^&]+)/i);
+    if (efgMatch) {
+      const normalized = decodeURIComponent(efgMatch[1])
+        .replace(/-/g, '+').replace(/_/g, '/');
+      const padded = normalized + '='.repeat((4 - normalized.length % 4) % 4);
+      const metadata = JSON.parse(atob(padded));
+      videoId = String(metadata.video_id || '').trim();
+    }
+  } catch (_) {}
   return {
     ok:true,
     paused: !!video.paused,
     currentTime: Number(video.currentTime || 0),
     readyState: Number(video.readyState || 0),
     duration: Number.isFinite(video.duration) ? Number(video.duration) : null,
-    src: String(video.currentSrc || video.src || '')
+    src: String(video.currentSrc || video.src || ''),
+    finger: !!picked.contains,
+    reelId: reelId,
+    videoId: videoId
   };
 })()
 ''',
       );
       final result = _coerceJsMap(raw);
-      debugPrint('FB current-video prime: $result');
+      debugPrint(
+        'FB_DL prime rawType=${raw.runtimeType} result=$result',
+      );
       return result;
     } catch (e) {
       debugPrint('FB current-video prime failed: $e');
       return null;
     }
+  }
+
+  /// Count byte-range activity per identity in a time window (for post-prime bind).
+  Map<String, int> _facebookActiveStreamCounts({
+    String? pageUrl,
+    DateTime? notBefore,
+  }) {
+    final counts = <String, int>{};
+    final now = DateTime.now();
+    final requestedPage = Uri.tryParse((pageUrl ?? _currentUrl).trim());
+    for (final resource in _capturedWebResources.values) {
+      if (notBefore != null && resource.capturedAt.isBefore(notBefore)) {
+        continue;
+      }
+      if (now.difference(resource.capturedAt) > const Duration(minutes: 10)) {
+        continue;
+      }
+      final lower = resource.url.toLowerCase();
+      final isRange =
+          lower.contains('bytestart') ||
+          lower.contains('byteend') ||
+          isMediaFragmentUrl(resource.url);
+      if (!isRange || !_isFacebookCdnUrl(resource.url)) continue;
+      final capturedPage = Uri.tryParse(resource.pageUrl);
+      if (requestedPage != null &&
+          capturedPage != null &&
+          requestedPage.host.isNotEmpty &&
+          capturedPage.host.isNotEmpty &&
+          requestedPage.host != capturedPage.host) {
+        continue;
+      }
+      final whole =
+          recoverWholeMediaUrlFromFragment(resource.url) ?? resource.url;
+      final identity = facebookMediaIdentity(whole);
+      if (identity.isEmpty) continue;
+      counts[identity] = (counts[identity] ?? 0) + 1;
+    }
+    return counts;
   }
 
   Future<List<String>> _resolveFacebookLongPressVideoCandidates({
@@ -1518,38 +1757,96 @@ class _BrowserPageState extends State<BrowserPage>
         isFacebookReelsPageUrl(_currentUrl);
     // Explicit long-press / gesture inputs only — never treat page history as
     // the seed list when identity binding is still unresolved.
-    final inputOnly = <String>[
-      primaryUrl,
-      ...candidates,
-    ].where((url) => url.trim().isNotEmpty).toList(growable: false);
+    // (Trusted primary is decided after soft-reel discard below.)
 
     var effectiveNotBefore = notBefore;
     var activeKeys = _facebookActivelyStreamedVideoKeys(
       pageUrl: pageUrl,
       notBefore: effectiveNotBefore,
     );
-    // 无论手动还是智能长按，都先确保当前可见视频真正开始播放。Facebook
+    var postPrimeCounts = <String, int>{};
+    var fingerUnderVideo = false;
+    var softReelKey = '';
+    // Seed soft reel identity from JS/page before priming upgrades to fbvideo:.
+    final expectedSeed = expectedVideoKey.trim();
+    if (expectedSeed.startsWith('reel:')) {
+      softReelKey = expectedSeed;
+    } else if (expectedSeed.isEmpty) {
+      final pageId = facebookMediaIdentity(pageUrl);
+      if (pageId.startsWith('reel:')) softReelKey = pageId;
+    }
+    // 无论手动还是智能长按，都先确保**手指下**的视频真正开始播放。Facebook
     // 往往在此后才暴露当前条目的完整 progressive/DASH/range 地址。
     final primeStartedAt = DateTime.now().subtract(
       const Duration(milliseconds: 400),
     );
     final primed = await _primeFacebookCurrentVideoForDownload();
-    if (primed?['ok'] == true) {
-      await Future<void>.delayed(const Duration(milliseconds: 1800));
+    final primedOk = primed?['ok'] == true;
+    if (primedOk) {
+      fingerUnderVideo = primed?['finger'] == true;
+      final primedReel = (primed?['reelId'] ?? '').toString().trim();
+      if (primedReel.isNotEmpty) {
+        softReelKey = 'reel:$primedReel';
+      }
+    }
+    // Always wait after prime attempt when we only have soft reel identity —
+    // need bytestart ranges from *this* video. Previously async prime returned
+    // {} so this wait never ran and we bound a neighbor CDN URL instead.
+    if (primedOk || softReelKey.isNotEmpty || reelsContext) {
+      // Paused / readyState<2 often needs longer for MSE range requests.
+      final paused = primed?['paused'] == true;
+      final ready = (primed?['readyState'] as num?)?.toInt() ?? 0;
+      final waitMs = (paused || ready < 2) ? 3200 : 2200;
+      await Future<void>.delayed(Duration(milliseconds: waitMs));
       effectiveNotBefore = primeStartedAt;
       activeKeys = _facebookActivelyStreamedVideoKeys(
         pageUrl: pageUrl,
         notBefore: effectiveNotBefore,
       );
+      postPrimeCounts = _facebookActiveStreamCounts(
+        pageUrl: pageUrl,
+        notBefore: primeStartedAt,
+      );
+      debugPrint(
+        'FB_DL post-prime counts=$postPrimeCounts '
+        'finger=$fingerUnderVideo softReel=$softReelKey '
+        'videoId=${primed?['videoId']} ok=$primedOk '
+        'waitMs=$waitMs paused=$paused ready=$ready',
+      );
     }
+    // JS may still ship a neighbor progressive as primary when blob has no
+    // CDN bind. Never trust it for identity while we only know soft reel.
+    var trustedPrimary = primaryUrl;
+    if (softReelKey.isNotEmpty) {
+      final primaryId = facebookMediaIdentity(primaryUrl);
+      if (_isFacebookCdnIdentity(primaryId)) {
+        debugPrint(
+          'FB_DL discard untrusted JS primary id=$primaryId '
+          'soft=$softReelKey',
+        );
+        trustedPrimary = '';
+      }
+    }
+    final inputTrusted = <String>[
+      trustedPrimary,
+      ...candidates,
+    ].where((url) => url.trim().isNotEmpty).toList(growable: false);
+    final primedVideoIdForBind =
+        primedOk ? (primed?['videoId'] ?? '').toString().trim() : '';
     var boundKey = _facebookUpgradeBoundKey(
-      expectedVideoKey: expectedVideoKey,
-      primaryUrl: primaryUrl,
-      inputCandidates: inputOnly,
+      expectedVideoKey: primedVideoIdForBind.isNotEmpty
+          ? 'fbvideo:${primedVideoIdForBind.toLowerCase()}'
+          : (_isFacebookCdnIdentity(expectedSeed)
+              ? expectedSeed
+              : (softReelKey.isNotEmpty ? softReelKey : expectedSeed)),
+      primaryUrl: trustedPrimary,
+      inputCandidates: inputTrusted,
       activeKeys: activeKeys,
       pageUrl: pageUrl,
+      postPrimeCounts: postPrimeCounts,
+      fingerUnderVideo: fingerUnderVideo,
     );
-    if (boundKey.isNotEmpty && !boundKey.startsWith('reel:')) {
+    if (_isFacebookCdnIdentity(boundKey)) {
       _pruneStaleFacebookProgressiveCaptures(boundKey);
       _cancelStaleSmartFacebookDownloads(boundKey);
     }
@@ -1609,7 +1906,7 @@ class _BrowserPageState extends State<BrowserPage>
       return <String>[...sameIdentity, ...playlists];
     }
 
-    var merged = List<String>.from(inputOnly);
+    var merged = List<String>.from(inputTrusted);
     for (var attempt = 0; attempt < 12; attempt++) {
       // Captures may include neighbor/history progressive MP4s. Only merge
       // them as *sources to score*; output is always same-identity only.
@@ -1630,53 +1927,100 @@ class _BrowserPageState extends State<BrowserPage>
         }
         merged.add(entry.key);
       }
+      // CRITICAL: recover whole MP4 from bytestart captures for the bound id.
+      // Recent-candidate scan skips fragments, which left correct binds with
+      // zero downloadable URLs (user saw「未能绑定」snackbar).
+      final harvestKey =
+          _isFacebookCdnIdentity(boundKey)
+              ? boundKey
+              : (softReelKey.isNotEmpty ? softReelKey : boundKey);
+      if (harvestKey.isNotEmpty) {
+        final harvested = _facebookHarvestUrlsForBoundKey(
+          harvestKey,
+          notBefore: effectiveNotBefore,
+          includeOlder: true,
+        );
+        if (harvested.isNotEmpty) {
+          merged.addAll(harvested);
+          if (attempt == 0 || attempt == 3 || attempt == 7) {
+            debugPrint(
+              'FB_DL harvest key=$harvestKey n=${harvested.length} '
+              'sample=${harvested.first.length > 100 ? harvested.first.substring(0, 100) : harvested.first}',
+            );
+          }
+        } else if (attempt == 0 || attempt == 6) {
+          debugPrint('FB_DL harvest EMPTY key=$harvestKey');
+        }
+      }
+      // Refresh post-prime counts each attempt — ranges may arrive late.
+      if (attempt > 0 && attempt % 3 == 0) {
+        postPrimeCounts = _facebookActiveStreamCounts(
+          pageUrl: pageUrl,
+          notBefore: primeStartedAt,
+        );
+      }
       // Re-upgrade bound key once captures arrive (primary may have been blob).
       boundKey = _facebookUpgradeBoundKey(
-        expectedVideoKey: boundKey.isNotEmpty ? boundKey : expectedVideoKey,
-        primaryUrl: primaryUrl,
-        inputCandidates: normalizeAll(merged),
+        expectedVideoKey: _isFacebookCdnIdentity(boundKey)
+            ? boundKey
+            : (softReelKey.isNotEmpty
+                ? softReelKey
+                : (boundKey.isNotEmpty ? boundKey : expectedVideoKey)),
+        primaryUrl: trustedPrimary,
+        inputCandidates: normalizeAll(inputTrusted),
         activeKeys: _facebookActivelyStreamedVideoKeys(
           pageUrl: pageUrl,
           notBefore: effectiveNotBefore,
         ),
         pageUrl: pageUrl,
+        postPrimeCounts: postPrimeCounts,
+        fingerUnderVideo: fingerUnderVideo,
       );
 
       final usable = normalizeAll(merged);
       usable.sort((left, right) => scoreOf(right).compareTo(scoreOf(left)));
 
-      List<String> scoped = usable;
-      final hasCdnBound = boundKey.isNotEmpty && !boundKey.startsWith('reel:');
-      if (hasCdnBound) {
+      List<String> scoped = const <String>[];
+      final hasCdnBound = _isFacebookCdnIdentity(boundKey);
+      if (hasCdnBound || boundKey.startsWith('reel:')) {
         final matched = _facebookCandidatesMatchingBound(usable, boundKey);
         if (matched.isNotEmpty) {
           scoped = matched;
         } else {
-          // Bound identity known but captures not ready — do NOT fall back to
-          // browse history. Stay on explicit inputs / wait another tick.
-          scoped = normalizeAll(inputOnly);
-          final inputMatched = _facebookCandidatesMatchingBound(
-            scoped,
+          // Direct harvest bypasses usable scoring gaps.
+          scoped = _facebookHarvestUrlsForBoundKey(
             boundKey,
+            includeOlder: true,
           );
-          if (inputMatched.isNotEmpty) scoped = inputMatched;
         }
-      } else if (activeKeys.length == 1) {
-        final matched = _facebookCandidatesMatchingBound(
-          usable,
-          activeKeys.first,
-        );
-        if (matched.isNotEmpty) {
-          scoped = matched;
-          boundKey = activeKeys.first;
-        } else {
-          scoped = normalizeAll(inputOnly);
+      } else if (postPrimeCounts.isNotEmpty &&
+          (fingerUnderVideo || softReelKey.isNotEmpty)) {
+        // Same dominance rule as upgrade — never lone prefetch.
+        final ranked =
+            postPrimeCounts.entries.toList()
+              ..sort((a, b) => b.value.compareTo(a.value));
+        final top = ranked.first;
+        final second = ranked.length > 1 ? ranked[1].value : 0;
+        final dominates =
+            ranked.length >= 2 && top.value >= 3 && top.value >= second * 2;
+        final strongSolo =
+            ranked.length == 1 &&
+            (top.value >= 5 || (fingerUnderVideo && top.value >= 1));
+        if (_isFacebookCdnIdentity(top.key) && (dominates || strongSolo)) {
+          final matched = _facebookCandidatesMatchingBound(usable, top.key);
+          if (matched.isNotEmpty) {
+            scoped = matched;
+            boundKey = top.key;
+          } else {
+            final harvested = _facebookHarvestUrlsForBoundKey(top.key);
+            if (harvested.isNotEmpty) {
+              scoped = harvested;
+              boundKey = top.key;
+            }
+          }
         }
-      } else {
-        // No reliable CDN bind yet: never drain page-wide history.
-        scoped = normalizeAll(inputOnly);
-        if (scoped.isEmpty) scoped = usable.take(1).toList(growable: false);
       }
+      // No CDN identity → do not download anything. Fail clearly (X-style).
 
       final progressive = scoped
           .where(_isFacebookProgressiveMp4Url)
@@ -1689,12 +2033,23 @@ class _BrowserPageState extends State<BrowserPage>
         final boundOnly = bindOnlyCurrent(scoped);
         final top = boundOnly.first;
         final topKey = facebookMediaIdentity(top);
+        // Refuse to return a progressive that does not match the bind.
+        if (_isFacebookCdnIdentity(boundKey) &&
+            topKey.isNotEmpty &&
+            !facebookIdentitiesMatch(topKey, boundKey)) {
+          debugPrint(
+            'FB media strategy: refuse mismatched top=$topKey '
+            'bound=$boundKey (neighbor guard)',
+          );
+          await Future<void>.delayed(const Duration(milliseconds: 250));
+          continue;
+        }
         final reason =
             hasCdnBound && facebookIdentitiesMatch(topKey, boundKey)
                 ? 'bound_current'
                 : (activeKeys.any((key) => facebookIdentitiesMatch(topKey, key))
                     ? 'active_stream'
-                    : (reelsContext ? 'reels_fallback' : 'quality'));
+                    : (reelsContext ? 'reels_bound' : 'quality'));
         final skippedNeighbor = usable
             .where(_isFacebookProgressiveMp4Url)
             .where(
@@ -1708,13 +2063,14 @@ class _BrowserPageState extends State<BrowserPage>
           'FB media strategy: reason=$reason reels=$reelsContext '
           'boundKey=${boundKey.isEmpty ? "(none)" : boundKey} '
           'topKey=${topKey.isEmpty ? "(none)" : topKey} '
+          'softReel=${softReelKey.isEmpty ? "(none)" : softReelKey} '
           'activeKeys=${activeKeys.length} '
           'progressive=${boundOnly.where(_isFacebookProgressiveMp4Url).length} '
           'playlist=$hasPlaylist '
           'total=${usable.length} bindOnly=${boundOnly.length} top=$top'
           '${skippedNeighbor.isEmpty ? "" : " skippedNeighbor=${skippedNeighbor.first}"}',
         );
-        if (topKey.isNotEmpty && !topKey.startsWith('reel:')) {
+        if (_isFacebookCdnIdentity(topKey)) {
           _pruneStaleFacebookProgressiveCaptures(topKey);
           _cancelStaleSmartFacebookDownloads(topKey);
         }
@@ -1730,14 +2086,14 @@ class _BrowserPageState extends State<BrowserPage>
       }
       await Future<void>.delayed(const Duration(milliseconds: 250));
     }
-    final fallback = normalizeAll(inputOnly.isNotEmpty ? inputOnly : merged);
-    fallback.sort((left, right) => scoreOf(right).compareTo(scoreOf(left)));
-    final boundOnly = bindOnlyCurrent(fallback);
+    // Exhausted: fail closed. Returning a scored neighbor is how wrong Reels
+    // get saved; callers must surface "cannot bind" instead.
     debugPrint(
-      'FB media strategy: resolve exhausted; usable=${boundOnly.length} '
-      'boundKey=$boundKey reels=$reelsContext',
+      'FB media strategy: resolve exhausted WITHOUT safe bind; '
+      'boundKey=$boundKey softReel=$softReelKey finger=$fingerUnderVideo '
+      'reels=$reelsContext — refusing neighbor fallback',
     );
-    return boundOnly;
+    return const <String>[];
   }
 
   /// Google / X 等登录后需要尽快把 cookie 落盘的站点。
@@ -3833,12 +4189,28 @@ class _BrowserPageState extends State<BrowserPage>
             : null;
     if (isSmartGesture) smartTask?.remove('lastGestureFailureType');
     final forceNoPreSkip = _smartForceDownloadNoPreSkip(smartTask);
+    final pageUrlEarly = (item['pageUrl'] ?? '').toString().trim();
+    final videoUrlEarly = (item['videoUrl'] ?? '').toString().trim();
+    final looksFacebookEarly =
+        item['facebookPipeline'] == true ||
+        smartTask?['facebookPipeline'] == true ||
+        _smartUsesFacebookPipeline(
+          (smartTask?['siteProfile'] ?? '').toString(),
+        ) ||
+        _isFacebookPlatformPage(pageUrlEarly) ||
+        _isFacebookPlatformPage(_currentUrl) ||
+        _isFacebookCdnUrl(videoUrlEarly);
     // 智能/动作编排：下载前禁止按 URL/src/磁盘路径宣称「库内已有」。
+    // Facebook 手动长按同样禁止：邻条 CDN 误绑后会弹「疑似重复」，但当前条未入库。
     // 仅入库后内容哈希匹配（或 24h 备案带 fileHash 且库内哈希仍在）才可跳过。
     final existingMedia = await _findExistingMediaForItem(item);
     if (existingMedia != null && item['allowSourceUrlReuse'] != true) {
-      if (isSmartDownload) {
-        debugPrint('智能下载：忽略源地址预命中，继续下载并以内容哈希查重');
+      if (isSmartDownload || looksFacebookEarly) {
+        debugPrint(
+          'FB_DL ignore robust URL pre-skip '
+          'smart=$isSmartDownload fb=$looksFacebookEarly '
+          'row=${existingMedia['id']}',
+        );
       } else {
         final downloadAnyway = await _confirmSourceUrlDuplicateBeforeDownload(
           existingMedia,
@@ -4204,6 +4576,61 @@ class _BrowserPageState extends State<BrowserPage>
       if (boundFbKey.startsWith('reel:') || boundFbKey.isEmpty) {
         boundFbKey = facebookMediaIdentity(downloadUrl);
       }
+      // Identity-based anti-duplicate (session + library). Hash-only cannot
+      // catch the same reel across re-signed / multi-quality CDN URLs.
+      final identityForSkip =
+          _isFacebookCdnIdentity(boundFbKey)
+              ? boundFbKey
+              : (expectedFbKey.isNotEmpty
+                  ? expectedFbKey
+                  : facebookMediaIdentity(downloadUrl));
+      if (identityForSkip.isNotEmpty && isSmartDownload) {
+        if (_sessionHasHandledFacebookIdentity(smartTask, identityForSkip)) {
+          debugPrint(
+            'FB_DL session identity skip $identityForSkip '
+            'url=${downloadUrl.length > 100 ? downloadUrl.substring(0, 100) : downloadUrl}',
+          );
+          if (smartTask != null) {
+            smartTask['expectedFbVideoKey'] = identityForSkip;
+          }
+          if (isSmartGesture) {
+            smartTask?['lastGestureFailureType'] = 'already_in_library';
+          }
+          onFailureType?.call('already_in_library');
+          if (shownDialog && mounted) {
+            final nav = Navigator.of(context, rootNavigator: true);
+            if (nav.canPop()) nav.pop();
+          }
+          progress.dispose();
+          detailNotifier.dispose();
+          return false;
+        }
+        if (await _libraryConfirmsFacebookIdentity(identityForSkip)) {
+          debugPrint(
+            'FB_DL library identity skip $identityForSkip '
+            'url=${downloadUrl.length > 100 ? downloadUrl.substring(0, 100) : downloadUrl}',
+          );
+          _rememberHandledFacebookIdentity(
+            smartTask,
+            identityForSkip,
+            softReelKey: expectedFbKey.startsWith('reel:') ? expectedFbKey : null,
+          );
+          if (smartTask != null) {
+            smartTask['expectedFbVideoKey'] = identityForSkip;
+          }
+          if (isSmartGesture) {
+            smartTask?['lastGestureFailureType'] = 'already_in_library';
+          }
+          onFailureType?.call('already_in_library');
+          if (shownDialog && mounted) {
+            final nav = Navigator.of(context, rootNavigator: true);
+            if (nav.canPop()) nav.pop();
+          }
+          progress.dispose();
+          detailNotifier.dispose();
+          return false;
+        }
+      }
       if (boundFbKey.isNotEmpty && !boundFbKey.startsWith('reel:')) {
         final before = attempts.length;
         attempts.removeWhere((url) {
@@ -4220,10 +4647,38 @@ class _BrowserPageState extends State<BrowserPage>
         if (smartTask != null) {
           smartTask['expectedFbVideoKey'] = boundFbKey;
         }
-      } else if (isSmartDownload && attempts.isNotEmpty) {
-        // 无法提取稳定 Facebook 身份时只允许尝试本次长按得到的首选地址，
-        // 禁止混入页面历史捕获候选，避免下载到其它视频。
-        final primary = attempts.first;
+      } else if (attempts.isNotEmpty) {
+        // 无稳定 CDN 身份时：手动/智能都只允许本次长按首选地址，
+        // 禁止混入页面历史捕获（否则会下到预加载的下一条）。
+        // Prefer abort when identity is still reel:/empty after resolve —
+        // downloading an unbound primary is how neighbors get saved.
+        if (expectedFbKey.startsWith('reel:') || expectedFbKey.isEmpty) {
+          debugPrint(
+            'FB pipeline: abort — no CDN identity for pressed item '
+            '(expected=$expectedFbKey primary=$downloadUrl)',
+          );
+          if (isSmartGesture) {
+            smartTask?['lastGestureFailureType'] = 'fb_identity_unbound';
+          }
+          onFailureType?.call('fb_identity_unbound');
+          if (shownDialog && mounted) {
+            final nav = Navigator.of(context, rootNavigator: true);
+            if (nav.canPop()) nav.pop();
+          }
+          progress.dispose();
+          detailNotifier.dispose();
+          if (showResultHint && mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(_facebookUnsupportedMediaMessage(forVideo: true)),
+                duration: const Duration(seconds: 3),
+              ),
+            );
+          }
+          return false;
+        }
+        final primary =
+            downloadUrl.trim().isNotEmpty ? downloadUrl : attempts.first;
         attempts
           ..clear()
           ..add(primary);
@@ -5500,7 +5955,7 @@ class _BrowserPageState extends State<BrowserPage>
       await controller.evaluateJavascript(
         source: '''
       (() => {
-          const handlerVersion = 'media-download-v28';
+          const handlerVersion = 'media-download-v33';
       if (window.__appMediaDownloadHandlersVersion === handlerVersion) return true;
       window.Flutter = window.Flutter || { postMessage: function(m){ try { if(window.flutter_inappwebview && window.flutter_inappwebview.callHandler) window.flutter_inappwebview.callHandler('Flutter', m); } catch(e){} } };
       window.MediaInterceptor = window.MediaInterceptor || {
@@ -6889,13 +7344,28 @@ class _BrowserPageState extends State<BrowserPage>
           const right = String(b || '').toLowerCase();
           if (!left || !right) return false;
           if (left === right) return true;
-          if (left.startsWith('reel:') || right.startsWith('reel:')) return left === right;
-          const core = (v) => v.replace(/_[a-z]\\d*\$/i, '').replace(/_[a-z]+\$/i, '');
+          if (left.startsWith('fbvideo:') && !right.startsWith('fbvideo:')) {
+            if (left.slice('fbvideo:'.length) === right) return true;
+          }
+          if (right.startsWith('fbvideo:') && !left.startsWith('fbvideo:')) {
+            if (right.slice('fbvideo:'.length) === left) return true;
+          }
+          // reel:123 ↔ fbvideo:123 (same numeric id on Reels)
+          const reelBare = (v) => v.startsWith('reel:') ? v.slice(5) : '';
+          const fbBare = (v) => v.startsWith('fbvideo:') ? v.slice(8) : '';
+          const ra = reelBare(left), rb = reelBare(right);
+          const fa = fbBare(left), fb = fbBare(right);
+          if (ra && fb && ra === fb) return true;
+          if (rb && fa && rb === fa) return true;
+          if (left.startsWith('reel:') || right.startsWith('reel:')) return false;
+          const core = (v) => {
+            let s = String(v || '');
+            if (s.startsWith('fbvideo:')) s = s.slice('fbvideo:'.length);
+            return s.replace(/_[a-z]\\d*\$/i, '').replace(/_[a-z]+\$/i, '');
+          };
           const ca = core(left), cb = core(right);
-          if (ca.length >= 8 && ca === cb) return true;
-          if (left.length >= 12 && right.includes(left)) return true;
-          if (right.length >= 12 && left.includes(right)) return true;
-          return false;
+          // Strict: same quality-stripped core only — no substring/contains.
+          return ca.length >= 10 && ca === cb;
         };
         if (isFacebookContext &&
             typeof window._lastTouchX === 'number' &&
@@ -6950,18 +7420,41 @@ class _BrowserPageState extends State<BrowserPage>
               const videoElBound = target;
               const playingSrc = String(videoElBound.currentSrc || videoElBound.src || '').trim();
               let boundKey = facebookMediaKey(playingSrc);
-              if (boundKey && boundKey.startsWith('reel:')) boundKey = '';
-              if (!boundKey) {
+              // reel: cannot filter CDN captures — keep as softReelKey only.
+              let softReelKey = '';
+              if (boundKey && boundKey.startsWith('reel:')) {
+                softReelKey = boundKey;
+                boundKey = '';
+              }
+              const readDomReelId = () => {
                 try {
                   const reelLink = videoElBound.closest &&
-                    videoElBound.closest('a[href*="/reel/"], a[href*="/reels/"]');
-                  if (reelLink && reelLink.href) boundKey = facebookMediaKey(reelLink.href);
+                    videoElBound.closest('a[href*="/reel/"], a[href*="/reels/"], a[href*="/videos/"]');
+                  if (reelLink && reelLink.href) {
+                    const m = String(reelLink.href).match(/\\/(?:reel|reels|videos)\\/(\\d{6,})/i);
+                    if (m) return 'reel:' + m[1];
+                  }
                 } catch (_) {}
-              }
-              if (!boundKey) {
-                const pageKey = facebookMediaKey(location.href);
-                if (pageKey && !pageKey.startsWith('reel:')) boundKey = pageKey;
-              }
+                try {
+                  let node = videoElBound;
+                  for (let d = 0; node && d < 10; d++, node = node.parentElement) {
+                    const attr = node.getAttribute && (
+                      node.getAttribute('data-video-id') ||
+                      node.getAttribute('data-id') ||
+                      node.getAttribute('data-reel-id')
+                    );
+                    if (attr && /^\\d{6,}\$/.test(String(attr))) return 'reel:' + attr;
+                  }
+                } catch (_) {}
+                try {
+                  const pageKey = facebookMediaKey(location.href);
+                  if (pageKey && pageKey.startsWith('reel:')) return pageKey;
+                } catch (_) {}
+                return '';
+              };
+              if (!softReelKey) softReelKey = readDomReelId();
+              // NEVER fill boundKey from activeKeys.size===1 — buffered current
+              // emits no bytestart while next-reel prefetch does.
               const looksFbProgressiveRaw = (u) => {
                 const s = String(u || '').toLowerCase();
                 return (s.includes('fbcdn') || s.includes('scontent.')) &&
@@ -6985,87 +7478,111 @@ class _BrowserPageState extends State<BrowserPage>
                       whole = parsed.toString();
                     } catch (_) {}
                     const key = facebookMediaKey(whole);
-                    if (key) activeKeys.add(key);
+                    if (key && !String(key).startsWith('reel:')) activeKeys.add(key);
                   }
                 }
               } catch (_) {}
-              if (activeKeys.size === 1) boundKey = Array.from(activeKeys)[0];
+              // If finger video has been playing a while, recent-only
+              // progressive captures are usually the *next* reel prefetch.
+              const pressedPlayingSec = Math.max(0, Number(videoElBound.currentTime || 0));
               let bestFb = null, bestFbScore = -1e18, bestFbReason = '';
-              try {
-                if (window.MediaInterceptor && window.MediaInterceptor.interceptedRequests) {
-                  const now = Date.now();
-                  const playbackMs = Math.max(0, Number(videoElBound.currentTime || 0) * 1000);
-                  const sessionStart = now - playbackMs;
-                  for (const [u, info] of window.MediaInterceptor.interceptedRequests) {
-                    if (!u || (now - (info.timestamp || 0)) > 600000) continue;
-                    if (!looksFbProgressiveRaw(u) && !(String(u).toLowerCase().includes('bytestart'))) continue;
-                    let whole = u;
-                    const lowerRaw = String(u).toLowerCase();
-                    if (lowerRaw.includes('bytestart') || lowerRaw.includes('byteend')) {
-                      try {
-                        const parsed = new URL(u, location.href);
-                        parsed.searchParams.delete('bytestart');
-                        parsed.searchParams.delete('byteend');
-                        whole = parsed.toString();
-                      } catch (_) { continue; }
-                    }
-                    if (!looksFbProgressiveRaw(whole)) continue;
-                    const track = facebookTrackMetadata(whole);
-                    if (track && track.audioOnly) continue;
-                    const key = facebookMediaKey(whole);
-                    const ts = Number(info.timestamp || 0);
-                    let score = 0;
-                    let reason = 'capture';
-                    if (boundKey && key && facebookKeysMatch(key, boundKey)) {
-                      score += 5e12; reason = 'bound_current';
-                    } else if (boundKey && key) {
-                      score -= isFacebookReelsContext ? 4e12 : 5e11;
-                    }
-                    if (key && activeKeys.has(key)) {
-                      score += isFacebookReelsContext ? 2e12 : 5e11;
-                      if (reason === 'capture') reason = 'active_stream';
-                    }
-                    // Recency is a weak signal on Reels — newest is often *next*.
-                    if (isFacebookReelsContext) {
-                      const delta = ts - sessionStart;
-                      if (delta >= -2000 && delta <= 8000) score += 2e10;
-                      else if (delta > 20000) score -= 3e10;
-                      score += Math.min(1e9, Math.max(0, ts - (now - 120000)) / 120);
-                    } else {
-                      score += ts;
-                    }
-                    const lower = String(whole).toLowerCase();
-                    if (lower.includes('oe=') || lower.includes('oh=')) score += 1e9;
-                    if (lower.includes('_hd') || lower.includes('hd_src') || lower.includes('oe_hd')) score += 5e8;
-                    if (track && track.videoTrack) {
-                      score += 3e12;
-                      score += Math.max(0, track.height || 0) * 1e9;
-                      score += Math.max(0, track.bitrate || 0) * 100;
-                    }
-                    if (score > bestFbScore) {
-                      bestFbScore = score; bestFb = whole; bestFbReason = reason;
+              // Only rank captures when we already have a CDN identity to match.
+              // Without it, picking "best" is how the wrong Reel gets bound.
+              if (boundKey) {
+                try {
+                  if (window.MediaInterceptor && window.MediaInterceptor.interceptedRequests) {
+                    const now = Date.now();
+                    const playbackMs = Math.max(0, pressedPlayingSec * 1000);
+                    const sessionStart = now - playbackMs;
+                    for (const [u, info] of window.MediaInterceptor.interceptedRequests) {
+                      if (!u || (now - (info.timestamp || 0)) > 600000) continue;
+                      if (!looksFbProgressiveRaw(u) && !(String(u).toLowerCase().includes('bytestart'))) continue;
+                      let whole = u;
+                      const lowerRaw = String(u).toLowerCase();
+                      if (lowerRaw.includes('bytestart') || lowerRaw.includes('byteend')) {
+                        try {
+                          const parsed = new URL(u, location.href);
+                          parsed.searchParams.delete('bytestart');
+                          parsed.searchParams.delete('byteend');
+                          whole = parsed.toString();
+                        } catch (_) { continue; }
+                      }
+                      if (!looksFbProgressiveRaw(whole)) continue;
+                      const track = facebookTrackMetadata(whole);
+                      if (track && track.audioOnly) continue;
+                      const key = facebookMediaKey(whole);
+                      if (!key || !facebookKeysMatch(key, boundKey)) continue;
+                      const ts = Number(info.timestamp || 0);
+                      let score = 5e12;
+                      let reason = 'bound_current';
+                      if (key && activeKeys.has(key)) {
+                        score += isFacebookReelsContext ? 2e12 : 5e11;
+                      }
+                      if (isFacebookReelsContext) {
+                        const delta = ts - sessionStart;
+                        if (delta >= -2000 && delta <= 8000) score += 2e10;
+                        else if (delta > 20000) score -= 3e10;
+                        score += Math.min(1e9, Math.max(0, ts - (now - 120000)) / 120);
+                      } else {
+                        score += ts;
+                      }
+                      const lower = String(whole).toLowerCase();
+                      if (lower.includes('oe=') || lower.includes('oh=')) score += 1e9;
+                      if (lower.includes('_hd') || lower.includes('hd_src') || lower.includes('oe_hd')) score += 5e8;
+                      if (track && track.videoTrack) {
+                        score += 3e12;
+                        score += Math.max(0, track.height || 0) * 1e9;
+                        score += Math.max(0, track.bitrate || 0) * 100;
+                      }
+                      if (score > bestFbScore) {
+                        bestFbScore = score; bestFb = whole; bestFbReason = reason;
+                      }
                     }
                   }
-                }
-              } catch (_) {}
+                } catch (_) {}
+              }
               if (playingSrc && !playingSrc.startsWith('blob:') && looksFbProgressiveRaw(playingSrc)) {
-                target.__appFbBoundDownloadUrl = playingSrc;
-                target.__appFbBindReason = 'dom_currentSrc';
-              } else if (bestFb) {
+                const playKey = facebookMediaKey(playingSrc);
+                if (!boundKey || !playKey || facebookKeysMatch(playKey, boundKey) ||
+                    String(playKey).startsWith('reel:')) {
+                  target.__appFbBoundDownloadUrl = playingSrc;
+                  target.__appFbBindReason = 'dom_currentSrc';
+                  if (playKey && !String(playKey).startsWith('reel:')) boundKey = playKey;
+                }
+              } else if (bestFb && boundKey) {
+                // Only accept captures that already matched boundKey above.
                 target.__appFbBoundDownloadUrl = bestFb;
                 target.__appFbBindReason = bestFbReason || 'ranked_capture';
               }
-              target.__appFbVideoKey = boundKey || facebookMediaKey(target.__appFbBoundDownloadUrl || '') || '';
+              // Prefer CDN identity; keep soft reel for Dart upgrade / skip.
+              target.__appFbVideoKey = boundKey || softReelKey ||
+                facebookMediaKey(target.__appFbBoundDownloadUrl || '') || '';
+              target.__appFbSoftReelKey = softReelKey || '';
               target.__appFbIsReels = !!isFacebookReelsContext;
               try {
                 console.log('[FB long-press] bind', {
                   reels: isFacebookReelsContext,
                   reason: target.__appFbBindReason || '',
                   key: target.__appFbVideoKey || '',
+                  softReel: softReelKey || '',
                   url: String(target.__appFbBoundDownloadUrl || '').slice(0, 160),
                   playing: playingSrc.slice(0, 80),
-                  activeKeys: Array.from(activeKeys)
+                  activeKeys: Array.from(activeKeys),
+                  refusedUnboundRank: !boundKey && !target.__appFbBoundDownloadUrl
                 });
+                Flutter.postMessage(JSON.stringify({
+                  type: 'fb_debug',
+                  phase: 'js_bind',
+                  reason: String(target.__appFbBindReason || ''),
+                  key: String(target.__appFbVideoKey || ''),
+                  softReel: String(softReelKey || ''),
+                  url: String(target.__appFbBoundDownloadUrl || '').slice(0, 180),
+                  playing: playingSrc.slice(0, 100),
+                  activeKeys: Array.from(activeKeys),
+                  finger: true,
+                  currentTime: pressedPlayingSec,
+                  extra: !target.__appFbBoundDownloadUrl ? 'no_bound_url' : 'has_bound_url'
+                }));
               } catch (_) {}
             }
           } catch (_) {}
@@ -7393,41 +7910,16 @@ class _BrowserPageState extends State<BrowserPage>
             return (s.includes('fbcdn') || s.includes('scontent.')) &&
               s.includes('.mp4') && !s.includes('bytestart') && !s.includes('byteend');
           };
-          if (!(target && target.__appFbBoundDownloadUrl) &&
-              videoEl && interceptedStreamUrl && looksFbProgressive(interceptedStreamUrl)) {
-            url = interceptedStreamUrl;
-          } else if (!(target && target.__appFbBoundDownloadUrl) &&
-                     videoEl && (!url || String(url).startsWith('blob:') ||
-                     domUrlLooksLikePosterOrThumb(url) || url === videoEl.poster)) {
-            try {
-              if (window.MediaInterceptor && window.MediaInterceptor.interceptedRequests) {
-                const now = Date.now();
-                let bestFb = null, bestFbScore = -1;
-                const boundKey = String((target && target.__appFbVideoKey) || '');
-                for (const [u, info] of window.MediaInterceptor.interceptedRequests) {
-                  if (!u || (now - info.timestamp) > 600000 || isMediaFragmentUrl(u)) continue;
-                  if (!looksFbProgressive(u)) continue;
-                  const track = facebookTrackMetadata(u);
-                  if (track && track.audioOnly) continue;
-                  let score = isFacebookReelsContext ? 0 : Number(info.timestamp || 0);
-                  const lower = String(u).toLowerCase();
-                  const key = facebookMediaKey(u);
-                  if (boundKey && key && facebookKeysMatch(key, boundKey)) score += 5e12;
-                  else if (boundKey && key && isFacebookReelsContext) score -= 4e12;
-                  if (lower.includes('oe=') || lower.includes('oh=')) score += 2e9;
-                  if (lower.includes('_hd') || lower.includes('hd_src') || lower.includes('oe_hd')) score += 1e9;
-                  if (track && track.videoTrack) {
-                    score += 3e12;
-                    score += Math.max(0, track.height || 0) * 1e9;
-                    score += Math.max(0, track.bitrate || 0) * 100;
-                  }
-                  if (!isFacebookReelsContext) score += Number(info.timestamp || 0) * 0;
-                  else score += Math.min(1e9, Number(info.timestamp || 0) * 0.01);
-                  if (score > bestFbScore) { bestFbScore = score; bestFb = u; }
-                }
-                if (bestFb) url = bestFb;
-              }
-            } catch (_) {}
+          // CRITICAL: when bind failed (blob + soft reel only), do NOT rank
+          // interceptor progressives — that repeatedly selected the same
+          // neighbor CDN (fbvideo:9691…) for every different reel: key.
+          if (!(target && target.__appFbBoundDownloadUrl)) {
+            if (videoEl && looksFbProgressive(url) &&
+                String((target && target.__appFbVideoKey) || '').startsWith('reel:')) {
+              url = String(videoEl.currentSrc || videoEl.src || url || '');
+            }
+          } else if (videoEl && interceptedStreamUrl && looksFbProgressive(interceptedStreamUrl)) {
+            // already bound above
           }
           // Images: lift largest fbcdn/scontent candidate from srcset / nearby attrs.
           const tagNow = (target.tagName || '').toLowerCase();
@@ -7465,7 +7957,8 @@ class _BrowserPageState extends State<BrowserPage>
           const innerV = (target.querySelector && target.querySelector('video')) || videoEl;
           const innerUrl = innerV && (innerV.currentSrc || innerV.src);
           if (innerUrl) url = innerUrl;
-          else if (videoEl && window.MediaInterceptor && window.MediaInterceptor.interceptedRequests) {
+          else if (!(isFacebookContext && videoEl) &&
+                   videoEl && window.MediaInterceptor && window.MediaInterceptor.interceptedRequests) {
             const now = Date.now();
             let bestUrl = null, bestTime = 0;
             for (const [u, info] of window.MediaInterceptor.interceptedRequests) {
@@ -7479,7 +7972,9 @@ class _BrowserPageState extends State<BrowserPage>
             if (bestUrl) url = bestUrl;
           }
           if (!url) {
-            updateFeedbackStatus('未找到下载链接', false);
+            updateFeedbackStatus(isFacebookContext
+              ? '未能绑定当前视频，请继续播放后再长按'
+              : '未找到下载链接', false);
             return;
           }
         }
@@ -7731,56 +8226,32 @@ class _BrowserPageState extends State<BrowserPage>
         } catch (_) {}
         if (isFacebookContext && window.MediaInterceptor && window.MediaInterceptor.interceptedRequests && !fbBoundExclusive) {
           try {
-            const now = Date.now();
-            const ranked = [];
-            const boundKey = String((target && target.__appFbVideoKey) || '');
-            for (const [u, info] of window.MediaInterceptor.interceptedRequests) {
-              if (!u || (now - info.timestamp) > 600000 || isMediaFragmentUrl(u)) continue;
-              const lower = String(u).toLowerCase();
-              const isFb = lower.includes('fbcdn') || lower.includes('scontent.');
-              if (!isFb) continue;
-              if (videoEl) {
-                if (!(lower.includes('.mp4') || lower.includes('.m3u8') || lower.includes('.mpd') || lower.includes('video.'))) continue;
-                const track = facebookTrackMetadata(u);
-                if (track && track.audioOnly) continue;
-                let score = isFacebookReelsContext ? 0 : Number(info.timestamp || 0);
-                const key = facebookMediaKey(u);
-                if (boundKey && key && facebookKeysMatch(key, boundKey)) score += 5e12;
-                else if (boundKey && key && isFacebookReelsContext) score -= 4e12;
-                if (lower.includes('.mp4') && !lower.includes('bytestart')) score += 2e9;
-                if (lower.includes('oe=') || lower.includes('oh=')) score += 1e9;
-                if (track && track.videoTrack) {
-                  score += 3e12;
-                  score += Math.max(0, track.height || 0) * 1e9;
-                  score += Math.max(0, track.bitrate || 0) * 100;
+            // Video + no CDN bind: never push historical progressives into
+            // candidates (feeds Dart the same wrong neighbor repeatedly).
+            if (!videoEl) {
+              const now = Date.now();
+              const ranked = [];
+              for (const [u, info] of window.MediaInterceptor.interceptedRequests) {
+                if (!u || (now - info.timestamp) > 600000 || isMediaFragmentUrl(u)) continue;
+                const lower = String(u).toLowerCase();
+                const isFb = lower.includes('fbcdn') || lower.includes('scontent.');
+                if (!isFb) continue;
+                if (lower.includes('scontent.') || /\\.(jpe?g|png|webp)(\\?|#|\$)/.test(lower)) {
+                  let score = Number(info.timestamp || 0);
+                  if (lower.includes('_o.') || lower.includes('p1080x1080')) score += 1e9;
+                  ranked.push({ u, score });
                 }
-                if (isFacebookReelsContext) score += Math.min(1e9, Number(info.timestamp || 0) * 0.01);
-                ranked.push({ u, score });
-              } else if (lower.includes('scontent.') || /\\.(jpe?g|png|webp)(\\?|#|\$)/.test(lower)) {
-                let score = Number(info.timestamp || 0);
-                if (lower.includes('_o.') || lower.includes('p1080x1080')) score += 1e9;
-                ranked.push({ u, score });
               }
+              ranked.sort((a, b) => b.score - a.score);
+              ranked.slice(0, 8).forEach(item => push(item.u));
             }
-            ranked.sort((a, b) => b.score - a.score);
-            ranked.slice(0, 8).forEach(item => push(item.u));
           } catch (_) {}
         }
-        if (isFacebookContext && videoEl && String(url || '').startsWith('blob:')) {
-          const boundKey = String((target && target.__appFbVideoKey) || '');
-          const progressive = cands.find(u => {
-            const s = String(u || '').toLowerCase();
-            if (!((s.includes('fbcdn') || s.includes('scontent.')) &&
-              s.includes('.mp4') && !s.includes('bytestart') && !s.includes('byteend'))) return false;
-            if (!boundKey) return true;
-            const key = facebookMediaKey(u);
-            return !key || facebookKeysMatch(key, boundKey);
-          }) || cands.find(u => {
-            const s = String(u || '').toLowerCase();
-            return (s.includes('fbcdn') || s.includes('scontent.')) &&
-              s.includes('.mp4') && !s.includes('bytestart') && !s.includes('byteend');
-          });
-          if (progressive) url = progressive;
+        // Keep blob for unbound FB video — Dart primes + binds by soft reel.
+        // Do NOT replace blob with a random progressive from cands.
+        if (isFacebookContext && videoEl && String(url || '').startsWith('blob:') &&
+            target && target.__appFbBoundDownloadUrl) {
+          url = target.__appFbBoundDownloadUrl;
         }
         if (tryBlobOrDataUrl(url, mediaType)) {
           e.preventDefault();
@@ -7998,7 +8469,7 @@ class _BrowserPageState extends State<BrowserPage>
       );
       final ready = await controller.evaluateJavascript(
         source:
-            "window.__appMediaDownloadHandlersVersion === 'media-download-v28'",
+            "window.__appMediaDownloadHandlersVersion === 'media-download-v33'",
       );
       if (ready == true || ready.toString().toLowerCase() == 'true') {
         if (_lastMediaHandlerFailureUrl == injectionUrl) {
@@ -8047,6 +8518,26 @@ class _BrowserPageState extends State<BrowserPage>
     try {
       final data = jsonDecode(message);
       if (data is! Map || !data.containsKey('type')) return;
+      if (data['type'] == 'fb_debug' || data['type'] == 'FB_DL') {
+        String clip(dynamic v, int n) {
+          final s = (v ?? '').toString();
+          if (s.length <= n) return s;
+          return s.substring(0, n);
+        }
+
+        debugPrint(
+          'FB_DL js phase=${data['phase'] ?? ''} '
+          'reason=${data['reason'] ?? ''} '
+          'key=${data['key'] ?? ''} '
+          'softReel=${data['softReel'] ?? ''} '
+          'url=${clip(data['url'], 140)} '
+          'playing=${clip(data['playing'], 80)} '
+          'activeKeys=${data['activeKeys'] ?? ''} '
+          't=${data['currentTime'] ?? ''} '
+          'extra=${data['extra'] ?? ''}',
+        );
+        return;
+      }
       if (data['type'] == 'long_press_status') {
         if (mounted && data['isSmartGesture'] != true) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -8293,6 +8784,11 @@ class _BrowserPageState extends State<BrowserPage>
                   pageUrl.isNotEmpty ? pageUrl : _currentUrl,
                 ) ||
                 isFacebookReelsPageUrl(sourcePageUrl);
+            debugPrint(
+              'FB_DL dart_recv expectedKey=$expectedFbVideoKey '
+              'reels=$isFbReels primary=${primaryVideoUrl.length > 100 ? primaryVideoUrl.substring(0, 100) : primaryVideoUrl} '
+              'cands=${candidateUrls.length} smart=$isSmartGesture',
+            );
             final fbCandidates = await _resolveFacebookLongPressVideoCandidates(
               primaryUrl: primaryVideoUrl,
               candidates: candidateUrls,
@@ -8304,11 +8800,19 @@ class _BrowserPageState extends State<BrowserPage>
             if (fbCandidates.isNotEmpty) {
               primaryVideoUrl = fbCandidates.first;
               candidateUrls = fbCandidates.skip(1).toList();
+            } else {
+              primaryVideoUrl = '';
+              candidateUrls = <String>[];
             }
             final boundKey =
                 facebookMediaIdentity(primaryVideoUrl).isNotEmpty
                     ? facebookMediaIdentity(primaryVideoUrl)
                     : expectedFbVideoKey;
+            debugPrint(
+              'FB_DL dart_resolved boundKey=$boundKey '
+              'primary=${primaryVideoUrl.length > 120 ? primaryVideoUrl.substring(0, 120) : primaryVideoUrl} '
+              'n=${fbCandidates.length}',
+            );
             if (boundKey.isNotEmpty && !boundKey.startsWith('reel:')) {
               final task = _smartDownloadTask;
               if (task != null &&
@@ -8785,13 +9289,21 @@ class _BrowserPageState extends State<BrowserPage>
           selectedType = MediaType.video;
         }
         if (selectedType == MediaType.video) {
-          // 智能手势/动作编排：禁止 URL+磁盘预跳过；仅入库后内容哈希可 already_in_library
+          // 智能手势/动作编排/Facebook：禁止 URL+磁盘预跳过（签名 URL 易误绑邻条后
+          // 再弹「重复」，而当前条其实未入库）。仅入库后内容哈希可 already_in_library。
           final existing = await _findExistingVideoBeforeDownload(resolvedUrl);
           if (existing != null) {
-            if (isSmartGesture) {
+            final onFacebook =
+                _isFacebookPlatformPage(_currentUrl) ||
+                _isFacebookCdnUrl(resolvedUrl) ||
+                _isFacebookPlatformPage(
+                  (data['pageUrl'] ?? data['sourcePageUrl'] ?? '').toString(),
+                );
+            if (isSmartGesture || onFacebook) {
               debugPrint(
-                'Smart gesture: ignore source-map pre-skip, '
-                'force download+hash',
+                'FB_DL ignore source-map pre-skip '
+                'smart=$isSmartGesture fb=$onFacebook '
+                'url=${resolvedUrl.length > 100 ? resolvedUrl.substring(0, 100) : resolvedUrl}',
               );
             } else if (!await _confirmSourceUrlDuplicateBeforeDownload(
               existing,
@@ -13465,6 +13977,11 @@ class _BrowserPageState extends State<BrowserPage>
     task['xInlineActivationPending'] = false;
     task['xInlineReadyToLongPress'] = false;
     if (_smartUsesFacebookPipeline((task['siteProfile'] ?? '').toString())) {
+      // Persist stable identity BEFORE clearing the per-press bind — otherwise
+      // soft-skip-disabled auto mode re-downloads the same reel forever.
+      // (skippedDuplicate is computed below; stash key now, decide after.)
+      task['__fbKeyPendingHandled'] =
+          (task['expectedFbVideoKey'] ?? '').toString().trim();
       // The CDN identity belongs only to the just-pressed reel. Carrying it
       // into the next action is exactly how a later long press can download
       // the previous/neighbor item.
@@ -13476,6 +13993,11 @@ class _BrowserPageState extends State<BrowserPage>
     // already_in_smart_task / duplicate_name_in_smart_task 是会话/备案软标记，
     // 绝不能当成「已经处理过」放行切条（否则未入库也会狂滑下一条）。
     final skippedDuplicate = !success && failureType == 'already_in_library';
+    final pendingFbKey =
+        (task.remove('__fbKeyPendingHandled') ?? '').toString().trim();
+    if ((success || skippedDuplicate) && pendingFbKey.isNotEmpty) {
+      _rememberHandledFacebookIdentity(task, pendingFbKey);
+    }
     final activeKey = (task['gestureActiveKey'] ?? '').toString();
     final actionFailures =
         (task['gestureActionFailures'] as Map<String, int>?) ?? <String, int>{};
@@ -15403,6 +15925,9 @@ class _BrowserPageState extends State<BrowserPage>
       // 已成功/已跳过的媒体指纹，防止清障后又回到旧条无限重复
       'handledMediaKeys': <String>{},
       'handledMediaSrcs': <String>{},
+      // Facebook: stable fbvideo:/reel: ids — hash-only cannot catch re-signed CDN URLs
+      // of the same reel across qualities.
+      'handledFbVideoIds': <String>{},
       'needAdvancePastCurrent': false,
       'actionAdvanceFailed': false,
       'advancingPastHandled': false,
@@ -15454,6 +15979,98 @@ class _BrowserPageState extends State<BrowserPage>
     final created = <String>{};
     task['handledMediaSrcs'] = created;
     return created;
+  }
+
+  Set<String> _handledFbVideoIdsOf(Map<String, dynamic> task) {
+    final raw = task['handledFbVideoIds'];
+    if (raw is Set<String>) return raw;
+    if (raw is Set) {
+      final casted = raw.map((e) => e.toString()).toSet();
+      task['handledFbVideoIds'] = casted;
+      return casted;
+    }
+    final created = <String>{};
+    task['handledFbVideoIds'] = created;
+    return created;
+  }
+
+  void _rememberHandledFacebookIdentity(
+    Map<String, dynamic>? task,
+    String identity, {
+    String? mediaId,
+    String? softReelKey,
+  }) {
+    final key = identity.trim();
+    if (key.isEmpty) return;
+    if (task != null) {
+      final set = _handledFbVideoIdsOf(task);
+      set.add(key);
+      if (softReelKey != null && softReelKey.trim().isNotEmpty) {
+        set.add(softReelKey.trim());
+      }
+      if (key.startsWith('fbvideo:')) {
+        final vid = key.substring('fbvideo:'.length);
+        if (vid.isNotEmpty) set.add(vid);
+      }
+    }
+    final mid = (mediaId ?? '').trim();
+    if (mid.isNotEmpty) {
+      _videoSourceUrlToMediaId[key] = mid;
+      if (softReelKey != null && softReelKey.trim().isNotEmpty) {
+        _videoSourceUrlToMediaId[softReelKey.trim()] = mid;
+      }
+      unawaited(_saveVideoSourceUrlMap());
+    }
+  }
+
+  bool _sessionHasHandledFacebookIdentity(
+    Map<String, dynamic>? task,
+    String identity,
+  ) {
+    final key = identity.trim();
+    if (key.isEmpty || task == null) return false;
+    final set = _handledFbVideoIdsOf(task);
+    if (set.contains(key)) return true;
+    for (final existing in set) {
+      if (facebookIdentitiesMatch(existing, key)) return true;
+    }
+    return false;
+  }
+
+  Future<bool> _libraryConfirmsFacebookIdentity(String identity) async {
+    final key = identity.trim();
+    if (key.isEmpty) return false;
+
+    Future<bool> rowOk(String? mediaId) async {
+      if (mediaId == null || mediaId.isEmpty) return false;
+      try {
+        final row = await _databaseService.getMediaItemById(mediaId);
+        return await _libraryConfirmsExistingMediaRow(row);
+      } catch (_) {
+        return false;
+      }
+    }
+
+    // Exact key only — never fuzzy facebookIdentitiesMatch across the whole
+    // source map (that caused「库内已有」for videos not actually in library).
+    if (await rowOk(_videoSourceUrlToMediaId[key])) {
+      debugPrint('FB_DL libraryConfirm EXACT key=$key → true');
+      return true;
+    }
+    if (key.startsWith('fbvideo:')) {
+      final bare = key.substring('fbvideo:'.length);
+      if (bare.isNotEmpty && await rowOk(_videoSourceUrlToMediaId[bare])) {
+        debugPrint('FB_DL libraryConfirm EXACT bare=$bare → true');
+        return true;
+      }
+    } else if (RegExp(r'^\d{6,}$').hasMatch(key)) {
+      if (await rowOk(_videoSourceUrlToMediaId['fbvideo:$key'])) {
+        debugPrint('FB_DL libraryConfirm EXACT fbvideo:$key → true');
+        return true;
+      }
+    }
+    debugPrint('FB_DL libraryConfirm key=$key → false (no exact map)');
+    return false;
   }
 
   /// 指纹必须足够具体：空 src / none 标签 / 仅几何位的 key 不得参与「已处理」判定。
@@ -15609,19 +16226,27 @@ class _BrowserPageState extends State<BrowserPage>
   Future<void> _markCurrentMediaHandled(Map<String, dynamic> task) async {
     final identity = await _actionCaptureMediaIdentity(task);
     task['needAdvancePastCurrent'] = true;
-    if (!_isReliableActionMediaIdentity(identity)) {
-      debugPrint('action markHandled skipped: unreliable identity');
-      return;
+    if (_isReliableActionMediaIdentity(identity)) {
+      final key = (identity!['key'] ?? '').toString();
+      final src = (identity['src'] ?? '').toString().trim();
+      if (key.isNotEmpty) _handledMediaKeysOf(task).add(key);
+      if (src.isNotEmpty) _handledMediaSrcsOf(task).add(src);
+      task['lastHandledMediaKey'] = key;
+      task['lastHandledMediaSrc'] = src;
+      debugPrint(
+        'action markHandled key=${key.length > 80 ? key.substring(0, 80) : key} src=$src',
+      );
+    } else {
+      debugPrint('action markHandled skipped: unreliable DOM identity');
     }
-    final key = (identity!['key'] ?? '').toString();
-    final src = (identity['src'] ?? '').toString().trim();
-    if (key.isNotEmpty) _handledMediaKeysOf(task).add(key);
-    if (src.isNotEmpty) _handledMediaSrcsOf(task).add(src);
-    task['lastHandledMediaKey'] = key;
-    task['lastHandledMediaSrc'] = src;
-    debugPrint(
-      'action markHandled key=${key.length > 80 ? key.substring(0, 80) : key} src=$src',
-    );
+    if (_smartUsesFacebookPipeline((task['siteProfile'] ?? '').toString()) ||
+        task['facebookPipeline'] == true) {
+      final fbId = await _actionCaptureFacebookVideoIdentity(task);
+      if (fbId.isNotEmpty) {
+        _rememberHandledFacebookIdentity(task, fbId);
+        debugPrint('action markHandled fbIdentity=$fbId');
+      }
+    }
   }
 
   /// 用户选定的切条方向 → (axisHint, preferHorizontal, label, direction)
@@ -15882,6 +16507,9 @@ class _BrowserPageState extends State<BrowserPage>
     final o = outcome.trim().toLowerCase();
     return o == 'invalid_smart_media_content' ||
         o == 'fb_stub_rejected' ||
+        o == 'fb_identity_unbound' ||
+        o == 'fb_video_track_not_captured' ||
+        o == 'fb_audio_track_not_captured' ||
         o == 'outside_requested_size_range' ||
         o.contains('invalid_smart_media') ||
         o.contains('stub') ||
@@ -18772,6 +19400,97 @@ class _BrowserPageState extends State<BrowserPage>
     }
   }
 
+  /// Stable Facebook reel/video identity for session skip (not DOM geometry).
+  Future<String> _actionCaptureFacebookVideoIdentity(
+    Map<String, dynamic> task,
+  ) async {
+    final fromTask = (task['expectedFbVideoKey'] ?? '').toString().trim();
+    if (_isFacebookCdnIdentity(fromTask) || fromTask.startsWith('reel:')) {
+      return fromTask;
+    }
+    final controller = _controller;
+    if (controller == null) return '';
+    try {
+      final raw = await controller.evaluateJavascript(
+        source: r'''
+(() => {
+  const facebookMediaKey = (u) => {
+    const raw = String(u || '').trim();
+    if (!raw || raw.startsWith('blob:') || raw.startsWith('data:')) return '';
+    try {
+      const lower = raw.toLowerCase();
+      const reel = lower.match(/(?:facebook\.com|fb\.watch)\/(?:reel|reels|videos?)\/(\d{6,})/);
+      if (reel) return 'reel:' + reel[1];
+      const parsed = new URL(raw, location.href);
+      const encodedEfg = parsed.searchParams.get('efg') || '';
+      if (encodedEfg) {
+        try {
+          const normalized = decodeURIComponent(encodedEfg)
+            .replace(/-/g, '+').replace(/_/g, '/');
+          const padded = normalized + '='.repeat((4 - normalized.length % 4) % 4);
+          const metadata = JSON.parse(atob(padded));
+          const videoId = String(metadata.video_id || '').trim();
+          if (videoId) return 'fbvideo:' + videoId.toLowerCase();
+        } catch (_) {}
+      }
+    } catch (_) {}
+    return '';
+  };
+  const vw = window.innerWidth || 1, vh = window.innerHeight || 1;
+  const cx = vw / 2, cy = vh / 2;
+  const videos = Array.from(document.querySelectorAll('video'));
+  let best = null, bestScore = -1e18;
+  for (const video of videos) {
+    const r = video.getBoundingClientRect();
+    const area = Math.max(0, Math.min(r.right, vw) - Math.max(r.left, 0)) *
+      Math.max(0, Math.min(r.bottom, vh) - Math.max(r.top, 0));
+    if (area < 4096) continue;
+    const contains = r.left <= cx && r.right >= cx && r.top <= cy && r.bottom >= cy;
+    let score = area;
+    if (contains) score += 1e12;
+    if (!video.paused && !video.ended) score += 1e11;
+    if (score > bestScore) { bestScore = score; best = video; }
+  }
+  if (!best) return { key: facebookMediaKey(location.href) || '' };
+  let key = facebookMediaKey(best.currentSrc || best.src || '');
+  if (!key || String(key).startsWith('reel:')) {
+    try {
+      const link = best.closest && best.closest('a[href*="/reel/"], a[href*="/reels/"], a[href*="/videos/"]');
+      if (link && link.href) {
+        const rk = facebookMediaKey(link.href);
+        if (rk) key = rk;
+      }
+    } catch (_) {}
+  }
+  if (!key || String(key).startsWith('reel:')) {
+    try {
+      let node = best;
+      for (let d = 0; node && d < 10; d++, node = node.parentElement) {
+        const attr = node.getAttribute && (
+          node.getAttribute('data-video-id') ||
+          node.getAttribute('data-id') ||
+          node.getAttribute('data-reel-id')
+        );
+        if (attr && /^\d{6,}$/.test(String(attr))) {
+          key = 'reel:' + attr;
+          break;
+        }
+      }
+    } catch (_) {}
+  }
+  if (!key) key = facebookMediaKey(location.href) || '';
+  return { key: key || '' };
+})()
+''',
+      );
+      final map = _coerceJsMap(raw);
+      return (map?['key'] ?? '').toString().trim();
+    } catch (e) {
+      debugPrint('FB action identity capture failed: $e');
+      return '';
+    }
+  }
+
   /// 媒体身份是否已相对 [before] 变化（key / src / 中心点 / 滚动弱判定）。
   /// 横向相邻图常只改 src 或中心 X，key 全等时也要能检出。
   Future<bool> _actionMediaIdentityChanged(
@@ -19845,8 +20564,12 @@ class _BrowserPageState extends State<BrowserPage>
     // Facebook 视频一旦在本任务中成功入库或确认重复，就不得再次长按下载。
     // 页面回弹/循环回到旧视频时，先切走再处理新的当前视频。
     if (!probe && _actionRecipeRequiresSuccessfulVideoSave(task)) {
-      final currentIdentity = await _actionCaptureMediaIdentity(task);
-      if (_isHandledMediaIdentity(task, currentIdentity)) {
+      // Prefer stable fbvideo:/reel: over fragile DOM blob geometry keys.
+      final fbIdNow = await _actionCaptureFacebookVideoIdentity(task);
+      if (fbIdNow.isNotEmpty &&
+          (_sessionHasHandledFacebookIdentity(task, fbIdNow) ||
+              await _libraryConfirmsFacebookIdentity(fbIdNow))) {
+        _rememberHandledFacebookIdentity(task, fbIdNow);
         task['needAdvancePastCurrent'] = true;
         final advanced = await _advancePastHandledMedia(task);
         if (!advanced) {
@@ -19856,6 +20579,19 @@ class _BrowserPageState extends State<BrowserPage>
         }
         task['actionAdvanceFailed'] = false;
         await Future<void>.delayed(const Duration(milliseconds: 420));
+      } else {
+        final currentIdentity = await _actionCaptureMediaIdentity(task);
+        if (_isHandledMediaIdentity(task, currentIdentity)) {
+          task['needAdvancePastCurrent'] = true;
+          final advanced = await _advancePastHandledMedia(task);
+          if (!advanced) {
+            task['actionAdvanceFailed'] = true;
+            _showSmartOperation('当前视频已下载，正在重试切到下一条');
+            return;
+          }
+          task['actionAdvanceFailed'] = false;
+          await Future<void>.delayed(const Duration(milliseconds: 420));
+        }
       }
     }
     // 切条失败后：身份仍是已处理条时禁止再长按同条（否则 Reels 会反复下同一视频）
@@ -20928,6 +21664,7 @@ class _BrowserPageState extends State<BrowserPage>
       }
       final gridSite =
           siteProfile == 'facebook_grid' ? 'Facebook' : 'Instagram';
+      activeTask['phase'] = 'instagram_grid_scanning';
       activeTask['matchStage'] = '$gridSite 网格 · 逐项打开下载';
     }
     // 全局：优先同站成功经验（含 X/91 原智能内置经验）；无记忆则用内置默认。
@@ -21193,13 +21930,20 @@ class _BrowserPageState extends State<BrowserPage>
     Map<String, dynamic> task,
     String phase,
   ) {
-    if (task['gestureDownloadPending'] == true) return true;
-    if (task['instagramGridMode'] != true ||
-        task['actionAwaitingLibrarySave'] != true) {
+    if (task['instagramGridMode'] != true) return false;
+    // Scan / scroll / return must never block on a stale gate from the prior cell.
+    if (phase == 'instagram_grid_returning' ||
+        phase == 'instagram_grid_scanning' ||
+        phase == 'instagram_grid_scrolling' ||
+        phase == 'visiting_seed') {
       return false;
     }
-    return phase == 'instagram_grid_opening' ||
-        phase == 'instagram_grid_waiting_download';
+    if (phase != 'instagram_grid_opening' &&
+        phase != 'instagram_grid_waiting_download') {
+      return false;
+    }
+    return task['gestureDownloadPending'] == true ||
+        task['actionAwaitingLibrarySave'] == true;
   }
 
   /// Facebook detail is a same-URL lightbox; do not treat URL drift as detail.
@@ -21211,7 +21955,8 @@ class _BrowserPageState extends State<BrowserPage>
   }) {
     if (phase == 'instagram_grid_returning' ||
         phase == 'instagram_grid_scanning' ||
-        phase == 'instagram_grid_scrolling') {
+        phase == 'instagram_grid_scrolling' ||
+        phase == 'visiting_seed') {
       return false;
     }
     if (_isInstagramGridDetailUrl(actualUrl)) return true;
@@ -21469,6 +22214,15 @@ class _BrowserPageState extends State<BrowserPage>
           source: '''
             (() => {
               const requested = ${jsonEncode(requestedType)};
+              const facebookDetail =
+                ${jsonEncode(gridSite)} === 'Facebook';
+              const mediaRoot = facebookDetail
+                ? (document.querySelector('div[role="dialog"]') || document)
+                : document;
+              if (facebookDetail &&
+                  !document.querySelector('div[role="dialog"]')) {
+                return {action:'wait'};
+              }
               const visible = (el) => {
                 const r = el.getBoundingClientRect();
                 if (r.width < 100 || r.height < 100 || r.bottom <= 0 ||
@@ -21479,7 +22233,7 @@ class _BrowserPageState extends State<BrowserPage>
                 return s.display !== 'none' && s.visibility !== 'hidden' &&
                   Number(s.opacity || 1) > 0.05;
               };
-              const media = Array.from(document.querySelectorAll('video, img'))
+              const media = Array.from(mediaRoot.querySelectorAll('video, img'))
                 .filter(el => visible(el))
                 .filter(el => {
                   if (requested === 'video') return el.tagName === 'VIDEO';
@@ -21618,6 +22372,8 @@ class _BrowserPageState extends State<BrowserPage>
                 if (img) return img;
                 const roleImg = anchor.querySelector('[role="img"]');
                 if (roleImg) return roleImg;
+                const bgImg = anchor.querySelector('i[data-visualcompletion], i[style*="background"]');
+                if (bgImg) return bgImg;
                 return null;
               };
               const stableKey = (anchor, img, rect, ordinal) => {
@@ -21679,6 +22435,8 @@ class _BrowserPageState extends State<BrowserPage>
                 'a[href*="permalink"]',
                 'a[href*="posts"]',
                 'a[href*="fbid"]',
+                'a[href*="set=a."]',
+                'div[role="button"][tabindex="0"]',
                 '[role="link"]',
                 '[role="button"]',
               ];
@@ -22878,6 +23636,13 @@ class _BrowserPageState extends State<BrowserPage>
             debugPrint(
               'FB pipeline: smart resolve progressive=${resolvedFb.length} '
               'top=${resolvedFb.first}',
+            );
+          } else {
+            // Fail closed — never drain unbound neighbor captures.
+            urls.clear();
+            captured.clear();
+            debugPrint(
+              'FB pipeline: smart resolve unbound; cleared candidates',
             );
           }
         }
@@ -26218,13 +26983,22 @@ class _BrowserPageState extends State<BrowserPage>
           final MediaType mediaType = result['mediaType'];
           if (shouldDownload && mediaType != MediaType.audio) {
             if (mediaType == MediaType.video) {
+              final onFacebook =
+                  _isFacebookPlatformPage(_currentUrl) ||
+                  _isFacebookCdnUrl(processedUrl);
               final existing = await _findExistingVideoBeforeDownload(
                 processedUrl,
               );
               if (existing != null) {
-                final downloadAnyway =
-                    await _confirmSourceUrlDuplicateBeforeDownload(existing);
-                if (!downloadAnyway) return;
+                if (onFacebook) {
+                  debugPrint(
+                    'FB_DL ignore dialog-path source-map pre-skip',
+                  );
+                } else {
+                  final downloadAnyway =
+                      await _confirmSourceUrlDuplicateBeforeDownload(existing);
+                  if (!downloadAnyway) return;
+                }
               }
             }
             ScaffoldMessenger.of(context).showSnackBar(
@@ -26242,11 +27016,18 @@ class _BrowserPageState extends State<BrowserPage>
         }
       } else {
         if (selectedType == MediaType.video) {
+          final onFacebook =
+              _isFacebookPlatformPage(_currentUrl) ||
+              _isFacebookCdnUrl(processedUrl);
           final existing = await _findExistingVideoBeforeDownload(processedUrl);
           if (existing != null) {
-            final downloadAnyway =
-                await _confirmSourceUrlDuplicateBeforeDownload(existing);
-            if (!downloadAnyway) return;
+            if (onFacebook) {
+              debugPrint('FB_DL ignore dialog-path source-map pre-skip');
+            } else {
+              final downloadAnyway =
+                  await _confirmSourceUrlDuplicateBeforeDownload(existing);
+              if (!downloadAnyway) return;
+            }
           }
         }
         ScaffoldMessenger.of(context).showSnackBar(
@@ -31028,6 +31809,28 @@ class _BrowserPageState extends State<BrowserPage>
               _videoSourceUrlToMediaId[_normalizeVideoSourceUrl(smartPageUrl)] =
                   mediaId;
             }
+            final fbId = facebookMediaIdentity(absoluteUrl);
+            if (fbId.isNotEmpty) {
+              _rememberHandledFacebookIdentity(
+                smartTask,
+                fbId,
+                mediaId: mediaId,
+                softReelKey: expectedMediaIdentity.startsWith('reel:')
+                    ? expectedMediaIdentity
+                    : (smartTask?['expectedFbVideoKey'] ?? '')
+                        .toString()
+                        .trim()
+                        .startsWith('reel:')
+                    ? (smartTask?['expectedFbVideoKey'] ?? '').toString().trim()
+                    : null,
+              );
+            } else if (expectedMediaIdentity.trim().isNotEmpty) {
+              _rememberHandledFacebookIdentity(
+                smartTask,
+                expectedMediaIdentity.trim(),
+                mediaId: mediaId,
+              );
+            }
             await _saveVideoSourceUrlMap();
           }
         }
@@ -31218,6 +32021,23 @@ class _BrowserPageState extends State<BrowserPage>
             if (_smartStablePageKey(smartPageUrl).isNotEmpty) {
               _videoSourceUrlToMediaId[_normalizeVideoSourceUrl(smartPageUrl)] =
                   existingMediaId;
+            }
+            final fbId = facebookMediaIdentity(absoluteUrl);
+            if (fbId.isNotEmpty) {
+              _rememberHandledFacebookIdentity(
+                smartTask,
+                fbId,
+                mediaId: existingMediaId,
+                softReelKey: expectedMediaIdentity.startsWith('reel:')
+                    ? expectedMediaIdentity
+                    : null,
+              );
+            } else if (expectedMediaIdentity.trim().isNotEmpty) {
+              _rememberHandledFacebookIdentity(
+                smartTask,
+                expectedMediaIdentity.trim(),
+                mediaId: existingMediaId,
+              );
             }
             await _saveVideoSourceUrlMap();
           }
@@ -35021,6 +35841,12 @@ class _BrowserPageState extends State<BrowserPage>
             debugPrint(
               'FB pipeline: smart resolve progressive=${resolvedFb.length} '
               'top=${resolvedFb.first}',
+            );
+          } else {
+            urls.clear();
+            captured.clear();
+            debugPrint(
+              'FB pipeline: smart resolve unbound; cleared candidates',
             );
           }
         }
