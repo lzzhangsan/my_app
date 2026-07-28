@@ -663,7 +663,8 @@ function __smartEaseInOut(t) {
     x: w > 0 ? ((r.left + r.width / 2) / w) : 0.5,
     y: h > 0 ? ((r.top + r.height / 2) / h) : 0.5,
     scrollTop: Math.round(Number(se && se.scrollTop) || 0),
-    scrollLeft: Math.round(Number(se && se.scrollLeft) || 0)
+    scrollLeft: Math.round(Number(se && se.scrollLeft) || 0),
+    pageUrl: String(location.href || '')
   };
 })()
 ''';
@@ -781,7 +782,10 @@ function __smartEaseInOut(t) {
   }
 
   /// 真实双击：两次短按，间隔约 90ms。
-  static String doubleTapAt({required double clientX, required double clientY}) {
+  static String doubleTapAt({
+    required double clientX,
+    required double clientY,
+  }) {
     return '''
 (() => {
   $finderPreamble

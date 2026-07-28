@@ -624,6 +624,16 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
                           (task['progress'] as num?)?.toDouble() ?? 0.0;
                       final detail = (task['progressDetail'] ?? '').toString();
                       final statusLabel = _browserDownloadStatusLabel(status);
+                      final smartCompleted =
+                          (task['smartBatchCompleted'] as num?)?.toInt();
+                      final smartTarget =
+                          (task['smartBatchTarget'] as num?)?.toInt();
+                      final smartProgressLabel =
+                          smartCompleted != null &&
+                                  smartTarget != null &&
+                                  smartTarget > 0
+                              ? '$smartCompleted/$smartTarget'
+                              : '';
                       return Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
@@ -642,6 +652,20 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
                                 ),
                               ),
                               const SizedBox(width: 8),
+                              if (smartProgressLabel.isNotEmpty) ...[
+                                Text(
+                                  smartProgressLabel,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w700,
+                                    fontFeatures: [
+                                      FontFeature.tabularFigures(),
+                                    ],
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                              ],
                               Text(
                                 statusLabel,
                                 style: TextStyle(

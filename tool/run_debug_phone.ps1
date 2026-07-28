@@ -252,6 +252,31 @@ if ($vmPort) {
   Write-Host "  Could not discover VM port; attach may wait forever" -ForegroundColor Yellow
 }
 
+# Capture Android/Flutter output independently from `flutter attach`.
+# Windows PowerShell Start-Transcript does not reliably include stdout from a
+# native child process, while this PID-scoped logcat file remains tail-able.
+$debugLogDir = Join-Path $ProjectRoot "debug_logs"
+New-Item -ItemType Directory -Path $debugLogDir -Force | Out-Null
+$androidLogPath = Join-Path $debugLogDir "android_app_latest.log"
+$androidLogErrPath = Join-Path $debugLogDir "android_app_latest.err.log"
+$androidLogProcess = $null
+if ($pidOf) {
+  Remove-Item -LiteralPath $androidLogPath -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $androidLogErrPath -Force -ErrorAction SilentlyContinue
+  try {
+    $androidLogProcess = Start-Process -FilePath $adb `
+      -ArgumentList @("-s", $DeviceId, "logcat", "--pid=$pidOf", "-v", "time") `
+      -RedirectStandardOutput $androidLogPath `
+      -RedirectStandardError $androidLogErrPath `
+      -WindowStyle Hidden `
+      -PassThru
+    Write-Host "  Android live log: $androidLogPath" -ForegroundColor Green
+    Write-Host "  VS terminal view: Get-Content '$androidLogPath' -Wait -Tail 100" -ForegroundColor Green
+  } catch {
+    Write-Host "  Could not start PID-scoped logcat: $($_.Exception.Message)" -ForegroundColor Yellow
+  }
+}
+
 # --- 7) attach ---
 Write-Step "7/7" "flutter attach --no-dds (keep this window focused; then press R)"
 Write-Host ""
@@ -265,7 +290,6 @@ Clear-DebugProxy
 
 # Preserve the interactive attach window (including I/flutter diagnostics)
 # without piping stdout, because a PowerShell pipeline would break r/R/q input.
-$debugLogDir = Join-Path $ProjectRoot "debug_logs"
 $attachLogPath = Join-Path $debugLogDir "flutter_attach_latest.log"
 $transcriptStarted = $false
 try {
@@ -303,6 +327,9 @@ if ($code -ne 0 -and (Test-Path $apk)) {
 
 if ($transcriptStarted) {
   try { Stop-Transcript | Out-Null } catch {}
+}
+if ($androidLogProcess -and -not $androidLogProcess.HasExited) {
+  Stop-Process -Id $androidLogProcess.Id -Force -ErrorAction SilentlyContinue
 }
 
 Write-Host ""

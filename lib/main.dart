@@ -51,6 +51,14 @@ void main() async {
       }
 
       runApp(const MyApp());
+      if (kDebugMode) {
+        Logger.i('[APP_LOG_READY] Debug 日志通道已启动');
+        Timer.periodic(const Duration(seconds: 30), (_) {
+          Logger.d(
+            '[APP_HEARTBEAT] ${DateTime.now().toIso8601String()} · 应用运行中',
+          );
+        });
+      }
     },
     (error, stack) {
       Logger.e('未捕获的异步异常', error, stack);
