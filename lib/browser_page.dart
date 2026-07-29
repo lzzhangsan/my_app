@@ -4774,16 +4774,11 @@ class _BrowserPageState extends State<BrowserPage>
               ..addAll(progressiveWithEmbeddedAudio);
             selectedVideoMetadata = null;
           } else {
-            attempts.clear();
             missingFacebookAudioTrack = true;
-            if (isSmartGesture) {
-              smartTask?['lastGestureFailureType'] =
-                  'fb_audio_track_not_captured';
-            }
-            onFailureType?.call('fb_audio_track_not_captured');
             debugPrint(
               'FB pipeline: matching audio track not captured for '
-              'videoId=${selectedVideoMetadata.videoId}; refusing silent save',
+              'videoId=${selectedVideoMetadata.videoId} after bounded wait; '
+              'preserve the bound video track as a partial success',
             );
           }
         }
@@ -4821,6 +4816,12 @@ class _BrowserPageState extends State<BrowserPage>
         progress.dispose();
         detailNotifier.dispose();
         return false;
+      }
+      if (missingFacebookAudioTrack) {
+        debugPrint(
+          '[SMART_PARTIAL] Facebook audio track unavailable; '
+          'continue with the verified video track only',
+        );
       }
     }
     if (isLongPress && attempts.length > (isFacebookPipeline ? 8 : 3)) {
@@ -31846,19 +31847,9 @@ class _BrowserPageState extends State<BrowserPage>
         }
         if (requirePairedAudio && !pairedAudioMuxed) {
           debugPrint(
-            'FB pipeline: reject silent DASH video because required audio '
-            'mux did not complete',
+            '[SMART_PARTIAL] Facebook audio mux did not complete after the '
+            'bounded attempt; preserve the downloaded video track',
           );
-          try {
-            final silentFile = downloadedFile;
-            if (silentFile != null && await silentFile.exists()) {
-              await silentFile.delete();
-            }
-          } catch (_) {}
-          downloadedFile = null;
-          onFailureType?.call('fb_audio_mux_failed');
-          if (mounted) _removeDownloadTask(taskId);
-          return false;
         }
         final completedDownload = downloadedFile!;
         final downloadedBytes = await completedDownload.length();
