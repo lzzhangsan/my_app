@@ -203,6 +203,8 @@ const String _kEarlyMediaSnifferScript = r'''
     mediaHost === 'tik.porn' || mediaHost.endsWith('.tik.porn') ||
     mediaHost === 'pin.porn' || mediaHost.endsWith('.pin.porn') ||
     mediaHost === 'instagram.com' || mediaHost.endsWith('.instagram.com'));
+  const isInstagramFeedPage = mediaHosts.some(mediaHost =>
+    mediaHost === 'instagram.com' || mediaHost.endsWith('.instagram.com'));
   const mediaBufferUrls = new WeakMap();
   const sourceBufferOwners = new WeakMap();
   const mediaSourceByBlobUrl = new Map();
@@ -332,7 +334,11 @@ const String _kEarlyMediaSnifferScript = r'''
           if (!url && ArrayBuffer.isView(buffer) && buffer.buffer) {
             url = mediaBufferUrls.get(buffer.buffer);
           }
-          if (!url && latestMediaBuffer && Date.now() - latestMediaBuffer.timestamp < 1500) {
+          // Instagram preloads adjacent posts concurrently. "Latest response"
+          // is therefore not evidence that a buffer belongs to this
+          // SourceBuffer and caused repeatable cross-post downloads.
+          if (!url && !isInstagramFeedPage &&
+              latestMediaBuffer && Date.now() - latestMediaBuffer.timestamp < 1500) {
             url = latestMediaBuffer.url;
           }
           if (owner && url) {
@@ -387,7 +393,11 @@ const String _kEarlyMediaSnifferScript = r'''
             (wholeMediaPriority(b[0]) - wholeMediaPriority(a[0])) ||
             (b[1].latest - a[1].latest) ||
             (b[1].count - a[1].count))
-          .slice(0, 32)
+          // Instagram may keep several reused feed buffers on one MediaSource.
+          // Keep enough history for the current video's earlier video track;
+          // native code subsequently binds one asset by the pressed element's
+          // exact duration and never mixes asset identities.
+          .slice(0, 80)
           .map(entry => entry[0]);
       } catch (_) {
         return [];
@@ -990,6 +1000,148 @@ class _BrowserPageState extends State<BrowserPage>
       score += ((metadata!.bitrate ?? 0) ~/ 1000).clamp(0, 10000);
     }
     return score;
+  }
+
+  List<String> _selectInstagramBoundTrackCandidates(
+    Iterable<String> fragmentUrls, {
+    Iterable<String> fallbackUrls = const <String>[],
+    double targetDurationSeconds = 0,
+  }) {
+    final tracksByAsset = <String, List<String>>{};
+    final seen = <String>{};
+    void collect(String raw) {
+      final whole = recoverWholeMediaUrlFromFragment(raw) ?? raw.trim();
+      if (whole.isEmpty || !seen.add(whole) || !_isInstagramCdnUrl(whole)) {
+        return;
+      }
+      final metadata = facebookMediaMetadata(whole);
+      if (metadata == null || metadata.videoId.isEmpty) return;
+      if (!metadata.isVideoTrack && !metadata.isAudioOnly) return;
+      tracksByAsset.putIfAbsent(metadata.videoId, () => <String>[]).add(whole);
+    }
+
+    for (final raw in fragmentUrls) {
+      collect(raw);
+    }
+    final boundGroupSummary = tracksByAsset.entries
+        .map((entry) {
+          final metadata =
+              entry.value
+                  .map(facebookMediaMetadata)
+                  .whereType<FacebookMediaMetadata>()
+                  .toList();
+          final durations = metadata
+              .map((value) => value.durationSeconds)
+              .whereType<int>()
+              .toSet()
+              .join('/');
+          final videoCount =
+              metadata.where((value) => value.isVideoTrack).length;
+          final audioCount =
+              metadata.where((value) => value.isAudioOnly).length;
+          return '${entry.key}(d=$durations,v=$videoCount,a=$audioCount)';
+        })
+        .join(',');
+    debugPrint(
+      '[IG_GROUPS] targetDuration=${targetDurationSeconds.toStringAsFixed(3)} '
+      'bound=[$boundGroupSummary]',
+    );
+
+    String? selectedAssetId;
+    var selectedScore = -0x7fffffff;
+    double? selectedDurationDelta;
+    for (final entry in tracksByAsset.entries) {
+      final metadata =
+          entry.value
+              .map(facebookMediaMetadata)
+              .whereType<FacebookMediaMetadata>()
+              .toList();
+      if (metadata.isEmpty) continue;
+      final videos =
+          entry.value
+              .where((url) => facebookMediaMetadata(url)?.isVideoTrack == true)
+              .toList();
+      final hasAudio = entry.value.any(
+        (url) => facebookMediaMetadata(url)?.isAudioOnly == true,
+      );
+      var score =
+          videos.isEmpty
+              ? 0
+              : videos
+                  .map(_scoreInstagramVideoCandidate)
+                  .reduce((left, right) => max(left, right));
+      if (hasAudio) score += 2000;
+      if (metadata.any(
+        (value) => value.encodeTag.toLowerCase().contains('.ad.'),
+      )) {
+        score -= 50000;
+      }
+      double? durationDelta;
+      if (targetDurationSeconds > 0) {
+        final durations =
+            metadata
+                .map((value) => value.durationSeconds)
+                .whereType<num>()
+                .map((duration) => duration.toDouble())
+                .where((duration) => duration > 0)
+                .toList();
+        if (durations.isNotEmpty) {
+          durationDelta = durations
+              .map((duration) => (duration - targetDurationSeconds).abs())
+              .reduce(min);
+          score += max(0, 200000 - (durationDelta * 50000).round());
+        }
+      }
+      if (score > selectedScore) {
+        selectedScore = score;
+        selectedAssetId = entry.key;
+        selectedDurationDelta = durationDelta;
+      }
+    }
+    if (selectedAssetId == null) return const <String>[];
+    if (targetDurationSeconds > 0) {
+      final allowedDelta = max(1.5, targetDurationSeconds * 0.20);
+      if (selectedDurationDelta == null ||
+          selectedDurationDelta! > allowedDelta) {
+        debugPrint(
+          '[IG_BOUND_REJECT] asset=$selectedAssetId '
+          'targetDuration=${targetDurationSeconds.toStringAsFixed(3)} '
+          'delta=${selectedDurationDelta?.toStringAsFixed(3) ?? 'unknown'} '
+          'allowed=${allowedDelta.toStringAsFixed(3)}',
+        );
+        return const <String>[];
+      }
+    }
+
+    // The exact MediaSource may only expose the audio half when Instagram
+    // buffered video before the sniffer was installed. Once the bound element
+    // has selected an asset identity, supplement only that same asset.
+    for (final raw in fallbackUrls) {
+      final whole = recoverWholeMediaUrlFromFragment(raw) ?? raw.trim();
+      if (facebookMediaMetadata(whole)?.videoId == selectedAssetId) {
+        collect(raw);
+      }
+    }
+    final selectedTracks = tracksByAsset[selectedAssetId]!;
+    final videos =
+        selectedTracks
+            .where((url) => facebookMediaMetadata(url)?.isVideoTrack == true)
+            .toList()
+          ..sort(
+            (left, right) => _scoreInstagramVideoCandidate(
+              right,
+            ).compareTo(_scoreInstagramVideoCandidate(left)),
+          );
+    final audios =
+        selectedTracks
+            .where((url) => facebookMediaMetadata(url)?.isAudioOnly == true)
+            .toList();
+    debugPrint(
+      '[IG_BOUND] asset=$selectedAssetId '
+      'videoTracks=${videos.length} audioTracks=${audios.length} '
+      'boundAssets=${tracksByAsset.length}',
+    );
+    return <String>[...videos, ...audios];
   }
 
   /// Facebook media strategy (dedicated site profile, parallel to X/91):
@@ -4487,7 +4639,8 @@ class _BrowserPageState extends State<BrowserPage>
           final metadata = facebookMediaMetadata(candidate);
           if (metadata?.isAudioOnly == true &&
               metadata!.videoId == selectedVideoMetadata.videoId) {
-            pairedDashAudioUrl = recoverWholeMediaUrlFromFragment(candidate);
+            pairedDashAudioUrl =
+                recoverWholeMediaUrlFromFragment(candidate) ?? candidate;
             break;
           }
         }
@@ -4882,6 +5035,10 @@ class _BrowserPageState extends State<BrowserPage>
             '[稳健下载诊断] 尝试#${i + 1}/${attempts.length}: 跳过 | failureType=$failureType | url=${attempts[i]}',
           );
         }
+        // A hash-confirmed library duplicate is terminal for this media item.
+        // Trying a lower rendition as if it were another item can turn a
+        // correct duplicate skip into a size failure and make the grid retry.
+        if (failureType == 'already_in_library') break;
         continue;
       }
       ok = await _performBackgroundDownload(
@@ -6866,6 +7023,7 @@ class _BrowserPageState extends State<BrowserPage>
           updateFeedbackStatus('未找到媒体元素', false);
           return;
         }
+        const initialLongPressTarget = target;
         const longPressSessionId = 'lp-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
         const isSmartGesture = !!(target && target.getAttribute &&
           target.getAttribute('data-app-smart-gesture') === '1');
@@ -6927,6 +7085,60 @@ class _BrowserPageState extends State<BrowserPage>
             if (score > bestScore) { bestScore = score; picked = video; }
           }
           return picked;
+        }
+
+        function pickInstagramVideoAtPoint(x, y) {
+          if (!isInstagramContext) return null;
+          try {
+            const stack = document.elementsFromPoint(x, y) || [];
+            let post = null;
+            for (const element of stack) {
+              const article = element && element.closest &&
+                element.closest('article');
+              if (article) {
+                post = article;
+                break;
+              }
+            }
+            const videos = post
+              ? Array.from(post.querySelectorAll('video'))
+              : Array.from(document.querySelectorAll('video')).filter(video => {
+                  const rect = video.getBoundingClientRect();
+                  return x >= rect.left && x <= rect.right &&
+                    y >= rect.top && y <= rect.bottom;
+                });
+            let selected = null;
+            let selectedScore = -Infinity;
+            for (const video of videos) {
+              const rect = video.getBoundingClientRect();
+              const visibleW = Math.max(0,
+                Math.min(rect.right, window.innerWidth || 1) -
+                Math.max(rect.left, 0));
+              const visibleH = Math.max(0,
+                Math.min(rect.bottom, window.innerHeight || 1) -
+                Math.max(rect.top, 0));
+              if (visibleW * visibleH <= 0) continue;
+              const contains = x >= rect.left && x <= rect.right &&
+                y >= rect.top && y <= rect.bottom;
+              const distance = Math.hypot(
+                rect.left + rect.width / 2 - x,
+                rect.top + rect.height / 2 - y
+              );
+              let score = -distance * 1000;
+              if (contains) score += 1000000000;
+              if (!video.paused && !video.ended) score += 10000000;
+              if (Number(video.currentTime || 0) > 0) score += 1000000;
+              if (score > selectedScore) {
+                selectedScore = score;
+                selected = video;
+              }
+            }
+            // Never escape to a different Instagram post. Transparent controls
+            // are accepted only when their own article contains one video.
+            return selected;
+          } catch (_) {
+            return null;
+          }
         }
 
         function xStatusInfoAtPoint(x, y) {
@@ -7189,8 +7401,10 @@ class _BrowserPageState extends State<BrowserPage>
           const xStatus = xStatusInfoAtPoint(window._lastTouchX, window._lastTouchY);
           const currentVideo = isTikPornContext
             ? pickTikPornVideo(window._lastTouchX, window._lastTouchY)
-            : ((xStatus && xStatus.video) ||
-              pickCurrentVideo(window._lastTouchX, window._lastTouchY));
+            : (isInstagramContext
+              ? pickInstagramVideoAtPoint(window._lastTouchX, window._lastTouchY)
+              : ((xStatus && xStatus.video) ||
+                pickCurrentVideo(window._lastTouchX, window._lastTouchY)));
           const atPoint = document.elementsFromPoint(window._lastTouchX, window._lastTouchY);
           let pointVideo = null;
           for (const el of atPoint) {
@@ -7229,6 +7443,56 @@ class _BrowserPageState extends State<BrowserPage>
           }
         }
         target = bestTarget;
+
+        if (isInstagramContext) {
+          try {
+            const tx = Number(window._lastTouchX || 0);
+            const ty = Number(window._lastTouchY || 0);
+            const selectedVideo = String((target && target.tagName) || '').toLowerCase() === 'video'
+              ? target
+              : (target && target.querySelector && target.querySelector('video'));
+            const selectedPost = selectedVideo && selectedVideo.closest &&
+              selectedVideo.closest('article');
+            const allPosts = Array.from(document.querySelectorAll('article'));
+            const postVideos = selectedPost
+              ? Array.from(selectedPost.querySelectorAll('video'))
+              : [];
+            const rectSummary = video => {
+              const rect = video.getBoundingClientRect();
+              return {
+                i: Array.from(document.querySelectorAll('video')).indexOf(video),
+                x: Math.round(rect.left),
+                y: Math.round(rect.top),
+                w: Math.round(rect.width),
+                h: Math.round(rect.height),
+                hit: tx >= rect.left && tx <= rect.right &&
+                  ty >= rect.top && ty <= rect.bottom,
+                paused: !!video.paused,
+                t: Number(video.currentTime || 0).toFixed(2),
+                d: Number(video.duration || 0).toFixed(2),
+                src: String(video.currentSrc || video.src || '').slice(-48)
+              };
+            };
+            let postHref = '';
+            if (selectedPost) {
+              const link = selectedPost.querySelector(
+                'a[href*="/p/"], a[href*="/reel/"], a[href*="/tv/"]'
+              );
+              postHref = String((link && (link.href || link.getAttribute('href'))) || '');
+            }
+            Flutter.postMessage(JSON.stringify({
+              type: 'ig_debug',
+              phase: 'touch_bind',
+              touch: Math.round(tx) + ',' + Math.round(ty),
+              initial: String((initialLongPressTarget && initialLongPressTarget.tagName) || ''),
+              selected: selectedVideo ? JSON.stringify(rectSummary(selectedVideo)) : 'none',
+              post: postHref.slice(0, 160),
+              postIndex: selectedPost ? allPosts.indexOf(selectedPost) : -1,
+              videoIndex: selectedVideo ? postVideos.indexOf(selectedVideo) : -1,
+              videos: JSON.stringify(postVideos.map(rectSummary))
+            }));
+          } catch (_) {}
+        }
 
         if (isXPlatformContext &&
             String(target.tagName || '').toLowerCase() === 'video') {
@@ -8533,6 +8797,19 @@ class _BrowserPageState extends State<BrowserPage>
     try {
       final data = jsonDecode(message);
       if (data is! Map || !data.containsKey('type')) return;
+      if (data['type'] == 'ig_debug') {
+        debugPrint(
+          '[IG_DOM] phase=${data['phase'] ?? ''} '
+          'touch=${data['touch'] ?? ''} '
+          'initial=${data['initial'] ?? ''} '
+          'selected=${data['selected'] ?? ''} '
+          'post=${data['post'] ?? ''} '
+          'postIndex=${data['postIndex'] ?? ''} '
+          'videoIndex=${data['videoIndex'] ?? ''} '
+          'videos=${data['videos'] ?? ''}',
+        );
+        return;
+      }
       if (data['type'] == 'fb_debug' || data['type'] == 'FB_DL') {
         String clip(dynamic v, int n) {
           final s = (v ?? '').toString();
@@ -9122,6 +9399,72 @@ class _BrowserPageState extends State<BrowserPage>
                   boundFragmentUrls.add(value.trim());
                 }
               }
+            }
+            if (isStreamReference &&
+                (_isInstagramPlatformPage(messagePageUrl) ||
+                    _isInstagramPlatformPage(_currentUrl))) {
+              final boundInstagramTracks = _selectInstagramBoundTrackCandidates(
+                boundFragmentUrls,
+                fallbackUrls: <String>[
+                  ...downloadCandidateUrls,
+                  ..._recentCapturedMediaCandidates(
+                    MediaType.video,
+                    pageUrl: messagePageUrl,
+                    notBefore: sessionNotBefore,
+                  ),
+                ],
+                targetDurationSeconds: messageDurationSeconds,
+              );
+              if (boundInstagramTracks.any(
+                (url) => facebookMediaMetadata(url)?.isVideoTrack == true,
+              )) {
+                final downloaded = await _downloadMediaRobustly(
+                  item: <String, dynamic>{
+                    'pageUrl':
+                        messagePageUrl.isNotEmpty
+                            ? messagePageUrl
+                            : _currentUrl,
+                    'videoUrl': boundInstagramTracks.first,
+                    // Keep the matching audio track in this list. The Instagram
+                    // pipeline removes it from video attempts only after binding
+                    // it to the selected video asset for muxing.
+                    'candidateUrls': boundInstagramTracks,
+                    'title': (data['title'] ?? '').toString(),
+                    'downloadOrigin': 'long_press',
+                    'isSmartGesture':
+                        isSmartGesture || _isSmartDemoLearningActive(),
+                    'smartTask':
+                        (isSmartGesture || _isSmartDemoLearningActive())
+                            ? _smartDownloadTask
+                            : null,
+                    'sessionId': mediaSessionId,
+                    'durationSec': messageDurationSeconds,
+                  },
+                  showResultHint: !isSmartGesture,
+                );
+                if (isSmartGesture) {
+                  await _completeSmartGestureDownload(downloaded);
+                }
+                return;
+              }
+              debugPrint(
+                '[IG_BOUND] current asset has no recoverable video track; '
+                'refusing unrelated fallback',
+              );
+              if (mounted && !isSmartGesture) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('当前视频轨尚未捕获，请继续播放几秒后再长按下载'),
+                    duration: Duration(seconds: 3),
+                  ),
+                );
+              }
+              if (isSmartGesture) {
+                _smartDownloadTask?['lastGestureFailureType'] =
+                    'instagram_current_track_not_captured';
+                await _completeSmartGestureDownload(false);
+              }
+              return;
             }
             final boundStreamCandidates =
                 normalizeMediaCandidateUrls(
@@ -16347,8 +16690,7 @@ class _BrowserPageState extends State<BrowserPage>
     }
     final identity = await _actionCaptureMediaIdentity(task);
     final identityReliable = _isReliableActionMediaIdentity(identity);
-    if (identityReliable &&
-        !await _shouldSkipAsHandledMedia(task, identity)) {
+    if (identityReliable && !await _shouldSkipAsHandledMedia(task, identity)) {
       task['needAdvancePastCurrent'] = false;
       task['actionAdvanceFailureCount'] = 0;
       return true;
@@ -21784,6 +22126,10 @@ class _BrowserPageState extends State<BrowserPage>
     activeTask['skipSniffAcquire'] = isLegacySite;
     activeTask['preferSniffFirst'] = !isLegacySite;
     if (activeTask['instagramGridMode'] == true) {
+      // A profile grid can contain legitimate very short clips. A generic
+      // minimum-byte filter rejects those before the MP4/content validation
+      // (for example a valid 1.7 s reel of about 150 KB).
+      activeTask['effectiveMinVideoBytes'] = null;
       activeTask['gestureMode'] = false;
       activeTask['protectVisibleGestureFlow'] = false;
       activeTask['skipSniffAcquire'] = true;
@@ -22076,6 +22422,16 @@ class _BrowserPageState extends State<BrowserPage>
     return marker == 'p' || marker == 'reel';
   }
 
+  String _instagramGridDetailKey(String value) {
+    final uri = Uri.tryParse(value);
+    if (uri == null) return '';
+    final parts = uri.pathSegments.where((part) => part.isNotEmpty).toList();
+    if (parts.length < 2) return '';
+    final marker = parts[parts.length - 2].toLowerCase();
+    if (marker != 'p' && marker != 'reel') return '';
+    return parts.last;
+  }
+
   /// Grid scan/scroll must never stall on a library gate left from a prior cell.
   bool _profileGridShouldWaitForLibrary(
     Map<String, dynamic> task,
@@ -22198,7 +22554,12 @@ class _BrowserPageState extends State<BrowserPage>
         );
       } catch (_) {}
     }
-    if (controller != null && await controller.canGoBack()) {
+    // Instagram's SPA history can contain detail pages from another profile
+    // or an older grid run. Going back can therefore jump to an unrelated
+    // reel. Restore the exact grid URL captured when this item was opened.
+    if (gridSite != 'Facebook' && gridUrl.startsWith('http')) {
+      _loadUrl(gridUrl);
+    } else if (controller != null && await controller.canGoBack()) {
       await controller.goBack();
     } else if (gridUrl.startsWith('http')) {
       _loadUrl(gridUrl);
@@ -22243,6 +22604,9 @@ class _BrowserPageState extends State<BrowserPage>
     if (!identical(_smartDownloadTask, task)) return;
     task['instagramGridActiveKey'] = '';
     task['instagramGridActiveHref'] = '';
+    // Only consecutive, settled grid-bottom scans may finish traversal.
+    // Transient empty DOMs while returning from a detail must not accumulate.
+    task['instagramGridNoNewScans'] = 0;
     _clearProfileGridLibraryGateForScan(task);
     task['phase'] = 'instagram_grid_scanning';
     unawaited(_advanceSmartDownload(_currentUrl));
@@ -22314,6 +22678,44 @@ class _BrowserPageState extends State<BrowserPage>
       final activeGridKey = (task['instagramGridActiveKey'] ?? '').toString();
       final nativeInstagram =
           _smartSiteProfile((task['host'] ?? '').toString()) == 'instagram';
+      if (nativeInstagram &&
+          activeGridKey.isNotEmpty &&
+          (phase == 'instagram_grid_opening' ||
+              phase == 'instagram_grid_waiting_download')) {
+        final actualDetailKey = _instagramGridDetailKey(actualUrl);
+        if (actualDetailKey != activeGridKey) {
+          final navigationWaits =
+              ((task['instagramGridNavigationWaits'] as int?) ?? 0) + 1;
+          task['instagramGridNavigationWaits'] = navigationWaits;
+          task['matchStage'] = 'Instagram 网格 · 等待指定详情页完成切换';
+          debugPrint(
+            '[SMART_GRID] wait detail navigation expected=$activeGridKey '
+            'actual=$actualDetailKey wait=$navigationWaits url=$actualUrl',
+          );
+          if (navigationWaits == 8) {
+            final activeHref =
+                (task['instagramGridActiveHref'] ?? '').toString();
+            if (activeHref.startsWith('http')) {
+              debugPrint(
+                '[SMART_GRID] click navigation delayed; loading exact href '
+                '$activeHref',
+              );
+              _loadUrl(activeHref);
+            }
+          } else if (navigationWaits >= 20) {
+            task['failed'] = ((task['failed'] as int?) ?? 0) + 1;
+            await _returnFromInstagramGrid(task, handled: false);
+            return;
+          }
+          Future<void>.delayed(const Duration(milliseconds: 450), () {
+            if (identical(_smartDownloadTask, task)) {
+              unawaited(_advanceSmartDownload(_currentUrl));
+            }
+          });
+          return;
+        }
+        task['instagramGridNavigationWaits'] = 0;
+      }
       final isDetail = _profileGridIsDetailView(
         nativeInstagram: nativeInstagram,
         actualUrl: actualUrl,
@@ -22384,7 +22786,7 @@ class _BrowserPageState extends State<BrowserPage>
                 return s.display !== 'none' && s.visibility !== 'hidden' &&
                   Number(s.opacity || 1) > 0.05;
               };
-              const media = Array.from(mediaRoot.querySelectorAll('video, img'))
+              let media = Array.from(mediaRoot.querySelectorAll('video, img'))
                 .filter(el => visible(el))
                 .filter(el => {
                   if (requested === 'video') return el.tagName === 'VIDEO';
@@ -22412,6 +22814,11 @@ class _BrowserPageState extends State<BrowserPage>
                 })
                 .filter(row => !row.badImage)
                 .sort((a, b) => b.score - a.score);
+              // Reel details contain both the real VIDEO and large poster
+              // images. In mixed grid mode, visible video is authoritative.
+              if (requested === 'mixed' && media.some(row => row.isVideo)) {
+                media = media.filter(row => row.isVideo);
+              }
               const row = media[0];
               if (!row) return {action:'wait'};
               if (row.isVideo) {
@@ -22668,6 +23075,12 @@ class _BrowserPageState extends State<BrowserPage>
                 count:rows.length, remaining:remaining.length
               };
             }
+            // During Instagram SPA restoration the profile shell can be
+            // visible before its grid anchors are mounted. This is not the
+            // bottom of the grid and must not consume the end-of-grid budget.
+            if (!rows.length) {
+              return {action:'wait_dom', count:0};
+            }
             const before = scrollY;
             const maxY = Math.max(0,
               document.documentElement.scrollHeight - innerHeight);
@@ -22689,6 +23102,8 @@ class _BrowserPageState extends State<BrowserPage>
         'success=${task['success']}/${task['target']}',
       );
       if (action == 'open' && result is Map) {
+        task['instagramGridNoNewScans'] = 0;
+        task['instagramGridEmptyDomScans'] = 0;
         final jsClicked = result['jsClick'] == true;
         var opened = jsClicked;
         if (!opened) {
@@ -22729,6 +23144,7 @@ class _BrowserPageState extends State<BrowserPage>
           'href=${task['instagramGridActiveHref']}',
         );
         task['instagramGridMediaWaits'] = 0;
+        task['instagramGridNavigationWaits'] = 0;
         task['phase'] = 'instagram_grid_opening';
         task['matchStage'] = '$gridSite 网格 · 打开指定媒体详情';
         _showSmartOperation('打开下一项媒体');
@@ -22741,6 +23157,7 @@ class _BrowserPageState extends State<BrowserPage>
       }
       if (action == 'scroll') {
         task['instagramGridNoNewScans'] = 0;
+        task['instagramGridEmptyDomScans'] = 0;
         task['phase'] = 'instagram_grid_scrolling';
         task['matchStage'] = '$gridSite 网格 · 加载下一行';
         _showSmartOperation('向下浏览下一行网格媒体');
@@ -22751,13 +23168,27 @@ class _BrowserPageState extends State<BrowserPage>
         });
         return;
       }
-      if (action == 'end' &&
-          result is Map &&
-          ((result['count'] as num?)?.toInt() ?? 0) == 0 &&
-          ((task['instagramGridNoNewScans'] as int?) ?? 0) >= 2) {
-        await _finishSmartDownload('$gridSite 网格未识别到可下载缩略图，请确认在个人页媒体/相册标签');
+      if (action == 'wait_dom') {
+        final emptyScans =
+            ((task['instagramGridEmptyDomScans'] as int?) ?? 0) + 1;
+        task['instagramGridEmptyDomScans'] = emptyScans;
+        task['instagramGridNoNewScans'] = 0;
+        debugPrint(
+          '[SMART_GRID] grid DOM not mounted yet; wait=$emptyScans/20 '
+          'url=$actualUrl',
+        );
+        if (emptyScans >= 20) {
+          await _finishSmartDownload('$gridSite 网格持续无法加载，已安全停止');
+          return;
+        }
+        Future<void>.delayed(const Duration(milliseconds: 1200), () {
+          if (identical(_smartDownloadTask, task)) {
+            unawaited(_advanceSmartDownload(_currentUrl));
+          }
+        });
         return;
       }
+      task['instagramGridEmptyDomScans'] = 0;
       final noNew = ((task['instagramGridNoNewScans'] as int?) ?? 0) + 1;
       task['instagramGridNoNewScans'] = noNew;
       // Instagram may need several seconds to append the next virtualized
