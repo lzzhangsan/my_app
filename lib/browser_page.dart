@@ -16345,9 +16345,18 @@ class _BrowserPageState extends State<BrowserPage>
       return false;
     }
     final identity = await _actionCaptureMediaIdentity(task);
-    if (!await _shouldSkipAsHandledMedia(task, identity)) {
+    final identityReliable = _isReliableActionMediaIdentity(identity);
+    if (identityReliable &&
+        !await _shouldSkipAsHandledMedia(task, identity)) {
       task['needAdvancePastCurrent'] = false;
+      task['actionAdvanceFailureCount'] = 0;
       return true;
+    }
+    if (!identityReliable) {
+      debugPrint(
+        '[SMART_ADVANCE] current identity is unreliable; '
+        'keep advance gate closed and perform bounded swipe retries',
+      );
     }
     task['advancingPastHandled'] = true;
     try {
@@ -16379,8 +16388,10 @@ class _BrowserPageState extends State<BrowserPage>
           return false;
         }
         final again = await _actionCaptureMediaIdentity(task);
-        if (!await _shouldSkipAsHandledMedia(task, again)) {
+        if (_isReliableActionMediaIdentity(again) &&
+            !await _shouldSkipAsHandledMedia(task, again)) {
           task['needAdvancePastCurrent'] = false;
+          task['actionAdvanceFailureCount'] = 0;
           return true;
         }
         _showSmartOperation('已处理过，${spec.$3}', point: const Offset(0.5, 0.5));
@@ -16399,11 +16410,23 @@ class _BrowserPageState extends State<BrowserPage>
         );
         await Future<void>.delayed(const Duration(milliseconds: 240));
       }
-      task['needAdvancePastCurrent'] = false;
-      return !await _shouldSkipAsHandledMedia(
-        task,
-        await _actionCaptureMediaIdentity(task),
+      final finalIdentity = await _actionCaptureMediaIdentity(task);
+      final advanced =
+          _isReliableActionMediaIdentity(finalIdentity) &&
+          !await _shouldSkipAsHandledMedia(task, finalIdentity);
+      if (advanced) {
+        task['needAdvancePastCurrent'] = false;
+        task['actionAdvanceFailureCount'] = 0;
+        return true;
+      }
+      final failures = ((task['actionAdvanceFailureCount'] as int?) ?? 0) + 1;
+      task['actionAdvanceFailureCount'] = failures;
+      task['needAdvancePastCurrent'] = true;
+      debugPrint(
+        '[SMART_ADVANCE] swipe not verified after bounded retries '
+        'failures=$failures; keep current media download-blocked',
       );
+      return false;
     } finally {
       task['advancingPastHandled'] = false;
     }
@@ -20094,8 +20117,9 @@ class _BrowserPageState extends State<BrowserPage>
     final attempts =
         horizontal ? maxAttempts.clamp(1, 2) : maxAttempts.clamp(1, 8);
     // 切换前混合识别，便于指纹覆盖图/视频
+    // Preserve the requested media filter while switching. Mixing poster
+    // images into a video task makes switch verification unreliable.
     final prevMixed = task['allowMixedMedia'];
-    task['allowMixedMedia'] = true;
     final filter = _actionMediaFilterFlags(task);
 
     // 健康连胜，或刚下载成功正交给 findNext：首刀不探广告
