@@ -1100,7 +1100,9 @@ class _BrowserPageState extends State<BrowserPage>
     }
     if (selectedAssetId == null) return const <String>[];
     if (targetDurationSeconds > 0) {
-      final allowedDelta = max(1.5, targetDurationSeconds * 0.20);
+      // Instagram's DOM duration and DASH metadata are independently rounded
+      // and can differ by almost two seconds on short Reels.
+      final allowedDelta = max(2.5, targetDurationSeconds * 0.25);
       if (selectedDurationDelta == null ||
           selectedDurationDelta! > allowedDelta) {
         debugPrint(
@@ -7407,6 +7409,7 @@ class _BrowserPageState extends State<BrowserPage>
                 pickCurrentVideo(window._lastTouchX, window._lastTouchY)));
           const atPoint = document.elementsFromPoint(window._lastTouchX, window._lastTouchY);
           let pointVideo = null;
+          let pointImage = null;
           for (const el of atPoint) {
             const tag = (el.tagName || '').toLowerCase();
             if (tag === 'video' && (el.currentSrc || el.src)) {
@@ -7415,9 +7418,23 @@ class _BrowserPageState extends State<BrowserPage>
               break;
             }
             if (tag === 'img' && (el.currentSrc || el.src)) {
-              bestTarget = el;
-              break;
+              // Reels often layers its poster IMG above the real VIDEO. Keep
+              // the image only as a fallback while continuing to search the
+              // same hit stack for the playable node underneath.
+              pointImage ??= el;
             }
+          }
+          if (!pointVideo && pointImage) bestTarget = pointImage;
+          // The synthetic long-press target is resolved with elementFromPoint
+          // before this rebinding pass. On Instagram's full-screen Reels page
+          // that exact VIDEO may not live inside an <article>, so the
+          // article-based picker returns null even though the touched node is
+          // authoritative. Never replace it with the overlaid poster image.
+          if (isInstagramContext &&
+              String((initialLongPressTarget && initialLongPressTarget.tagName) || '').toLowerCase() === 'video' &&
+              (initialLongPressTarget.currentSrc || initialLongPressTarget.src)) {
+            bestTarget = initialLongPressTarget;
+            pointVideo = initialLongPressTarget;
           }
           const selectedTag = (bestTarget.tagName || '').toLowerCase();
           const selectedImage = selectedTag === 'img' || selectedTag === 'image' ||
@@ -21154,6 +21171,52 @@ class _BrowserPageState extends State<BrowserPage>
     var cy = (hit['clientY'] as num?)?.toDouble() ?? 0;
     // client 坐标无效时，用屏幕中心像素（由 JS 内再算）
     final useJsCenter = !(cx.isFinite && cy.isFinite && cx > 0 && cy > 0);
+    if (!probe &&
+        task['mediaType'] == MediaType.video &&
+        _isInstagramPlatformPage(_currentUrl)) {
+      // A freshly-swiped Reel can be mounted but paused at t=0. In that state
+      // the hook runs without Instagram requesting the current DASH track.
+      try {
+        final warmupRaw = await _controller?.evaluateJavascript(
+          source: '''
+(() => {
+  const w = window.innerWidth || 360;
+  const h = window.innerHeight || 640;
+  const x = $useJsCenter ? (w * ${point.dx}) : $cx;
+  const y = $useJsCenter ? (h * ${point.dy}) : $cy;
+  const stack = document.elementsFromPoint(x, y);
+  let video = stack.find(el =>
+    String(el && el.tagName || '').toLowerCase() === 'video');
+  if (!video) {
+    video = Array.from(document.querySelectorAll('video')).find(el => {
+      const r = el.getBoundingClientRect();
+      return r.width > 80 && r.height > 80 &&
+        r.bottom > 0 && r.top < innerHeight &&
+        x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+    });
+  }
+  if (!video) return {ok:false, reason:'video_not_mounted'};
+  try {
+    video.muted = true;
+    const promise = video.play();
+    if (promise && promise.catch) promise.catch(() => {});
+  } catch (_) {}
+  return {
+    ok:true,
+    paused:!!video.paused,
+    time:Number(video.currentTime || 0),
+    duration:Number(video.duration || 0),
+    src:String(video.currentSrc || video.src || '').slice(-48)
+  };
+})()
+''',
+        );
+        debugPrint('action Instagram video warmup: ${_coerceJsMap(warmupRaw)}');
+        await Future<void>.delayed(const Duration(milliseconds: 1400));
+      } catch (e) {
+        debugPrint('action Instagram video warmup failed: $e');
+      }
+    }
     task['gestureDownloadPending'] = true;
     task['gestureDownloadStartedAt'] = DateTime.now();
     // 入库闸门：仅媒体库确认成功（或库内重复/明确失败）后才允许切下一条
