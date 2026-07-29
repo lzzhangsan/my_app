@@ -2868,7 +2868,20 @@ class _BrowserPageState extends State<BrowserPage>
       }
 
       debugPrint('[BrowserPage] WebView blank after $reason; restoring $saved');
-      await ctrl.loadUrl(urlRequest: URLRequest(url: WebUri(saved)));
+      if (!mounted || !_isBrowsingWebPage || !identical(_controller, ctrl)) {
+        return;
+      }
+      try {
+        await ctrl.loadUrl(urlRequest: URLRequest(url: WebUri(saved)));
+      } on MissingPluginException catch (e) {
+        // The native WebView may be disposed between getUrl() and loadUrl()
+        // while switching app pages or during hot restart. Ignore that stale
+        // controller instead of surfacing a critical asynchronous exception.
+        debugPrint(
+          '[BrowserPage] ignored stale WebView restore after $reason: $e',
+        );
+        return;
+      }
       _rememberLastBrowsingUrl(saved);
       if (mounted) {
         setState(() {
@@ -12868,6 +12881,29 @@ class _BrowserPageState extends State<BrowserPage>
       return true;
     }
 
+    // X's no-keyword immersive viewer keeps transient entries in WebView
+    // history. When there is no proven list-page return URL, going back can
+    // reopen an already exhausted video and leave the FSM without a next
+    // callback. Stay in the viewer and advance to the next item instead.
+    if (task['siteProfile'] == 'x' &&
+        (task['keyword'] ?? '').toString().trim().isEmpty &&
+        knownReturnUrl.isEmpty) {
+      task['feedStalledCount'] = 0;
+      task['gestureNoMoveCount'] = 0;
+      task['gestureDetailMode'] = false;
+      task['gestureReturnUrl'] = '';
+      task['gestureDownloadPending'] = false;
+      task['phase'] = 'scanning_feed';
+      task['matchStage'] = 'X 当前视频不可用 · 跳到下一条';
+      debugPrint(
+        '[SMART_RECOVERY] X exhausted media has no safe return URL; '
+        'advance in place current=$actualUrl reason=$reason',
+      );
+      _showSmartOperation('当前视频无法下载，自动跳到下一条');
+      _continueSmartFeed(task, madeProgress: false);
+      return true;
+    }
+
     if (knownReturnUrl.isEmpty && !await controller.canGoBack()) return false;
     task['feedStalledCount'] = 0;
     task['gestureNoMoveCount'] = 0;
@@ -16435,6 +16471,15 @@ class _BrowserPageState extends State<BrowserPage>
   /// 回合级看门狗：同一媒体长时间无进展则强制跳过并切下一条。
   static const Duration _kActionRecipeStepWatchdog = Duration(seconds: 24);
 
+  /// 普通智能下载的第二层停滞保护。
+  ///
+  /// 单次下载本身已有 2 分钟 inactivityTimeout；这里额外留 30 秒宽限，
+  /// 防止底层取消/回调异常时，一个永久 `downloading` 状态锁死整个 50 条任务。
+  /// 只按最后一次真实进度变化判断，持续有数据的大视频不会被误杀。
+  static const Duration _kSmartMediaNoProgressHardTimeout = Duration(
+    seconds: 150,
+  );
+
   bool _isActionRecipePlaceholderRow(Map row) {
     return (row['url']?.toString() ?? '').startsWith('action-recipe://');
   }
@@ -16467,6 +16512,44 @@ class _BrowserPageState extends State<BrowserPage>
     for (final id in ids) {
       _removeDownloadTask(id);
     }
+  }
+
+  int _cancelSmartMediaDownloadsWithoutProgress(
+    Duration timeout,
+    String reason,
+  ) {
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    final staleIds = <String>[];
+    for (final row in _downloadTasks) {
+      if (row['isSmartBatchMedia'] != true ||
+          row['status'] != 'downloading' ||
+          _isActionRecipePlaceholderRow(row)) {
+        continue;
+      }
+      final lastProgressAtMs =
+          (row['lastProgressAtMs'] as num?)?.toInt() ??
+          (row['lastSampleAtMs'] as num?)?.toInt() ??
+          nowMs;
+      final stalledFor = Duration(
+        milliseconds: max(0, nowMs - lastProgressAtMs),
+      );
+      if (stalledFor < timeout) continue;
+      final token = row['cancelToken'];
+      if (token is CancelToken && !token.isCancelled) {
+        token.cancel(reason);
+      }
+      final id = (row['id'] ?? '').toString();
+      if (id.isNotEmpty) staleIds.add(id);
+      debugPrint(
+        '[SMART_WATCHDOG] cancel stalled media '
+        'id=$id stalled=${stalledFor.inSeconds}s '
+        'progress=${row['progress']} detail=${row['progressDetail']}',
+      );
+    }
+    for (final id in staleIds) {
+      _removeDownloadTask(id);
+    }
+    return staleIds.length;
   }
 
   /// 哈希确认的库内重复：闸门已关，允许立刻切条（勿被残留 longPress/进度条挡住）。
@@ -21790,7 +21873,28 @@ class _BrowserPageState extends State<BrowserPage>
         (row) =>
             row['isSmartBatchMedia'] == true && row['status'] == 'downloading',
       );
-      if (hasActiveMediaDownload || _smartDownloadAdvancing) return;
+      if (_smartDownloadAdvancing) return;
+      if (hasActiveMediaDownload) {
+        final cancelled = _cancelSmartMediaDownloadsWithoutProgress(
+          _kSmartMediaNoProgressHardTimeout,
+          'smart_media_no_progress_watchdog',
+        );
+        if (cancelled == 0) return;
+        activeTask['lastGestureFailureType'] = 'step_watchdog_timeout';
+        activeTask['lastProgressAt'] = DateTime.now();
+        activeTask['lastAdvanceAt'] = DateTime.now();
+        _longPressVideoDownloadInProgress = false;
+        debugPrint(
+          '[SMART_WATCHDOG] released $cancelled stalled media task(s); '
+          'completed=${activeTask['success']}/${activeTask['target']}',
+        );
+        Future<void>.delayed(const Duration(milliseconds: 300), () {
+          if (identical(_smartDownloadTask, activeTask)) {
+            unawaited(_completeSmartGestureDownload(false));
+          }
+        });
+        return;
+      }
       if (activeTask['demoPhase'] == 'demo') return;
 
       _touchSmartProgressMarker(activeTask);
@@ -27687,7 +27791,7 @@ class _BrowserPageState extends State<BrowserPage>
     // Some valid HLS/TS containers are playable by ExoPlayer but Android's
     // metadata retriever reports 0. Treat 0 as unknown, not as a zero-length
     // video, otherwise smart download repeatedly fetches other renditions.
-    if (durationMs != null) {
+    if (durationMs != null && durationMs > 0) {
       // 能读到真实时长就是最可靠的可播放证据；不要再用“黑帧”颜色判断，
       // Facebook 关键帧延迟/硬解码差异常会让有效视频抽到纯黑首帧。
       return durationMs >= 500;
@@ -29065,12 +29169,23 @@ class _BrowserPageState extends State<BrowserPage>
               return finalFile;
             }
           }
-          if (videoFile != null && await videoFile.exists()) return videoFile;
+          if (videoFile != null && await videoFile.exists()) {
+            debugPrint(
+              '[SMART_PARTIAL] X HLS mux did not produce a usable output; '
+              'keep complete video track after bounded mux attempt '
+              'bytes=${await videoFile.length()}',
+            );
+            return videoFile;
+          }
         } catch (e) {
           debugPrint('X HLS 音视频合并失败，将保留已下载的视频轨: $e');
           if (videoFile != null &&
               await videoFile.exists() &&
               await videoFile.length() > 0) {
+            debugPrint(
+              '[SMART_PARTIAL] X HLS mux failed; keep complete video track '
+              'after bounded mux attempt bytes=${await videoFile.length()}',
+            );
             return videoFile;
           }
         } finally {
@@ -32115,6 +32230,8 @@ class _BrowserPageState extends State<BrowserPage>
       'transferStatus': '',
       'lastSampleBytes': 0,
       'lastSampleAtMs': DateTime.now().millisecondsSinceEpoch,
+      'lastProgressAtMs': DateTime.now().millisecondsSinceEpoch,
+      'lastProgressValue': 0.0,
       'smoothedBytesPerSecond': 0.0,
       'status': 'downloading',
       'cancelToken': cancelToken,
@@ -32139,7 +32256,16 @@ class _BrowserPageState extends State<BrowserPage>
   }) {
     final idx = _downloadTasks.indexWhere((t) => t['id'] == id);
     if (idx < 0) return;
-    if (progress != null) _downloadTasks[idx]['progress'] = progress;
+    if (progress != null) {
+      final previousProgress =
+          (_downloadTasks[idx]['lastProgressValue'] as num?)?.toDouble() ?? 0.0;
+      _downloadTasks[idx]['progress'] = progress;
+      if (progress > previousProgress + 0.000001) {
+        _downloadTasks[idx]['lastProgressValue'] = progress;
+        _downloadTasks[idx]['lastProgressAtMs'] =
+            DateTime.now().millisecondsSinceEpoch;
+      }
+    }
     if (status != null) _downloadTasks[idx]['status'] = status;
     if (progressDetail != null) {
       _downloadTasks[idx]['progressDetail'] = progressDetail;

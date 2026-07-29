@@ -17,18 +17,20 @@ import 'diary_page.dart';
 import 'services/database_service.dart';
 import 'services/error_service.dart';
 import 'services/logger.dart';
+import 'services/debug_file_log.dart';
 import 'app_route_observer.dart';
 
 // 添加全局 navigatorKey
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
-void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-
+void main() {
   // 捕获未处理的异步异常，防止静默崩溃
   runZonedGuarded(
     () async {
+      // Binding initialization and runApp must stay in the same Zone.
+      WidgetsFlutterBinding.ensureInitialized();
+      await DebugFileLog.initialize();
+      await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
       try {
         await serviceLocator.initialize();
         final view = ui.PlatformDispatcher.instance.views.firstOrNull;
@@ -79,6 +81,7 @@ void main() async {
         }
       }
     },
+    zoneSpecification: DebugFileLog.zoneSpecification,
   );
 }
 

@@ -84,3 +84,6 @@ android/app/build/
 # Local recovery copies contain private user data and must never be committed.
 recovery_backups_*/
 .codex_*.log
+
+# Local runtime logs may contain page URLs or user activity; never commit them.
+/debug_logs/
