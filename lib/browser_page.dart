@@ -928,8 +928,7 @@ class _BrowserPageState extends State<BrowserPage>
     if (path.contains('/watch')) return false;
     if (path.contains('profile.php') || path.contains('/people/')) return true;
     if (RegExp(r'/photos').hasMatch(path)) return true;
-    final segments =
-        uri.pathSegments.where((part) => part.isNotEmpty).toList();
+    final segments = uri.pathSegments.where((part) => part.isNotEmpty).toList();
     if (segments.isEmpty) return false;
     const excludedRoots = <String>{
       'reels',
@@ -1393,6 +1392,7 @@ class _BrowserPageState extends State<BrowserPage>
     required List<String> inputCandidates,
     required Set<String> activeKeys,
     required String pageUrl,
+
     /// Keys that streamed *because* we primed the finger video — strongest
     /// CDN bind, like X's mediaId from the pressed tweet.
     Map<String, int> postPrimeCounts = const {},
@@ -1684,9 +1684,7 @@ class _BrowserPageState extends State<BrowserPage>
 ''',
       );
       final result = _coerceJsMap(raw);
-      debugPrint(
-        'FB_DL prime rawType=${raw.runtimeType} result=$result',
-      );
+      debugPrint('FB_DL prime rawType=${raw.runtimeType} result=$result');
       return result;
     } catch (e) {
       debugPrint('FB current-video prime failed: $e');
@@ -1834,11 +1832,12 @@ class _BrowserPageState extends State<BrowserPage>
     final primedVideoIdForBind =
         primedOk ? (primed?['videoId'] ?? '').toString().trim() : '';
     var boundKey = _facebookUpgradeBoundKey(
-      expectedVideoKey: primedVideoIdForBind.isNotEmpty
-          ? 'fbvideo:${primedVideoIdForBind.toLowerCase()}'
-          : (_isFacebookCdnIdentity(expectedSeed)
-              ? expectedSeed
-              : (softReelKey.isNotEmpty ? softReelKey : expectedSeed)),
+      expectedVideoKey:
+          primedVideoIdForBind.isNotEmpty
+              ? 'fbvideo:${primedVideoIdForBind.toLowerCase()}'
+              : (_isFacebookCdnIdentity(expectedSeed)
+                  ? expectedSeed
+                  : (softReelKey.isNotEmpty ? softReelKey : expectedSeed)),
       primaryUrl: trustedPrimary,
       inputCandidates: inputTrusted,
       activeKeys: activeKeys,
@@ -1961,11 +1960,12 @@ class _BrowserPageState extends State<BrowserPage>
       }
       // Re-upgrade bound key once captures arrive (primary may have been blob).
       boundKey = _facebookUpgradeBoundKey(
-        expectedVideoKey: _isFacebookCdnIdentity(boundKey)
-            ? boundKey
-            : (softReelKey.isNotEmpty
-                ? softReelKey
-                : (boundKey.isNotEmpty ? boundKey : expectedVideoKey)),
+        expectedVideoKey:
+            _isFacebookCdnIdentity(boundKey)
+                ? boundKey
+                : (softReelKey.isNotEmpty
+                    ? softReelKey
+                    : (boundKey.isNotEmpty ? boundKey : expectedVideoKey)),
         primaryUrl: trustedPrimary,
         inputCandidates: normalizeAll(inputTrusted),
         activeKeys: _facebookActivelyStreamedVideoKeys(
@@ -4626,7 +4626,8 @@ class _BrowserPageState extends State<BrowserPage>
           _rememberHandledFacebookIdentity(
             smartTask,
             identityForSkip,
-            softReelKey: expectedFbKey.startsWith('reel:') ? expectedFbKey : null,
+            softReelKey:
+                expectedFbKey.startsWith('reel:') ? expectedFbKey : null,
           );
           if (smartTask != null) {
             smartTask['expectedFbVideoKey'] = identityForSkip;
@@ -8619,6 +8620,26 @@ class _BrowserPageState extends State<BrowserPage>
               : mediaType == 'audio'
               ? MediaType.audio
               : MediaType.image;
+      final activeSmartTask = _smartDownloadTask;
+      final rejectsUnexpectedSmartMedia =
+          isSmartGesture &&
+          activeSmartTask != null &&
+          activeSmartTask['allowMixedMedia'] != true &&
+          activeSmartTask['mediaType'] is MediaType &&
+          activeSmartTask['mediaType'] != requestedMediaType;
+      if (action == 'download' && rejectsUnexpectedSmartMedia) {
+        final expected = activeSmartTask['mediaType'] as MediaType;
+        activeSmartTask['lastGestureFailureType'] =
+            'unexpected_smart_media_type';
+        debugPrint(
+          '[SMART_MEDIA_GATE] rejected unexpected media '
+          'expected=${expected.name} actual=${requestedMediaType.name} '
+          'url=$urlValue page=$messagePageUrl',
+        );
+        // Keep the library gate closed. A thumbnail must never complete a
+        // video-only item or release the recipe to slide to the next item.
+        return;
+      }
       if (action == 'favorite' && requestedMediaType == MediaType.video) {
         rawDownloadCandidateUrls.addAll(
           _recentCapturedMediaCandidates(
@@ -16971,8 +16992,7 @@ class _BrowserPageState extends State<BrowserPage>
     }
     if (awaiting &&
         failureType == 'download_failed_retryable' &&
-        (_hasActiveSmartBatchDownload() ||
-            _longPressVideoDownloadInProgress)) {
+        (_hasActiveSmartBatchDownload() || _longPressVideoDownloadInProgress)) {
       return true;
     }
     return false;
@@ -20728,7 +20748,9 @@ class _BrowserPageState extends State<BrowserPage>
     }
     // 验证/编排时混合识别，优先屏幕中心大媒体，避免右下角小图
     final prevMixed = task['allowMixedMedia'];
-    if (probe || task['mode'] == 'action_recipe') {
+    // Only template probing may inspect mixed media. A real video recipe must
+    // not select a poster IMG and count its WebP/JPG save as video success.
+    if (probe) {
       task['allowMixedMedia'] = true;
     }
     var hit = await _actionFindCenterMedia(task);
@@ -22708,9 +22730,7 @@ class _BrowserPageState extends State<BrowserPage>
           result is Map &&
           ((result['count'] as num?)?.toInt() ?? 0) == 0 &&
           ((task['instagramGridNoNewScans'] as int?) ?? 0) >= 2) {
-        await _finishSmartDownload(
-          '$gridSite 网格未识别到可下载缩略图，请确认在个人页媒体/相册标签',
-        );
+        await _finishSmartDownload('$gridSite 网格未识别到可下载缩略图，请确认在个人页媒体/相册标签');
         return;
       }
       final noNew = ((task['instagramGridNoNewScans'] as int?) ?? 0) + 1;
@@ -27095,9 +27115,7 @@ class _BrowserPageState extends State<BrowserPage>
               );
               if (existing != null) {
                 if (onFacebook) {
-                  debugPrint(
-                    'FB_DL ignore dialog-path source-map pre-skip',
-                  );
+                  debugPrint('FB_DL ignore dialog-path source-map pre-skip');
                 } else {
                   final downloadAnyway =
                       await _confirmSourceUrlDuplicateBeforeDownload(existing);
@@ -31930,14 +31948,17 @@ class _BrowserPageState extends State<BrowserPage>
                 smartTask,
                 fbId,
                 mediaId: mediaId,
-                softReelKey: expectedMediaIdentity.startsWith('reel:')
-                    ? expectedMediaIdentity
-                    : (smartTask?['expectedFbVideoKey'] ?? '')
-                        .toString()
-                        .trim()
-                        .startsWith('reel:')
-                    ? (smartTask?['expectedFbVideoKey'] ?? '').toString().trim()
-                    : null,
+                softReelKey:
+                    expectedMediaIdentity.startsWith('reel:')
+                        ? expectedMediaIdentity
+                        : (smartTask?['expectedFbVideoKey'] ?? '')
+                            .toString()
+                            .trim()
+                            .startsWith('reel:')
+                        ? (smartTask?['expectedFbVideoKey'] ?? '')
+                            .toString()
+                            .trim()
+                        : null,
               );
             } else if (expectedMediaIdentity.trim().isNotEmpty) {
               _rememberHandledFacebookIdentity(
@@ -32143,9 +32164,10 @@ class _BrowserPageState extends State<BrowserPage>
                 smartTask,
                 fbId,
                 mediaId: existingMediaId,
-                softReelKey: expectedMediaIdentity.startsWith('reel:')
-                    ? expectedMediaIdentity
-                    : null,
+                softReelKey:
+                    expectedMediaIdentity.startsWith('reel:')
+                        ? expectedMediaIdentity
+                        : null,
               );
             } else if (expectedMediaIdentity.trim().isNotEmpty) {
               _rememberHandledFacebookIdentity(
