@@ -2899,11 +2899,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
           _videoCount =
               _mediaItems.where((i) => i.type == MediaType.video).length;
         });
-        if (!_isSystemMediaFolder(target)) {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(SnackBar(content: Text('已移入“${target.name}”')));
-        }
+        // 移动模式成功移入文件夹/回收站/收藏夹：不弹「已移入」提示，避免打断操作。
       } catch (e) {
         if (!mounted) return;
         ScaffoldMessenger.of(
