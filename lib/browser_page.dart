@@ -2649,6 +2649,8 @@ class _BrowserPageState extends State<BrowserPage>
   String _telegramStreamTransferId = '';
   int _telegramStreamBytes = 0;
   int _telegramStreamExpectedBytes = 0;
+  String _telegramStreamProgressTaskId = '';
+  bool _telegramStreamOwnsProgressTask = false;
 
   void _notifyMediaDownloadSaved() {
     _mediaDownloadSaveResolved = true;
@@ -5596,7 +5598,10 @@ class _BrowserPageState extends State<BrowserPage>
     ScaffoldMessenger.of(context).showSnackBar(snackBar);
   }
 
-  Future<void> _openMediaLibraryAt(Map<String, dynamic> mediaRow) async {
+  Future<void> _openMediaLibraryAt(
+    Map<String, dynamic> mediaRow, {
+    bool isDuplicate = false,
+  }) async {
     if (!mounted) return;
     final directory = (mediaRow['directory'] ?? 'root').toString().trim();
     final mediaId = (mediaRow['id'] ?? '').toString().trim();
@@ -5607,6 +5612,7 @@ class _BrowserPageState extends State<BrowserPage>
               showRouteBackButton: true,
               initialDirectoryId: directory.isEmpty ? 'root' : directory,
               highlightMediaId: mediaId.isEmpty ? null : mediaId,
+              highlightIsDuplicate: isDuplicate,
             ),
       ),
     );
@@ -5698,7 +5704,7 @@ class _BrowserPageState extends State<BrowserPage>
       );
       if (!mounted) return;
       if (action == 'locate') {
-        await _openMediaLibraryAt(existingRow);
+        await _openMediaLibraryAt(existingRow, isDuplicate: true);
       } else if (action == 'preview') {
         await Navigator.of(context).push(
           MaterialPageRoute(
@@ -5771,7 +5777,7 @@ class _BrowserPageState extends State<BrowserPage>
       );
       if (!mounted) return false;
       if (action == 'locate') {
-        await _openMediaLibraryAt(existingRow);
+        await _openMediaLibraryAt(existingRow, isDuplicate: true);
       } else if (action == 'preview') {
         await Navigator.of(context).push(
           MaterialPageRoute(
@@ -5848,6 +5854,22 @@ class _BrowserPageState extends State<BrowserPage>
         _telegramStreamBytes = 0;
         _telegramStreamExpectedBytes =
             (message['expectedBytes'] as num?)?.toInt() ?? 0;
+        final smartTask = _smartDownloadTask;
+        final smartProgressId =
+            (smartTask?['discoveryTaskId'] ?? '').toString();
+        _telegramStreamOwnsProgressTask = smartProgressId.isEmpty;
+        _telegramStreamProgressTaskId =
+            smartProgressId.isNotEmpty ? smartProgressId : const Uuid().v4();
+        if (_telegramStreamOwnsProgressTask) {
+          _addDownloadTask(
+            _telegramStreamProgressTaskId,
+            'telegram-stream://$transferId',
+            MediaType.video,
+            CancelToken(),
+            displayName: 'Telegram 视频',
+          );
+        }
+        _updateTelegramStreamProgress(status: 'downloading');
         debugPrint(
           '[TG_STREAM] start id=$transferId '
           'expected=${message['expectedBytes']} path=${file.path}',
@@ -5864,6 +5886,7 @@ class _BrowserPageState extends State<BrowserPage>
         final bytes = base64Decode(encoded);
         _telegramStreamSink!.add(bytes);
         _telegramStreamBytes += bytes.length;
+        _updateTelegramStreamProgress(status: 'downloading');
         if (_telegramStreamBytes % (4 * 1024 * 1024) < bytes.length) {
           await _telegramStreamSink!.flush();
           debugPrint(
@@ -5904,18 +5927,40 @@ class _BrowserPageState extends State<BrowserPage>
           await file.delete();
           throw const FormatException('Telegram stream is not a valid video');
         }
-        await _saveToMediaLibrary(
+        final savedMedia = await _saveToMediaLibrary(
           file,
           MediaType.video,
           allowDuplicate: false,
           relaxValidation: false,
         );
         _notifyMediaDownloadSaved();
+        _updateTelegramStreamProgress(
+          status: _telegramStreamOwnsProgressTask ? 'completed' : 'downloading',
+          forceProgress: 1.0,
+          detailPrefix: 'Telegram 视频已保存',
+        );
+        final smartTask = _smartDownloadTask;
+        if (smartTask != null &&
+            (smartTask['gestureDownloadPending'] == true ||
+                smartTask['actionAwaitingLibrarySave'] == true ||
+                smartTask['actionLongPressNeedsConfirm'] == true)) {
+          debugPrint(
+            '[TG_STREAM] library saved; completing smart gesture immediately',
+          );
+          await _completeSmartGestureDownload(true);
+        }
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Telegram 视频已保存到媒体库'),
+            SnackBar(
+              content: const Text('Telegram 视频已保存到媒体库'),
               duration: _kMediaSaveSnackDuration,
+              action:
+                  smartTask == null
+                      ? SnackBarAction(
+                        label: '查看',
+                        onPressed: () => _openMediaLibraryAt(savedMedia),
+                      )
+                      : null,
             ),
           );
         }
@@ -5927,12 +5972,45 @@ class _BrowserPageState extends State<BrowserPage>
         _telegramStreamSink = null;
         _telegramStreamFile = null;
         _telegramStreamTransferId = '';
+        _updateTelegramStreamProgress(
+          status: 'failed',
+          detailPrefix: 'Telegram 视频下载失败',
+        );
         await sink?.close();
         if (file != null && await file.exists()) await file.delete();
         debugPrint('[TG_STREAM] web error: ${message['error']}');
         return <String, dynamic>{'ok': true};
       }
       return <String, dynamic>{'ok': false, 'reason': 'unknown_phase'};
+    } on _ExistingMediaDuplicateException catch (e, st) {
+      debugPrint('[TG_STREAM] phase=$phase duplicate: $e\n$st');
+      final sink = _telegramStreamSink;
+      final file = _telegramStreamFile;
+      _telegramStreamSink = null;
+      _telegramStreamFile = null;
+      _telegramStreamTransferId = '';
+      _telegramStreamExpectedBytes = 0;
+      try {
+        await sink?.close();
+        if (file != null && await file.exists()) await file.delete();
+      } catch (_) {}
+      _updateTelegramStreamProgress(
+        status: _telegramStreamOwnsProgressTask ? 'completed' : 'downloading',
+        forceProgress: 1.0,
+        detailPrefix: '媒体库中已存在，继续下一条',
+      );
+      final smartTask = _smartDownloadTask;
+      if (smartTask != null) {
+        smartTask['lastGestureFailureType'] = 'already_in_library';
+        await _completeSmartGestureDownload(false);
+      } else {
+        await _showMediaDuplicateDialog(e.existingRow);
+      }
+      return <String, dynamic>{
+        'ok': true,
+        'duplicate': true,
+        'reason': 'already_in_library',
+      };
     } catch (e, st) {
       debugPrint('[TG_STREAM] phase=$phase failed: $e\n$st');
       final sink = _telegramStreamSink;
@@ -5941,6 +6019,10 @@ class _BrowserPageState extends State<BrowserPage>
       _telegramStreamFile = null;
       _telegramStreamTransferId = '';
       _telegramStreamExpectedBytes = 0;
+      _updateTelegramStreamProgress(
+        status: 'failed',
+        detailPrefix: 'Telegram 视频保存失败',
+      );
       try {
         await sink?.close();
         if (file != null && await file.exists()) await file.delete();
@@ -5955,6 +6037,31 @@ class _BrowserPageState extends State<BrowserPage>
       }
       return <String, dynamic>{'ok': false, 'reason': e.toString()};
     }
+  }
+
+  void _updateTelegramStreamProgress({
+    required String status,
+    double? forceProgress,
+    String detailPrefix = 'Telegram 视频下载中',
+  }) {
+    final id = _telegramStreamProgressTaskId;
+    if (id.isEmpty) return;
+    final expected = _telegramStreamExpectedBytes;
+    final progress =
+        forceProgress ??
+        (expected > 0
+            ? (_telegramStreamBytes / expected).clamp(0.0, 0.99)
+            : 0.0);
+    final sizeDetail =
+        expected > 0
+            ? '${_formatBytes(_telegramStreamBytes)} / ${_formatBytes(expected)}'
+            : _formatBytes(_telegramStreamBytes);
+    _updateDownloadTask(
+      id,
+      progress: progress,
+      status: status,
+      progressDetail: '$detailPrefix · $sizeDetail',
+    );
   }
 
   /// Same [InAppWebView] instance (via GlobalKey) for BrowserPage or document loan host.
@@ -6283,9 +6390,52 @@ class _BrowserPageState extends State<BrowserPage>
       await controller.evaluateJavascript(
         source: '''
       (() => {
-          const handlerVersion = 'media-download-v36';
+          const handlerVersion = 'media-download-v37';
       if (window.__appMediaDownloadHandlersVersion === handlerVersion) return true;
       window.Flutter = window.Flutter || { postMessage: function(m){ try { if(window.flutter_inappwebview && window.flutter_inappwebview.callHandler) window.flutter_inappwebview.callHandler('Flutter', m); } catch(e){} } };
+      // Telegram Web occasionally carries a non-1 playback rate between
+      // virtualized cards. The downloaded bytes are normal, so keep only the
+      // in-page player at the expected real-time speed.
+      const telegramHost = String(location.hostname || '').toLowerCase();
+      if (telegramHost === 'web.telegram.org' || telegramHost === 'telegram.org') {
+        const normalizeTelegramVideoRate = (video) => {
+          if (!video || video.tagName !== 'VIDEO') return;
+          try {
+            video.defaultPlaybackRate = 1;
+            if (Math.abs(Number(video.playbackRate || 1) - 1) > 0.001) {
+              video.playbackRate = 1;
+            }
+            if (!video.__appTelegramRateGuard) {
+              video.__appTelegramRateGuard = true;
+              video.addEventListener('ratechange', () => {
+                if (Math.abs(Number(video.playbackRate || 1) - 1) > 0.001) {
+                  video.playbackRate = 1;
+                }
+              });
+            }
+          } catch (_) {}
+        };
+        document.querySelectorAll('video').forEach(normalizeTelegramVideoRate);
+        if (!window.__appTelegramRateObserver) {
+          window.__appTelegramRateObserver = new MutationObserver((records) => {
+            records.forEach((record) => {
+              record.addedNodes.forEach((node) => {
+                if (!node || node.nodeType !== 1) return;
+                if (node.tagName === 'VIDEO') normalizeTelegramVideoRate(node);
+                if (node.querySelectorAll) {
+                  node.querySelectorAll('video').forEach(
+                    normalizeTelegramVideoRate
+                  );
+                }
+              });
+            });
+          });
+          window.__appTelegramRateObserver.observe(document.documentElement, {
+            childList: true,
+            subtree: true
+          });
+        }
+      }
       window.MediaInterceptor = window.MediaInterceptor || {
         processedUrls: new Set(),
         interceptedRequests: new Map(),
@@ -9156,7 +9306,7 @@ class _BrowserPageState extends State<BrowserPage>
       );
       final ready = await controller.evaluateJavascript(
         source:
-            "window.__appMediaDownloadHandlersVersion === 'media-download-v33'",
+            "window.__appMediaDownloadHandlersVersion === 'media-download-v37'",
       );
       if (ready == true || ready.toString().toLowerCase() == 'true') {
         if (_lastMediaHandlerFailureUrl == injectionUrl) {
@@ -10610,7 +10760,7 @@ class _BrowserPageState extends State<BrowserPage>
           return;
         }
       }
-      await _saveToMediaLibrary(
+      final savedMedia = await _saveToMediaLibrary(
         file,
         normalizedMediaType == 'image'
             ? MediaType.image
@@ -10628,14 +10778,7 @@ class _BrowserPageState extends State<BrowserPage>
             duration: _kMediaSaveSnackDuration,
             action: SnackBarAction(
               label: '查看',
-              onPressed:
-                  () => Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder:
-                          (context) =>
-                              const MediaManagerPage(showRouteBackButton: true),
-                    ),
-                  ),
+              onPressed: () => _openMediaLibraryAt(savedMedia),
             ),
           ),
         );
@@ -21738,6 +21881,20 @@ class _BrowserPageState extends State<BrowserPage>
       _showSmartOperation('未找到可长按媒体', point: const Offset(0.5, 0.5));
       task['failed'] = ((task['failed'] as int?) ?? 0) + 1;
       return;
+    }
+    if (!probe && task['allowMixedMedia'] == true && hit['found'] != false) {
+      final resolvedType =
+          hit['type']?.toString() == 'image'
+              ? MediaType.image
+              : MediaType.video;
+      if (task['mediaType'] != resolvedType) {
+        debugPrint(
+          '[SMART_MEDIA_GATE] corrected mixed card type from '
+          '${(task['mediaType'] as MediaType?)?.name ?? 'unknown'} '
+          'to ${resolvedType.name}',
+        );
+      }
+      task['mediaType'] = resolvedType;
     }
     // 视觉手指：媒体中心；找不到媒体时屏幕正中
     final point = Offset(
@@ -33182,15 +33339,7 @@ class _BrowserPageState extends State<BrowserPage>
                 duration: _kMediaSaveSnackDuration,
                 action: SnackBarAction(
                   label: '查看',
-                  onPressed:
-                      () => Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder:
-                              (context) => const MediaManagerPage(
-                                showRouteBackButton: true,
-                              ),
-                        ),
-                      ),
+                  onPressed: () => _openMediaLibraryAt(mediaMap),
                 ),
               ),
             );

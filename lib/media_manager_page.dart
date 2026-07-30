@@ -546,12 +546,14 @@ class MediaManagerPage extends StatefulWidget {
     this.showRouteBackButton = false,
     this.initialDirectoryId,
     this.highlightMediaId,
+    this.highlightIsDuplicate = false,
   });
 
   final void Function(bool isMultiSelectMode)? onMultiSelectModeChanged;
   final bool showRouteBackButton;
   final String? initialDirectoryId;
   final String? highlightMediaId;
+  final bool highlightIsDuplicate;
 
   @override
   _MediaManagerPageState createState() => _MediaManagerPageState();
@@ -3820,13 +3822,15 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     final isSystemFolder = item.id == 'recycle_bin' || item.id == 'favorites';
     bool isSelected = _selectedItems.contains(item.id);
     bool isLastViewed = item.id == _lastViewedMediaId;
-    final isDuplicateHighlight = item.id == _highlightedMediaId;
+    final isLocateHighlight = item.id == _highlightedMediaId;
+    final isDuplicateHighlight =
+        isLocateHighlight && widget.highlightIsDuplicate;
     final showFavThumbnailBadge =
         item.isFavorite &&
         (item.type == MediaType.image || item.type == MediaType.video);
 
     return GestureDetector(
-      key: isDuplicateHighlight ? _highlightedMediaKey : ValueKey(item.id),
+      key: isLocateHighlight ? _highlightedMediaKey : ValueKey(item.id),
       onTap:
           isSystemFolder
               ? () => _navigateToFolder(item)
@@ -3852,15 +3856,22 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                 _toggleItemSelection(item.id);
               },
       child: Card(
-        elevation: isDuplicateHighlight ? 10 : (isLastViewed ? 6 : 2),
+        elevation: isLocateHighlight ? 10 : (isLastViewed ? 6 : 2),
         color:
-            isDuplicateHighlight ? Colors.amber.withValues(alpha: 0.22) : null,
+            isLocateHighlight
+                ? (isDuplicateHighlight
+                    ? Colors.amber.withValues(alpha: 0.22)
+                    : Colors.green.withValues(alpha: 0.16))
+                : null,
         margin: const EdgeInsets.all(0),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(6),
           side:
-              isDuplicateHighlight
-                  ? const BorderSide(color: Colors.orange, width: 3.5)
+              isLocateHighlight
+                  ? BorderSide(
+                    color: isDuplicateHighlight ? Colors.orange : Colors.green,
+                    width: 3.5,
+                  )
                   : isLastViewed
                   ? const BorderSide(color: Colors.blue, width: 2.0)
                   : BorderSide.none,
@@ -3889,7 +3900,7 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                   ),
                 ],
               ),
-              if (isDuplicateHighlight)
+              if (isLocateHighlight)
                 Positioned(
                   left: 3,
                   top: 3,
@@ -3899,11 +3910,12 @@ class _MediaManagerPageState extends State<MediaManagerPage>
                       vertical: 2,
                     ),
                     decoration: BoxDecoration(
-                      color: Colors.orange,
+                      color:
+                          isDuplicateHighlight ? Colors.orange : Colors.green,
                       borderRadius: BorderRadius.circular(4),
                     ),
-                    child: const Text(
-                      '重复文件',
+                    child: Text(
+                      isDuplicateHighlight ? '重复文件' : '刚刚下载',
                       style: TextStyle(
                         color: Colors.white,
                         fontSize: 9,
@@ -5821,7 +5833,11 @@ class _MediaManagerPageState extends State<MediaManagerPage>
       }
       // 跨设备导入后 path 可能错误：先尝试 media/ 下同名文件再决定是否清理。
       final appDir = await getApplicationDocumentsDirectory();
-      final candidatePath = path.join(appDir.path, 'media', path.basename(item.path));
+      final candidatePath = path.join(
+        appDir.path,
+        'media',
+        path.basename(item.path),
+      );
       if (candidatePath != item.path && await File(candidatePath).exists()) {
         await _databaseService.updateMediaItemPath(item.id, candidatePath);
         _invalidMediaRetryCounts.remove(item.id);

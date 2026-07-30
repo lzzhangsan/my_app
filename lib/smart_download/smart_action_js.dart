@@ -1298,6 +1298,7 @@ function __smartEaseInOut(t) {
 
   let best = null;
   let bestScore = -1e18;
+  const videoAlternatives = [];
   const minIw = isFacebook ? 72 : 120;
   const minIh = isFacebook ? 72 : 100;
   const minAreaRatio = isFacebook ? 0.02 : 0.04;
@@ -1345,10 +1346,59 @@ function __smartEaseInOut(t) {
       fbBonus * 2500 +
       isMarked * 1500 -
       dist * 2;
+    const candidate = { el, mx, my, cover, areaRatio, isVideo, src, r, score };
+    if (isVideo) videoAlternatives.push(candidate);
     if (score > bestScore) {
       bestScore = score;
-      best = { el, mx, my, cover, areaRatio, isVideo, src };
+      best = candidate;
     }
+  }
+
+  // A poster IMG is commonly layered directly above its real VIDEO. In mixed
+  // mode the underlying video owns that visual card: downloading the poster
+  // must never be counted as downloading the media. Keep genuine image-only
+  // cards unchanged.
+  if (!imagesOnly && !videosOnly && best && !best.isVideo) {
+    let owningVideo = null;
+    let owningScore = -1e18;
+    for (const video of videoAlternatives) {
+      const overlapW = Math.max(
+        0,
+        Math.min(best.r.right, video.r.right) -
+          Math.max(best.r.left, video.r.left)
+      );
+      const overlapH = Math.max(
+        0,
+        Math.min(best.r.bottom, video.r.bottom) -
+          Math.max(best.r.top, video.r.top)
+      );
+      const overlapArea = overlapW * overlapH;
+      const smallerArea = Math.max(
+        1,
+        Math.min(
+          Math.max(1, best.r.width * best.r.height),
+          Math.max(1, video.r.width * video.r.height)
+        )
+      );
+      const overlapRatio = overlapArea / smallerArea;
+      let sameCard = false;
+      try {
+        const cardSelector =
+          'article, figure, [role="dialog"], [class*="card"], ' +
+          '[class*="item"], [class*="media"], [class*="slide"]';
+        const imageCard = best.el.closest(cardSelector);
+        sameCard = !!imageCard && imageCard === video.el.closest(cardSelector);
+      } catch (_) {}
+      const centerGap = Math.hypot(video.mx - best.mx, video.my - best.my);
+      const ownsPoster =
+        overlapRatio >= 0.35 ||
+        (sameCard && centerGap <= Math.max(120, Math.min(w, h) * 0.28));
+      if (ownsPoster && video.score > owningScore) {
+        owningVideo = video;
+        owningScore = video.score;
+      }
+    }
+    if (owningVideo) best = owningVideo;
   }
 
   document.querySelectorAll('[data-app-smart-current]').forEach(el => {
