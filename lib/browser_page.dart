@@ -2260,10 +2260,20 @@ class _BrowserPageState extends State<BrowserPage>
 
   /// Google / X 等登录后需要尽快把 cookie 落盘的站点。
   bool _shouldPersistCookiesForUrl(String? url) {
-    if (_isXPlatformPage(url) || _isFacebookPlatformPage(url)) return true;
+    if (_isXPlatformPage(url) ||
+        _isFacebookPlatformPage(url) ||
+        _isInstagramPlatformPage(url)) {
+      return true;
+    }
     final host = Uri.tryParse((url ?? '').trim())?.host.toLowerCase() ?? '';
     if (host.isEmpty) return false;
-    return host == 'google.com' ||
+    return host == 'telegram.org' ||
+        host.endsWith('.telegram.org') ||
+        host == 'instagram.com' ||
+        host.endsWith('.instagram.com') ||
+        host == 'threads.net' ||
+        host.endsWith('.threads.net') ||
+        host == 'google.com' ||
         host.endsWith('.google.com') ||
         host == 'google.cn' ||
         host.endsWith('.google.cn') ||
@@ -2651,6 +2661,22 @@ class _BrowserPageState extends State<BrowserPage>
   int _telegramStreamExpectedBytes = 0;
   String _telegramStreamProgressTaskId = '';
   bool _telegramStreamOwnsProgressTask = false;
+  DateTime? _telegramStreamLastProgressAt;
+  bool _telegramStreamFinalizing = false;
+
+  bool get _telegramStreamIsActive =>
+      _telegramStreamFinalizing ||
+      (_telegramStreamSink != null && _telegramStreamTransferId.isNotEmpty);
+
+  bool get _telegramStreamHasRecentProgress {
+    if (!_telegramStreamIsActive) return false;
+    // Hashing and inserting a 1GB+ completed file can legitimately take much
+    // longer than the network inactivity threshold. It is still active work.
+    if (_telegramStreamFinalizing) return true;
+    final last = _telegramStreamLastProgressAt;
+    return last != null &&
+        DateTime.now().difference(last) < const Duration(minutes: 2);
+  }
 
   void _notifyMediaDownloadSaved() {
     _mediaDownloadSaveResolved = true;
@@ -5841,8 +5867,17 @@ class _BrowserPageState extends State<BrowserPage>
     final transferId = (message['transferId'] ?? '').toString();
     try {
       if (phase == 'start') {
-        if (_telegramStreamSink != null) {
-          await _telegramStreamSink!.close();
+        if (_telegramStreamIsActive) {
+          debugPrint(
+            '[TG_STREAM] reject overlapping start id=$transferId '
+            'active=$_telegramStreamTransferId '
+            'bytes=$_telegramStreamBytes/$_telegramStreamExpectedBytes',
+          );
+          return <String, dynamic>{
+            'ok': false,
+            'reason': 'telegram_download_already_active',
+            'activeTransferId': _telegramStreamTransferId,
+          };
         }
         final appDir = await getApplicationDocumentsDirectory();
         final mediaDir = Directory('${appDir.path}/media');
@@ -5852,6 +5887,7 @@ class _BrowserPageState extends State<BrowserPage>
         _telegramStreamSink = file.openWrite();
         _telegramStreamTransferId = transferId;
         _telegramStreamBytes = 0;
+        _telegramStreamLastProgressAt = DateTime.now();
         _telegramStreamExpectedBytes =
             (message['expectedBytes'] as num?)?.toInt() ?? 0;
         final smartTask = _smartDownloadTask;
@@ -5886,6 +5922,7 @@ class _BrowserPageState extends State<BrowserPage>
         final bytes = base64Decode(encoded);
         _telegramStreamSink!.add(bytes);
         _telegramStreamBytes += bytes.length;
+        _telegramStreamLastProgressAt = DateTime.now();
         _updateTelegramStreamProgress(status: 'downloading');
         if (_telegramStreamBytes % (4 * 1024 * 1024) < bytes.length) {
           await _telegramStreamSink!.flush();
@@ -5901,9 +5938,11 @@ class _BrowserPageState extends State<BrowserPage>
       if (phase == 'end') {
         final sink = _telegramStreamSink!;
         final file = _telegramStreamFile!;
+        _telegramStreamFinalizing = true;
         _telegramStreamSink = null;
         _telegramStreamFile = null;
         _telegramStreamTransferId = '';
+        _telegramStreamLastProgressAt = null;
         await sink.flush();
         await sink.close();
         final actualBytes = await file.length();
@@ -5949,6 +5988,7 @@ class _BrowserPageState extends State<BrowserPage>
           );
           await _completeSmartGestureDownload(true);
         }
+        _telegramStreamFinalizing = false;
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
@@ -5972,6 +6012,8 @@ class _BrowserPageState extends State<BrowserPage>
         _telegramStreamSink = null;
         _telegramStreamFile = null;
         _telegramStreamTransferId = '';
+        _telegramStreamLastProgressAt = null;
+        _telegramStreamFinalizing = false;
         _updateTelegramStreamProgress(
           status: 'failed',
           detailPrefix: 'Telegram 视频下载失败',
@@ -5989,6 +6031,8 @@ class _BrowserPageState extends State<BrowserPage>
       _telegramStreamSink = null;
       _telegramStreamFile = null;
       _telegramStreamTransferId = '';
+      _telegramStreamLastProgressAt = null;
+      _telegramStreamFinalizing = false;
       _telegramStreamExpectedBytes = 0;
       try {
         await sink?.close();
@@ -6018,6 +6062,8 @@ class _BrowserPageState extends State<BrowserPage>
       _telegramStreamSink = null;
       _telegramStreamFile = null;
       _telegramStreamTransferId = '';
+      _telegramStreamLastProgressAt = null;
+      _telegramStreamFinalizing = false;
       _telegramStreamExpectedBytes = 0;
       _updateTelegramStreamProgress(
         status: 'failed',
@@ -6390,7 +6436,7 @@ class _BrowserPageState extends State<BrowserPage>
       await controller.evaluateJavascript(
         source: '''
       (() => {
-          const handlerVersion = 'media-download-v37';
+          const handlerVersion = 'media-download-v40';
       if (window.__appMediaDownloadHandlersVersion === handlerVersion) return true;
       window.Flutter = window.Flutter || { postMessage: function(m){ try { if(window.flutter_inappwebview && window.flutter_inappwebview.callHandler) window.flutter_inappwebview.callHandler('Flutter', m); } catch(e){} } };
       // Telegram Web occasionally carries a non-1 playback rate between
@@ -6674,13 +6720,164 @@ class _BrowserPageState extends State<BrowserPage>
           const spec = JSON.parse(decodeURIComponent(encoded));
           expectedBytes = Number(spec && spec.size || 0);
         } catch (_) {}
-        await bridge.callHandler('TelegramStreamChunk', {
+        const startAck = await bridge.callHandler('TelegramStreamChunk', {
           phase: 'start',
           transferId: transferId,
           expectedBytes: expectedBytes
         });
+        if (!startAck || startAck.ok === false) {
+          throw new Error(
+            'Telegram stream start rejected: ' +
+            String(startAck && startAck.reason || 'unknown')
+          );
+        }
         let received = 0;
         try {
+          // Telegram's authenticated /k/stream endpoint supports byte ranges.
+          // For known-size files, prefetch several non-overlapping ranges in
+          // parallel, then forward them to Flutter strictly in byte order.
+          // This overlaps network latency with platform-channel/disk writes
+          // while keeping memory bounded and the final file deterministic.
+          if (expectedBytes >= 64 * 1024 * 1024) {
+            try {
+              const parallelism = expectedBytes >= 256 * 1024 * 1024 ? 4 : 3;
+              const rangeBytes = 4 * 1024 * 1024;
+              const bridgeChunkBytes = 512 * 1024;
+              const fetchRange = async (start, end) => {
+              let lastError = null;
+              for (let attempt = 0; attempt < 3; attempt++) {
+                try {
+                  const response = await fetch(streamUrl, {
+                    method: 'GET',
+                    credentials: 'include',
+                    cache: 'no-cache',
+                    headers: {'Range': 'bytes=' + start + '-' + end}
+                  });
+                  if (!response.ok || response.status !== 206) {
+                    throw new Error(
+                      'Telegram parallel range status ' + response.status
+                    );
+                  }
+                  const contentRange = String(
+                    response.headers.get('content-range') || ''
+                  );
+                  const match = contentRange.match(
+                    /bytes\\s+(\\d+)-(\\d+)\\/(\\d+|\\*)/i
+                  );
+                  if (!match ||
+                      Number(match[1]) !== start ||
+                      Number(match[2]) !== end) {
+                    throw new Error(
+                      'Telegram parallel range mismatch for ' +
+                      start + '-' + end
+                    );
+                  }
+                  const bytes = new Uint8Array(
+                    await response.arrayBuffer()
+                  );
+                  if (bytes.length !== end - start + 1) {
+                    throw new Error(
+                      'Telegram parallel range length mismatch at ' + start
+                    );
+                  }
+                  return {start:start, bytes:bytes};
+                } catch (error) {
+                  lastError = error;
+                  if (attempt < 2) {
+                    await new Promise(resolve => setTimeout(
+                      resolve,
+                      350 * (attempt + 1)
+                    ));
+                  }
+                }
+              }
+              throw lastError || new Error('Telegram parallel range failed');
+              };
+              const makeBatch = (start) => {
+              const jobs = [];
+              let cursor = start;
+              for (let i = 0; i < parallelism && cursor < expectedBytes; i++) {
+                const end = Math.min(
+                  expectedBytes - 1,
+                  cursor + rangeBytes - 1
+                );
+                jobs.push(fetchRange(cursor, end));
+                cursor = end + 1;
+              }
+              return {
+                nextCursor: cursor,
+                promise: Promise.all(jobs)
+              };
+              };
+              const sendOrderedBlock = async (block) => {
+              if (block.start !== received) {
+                throw new Error(
+                  'Telegram ordered write mismatch: ' +
+                  block.start + '/' + received
+                );
+              }
+              const value = block.bytes;
+              for (let offset = 0;
+                  offset < value.length;
+                  offset += bridgeChunkBytes) {
+                const part = value.subarray(
+                  offset,
+                  Math.min(value.length, offset + bridgeChunkBytes)
+                );
+                let binary = '';
+                for (let i = 0; i < part.length; i += 0x8000) {
+                  binary += String.fromCharCode.apply(
+                    null,
+                    part.subarray(i, Math.min(part.length, i + 0x8000))
+                  );
+                }
+                const ack = await bridge.callHandler('TelegramStreamChunk', {
+                  phase: 'chunk',
+                  transferId: transferId,
+                  data: btoa(binary)
+                });
+                if (!ack || ack.ok === false) {
+                  throw new Error('Flutter rejected Telegram parallel chunk');
+                }
+                received += part.length;
+                const percent = Math.min(
+                  99,
+                  Math.floor(received * 100 / expectedBytes)
+                );
+                updateFeedbackStatus(
+                  '正在加速下载 Telegram 视频 ' + percent + '%',
+                  null
+                );
+              }
+              };
+              let batch = makeBatch(0);
+              while (batch) {
+                const blocks = await batch.promise;
+                // Start the next network window before serializing/writing
+                // this one, so network and disk/channel work overlap.
+                const nextBatch = batch.nextCursor < expectedBytes
+                  ? makeBatch(batch.nextCursor)
+                  : null;
+                blocks.sort((a, b) => a.start - b.start);
+                for (const block of blocks) {
+                  await sendOrderedBlock(block);
+                }
+                batch = nextBatch;
+              }
+            } catch (parallelError) {
+              // Telegram's Service Worker can realign otherwise valid Range
+              // requests. Keep every already-written contiguous byte and
+              // continue below with the proven single-range pipeline.
+              console.warn(
+                'Telegram acceleration fallback at byte ' + received,
+                parallelError
+              );
+              updateFeedbackStatus(
+                'Telegram 加速通道不兼容，已切换稳定下载',
+                null
+              );
+            }
+          }
           while (expectedBytes <= 0 || received < expectedBytes) {
             const requestedEnd = expectedBytes > 0
               ? Math.min(expectedBytes - 1, received + 1024 * 1024 - 1)
@@ -9306,7 +9503,7 @@ class _BrowserPageState extends State<BrowserPage>
       );
       final ready = await controller.evaluateJavascript(
         source:
-            "window.__appMediaDownloadHandlersVersion === 'media-download-v37'",
+            "window.__appMediaDownloadHandlersVersion === 'media-download-v40'",
       );
       if (ready == true || ready.toString().toLowerCase() == 'true') {
         if (_lastMediaHandlerFailureUrl == injectionUrl) {
@@ -22444,7 +22641,8 @@ class _BrowserPageState extends State<BrowserPage>
     var progressSince = DateTime.now();
     final healthy = _actionRecipeHealthySkipGuard(task);
     while (identical(_smartDownloadTask, task) &&
-        DateTime.now().difference(started) < waitLimit) {
+        (DateTime.now().difference(started) < waitLimit ||
+            _telegramStreamHasRecentProgress)) {
       if (task['actionForceSkipReleased'] == true &&
           task['actionLongPressNeedsConfirm'] != true) {
         debugPrint('action waitDownload: EXIT reason=force_skip_released');
@@ -22468,7 +22666,9 @@ class _BrowserPageState extends State<BrowserPage>
       final downloading = _actionRecipeHasRealSmartDownloading();
       final longPressBusy = _longPressVideoDownloadInProgress;
       final urlInFlight = _downloadingUrls.isNotEmpty;
-      final activelyDownloading = downloading || longPressBusy || urlInFlight;
+      final telegramDownloading = _telegramStreamHasRecentProgress;
+      final activelyDownloading =
+          downloading || longPressBusy || urlInFlight || telegramDownloading;
       if (strictVideoSave &&
           DateTime.now().difference(started) >=
               _kFacebookSmartRoundHardTimeout) {
@@ -22528,6 +22728,8 @@ class _BrowserPageState extends State<BrowserPage>
       // 进度指纹：真实下载数 / URL 在途 / 闸门 / outcome，变则刷新看门狗
       final progressFingerprint =
           '${activelyDownloading ? 1 : 0}|${_downloadingUrls.length}|'
+          'tg=${telegramDownloading ? _telegramStreamBytes : 0}/'
+          '$_telegramStreamExpectedBytes|'
           '${needsConfirm ? 1 : 0}|$awaitingLibrary|$pending|'
           '$completerPending|$outcomeNow|${task['success']}';
       if (progressFingerprint != lastProgressFingerprint) {
@@ -22663,6 +22865,18 @@ class _BrowserPageState extends State<BrowserPage>
     }
     // 审计缺口修复：loop_timeout 必须关闸 + 清占位，否则 findNext 永久被挡
     if (identical(_smartDownloadTask, task)) {
+      // 大文件完成后的哈希/入库回调，可能恰好落在 while 截止边界。
+      // 强制跳过前必须最后复核一次真实终态，绝不能把成功覆盖成超时。
+      if (_actionRecipeDidLibrarySave(task) ||
+          _actionRecipeIsLibraryDuplicateReleased(task) ||
+          (task['actionForceSkipReleased'] == true &&
+              task['actionLongPressNeedsConfirm'] != true)) {
+        debugPrint(
+          'action waitDownload: EXIT reason=terminal_at_loop_boundary '
+          'outcome=${task['actionDownloadOutcome']}',
+        );
+        return;
+      }
       await _actionRecipeForceSkipCurrent(
         task,
         outcome: 'loop_timeout',
