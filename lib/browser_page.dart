@@ -2644,6 +2644,11 @@ class _BrowserPageState extends State<BrowserPage>
   bool _mediaDownloadSaveResolved = false;
   bool _longPressVideoDownloadInProgress = false;
   bool _instagramManualTrackRecoveryInProgress = false;
+  IOSink? _telegramStreamSink;
+  File? _telegramStreamFile;
+  String _telegramStreamTransferId = '';
+  int _telegramStreamBytes = 0;
+  int _telegramStreamExpectedBytes = 0;
 
   void _notifyMediaDownloadSaved() {
     _mediaDownloadSaveResolved = true;
@@ -5805,10 +5810,150 @@ class _BrowserPageState extends State<BrowserPage>
         }
       },
     );
+    ctrl.addJavaScriptHandler(
+      handlerName: 'TelegramStreamChunk',
+      callback: (args) async {
+        if (args.isEmpty || args.first is! Map) {
+          return <String, dynamic>{'ok': false, 'reason': 'invalid_message'};
+        }
+        return _handleTelegramStreamChunk(
+          Map<String, dynamic>.from(args.first as Map),
+        );
+      },
+    );
     _syncBrowserSessionPreview();
     // Remount after GlobalKey loan/return: native surface starts at about:blank.
     if (_isBrowsingWebPage) {
       unawaited(_recoverBrowsingSurfaceIfBlank(reason: 'webview_created'));
+    }
+  }
+
+  Future<Map<String, dynamic>> _handleTelegramStreamChunk(
+    Map<String, dynamic> message,
+  ) async {
+    final phase = (message['phase'] ?? '').toString();
+    final transferId = (message['transferId'] ?? '').toString();
+    try {
+      if (phase == 'start') {
+        if (_telegramStreamSink != null) {
+          await _telegramStreamSink!.close();
+        }
+        final appDir = await getApplicationDocumentsDirectory();
+        final mediaDir = Directory('${appDir.path}/media');
+        if (!await mediaDir.exists()) await mediaDir.create(recursive: true);
+        final file = File('${mediaDir.path}/${const Uuid().v4()}.mp4');
+        _telegramStreamFile = file;
+        _telegramStreamSink = file.openWrite();
+        _telegramStreamTransferId = transferId;
+        _telegramStreamBytes = 0;
+        _telegramStreamExpectedBytes =
+            (message['expectedBytes'] as num?)?.toInt() ?? 0;
+        debugPrint(
+          '[TG_STREAM] start id=$transferId '
+          'expected=${message['expectedBytes']} path=${file.path}',
+        );
+        return <String, dynamic>{'ok': true};
+      }
+      if (transferId.isEmpty ||
+          transferId != _telegramStreamTransferId ||
+          _telegramStreamSink == null) {
+        return <String, dynamic>{'ok': false, 'reason': 'unknown_transfer'};
+      }
+      if (phase == 'chunk') {
+        final encoded = (message['data'] ?? '').toString();
+        final bytes = base64Decode(encoded);
+        _telegramStreamSink!.add(bytes);
+        _telegramStreamBytes += bytes.length;
+        if (_telegramStreamBytes % (4 * 1024 * 1024) < bytes.length) {
+          await _telegramStreamSink!.flush();
+          debugPrint(
+            '[TG_STREAM] progress id=$transferId bytes=$_telegramStreamBytes',
+          );
+        }
+        return <String, dynamic>{
+          'ok': true,
+          'receivedBytes': _telegramStreamBytes,
+        };
+      }
+      if (phase == 'end') {
+        final sink = _telegramStreamSink!;
+        final file = _telegramStreamFile!;
+        _telegramStreamSink = null;
+        _telegramStreamFile = null;
+        _telegramStreamTransferId = '';
+        await sink.flush();
+        await sink.close();
+        final actualBytes = await file.length();
+        final expectedBytes = _telegramStreamExpectedBytes;
+        _telegramStreamExpectedBytes = 0;
+        debugPrint(
+          '[TG_STREAM] end id=$transferId bytes=$actualBytes '
+          'expected=$expectedBytes',
+        );
+        if ((expectedBytes > 0 && actualBytes != expectedBytes) ||
+            actualBytes < _kMinBase64VideoBytes ||
+            _detectVideoExtension(
+                  await file
+                      .openRead(0, min(actualBytes, 64 * 1024))
+                      .fold<List<int>>(
+                        <int>[],
+                        (all, part) => all..addAll(part),
+                      ),
+                ) ==
+                null) {
+          await file.delete();
+          throw const FormatException('Telegram stream is not a valid video');
+        }
+        await _saveToMediaLibrary(
+          file,
+          MediaType.video,
+          allowDuplicate: false,
+          relaxValidation: false,
+        );
+        _notifyMediaDownloadSaved();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Telegram 视频已保存到媒体库'),
+              duration: _kMediaSaveSnackDuration,
+            ),
+          );
+        }
+        return <String, dynamic>{'ok': true, 'savedBytes': actualBytes};
+      }
+      if (phase == 'error') {
+        final sink = _telegramStreamSink;
+        final file = _telegramStreamFile;
+        _telegramStreamSink = null;
+        _telegramStreamFile = null;
+        _telegramStreamTransferId = '';
+        await sink?.close();
+        if (file != null && await file.exists()) await file.delete();
+        debugPrint('[TG_STREAM] web error: ${message['error']}');
+        return <String, dynamic>{'ok': true};
+      }
+      return <String, dynamic>{'ok': false, 'reason': 'unknown_phase'};
+    } catch (e, st) {
+      debugPrint('[TG_STREAM] phase=$phase failed: $e\n$st');
+      final sink = _telegramStreamSink;
+      final file = _telegramStreamFile;
+      _telegramStreamSink = null;
+      _telegramStreamFile = null;
+      _telegramStreamTransferId = '';
+      _telegramStreamExpectedBytes = 0;
+      try {
+        await sink?.close();
+        if (file != null && await file.exists()) await file.delete();
+      } catch (_) {}
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Telegram 视频保存失败：$e'),
+            duration: _kMediaSaveSnackDuration,
+          ),
+        );
+      }
+      return <String, dynamic>{'ok': false, 'reason': e.toString()};
     }
   }
 
@@ -6138,7 +6283,7 @@ class _BrowserPageState extends State<BrowserPage>
       await controller.evaluateJavascript(
         source: '''
       (() => {
-          const handlerVersion = 'media-download-v34';
+          const handlerVersion = 'media-download-v36';
       if (window.__appMediaDownloadHandlersVersion === handlerVersion) return true;
       window.Flutter = window.Flutter || { postMessage: function(m){ try { if(window.flutter_inappwebview && window.flutter_inappwebview.callHandler) window.flutter_inappwebview.callHandler('Flutter', m); } catch(e){} } };
       window.MediaInterceptor = window.MediaInterceptor || {
@@ -6315,9 +6460,13 @@ class _BrowserPageState extends State<BrowserPage>
           
           let blob;
           try {
-            const resp = await fetch(blobUrl, { 
-              method: 'GET', 
-              credentials: 'omit',
+            let sameOrigin = false;
+            try { sameOrigin = new URL(blobUrl, location.href).origin === location.origin; } catch (_) {}
+            const resp = await fetch(blobUrl, {
+              method: 'GET',
+              // Telegram /k/stream is fulfilled by its authenticated page
+              // session and Service Worker.
+              credentials: sameOrigin ? 'include' : 'omit',
               cache: 'no-cache'
             });
             if (!resp.ok) throw new Error('Fetch status ' + resp.status);
@@ -6359,6 +6508,134 @@ class _BrowserPageState extends State<BrowserPage>
         } catch (error) {
           console.error('Error resolving Blob URL:', error);
           return null;
+        }
+      }
+
+      async function streamTelegramVideoToFlutter(streamUrl) {
+        const transferId =
+          'tg-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+        const bridge = window.flutter_inappwebview;
+        if (!bridge || typeof bridge.callHandler !== 'function') {
+          throw new Error('Telegram stream bridge unavailable');
+        }
+        let expectedBytes = 0;
+        try {
+          const encoded = streamUrl.split('/stream/')[1] || '';
+          const spec = JSON.parse(decodeURIComponent(encoded));
+          expectedBytes = Number(spec && spec.size || 0);
+        } catch (_) {}
+        await bridge.callHandler('TelegramStreamChunk', {
+          phase: 'start',
+          transferId: transferId,
+          expectedBytes: expectedBytes
+        });
+        let received = 0;
+        try {
+          while (expectedBytes <= 0 || received < expectedBytes) {
+            const requestedEnd = expectedBytes > 0
+              ? Math.min(expectedBytes - 1, received + 1024 * 1024 - 1)
+              : received + 1024 * 1024 - 1;
+            const response = await fetch(streamUrl, {
+              method: 'GET',
+              credentials: 'include',
+              cache: 'no-cache',
+              headers: {'Range': 'bytes=' + received + '-' + requestedEnd}
+            });
+            if (!response.ok) {
+              throw new Error('Telegram fetch status ' + response.status);
+            }
+            const contentRange = String(
+              response.headers.get('content-range') || ''
+            );
+            const rangeMatch = contentRange.match(
+              /bytes\\s+(\\d+)-(\\d+)\\/(\\d+|\\*)/i
+            );
+            if (rangeMatch) {
+              const responseStart = Number(rangeMatch[1]);
+              if (responseStart !== received) {
+                throw new Error(
+                  'Telegram returned range ' + responseStart +
+                  ', expected ' + received
+                );
+              }
+              const total = Number(rangeMatch[3]);
+              if (Number.isFinite(total) && total > 0) expectedBytes = total;
+            } else if (received > 0) {
+              throw new Error('Telegram ignored continuation range');
+            }
+            const reader = response.body && response.body.getReader
+              ? response.body.getReader()
+              : null;
+            if (!reader) {
+              throw new Error('Telegram streaming reader unavailable');
+            }
+            const beforeResponse = received;
+            while (true) {
+              const result = await reader.read();
+              if (result.done) break;
+              const value = result.value;
+            // Keep each platform-channel message small and await its write for
+            // true backpressure; large Telegram files never accumulate in JS.
+            for (let offset = 0; offset < value.length; offset += 192 * 1024) {
+              const part = value.subarray(
+                offset,
+                Math.min(value.length, offset + 192 * 1024)
+              );
+              let binary = '';
+              for (let i = 0; i < part.length; i += 0x8000) {
+                binary += String.fromCharCode.apply(
+                  null,
+                  part.subarray(i, Math.min(part.length, i + 0x8000))
+                );
+              }
+              const ack = await bridge.callHandler('TelegramStreamChunk', {
+                phase: 'chunk',
+                transferId: transferId,
+                data: btoa(binary)
+              });
+              if (!ack || ack.ok === false) {
+                throw new Error('Flutter rejected Telegram chunk');
+              }
+              received += part.length;
+              if (expectedBytes > 0) {
+                const percent = Math.min(
+                  99,
+                  Math.floor(received * 100 / expectedBytes)
+                );
+                updateFeedbackStatus('正在读取 Telegram 视频 ' + percent + '%…', null);
+              }
+            }
+            }
+            if (received <= beforeResponse) {
+              throw new Error('Telegram returned an empty range');
+            }
+            if (expectedBytes <= 0 && response.status !== 206) break;
+          }
+          if (expectedBytes > 0 && received !== expectedBytes) {
+            throw new Error(
+              'Telegram stream incomplete: ' + received + '/' + expectedBytes
+            );
+          }
+          const ack = await bridge.callHandler('TelegramStreamChunk', {
+            phase: 'end',
+            transferId: transferId,
+            receivedBytes: received,
+            expectedBytes: expectedBytes
+          });
+          if (!ack || ack.ok === false) {
+            throw new Error('Flutter failed to save Telegram video');
+          }
+          updateFeedbackStatus('Telegram 视频已保存', true);
+          return true;
+        } catch (error) {
+          try {
+            await bridge.callHandler('TelegramStreamChunk', {
+              phase: 'error',
+              transferId: transferId,
+              error: String(error && error.message || error)
+            });
+          } catch (_) {}
+          throw error;
         }
       }
 
@@ -8299,8 +8576,16 @@ class _BrowserPageState extends State<BrowserPage>
         }
         // 多重处理blob/data url
         function tryBlobOrDataUrl(url, mediaType) {
-          if (isBlobUrl(url)) {
-            if (mediaType === 'video' && isElementBoundFeedContext) {
+          let isTelegramInternalStream = false;
+          try {
+            const parsed = new URL(url, location.href);
+            isTelegramInternalStream =
+              parsed.hostname.toLowerCase() === 'web.telegram.org' &&
+              parsed.origin === location.origin &&
+              /\\/k\\/stream\\//i.test(parsed.pathname);
+          } catch (_) {}
+          if (isBlobUrl(url) || isTelegramInternalStream) {
+            if (isBlobUrl(url) && mediaType === 'video' && isElementBoundFeedContext) {
               let boundFragments = [];
               try {
                 if (videoEl && typeof window.__appMediaFragmentsForVideo === 'function') {
@@ -8343,6 +8628,18 @@ class _BrowserPageState extends State<BrowserPage>
               return true;
             }
             updateFeedbackStatus('正在处理blob...', true);
+            if (isTelegramInternalStream) {
+              updateFeedbackStatus('正在通过 Telegram 会话读取视频…', null);
+              streamTelegramVideoToFlutter(url).catch(error => {
+                console.error('Telegram stream download failed:', error);
+                updateFeedbackStatus(
+                  'Telegram 视频读取失败：' +
+                    String(error && error.message || error),
+                  false
+                );
+              });
+              return true;
+            }
             resolveBlobUrl(url, mediaType).then(resolved => {
               if (resolved) {
                 Flutter.postMessage(JSON.stringify({
