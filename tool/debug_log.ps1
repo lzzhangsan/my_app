@@ -4,7 +4,8 @@
 
   - Finds adb without requiring it on PATH.
   - Uses the only connected device unless -DeviceId is supplied.
-  - Restricts logcat to the app PID.
+  - Automatically follows the app log across Flutter hot restarts/app restarts.
+  - Restricts the logcat fallback to the current app PID.
   - Shows either every app log or only lines containing -Prefix.
   - Saves the complete, unfiltered app log under debug_logs/.
   - Does not install/uninstall the app, clear app data, or stop Flutter.
@@ -109,7 +110,6 @@ $LatestLog = Join-Path $LogDir "debug_log_latest.log"
 $LatestPath = Join-Path $LogDir "debug_log_latest.path.txt"
 
 Set-Content -LiteralPath $SessionLog -Value "" -Encoding UTF8
-Set-Content -LiteralPath $LatestLog -Value "" -Encoding UTF8
 Set-Content -LiteralPath $LatestPath -Value $SessionLog -Encoding UTF8
 
 $DeviceLogPath = "files/codex_debug.log"
@@ -127,20 +127,43 @@ Write-Host "Saved  : $SessionLog" -ForegroundColor Green
 Write-Host "Latest : $LatestLog" -ForegroundColor Green
 Write-Host "Source : $(if ($UseAppFile) { 'app debug file (Vivo-safe)' } else { 'Android logcat fallback' })" -ForegroundColor Green
 Write-Host ""
-Write-Host "Reproduce the issue once, then press Ctrl+C and tell the assistant: 操作完成" -ForegroundColor Yellow
+Write-Host "Keep this window open while testing. Press Ctrl+C only when you want to stop." -ForegroundColor Yellow
 Write-Host ""
 
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-$SessionWriter = [System.IO.StreamWriter]::new($SessionLog, $true, $Utf8NoBom)
-$LatestWriter = [System.IO.StreamWriter]::new($LatestLog, $true, $Utf8NoBom)
+$SessionStream = [System.IO.FileStream]::new(
+  $SessionLog,
+  [System.IO.FileMode]::Append,
+  [System.IO.FileAccess]::Write,
+  [System.IO.FileShare]::ReadWrite
+)
+$SessionWriter = [System.IO.StreamWriter]::new($SessionStream, $Utf8NoBom)
+$LatestWriter = $null
+try {
+  $LatestStream = [System.IO.FileStream]::new(
+    $LatestLog,
+    [System.IO.FileMode]::Append,
+    [System.IO.FileAccess]::Write,
+    [System.IO.FileShare]::ReadWrite
+  )
+  $LatestWriter = [System.IO.StreamWriter]::new($LatestStream, $Utf8NoBom)
+} catch [System.IO.IOException] {
+  # A viewer started with an older script may still hold this compatibility
+  # mirror exclusively. The unique session log remains fully available, and
+  # debug_log_latest.path.txt points tools to it, so do not abort live viewing.
+  Write-Host "[WARN] The compatibility latest log is used by an older viewer." -ForegroundColor Yellow
+  Write-Host "       Live output and the session log will continue normally." -ForegroundColor Yellow
+}
 $SessionWriter.AutoFlush = $true
-$LatestWriter.AutoFlush = $true
+if ($LatestWriter) { $LatestWriter.AutoFlush = $true }
 
 try {
   try {
     if ($UseAppFile) {
       $LogStream = {
-        & $Adb -s $DeviceId exec-out run-as $PackageName tail -n 200 -f $DeviceLogPath
+        # -f follows an old file descriptor and goes silent when a Flutter hot
+        # restart recreates codex_debug.log. -F follows by filename and retries.
+        & $Adb -s $DeviceId exec-out run-as $PackageName tail -n 200 -F -s 1 $DeviceLogPath
       }
     } else {
       $LogStream = {
@@ -151,14 +174,14 @@ try {
       ForEach-Object {
         $Line = [string]$_
         $SessionWriter.WriteLine($Line)
-        $LatestWriter.WriteLine($Line)
+        if ($LatestWriter) { $LatestWriter.WriteLine($Line) }
         if (-not $Prefix -or $Line.IndexOf($Prefix, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
           $Line
         }
       }
   } finally {
     $SessionWriter.Dispose()
-    $LatestWriter.Dispose()
+    if ($LatestWriter) { $LatestWriter.Dispose() }
   }
 } finally {
   Write-Host ""

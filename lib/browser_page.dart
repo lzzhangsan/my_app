@@ -1006,6 +1006,7 @@ class _BrowserPageState extends State<BrowserPage>
     Iterable<String> fragmentUrls, {
     Iterable<String> fallbackUrls = const <String>[],
     double targetDurationSeconds = 0,
+    Set<String> excludedAssetIds = const <String>{},
   }) {
     final tracksByAsset = <String, List<String>>{};
     final seen = <String>{};
@@ -1051,6 +1052,10 @@ class _BrowserPageState extends State<BrowserPage>
     var selectedScore = -0x7fffffff;
     double? selectedDurationDelta;
     for (final entry in tracksByAsset.entries) {
+      if (excludedAssetIds.contains(entry.key)) {
+        debugPrint('[IG_BOUND_SKIP_HANDLED] asset=${entry.key}');
+        continue;
+      }
       final metadata =
           entry.value
               .map(facebookMediaMetadata)
@@ -1100,9 +1105,12 @@ class _BrowserPageState extends State<BrowserPage>
     }
     if (selectedAssetId == null) return const <String>[];
     if (targetDurationSeconds > 0) {
-      // Instagram's DOM duration and DASH metadata are independently rounded
-      // and can differ by almost two seconds on short Reels.
-      final allowedDelta = max(2.5, targetDurationSeconds * 0.25);
+      // The DASH metadata duration is integral while the DOM duration has
+      // fractions, so the same asset can be about one second apart. A wider
+      // tolerance is unsafe in Instagram's reused feed player: the next/previous
+      // Reel's tracks remain bound and a 7-second Reel can otherwise select a
+      // nearby 9-second asset. Prefer a retry over downloading the wrong post.
+      const allowedDelta = 1.25;
       if (selectedDurationDelta == null ||
           selectedDurationDelta! > allowedDelta) {
         debugPrint(
@@ -2635,6 +2643,7 @@ class _BrowserPageState extends State<BrowserPage>
   Timer? _mediaDownloadFailHintTimer;
   bool _mediaDownloadSaveResolved = false;
   bool _longPressVideoDownloadInProgress = false;
+  bool _instagramManualTrackRecoveryInProgress = false;
 
   void _notifyMediaDownloadSaved() {
     _mediaDownloadSaveResolved = true;
@@ -6129,7 +6138,7 @@ class _BrowserPageState extends State<BrowserPage>
       await controller.evaluateJavascript(
         source: '''
       (() => {
-          const handlerVersion = 'media-download-v33';
+          const handlerVersion = 'media-download-v34';
       if (window.__appMediaDownloadHandlersVersion === handlerVersion) return true;
       window.Flutter = window.Flutter || { postMessage: function(m){ try { if(window.flutter_inappwebview && window.flutter_inappwebview.callHandler) window.flutter_inappwebview.callHandler('Flutter', m); } catch(e){} } };
       window.MediaInterceptor = window.MediaInterceptor || {
@@ -7425,16 +7434,26 @@ class _BrowserPageState extends State<BrowserPage>
             }
           }
           if (!pointVideo && pointImage) bestTarget = pointImage;
-          // The synthetic long-press target is resolved with elementFromPoint
-          // before this rebinding pass. On Instagram's full-screen Reels page
-          // that exact VIDEO may not live inside an <article>, so the
-          // article-based picker returns null even though the touched node is
-          // authoritative. Never replace it with the overlaid poster image.
+          // A synthetic smart gesture may target Instagram's real VIDEO below
+          // a poster overlay. For a user's manual long press, however, never
+          // let a stale/off-screen VIDEO override the image under the finger.
+          const initialVideo = String(
+            (initialLongPressTarget && initialLongPressTarget.tagName) || ''
+          ).toLowerCase() === 'video' ? initialLongPressTarget : null;
+          const initialVideoRect = initialVideo
+            ? initialVideo.getBoundingClientRect()
+            : null;
+          const initialVideoHit = !!initialVideoRect &&
+            window._lastTouchX >= initialVideoRect.left &&
+            window._lastTouchX <= initialVideoRect.right &&
+            window._lastTouchY >= initialVideoRect.top &&
+            window._lastTouchY <= initialVideoRect.bottom;
           if (isInstagramContext &&
-              String((initialLongPressTarget && initialLongPressTarget.tagName) || '').toLowerCase() === 'video' &&
-              (initialLongPressTarget.currentSrc || initialLongPressTarget.src)) {
-            bestTarget = initialLongPressTarget;
-            pointVideo = initialLongPressTarget;
+              initialVideo &&
+              (initialVideo.currentSrc || initialVideo.src) &&
+              (isSmartGesture || initialVideoHit)) {
+            bestTarget = initialVideo;
+            pointVideo = initialVideo;
           }
           const selectedTag = (bestTarget.tagName || '').toLowerCase();
           const selectedImage = selectedTag === 'img' || selectedTag === 'image' ||
@@ -8315,7 +8334,8 @@ class _BrowserPageState extends State<BrowserPage>
                 positionSec: videoEl && isFinite(Number(videoEl.currentTime)) ? Number(videoEl.currentTime) : 0,
                 durationSec: effectiveVideoDuration(videoEl),
                 sessionId: longPressSessionId,
-                playbackStartedAtMs: Date.now() - Math.max(0, Number(videoEl && videoEl.currentTime || 0)) * 1000,
+                playbackStartedAtMs: Number(videoEl && videoEl.__appWarmupStartedAtMs || 0) ||
+                  (Date.now() - Math.max(0, Number(videoEl && videoEl.currentTime || 0)) * 1000),
                 boundFragments: boundFragments,
                 candidates: cands
               }));
@@ -8337,7 +8357,8 @@ class _BrowserPageState extends State<BrowserPage>
                   positionSec: videoEl && isFinite(Number(videoEl.currentTime)) ? Number(videoEl.currentTime) : 0,
                   durationSec: effectiveVideoDuration(videoEl),
                   sessionId: longPressSessionId,
-                  playbackStartedAtMs: Date.now() - Math.max(0, Number(videoEl && videoEl.currentTime || 0)) * 1000,
+                  playbackStartedAtMs: Number(videoEl && videoEl.__appWarmupStartedAtMs || 0) ||
+                    (Date.now() - Math.max(0, Number(videoEl && videoEl.currentTime || 0)) * 1000),
                   candidates: cands
                 }));
                 updateFeedbackStatus('正在保存…', null);
@@ -8581,7 +8602,8 @@ class _BrowserPageState extends State<BrowserPage>
           expectedXMediaId: isXPlatformContext
             ? String(target.__appXMediaId || '')
             : '',
-          playbackStartedAtMs: Date.now() - Math.max(0, Number(videoEl && videoEl.currentTime || 0)) * 1000,
+          playbackStartedAtMs: Number(videoEl && videoEl.__appWarmupStartedAtMs || 0) ||
+            (Date.now() - Math.max(0, Number(videoEl && videoEl.currentTime || 0)) * 1000),
           durationSec: effectiveVideoDuration(videoEl),
           candidates: cands
         }));
@@ -8644,6 +8666,78 @@ class _BrowserPageState extends State<BrowserPage>
           return {ok: true, tag: media.tagName || ''};
         } catch (err) {
           return {ok: false, reason: String(err && err.message || err || 'error')};
+        }
+      };
+
+      // Manual Instagram long-press recovery. This is deliberately exposed
+      // separately from __appTriggerSmartLongPress so the automatic retry
+      // remains a manual download and never enters smart-task accounting.
+      window.__appRecoverInstagramManualVideoTrack = function() {
+        try {
+          const w = window.innerWidth || 360;
+          const h = window.innerHeight || 640;
+          const cx = w / 2, cy = h / 2;
+          const videos = Array.from(document.querySelectorAll('video'))
+            .filter(video => {
+              const r = video.getBoundingClientRect();
+              return r.width >= 100 && r.height >= 80 &&
+                r.bottom > 0 && r.top < h;
+            })
+            .map(video => {
+              const r = video.getBoundingClientRect();
+              const covers = r.left <= cx && r.right >= cx &&
+                r.top <= cy && r.bottom >= cy;
+              const visibleArea =
+                Math.max(0, Math.min(r.right, w) - Math.max(r.left, 0)) *
+                Math.max(0, Math.min(r.bottom, h) - Math.max(r.top, 0));
+              return {
+                video,
+                score: (covers ? 1e12 : 0) +
+                  (!video.paused && !video.ended ? 1e11 : 0) + visibleArea
+              };
+            })
+            .sort((a, b) => b.score - a.score);
+          const video = videos.length ? videos[0].video : null;
+          if (!video) return {ok:false, reason:'no_visible_video'};
+          const r = video.getBoundingClientRect();
+          const x = Math.max(8, Math.min(w - 8, r.left + r.width / 2));
+          const y = Math.max(8, Math.min(h - 8, r.top + r.height / 2));
+          let seeked = false;
+          try {
+            if (Number.isFinite(video.duration) && video.duration > 3) {
+              const target = Math.min(
+                Math.max(0.75, video.duration * 0.12),
+                video.duration - 0.5
+              );
+              video.currentTime = target;
+              seeked = true;
+            }
+            const promise = video.play();
+            if (promise && promise.catch) promise.catch(() => {});
+          } catch (_) {}
+          setTimeout(function() {
+            try {
+              video.removeAttribute('data-app-smart-gesture');
+              video.setAttribute('data-app-smart-current', '1');
+              pressedElement = video;
+              const fakeEvent = {
+                preventDefault: function() {},
+                stopPropagation: function() {},
+                target: video,
+                touches: [{clientX:x, clientY:y}],
+                changedTouches: [{clientX:x,clientY:y}]
+              };
+              handleMediaDownload(video, fakeEvent);
+            } catch (_) {}
+          }, 900);
+          return {
+            ok:true,
+            seeked:seeked,
+            duration:Number(video.duration || 0),
+            src:String(video.currentSrc || video.src || '').slice(-48)
+          };
+        } catch (err) {
+          return {ok:false, reason:String(err && err.message || err || 'error')};
         }
       };
 
@@ -8916,6 +9010,31 @@ class _BrowserPageState extends State<BrowserPage>
               ? MediaType.audio
               : MediaType.image;
       final activeSmartTask = _smartDownloadTask;
+      final instagramMessagePath =
+          Uri.tryParse(messagePageUrl)?.path.toLowerCase() ?? '';
+      final instagramCurrentPath =
+          Uri.tryParse(_currentUrl)?.path.toLowerCase() ?? '';
+      final isInstagramReelVideoMessage =
+          requestedMediaType == MediaType.video &&
+          (_isInstagramPlatformPage(messagePageUrl) ||
+              _isInstagramPlatformPage(_currentUrl)) &&
+          (instagramMessagePath.contains('/reel') ||
+              instagramCurrentPath.contains('/reel'));
+      // Instagram's visible Reel is frequently covered by an IMG poster. The
+      // center probe can therefore initialize an automatic task as "image"
+      // even though the long-press hook correctly resolves the underlying
+      // VIDEO. Promote that proven Reel video instead of rejecting it and
+      // waiting for the library gate to time out.
+      if (isSmartGesture &&
+          activeSmartTask != null &&
+          activeSmartTask['mediaType'] == MediaType.image &&
+          isInstagramReelVideoMessage) {
+        debugPrint(
+          '[SMART_MEDIA_GATE] promote Instagram poster task image->video '
+          'page=$messagePageUrl',
+        );
+        activeSmartTask['mediaType'] = MediaType.video;
+      }
       final rejectsUnexpectedSmartMedia =
           isSmartGesture &&
           activeSmartTask != null &&
@@ -9420,6 +9539,14 @@ class _BrowserPageState extends State<BrowserPage>
             if (isStreamReference &&
                 (_isInstagramPlatformPage(messagePageUrl) ||
                     _isInstagramPlatformPage(_currentUrl))) {
+              final instagramHandledAssetIds =
+                  (_smartDownloadTask?['instagramHandledAssetIds']
+                      as Set<String>?) ??
+                  <String>{};
+              if (_smartDownloadTask != null) {
+                _smartDownloadTask!['instagramHandledAssetIds'] =
+                    instagramHandledAssetIds;
+              }
               final boundInstagramTracks = _selectInstagramBoundTrackCandidates(
                 boundFragmentUrls,
                 fallbackUrls: <String>[
@@ -9429,12 +9556,39 @@ class _BrowserPageState extends State<BrowserPage>
                     pageUrl: messagePageUrl,
                     notBefore: sessionNotBefore,
                   ),
+                  // Instagram can preload/cache the video half before the
+                  // current long-press session, then request only audio while
+                  // we observe playback. Once boundFragments identifies the
+                  // exact xpv_asset_id, older requests are safe to use only as
+                  // a same-asset rescue source.
+                  ..._recentCapturedMediaCandidates(
+                    MediaType.video,
+                    pageUrl: messagePageUrl,
+                    limit: 160,
+                  ),
                 ],
                 targetDurationSeconds: messageDurationSeconds,
+                excludedAssetIds:
+                    isSmartGesture
+                        ? instagramHandledAssetIds
+                        : const <String>{},
               );
               if (boundInstagramTracks.any(
                 (url) => facebookMediaMetadata(url)?.isVideoTrack == true,
               )) {
+                final selectedInstagramAssetId =
+                    boundInstagramTracks
+                        .map(facebookMediaMetadata)
+                        .whereType<FacebookMediaMetadata>()
+                        .firstWhere(
+                          (metadata) =>
+                              metadata.isVideoTrack &&
+                              metadata.videoId.isNotEmpty,
+                        )
+                        .videoId;
+                if (_smartDownloadTask != null) {
+                  _smartDownloadTask!['instagramTrackCaptureFailures'] = 0;
+                }
                 final downloaded = await _downloadMediaRobustly(
                   item: <String, dynamic>{
                     'pageUrl':
@@ -9459,6 +9613,15 @@ class _BrowserPageState extends State<BrowserPage>
                   },
                   showResultHint: !isSmartGesture,
                 );
+                if (downloaded &&
+                    isSmartGesture &&
+                    selectedInstagramAssetId.isNotEmpty) {
+                  instagramHandledAssetIds.add(selectedInstagramAssetId);
+                  debugPrint(
+                    '[IG_ASSET_HANDLED] asset=$selectedInstagramAssetId '
+                    'count=${instagramHandledAssetIds.length}',
+                  );
+                }
                 if (isSmartGesture) {
                   await _completeSmartGestureDownload(downloaded);
                 }
@@ -9469,16 +9632,60 @@ class _BrowserPageState extends State<BrowserPage>
                 'refusing unrelated fallback',
               );
               if (mounted && !isSmartGesture) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('当前视频轨尚未捕获，请继续播放几秒后再长按下载'),
-                    duration: Duration(seconds: 3),
-                  ),
-                );
+                if (!_instagramManualTrackRecoveryInProgress) {
+                  _instagramManualTrackRecoveryInProgress = true;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('正在加速获取当前视频轨，并自动重试下载…'),
+                      duration: Duration(seconds: 2),
+                    ),
+                  );
+                  unawaited(() async {
+                    // Let the failed blob message finish and release its
+                    // processing key before the automatic manual retry.
+                    await Future<void>.delayed(
+                      const Duration(milliseconds: 180),
+                    );
+                    try {
+                      final raw = await _controller?.evaluateJavascript(
+                        source:
+                            'window.__appRecoverInstagramManualVideoTrack'
+                            ' ? window.__appRecoverInstagramManualVideoTrack()'
+                            " : ({ok:false,reason:'hook_missing'})",
+                      );
+                      debugPrint('[IG_MANUAL_TRACK_RECOVERY] $raw');
+                    } catch (e) {
+                      debugPrint('[IG_MANUAL_TRACK_RECOVERY] failed: $e');
+                    }
+                    // Keep the guard closed while the delayed JS retry posts
+                    // its result, preventing an automatic retry loop.
+                    await Future<void>.delayed(const Duration(seconds: 4));
+                    _instagramManualTrackRecoveryInProgress = false;
+                  }());
+                } else {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('视频轨仍在获取中，请稍候再长按一次'),
+                      duration: Duration(seconds: 3),
+                    ),
+                  );
+                }
               }
               if (isSmartGesture) {
-                _smartDownloadTask?['lastGestureFailureType'] =
-                    'instagram_current_track_not_captured';
+                final smartTask = _smartDownloadTask;
+                if (smartTask != null) {
+                  final captureFailures =
+                      ((smartTask['instagramTrackCaptureFailures'] as int?) ??
+                          0) +
+                      1;
+                  smartTask['instagramTrackCaptureFailures'] = captureFailures;
+                  smartTask['lastGestureFailureType'] =
+                      'instagram_current_track_not_captured';
+                  _showSmartOperation(
+                    '当前视频轨尚未捕获，继续播放后重试（$captureFailures/8）',
+                    point: const Offset(0.5, 0.46),
+                  );
+                }
                 await _completeSmartGestureDownload(false);
               }
               return;
@@ -17282,6 +17489,17 @@ class _BrowserPageState extends State<BrowserPage>
 
   /// 是否允许在长按下载会话之后切条（入库成功 / 明确跳过失败 / 固定等待到点 / 强制跳过）。
   bool _actionRecipeMayAdvancePastDownload(Map<String, dynamic> task) {
+    final outcome = (task['actionDownloadOutcome'] ?? '').toString();
+    if (task['mediaType'] == MediaType.video &&
+        _isInstagramPlatformPage(_currentUrl) &&
+        outcome == 'instagram_current_track_not_captured') {
+      // No transfer was started. Retry this same Reel a bounded number of
+      // times instead of treating a track-readiness miss as permission to
+      // swipe away.
+      final captureFailures =
+          (task['instagramTrackCaptureFailures'] as int?) ?? 0;
+      if (captureFailures < 8) return false;
+    }
     if (_actionRecipeRequiresSuccessfulVideoSave(task)) {
       // Facebook 视频严格模式：固定等待到点、看门狗跳过、地址已解析等状态
       // 均不能直接放行。只接受真实入库、哈希确认库内已有，或确认没有
@@ -20096,6 +20314,8 @@ class _BrowserPageState extends State<BrowserPage>
       final attempts = maxAttempts.clamp(2, 4);
       const xOffsets = <double>[0.50, 0.42, 0.58, 0.46];
       final preferParamFlick = distanceFraction >= 0.55 && durationMs > 240;
+      final instagramVerticalFlick =
+          _isInstagramPlatformPage(_currentUrl) && vertical;
 
       for (var i = 0; i < attempts; i++) {
         if (!identical(_smartDownloadTask, task) &&
@@ -20104,9 +20324,15 @@ class _BrowserPageState extends State<BrowserPage>
         }
         final startX = xOffsets[i % xOffsets.length];
         if (preferParamFlick) {
-          final dist = distanceFraction.clamp(0.55, 0.92);
+          final dist =
+              instagramVerticalFlick
+                  ? (max(distanceFraction, 0.78) + i * 0.045).clamp(0.78, 0.92)
+                  : distanceFraction.clamp(0.55, 0.92);
           // 略加重试：后几轮略加长，但不低于配方值、不超过编辑器上限
-          final dur = (durationMs + i * 20).clamp(durationMs, 600);
+          final dur =
+              instagramVerticalFlick
+                  ? (190 - i * 15).clamp(140, 190)
+                  : (durationMs + i * 20).clamp(durationMs, 600);
           final status =
               i == 0
                   ? label
@@ -20152,6 +20378,49 @@ class _BrowserPageState extends State<BrowserPage>
             break;
           }
           // 未切：同轮再轻扫一次（略偏 X）
+          // A successful channel call only proves that MotionEvents were
+          // injected. If Instagram did not actually change the visible Reel,
+          // escalate to a screen-coordinate fling that mirrors a manual
+          // bottom-to-top swipe.
+          if (instagramVerticalFlick) {
+            final fullScreenX = xOffsets[(i + 1) % xOffsets.length];
+            final fullScreenDuration = (210 - i * 12).clamp(150, 210);
+            debugPrint(
+              '[IG_SWIPE_ESCALATE] param gesture produced no media change; '
+              'fullscreen attempt=${i + 1}/$attempts '
+              'x=$fullScreenX dur=${fullScreenDuration}ms',
+            );
+            _showSmartOperation(
+              axisHint == 'up' ? '轻扫未切换，改用整屏上滑' : '$label（整屏重试）',
+              point: Offset(fullScreenX, axisHint == 'up' ? 0.90 : 0.08),
+            );
+            await _nativeFullScreenVerticalFling(
+              direction: axisHint,
+              xNorm: fullScreenX,
+              durationMs: fullScreenDuration,
+              fromScreenY: 0.92,
+              toScreenY: 0.06,
+            );
+            await Future<void>.delayed(
+              Duration(milliseconds: (settleMs + 120).clamp(620, 820)),
+            );
+            if (!identical(_smartDownloadTask, task) &&
+                task['actionProbe'] != true) {
+              break;
+            }
+            if (await _actionMediaIdentityChanged(task, before)) {
+              switched = true;
+              debugPrint(
+                '[IG_SWIPE_ESCALATE] switched on fullscreen '
+                'attempt ${i + 1}',
+              );
+              break;
+            }
+            debugPrint(
+              '[IG_SWIPE_ESCALATE] fullscreen gesture still did not '
+              'change media on attempt ${i + 1}',
+            );
+          }
           final retryX = (startX + 0.06).clamp(0.28, 0.72);
           final retryEnds = _fingerFlickEndpoints(
             axisHint,
@@ -20387,6 +20656,7 @@ class _BrowserPageState extends State<BrowserPage>
     if (switched) {
       task['actionAdvanceFailed'] = false;
       task['needAdvancePastCurrent'] = false;
+      task['instagramTrackCaptureFailures'] = 0;
       _showSmartOperation('已$label', point: const Offset(0.5, 0.5));
     } else if (vertical) {
       // 身份未变：保留待切标志，后续长按不得再下同条
@@ -21048,6 +21318,16 @@ class _BrowserPageState extends State<BrowserPage>
     final healthy = !probe && _actionRecipeHealthySkipGuard(task);
     final disablePreSkip = !probe && _actionRecipeDisablesPreSkip(task);
     final fixedForce = !probe && _actionRecipeIsFixedWaitForce(task);
+    final currentPath = Uri.tryParse(_currentUrl)?.path.toLowerCase() ?? '';
+    if (!probe &&
+        task['mediaType'] == MediaType.image &&
+        _isInstagramPlatformPage(_currentUrl) &&
+        currentPath.contains('/reel')) {
+      debugPrint(
+        'action Instagram Reels: correcting poster-detected task image->video',
+      );
+      task['mediaType'] = MediaType.video;
+    }
     // Facebook 视频一旦在本任务中成功入库或确认重复，就不得再次长按下载。
     // 页面回弹/循环回到旧视频时，先切走再处理新的当前视频。
     if (!probe && _actionRecipeRequiresSuccessfulVideoSave(task)) {
@@ -21177,8 +21457,45 @@ class _BrowserPageState extends State<BrowserPage>
       // A freshly-swiped Reel can be mounted but paused at t=0. In that state
       // the hook runs without Instagram requesting the current DASH track.
       try {
-        final warmupRaw = await _controller?.evaluateJavascript(
-          source: '''
+        // Retry state belongs to one visible video. Instagram can replace the
+        // Reel while this loop is waiting; never carry an old video's failure
+        // count (and its controlled seeks) into the newly visible video.
+        final retryIdentity = await _actionCaptureMediaIdentity(task);
+        final retrySrc = (retryIdentity?['src'] ?? '').toString().trim();
+        final previousRetrySrc =
+            (task['instagramTrackRetryMediaSrc'] ?? '').toString().trim();
+        if (retrySrc.isNotEmpty &&
+            previousRetrySrc.isNotEmpty &&
+            retrySrc != previousRetrySrc) {
+          debugPrint(
+            '[IG_RETRY_IDENTITY_RESET] visible video changed during retry; '
+            'old=${previousRetrySrc.substring(max(0, previousRetrySrc.length - 48))} '
+            'new=${retrySrc.substring(max(0, retrySrc.length - 48))}',
+          );
+          task['instagramTrackCaptureFailures'] = 0;
+        }
+        if (retrySrc.isNotEmpty) {
+          task['instagramTrackRetryMediaSrc'] = retrySrc;
+        }
+        final captureFailures =
+            (task['instagramTrackCaptureFailures'] as int?) ?? 0;
+        // Mirror a patient manual retry: each "track not captured" result
+        // keeps us on the same Reel and increases the playback wait before the
+        // next identical long press. Only the fourth press may seek.
+        final minimumWarmupAttempts =
+            captureFailures <= 0
+                ? 2
+                : captureFailures == 1
+                ? 4
+                : captureFailures == 2
+                ? 6
+                : 8;
+        Map<String, dynamic>? warmup;
+        String warmupMediaSrc = '';
+        for (var warmupAttempt = 1; warmupAttempt <= 8; warmupAttempt++) {
+          if (!identical(_smartDownloadTask, task)) return;
+          final warmupRaw = await _controller?.evaluateJavascript(
+            source: '''
 (() => {
   const w = window.innerWidth || 360;
   const h = window.innerHeight || 640;
@@ -21196,23 +21513,89 @@ class _BrowserPageState extends State<BrowserPage>
     });
   }
   if (!video) return {ok:false, reason:'video_not_mounted'};
+  let seeked = false;
   try {
+    video.__appWarmupStartedAtMs =
+      Number(video.__appWarmupStartedAtMs || 0) || Date.now();
     video.muted = true;
+    // Instagram often reuses a MediaSource whose first video segment was
+    // fetched before our sniffer was attached. Audio may therefore be visible
+    // to Dart while the current asset's video track is still missing. Nudge
+    // this exact visible video early (once per retry round) to force a fresh
+    // video-segment request instead of wasting several complete long-press
+    // rounds before the old late recovery seek runs.
+    const captureSeekRound = $captureFailures;
+    const captureNudgeReady =
+      ($warmupAttempt >= 2 || captureSeekRound > 0) &&
+      Number(video.currentTime || 0) < 0.65;
+    if (captureNudgeReady &&
+        Number.isFinite(video.duration) &&
+        video.duration > 3 &&
+        Number(video.__appManualRetryCaptureSeekRound ?? -1) !== captureSeekRound) {
+      // Begin gently so the user does not see a large jump on the first try;
+      // later failed rounds probe different DASH segments with a bounded set.
+      const seekFractions = [0.12, 0.28, 0.45, 0.62, 0.78, 0.35, 0.88, 0.18];
+      const seekIndex = Math.min(
+        seekFractions.length - 1,
+        Math.max(0, captureSeekRound)
+      );
+      const seekTarget = Math.min(
+        Math.max(0.75, video.duration * seekFractions[seekIndex]),
+        video.duration - 0.5
+      );
+      video.__appManualRetryCaptureSeekRound = captureSeekRound;
+      video.currentTime = seekTarget;
+      seeked = true;
+    }
     const promise = video.play();
     if (promise && promise.catch) promise.catch(() => {});
   } catch (_) {}
   return {
     ok:true,
     paused:!!video.paused,
+    seeked:seeked,
     time:Number(video.currentTime || 0),
     duration:Number(video.duration || 0),
     src:String(video.currentSrc || video.src || '').slice(-48)
   };
 })()
 ''',
-        );
-        debugPrint('action Instagram video warmup: ${_coerceJsMap(warmupRaw)}');
-        await Future<void>.delayed(const Duration(milliseconds: 1400));
+          );
+          warmup = _coerceJsMap(warmupRaw);
+          final observedWarmupSrc = (warmup?['src'] ?? '').toString().trim();
+          if (observedWarmupSrc.isNotEmpty) {
+            if (warmupMediaSrc.isEmpty) {
+              warmupMediaSrc = observedWarmupSrc;
+            } else if (observedWarmupSrc != warmupMediaSrc) {
+              debugPrint(
+                '[IG_RETRY_TARGET_CHANGED] visible video source changed '
+                'inside warmup attempt=$warmupAttempt; cancel this press and '
+                'restart retry state on the new video',
+              );
+              task['instagramTrackCaptureFailures'] = 0;
+              task.remove('instagramTrackRetryMediaSrc');
+              _showSmartOperation('检测到视频已切换，重新从当前视频开始');
+              return;
+            }
+          }
+          final playedFor = (warmup?['time'] as num?)?.toDouble() ?? 0.0;
+          debugPrint(
+            'action Instagram video warmup: attempt=$warmupAttempt/8 '
+            '$warmup',
+          );
+          // Do not use a fixed delay as proof of readiness. Some Reels remain
+          // at t=0 for several seconds while their MSE/DASH source is mounted.
+          if (warmup?['seeked'] == true) {
+            await Future<void>.delayed(const Duration(milliseconds: 900));
+            continue;
+          }
+          if (warmupAttempt >= minimumWarmupAttempts &&
+              warmup?['ok'] == true &&
+              playedFor >= 0.35) {
+            break;
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 600));
+        }
       } catch (e) {
         debugPrint('action Instagram video warmup failed: $e');
       }
