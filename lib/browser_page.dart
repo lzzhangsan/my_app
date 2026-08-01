@@ -158,6 +158,23 @@ class _YouTubeDownloadPlan {
   final String qualityLabel;
 }
 
+class _YouTubeInterceptedStreams {
+  const _YouTubeInterceptedStreams({
+    required this.videoUrl,
+    required this.audioUrl,
+  });
+
+  final String videoUrl;
+  final String audioUrl;
+}
+
+class _YouTubeManifestPlans {
+  const _YouTubeManifestPlans({this.hqPlan, this.muxedPlan});
+
+  final _YouTubeDownloadPlan? hqPlan;
+  final _YouTubeDownloadPlan? muxedPlan;
+}
+
 /// 同时发起的 HLS 分片 HTTP 请求数（需 ≤ [ _kHlsMaxConnectionsPerHost ]，过大易被 CDN 限流）。
 const int _kHlsParallelSegmentFetches = 10;
 
@@ -209,6 +226,8 @@ const String _kEarlyMediaSnifferScript = r'''
   if (window.__appEarlyMediaSnifferInstalled) return;
   window.__appEarlyMediaSnifferInstalled = true;
   window.__appEarlyMediaRequests = window.__appEarlyMediaRequests || new Map();
+  window.__appTelegramStreamRequests =
+    window.__appTelegramStreamRequests || new Map();
   const mediaHosts = [String(location.hostname || '').toLowerCase()];
   try {
     if (document.referrer) {
@@ -221,6 +240,28 @@ const String _kEarlyMediaSnifferScript = r'''
     mediaHost === 'instagram.com' || mediaHost.endsWith('.instagram.com'));
   const isInstagramFeedPage = mediaHosts.some(mediaHost =>
     mediaHost === 'instagram.com' || mediaHost.endsWith('.instagram.com'));
+
+  // Keep Telegram's player untouched: do not include it in the invasive MSE
+  // request-binding hooks below. Only normalize its accidental carried-over
+  // playback rate through ordinary media events.
+  const isTelegramPage = mediaHosts.some(mediaHost =>
+    mediaHost === 'web.telegram.org' || mediaHost === 'telegram.org');
+  if (isTelegramPage && !window.__appTelegramEarlyRateGuard) {
+    window.__appTelegramEarlyRateGuard = true;
+    const keepTelegramAtNormalRate = event => {
+      const video = event && event.target;
+      if (!video || String(video.tagName || '').toUpperCase() !== 'VIDEO') return;
+      try {
+        video.defaultPlaybackRate = 1;
+        if (Math.abs(Number(video.playbackRate || 1) - 1) > 0.001) {
+          video.playbackRate = 1;
+        }
+      } catch (_) {}
+    };
+    ['play', 'playing', 'loadedmetadata', 'ratechange'].forEach(type => {
+      document.addEventListener(type, keepTelegramAtNormalRate, true);
+    });
+  }
   const mediaBufferUrls = new WeakMap();
   const sourceBufferOwners = new WeakMap();
   const mediaSourceByBlobUrl = new Map();
@@ -431,6 +472,22 @@ const String _kEarlyMediaSnifferScript = r'''
         source: source || '',
         timestamp: Date.now()
       });
+      // Telegram chat pages can produce hundreds of unrelated resources and
+      // evict the actual video request from the general bounded map. Preserve
+      // authenticated stream URLs in their own small ring without touching
+      // Telegram's fetch/MediaSource implementation.
+      if (/\/k\/stream\//i.test(new URL(url).pathname)) {
+        window.__appTelegramStreamRequests.set(url, {
+          contentType: String(contentType || '').toLowerCase(),
+          source: source || '',
+          timestamp: Date.now()
+        });
+        if (window.__appTelegramStreamRequests.size > 100) {
+          const oldestTelegram =
+            window.__appTelegramStreamRequests.keys().next().value;
+          window.__appTelegramStreamRequests.delete(oldestTelegram);
+        }
+      }
       bindRequestToVisibleVideo(url);
       if (window.__appEarlyMediaRequests.size > 500) {
         const first = window.__appEarlyMediaRequests.keys().next().value;
@@ -2670,11 +2727,13 @@ class _BrowserPageState extends State<BrowserPage>
   bool _mediaDownloadSaveResolved = false;
   bool _longPressVideoDownloadInProgress = false;
   bool _instagramManualTrackRecoveryInProgress = false;
-  IOSink? _telegramStreamSink;
+  RandomAccessFile? _telegramStreamSink;
   File? _telegramStreamFile;
   String _telegramStreamTransferId = '';
   int _telegramStreamBytes = 0;
   int _telegramStreamExpectedBytes = 0;
+  MediaType _telegramStreamMediaType = MediaType.video;
+  String _telegramStreamMimeType = 'video/mp4';
   String _telegramStreamProgressTaskId = '';
   bool _telegramStreamOwnsProgressTask = false;
   DateTime? _telegramStreamLastProgressAt;
@@ -2810,8 +2869,7 @@ class _BrowserPageState extends State<BrowserPage>
       return null;
     }
 
-    if (lower.startsWith('youtube://') ||
-        lower.startsWith('vnd.youtube://')) {
+    if (lower.startsWith('youtube://') || lower.startsWith('vnd.youtube://')) {
       final path = trimmed.substring(trimmed.indexOf('://') + 3).trim();
       if (path.isEmpty) return null;
       if (path.startsWith('http://') || path.startsWith('https://')) {
@@ -3026,11 +3084,63 @@ class _BrowserPageState extends State<BrowserPage>
     unawaited(_recoverBrowsingSurfaceIfBlank(reason: 'did_pop_next'));
   }
 
+  @override
+  void didPushNext() {
+    // Another route now covers the browser. Downloads may continue, but page
+    // playback and browser-owned transient UI must not leak into that route.
+    ScaffoldMessenger.of(context).clearSnackBars();
+    unawaited(_pauseWebMediaWhenHidden(reason: 'route_covered'));
+  }
+
+  Future<void> _pauseWebMediaWhenHidden({required String reason}) async {
+    final ctrl = _controller;
+    if (ctrl == null) return;
+    try {
+      await ctrl.evaluateJavascript(
+        source: '''
+          (() => {
+            let paused = 0;
+            const visited = new Set();
+            const scan = root => {
+              if (!root || visited.has(root)) return;
+              visited.add(root);
+              try {
+                root.querySelectorAll('video, audio').forEach(media => {
+                  try {
+                    media.autoplay = false;
+                    if (!media.paused) {
+                      media.pause();
+                      paused++;
+                    }
+                  } catch (_) {}
+                });
+                root.querySelectorAll('*').forEach(node => {
+                  if (node.shadowRoot) scan(node.shadowRoot);
+                });
+                root.querySelectorAll('iframe').forEach(frame => {
+                  try { scan(frame.contentDocument); } catch (_) {}
+                });
+              } catch (_) {}
+            };
+            scan(document);
+            return paused;
+          })()
+        ''',
+      );
+      debugPrint('[BrowserPage] paused hidden web media: $reason');
+    } catch (e) {
+      debugPrint('[BrowserPage] pause hidden web media failed ($reason): $e');
+    }
+  }
+
   void _onBrowserWebViewLoanChanged() {
     final preview = BrowserSessionPreview.instance;
     if (preview.isLoaned) {
       _rememberLastBrowsingUrl(_currentUrl);
       return;
+    }
+    if (!_isBrowserRouteForeground) {
+      unawaited(_pauseWebMediaWhenHidden(reason: 'document_preview_closed'));
     }
     // GlobalKey reparent back to BrowserPage often remounts Android WebView as about:blank.
     unawaited(_recoverBrowsingSurfaceIfBlank(reason: 'loan_returned'));
@@ -3156,6 +3266,10 @@ class _BrowserPageState extends State<BrowserPage>
     // 从其他标签页（如媒体）滑动到浏览器时，应显示主界面而非空白网页
     final idx = widget.currentMainPageIndex;
     final oldIdx = oldWidget.currentMainPageIndex;
+    if (idx != 3 && oldIdx == 3) {
+      ScaffoldMessenger.of(context).clearSnackBars();
+      unawaited(_pauseWebMediaWhenHidden(reason: 'main_tab_changed'));
+    }
     if (idx == 3 && oldIdx != 3 && !_showHomePage) {
       _goToHomePage();
     }
@@ -5343,7 +5457,7 @@ class _BrowserPageState extends State<BrowserPage>
           !ok &&
           (lastFailureType == 'fb_audio_track_not_captured' ||
               lastFailureType == 'fb_audio_mux_failed');
-      ScaffoldMessenger.of(context).showSnackBar(
+      _showBrowserSnackBar(
         SnackBar(
           content: Text(
             ok
@@ -5660,8 +5774,14 @@ class _BrowserPageState extends State<BrowserPage>
   }
 
   /// 浏览器被目录/媒体库等路由盖住时，不弹出下载成功提示。
-  bool get _isBrowserRouteForeground =>
-      mounted && (ModalRoute.of(context)?.isCurrent ?? false);
+  bool get _isBrowserRouteForeground {
+    final selectedTab = widget.currentMainPageIndex;
+    return mounted &&
+        (ModalRoute.of(context)?.isCurrent ?? false) &&
+        (selectedTab == null || selectedTab == 3) &&
+        !_showHomePage &&
+        !BrowserSessionPreview.instance.isLoaned;
+  }
 
   void _showBrowserSnackBar(SnackBar snackBar) {
     if (!_isBrowserRouteForeground) return;
@@ -5881,8 +6001,16 @@ class _BrowserPageState extends State<BrowserPage>
       handlerName: 'Flutter',
       callback: (args) {
         if (args.isNotEmpty && args[0] != null) {
-          debugPrint('来自JavaScript的消息: ${args[0]}');
-          _handleJavaScriptMessage(args[0].toString());
+          final rawMessage = args[0].toString();
+          if (rawMessage.length > 4000) {
+            debugPrint(
+              '来自JavaScript的消息: ${rawMessage.substring(0, 1200)}'
+              '...[省略 ${rawMessage.length - 1200} 字符]',
+            );
+          } else {
+            debugPrint('来自JavaScript的消息: $rawMessage');
+          }
+          _handleJavaScriptMessage(rawMessage);
         }
       },
     );
@@ -5926,9 +6054,35 @@ class _BrowserPageState extends State<BrowserPage>
         final appDir = await getApplicationDocumentsDirectory();
         final mediaDir = Directory('${appDir.path}/media');
         if (!await mediaDir.exists()) await mediaDir.create(recursive: true);
-        final file = File('${mediaDir.path}/${const Uuid().v4()}.mp4');
+        final mimeType = (message['mimeType'] ?? '').toString().toLowerCase();
+        final mediaTypeName =
+            (message['mediaType'] ?? 'video').toString().toLowerCase();
+        _telegramStreamMediaType =
+            mediaTypeName == 'image'
+                ? MediaType.image
+                : mediaTypeName == 'audio'
+                ? MediaType.audio
+                : MediaType.video;
+        _telegramStreamMimeType = mimeType;
+        final extension =
+            mimeType.contains('webm')
+                ? '.webm'
+                : mimeType.contains('jpeg') || mimeType.contains('jpg')
+                ? '.jpg'
+                : mimeType.contains('png')
+                ? '.png'
+                : mimeType.contains('webp')
+                ? '.webp'
+                : mimeType.contains('audio/mpeg')
+                ? '.mp3'
+                : mimeType.contains('ogg')
+                ? '.ogg'
+                : mimeType.contains('audio/mp4')
+                ? '.m4a'
+                : '.mp4';
+        final file = File('${mediaDir.path}/${const Uuid().v4()}$extension');
         _telegramStreamFile = file;
-        _telegramStreamSink = file.openWrite();
+        _telegramStreamSink = await file.open(mode: FileMode.write);
         _telegramStreamTransferId = transferId;
         _telegramStreamBytes = 0;
         _telegramStreamLastProgressAt = DateTime.now();
@@ -5964,12 +6118,14 @@ class _BrowserPageState extends State<BrowserPage>
       if (phase == 'chunk') {
         final encoded = (message['data'] ?? '').toString();
         final bytes = base64Decode(encoded);
-        _telegramStreamSink!.add(bytes);
+        // Await the actual file write before acknowledging this JS chunk.
+        // IOSink previously queued several megabytes and then stalled on a
+        // periodic flush, producing a visible burst/pause download pattern.
+        await _telegramStreamSink!.writeFrom(bytes);
         _telegramStreamBytes += bytes.length;
         _telegramStreamLastProgressAt = DateTime.now();
         _updateTelegramStreamProgress(status: 'downloading');
         if (_telegramStreamBytes % (4 * 1024 * 1024) < bytes.length) {
-          await _telegramStreamSink!.flush();
           debugPrint(
             '[TG_STREAM] progress id=$transferId bytes=$_telegramStreamBytes',
           );
@@ -5996,23 +6152,27 @@ class _BrowserPageState extends State<BrowserPage>
           '[TG_STREAM] end id=$transferId bytes=$actualBytes '
           'expected=$expectedBytes',
         );
+        final head = await file
+            .openRead(0, min(actualBytes, 64 * 1024))
+            .fold<List<int>>(<int>[], (all, part) => all..addAll(part));
+        final invalidContainer =
+            _telegramStreamMediaType == MediaType.video
+                ? actualBytes < _kMinBase64VideoBytes ||
+                    _detectVideoExtension(head) == null
+                : _telegramStreamMediaType == MediaType.image
+                ? actualBytes < _kMinSavedImageBytes ||
+                    _detectImageExtension(head) == null
+                : actualBytes < 512;
         if ((expectedBytes > 0 && actualBytes != expectedBytes) ||
-            actualBytes < _kMinBase64VideoBytes ||
-            _detectVideoExtension(
-                  await file
-                      .openRead(0, min(actualBytes, 64 * 1024))
-                      .fold<List<int>>(
-                        <int>[],
-                        (all, part) => all..addAll(part),
-                      ),
-                ) ==
-                null) {
+            invalidContainer) {
           await file.delete();
-          throw const FormatException('Telegram stream is not a valid video');
+          throw FormatException(
+            'Telegram stream is not valid ${_telegramStreamMimeType.isEmpty ? 'media' : _telegramStreamMimeType}',
+          );
         }
         final savedMedia = await _saveToMediaLibrary(
           file,
-          MediaType.video,
+          _telegramStreamMediaType,
           allowDuplicate: false,
           relaxValidation: false,
         );
@@ -6034,7 +6194,7 @@ class _BrowserPageState extends State<BrowserPage>
         }
         _telegramStreamFinalizing = false;
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
+          _showBrowserSnackBar(
             SnackBar(
               content: const Text('Telegram 视频已保存到媒体库'),
               duration: _kMediaSaveSnackDuration,
@@ -6118,7 +6278,7 @@ class _BrowserPageState extends State<BrowserPage>
         if (file != null && await file.exists()) await file.delete();
       } catch (_) {}
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        _showBrowserSnackBar(
           SnackBar(
             content: Text('Telegram 视频保存失败：$e'),
             duration: _kMediaSaveSnackDuration,
@@ -6474,7 +6634,8 @@ class _BrowserPageState extends State<BrowserPage>
 
   /// YouTube 浏览入口：桌面 WebView 用 www，移动端用 m.
   String get _defaultYouTubeBrowseUrl {
-    if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
+    if (!kIsWeb &&
+        (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
       return 'https://www.youtube.com/';
     }
     return 'https://m.youtube.com/';
@@ -6553,6 +6714,172 @@ class _BrowserPageState extends State<BrowserPage>
     return YoutubeExplode(YoutubeHttpClient(IOClient(ioClient)));
   }
 
+  static const Set<String> _youtubeMuxedItags = {
+    '18',
+    '22',
+    '37',
+    '38',
+    '43',
+    '45',
+  };
+  static const Set<String> _youtubeAudioItags = {
+    '139',
+    '140',
+    '141',
+    '171',
+    '249',
+    '250',
+    '251',
+  };
+  static const Set<String> _youtubeVideoOnlyItags = {
+    '133',
+    '134',
+    '135',
+    '136',
+    '137',
+    '160',
+    '242',
+    '243',
+    '244',
+    '247',
+    '248',
+    '271',
+    '272',
+    '303',
+    '308',
+    '313',
+    '315',
+  };
+
+  bool _isGoogleVideoPlaybackUrl(String url) {
+    final lower = url.toLowerCase();
+    return lower.contains('googlevideo.com') && lower.contains('videoplayback');
+  }
+
+  String? _youtubeItagFromUrl(String url) {
+    return Uri.tryParse(url)?.queryParameters['itag'];
+  }
+
+  int _youtubeItagScore(String url, String? videoId) {
+    var score = int.tryParse(_youtubeItagFromUrl(url) ?? '') ?? 0;
+    if (videoId != null &&
+        videoId.isNotEmpty &&
+        url.toLowerCase().contains(videoId.toLowerCase())) {
+      score += 100000;
+    }
+    try {
+      final mime = Uri.parse(url).queryParameters['mime'] ?? '';
+      final decoded = Uri.decodeComponent(mime);
+      if (decoded.contains('video/mp4') && !decoded.contains('video-only')) {
+        score += 50000;
+      }
+    } catch (_) {}
+    return score;
+  }
+
+  String? _pickYouTubeInterceptedMuxedUrl(
+    List<String> candidates,
+    String? videoId,
+  ) {
+    String? best;
+    var bestScore = -1;
+    for (final raw in candidates) {
+      final url = raw.trim();
+      if (!_isGoogleVideoPlaybackUrl(url)) continue;
+      final itag = _youtubeItagFromUrl(url) ?? '';
+      if (!_youtubeMuxedItags.contains(itag)) continue;
+      final score = _youtubeItagScore(url, videoId);
+      if (score > bestScore) {
+        bestScore = score;
+        best = url;
+      }
+    }
+    return best;
+  }
+
+  _YouTubeInterceptedStreams? _pickYouTubeInterceptedPairedUrls(
+    List<String> candidates,
+    String? videoId,
+  ) {
+    String? bestVideo;
+    var bestVideoScore = -1;
+    String? bestAudio;
+    var bestAudioScore = -1;
+    bool looksVideoOnly(String url) {
+      final itag = _youtubeItagFromUrl(url) ?? '';
+      if (_youtubeVideoOnlyItags.contains(itag)) return true;
+      try {
+        final mime = Uri.decodeComponent(
+          Uri.parse(url).queryParameters['mime'] ?? '',
+        );
+        return mime.contains('video/') && mime.contains('video-only');
+      } catch (_) {}
+      return false;
+    }
+
+    bool looksAudioOnly(String url) {
+      final itag = _youtubeItagFromUrl(url) ?? '';
+      if (_youtubeAudioItags.contains(itag)) return true;
+      try {
+        final mime = Uri.decodeComponent(
+          Uri.parse(url).queryParameters['mime'] ?? '',
+        );
+        return mime.contains('audio/');
+      } catch (_) {}
+      return false;
+    }
+
+    for (final raw in candidates) {
+      final url = raw.trim();
+      if (!_isGoogleVideoPlaybackUrl(url)) continue;
+      if (videoId != null &&
+          videoId.isNotEmpty &&
+          !url.toLowerCase().contains(videoId.toLowerCase())) {
+        continue;
+      }
+      final score = _youtubeItagScore(url, videoId);
+      if (looksAudioOnly(url)) {
+        if (score > bestAudioScore) {
+          bestAudioScore = score;
+          bestAudio = url;
+        }
+      } else if (looksVideoOnly(url)) {
+        if (score > bestVideoScore) {
+          bestVideoScore = score;
+          bestVideo = url;
+        }
+      }
+    }
+    if (bestVideo == null || bestAudio == null) return null;
+    return _YouTubeInterceptedStreams(videoUrl: bestVideo, audioUrl: bestAudio);
+  }
+
+  List<String> _youtubeStreamCandidatesFromMessage(
+    Map<dynamic, dynamic> data,
+    List<String> downloadCandidateUrls,
+  ) {
+    final out = <String>[];
+    final seen = <String>{};
+    void add(String? raw) {
+      final url = (raw ?? '').trim();
+      if (url.isEmpty || seen.contains(url)) return;
+      if (!_isGoogleVideoPlaybackUrl(url)) return;
+      seen.add(url);
+      out.add(url);
+    }
+
+    final dedicated = data['youtubeStreamCandidates'];
+    if (dedicated is List) {
+      for (final entry in dedicated) {
+        if (entry is String) add(entry);
+      }
+    }
+    for (final url in downloadCandidateUrls) {
+      add(url);
+    }
+    return out;
+  }
+
   final Set<String> _downloadingUrls = {};
   final Map<String, String> _videoSourceUrlToMediaId = {};
   static const String _kVideoSourceUrlMapPrefsKey =
@@ -6586,7 +6913,7 @@ class _BrowserPageState extends State<BrowserPage>
       await controller.evaluateJavascript(
         source: '''
       (() => {
-          const handlerVersion = 'media-download-v43';
+          const handlerVersion = 'media-download-v55';
       if (window.__appMediaDownloadHandlersVersion === handlerVersion) return true;
       window.Flutter = window.Flutter || { postMessage: function(m){ try { if(window.flutter_inappwebview && window.flutter_inappwebview.callHandler) window.flutter_inappwebview.callHandler('Flutter', m); } catch(e){} } };
       // Telegram Web occasionally carries a non-1 playback rate between
@@ -6731,7 +7058,7 @@ class _BrowserPageState extends State<BrowserPage>
         const trustedPatterns = [
           '/cdn.', '/static/', '/assets/', '/uploads/', '/media/', '/images/', '/videos/', '/photos/',
           '/img/', '/video/', '/videopage/', '/thumb/', '/preview.', '/thumbnail.', '/stream',
-          'youtube.com', 'youtu.be', 'vimeo.com', 'dailymotion.com', 'bilibili.com',
+          'youtube.com', 'youtu.be', 'googlevideo.com', 'videoplayback', 'vimeo.com', 'dailymotion.com', 'bilibili.com',
           'videopress', '/mp4', '/webm', '/m3u8', '/hls/', '/manifest', '/segment',
           'tik.', 'xvideos', 'xhamster', 'pornhub', 'redtube', 'eporner', 'streamable',
           'fbcdn.net', 'scontent.', 'facebook.com', 'fb.watch'
@@ -6873,7 +7200,8 @@ class _BrowserPageState extends State<BrowserPage>
         const startAck = await bridge.callHandler('TelegramStreamChunk', {
           phase: 'start',
           transferId: transferId,
-          expectedBytes: expectedBytes
+          expectedBytes: expectedBytes,
+          mimeType: 'video/mp4'
         });
         if (!startAck || startAck.ok === false) {
           throw new Error(
@@ -6892,7 +7220,7 @@ class _BrowserPageState extends State<BrowserPage>
             try {
               const parallelism = expectedBytes >= 256 * 1024 * 1024 ? 4 : 3;
               const rangeBytes = 4 * 1024 * 1024;
-              const bridgeChunkBytes = 512 * 1024;
+              const bridgeChunkBytes = 192 * 1024;
               const fetchRange = async (start, end) => {
               let lastError = null;
               for (let attempt = 0; attempt < 3; attempt++) {
@@ -7134,6 +7462,410 @@ class _BrowserPageState extends State<BrowserPage>
           } catch (_) {}
           throw error;
         }
+      }
+
+      // A normal Blob can be read in the page process, but converting a large
+      // Telegram video to one Base64 string is both memory-heavy and capped by
+      // resolveBlobUrl. Stream it through the existing back-pressured bridge.
+      async function streamTelegramBlobToFlutter(blobUrl) {
+        const bridge = window.flutter_inappwebview;
+        if (!bridge || typeof bridge.callHandler !== 'function') {
+          throw new Error('Telegram blob bridge unavailable');
+        }
+        const response = await fetch(blobUrl, {method: 'GET', cache: 'no-cache'});
+        if (!response.ok) throw new Error('Telegram blob status ' + response.status);
+        const blob = await response.blob();
+        if (!blob || blob.size < 10240) throw new Error('Telegram blob is empty or incomplete');
+        const transferId = 'tg-blob-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+        const startAck = await bridge.callHandler('TelegramStreamChunk', {
+          phase: 'start',
+          transferId: transferId,
+          expectedBytes: blob.size,
+          mimeType: String(blob.type || 'video/mp4')
+        });
+        if (!startAck || startAck.ok === false) {
+          throw new Error('Telegram blob start rejected');
+        }
+        try {
+          let sent = 0;
+          const reader = blob.stream && blob.stream().getReader
+            ? blob.stream().getReader()
+            : null;
+          if (!reader) throw new Error('Telegram blob streaming reader unavailable');
+          while (true) {
+            const result = await reader.read();
+            if (result.done) break;
+            const value = result.value;
+            for (let offset = 0; offset < value.length; offset += 192 * 1024) {
+              const part = value.subarray(offset, Math.min(value.length, offset + 192 * 1024));
+              let binary = '';
+              for (let i = 0; i < part.length; i += 0x8000) {
+                binary += String.fromCharCode.apply(null, part.subarray(i, Math.min(part.length, i + 0x8000)));
+              }
+              const ack = await bridge.callHandler('TelegramStreamChunk', {
+                phase: 'chunk', transferId: transferId, data: btoa(binary)
+              });
+              if (!ack || ack.ok === false) throw new Error('Flutter rejected Telegram blob chunk');
+              sent += part.length;
+              updateFeedbackStatus('正在读取 Telegram 视频 ' + Math.min(99, Math.floor(sent * 100 / blob.size)) + '%…', null);
+            }
+          }
+          const endAck = await bridge.callHandler('TelegramStreamChunk', {
+            phase: 'end', transferId: transferId,
+            receivedBytes: sent, expectedBytes: blob.size
+          });
+          if (!endAck || endAck.ok === false) throw new Error('Flutter failed to save Telegram blob');
+          return true;
+        } catch (error) {
+          try {
+            await bridge.callHandler('TelegramStreamChunk', {
+              phase: 'error', transferId: transferId,
+              error: String(error && error.message || error)
+            });
+          } catch (_) {}
+          throw error;
+        }
+      }
+
+      // Telegram's own media download is the authoritative path because it is
+      // bound to the current message's Photo/Document object, even when the
+      // player exposes only an opaque Blob. Capture its one-shot Service
+      // Worker d/<id> response and forward it with bounded backpressure.
+      async function streamTelegramOfficialDownloadToFlutter(downloadUrl) {
+        const bridge = window.flutter_inappwebview;
+        if (!bridge || typeof bridge.callHandler !== 'function') {
+          throw new Error('Telegram official download bridge unavailable');
+        }
+        const response = await fetch(downloadUrl, {
+          method: 'GET', credentials: 'include', cache: 'no-cache'
+        });
+        if (!response.ok || !response.body || !response.body.getReader) {
+          throw new Error('Telegram official download response unavailable');
+        }
+        const mimeType = String(response.headers.get('content-type') || 'video/mp4').toLowerCase();
+        const expectedBytes = Number(response.headers.get('content-length') || 0);
+        const mediaType = mimeType.startsWith('image/')
+          ? 'image'
+          : (mimeType.startsWith('audio/') ? 'audio' : 'video');
+        const transferId = 'tg-official-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+        const startAck = await bridge.callHandler('TelegramStreamChunk', {
+          phase: 'start', transferId: transferId,
+          expectedBytes: expectedBytes, mimeType: mimeType, mediaType: mediaType
+        });
+        if (!startAck || startAck.ok === false) {
+          throw new Error('Telegram official download start rejected');
+        }
+        let received = 0;
+        try {
+          const reader = response.body.getReader();
+          while (true) {
+            const result = await reader.read();
+            if (result.done) break;
+            const value = result.value;
+            for (let offset = 0; offset < value.length; offset += 192 * 1024) {
+              const part = value.subarray(offset, Math.min(value.length, offset + 192 * 1024));
+              let binary = '';
+              for (let i = 0; i < part.length; i += 0x8000) {
+                binary += String.fromCharCode.apply(null, part.subarray(i, Math.min(part.length, i + 0x8000)));
+              }
+              const ack = await bridge.callHandler('TelegramStreamChunk', {
+                phase: 'chunk', transferId: transferId, data: btoa(binary)
+              });
+              if (!ack || ack.ok === false) throw new Error('Flutter rejected official Telegram chunk');
+              received += part.length;
+            }
+          }
+          const endAck = await bridge.callHandler('TelegramStreamChunk', {
+            phase: 'end', transferId: transferId,
+            receivedBytes: received, expectedBytes: expectedBytes
+          });
+          if (!endAck || endAck.ok === false) throw new Error('Flutter failed to save official Telegram media');
+          window.dispatchEvent(new Event('__appTelegramOfficialDownloadSucceeded'));
+          return true;
+        } catch (error) {
+          try {
+            await bridge.callHandler('TelegramStreamChunk', {
+              phase: 'error', transferId: transferId,
+              error: String(error && error.message || error)
+            });
+          } catch (_) {}
+          throw error;
+        }
+      }
+
+      async function tryTelegramManagerMediaDownload() {
+        const manager = window.appDownloadManager;
+        const mediaViewer = window.appMediaViewer;
+        const target = mediaViewer && mediaViewer.target;
+        const messageMedia = target && target.message && target.message.media;
+        const primary = messageMedia && messageMedia.document;
+        if (!manager || typeof manager.downloadMedia !== 'function' ||
+            !primary || String(primary.type || '').toLowerCase() !== 'video') {
+          return false;
+        }
+        // Telegram may expose AV1/HLS alternatives alongside the main document.
+        // Prefer the largest compatible H.264 MP4 at the best resolution; this
+        // is exact-message data, not a page-wide captured request.
+        const documents = [primary].concat(
+          Array.isArray(messageMedia.alt_documents)
+            ? messageMedia.alt_documents
+            : []
+        ).filter(doc => doc &&
+          String(doc.type || '').toLowerCase() === 'video' &&
+          String(doc.mime_type || '').toLowerCase() === 'video/mp4');
+        const codecOf = doc => {
+          const attribute = Array.isArray(doc.attributes)
+            ? doc.attributes.find(item => item && item._ === 'documentAttributeVideo')
+            : null;
+          return String(attribute && attribute.video_codec || '').toLowerCase();
+        };
+        documents.sort((a, b) => {
+          const aH264 = codecOf(a) === 'h264' ? 1 : 0;
+          const bH264 = codecOf(b) === 'h264' ? 1 : 0;
+          if (aH264 !== bH264) return bH264 - aH264;
+          const aPixels = Number(a.w || 0) * Number(a.h || 0);
+          const bPixels = Number(b.w || 0) * Number(b.h || 0);
+          if (aPixels !== bPixels) return bPixels - aPixels;
+          return Number(b.size || 0) - Number(a.size || 0);
+        });
+        const media = documents[0] || primary;
+        updateFeedbackStatus('正在下载当前 Telegram 原始视频…', null);
+        try {
+          const download = manager.downloadMedia({media: media}, 'blob');
+          if (download && typeof download.addNotifyListener === 'function') {
+            download.addNotifyListener(progress => {
+              const done = Number(progress && (progress.done || progress.offset || progress.loaded) || 0);
+              const total = Number(progress && (progress.total || progress.size) || media.size || 0);
+              if (done > 0 && total > 0) {
+                updateFeedbackStatus(
+                  '正在下载当前 Telegram 原始视频 ' +
+                  Math.min(99, Math.floor(done * 100 / total)) + '%…',
+                  null
+                );
+              }
+            });
+          }
+          const blob = await download;
+          if (!(blob instanceof Blob) || blob.size < 1024) {
+            throw new Error('Telegram manager returned an empty media Blob');
+          }
+          const objectUrl = URL.createObjectURL(blob);
+          try {
+            await streamTelegramBlobToFlutter(objectUrl);
+          } finally {
+            try { URL.revokeObjectURL(objectUrl); } catch (_) {}
+          }
+          window.dispatchEvent(new Event('__appTelegramOfficialDownloadSucceeded'));
+          return true;
+        } catch (error) {
+          console.error('Telegram manager media download failed:', error);
+          return false;
+        }
+      }
+
+      function tryTelegramOfficialMediaDownload(boundVideo) {
+        const managerAttempt = tryTelegramManagerMediaDownload();
+        return managerAttempt.then(started => {
+          if (started) return true;
+          return tryTelegramOfficialMediaDownloadViaControls(boundVideo);
+        });
+      }
+
+      function tryTelegramOfficialMediaDownloadViaControls(boundVideo) {
+        return new Promise(async resolve => {
+          const visible = element => {
+            if (!element || !element.getClientRects || !element.getClientRects().length) return false;
+            const style = getComputedStyle(element);
+            if (style.display === 'none' || style.visibility === 'hidden') return false;
+            const rect = element.getBoundingClientRect();
+            return rect.width > 1 && rect.height > 1 &&
+              rect.bottom > 0 && rect.right > 0 &&
+              rect.top < innerHeight && rect.left < innerWidth;
+          };
+          // Telegram can retain an old media viewer and its download button in
+          // the DOM after the user moves to another inline/message video. A
+          // page-wide button lookup therefore downloads the stale viewer item.
+          // Only trust controls in the exact viewer that owns this pressed video.
+          let viewer = boundVideo && boundVideo.closest && (
+            boundVideo.closest('.media-viewer-whole') ||
+            boundVideo.closest('.media-viewer')
+          );
+          let openedViewerForDownload = false;
+          if ((!viewer || !visible(viewer) || !viewer.contains(boundVideo)) &&
+              boundVideo && visible(boundVideo)) {
+            // Inline chat videos have no trustworthy standalone download
+            // control. Clicking the exact pressed video asks Telegram to build
+            // a media viewer from that message's Document object; its download
+            // button is therefore semantically bound to this press.
+            const previousViewers = new Set(Array.from(document.querySelectorAll(
+              '.media-viewer-whole, .media-viewer'
+            )).filter(visible));
+            try { boundVideo.click(); } catch (_) {}
+            for (let attempt = 0; attempt < 18 && !viewer; attempt++) {
+              await new Promise(done => setTimeout(done, 100));
+              const candidates = Array.from(document.querySelectorAll(
+                '.media-viewer-whole, .media-viewer'
+              )).filter(visible);
+              viewer = candidates.find(candidate => !previousViewers.has(candidate)) || null;
+            }
+            openedViewerForDownload = !!viewer;
+          }
+          if (!viewer || !visible(viewer) ||
+              (!openedViewerForDownload && !viewer.contains(boundVideo))) {
+            try {
+              Flutter.postMessage(JSON.stringify({
+                type: 'telegram_debug', phase: 'official_scope_rejected',
+                reason: !viewer ? 'pressed_video_viewer_not_opened' : 'viewer_or_video_not_bound',
+                currentSrc: String(boundVideo && (boundVideo.currentSrc || boundVideo.src) || '').slice(0, 240)
+              }));
+            } catch (_) {}
+            resolve(false);
+            return;
+          }
+          const buttons = Array.from(viewer.querySelectorAll(
+            '.media-viewer-buttons .quality-download-options-button-menu, ' +
+            '.media-viewer-buttons .btn-icon'
+          ));
+          // Telegram auto-hides the viewer top bar while video is playing. Its
+          // bound download button then has a temporary 0x0 rect even though a
+          // programmatic click remains valid. Prefer the stable semantic class
+          // without requiring geometry; geometry is only a fallback for less
+          // specific controls.
+          const downloadButton = buttons.find(button =>
+            button.classList && button.classList.contains('quality-download-options-button-menu')
+          ) || buttons.find(button => {
+            if (!visible(button)) return false;
+            const value = String(button.className || '') + ' ' +
+              String(button.getAttribute('title') || '') + ' ' +
+              String(button.getAttribute('aria-label') || '') + ' ' +
+              String(button.innerHTML || '');
+            return /download|icon-download|下载/i.test(value);
+          });
+          if (!downloadButton) {
+            resolve(false);
+            return;
+          }
+          const originalAppend = Element.prototype.append;
+          const originalAppendChild = Node.prototype.appendChild;
+          const originalCreateObjectURL = URL.createObjectURL;
+          const originalAnchorClick = HTMLAnchorElement.prototype.click;
+          let capturedOfficialBlobUrl = '';
+          const blockCapturedAnchor = event => {
+            const anchor = event.target && event.target.closest && event.target.closest('a');
+            if (capturedOfficialBlobUrl && anchor && String(anchor.href || '') === capturedOfficialBlobUrl) {
+              event.preventDefault();
+              event.stopImmediatePropagation();
+            }
+          };
+          document.addEventListener('click', blockCapturedAnchor, true);
+          let settled = false;
+          const restore = value => {
+            if (settled) return;
+            settled = true;
+            Element.prototype.append = originalAppend;
+            Node.prototype.appendChild = originalAppendChild;
+            URL.createObjectURL = originalCreateObjectURL;
+            HTMLAnchorElement.prototype.click = originalAnchorClick;
+            document.removeEventListener('click', blockCapturedAnchor, true);
+            resolve(value);
+          };
+          const captureDownloadIframe = nodes => {
+            const iframe = nodes.find(node => {
+              if (!node || String(node.tagName || '').toUpperCase() !== 'IFRAME') return false;
+              try {
+                const parsed = new URL(String(node.src || ''), location.href);
+                return parsed.origin === location.origin && /\\/d\\/[^/]+\$/i.test(parsed.pathname);
+              } catch (_) { return false; }
+            });
+            if (iframe) {
+              const capturedUrl = String(iframe.src || '');
+              restore(true);
+              streamTelegramOfficialDownloadToFlutter(capturedUrl).catch(error => {
+                console.error('Telegram official media download failed:', error);
+                updateFeedbackStatus('Telegram official download failed; trying stream fallback', false);
+                window.dispatchEvent(new Event('__appTelegramOfficialDownloadFailed'));
+              });
+              if (openedViewerForDownload) {
+                setTimeout(() => {
+                  try {
+                    const closeIcon = viewer.querySelector(
+                      '.media-viewer-buttons .icon-close, ' +
+                      '.media-viewer-topbar .icon-close'
+                    );
+                    const closeButton = closeIcon && closeIcon.closest('.btn-icon');
+                    if (closeButton) closeButton.click();
+                  } catch (_) {}
+                }, 250);
+              }
+              return true;
+            }
+            return false;
+          };
+          Element.prototype.append = function() {
+            const nodes = Array.from(arguments);
+            if (captureDownloadIframe(nodes)) return;
+            return originalAppend.apply(this, arguments);
+          };
+          Node.prototype.appendChild = function(node) {
+            if (captureDownloadIframe([node])) return node;
+            return originalAppendChild.call(this, node);
+          };
+          // When Telegram's internal ServiceWorker message port is unavailable,
+          // downloadToDisc does not create d/<id>. It downloads the exact
+          // message media into a Blob, then calls URL.createObjectURL and clicks
+          // an anchor. Capture that authoritative result instead of timing out
+          // into a partial MediaRecorder recording.
+          URL.createObjectURL = function(value) {
+            const createdUrl = originalCreateObjectURL.call(URL, value);
+            const mime = String(value && value.type || '').toLowerCase();
+            const isOfficialVideoBlob = !settled && value instanceof Blob &&
+              value.size >= 1024 && (mime.startsWith('video/') || mime === 'application/octet-stream');
+            if (isOfficialVideoBlob) {
+              capturedOfficialBlobUrl = createdUrl;
+              streamTelegramBlobToFlutter(createdUrl).then(() => {
+                window.dispatchEvent(new Event('__appTelegramOfficialDownloadSucceeded'));
+              }).catch(error => {
+                console.error('Telegram official Blob download failed:', error);
+                window.dispatchEvent(new Event('__appTelegramOfficialDownloadFailed'));
+              }).finally(() => {
+                try { URL.revokeObjectURL(createdUrl); } catch (_) {}
+              });
+              // createDownloadAnchor runs synchronously after createObjectURL;
+              // keep the click override for the rest of this task, then restore.
+              setTimeout(() => restore(true), 0);
+            }
+            return createdUrl;
+          };
+          HTMLAnchorElement.prototype.click = function() {
+            if (capturedOfficialBlobUrl && String(this.href || '') === capturedOfficialBlobUrl) {
+              return;
+            }
+            return originalAnchorClick.call(this);
+          };
+          try {
+            downloadButton.click();
+          } catch (_) {
+            restore(false);
+            return;
+          }
+          // HLS videos expose a quality menu instead of downloading on the
+          // first click. Telegram orders those entries from highest to lowest;
+          // select the first visible option so the result matches a user's
+          // expectation of best available quality.
+          setTimeout(() => {
+            if (settled) return;
+            const qualityOption = Array.from(
+              document.querySelectorAll('.btn-menu.active .btn-menu-item')
+            ).find(visible);
+            if (qualityOption) {
+              try { qualityOption.click(); } catch (_) {}
+            }
+          }, 180);
+          // The no-message-port branch may need the full media download to
+          // finish before createObjectURL is called. Keep the scoped hook alive
+          // instead of treating a legitimate large download as failure.
+          setTimeout(() => restore(false), 30 * 60 * 1000);
+        });
       }
 
       // 深度扫描DOM树查找媒体元素
@@ -7379,6 +8111,87 @@ class _BrowserPageState extends State<BrowserPage>
         }
       }
 
+      function isYouTubePage() {
+        try {
+          const host = String(location.hostname || '').toLowerCase();
+          return host.includes('youtube.com') || host === 'youtu.be';
+        } catch (_) {}
+        return false;
+      }
+
+      function isYouTubeVideoTarget(el) {
+        if (!el) return false;
+        const tag = String(el.tagName || '').toLowerCase();
+        if (tag === 'video') return true;
+        return !!(el.querySelector && el.querySelector('video'));
+      }
+
+      function installYouTubeDownloadTouchGuard() {
+        if (window.__appYoutubeTouchGuardInstalled) return;
+        window.__appYoutubeTouchGuardInstalled = true;
+        try {
+          const style = document.createElement('style');
+          style.id = 'app-youtube-download-touch-guard';
+          style.textContent =
+            'video, .html5-video-player, .html5-main-player, #player-container-id {' +
+            '-webkit-touch-callout: none !important;' +
+            '-webkit-user-select: none !important;' +
+            'user-select: none !important;' +
+            '}';
+          (document.head || document.documentElement).appendChild(style);
+        } catch (_) {}
+      }
+
+      function dismissYouTubeNativeMenus() {
+        if (!isYouTubePage()) return;
+        try {
+          const selectors = [
+            'tp-yt-iron-overlay-backdrop.opened',
+            'tp-yt-iron-overlay-backdrop[opened]',
+            '.ytOverlayManagerOverlayOpened',
+            'ytd-menu-popup-renderer #dismiss-button',
+            'button[aria-label="关闭"]',
+            'button[aria-label="Close"]',
+            'yt-icon-button#dismiss-button',
+            '.ytSheetViewHeaderRendererIconButton button',
+            '.menu-dialog button[aria-label*="关闭"]',
+            '.menu-dialog button[aria-label*="Close"]'
+          ];
+          for (const sel of selectors) {
+            const nodes = document.querySelectorAll(sel);
+            for (const node of nodes) {
+              try { node.click(); } catch (_) {}
+            }
+          }
+          const backdrops = document.querySelectorAll(
+            'tp-yt-iron-overlay-backdrop, ytd-popup-container, .menu-dialog'
+          );
+          for (const backdrop of backdrops) {
+            try { backdrop.click(); } catch (_) {}
+          }
+        } catch (_) {}
+      }
+
+      if (isYouTubePage()) installYouTubeDownloadTouchGuard();
+
+      document.addEventListener('contextmenu', function(e) {
+        if (!isYouTubePage()) return;
+        try {
+          const target = e.target;
+          if (isYouTubeVideoTarget(target) ||
+              (target && target.closest && target.closest('video, .html5-video-player'))) {
+            e.preventDefault();
+            e.stopPropagation();
+          }
+        } catch (_) {}
+      }, true);
+
+      document.addEventListener('selectstart', function(e) {
+        if (isYouTubePage() && window._appYoutubeDownloadGesture) {
+          try { e.preventDefault(); } catch (_) {}
+        }
+      }, true);
+
       // 增强的长按检测 - 支持更多媒体元素类型
       document.addEventListener('touchstart', function(e) {
         // 媒体元素选择器 - 匹配媒体及常见视频站容器
@@ -7600,18 +8413,36 @@ class _BrowserPageState extends State<BrowserPage>
           const touchY = touch.clientY;
           window._lastTouchX = touchX;
           window._lastTouchY = touchY;
-          pressTimer = setTimeout(function() {
-            createFeedbackElement(touchX, touchY);
+          const ytVideoDownload =
+            isYouTubePage() && isYouTubeVideoTarget(pressedElement);
+          window._appYoutubeDownloadGesture = ytVideoDownload;
+          if (ytVideoDownload) {
             try {
-              Flutter.postMessage(JSON.stringify({
-                type: 'long_press_status',
-                target: String((pressedElement && pressedElement.tagName) || ''),
-                isSmartGesture: !!(pressedElement && pressedElement.getAttribute &&
-                  pressedElement.getAttribute('data-app-smart-gesture') === '1')
-              }));
+              e.preventDefault();
+              e.stopPropagation();
             } catch (_) {}
+          }
+          pressTimer = setTimeout(function() {
+            if (!ytVideoDownload) {
+              createFeedbackElement(touchX, touchY);
+              try {
+                Flutter.postMessage(JSON.stringify({
+                  type: 'long_press_status',
+                  target: String((pressedElement && pressedElement.tagName) || ''),
+                  isSmartGesture: !!(pressedElement && pressedElement.getAttribute &&
+                    pressedElement.getAttribute('data-app-smart-gesture') === '1')
+                }));
+              } catch (_) {}
+            } else {
+              removeFeedbackElement();
+            }
             handleMediaDownload(pressedElement, e);
-          }, 400);
+            if (ytVideoDownload) {
+              dismissYouTubeNativeMenus();
+              setTimeout(dismissYouTubeNativeMenus, 120);
+              setTimeout(dismissYouTubeNativeMenus, 320);
+            }
+          }, ytVideoDownload ? 320 : 400);
         }
       }, true);
 
@@ -7644,6 +8475,12 @@ class _BrowserPageState extends State<BrowserPage>
 
       document.addEventListener('touchend', function(e) {
         clearTimeout(pressTimer);
+        if (window._appYoutubeDownloadGesture) {
+          try { e.preventDefault(); } catch (_) {}
+          dismissYouTubeNativeMenus();
+          setTimeout(dismissYouTubeNativeMenus, 120);
+          window._appYoutubeDownloadGesture = false;
+        }
         try {
           const t = Date.now();
           const touch = (e.changedTouches && e.changedTouches[0]) ? e.changedTouches[0] : null;
@@ -7820,6 +8657,7 @@ class _BrowserPageState extends State<BrowserPage>
         let isFacebookContext = false;
         let isInstagramContext = false;
         let isYouTubeContext = false;
+        let isTelegramContext = false;
         try {
           const hosts = [location.hostname || ''];
           if (document.referrer) hosts.push(new URL(document.referrer).hostname || '');
@@ -7852,7 +8690,64 @@ class _BrowserPageState extends State<BrowserPage>
             const normalized = String(host).toLowerCase();
             return normalized.includes('youtube.com') || normalized === 'youtu.be';
           });
+          isTelegramContext = hosts.some(host => {
+            const normalized = String(host).toLowerCase();
+            return normalized === 'web.telegram.org' || normalized === 'telegram.org';
+          });
         } catch (_) {}
+
+        function youtubeParseItag(rawUrl) {
+          try {
+            return new URL(String(rawUrl), location.origin).searchParams.get('itag') || '';
+          } catch (_) {}
+          return '';
+        }
+        function youtubeIsMuxedItag(itag) {
+          return itag === '18' || itag === '22' || itag === '37' ||
+            itag === '38' || itag === '43' || itag === '45';
+        }
+        function youtubeStreamCandidates(ytId) {
+          const ranked = [];
+          const now = Date.now();
+          const visit = (u, info) => {
+            if (!u) return;
+            const lower = String(u).toLowerCase();
+            if (!lower.includes('googlevideo.com') && !lower.includes('videoplayback')) return;
+            if (now - Number((info && info.timestamp) || 0) > 900000) return;
+            const itag = youtubeParseItag(u);
+            let score = Number((info && info.timestamp) || 0);
+            if (ytId && lower.includes(String(ytId).toLowerCase())) score += 1e12;
+            if (youtubeIsMuxedItag(itag)) score += 1e11;
+            try {
+              const mime = decodeURIComponent(
+                new URL(u, location.origin).searchParams.get('mime') || ''
+              );
+              if (mime.includes('video/mp4') && !mime.includes('video-only')) score += 1e10;
+            } catch (_) {}
+            const ct = String((info && info.contentType) || '').toLowerCase();
+            if (ct.startsWith('video/')) score += 1e9;
+            ranked.push({ u, score });
+          };
+          try {
+            if (window.MediaInterceptor && window.MediaInterceptor.interceptedRequests) {
+              for (const [u, info] of window.MediaInterceptor.interceptedRequests) visit(u, info);
+            }
+            const early = window.__appEarlyMediaRequests;
+            if (early && typeof early.forEach === 'function') {
+              early.forEach((info, u) => visit(u, info));
+            }
+          } catch (_) {}
+          ranked.sort((a, b) => b.score - a.score);
+          const seen = new Set();
+          const out = [];
+          for (const row of ranked) {
+            if (seen.has(row.u)) continue;
+            seen.add(row.u);
+            out.push(row.u);
+            if (out.length >= 8) break;
+          }
+          return out;
+        }
 
         function youtubeVideoIdFromPage(video) {
           try {
@@ -9183,6 +10078,144 @@ class _BrowserPageState extends State<BrowserPage>
               /\\/k\\/stream\\//i.test(parsed.pathname);
           } catch (_) {}
           if (isBlobUrl(url) || isTelegramInternalStream) {
+            if (isTelegramContext && isBlobUrl(url) && mediaType === 'video') {
+              // Telegram's video element normally exposes only a MediaSource
+              // Blob. Prefer the authenticated /k/stream URL that fed this
+              // exact element; page-wide "latest request" can belong to an
+              // adjacent/preloaded message.
+              let telegramStreamUrl = '';
+              try {
+                const possible = [];
+                if (videoEl && typeof window.__appMediaFragmentsForVideo === 'function') {
+                  possible.push(...window.__appMediaFragmentsForVideo(videoEl));
+                }
+                // Do not use page-wide request maps or performance entries here.
+                // Telegram preloads adjacent messages, so the newest global
+                // /k/stream request is not proof that it belongs to this press.
+                telegramStreamUrl = possible.find(candidate => {
+                  try {
+                    const parsed = new URL(String(candidate), location.href);
+                    return parsed.hostname.toLowerCase() === 'web.telegram.org' &&
+                      parsed.origin === location.origin &&
+                      /\\/k\\/stream\\//i.test(parsed.pathname);
+                  } catch (_) { return false; }
+                }) || '';
+              } catch (_) {}
+              try {
+                const nearbyRoot = videoEl && (
+                  videoEl.closest('.media-viewer-whole') ||
+                  videoEl.closest('.media-viewer') ||
+                  videoEl.closest('[data-mid]') ||
+                  videoEl.parentElement
+                );
+                const controls = Array.from(
+                  (nearbyRoot || document).querySelectorAll(
+                    'button,[role="button"],a[download],a[aria-label],a[title]'
+                  )
+                ).slice(0, 80).map(control => ({
+                  tag: String(control.tagName || '').toLowerCase(),
+                  title: String(control.getAttribute('title') || '').slice(0, 80),
+                  aria: String(control.getAttribute('aria-label') || '').slice(0, 80),
+                  cls: String(control.className || '').slice(0, 160),
+                  download: String(control.getAttribute('download') || '').slice(0, 80)
+                })).filter(row => {
+                  const value = (row.title + ' ' + row.aria + ' ' + row.cls + ' ' + row.download).toLowerCase();
+                  return value.includes('download') || value.includes('save') ||
+                    value.includes('下载') || value.includes('保存');
+                }).slice(0, 12);
+                let performanceTelegramCount = 0;
+                try {
+                  performanceTelegramCount = performance
+                    .getEntriesByType('resource')
+                    .filter(entry => /\\/k\\/stream\\//i.test(String(entry && entry.name || '')))
+                    .length;
+                } catch (_) {}
+                Flutter.postMessage(JSON.stringify({
+                  type: 'telegram_debug',
+                  phase: 'blob_discovery',
+                  foundStream: !!telegramStreamUrl,
+                  possibleCount: possible.length,
+                  dedicatedCount: Number(window.__appTelegramStreamRequests && window.__appTelegramStreamRequests.size || 0),
+                  earlyCount: Number(window.__appEarlyMediaRequests && window.__appEarlyMediaRequests.size || 0),
+                  interceptedCount: Number(window.MediaInterceptor && window.MediaInterceptor.interceptedRequests && window.MediaInterceptor.interceptedRequests.size || 0),
+                  performanceTelegramCount: performanceTelegramCount,
+                  currentSrc: String(videoEl && (videoEl.currentSrc || videoEl.src) || '').slice(0, 240),
+                  duration: Number(videoEl && videoEl.duration || 0),
+                  readyState: Number(videoEl && videoEl.readyState || 0),
+                  controls: controls
+                }));
+              } catch (_) {}
+              const runTelegramFallbacks = () => {
+                updateFeedbackStatus(
+                  telegramStreamUrl
+                    ? '正在读取当前 Telegram 视频…'
+                    : '正在读取 Telegram blob 视频…',
+                  null
+                );
+                const directAttempt = telegramStreamUrl
+                  ? streamTelegramVideoToFlutter(telegramStreamUrl)
+                  : streamTelegramBlobToFlutter(url);
+                directAttempt.catch(async firstError => {
+                  // Some Telegram builds expose a fetchable Blob even when its
+                  // underlying /k/stream request has expired. Try that exact
+                  // element before the final short recording fallback.
+                  if (telegramStreamUrl) {
+                    try {
+                      await streamTelegramBlobToFlutter(url);
+                      return;
+                    } catch (_) {}
+                  }
+                  console.error('Telegram blob download failed:', firstError);
+                  if (videoEl && videoEl.readyState >= 2) {
+                    tryMediaRecorderCapture(videoEl, function(success) {
+                      if (!success) updateFeedbackStatus('Telegram 视频读取失败，请继续播放后重试', false);
+                    });
+                  } else {
+                    updateFeedbackStatus('Telegram 视频尚未缓冲，请继续播放后重试', false);
+                  }
+                });
+              };
+              updateFeedbackStatus('正在调用 Telegram 原始媒体下载…', null);
+              const onOfficialSuccess = () => {
+                window.removeEventListener(
+                  '__appTelegramOfficialDownloadFailed',
+                  onOfficialFailure
+                );
+              };
+              const onOfficialFailure = () => {
+                window.removeEventListener(
+                  '__appTelegramOfficialDownloadSucceeded',
+                  onOfficialSuccess
+                );
+                runTelegramFallbacks();
+              };
+              window.addEventListener(
+                '__appTelegramOfficialDownloadFailed',
+                onOfficialFailure,
+                {once: true}
+              );
+              window.addEventListener(
+                '__appTelegramOfficialDownloadSucceeded',
+                onOfficialSuccess,
+                {once: true}
+              );
+              tryTelegramOfficialMediaDownload(videoEl).then(started => {
+                if (!started) {
+                  window.removeEventListener(
+                    '__appTelegramOfficialDownloadFailed',
+                    onOfficialFailure
+                  );
+                  runTelegramFallbacks();
+                }
+              }, () => {
+                window.removeEventListener(
+                  '__appTelegramOfficialDownloadFailed',
+                  onOfficialFailure
+                );
+                runTelegramFallbacks();
+              });
+              return true;
+            }
             if (isBlobUrl(url) && mediaType === 'video' && isElementBoundFeedContext) {
               let boundFragments = [];
               try {
@@ -9473,12 +10506,14 @@ class _BrowserPageState extends State<BrowserPage>
           const ytId = youtubeVideoIdFromPage(ytVideo);
           if (ytId) {
             const ytPage = 'https://www.youtube.com/watch?v=' + ytId;
+            const ytStreams = youtubeStreamCandidates(ytId);
             Flutter.postMessage(JSON.stringify({
               type: 'media',
               mediaType: 'video',
               url: ytPage,
               youtubeVideoId: ytId,
               youtubePageUrl: ytPage,
+              youtubeStreamCandidates: ytStreams,
               isBase64: false,
               isSmartGesture: isSmartGesture,
               action: 'download',
@@ -9488,13 +10523,18 @@ class _BrowserPageState extends State<BrowserPage>
               playbackStartedAtMs: Number(videoEl && videoEl.__appWarmupStartedAtMs || 0) ||
                 (Date.now() - Math.max(0, Number(videoEl && videoEl.currentTime || 0)) * 1000),
               durationSec: effectiveVideoDuration(videoEl),
-              candidates: cands
+              candidates: cands.concat(ytStreams)
             }));
-            updateFeedbackStatus('正在解析 YouTube…', null);
+            removeFeedbackElement();
+            dismissYouTubeNativeMenus();
+            setTimeout(dismissYouTubeNativeMenus, 120);
+            setTimeout(dismissYouTubeNativeMenus, 320);
             e.preventDefault();
+            e.stopPropagation();
             return;
           }
           updateFeedbackStatus('无法识别当前 YouTube 视频，请先点进该视频再长按', false);
+          dismissYouTubeNativeMenus();
           e.preventDefault();
           return;
         }
@@ -9787,7 +10827,7 @@ class _BrowserPageState extends State<BrowserPage>
       );
       final ready = await controller.evaluateJavascript(
         source:
-            "window.__appMediaDownloadHandlersVersion === 'media-download-v43'",
+            "window.__appMediaDownloadHandlersVersion === 'media-download-v55'",
       );
       if (ready == true || ready.toString().toLowerCase() == 'true') {
         if (_lastMediaHandlerFailureUrl == injectionUrl) {
@@ -9836,6 +10876,20 @@ class _BrowserPageState extends State<BrowserPage>
     try {
       final data = jsonDecode(message);
       if (data is! Map || !data.containsKey('type')) return;
+      if (data['type'] == 'telegram_debug') {
+        debugPrint(
+          '[TG_BLOB_DEBUG] phase=${data['phase'] ?? ''} '
+          'foundStream=${data['foundStream']} '
+          'possible=${data['possibleCount']} '
+          'dedicated=${data['dedicatedCount']} '
+          'early=${data['earlyCount']} '
+          'intercepted=${data['interceptedCount']} '
+          'performanceStreams=${data['performanceTelegramCount']} '
+          'readyState=${data['readyState']} duration=${data['duration']} '
+          'currentSrc=${data['currentSrc']} controls=${data['controls']}',
+        );
+        return;
+      }
       if (data['type'] == 'ig_debug') {
         debugPrint(
           '[IG_DOM] phase=${data['phase'] ?? ''} '
@@ -9870,7 +10924,10 @@ class _BrowserPageState extends State<BrowserPage>
         return;
       }
       if (data['type'] == 'long_press_status') {
-        if (mounted && data['isSmartGesture'] != true) {
+        if (mounted &&
+            data['isSmartGesture'] != true &&
+            data['isYouTube'] != true &&
+            !_isYouTubeBrowsePageUrl(_currentUrl)) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: Text('已识别长按，正在解析当前媒体…'),
@@ -10031,8 +11088,8 @@ class _BrowserPageState extends State<BrowserPage>
           try {
             final downloaded = await _downloadYouTubeWithAudio(
               youtubePage,
-              showSuccessPrompt: !isSmartGesture,
-              preferSingleMuxedDownload: true,
+              showSuccessPrompt: false,
+              longPressFlow: true,
             );
             debugPrint(
               'YouTube long-press: page=$youtubePage '
@@ -10349,7 +11406,10 @@ class _BrowserPageState extends State<BrowserPage>
 
       try {
         debugPrint(
-          'Received URL from JavaScript with download action: $urlValue, type: $mediaType, isBase64: $isBase64',
+          'Received media download action: type=$mediaType '
+          'isBase64=$isBase64 isStreamReference=$isStreamReference '
+          'payloadChars=${urlValue.length} '
+          'url=${isBase64 ? '<base64 omitted>' : urlValue}',
         );
 
         if (isBase64 || isStreamReference) {
@@ -11265,7 +12325,16 @@ class _BrowserPageState extends State<BrowserPage>
       await file.writeAsBytes(bytes);
       debugPrint('已从Base64保存文件: $filePath');
       if (normalizedMediaType == 'video') {
-        final durationMs = await _probeNativeVideoDurationMs(file);
+        final durationMs = await _probeNativeVideoDurationMs(file).timeout(
+          const Duration(seconds: 5),
+          onTimeout: () {
+            debugPrint(
+              '[BLOB_VIDEO] native duration probe timed out; '
+              'continuing with container validation',
+            );
+            return null;
+          },
+        );
         if (durationMs != null && durationMs <= 0) {
           await file.delete();
           if (mounted) {
@@ -11291,7 +12360,7 @@ class _BrowserPageState extends State<BrowserPage>
       );
       _notifyMediaDownloadSaved();
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        _showBrowserSnackBar(
           SnackBar(
             content: Text('已保存到媒体库：${file.path.split('/').last}'),
             duration: _kMediaSaveSnackDuration,
@@ -11453,6 +12522,8 @@ class _BrowserPageState extends State<BrowserPage>
 
   Future<void> _goToHomePage() async {
     if (!_showHomePage) {
+      ScaffoldMessenger.of(context).clearSnackBars();
+      await _pauseWebMediaWhenHidden(reason: 'browser_home_overlay');
       // Only persist after first successful load — never write defaults over
       // user-stored .hk / query bookmarks during the startup race.
       if (_commonWebsitesLoaded) {
@@ -29083,9 +30154,21 @@ class _BrowserPageState extends State<BrowserPage>
   Future<bool> _downloadYouTubeWithAudio(
     String pageUrl, {
     bool showSuccessPrompt = true,
-    bool preferSingleMuxedDownload = false,
+    bool longPressFlow = false,
+    List<String> streamCandidates = const [],
   }) async {
     final canonical = _canonicalYouTubePageUrl(pageUrl) ?? pageUrl.trim();
+    final videoId = _extractYouTubeVideoId(canonical);
+    final dedupeKey =
+        videoId != null && videoId.isNotEmpty
+            ? 'youtube:watch:$videoId'
+            : canonical;
+    if (_downloadingUrls.contains(dedupeKey)) {
+      debugPrint('YouTube: 已在下载中，跳过重复任务 videoId=$videoId');
+      return false;
+    }
+    _downloadingUrls.add(dedupeKey);
+
     final taskId = const Uuid().v4();
     final cancelToken = CancelToken();
 
@@ -29098,6 +30181,60 @@ class _BrowserPageState extends State<BrowserPage>
       );
     }
 
+    Future<bool> markCompleted(bool ok, String successDetail) async {
+      if (ok && mounted) {
+        _updateDownloadTask(
+          taskId,
+          status: 'completed',
+          progress: 1.0,
+          progressDetail: successDetail,
+        );
+        if (showSuccessPrompt) {
+          _showBrowserSnackBar(
+            SnackBar(
+              content: Text(successDetail),
+              duration: _kMediaSaveSnackDuration,
+            ),
+          );
+        }
+      } else if (!ok && mounted) {
+        _updateDownloadTask(
+          taskId,
+          status: 'failed',
+          progress: 0.0,
+          progressDetail: 'YouTube 下载失败',
+        );
+      }
+      return ok;
+    }
+
+    Future<bool> downloadDirectStream({
+      required String videoUrl,
+      String? audioUrl,
+      required String progressLabel,
+      double baseProgress = 0.06,
+      bool warnOnPairedMuxFailure = true,
+    }) async {
+      return _performBackgroundDownload(
+        videoUrl,
+        MediaType.video,
+        pairedAudioUrl: audioUrl,
+        pairedAudioDownloadTimeout: const Duration(minutes: 5),
+        pairedAudioMuxTimeout: const Duration(seconds: 90),
+        warnOnPairedMuxFailure: audioUrl != null && warnOnPairedMuxFailure,
+        showSuccessPrompt: false,
+        skipFailurePrompt: true,
+        progressTaskId: taskId,
+        progressCancelToken: cancelToken,
+        onProgress: (fraction, {String? detail}) {
+          reportProgress(
+            baseProgress + fraction.clamp(0.0, 1.0) * (0.94 - baseProgress),
+            detail ?? progressLabel,
+          );
+        },
+      );
+    }
+
     if (mounted) {
       _addDownloadTask(
         taskId,
@@ -29106,66 +30243,31 @@ class _BrowserPageState extends State<BrowserPage>
         cancelToken,
         displayName: 'YouTube',
       );
-      reportProgress(0.03, '正在解析 YouTube…');
+      reportProgress(0.03, '正在准备下载…');
     }
 
     try {
-      if (preferSingleMuxedDownload) {
-        final muxedPlan = await _resolveYouTubeMuxedPlan(canonical);
-        if (muxedPlan == null) {
-          if (mounted) {
-            _updateDownloadTask(
-              taskId,
-              status: 'failed',
-              progress: 0.0,
-              progressDetail: '无法解析 YouTube 视频',
-            );
-            if (showSuccessPrompt) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('无法解析 YouTube 视频，请确认网络可访问 YouTube'),
-                  duration: Duration(seconds: 3),
-                ),
-              );
-            }
-          }
-          return false;
-        }
-        reportProgress(0.08, '已解析 ${muxedPlan.qualityLabel}，开始下载…');
-        final ok = await _performBackgroundDownload(
-          muxedPlan.videoUrl,
-          MediaType.video,
-          showSuccessPrompt: showSuccessPrompt,
-          skipFailurePrompt: !showSuccessPrompt,
-          progressTaskId: taskId,
-          progressCancelToken: cancelToken,
-          onProgress: (fraction, {String? detail}) {
-            reportProgress(
-              0.08 + fraction.clamp(0.0, 1.0) * 0.9,
-              detail ?? '下载 ${muxedPlan.qualityLabel}…',
-            );
-          },
+      if (!longPressFlow && streamCandidates.isNotEmpty) {
+        final sniffedMuxed = _pickYouTubeInterceptedMuxedUrl(
+          streamCandidates,
+          videoId,
         );
-        if (ok && mounted) {
-          _updateDownloadTask(
-            taskId,
-            status: 'completed',
-            progress: 1.0,
-            progressDetail: '已保存（${muxedPlan.qualityLabel}，含声音）',
+        if (sniffedMuxed != null) {
+          reportProgress(0.06, '下载播放流…');
+          final ok = await downloadDirectStream(
+            videoUrl: sniffedMuxed,
+            progressLabel: '下载播放流…',
+            warnOnPairedMuxFailure: false,
           );
-        } else if (!ok && mounted) {
-          _updateDownloadTask(
-            taskId,
-            status: 'failed',
-            progress: 0.0,
-            progressDetail: 'YouTube 下载失败',
-          );
+          if (ok) {
+            return markCompleted(true, '已保存（播放流，含声音）');
+          }
+          reportProgress(0.08, '播放流不可用，正在解析…');
         }
-        return ok;
       }
 
-      final plan = await _resolveYouTubeDownloadPlan(canonical);
-      if (plan == null) {
+      final plans = await _resolveYouTubeManifestPlans(canonical);
+      if (plans == null) {
         if (mounted) {
           _updateDownloadTask(
             taskId,
@@ -29185,94 +30287,61 @@ class _BrowserPageState extends State<BrowserPage>
         return false;
       }
 
-      reportProgress(0.08, '已解析 ${plan.qualityLabel}，开始下载…');
+      final hq = plans.hqPlan;
+      final muxed = plans.muxedPlan;
 
-      if (plan.audioUrl != null && plan.audioUrl!.trim().isNotEmpty) {
-        final muxedOk = await _performBackgroundDownload(
-          plan.videoUrl,
+      Future<bool> tryMuxedDownload() async {
+        if (muxed == null) return false;
+        reportProgress(0.08, '下载 ${muxed.qualityLabel}…');
+        debugPrint('YouTube: try muxed ${muxed.qualityLabel}');
+        final ok = await _performBackgroundDownload(
+          muxed.videoUrl,
           MediaType.video,
-          pairedAudioUrl: plan.audioUrl,
-          pairedAudioDownloadTimeout: const Duration(minutes: 5),
-          pairedAudioMuxTimeout: const Duration(seconds: 90),
-          warnOnPairedMuxFailure: true,
           showSuccessPrompt: false,
           skipFailurePrompt: true,
           progressTaskId: taskId,
           progressCancelToken: cancelToken,
           onProgress: (fraction, {String? detail}) {
             reportProgress(
-              0.08 + fraction.clamp(0.0, 1.0) * 0.82,
-              detail ?? '下载中…',
+              0.08 + fraction.clamp(0.0, 1.0) * 0.88,
+              detail ?? '下载 ${muxed.qualityLabel}…',
             );
           },
         );
-        if (muxedOk) {
-          if (mounted) {
-            _updateDownloadTask(
-              taskId,
-              status: 'completed',
-              progress: 1.0,
-              progressDetail: '已保存（${plan.qualityLabel}，含声音）',
-            );
-            if (showSuccessPrompt) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text(
-                    'YouTube 已保存（${plan.qualityLabel}，含声音）',
-                  ),
-                  duration: _kMediaSaveSnackDuration,
-                ),
-              );
-            }
-          }
-          return true;
+        if (ok) {
+          await markCompleted(true, '已保存（${muxed.qualityLabel}，含声音）');
         }
-        reportProgress(0.12, '高清合并失败，正在下载带声音版本…');
+        return ok;
       }
 
-      final muxedPlan = await _resolveYouTubeMuxedPlan(canonical);
-      if (muxedPlan == null) {
-        if (mounted) {
-          _updateDownloadTask(
-            taskId,
-            status: 'failed',
-            progress: 0.0,
-            progressDetail: 'YouTube 下载失败',
-          );
-          if (showSuccessPrompt) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('YouTube 下载失败，请稍后重试'),
-                duration: Duration(seconds: 3),
-              ),
-            );
-          }
+      Future<bool> tryHqDownload() async {
+        if (hq == null || hq.audioUrl == null || hq.audioUrl!.trim().isEmpty) {
+          return false;
         }
-        return false;
-      }
-
-      final ok = await _performBackgroundDownload(
-        muxedPlan.videoUrl,
-        MediaType.video,
-        showSuccessPrompt: showSuccessPrompt,
-        skipFailurePrompt: !showSuccessPrompt,
-        progressTaskId: taskId,
-        progressCancelToken: cancelToken,
-        onProgress: (fraction, {String? detail}) {
-          reportProgress(
-            0.15 + fraction.clamp(0.0, 1.0) * 0.83,
-            detail ?? '下载 ${muxedPlan.qualityLabel}…',
-          );
-        },
-      );
-      if (ok && mounted) {
-        _updateDownloadTask(
-          taskId,
-          status: 'completed',
-          progress: 1.0,
-          progressDetail: '已保存（${muxedPlan.qualityLabel}，含声音）',
+        reportProgress(0.10, '下载 ${hq.qualityLabel}…');
+        debugPrint('YouTube: try HQ paired ${hq.qualityLabel}');
+        final hqOk = await downloadDirectStream(
+          videoUrl: hq.videoUrl,
+          audioUrl: hq.audioUrl,
+          progressLabel: '下载 ${hq.qualityLabel}…',
+          baseProgress: 0.10,
         );
-      } else if (!ok && mounted) {
+        if (hqOk) {
+          await markCompleted(true, '已保存（${hq.qualityLabel}，含声音）');
+        }
+        return hqOk;
+      }
+
+      if (longPressFlow) {
+        if (await tryMuxedDownload()) return true;
+        if (await tryHqDownload()) return true;
+      } else {
+        if (await tryHqDownload()) return true;
+        reportProgress(0.15, '正在换带声音版本…');
+        if (await tryMuxedDownload()) return true;
+      }
+
+      if (mounted) {
         _updateDownloadTask(
           taskId,
           status: 'failed',
@@ -29280,7 +30349,7 @@ class _BrowserPageState extends State<BrowserPage>
           progressDetail: 'YouTube 下载失败',
         );
       }
-      return ok;
+      return false;
     } catch (e, stackTrace) {
       debugPrint('YouTube 下载异常: $e\n$stackTrace');
       if (mounted) {
@@ -29292,10 +30361,14 @@ class _BrowserPageState extends State<BrowserPage>
         );
       }
       return false;
+    } finally {
+      _downloadingUrls.remove(dedupeKey);
     }
   }
 
-  Future<_YouTubeDownloadPlan?> _resolveYouTubeDownloadPlan(String url) async {
+  Future<_YouTubeManifestPlans?> _resolveYouTubeManifestPlans(
+    String url,
+  ) async {
     final videoId = _extractYouTubeVideoId(url);
     if (videoId == null || videoId.isEmpty) {
       debugPrint('YouTube: 无法从链接解析 videoId: $url');
@@ -29303,9 +30376,11 @@ class _BrowserPageState extends State<BrowserPage>
     }
     try {
       _youtubeExplode ??= _createYoutubeExplode();
-      final manifest =
-          await _youtubeExplode!.videos.streamsClient.getManifest(videoId);
+      final manifest = await _youtubeExplode!.videos.streamsClient.getManifest(
+        videoId,
+      );
 
+      _YouTubeDownloadPlan? hqPlan;
       if (manifest.videoOnly.isNotEmpty && manifest.audioOnly.isNotEmpty) {
         final mp4Videos =
             manifest.videoOnly
@@ -29323,46 +30398,56 @@ class _BrowserPageState extends State<BrowserPage>
             mp4Audios.isNotEmpty
                 ? mp4Audios.withHighestBitrate()
                 : manifest.audioOnly.withHighestBitrate();
-        debugPrint(
-          'YouTube: $videoId -> ${video.qualityLabel} + ${audio.bitrate.bitsPerSecond ~/ 1000}kbps audio',
-        );
-        return _YouTubeDownloadPlan(
+        hqPlan = _YouTubeDownloadPlan(
           videoUrl: video.url.toString(),
           audioUrl: audio.url.toString(),
           qualityLabel: video.qualityLabel,
         );
       }
 
-      return _resolveYouTubeMuxedPlan(url, manifest: manifest);
+      _YouTubeDownloadPlan? muxedPlan;
+      if (manifest.muxed.isNotEmpty) {
+        final muxed = manifest.muxed.bestQuality;
+        muxedPlan = _YouTubeDownloadPlan(
+          videoUrl: muxed.url.toString(),
+          qualityLabel: muxed.qualityLabel,
+        );
+      }
+
+      if (hqPlan == null && muxedPlan == null) return null;
+      debugPrint(
+        'YouTube manifest: $videoId '
+        'hq=${hqPlan?.qualityLabel ?? '-'} '
+        'muxed=${muxedPlan?.qualityLabel ?? '-'}',
+      );
+      return _YouTubeManifestPlans(hqPlan: hqPlan, muxedPlan: muxedPlan);
     } catch (e, stackTrace) {
-      debugPrint('YouTube 解析失败: $e\n$stackTrace');
+      debugPrint('YouTube manifest 解析失败: $e\n$stackTrace');
+      return null;
     }
-    return null;
+  }
+
+  Future<_YouTubeDownloadPlan?> _resolveYouTubeDownloadPlan(String url) async {
+    final plans = await _resolveYouTubeManifestPlans(url);
+    if (plans == null) return null;
+    if (plans.hqPlan != null) return plans.hqPlan;
+    return plans.muxedPlan;
   }
 
   Future<_YouTubeDownloadPlan?> _resolveYouTubeMuxedPlan(
     String url, {
     StreamManifest? manifest,
   }) async {
-    final videoId = _extractYouTubeVideoId(url);
-    if (videoId == null || videoId.isEmpty) return null;
-    try {
-      _youtubeExplode ??= _createYoutubeExplode();
-      final resolvedManifest =
-          manifest ?? await _youtubeExplode!.videos.streamsClient.getManifest(
-            videoId,
-          );
-      if (resolvedManifest.muxed.isEmpty) return null;
-      final muxed = resolvedManifest.muxed.bestQuality;
-      debugPrint('YouTube: $videoId -> muxed ${muxed.qualityLabel}');
+    if (manifest != null) {
+      if (manifest.muxed.isEmpty) return null;
+      final muxed = manifest.muxed.bestQuality;
       return _YouTubeDownloadPlan(
         videoUrl: muxed.url.toString(),
         qualityLabel: muxed.qualityLabel,
       );
-    } catch (e, stackTrace) {
-      debugPrint('YouTube muxed 解析失败: $e\n$stackTrace');
-      return null;
     }
+    final plans = await _resolveYouTubeManifestPlans(url);
+    return plans?.muxedPlan;
   }
 
   Widget _buildDownloadDialog(String url, String mimeType) {
@@ -29585,8 +30670,11 @@ class _BrowserPageState extends State<BrowserPage>
       return 'https://www.baidu.com';
     if (lower.contains('gstatic.com') ||
         lower.contains('googleusercontent.com') ||
-        lower.contains('google.com'))
-      return 'https://www.google.com';
+        lower.contains('googlevideo.com') ||
+        lower.contains('youtube.com') ||
+        lower.contains('youtu.be'))
+      return 'https://www.youtube.com/';
+    if (lower.contains('google.com')) return 'https://www.google.com';
     if (lower.contains('bing.com') || lower.contains('bcbits.com'))
       return 'https://www.bing.com';
     if (lower.contains('twitter.com') || lower.contains('twimg.com'))
@@ -29649,6 +30737,10 @@ class _BrowserPageState extends State<BrowserPage>
       } catch (_) {}
     }
     candidates.add(_getMediaReferer(mediaUrl));
+    if (mediaUrl.toLowerCase().contains('googlevideo.com')) {
+      candidates.add('https://www.youtube.com/');
+      candidates.add('https://m.youtube.com/');
+    }
     if (_isFacebookCdnUrl(mediaUrl) ||
         page.toLowerCase().contains('facebook.com') ||
         page.toLowerCase().contains('fb.com')) {
@@ -33905,6 +34997,7 @@ class _BrowserPageState extends State<BrowserPage>
         _removeDownloadTask(taskId);
       }
     }
+
     var timedOut = false;
     var sizeRangeExceeded = false;
     Timer? timeoutTimer;
@@ -34043,7 +35136,9 @@ class _BrowserPageState extends State<BrowserPage>
                 muxedFile = null;
                 pairedAudioMuxed = true;
                 debugPrint('Paired video+audio mux completed');
-              } else if (warnOnPairedMuxFailure && mounted && !skipFailurePrompt) {
+              } else if (warnOnPairedMuxFailure &&
+                  mounted &&
+                  !skipFailurePrompt) {
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(
                     content: Text('音视频合并失败，将尝试下载带声音的版本'),
@@ -34338,14 +35433,14 @@ class _BrowserPageState extends State<BrowserPage>
           ),
         );
       } else if (mounted && skipFailurePrompt) {
-            removeOwnedTask();
+        removeOwnedTask();
       }
       return false;
     } catch (e, st) {
       var type = 'exception';
       if (sizeRangeExceeded) {
         onFailureType?.call('outside_requested_size_range');
-            removeOwnedTask();
+        removeOwnedTask();
         return false;
       }
       final msg = e.toString().toLowerCase();
