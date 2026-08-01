@@ -2738,6 +2738,11 @@ class _BrowserPageState extends State<BrowserPage>
   bool _telegramStreamOwnsProgressTask = false;
   DateTime? _telegramStreamLastProgressAt;
   bool _telegramStreamFinalizing = false;
+  bool _telegramOfficialDownloadActive = false;
+  DateTime? _telegramOfficialDownloadLastProgressAt;
+  int _telegramOfficialDownloadDoneBytes = 0;
+  int _telegramOfficialDownloadTotalBytes = 0;
+  bool _telegramStreamUsesOfficialProgressStages = false;
 
   bool get _telegramStreamIsActive =>
       _telegramStreamFinalizing ||
@@ -2749,6 +2754,13 @@ class _BrowserPageState extends State<BrowserPage>
     // longer than the network inactivity threshold. It is still active work.
     if (_telegramStreamFinalizing) return true;
     final last = _telegramStreamLastProgressAt;
+    return last != null &&
+        DateTime.now().difference(last) < const Duration(minutes: 2);
+  }
+
+  bool get _telegramOfficialDownloadHasRecentProgress {
+    if (!_telegramOfficialDownloadActive) return false;
+    final last = _telegramOfficialDownloadLastProgressAt;
     return last != null &&
         DateTime.now().difference(last) < const Duration(minutes: 2);
   }
@@ -6088,20 +6100,29 @@ class _BrowserPageState extends State<BrowserPage>
         _telegramStreamLastProgressAt = DateTime.now();
         _telegramStreamExpectedBytes =
             (message['expectedBytes'] as num?)?.toInt() ?? 0;
-        final smartTask = _smartDownloadTask;
-        final smartProgressId =
-            (smartTask?['discoveryTaskId'] ?? '').toString();
-        _telegramStreamOwnsProgressTask = smartProgressId.isEmpty;
-        _telegramStreamProgressTaskId =
-            smartProgressId.isNotEmpty ? smartProgressId : const Uuid().v4();
-        if (_telegramStreamOwnsProgressTask) {
-          _addDownloadTask(
-            _telegramStreamProgressTaskId,
-            'telegram-stream://$transferId',
-            MediaType.video,
-            CancelToken(),
-            displayName: 'Telegram 视频',
-          );
+        final existingProgressIndex = _downloadTasks.indexWhere(
+          (row) =>
+              row['id'] == _telegramStreamProgressTaskId &&
+              row['status'] == 'downloading',
+        );
+        _telegramStreamUsesOfficialProgressStages =
+            _telegramOfficialDownloadActive && existingProgressIndex >= 0;
+        if (!_telegramStreamUsesOfficialProgressStages) {
+          final smartTask = _smartDownloadTask;
+          final smartProgressId =
+              (smartTask?['discoveryTaskId'] ?? '').toString();
+          _telegramStreamOwnsProgressTask = smartProgressId.isEmpty;
+          _telegramStreamProgressTaskId =
+              smartProgressId.isNotEmpty ? smartProgressId : const Uuid().v4();
+          if (_telegramStreamOwnsProgressTask) {
+            _addDownloadTask(
+              _telegramStreamProgressTaskId,
+              'telegram-stream://$transferId',
+              MediaType.video,
+              CancelToken(),
+              displayName: 'Telegram 视频',
+            );
+          }
         }
         _updateTelegramStreamProgress(status: 'downloading');
         debugPrint(
@@ -6297,11 +6318,13 @@ class _BrowserPageState extends State<BrowserPage>
     final id = _telegramStreamProgressTaskId;
     if (id.isEmpty) return;
     final expected = _telegramStreamExpectedBytes;
+    final rawProgress =
+        expected > 0 ? (_telegramStreamBytes / expected).clamp(0.0, 1.0) : 0.0;
     final progress =
         forceProgress ??
-        (expected > 0
-            ? (_telegramStreamBytes / expected).clamp(0.0, 0.99)
-            : 0.0);
+        (_telegramStreamUsesOfficialProgressStages
+            ? (0.85 + rawProgress * 0.14).clamp(0.85, 0.99)
+            : rawProgress.clamp(0.0, 0.99));
     final sizeDetail =
         expected > 0
             ? '${_formatBytes(_telegramStreamBytes)} / ${_formatBytes(expected)}'
@@ -6311,6 +6334,47 @@ class _BrowserPageState extends State<BrowserPage>
       progress: progress,
       status: status,
       progressDetail: '$detailPrefix · $sizeDetail',
+    );
+  }
+
+  void _ensureTelegramOfficialProgressTask({required bool isSmartGesture}) {
+    final smartTask = _smartDownloadTask;
+    final smartProgressId =
+        isSmartGesture ? (smartTask?['discoveryTaskId'] ?? '').toString() : '';
+    _telegramStreamOwnsProgressTask = smartProgressId.isEmpty;
+    _telegramStreamProgressTaskId =
+        smartProgressId.isNotEmpty ? smartProgressId : const Uuid().v4();
+    if (_telegramStreamOwnsProgressTask) {
+      _addDownloadTask(
+        _telegramStreamProgressTaskId,
+        'telegram-official://${DateTime.now().microsecondsSinceEpoch}',
+        MediaType.video,
+        CancelToken(),
+        displayName: 'Telegram 原始视频',
+        isSmartBatchMedia: isSmartGesture,
+      );
+    }
+  }
+
+  void _updateTelegramOfficialProgress(String phase) {
+    final id = _telegramStreamProgressTaskId;
+    if (id.isEmpty) return;
+    final total = _telegramOfficialDownloadTotalBytes;
+    final done = _telegramOfficialDownloadDoneBytes;
+    final raw = total > 0 ? (done / total).clamp(0.0, 1.0) : 0.0;
+    final progress =
+        phase == 'streaming' ? 0.85 : (raw * 0.85).clamp(0.0, 0.85);
+    final detail =
+        phase == 'streaming'
+            ? 'Telegram 原始媒体读取完成，正在写入应用'
+            : total > 0
+            ? '正在读取 Telegram 原始视频 · ${_formatBytes(done)} / ${_formatBytes(total)}'
+            : '正在调用 Telegram 原始媒体下载';
+    _updateDownloadTask(
+      id,
+      status: 'downloading',
+      progress: progress,
+      progressDetail: detail,
     );
   }
 
@@ -6913,7 +6977,7 @@ class _BrowserPageState extends State<BrowserPage>
       await controller.evaluateJavascript(
         source: '''
       (() => {
-          const handlerVersion = 'media-download-v55';
+      const handlerVersion = 'media-download-v58';
       if (window.__appMediaDownloadHandlersVersion === handlerVersion) return true;
       window.Flutter = window.Flutter || { postMessage: function(m){ try { if(window.flutter_inappwebview && window.flutter_inappwebview.callHandler) window.flutter_inappwebview.callHandler('Flutter', m); } catch(e){} } };
       // Telegram Web occasionally carries a non-1 playback rate between
@@ -7593,7 +7657,7 @@ class _BrowserPageState extends State<BrowserPage>
         }
       }
 
-      async function tryTelegramManagerMediaDownload() {
+      async function tryTelegramManagerMediaDownload(isSmartGesture) {
         const manager = window.appDownloadManager;
         const mediaViewer = window.appMediaViewer;
         const target = mediaViewer && mediaViewer.target;
@@ -7629,14 +7693,56 @@ class _BrowserPageState extends State<BrowserPage>
           return Number(b.size || 0) - Number(a.size || 0);
         });
         const media = documents[0] || primary;
+        const telegramDocumentId = String(media.id || primary.id || '');
         updateFeedbackStatus('正在下载当前 Telegram 原始视频…', null);
+        const reportManagerStatus = (phase, done, total) => {
+          try {
+            Flutter.postMessage(JSON.stringify({
+              type: 'telegram_download_status',
+              phase: phase,
+              done: Number(done || 0),
+              total: Number(total || media.size || 0),
+              documentId: telegramDocumentId,
+              isSmartGesture: !!isSmartGesture
+            }));
+          } catch (_) {}
+        };
+        window.__appTelegramSavedDocumentIds =
+          window.__appTelegramSavedDocumentIds || new Set();
+        if (telegramDocumentId &&
+            window.__appTelegramSavedDocumentIds.has(telegramDocumentId)) {
+          reportManagerStatus('duplicate', media.size, media.size);
+          window.dispatchEvent(new Event('__appTelegramOfficialDownloadSucceeded'));
+          return true;
+        }
+        const inFlight = window.__appTelegramManagerInFlight;
+        if (inFlight) {
+          // A second synthetic/manual press must never create an overlapping
+          // Telegram Blob task. The original task owns the library gate.
+          reportManagerStatus('busy', inFlight.done || 0, inFlight.total || 0);
+          return true;
+        }
+        reportManagerStatus('start', 0, media.size);
+        let download = null;
+        let stallTimer = null;
+        const managerState = {
+          documentId: telegramDocumentId,
+          done: 0,
+          total: Number(media.size || 0),
+          lastProgressAt: Date.now()
+        };
+        window.__appTelegramManagerInFlight = managerState;
         try {
-          const download = manager.downloadMedia({media: media}, 'blob');
+          download = manager.downloadMedia({media: media}, 'blob');
           if (download && typeof download.addNotifyListener === 'function') {
             download.addNotifyListener(progress => {
               const done = Number(progress && (progress.done || progress.offset || progress.loaded) || 0);
               const total = Number(progress && (progress.total || progress.size) || media.size || 0);
               if (done > 0 && total > 0) {
+                if (done > managerState.done) managerState.lastProgressAt = Date.now();
+                managerState.done = Math.max(managerState.done, done);
+                managerState.total = total;
+                reportManagerStatus('progress', done, total);
                 updateFeedbackStatus(
                   '正在下载当前 Telegram 原始视频 ' +
                   Math.min(99, Math.floor(done * 100 / total)) + '%…',
@@ -7645,26 +7751,53 @@ class _BrowserPageState extends State<BrowserPage>
               }
             });
           }
-          const blob = await download;
+          const stalled = new Promise((_, reject) => {
+            stallTimer = setInterval(() => {
+              if (Date.now() - managerState.lastProgressAt > 110000) {
+                clearInterval(stallTimer);
+                stallTimer = null;
+                reject(new Error('Telegram original media made no byte progress for 110 seconds'));
+              }
+            }, 5000);
+          });
+          const blob = await Promise.race([download, stalled]);
           if (!(blob instanceof Blob) || blob.size < 1024) {
             throw new Error('Telegram manager returned an empty media Blob');
           }
           const objectUrl = URL.createObjectURL(blob);
           try {
+            reportManagerStatus('streaming', blob.size, blob.size);
             await streamTelegramBlobToFlutter(objectUrl);
           } finally {
             try { URL.revokeObjectURL(objectUrl); } catch (_) {}
           }
+          if (telegramDocumentId) {
+            window.__appTelegramSavedDocumentIds.add(telegramDocumentId);
+          }
+          reportManagerStatus('completed', blob.size, blob.size);
+          // The native media-library snackbar is the useful terminal UI. Do
+          // not leave Telegram's transient blue read indicator over the page.
+          removeFeedbackElement();
           window.dispatchEvent(new Event('__appTelegramOfficialDownloadSucceeded'));
           return true;
         } catch (error) {
+          try {
+            if (download && typeof download.cancel === 'function') download.cancel();
+            else if (download && typeof download.abort === 'function') download.abort();
+          } catch (_) {}
+          reportManagerStatus('fallback', managerState.done, managerState.total);
           console.error('Telegram manager media download failed:', error);
           return false;
+        } finally {
+          if (stallTimer) clearInterval(stallTimer);
+          if (window.__appTelegramManagerInFlight === managerState) {
+            window.__appTelegramManagerInFlight = null;
+          }
         }
       }
 
-      function tryTelegramOfficialMediaDownload(boundVideo) {
-        const managerAttempt = tryTelegramManagerMediaDownload();
+      function tryTelegramOfficialMediaDownload(boundVideo, isSmartGesture) {
+        const managerAttempt = tryTelegramManagerMediaDownload(isSmartGesture);
         return managerAttempt.then(started => {
           if (started) return true;
           return tryTelegramOfficialMediaDownloadViaControls(boundVideo);
@@ -8082,20 +8215,31 @@ class _BrowserPageState extends State<BrowserPage>
         }, 10);
       }
 
-      function removeFeedbackElement() {
-        if (feedbackElement) {
-          feedbackElement.style.transform = 'scale(0.5)';
-          feedbackElement.style.opacity = '0';
+      function removeFeedbackElement(expectedElement) {
+        const element = expectedElement || feedbackElement;
+        if (element) {
+          element.style.transform = 'scale(0.5)';
+          element.style.opacity = '0';
           setTimeout(() => {
-            if (feedbackElement && feedbackElement.parentNode) {
-              feedbackElement.parentNode.removeChild(feedbackElement);
-              feedbackElement = null;
+            if (element && element.parentNode) {
+              element.parentNode.removeChild(element);
             }
+            if (feedbackElement === element) feedbackElement = null;
           }, 300);
         }
       }
 
       function updateFeedbackStatus(status, success) {
+        // Telegram progress belongs to the app's existing download ring. Its
+        // injected 100px blue feedback bubble duplicated that UI and covered
+        // the media viewer, so Telegram never renders this webpage overlay.
+        try {
+          const host = String(location.hostname || '').toLowerCase();
+          if (host === 'web.telegram.org' || host === 'telegram.org') {
+            removeFeedbackElement();
+            return;
+          }
+        } catch (_) {}
         if (feedbackElement) {
           feedbackElement.innerText = status;
           var bg;
@@ -8106,7 +8250,8 @@ class _BrowserPageState extends State<BrowserPage>
           }
           feedbackElement.style.backgroundColor = bg;
           if (success === true || success === false) {
-            setTimeout(removeFeedbackElement, 1000);
+            const terminalElement = feedbackElement;
+            setTimeout(() => removeFeedbackElement(terminalElement), 700);
           }
         }
       }
@@ -8424,7 +8569,14 @@ class _BrowserPageState extends State<BrowserPage>
           }
           pressTimer = setTimeout(function() {
             if (!ytVideoDownload) {
-              createFeedbackElement(touchX, touchY);
+              const host = String(location.hostname || '').toLowerCase();
+              const suppressTelegramFeedback =
+                host === 'web.telegram.org' || host === 'telegram.org';
+              if (suppressTelegramFeedback) {
+                removeFeedbackElement();
+              } else {
+                createFeedbackElement(touchX, touchY);
+              }
               try {
                 Flutter.postMessage(JSON.stringify({
                   type: 'long_press_status',
@@ -10199,7 +10351,7 @@ class _BrowserPageState extends State<BrowserPage>
                 onOfficialSuccess,
                 {once: true}
               );
-              tryTelegramOfficialMediaDownload(videoEl).then(started => {
+              tryTelegramOfficialMediaDownload(videoEl, isSmartGesture).then(started => {
                 if (!started) {
                   window.removeEventListener(
                     '__appTelegramOfficialDownloadFailed',
@@ -10819,6 +10971,7 @@ class _BrowserPageState extends State<BrowserPage>
         console.log('初始扫描完成，找到', initialMediaElements.length, '个媒体元素');
       }, 1000);
       window.updateFeedbackStatus = updateFeedbackStatus;
+      window.__appDismissMediaDownloadFeedback = removeFeedbackElement;
       window.tryCanvasCaptureFallback = tryCanvasCaptureFallback;
       window.__appMediaDownloadHandlersVersion = handlerVersion;
       return true;
@@ -10827,7 +10980,7 @@ class _BrowserPageState extends State<BrowserPage>
       );
       final ready = await controller.evaluateJavascript(
         source:
-            "window.__appMediaDownloadHandlersVersion === 'media-download-v55'",
+            "window.__appMediaDownloadHandlersVersion === 'media-download-v58'",
       );
       if (ready == true || ready.toString().toLowerCase() == 'true') {
         if (_lastMediaHandlerFailureUrl == injectionUrl) {
@@ -10920,6 +11073,71 @@ class _BrowserPageState extends State<BrowserPage>
           'activeKeys=${data['activeKeys'] ?? ''} '
           't=${data['currentTime'] ?? ''} '
           'extra=${data['extra'] ?? ''}',
+        );
+        return;
+      }
+      if (data['type'] == 'telegram_download_status') {
+        final phase = (data['phase'] ?? '').toString();
+        _telegramOfficialDownloadDoneBytes =
+            (data['done'] as num?)?.toInt() ?? 0;
+        _telegramOfficialDownloadTotalBytes =
+            (data['total'] as num?)?.toInt() ?? 0;
+        if (phase == 'duplicate') {
+          _telegramOfficialDownloadActive = false;
+          _telegramOfficialDownloadLastProgressAt = null;
+          final smartTask = _smartDownloadTask;
+          if (smartTask != null && data['isSmartGesture'] == true) {
+            smartTask['lastGestureFailureType'] = 'already_in_library';
+            await _completeSmartGestureDownload(false);
+          } else if (mounted) {
+            _showBrowserSnackBar(
+              const SnackBar(
+                content: Text('本轮已经下载过这个 Telegram 视频'),
+                duration: Duration(milliseconds: 1200),
+              ),
+            );
+          }
+        } else if (phase == 'busy') {
+          // Keep the existing owner active; a repeated press must not start a
+          // second download or release the smart-download library gate.
+          _telegramOfficialDownloadActive = true;
+          _telegramOfficialDownloadLastProgressAt = DateTime.now();
+        } else if (phase == 'start') {
+          _ensureTelegramOfficialProgressTask(
+            isSmartGesture: data['isSmartGesture'] == true,
+          );
+          _telegramOfficialDownloadActive = true;
+          _telegramOfficialDownloadLastProgressAt = DateTime.now();
+          _updateTelegramOfficialProgress(phase);
+        } else if (phase == 'progress' ||
+            phase == 'streaming' ||
+            phase == 'fallback') {
+          _telegramOfficialDownloadActive = true;
+          _telegramOfficialDownloadLastProgressAt = DateTime.now();
+          if (phase != 'fallback') {
+            _updateTelegramOfficialProgress(phase);
+          } else if (_telegramStreamProgressTaskId.isNotEmpty) {
+            _updateDownloadTask(
+              _telegramStreamProgressTaskId,
+              status: 'downloading',
+              progressDetail: '原始方式停滞，正在尝试 Telegram 兼容下载方式',
+            );
+          }
+        } else if (phase == 'completed' || phase == 'failed') {
+          _telegramOfficialDownloadActive = false;
+          _telegramOfficialDownloadLastProgressAt = null;
+          if (phase == 'failed' && _telegramStreamProgressTaskId.isNotEmpty) {
+            _updateDownloadTask(
+              _telegramStreamProgressTaskId,
+              status: 'failed',
+              progressDetail: 'Telegram 原始方式未成功，正在尝试兼容方式',
+            );
+          }
+        }
+        debugPrint(
+          '[TG_OFFICIAL] phase=$phase '
+          'bytes=${data['done'] ?? ''}/${data['total'] ?? ''} '
+          'smart=${data['isSmartGesture'] == true}',
         );
         return;
       }
@@ -13902,6 +14120,9 @@ class _BrowserPageState extends State<BrowserPage>
     }
     if (value == 'instagram.com' || value.endsWith('.instagram.com')) {
       return 'instagram';
+    }
+    if (value == 'telegram.org' || value.endsWith('.telegram.org')) {
+      return 'telegram';
     }
     if (value == 'tik.porn' || value.endsWith('.tik.porn')) return 'tikporn';
     if (value == 'pin.porn' || value.endsWith('.pin.porn')) return 'pinporn';
@@ -17221,7 +17442,9 @@ class _BrowserPageState extends State<BrowserPage>
     // 编辑器在智能下载对话框关闭后打开，避免挡住网页导致「验证零件」看不见效果
     SmartActionRecipe? editorSeed;
     SmartActionRecipe defaultActionTemplate() {
-      return SmartActionRecipe.feedTemplate(dialogHost);
+      return _smartSiteProfile(dialogHost) == 'telegram'
+          ? SmartActionRecipe.feedLeftTemplate(dialogHost)
+          : SmartActionRecipe.feedTemplate(dialogHost);
     }
 
     final confirmed = await showDialog<String>(
@@ -18385,7 +18608,10 @@ class _BrowserPageState extends State<BrowserPage>
           recipe: runRecipe,
           targetCount: enteredCount,
           mediaType: mediaType,
-          allowMixedMedia: false,
+          // Telegram's media viewer is a mixed photo/video carousel. Its
+          // automatic recipe must download the actual centered media type,
+          // rather than rejecting photos in a video-seeded task (or vice versa).
+          allowMixedMedia: _smartSiteProfile(dialogHost) == 'telegram',
           startFromCurrentPage: startFromCurrentPage,
           minVideoBytes: minVideoBytes,
           maxVideoBytes: maxVideoBytes,
@@ -19218,11 +19444,15 @@ class _BrowserPageState extends State<BrowserPage>
     final completer = task['actionDownloadCompleter'];
     if (completer is Completer<bool> && !completer.isCompleted) return true;
     if (_longPressVideoDownloadInProgress) return true;
-    return _actionRecipeHasRealSmartDownloading();
+    return _telegramOfficialDownloadHasRecentProgress ||
+        _telegramStreamHasRecentProgress ||
+        _actionRecipeHasRealSmartDownloading();
   }
 
   bool _hasActiveSmartBatchDownload() {
     return _longPressVideoDownloadInProgress ||
+        _telegramOfficialDownloadHasRecentProgress ||
+        _telegramStreamHasRecentProgress ||
         _downloadingUrls.isNotEmpty ||
         _actionRecipeHasRealSmartDownloading();
   }
@@ -24035,7 +24265,8 @@ class _BrowserPageState extends State<BrowserPage>
     final healthy = _actionRecipeHealthySkipGuard(task);
     while (identical(_smartDownloadTask, task) &&
         (DateTime.now().difference(started) < waitLimit ||
-            _telegramStreamHasRecentProgress)) {
+            _telegramStreamHasRecentProgress ||
+            _telegramOfficialDownloadHasRecentProgress)) {
       if (task['actionForceSkipReleased'] == true &&
           task['actionLongPressNeedsConfirm'] != true) {
         debugPrint('action waitDownload: EXIT reason=force_skip_released');
@@ -24059,7 +24290,9 @@ class _BrowserPageState extends State<BrowserPage>
       final downloading = _actionRecipeHasRealSmartDownloading();
       final longPressBusy = _longPressVideoDownloadInProgress;
       final urlInFlight = _downloadingUrls.isNotEmpty;
-      final telegramDownloading = _telegramStreamHasRecentProgress;
+      final telegramDownloading =
+          _telegramStreamHasRecentProgress ||
+          _telegramOfficialDownloadHasRecentProgress;
       final activelyDownloading =
           downloading || longPressBusy || urlInFlight || telegramDownloading;
       if (strictVideoSave &&
@@ -24123,6 +24356,8 @@ class _BrowserPageState extends State<BrowserPage>
           '${activelyDownloading ? 1 : 0}|${_downloadingUrls.length}|'
           'tg=${telegramDownloading ? _telegramStreamBytes : 0}/'
           '$_telegramStreamExpectedBytes|'
+          'tgOfficial=$_telegramOfficialDownloadDoneBytes/'
+          '$_telegramOfficialDownloadTotalBytes|'
           '${needsConfirm ? 1 : 0}|$awaitingLibrary|$pending|'
           '$completerPending|$outcomeNow|${task['success']}';
       if (progressFingerprint != lastProgressFingerprint) {
@@ -24218,6 +24453,8 @@ class _BrowserPageState extends State<BrowserPage>
       // 有真实下载但长时间无指纹变化：看门狗强制跳过
       if (!strictVideoSave &&
           (awaitingLibrary || needsConfirm) &&
+          !_telegramOfficialDownloadHasRecentProgress &&
+          !_telegramStreamHasRecentProgress &&
           DateTime.now().difference(progressSince) >
               _kActionRecipeLibraryWatchdog) {
         await _actionRecipeForceSkipCurrent(
