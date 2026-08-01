@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -12,12 +13,13 @@ import 'core/app_state.dart';
 import 'core/service_locator.dart';
 import 'services/background_media_service.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter/foundation.dart' show kDebugMode;
+import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb;
 import 'diary_page.dart';
 import 'services/database_service.dart';
 import 'services/error_service.dart';
 import 'services/logger.dart';
 import 'services/debug_file_log.dart';
+import 'services/webview_environment_service.dart';
 import 'app_route_observer.dart';
 
 // 添加全局 navigatorKey
@@ -30,6 +32,9 @@ void main() {
       // Binding initialization and runApp must stay in the same Zone.
       WidgetsFlutterBinding.ensureInitialized();
       await DebugFileLog.initialize();
+      if (!kIsWeb && Platform.isWindows) {
+        await WebViewEnvironmentService.initialize();
+      }
       await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
       try {
         await serviceLocator.initialize();

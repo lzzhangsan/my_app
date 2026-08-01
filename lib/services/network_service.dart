@@ -1,6 +1,9 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:dio/dio.dart';
+import 'package:dio/io.dart';
 import 'package:flutter/foundation.dart';
+import '../utils/system_proxy.dart';
 import 'logger.dart';
 
 /// 网络服务 - 提供统一的HTTP请求处理，包含超时、重试和错误处理
@@ -28,6 +31,8 @@ class NetworkService {
       },
     ));
 
+    _configureSystemProxy();
+
     // 添加拦截器
     _dio.interceptors.add(_createRetryInterceptor());
     _dio.interceptors.add(_createLoggingInterceptor());
@@ -38,6 +43,23 @@ class NetworkService {
       Logger.log('$_tag: 网络服务初始化完成');
     }
     return;
+  }
+
+  void _configureSystemProxy() {
+    if (kIsWeb) return;
+    final proxyUrl = resolveSystemHttpProxyUrl();
+    if (proxyUrl == null) return;
+    final uri = Uri.tryParse(proxyUrl);
+    if (uri == null || uri.host.isEmpty) return;
+    final port = uri.hasPort ? uri.port : 80;
+    (_dio.httpClientAdapter as IOHttpClientAdapter).createHttpClient = () {
+      final client = HttpClient();
+      client.findProxy = (_) => 'PROXY ${uri.host}:$port';
+      return client;
+    };
+    if (kDebugMode) {
+      Logger.log('$_tag: 使用系统代理 ${uri.host}:$port');
+    }
   }
 
   /// 创建重试拦截器

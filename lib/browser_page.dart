@@ -28,11 +28,14 @@ import 'package:path/path.dart' as p;
 import 'package:encrypt/encrypt.dart' as enc;
 import 'package:video_thumbnail/video_thumbnail.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+import 'package:youtube_explode_dart/youtube_explode_dart.dart';
+import 'package:http/io_client.dart';
 
 import 'core/service_locator.dart';
 import 'services/database_service.dart';
 import 'utils/export_import_error_utils.dart';
 import 'utils/media_download_utils.dart';
+import 'utils/system_proxy.dart';
 import 'models/media_item.dart';
 import 'models/media_type.dart';
 import 'media_manager_page.dart';
@@ -47,6 +50,7 @@ import 'smart_download/smart_paginated_sniff.dart';
 import 'widgets/safe_modal_sheet_body.dart';
 import 'services/browser_service.dart';
 import 'services/browser_session_preview.dart';
+import 'services/webview_environment_service.dart';
 import 'services/logger.dart';
 import 'services/network_service.dart';
 import 'app_route_observer.dart';
@@ -140,6 +144,18 @@ class _DashTrackPlan {
   final int bandwidth;
   final String initializationUrl;
   final List<String> segmentUrls;
+}
+
+class _YouTubeDownloadPlan {
+  const _YouTubeDownloadPlan({
+    required this.videoUrl,
+    this.audioUrl,
+    this.qualityLabel = '',
+  });
+
+  final String videoUrl;
+  final String? audioUrl;
+  final String qualityLabel;
 }
 
 /// 同时发起的 HLS 分片 HTTP 请求数（需 ≤ [ _kHlsMaxConnectionsPerHost ]，过大易被 CDN 限流）。
@@ -2775,15 +2791,36 @@ class _BrowserPageState extends State<BrowserPage>
       final fromFallback = asHttp(fallback?.group(1));
       if (fromFallback != null) return fromFallback;
 
+      final pathPart =
+          trimmed.substring('intent://'.length).split('#').first.trim();
+      if (pathPart.isNotEmpty) {
+        final host = pathPart.split('/').first.toLowerCase();
+        if (host.contains('youtube.com') || host == 'youtu.be') {
+          return 'https://$pathPart';
+        }
+      }
+
       final schemeMatch = RegExp(
         r';scheme=([a-zA-Z][a-zA-Z0-9+.-]*)',
       ).firstMatch(trimmed);
       final scheme = (schemeMatch?.group(1) ?? '').toLowerCase();
       if (scheme == 'http' || scheme == 'https') {
-        final pathPart = trimmed.substring('intent://'.length).split('#').first;
         if (pathPart.isNotEmpty) return '$scheme://$pathPart';
       }
       return null;
+    }
+
+    if (lower.startsWith('youtube://') ||
+        lower.startsWith('vnd.youtube://')) {
+      final path = trimmed.substring(trimmed.indexOf('://') + 3).trim();
+      if (path.isEmpty) return null;
+      if (path.startsWith('http://') || path.startsWith('https://')) {
+        return path;
+      }
+      final host = path.split('/').first.toLowerCase();
+      if (host.contains('youtube.com') || host == 'youtu.be') {
+        return 'https://$path';
+      }
     }
 
     final uri = Uri.tryParse(trimmed);
@@ -2807,6 +2844,13 @@ class _BrowserPageState extends State<BrowserPage>
     if (extracted != null) {
       debugPrint('深链转 WebView 打开: $extracted <- $url');
       await ctrl.loadUrl(urlRequest: URLRequest(url: WebUri(extracted)));
+      return NavigationActionPolicy.CANCEL;
+    }
+    if (_looksLikeYouTubeDeepLink(url)) {
+      debugPrint('YouTube App 链回退网页版: $url');
+      await ctrl.loadUrl(
+        urlRequest: URLRequest(url: WebUri(_defaultYouTubeBrowseUrl)),
+      );
       return NavigationActionPolicy.CANCEL;
     }
     final lower = url.toLowerCase();
@@ -6124,6 +6168,7 @@ class _BrowserPageState extends State<BrowserPage>
             : 0.0;
     final webView = InAppWebView(
       key: BrowserSessionPreview.instance.webViewKey,
+      webViewEnvironment: WebViewEnvironmentService.environment,
       initialUrlRequest: URLRequest(url: WebUri(initialUrl)),
       initialSettings: InAppWebViewSettings(
         javaScriptEnabled: true,
@@ -6176,6 +6221,13 @@ class _BrowserPageState extends State<BrowserPage>
             if (extracted != null) {
               unawaited(
                 ctrl.loadUrl(urlRequest: URLRequest(url: WebUri(extracted))),
+              );
+            } else if (_looksLikeYouTubeDeepLink(urlStr)) {
+              debugPrint('YouTube 深链无法解析，回退到网页版: $urlStr');
+              unawaited(
+                ctrl.loadUrl(
+                  urlRequest: URLRequest(url: WebUri(_defaultYouTubeBrowseUrl)),
+                ),
               );
             } else {
               unawaited(ctrl.stopLoading());
@@ -6287,14 +6339,35 @@ class _BrowserPageState extends State<BrowserPage>
         await ctrl.loadUrl(urlRequest: URLRequest(url: WebUri(popupUrl)));
         return false;
       },
-      onReceivedError:
-          (ctrl, req, err) => debugPrint('WebView错误: ${err?.description}'),
+      onReceivedError: (ctrl, req, err) {
+        final description = err?.description ?? '';
+        debugPrint('WebView错误: $description');
+        final failedUrl = req.url?.toString() ?? _currentUrl;
+        final mainFrame = req.isForMainFrame ?? true;
+        if (!mounted || !mainFrame) return;
+        if (_isYouTubeBrowsePageUrl(failedUrl) &&
+            (description.contains('ERR_CONNECTION') ||
+                description.contains('ERR_PROXY') ||
+                description.contains('ERR_TIMED_OUT'))) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                'YouTube 连接失败（$description）。${_youtubeBrowseFailureHint()}',
+              ),
+              duration: const Duration(seconds: 5),
+            ),
+          );
+        }
+      },
       shouldOverrideUrlLoading: (ctrl, nav) async {
         final url = nav.request.url?.toString() ?? '';
         debugPrint('导航请求: $url');
-        if (_isDownloadableLink(url) || _isYouTubeLink(url)) {
+        if (_isYouTubeBrowsePageUrl(url)) {
+          return NavigationActionPolicy.ALLOW;
+        }
+        if (_isDownloadableLink(url)) {
           debugPrint('检测到可能的下载链接: $url');
-          _handleDownload(url, '', _guessMimeType(url));
+          unawaited(_handleDownload(url, '', _guessMimeType(url)));
           return NavigationActionPolicy.CANCEL;
         }
         if (!url.startsWith('http://') && !url.startsWith('https://')) {
@@ -6399,8 +6472,85 @@ class _BrowserPageState extends State<BrowserPage>
     );
   }
 
-  bool _isYouTubeLink(String url) {
-    return url.contains('youtube.com') || url.contains('youtu.be');
+  /// YouTube 浏览入口：桌面 WebView 用 www，移动端用 m.
+  String get _defaultYouTubeBrowseUrl {
+    if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
+      return 'https://www.youtube.com/';
+    }
+    return 'https://m.youtube.com/';
+  }
+
+  String? _extractYouTubeVideoId(String rawUrl) {
+    final uri = Uri.tryParse(rawUrl.trim());
+    if (uri == null) return null;
+    final host = uri.host.toLowerCase();
+    if (host == 'youtu.be') {
+      if (uri.pathSegments.isEmpty) return null;
+      return uri.pathSegments.first.split('?').first;
+    }
+    if (!host.contains('youtube.com')) return null;
+    final fromQuery = uri.queryParameters['v'];
+    if (fromQuery != null && fromQuery.isNotEmpty) return fromQuery;
+    final segments =
+        uri.pathSegments.where((segment) => segment.isNotEmpty).toList();
+    for (var i = 0; i < segments.length - 1; i++) {
+      final marker = segments[i].toLowerCase();
+      if (marker == 'shorts' || marker == 'embed' || marker == 'live') {
+        return segments[i + 1].split('?').first;
+      }
+    }
+    return null;
+  }
+
+  /// 手机应用内 WebView 打不开 YouTube 时的提示（与电脑 Stacher/Clash 无关）。
+  String _youtubeBrowseFailureHint() {
+    if (!kIsWeb && Platform.isAndroid) {
+      return '请确认手机已开启 VPN/代理，且能正常访问 YouTube';
+    }
+    if (!kIsWeb && Platform.isWindows) {
+      final proxy = WebViewEnvironmentService.proxyUrl;
+      return proxy != null
+          ? '请确认 Clash 已开启，当前代理：$proxy'
+          : '请确认 Clash 已开启且端口为 7897';
+    }
+    return '请确认当前设备网络或代理可访问 YouTube';
+  }
+
+  bool _looksLikeYouTubeDeepLink(String rawUrl) {
+    final lower = rawUrl.toLowerCase();
+    return lower.contains('youtube.com') ||
+        lower.contains('youtu.be') ||
+        lower.startsWith('youtube://') ||
+        lower.startsWith('vnd.youtube://');
+  }
+
+  bool _isYouTubeWatchPageUrl(String url) {
+    final videoId = _extractYouTubeVideoId(url);
+    return videoId != null && videoId.isNotEmpty;
+  }
+
+  /// YouTube 站点页（首页/观看/Shorts 等），不是 googlevideo 流媒体直链。
+  bool _isYouTubeBrowsePageUrl(String url) {
+    final uri = Uri.tryParse(url.trim());
+    if (uri == null) return false;
+    final host = uri.host.toLowerCase();
+    if (host.contains('googlevideo.com') || host.contains('ytimg.com')) {
+      return false;
+    }
+    return host.contains('youtube.com') || host == 'youtu.be';
+  }
+
+  YoutubeExplode? _youtubeExplode;
+
+  YoutubeExplode _createYoutubeExplode() {
+    final proxyUrl = resolveSystemHttpProxyUrl();
+    if (proxyUrl == null) return YoutubeExplode();
+    final uri = Uri.tryParse(proxyUrl);
+    if (uri == null || uri.host.isEmpty) return YoutubeExplode();
+    final port = uri.hasPort ? uri.port : 80;
+    final ioClient = HttpClient();
+    ioClient.findProxy = (_) => 'PROXY ${uri.host}:$port';
+    return YoutubeExplode(YoutubeHttpClient(IOClient(ioClient)));
   }
 
   final Set<String> _downloadingUrls = {};
@@ -6436,7 +6586,7 @@ class _BrowserPageState extends State<BrowserPage>
       await controller.evaluateJavascript(
         source: '''
       (() => {
-          const handlerVersion = 'media-download-v40';
+          const handlerVersion = 'media-download-v43';
       if (window.__appMediaDownloadHandlersVersion === handlerVersion) return true;
       window.Flutter = window.Flutter || { postMessage: function(m){ try { if(window.flutter_inappwebview && window.flutter_inappwebview.callHandler) window.flutter_inappwebview.callHandler('Flutter', m); } catch(e){} } };
       // Telegram Web occasionally carries a non-1 playback rate between
@@ -7223,7 +7373,9 @@ class _BrowserPageState extends State<BrowserPage>
             bg = success ? 'rgba(0, 128, 0, 0.5)' : 'rgba(255, 0, 0, 0.5)';
           }
           feedbackElement.style.backgroundColor = bg;
-          setTimeout(removeFeedbackElement, 1000);
+          if (success === true || success === false) {
+            setTimeout(removeFeedbackElement, 1000);
+          }
         }
       }
 
@@ -7667,6 +7819,7 @@ class _BrowserPageState extends State<BrowserPage>
         let isXPlatformContext = false;
         let isFacebookContext = false;
         let isInstagramContext = false;
+        let isYouTubeContext = false;
         try {
           const hosts = [location.hostname || ''];
           if (document.referrer) hosts.push(new URL(document.referrer).hostname || '');
@@ -7695,7 +7848,105 @@ class _BrowserPageState extends State<BrowserPage>
             return normalized === 'instagram.com' ||
               normalized.endsWith('.instagram.com');
           });
+          isYouTubeContext = hosts.some(host => {
+            const normalized = String(host).toLowerCase();
+            return normalized.includes('youtube.com') || normalized === 'youtu.be';
+          });
         } catch (_) {}
+
+        function youtubeVideoIdFromPage(video) {
+          try {
+            const parseIdFromHref = (href) => {
+              const h = String(href || '').trim();
+              if (!h) return '';
+              try {
+                const u = new URL(h, location.origin);
+                const host = String(u.hostname || '').toLowerCase();
+                if (host === 'youtu.be') {
+                  const seg = u.pathname.split('/').filter(Boolean);
+                  return seg[0] ? seg[0].split('?')[0] : '';
+                }
+                if (host.includes('youtube.com')) {
+                  const v = u.searchParams.get('v');
+                  if (v) return v;
+                  const parts = u.pathname.split('/').filter(Boolean);
+                  for (let i = 0; i < parts.length - 1; i++) {
+                    const marker = parts[i].toLowerCase();
+                    if (marker === 'shorts' || marker === 'embed' || marker === 'live') {
+                      return parts[i + 1].split('?')[0];
+                    }
+                  }
+                }
+              } catch (_) {}
+              return '';
+            };
+            const idFromNode = (node) => {
+              if (!node) return '';
+              const attrs = [
+                'data-video-id',
+                'data-videoid',
+                'data-context-item-id',
+                'data-item-id'
+              ];
+              for (const name of attrs) {
+                const raw = node.getAttribute && node.getAttribute(name);
+                const text = String(raw || '').trim();
+                if (text.length === 11 && /^[a-zA-Z0-9_-]+\$/.test(text)) return text;
+              }
+              return '';
+            };
+            const youtubeIdAtPoint = (x, y) => {
+              try {
+                const stack = document.elementsFromPoint(x, y) || [];
+                for (const el of stack) {
+                  let id = idFromNode(el);
+                  if (id) return id;
+                  const link = el.closest &&
+                    el.closest('a[href*="/watch"], a[href*="/shorts/"], a[href*="/embed/"], a[href*="youtu.be/"]');
+                  if (link && link.href) {
+                    id = parseIdFromHref(link.href);
+                    if (id) return id;
+                  }
+                }
+              } catch (_) {}
+              return '';
+            };
+            if (typeof window._lastTouchX === 'number' &&
+                typeof window._lastTouchY === 'number') {
+              const touchId = youtubeIdAtPoint(window._lastTouchX, window._lastTouchY);
+              if (touchId) return touchId;
+            }
+            if (video) {
+              let id = idFromNode(video);
+              if (id) return id;
+              let node = video.parentElement;
+              for (let depth = 0; node && depth < 14; depth++, node = node.parentElement) {
+                id = idFromNode(node);
+                if (id) return id;
+                const link = node.closest &&
+                  node.closest('a[href*="/watch"], a[href*="/shorts/"], a[href*="/embed/"]');
+                if (link && link.href) {
+                  id = parseIdFromHref(link.href);
+                  if (id) return id;
+                }
+              }
+            }
+            let id = parseIdFromHref(location.href);
+            if (id) return id;
+            if (video &&
+                typeof window._lastTouchX === 'number' &&
+                typeof window._lastTouchY === 'number') {
+              const atPoint = pickCurrentVideo(window._lastTouchX, window._lastTouchY);
+              if (atPoint === video &&
+                  window.ytcfg &&
+                  window.ytcfg.data_ &&
+                  window.ytcfg.data_.VIDEO_ID) {
+                return String(window.ytcfg.data_.VIDEO_ID);
+              }
+            }
+          } catch (_) {}
+          return '';
+        }
         
         function pickCurrentVideo(x, y) {
           const videos = Array.from(document.querySelectorAll('video'));
@@ -9214,6 +9465,39 @@ class _BrowserPageState extends State<BrowserPage>
             target && target.__appFbBoundDownloadUrl) {
           url = target.__appFbBoundDownloadUrl;
         }
+        if (isYouTubeContext && mediaType === 'video') {
+          const ytVideo = videoEl ||
+            ((typeof window._lastTouchX === 'number' && typeof window._lastTouchY === 'number')
+              ? pickCurrentVideo(window._lastTouchX, window._lastTouchY)
+              : null);
+          const ytId = youtubeVideoIdFromPage(ytVideo);
+          if (ytId) {
+            const ytPage = 'https://www.youtube.com/watch?v=' + ytId;
+            Flutter.postMessage(JSON.stringify({
+              type: 'media',
+              mediaType: 'video',
+              url: ytPage,
+              youtubeVideoId: ytId,
+              youtubePageUrl: ytPage,
+              isBase64: false,
+              isSmartGesture: isSmartGesture,
+              action: 'download',
+              pageUrl: location.href || '',
+              title: document.title || '',
+              sessionId: longPressSessionId,
+              playbackStartedAtMs: Number(videoEl && videoEl.__appWarmupStartedAtMs || 0) ||
+                (Date.now() - Math.max(0, Number(videoEl && videoEl.currentTime || 0)) * 1000),
+              durationSec: effectiveVideoDuration(videoEl),
+              candidates: cands
+            }));
+            updateFeedbackStatus('正在解析 YouTube…', null);
+            e.preventDefault();
+            return;
+          }
+          updateFeedbackStatus('无法识别当前 YouTube 视频，请先点进该视频再长按', false);
+          e.preventDefault();
+          return;
+        }
         if (tryBlobOrDataUrl(url, mediaType)) {
           e.preventDefault();
           return;
@@ -9503,7 +9787,7 @@ class _BrowserPageState extends State<BrowserPage>
       );
       final ready = await controller.evaluateJavascript(
         source:
-            "window.__appMediaDownloadHandlersVersion === 'media-download-v40'",
+            "window.__appMediaDownloadHandlersVersion === 'media-download-v43'",
       );
       if (ready == true || ready.toString().toLowerCase() == 'true') {
         if (_lastMediaHandlerFailureUrl == injectionUrl) {
@@ -9725,6 +10009,44 @@ class _BrowserPageState extends State<BrowserPage>
       }
 
       if (urlValue is! String) return;
+      if (action == 'download' && requestedMediaType == MediaType.video) {
+        final youtubePage =
+            _youtubePageFromMessageData(data) ??
+            _canonicalYouTubePageUrl(messagePageUrl) ??
+            _canonicalYouTubePageUrl(_currentUrl) ??
+            _canonicalYouTubePageUrl(urlValue);
+        if (youtubePage != null) {
+          if (_longPressVideoDownloadInProgress) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('当前 YouTube 视频正在保存，请稍候…'),
+                  duration: Duration(milliseconds: 1600),
+                ),
+              );
+            }
+            return;
+          }
+          _longPressVideoDownloadInProgress = true;
+          try {
+            final downloaded = await _downloadYouTubeWithAudio(
+              youtubePage,
+              showSuccessPrompt: !isSmartGesture,
+              preferSingleMuxedDownload: true,
+            );
+            debugPrint(
+              'YouTube long-press: page=$youtubePage '
+              'id=${data['youtubeVideoId'] ?? ''} ok=$downloaded',
+            );
+            if (isSmartGesture) {
+              await _completeSmartGestureDownload(downloaded);
+            }
+          } finally {
+            _longPressVideoDownloadInProgress = false;
+          }
+          return;
+        }
+      }
       if (action == 'favorite') {
         final pageUrl = (data['pageUrl'] ?? '').toString().trim();
         final title = (data['title'] ?? '').toString().trim();
@@ -28662,9 +28984,9 @@ class _BrowserPageState extends State<BrowserPage>
       }
 
       String processedUrl = absoluteUrl;
-      if (absoluteUrl.contains('youtube.com') ||
-          absoluteUrl.contains('youtu.be')) {
-        processedUrl = await _resolveYouTubeUrl(absoluteUrl);
+      if (_isYouTubeWatchPageUrl(absoluteUrl)) {
+        await _downloadYouTubeWithAudio(absoluteUrl);
+        return;
       }
 
       if (selectedType == null) {
@@ -28740,8 +29062,307 @@ class _BrowserPageState extends State<BrowserPage>
     }
   }
 
-  Future<String> _resolveYouTubeUrl(String url) async {
-    return url; // 占位符，需集成 youtube_explode_dart
+  String? _canonicalYouTubePageUrl(String? rawUrl) {
+    final videoId = _extractYouTubeVideoId((rawUrl ?? '').trim());
+    if (videoId == null || videoId.isEmpty) return null;
+    return 'https://www.youtube.com/watch?v=$videoId';
+  }
+
+  String? _youtubePageFromMessageData(Map<dynamic, dynamic> data) {
+    final pageUrl = (data['youtubePageUrl'] ?? '').toString().trim();
+    if (pageUrl.isNotEmpty) {
+      return _canonicalYouTubePageUrl(pageUrl);
+    }
+    final videoId = (data['youtubeVideoId'] ?? '').toString().trim();
+    if (videoId.isNotEmpty) {
+      return 'https://www.youtube.com/watch?v=$videoId';
+    }
+    return null;
+  }
+
+  Future<bool> _downloadYouTubeWithAudio(
+    String pageUrl, {
+    bool showSuccessPrompt = true,
+    bool preferSingleMuxedDownload = false,
+  }) async {
+    final canonical = _canonicalYouTubePageUrl(pageUrl) ?? pageUrl.trim();
+    final taskId = const Uuid().v4();
+    final cancelToken = CancelToken();
+
+    void reportProgress(double progress, String detail) {
+      if (!mounted) return;
+      _updateDownloadTask(
+        taskId,
+        progress: progress.clamp(0.0, 0.99),
+        progressDetail: detail,
+      );
+    }
+
+    if (mounted) {
+      _addDownloadTask(
+        taskId,
+        canonical,
+        MediaType.video,
+        cancelToken,
+        displayName: 'YouTube',
+      );
+      reportProgress(0.03, '正在解析 YouTube…');
+    }
+
+    try {
+      if (preferSingleMuxedDownload) {
+        final muxedPlan = await _resolveYouTubeMuxedPlan(canonical);
+        if (muxedPlan == null) {
+          if (mounted) {
+            _updateDownloadTask(
+              taskId,
+              status: 'failed',
+              progress: 0.0,
+              progressDetail: '无法解析 YouTube 视频',
+            );
+            if (showSuccessPrompt) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('无法解析 YouTube 视频，请确认网络可访问 YouTube'),
+                  duration: Duration(seconds: 3),
+                ),
+              );
+            }
+          }
+          return false;
+        }
+        reportProgress(0.08, '已解析 ${muxedPlan.qualityLabel}，开始下载…');
+        final ok = await _performBackgroundDownload(
+          muxedPlan.videoUrl,
+          MediaType.video,
+          showSuccessPrompt: showSuccessPrompt,
+          skipFailurePrompt: !showSuccessPrompt,
+          progressTaskId: taskId,
+          progressCancelToken: cancelToken,
+          onProgress: (fraction, {String? detail}) {
+            reportProgress(
+              0.08 + fraction.clamp(0.0, 1.0) * 0.9,
+              detail ?? '下载 ${muxedPlan.qualityLabel}…',
+            );
+          },
+        );
+        if (ok && mounted) {
+          _updateDownloadTask(
+            taskId,
+            status: 'completed',
+            progress: 1.0,
+            progressDetail: '已保存（${muxedPlan.qualityLabel}，含声音）',
+          );
+        } else if (!ok && mounted) {
+          _updateDownloadTask(
+            taskId,
+            status: 'failed',
+            progress: 0.0,
+            progressDetail: 'YouTube 下载失败',
+          );
+        }
+        return ok;
+      }
+
+      final plan = await _resolveYouTubeDownloadPlan(canonical);
+      if (plan == null) {
+        if (mounted) {
+          _updateDownloadTask(
+            taskId,
+            status: 'failed',
+            progress: 0.0,
+            progressDetail: '无法解析 YouTube 视频',
+          );
+          if (showSuccessPrompt) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('无法解析 YouTube 视频，请确认网络可访问 YouTube'),
+                duration: Duration(seconds: 3),
+              ),
+            );
+          }
+        }
+        return false;
+      }
+
+      reportProgress(0.08, '已解析 ${plan.qualityLabel}，开始下载…');
+
+      if (plan.audioUrl != null && plan.audioUrl!.trim().isNotEmpty) {
+        final muxedOk = await _performBackgroundDownload(
+          plan.videoUrl,
+          MediaType.video,
+          pairedAudioUrl: plan.audioUrl,
+          pairedAudioDownloadTimeout: const Duration(minutes: 5),
+          pairedAudioMuxTimeout: const Duration(seconds: 90),
+          warnOnPairedMuxFailure: true,
+          showSuccessPrompt: false,
+          skipFailurePrompt: true,
+          progressTaskId: taskId,
+          progressCancelToken: cancelToken,
+          onProgress: (fraction, {String? detail}) {
+            reportProgress(
+              0.08 + fraction.clamp(0.0, 1.0) * 0.82,
+              detail ?? '下载中…',
+            );
+          },
+        );
+        if (muxedOk) {
+          if (mounted) {
+            _updateDownloadTask(
+              taskId,
+              status: 'completed',
+              progress: 1.0,
+              progressDetail: '已保存（${plan.qualityLabel}，含声音）',
+            );
+            if (showSuccessPrompt) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    'YouTube 已保存（${plan.qualityLabel}，含声音）',
+                  ),
+                  duration: _kMediaSaveSnackDuration,
+                ),
+              );
+            }
+          }
+          return true;
+        }
+        reportProgress(0.12, '高清合并失败，正在下载带声音版本…');
+      }
+
+      final muxedPlan = await _resolveYouTubeMuxedPlan(canonical);
+      if (muxedPlan == null) {
+        if (mounted) {
+          _updateDownloadTask(
+            taskId,
+            status: 'failed',
+            progress: 0.0,
+            progressDetail: 'YouTube 下载失败',
+          );
+          if (showSuccessPrompt) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('YouTube 下载失败，请稍后重试'),
+                duration: Duration(seconds: 3),
+              ),
+            );
+          }
+        }
+        return false;
+      }
+
+      final ok = await _performBackgroundDownload(
+        muxedPlan.videoUrl,
+        MediaType.video,
+        showSuccessPrompt: showSuccessPrompt,
+        skipFailurePrompt: !showSuccessPrompt,
+        progressTaskId: taskId,
+        progressCancelToken: cancelToken,
+        onProgress: (fraction, {String? detail}) {
+          reportProgress(
+            0.15 + fraction.clamp(0.0, 1.0) * 0.83,
+            detail ?? '下载 ${muxedPlan.qualityLabel}…',
+          );
+        },
+      );
+      if (ok && mounted) {
+        _updateDownloadTask(
+          taskId,
+          status: 'completed',
+          progress: 1.0,
+          progressDetail: '已保存（${muxedPlan.qualityLabel}，含声音）',
+        );
+      } else if (!ok && mounted) {
+        _updateDownloadTask(
+          taskId,
+          status: 'failed',
+          progress: 0.0,
+          progressDetail: 'YouTube 下载失败',
+        );
+      }
+      return ok;
+    } catch (e, stackTrace) {
+      debugPrint('YouTube 下载异常: $e\n$stackTrace');
+      if (mounted) {
+        _updateDownloadTask(
+          taskId,
+          status: 'failed',
+          progress: 0.0,
+          progressDetail: 'YouTube 下载出错',
+        );
+      }
+      return false;
+    }
+  }
+
+  Future<_YouTubeDownloadPlan?> _resolveYouTubeDownloadPlan(String url) async {
+    final videoId = _extractYouTubeVideoId(url);
+    if (videoId == null || videoId.isEmpty) {
+      debugPrint('YouTube: 无法从链接解析 videoId: $url');
+      return null;
+    }
+    try {
+      _youtubeExplode ??= _createYoutubeExplode();
+      final manifest =
+          await _youtubeExplode!.videos.streamsClient.getManifest(videoId);
+
+      if (manifest.videoOnly.isNotEmpty && manifest.audioOnly.isNotEmpty) {
+        final mp4Videos =
+            manifest.videoOnly
+                .where((stream) => stream.container == StreamContainer.mp4)
+                .toList();
+        final video =
+            mp4Videos.isNotEmpty
+                ? mp4Videos.bestQuality
+                : manifest.videoOnly.bestQuality;
+        final mp4Audios =
+            manifest.audioOnly
+                .where((stream) => stream.container == StreamContainer.mp4)
+                .toList();
+        final audio =
+            mp4Audios.isNotEmpty
+                ? mp4Audios.withHighestBitrate()
+                : manifest.audioOnly.withHighestBitrate();
+        debugPrint(
+          'YouTube: $videoId -> ${video.qualityLabel} + ${audio.bitrate.bitsPerSecond ~/ 1000}kbps audio',
+        );
+        return _YouTubeDownloadPlan(
+          videoUrl: video.url.toString(),
+          audioUrl: audio.url.toString(),
+          qualityLabel: video.qualityLabel,
+        );
+      }
+
+      return _resolveYouTubeMuxedPlan(url, manifest: manifest);
+    } catch (e, stackTrace) {
+      debugPrint('YouTube 解析失败: $e\n$stackTrace');
+    }
+    return null;
+  }
+
+  Future<_YouTubeDownloadPlan?> _resolveYouTubeMuxedPlan(
+    String url, {
+    StreamManifest? manifest,
+  }) async {
+    final videoId = _extractYouTubeVideoId(url);
+    if (videoId == null || videoId.isEmpty) return null;
+    try {
+      _youtubeExplode ??= _createYoutubeExplode();
+      final resolvedManifest =
+          manifest ?? await _youtubeExplode!.videos.streamsClient.getManifest(
+            videoId,
+          );
+      if (resolvedManifest.muxed.isEmpty) return null;
+      final muxed = resolvedManifest.muxed.bestQuality;
+      debugPrint('YouTube: $videoId -> muxed ${muxed.qualityLabel}');
+      return _YouTubeDownloadPlan(
+        videoUrl: muxed.url.toString(),
+        qualityLabel: muxed.qualityLabel,
+      );
+    } catch (e, stackTrace) {
+      debugPrint('YouTube muxed 解析失败: $e\n$stackTrace');
+      return null;
+    }
   }
 
   Widget _buildDownloadDialog(String url, String mimeType) {
@@ -28820,6 +29441,7 @@ class _BrowserPageState extends State<BrowserPage>
 
   bool _isDownloadableLink(String url) {
     debugPrint('检查URL是否为可下载链接: $url');
+    if (_isYouTubeBrowsePageUrl(url)) return false;
     final fileExtensions = [
       '.jpg',
       '.jpeg',
@@ -28886,7 +29508,6 @@ class _BrowserPageState extends State<BrowserPage>
     for (final param in downloadParams) {
       if (queryString.contains(param)) return true;
     }
-    if (url.contains('youtube.com') || url.contains('youtu.be')) return true;
     return false;
   }
 
@@ -32177,6 +32798,7 @@ class _BrowserPageState extends State<BrowserPage>
           });
           _commonWebsitesLoaded = true;
           debugPrint('从SharedPreferences加载了${_commonWebsites.length}个常用网站');
+          await _ensureYouTubeCommonWebsite();
           if (migrated) {
             await _saveCommonWebsites();
             debugPrint('已迁移旧版 Google /m 常用网站 URL 并写回');
@@ -32189,6 +32811,11 @@ class _BrowserPageState extends State<BrowserPage>
       setState(() {
         _commonWebsites.clear();
         _commonWebsites.addAll([
+          {
+            'name': 'YouTube',
+            'url': _defaultYouTubeBrowseUrl,
+            'iconCode': Icons.play_circle_outline.codePoint,
+          },
           {
             'name': 'Google',
             'url': BrowserService.kGoogleHomeUrl,
@@ -32211,6 +32838,11 @@ class _BrowserPageState extends State<BrowserPage>
         _commonWebsites.clear();
         _commonWebsites.addAll([
           {
+            'name': 'YouTube',
+            'url': _defaultYouTubeBrowseUrl,
+            'iconCode': Icons.play_circle_outline.codePoint,
+          },
+          {
             'name': 'Google',
             'url': BrowserService.kGoogleHomeUrl,
             'iconCode': Icons.public.codePoint,
@@ -32225,6 +32857,24 @@ class _BrowserPageState extends State<BrowserPage>
       _commonWebsitesLoaded = true;
       debugPrint('加载出错，使用默认常用网站（未清除 prefs）');
     }
+  }
+
+  Future<void> _ensureYouTubeCommonWebsite() async {
+    final youtubeUrl = _defaultYouTubeBrowseUrl;
+    final alreadyHas = _commonWebsites.any((site) {
+      final url = (site['url'] ?? '').toString().toLowerCase();
+      return url.contains('youtube.com') || url.contains('youtu.be');
+    });
+    if (alreadyHas) return;
+    setState(() {
+      _commonWebsites.insert(0, {
+        'name': 'YouTube',
+        'url': youtubeUrl,
+        'iconCode': Icons.play_circle_outline.codePoint,
+      });
+    });
+    await _saveCommonWebsites();
+    debugPrint('已添加 YouTube 到常用网站');
   }
 
   // 2. 加载历史记录
@@ -33085,7 +33735,9 @@ class _BrowserPageState extends State<BrowserPage>
                         width: 50,
                         height: 50,
                         child: CircularProgressIndicator(
-                          value: activeTasks.first['progress'] as double?,
+                          value:
+                              (activeTasks.first['progress'] as num?)
+                                  ?.toDouble(),
                           backgroundColor: Colors.grey.withOpacity(0.5),
                           valueColor: const AlwaysStoppedAnimation<Color>(
                             Colors.green,
@@ -33189,7 +33841,12 @@ class _BrowserPageState extends State<BrowserPage>
     bool rejectAudioOnlyMp4 = false,
     String? pairedAudioUrl,
     bool requirePairedAudio = false,
+    Duration pairedAudioDownloadTimeout = const Duration(seconds: 12),
+    Duration pairedAudioMuxTimeout = const Duration(seconds: 9),
+    bool warnOnPairedMuxFailure = false,
     String expectedMediaIdentity = '',
+    String? progressTaskId,
+    CancelToken? progressCancelToken,
   }) async {
     // 仅下载图片和视频，不下载语音/音频
     if (mediaType == MediaType.audio) {
@@ -33240,8 +33897,14 @@ class _BrowserPageState extends State<BrowserPage>
       return false;
     }
     _downloadingUrls.add(absoluteUrl);
-    final taskId = const Uuid().v4();
-    final cancelToken = CancelToken();
+    final ownsProgressTask = progressTaskId != null;
+    final taskId = progressTaskId ?? const Uuid().v4();
+    final cancelToken = progressCancelToken ?? CancelToken();
+    void removeOwnedTask() {
+      if (mounted && !ownsProgressTask) {
+        _removeDownloadTask(taskId);
+      }
+    }
     var timedOut = false;
     var sizeRangeExceeded = false;
     Timer? timeoutTimer;
@@ -33258,13 +33921,22 @@ class _BrowserPageState extends State<BrowserPage>
 
     resetInactivityTimeout();
     if (mounted) {
-      _addDownloadTask(
-        taskId,
-        absoluteUrl,
-        mediaType,
-        cancelToken,
-        isSmartBatchMedia: isSmartBatchMedia,
-      );
+      if (ownsProgressTask) {
+        final idx = _downloadTasks.indexWhere((t) => t['id'] == taskId);
+        if (idx >= 0) {
+          _downloadTasks[idx]['url'] = absoluteUrl;
+          _downloadTasks[idx]['status'] = 'downloading';
+          _downloadTasksNotifier.value = List.from(_downloadTasks);
+        }
+      } else {
+        _addDownloadTask(
+          taskId,
+          absoluteUrl,
+          mediaType,
+          cancelToken,
+          isSmartBatchMedia: isSmartBatchMedia,
+        );
+      }
     }
 
     File? downloadedFile;
@@ -33311,39 +33983,39 @@ class _BrowserPageState extends State<BrowserPage>
           File? audioFile;
           File? muxedFile;
           try {
-            onProgress?.call(0.96, detail: '视频轨完成，正在合并 Facebook 音频轨…');
+            onProgress?.call(0.96, detail: '视频轨完成，正在下载音频轨…');
             resetInactivityTimeout();
             audioFile = await _downloadFile(
               pairedAudioUrl,
-              MediaType.video,
+              MediaType.audio,
               cancelToken: cancelToken,
               maxRequestAttempts: maxRequestAttempts,
               onProgress: (p, {detail}) {
                 resetInactivityTimeout();
                 final combined = 0.96 + (p.clamp(0.0, 1.0) * 0.025);
-                onProgress?.call(combined, detail: detail ?? 'Facebook 音频轨下载中');
+                onProgress?.call(combined, detail: detail ?? '音频轨下载中');
                 if (mounted) {
                   _updateDownloadTask(
                     taskId,
                     progress: combined,
-                    progressDetail: detail ?? 'Facebook 音频轨下载中',
+                    progressDetail: detail ?? '音频轨下载中',
                   );
                 }
               },
             ).timeout(
-              const Duration(seconds: 12),
+              pairedAudioDownloadTimeout,
               onTimeout: () {
                 timedOut = true;
                 if (!cancelToken.isCancelled) {
-                  cancelToken.cancel('facebook_audio_timeout');
+                  cancelToken.cancel('paired_audio_timeout');
                 }
-                throw TimeoutException('Facebook audio download timeout');
+                throw TimeoutException('paired audio download timeout');
               },
             );
             if (audioFile != null && await audioFile.exists()) {
               muxedFile = File('${downloadedFile.path}.fb-mux.mp4');
               if (await muxedFile.exists()) await muxedFile.delete();
-              onProgress?.call(0.99, detail: 'Facebook 视频与音频合并中');
+              onProgress?.call(0.99, detail: '视频与音频合并中');
               final muxed =
                   await const MethodChannel('media_muxer')
                       .invokeMethod<bool>('muxMp4', <String, String>{
@@ -33352,11 +34024,11 @@ class _BrowserPageState extends State<BrowserPage>
                         'outputPath': muxedFile.path,
                       })
                       .timeout(
-                        const Duration(seconds: 9),
+                        pairedAudioMuxTimeout,
                         onTimeout: () {
                           timedOut = true;
                           debugPrint(
-                            'FB pipeline: native mux hard timeout after 9s',
+                            'Paired audio mux hard timeout after ${pairedAudioMuxTimeout.inSeconds}s',
                           );
                           return false;
                         },
@@ -33370,16 +34042,29 @@ class _BrowserPageState extends State<BrowserPage>
                 downloadedFile = await muxedFile.rename(originalPath);
                 muxedFile = null;
                 pairedAudioMuxed = true;
-                debugPrint(
-                  'FB pipeline: paired DASH video+audio mux completed',
+                debugPrint('Paired video+audio mux completed');
+              } else if (warnOnPairedMuxFailure && mounted && !skipFailurePrompt) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('音视频合并失败，将尝试下载带声音的版本'),
+                    duration: Duration(seconds: 2),
+                  ),
                 );
               }
             }
           } catch (e) {
             debugPrint(
-              'FB pipeline: paired audio mux failed '
+              'Paired audio mux failed '
               '(required=$requirePairedAudio): $e',
             );
+            if (warnOnPairedMuxFailure && mounted && !skipFailurePrompt) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('音视频合并失败，将尝试下载带声音的版本'),
+                  duration: Duration(seconds: 2),
+                ),
+              );
+            }
           } finally {
             for (final temporary in <File?>[audioFile, muxedFile]) {
               try {
@@ -33396,6 +34081,21 @@ class _BrowserPageState extends State<BrowserPage>
             'bounded attempt; preserve the downloaded video track',
           );
         }
+        if (warnOnPairedMuxFailure &&
+            pairedAudioUrl != null &&
+            pairedAudioUrl.trim().isNotEmpty &&
+            !pairedAudioMuxed) {
+          debugPrint(
+            'Rejecting silent-only download because paired audio mux failed',
+          );
+          try {
+            await downloadedFile?.delete();
+          } catch (_) {}
+          downloadedFile = null;
+          onFailureType?.call('paired_audio_mux_failed');
+          removeOwnedTask();
+          return false;
+        }
         final completedDownload = downloadedFile!;
         final downloadedBytes = await completedDownload.length();
         if ((appliedMinFileBytes != null &&
@@ -33409,7 +34109,7 @@ class _BrowserPageState extends State<BrowserPage>
           await completedDownload.delete();
           downloadedFile = null;
           onFailureType?.call('outside_requested_size_range');
-          if (mounted) _removeDownloadTask(taskId);
+          removeOwnedTask();
           return false;
         }
         if (mediaType == MediaType.video &&
@@ -33431,7 +34131,7 @@ class _BrowserPageState extends State<BrowserPage>
             await completedDownload.delete();
             downloadedFile = null;
             onFailureType?.call('fb_stub_rejected');
-            if (mounted) _removeDownloadTask(taskId);
+            removeOwnedTask();
             return false;
           }
         }
@@ -33464,7 +34164,7 @@ class _BrowserPageState extends State<BrowserPage>
             await completedDownload.delete();
             downloadedFile = null;
             onFailureType?.call('audio_only_mp4_rejected');
-            if (mounted) _removeDownloadTask(taskId);
+            removeOwnedTask();
             return false;
           }
         }
@@ -33476,7 +34176,7 @@ class _BrowserPageState extends State<BrowserPage>
           await completedDownload.delete();
           downloadedFile = null;
           onFailureType?.call('invalid_smart_media_content');
-          if (mounted) _removeDownloadTask(taskId);
+          removeOwnedTask();
           return false;
         }
         final Map<String, dynamic> mediaMap;
@@ -33575,7 +34275,7 @@ class _BrowserPageState extends State<BrowserPage>
             ),
           );
         } else if (mounted && skipFailurePrompt) {
-          _removeDownloadTask(taskId);
+          removeOwnedTask();
         }
         return false;
       }
@@ -33583,12 +34283,12 @@ class _BrowserPageState extends State<BrowserPage>
       if (e.type == DioExceptionType.cancel) {
         if (sizeRangeExceeded) {
           onFailureType?.call('outside_requested_size_range');
-          if (mounted) _removeDownloadTask(taskId);
+          removeOwnedTask();
         } else if (timedOut) {
           onFailureType?.call('timeout');
           debugPrint('长时间无下载进度，已取消: $absoluteUrl');
           if (mounted && skipFailurePrompt) {
-            _removeDownloadTask(taskId);
+            removeOwnedTask();
           } else if (mounted) {
             _updateDownloadTask(
               taskId,
@@ -33638,14 +34338,14 @@ class _BrowserPageState extends State<BrowserPage>
           ),
         );
       } else if (mounted && skipFailurePrompt) {
-        _removeDownloadTask(taskId);
+            removeOwnedTask();
       }
       return false;
     } catch (e, st) {
       var type = 'exception';
       if (sizeRangeExceeded) {
         onFailureType?.call('outside_requested_size_range');
-        if (mounted) _removeDownloadTask(taskId);
+            removeOwnedTask();
         return false;
       }
       final msg = e.toString().toLowerCase();
@@ -33741,7 +34441,7 @@ class _BrowserPageState extends State<BrowserPage>
       }
       if (mounted) {
         if (isLibraryDuplicate) {
-          _removeDownloadTask(taskId);
+          removeOwnedTask();
           // 内容哈希命中：动作编排立刻关闸放行 waitDownload（禁止仅靠 URL 宣称库内已有）
           final hash = (duplicateRow?['file_hash'] ?? '').toString().trim();
           if (smartTask != null &&
@@ -33768,7 +34468,7 @@ class _BrowserPageState extends State<BrowserPage>
             ),
           );
         } else {
-          _removeDownloadTask(taskId);
+          removeOwnedTask();
         }
       }
       return false;

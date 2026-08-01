@@ -254,7 +254,9 @@ class MediaSnifferService {
     
     try {
       // 提取YouTube视频ID
-      final videoIdMatch = RegExp(r'(?:youtube\.com/watch\?v=|youtu\.be/)([a-zA-Z0-9_-]+)').firstMatch(url);
+      final videoIdMatch = RegExp(
+        r'(?:youtube\.com/(?:watch\?v=|shorts/|embed/|live/)|youtu\.be/)([a-zA-Z0-9_-]{6,})',
+      ).firstMatch(url);
       if (videoIdMatch != null) {
         final videoId = videoIdMatch.group(1)!;
         
