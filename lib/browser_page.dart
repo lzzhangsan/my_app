@@ -4618,6 +4618,13 @@ class _BrowserPageState extends State<BrowserPage>
     return host == 'tik.porn' || host.endsWith('.tik.porn');
   }
 
+  bool _isTelegramPlatformPage(String? url) {
+    final host = Uri.tryParse((url ?? '').trim())?.host.toLowerCase() ?? '';
+    return host == 'web.telegram.org' ||
+        host == 'telegram.org' ||
+        host.endsWith('.telegram.org');
+  }
+
   String _normalizeAdultSiteHost(String? hostOrUrl) {
     final raw = (hostOrUrl ?? '').trim().toLowerCase();
     if (raw.isEmpty) return '';
@@ -6567,11 +6574,11 @@ class _BrowserPageState extends State<BrowserPage>
         if (!await mediaDir.exists()) await mediaDir.create(recursive: true);
         final mimeType = (message['mimeType'] ?? '').toString().toLowerCase();
         final mediaTypeName =
-            (message['mediaType'] ?? 'video').toString().toLowerCase();
+            (message['mediaType'] ?? '').toString().toLowerCase();
         _telegramStreamMediaType =
-            mediaTypeName == 'image'
+            mediaTypeName == 'image' || mimeType.startsWith('image/')
                 ? MediaType.image
-                : mediaTypeName == 'audio'
+                : mediaTypeName == 'audio' || mimeType.startsWith('audio/')
                 ? MediaType.audio
                 : MediaType.video;
         _telegramStreamMimeType = mimeType;
@@ -6614,16 +6621,23 @@ class _BrowserPageState extends State<BrowserPage>
           _telegramStreamProgressTaskId =
               smartProgressId.isNotEmpty ? smartProgressId : const Uuid().v4();
           if (_telegramStreamOwnsProgressTask) {
+            final isImageStream = _telegramStreamMediaType == MediaType.image;
             _addDownloadTask(
               _telegramStreamProgressTaskId,
               'telegram-stream://$transferId',
-              MediaType.video,
+              isImageStream ? MediaType.image : MediaType.video,
               CancelToken(),
-              displayName: 'Telegram 视频',
+              displayName: isImageStream ? 'Telegram 图片' : 'Telegram 视频',
             );
           }
         }
-        _updateTelegramStreamProgress(status: 'downloading');
+        _updateTelegramStreamProgress(
+          status: 'downloading',
+          detailPrefix:
+              _telegramStreamMediaType == MediaType.image
+                  ? 'Telegram 图片下载中'
+                  : 'Telegram 视频下载中',
+        );
         debugPrint(
           '[TG_STREAM] start id=$transferId '
           'expected=${message['expectedBytes']} path=${file.path}',
@@ -6697,11 +6711,19 @@ class _BrowserPageState extends State<BrowserPage>
           relaxValidation: false,
         );
         _notifyMediaDownloadSaved();
+        final savedLabel =
+            _telegramStreamMediaType == MediaType.image
+                ? 'Telegram 图片已保存'
+                : 'Telegram 视频已保存';
+        // Always close the progress row after a successful save — leaving
+        // status=downloading makes the panel look stuck after a finished image.
         _updateTelegramStreamProgress(
-          status: _telegramStreamOwnsProgressTask ? 'completed' : 'downloading',
+          status: 'completed',
           forceProgress: 1.0,
-          detailPrefix: 'Telegram 视频已保存',
+          detailPrefix: savedLabel,
         );
+        _telegramOfficialDownloadActive = false;
+        _telegramOfficialDownloadLastProgressAt = null;
         final smartTask = _smartDownloadTask;
         if (smartTask != null &&
             (smartTask['gestureDownloadPending'] == true ||
@@ -6716,7 +6738,11 @@ class _BrowserPageState extends State<BrowserPage>
         if (mounted) {
           _showBrowserSnackBar(
             SnackBar(
-              content: const Text('Telegram 视频已保存到媒体库'),
+              content: Text(
+                _telegramStreamMediaType == MediaType.image
+                    ? 'Telegram 图片已保存到媒体库'
+                    : 'Telegram 视频已保存到媒体库',
+              ),
               duration: _kMediaSaveSnackDuration,
               action:
                   smartTask == null
@@ -7553,7 +7579,7 @@ class _BrowserPageState extends State<BrowserPage>
       await controller.evaluateJavascript(
         source: '''
       (() => {
-      const handlerVersion = 'media-download-v58';
+      const handlerVersion = 'media-download-v62';
       if (window.__appMediaDownloadHandlersVersion === handlerVersion) return true;
       window.Flutter = window.Flutter || { postMessage: function(m){ try { if(window.flutter_inappwebview && window.flutter_inappwebview.callHandler) window.flutter_inappwebview.callHandler('Flutter', m); } catch(e){} } };
       // Telegram Web occasionally carries a non-1 playback rate between
@@ -8124,13 +8150,19 @@ class _BrowserPageState extends State<BrowserPage>
         const response = await fetch(blobUrl, {method: 'GET', cache: 'no-cache'});
         if (!response.ok) throw new Error('Telegram blob status ' + response.status);
         const blob = await response.blob();
-        if (!blob || blob.size < 10240) throw new Error('Telegram blob is empty or incomplete');
+        const mimeType = String(blob && blob.type || '').toLowerCase();
+        const isImageBlob = mimeType.startsWith('image/');
+        const minBytes = isImageBlob ? 2048 : 10240;
+        if (!blob || blob.size < minBytes) throw new Error('Telegram blob is empty or incomplete');
+        const mediaType = isImageBlob ? 'image' : (mimeType.startsWith('audio/') ? 'audio' : 'video');
+        const label = mediaType === 'image' ? '图片' : '视频';
         const transferId = 'tg-blob-' + Date.now() + '-' + Math.random().toString(36).slice(2);
         const startAck = await bridge.callHandler('TelegramStreamChunk', {
           phase: 'start',
           transferId: transferId,
           expectedBytes: blob.size,
-          mimeType: String(blob.type || 'video/mp4')
+          mimeType: mimeType || (isImageBlob ? 'image/jpeg' : 'video/mp4'),
+          mediaType: mediaType
         });
         if (!startAck || startAck.ok === false) {
           throw new Error('Telegram blob start rejected');
@@ -8156,7 +8188,11 @@ class _BrowserPageState extends State<BrowserPage>
               });
               if (!ack || ack.ok === false) throw new Error('Flutter rejected Telegram blob chunk');
               sent += part.length;
-              updateFeedbackStatus('正在读取 Telegram 视频 ' + Math.min(99, Math.floor(sent * 100 / blob.size)) + '%…', null);
+              updateFeedbackStatus(
+                '正在读取 Telegram ' + label + ' ' +
+                Math.min(99, Math.floor(sent * 100 / blob.size)) + '%…',
+                null
+              );
             }
           }
           const endAck = await bridge.callHandler('TelegramStreamChunk', {
@@ -8247,39 +8283,72 @@ class _BrowserPageState extends State<BrowserPage>
         const mediaViewer = window.appMediaViewer;
         const target = mediaViewer && mediaViewer.target;
         const messageMedia = target && target.message && target.message.media;
-        const primary = messageMedia && messageMedia.document;
-        if (!manager || typeof manager.downloadMedia !== 'function' ||
-            !primary || String(primary.type || '').toLowerCase() !== 'video') {
+        if (!manager || typeof manager.downloadMedia !== 'function' || !messageMedia) {
           return false;
         }
-        // Telegram may expose AV1/HLS alternatives alongside the main document.
-        // Prefer the largest compatible H.264 MP4 at the best resolution; this
-        // is exact-message data, not a page-wide captured request.
-        const documents = [primary].concat(
-          Array.isArray(messageMedia.alt_documents)
-            ? messageMedia.alt_documents
-            : []
-        ).filter(doc => doc &&
-          String(doc.type || '').toLowerCase() === 'video' &&
-          String(doc.mime_type || '').toLowerCase() === 'video/mp4');
-        const codecOf = doc => {
-          const attribute = Array.isArray(doc.attributes)
-            ? doc.attributes.find(item => item && item._ === 'documentAttributeVideo')
-            : null;
-          return String(attribute && attribute.video_codec || '').toLowerCase();
-        };
-        documents.sort((a, b) => {
-          const aH264 = codecOf(a) === 'h264' ? 1 : 0;
-          const bH264 = codecOf(b) === 'h264' ? 1 : 0;
-          if (aH264 !== bH264) return bH264 - aH264;
-          const aPixels = Number(a.w || 0) * Number(a.h || 0);
-          const bPixels = Number(b.w || 0) * Number(b.h || 0);
-          if (aPixels !== bPixels) return bPixels - aPixels;
-          return Number(b.size || 0) - Number(a.size || 0);
-        });
-        const media = documents[0] || primary;
-        const telegramDocumentId = String(media.id || primary.id || '');
-        updateFeedbackStatus('正在下载当前 Telegram 原始视频…', null);
+        const primaryDoc = messageMedia.document;
+        const photo = messageMedia.photo;
+        const docType = String((primaryDoc && primaryDoc.type) || '').toLowerCase();
+        const docMime = String((primaryDoc && primaryDoc.mime_type) || '').toLowerCase();
+        const isPhotoDoc = !!primaryDoc && (
+          docType === 'photo' || docMime.startsWith('image/')
+        );
+        const isVideoDoc = !!primaryDoc && (
+          docType === 'video' || docMime.startsWith('video/')
+        );
+        let media = null;
+        let mediaKind = '';
+        // Video documents first. A video message must never fall through to a
+        // poster/thumbnail photo path and save only the cover JPEG.
+        if (isVideoDoc) {
+          // Telegram may expose AV1/HLS alternatives alongside the main document.
+          // Prefer the largest compatible H.264 MP4 at the best resolution.
+          const documents = [primaryDoc].concat(
+            Array.isArray(messageMedia.alt_documents)
+              ? messageMedia.alt_documents
+              : []
+          ).filter(doc => doc &&
+            (String(doc.type || '').toLowerCase() === 'video' ||
+              String(doc.mime_type || '').toLowerCase().startsWith('video/')) &&
+            (String(doc.mime_type || '').toLowerCase() === 'video/mp4' ||
+              String(doc.mime_type || '').toLowerCase().startsWith('video/')));
+          const codecOf = doc => {
+            const attribute = Array.isArray(doc.attributes)
+              ? doc.attributes.find(item => item && item._ === 'documentAttributeVideo')
+              : null;
+            return String(attribute && attribute.video_codec || '').toLowerCase();
+          };
+          documents.sort((a, b) => {
+            const aMime = String(a.mime_type || '').toLowerCase();
+            const bMime = String(b.mime_type || '').toLowerCase();
+            const aMp4 = aMime === 'video/mp4' ? 1 : 0;
+            const bMp4 = bMime === 'video/mp4' ? 1 : 0;
+            if (aMp4 !== bMp4) return bMp4 - aMp4;
+            const aH264 = codecOf(a) === 'h264' ? 1 : 0;
+            const bH264 = codecOf(b) === 'h264' ? 1 : 0;
+            if (aH264 !== bH264) return bH264 - aH264;
+            const aPixels = Number(a.w || 0) * Number(a.h || 0);
+            const bPixels = Number(b.w || 0) * Number(b.h || 0);
+            if (aPixels !== bPixels) return bPixels - aPixels;
+            return Number(b.size || 0) - Number(a.size || 0);
+          });
+          media = documents[0] || primaryDoc;
+          mediaKind = 'video';
+        } else if (photo) {
+          // Full message photo object — not the on-screen thumbnail IMG blob.
+          media = photo;
+          mediaKind = 'photo';
+        } else if (isPhotoDoc) {
+          media = primaryDoc;
+          mediaKind = 'photo';
+        } else {
+          return false;
+        }
+        const telegramDocumentId = String(
+          (media && media.id) || (primaryDoc && primaryDoc.id) || (photo && photo.id) || ''
+        );
+        const mediaLabel = mediaKind === 'photo' ? '图片' : '视频';
+        updateFeedbackStatus('正在下载当前 Telegram 原始' + mediaLabel + '…', null);
         const reportManagerStatus = (phase, done, total) => {
           try {
             Flutter.postMessage(JSON.stringify({
@@ -8288,6 +8357,7 @@ class _BrowserPageState extends State<BrowserPage>
               done: Number(done || 0),
               total: Number(total || media.size || 0),
               documentId: telegramDocumentId,
+              mediaKind: mediaKind,
               isSmartGesture: !!isSmartGesture
             }));
           } catch (_) {}
@@ -8301,9 +8371,10 @@ class _BrowserPageState extends State<BrowserPage>
           // A second synthetic/manual press must never create an overlapping
           // Telegram Blob task. The original task owns the library gate.
           reportManagerStatus('busy', inFlight.done || 0, inFlight.total || 0);
+          updateFeedbackStatus('Telegram 下载进行中…', 'progress');
           return true;
         }
-        reportManagerStatus('start', 0, media.size);
+        reportManagerStatus('start', 0, media.size || 0);
         let download = null;
         let stallTimer = null;
         const managerState = {
@@ -8325,7 +8396,7 @@ class _BrowserPageState extends State<BrowserPage>
                 managerState.total = total;
                 reportManagerStatus('progress', done, total);
                 updateFeedbackStatus(
-                  '正在下载当前 Telegram 原始视频 ' +
+                  '正在下载当前 Telegram 原始' + mediaLabel + ' ' +
                   Math.min(99, Math.floor(done * 100 / total)) + '%…',
                   null
                 );
@@ -8342,12 +8413,23 @@ class _BrowserPageState extends State<BrowserPage>
             }, 5000);
           });
           const blob = await Promise.race([download, stalled]);
-          if (!(blob instanceof Blob) || blob.size < 1024) {
+          const minBytes = mediaKind === 'photo' ? 2048 : 1024;
+          if (!(blob instanceof Blob) || blob.size < minBytes) {
             throw new Error('Telegram manager returned an empty media Blob');
           }
-          const objectUrl = URL.createObjectURL(blob);
+          // Force image mime when Telegram returns an untyped photo blob so the
+          // native stream saver does not classify it as video/mp4.
+          let objectBlob = blob;
+          if (mediaKind === 'photo' && !String(blob.type || '').startsWith('image/')) {
+            try {
+              objectBlob = new Blob([blob], {type: 'image/jpeg'});
+            } catch (_) {
+              objectBlob = blob;
+            }
+          }
+          const objectUrl = URL.createObjectURL(objectBlob);
           try {
-            reportManagerStatus('streaming', blob.size, blob.size);
+            reportManagerStatus('streaming', objectBlob.size, objectBlob.size);
             await streamTelegramBlobToFlutter(objectUrl);
           } finally {
             try { URL.revokeObjectURL(objectUrl); } catch (_) {}
@@ -8355,7 +8437,7 @@ class _BrowserPageState extends State<BrowserPage>
           if (telegramDocumentId) {
             window.__appTelegramSavedDocumentIds.add(telegramDocumentId);
           }
-          reportManagerStatus('completed', blob.size, blob.size);
+          reportManagerStatus('completed', objectBlob.size, objectBlob.size);
           // The native media-library snackbar is the useful terminal UI. Do
           // not leave Telegram's transient blue read indicator over the page.
           removeFeedbackElement();
@@ -8377,15 +8459,15 @@ class _BrowserPageState extends State<BrowserPage>
         }
       }
 
-      function tryTelegramOfficialMediaDownload(boundVideo, isSmartGesture) {
+      function tryTelegramOfficialMediaDownload(boundMedia, isSmartGesture) {
         const managerAttempt = tryTelegramManagerMediaDownload(isSmartGesture);
         return managerAttempt.then(started => {
           if (started) return true;
-          return tryTelegramOfficialMediaDownloadViaControls(boundVideo);
+          return tryTelegramOfficialMediaDownloadViaControls(boundMedia);
         });
       }
 
-      function tryTelegramOfficialMediaDownloadViaControls(boundVideo) {
+      function tryTelegramOfficialMediaDownloadViaControls(boundMedia) {
         return new Promise(async resolve => {
           const visible = element => {
             if (!element || !element.getClientRects || !element.getClientRects().length) return false;
@@ -8397,24 +8479,23 @@ class _BrowserPageState extends State<BrowserPage>
               rect.top < innerHeight && rect.left < innerWidth;
           };
           // Telegram can retain an old media viewer and its download button in
-          // the DOM after the user moves to another inline/message video. A
+          // the DOM after the user moves to another inline/message item. A
           // page-wide button lookup therefore downloads the stale viewer item.
-          // Only trust controls in the exact viewer that owns this pressed video.
-          let viewer = boundVideo && boundVideo.closest && (
-            boundVideo.closest('.media-viewer-whole') ||
-            boundVideo.closest('.media-viewer')
+          // Only trust controls in the exact viewer that owns this pressed media.
+          let viewer = boundMedia && boundMedia.closest && (
+            boundMedia.closest('.media-viewer-whole') ||
+            boundMedia.closest('.media-viewer')
           );
           let openedViewerForDownload = false;
-          if ((!viewer || !visible(viewer) || !viewer.contains(boundVideo)) &&
-              boundVideo && visible(boundVideo)) {
-            // Inline chat videos have no trustworthy standalone download
-            // control. Clicking the exact pressed video asks Telegram to build
-            // a media viewer from that message's Document object; its download
-            // button is therefore semantically bound to this press.
+          if ((!viewer || !visible(viewer) || !viewer.contains(boundMedia)) &&
+              boundMedia && visible(boundMedia)) {
+            // Inline chat media has no trustworthy standalone download
+            // control. Clicking the exact pressed node asks Telegram to build
+            // a media viewer from that message's Photo/Document object.
             const previousViewers = new Set(Array.from(document.querySelectorAll(
               '.media-viewer-whole, .media-viewer'
             )).filter(visible));
-            try { boundVideo.click(); } catch (_) {}
+            try { boundMedia.click(); } catch (_) {}
             for (let attempt = 0; attempt < 18 && !viewer; attempt++) {
               await new Promise(done => setTimeout(done, 100));
               const candidates = Array.from(document.querySelectorAll(
@@ -8424,13 +8505,25 @@ class _BrowserPageState extends State<BrowserPage>
             }
             openedViewerForDownload = !!viewer;
           }
+          // Album photos are often already inside a visible viewer that may
+          // briefly detach contains() during slide animation — still trust it.
+          if (!viewer || !visible(viewer)) {
+            try {
+              const openViewers = Array.from(document.querySelectorAll(
+                '.media-viewer-whole, .media-viewer'
+              )).filter(visible);
+              viewer = openViewers[0] || null;
+            } catch (_) {}
+          }
           if (!viewer || !visible(viewer) ||
-              (!openedViewerForDownload && !viewer.contains(boundVideo))) {
+              (!openedViewerForDownload && boundMedia &&
+                viewer.contains && !viewer.contains(boundMedia) &&
+                String((boundMedia.tagName || '')).toUpperCase() === 'VIDEO')) {
             try {
               Flutter.postMessage(JSON.stringify({
                 type: 'telegram_debug', phase: 'official_scope_rejected',
-                reason: !viewer ? 'pressed_video_viewer_not_opened' : 'viewer_or_video_not_bound',
-                currentSrc: String(boundVideo && (boundVideo.currentSrc || boundVideo.src) || '').slice(0, 240)
+                reason: !viewer ? 'pressed_media_viewer_not_opened' : 'viewer_or_media_not_bound',
+                currentSrc: String(boundMedia && (boundMedia.currentSrc || boundMedia.src) || '').slice(0, 240)
               }));
             } catch (_) {}
             resolve(false);
@@ -8740,6 +8833,22 @@ class _BrowserPageState extends State<BrowserPage>
 
       function markMediaUrlProcessing(url) {
         if (!url) return false;
+        let isTelegramHost = false;
+        try {
+          const host = String(location.hostname || '').toLowerCase();
+          isTelegramHost = host === 'web.telegram.org' || host === 'telegram.org';
+        } catch (_) {}
+        // Telegram Web reuses blob:/stream URLs across album slides. A 45s soft
+        // lock makes later photos report "已在处理中" with no media message,
+        // leaving smart waitDownload stuck on library confirmation.
+        if (isTelegramHost) {
+          try { window.processedMediaUrls.delete(url); } catch (_) {}
+          window.processedMediaUrls.add(url);
+          setTimeout(function() {
+            try { window.processedMediaUrls.delete(url); } catch (e) {}
+          }, 2500);
+          return true;
+        }
         if (window.processedMediaUrls.has(url)) return false;
         window.processedMediaUrls.add(url);
         setTimeout(function() {
@@ -8783,24 +8892,23 @@ class _BrowserPageState extends State<BrowserPage>
       }
 
       function updateFeedbackStatus(status, success) {
-        // In-progress overlay text ("正在获取下载地址…") must not linger on media.
-        // Download success toasts come from Flutter ("已触发长按下载").
-        // Keep short native toasts only for failures / favorite confirmations.
+        // In-progress overlay text must not linger as a DOM bubble.
+        // Failures / explicit progress hints go through Flutter page_toast.
+        // success === null stays silent (avoids spamming during video streams).
         removeFeedbackElement();
-        if (success === false || success === true) {
-          const text = String(status || '');
-          if (!text) return;
-          // Skip download-progress style success labels; Flutter owns those.
-          if (success === true &&
-              (text.indexOf('保存') >= 0 || text.indexOf('截图') >= 0 ||
-               text.indexOf('data url') >= 0 || text.indexOf('blob') >= 0)) {
-            return;
-          }
+        const text = String(status || '');
+        if (!text) return;
+        if (success === true &&
+            (text.indexOf('保存') >= 0 || text.indexOf('截图') >= 0 ||
+             text.indexOf('data url') >= 0 || text.indexOf('blob') >= 0)) {
+          return;
+        }
+        if (success === false || success === true || success === 'progress') {
           try {
             Flutter.postMessage(JSON.stringify({
               type: 'page_toast',
               message: text,
-              durationMs: success === true ? 1200 : 1600
+              durationMs: success === true ? 1200 : (success === false ? 1600 : 1400)
             }));
           } catch (_) {}
         }
@@ -9347,7 +9455,7 @@ class _BrowserPageState extends State<BrowserPage>
       async function handleMediaDownload(target, e) {
         if (!target) {
           updateFeedbackStatus('未找到媒体元素', false);
-          return;
+          return false;
         }
         const initialLongPressTarget = target;
         const longPressSessionId = 'lp-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
@@ -9903,6 +10011,82 @@ class _BrowserPageState extends State<BrowserPage>
           return 0;
         }
 
+        // Telegram mixed albums: decide the CURRENT slide kind from the media
+        // viewer message object first. Never treat a video slide's poster IMG
+        // as the download target, and never let a leftover VIDEO steal a photo.
+        // IMPORTANT: do not treat readyState/videoWidth alone as "live video" —
+        // a previous slide's VIDEO often stays buffered while a photo is shown,
+        // which previously forced the image path into a silent video hang.
+        function telegramViewerSlideKind(hintEl) {
+          try {
+            const viewer = window.appMediaViewer;
+            const viewerTarget = viewer && viewer.target;
+            const media = viewerTarget && viewerTarget.message && viewerTarget.message.media;
+            if (media) {
+              const doc = media.document;
+              const docType = String((doc && doc.type) || '').toLowerCase();
+              const docMime = String((doc && doc.mime_type) || '').toLowerCase();
+              if (doc && (docType === 'video' || docMime.startsWith('video/'))) {
+                return 'video';
+              }
+              if (media.photo || docType === 'photo' || docMime.startsWith('image/')) {
+                return 'photo';
+              }
+            }
+          } catch (_) {}
+          const hintTag = String((hintEl && hintEl.tagName) || '').toLowerCase();
+          try {
+            const w = window.innerWidth || 360;
+            const h = window.innerHeight || 640;
+            const cx = w / 2;
+            const cy = h / 2;
+            let liveVideo = null;
+            let dominantPhoto = null;
+            const videos = Array.from(document.querySelectorAll(
+              '.media-viewer video, .media-viewer-whole video, video'
+            ));
+            for (const v of videos) {
+              const r = v.getBoundingClientRect();
+              const iw = Math.max(0, Math.min(w, r.right) - Math.max(0, r.left));
+              const ih = Math.max(0, Math.min(h, r.bottom) - Math.max(0, r.top));
+              if (iw * ih < w * h * 0.12) continue;
+              if (!(r.left <= cx && r.right >= cx && r.top <= cy && r.bottom >= cy)) continue;
+              // Only "actively presented" video counts — not a buffered leftover.
+              const activelyPresented =
+                (!v.paused && !v.ended) ||
+                Number(v.currentTime || 0) > 0.2;
+              if (activelyPresented) {
+                liveVideo = v;
+                break;
+              }
+            }
+            const imgs = Array.from(document.querySelectorAll(
+              '.media-viewer img, .media-viewer-whole img, .media-photo img'
+            ));
+            for (const img of imgs) {
+              const r = img.getBoundingClientRect();
+              const iw = Math.max(0, Math.min(w, r.right) - Math.max(0, r.left));
+              const ih = Math.max(0, Math.min(h, r.bottom) - Math.max(0, r.top));
+              if (iw * ih < w * h * 0.12) continue;
+              if (r.left <= cx && r.right >= cx && r.top <= cy && r.bottom >= cy) {
+                dominantPhoto = img;
+                break;
+              }
+            }
+            if (liveVideo && !dominantPhoto) return 'video';
+            if (dominantPhoto && !liveVideo) return 'photo';
+            if (liveVideo && dominantPhoto) {
+              // Poster IMG over a playing video → video; otherwise photo wins.
+              return (!liveVideo.paused && !liveVideo.ended) ? 'video' : 'photo';
+            }
+            if (hintTag === 'img' || hintTag === 'image') return 'photo';
+            if (hintTag === 'video') return 'video';
+          } catch (_) {}
+          if (hintTag === 'img' || hintTag === 'image') return 'photo';
+          if (hintTag === 'video') return 'video';
+          return 'unknown';
+        }
+
         // 触点上即使覆盖着网页按钮，也优先选择触点范围内真正可见、正在播放的视频。
         let bestTarget = target;
         if (typeof window._lastTouchX === 'number' && typeof window._lastTouchY === 'number') {
@@ -9931,6 +10115,96 @@ class _BrowserPageState extends State<BrowserPage>
             }
           }
           if (!pointVideo && pointImage) bestTarget = pointImage;
+          // Telegram mixed album: classify the CURRENT slide, then bind the
+          // matching node. Video slides must download VIDEO (never poster IMG);
+          // photo slides must prefer IMG over a leftover VIDEO shell.
+          if (isTelegramContext) {
+            const slideKind = telegramViewerSlideKind(
+              pointImage || pointVideo || bestTarget || target
+            );
+            let telegramVideo = pointVideo;
+            if (!telegramVideo) {
+              try {
+                const vids = Array.from(document.querySelectorAll(
+                  '.media-viewer video, .media-viewer-whole video, video'
+                )).filter(el => {
+                  const r = el.getBoundingClientRect();
+                  return r.width >= 120 && r.height >= 100 &&
+                    r.left <= window._lastTouchX && r.right >= window._lastTouchX &&
+                    r.top <= window._lastTouchY && r.bottom >= window._lastTouchY;
+                }).sort((a, b) => {
+                  const ra = a.getBoundingClientRect();
+                  const rb = b.getBoundingClientRect();
+                  return (rb.width * rb.height) - (ra.width * ra.height);
+                });
+                telegramVideo = vids[0] || null;
+              } catch (_) {}
+            }
+            let telegramImg = pointImage;
+            if (!telegramImg) {
+              try {
+                const imgs = Array.from(document.querySelectorAll(
+                  '.media-viewer img, .media-viewer-whole img, .media-photo img, img.thumbnail'
+                )).filter(el => {
+                  const r = el.getBoundingClientRect();
+                  return r.width >= 160 && r.height >= 160 &&
+                    r.left <= window._lastTouchX && r.right >= window._lastTouchX &&
+                    r.top <= window._lastTouchY && r.bottom >= window._lastTouchY;
+                }).sort((a, b) => {
+                  const ra = a.getBoundingClientRect();
+                  const rb = b.getBoundingClientRect();
+                  return (rb.width * rb.height) - (ra.width * ra.height);
+                });
+                telegramImg = imgs[0] || null;
+              } catch (_) {}
+            }
+            if (slideKind === 'video') {
+              const videoNode = telegramVideo || currentVideo;
+              if (videoNode && (videoNode.currentSrc || videoNode.src)) {
+                bestTarget = videoNode;
+                pointVideo = videoNode;
+                pointImage = null;
+              }
+            } else if (slideKind === 'photo') {
+              if (telegramImg && (telegramImg.currentSrc || telegramImg.src)) {
+                bestTarget = telegramImg;
+                pointVideo = null;
+              }
+            } else {
+              let videoLooksLive = false;
+              const probeVideo = telegramVideo || pointVideo || currentVideo;
+              if (probeVideo) {
+                try {
+                  videoLooksLive =
+                    Number(probeVideo.readyState || 0) >= 2 ||
+                    Number(probeVideo.currentTime || 0) > 0.05 ||
+                    (!probeVideo.paused && !probeVideo.ended) ||
+                    (isFinite(Number(probeVideo.duration)) &&
+                      Number(probeVideo.duration) > 0.2);
+                } catch (_) {}
+              }
+              if (videoLooksLive && probeVideo &&
+                  (probeVideo.currentSrc || probeVideo.src)) {
+                bestTarget = probeVideo;
+                pointVideo = probeVideo;
+                pointImage = null;
+              } else if (telegramImg &&
+                  (telegramImg.currentSrc || telegramImg.src)) {
+                bestTarget = telegramImg;
+                pointVideo = null;
+              }
+            }
+            try {
+              Flutter.postMessage(JSON.stringify({
+                type: 'telegram_debug',
+                phase: 'slide_kind',
+                kind: slideKind,
+                targetTag: String((bestTarget && bestTarget.tagName) || ''),
+                hasVideo: !!(pointVideo || telegramVideo),
+                hasImage: !!(pointImage || telegramImg)
+              }));
+            } catch (_) {}
+          }
           // A synthetic smart gesture may target Instagram's real VIDEO below
           // a poster overlay. For a user's manual long press, however, never
           // let a stale/off-screen VIDEO override the image under the finger.
@@ -10443,8 +10717,8 @@ class _BrowserPageState extends State<BrowserPage>
         let url = null;
         let interceptedStreamUrl = null;
         const parentLink = target.closest ? target.closest('a') : null;
-        const tagName = (target.tagName || '').toLowerCase();
-        const videoEl = tagName === 'video' ? target : (target.querySelector && target.querySelector('video'));
+        let tagName = (target.tagName || '').toLowerCase();
+        let videoEl = tagName === 'video' ? target : (target.querySelector && target.querySelector('video'));
         if (videoEl &&
             window.MediaInterceptor &&
             window.MediaInterceptor.interceptedRequests &&
@@ -11099,13 +11373,48 @@ class _BrowserPageState extends State<BrowserPage>
         } else if (videoEl && (videoEl.currentSrc || videoEl.src)) {
           mediaType = 'video';
         }
+        // Telegram ground truth overrides tag/src guesses: a video slide's
+        // poster IMG must still download as video.
+        if (isTelegramContext) {
+          const slideKind = telegramViewerSlideKind(target || videoEl);
+          if (slideKind === 'video') {
+            mediaType = 'video';
+            if (!videoEl || !(videoEl.currentSrc || videoEl.src) ||
+                tagName === 'img' || tagName === 'image') {
+              try {
+                const viewerVideo = document.querySelector(
+                  '.media-viewer video, .media-viewer-whole video'
+                );
+                if (viewerVideo && (viewerVideo.currentSrc || viewerVideo.src) &&
+                    (!viewerVideo.paused || Number(viewerVideo.currentTime || 0) > 0.2)) {
+                  target = viewerVideo;
+                  videoEl = viewerVideo;
+                  tagName = 'video';
+                  url = String(viewerVideo.currentSrc || viewerVideo.src || url);
+                }
+              } catch (_) {}
+            }
+          } else if (slideKind === 'photo') {
+            mediaType = 'image';
+          } else if (tagName === 'img' || tagName === 'image') {
+            // Finger is on an image and slide kind is ambiguous → download photo.
+            mediaType = 'image';
+          }
+        }
         const className = target.className ? target.className.toLowerCase() : '';
         const id = target.id ? target.id.toLowerCase() : '';
 
         if (!markMediaUrlProcessing(url)) {
+          try {
+            Flutter.postMessage(JSON.stringify({
+              type: 'media_busy',
+              isSmartGesture: isSmartGesture,
+              url: String(url || '').slice(0, 240)
+            }));
+          } catch (_) {}
           updateFeedbackStatus('该媒体已在处理中', false);
           e.preventDefault();
-          return;
+          return false;
         }
         
         // 收集候选 URL（与收藏逻辑一致）
@@ -11275,6 +11584,62 @@ class _BrowserPageState extends State<BrowserPage>
           e.preventDefault();
           return;
         }
+        // Telegram images must stay on the same fast path as every other site:
+        // resolve the pressed IMG (blob/data/http) and save. Do NOT route photos
+        // through appDownloadManager / TG_STREAM — that path is for videos and
+        // made a simple long-press wait many seconds with a stuck progress row.
+        if (isTelegramContext && mediaType === 'image' &&
+            telegramViewerSlideKind(target) !== 'video') {
+          let imageUrl = url;
+          try {
+            const imgEl = (String((target && target.tagName) || '').toLowerCase() === 'img')
+              ? target
+              : (target && target.querySelector && target.querySelector('img'));
+            if (imgEl) {
+              const current = String(imgEl.currentSrc || imgEl.src || '').trim();
+              const srcset = String(imgEl.srcset || imgEl.getAttribute('srcset') || '');
+              if (srcset) {
+                let best = current;
+                let bestW = 0;
+                srcset.split(',').forEach(part => {
+                  const trimmed = String(part || '').trim();
+                  if (!trimmed) return;
+                  const bits = trimmed.split(/\\s+/);
+                  const u = bits[0];
+                  const wMatch = trimmed.match(/(\\d+)w/);
+                  const w = wMatch ? parseInt(wMatch[1], 10) : 0;
+                  if (u && w >= bestW) { bestW = w; best = u; }
+                });
+                if (best) imageUrl = best;
+              } else if (current) {
+                imageUrl = current;
+              }
+              try {
+                if (imageUrl && !/^https?:|^blob:|^data:/i.test(imageUrl)) {
+                  imageUrl = new URL(imageUrl, location.href).href;
+                }
+              } catch (_) {}
+            }
+          } catch (_) {}
+          if (tryBlobOrDataUrl(imageUrl, 'image')) {
+            e.preventDefault();
+            return;
+          }
+          Flutter.postMessage(JSON.stringify({
+            type: 'media',
+            mediaType: 'image',
+            url: imageUrl,
+            isBase64: false,
+            isSmartGesture: isSmartGesture,
+            action: 'download',
+            pageUrl: location.href || '',
+            title: document.title || '',
+            sessionId: longPressSessionId,
+            candidates: cands
+          }));
+          e.preventDefault();
+          return;
+        }
         if (tryBlobOrDataUrl(url, mediaType)) {
           e.preventDefault();
           return;
@@ -11317,7 +11682,7 @@ class _BrowserPageState extends State<BrowserPage>
       }
 
       // 供动作编排直接调用：不依赖合成 touch 事件链，避免 touchmove 取消长按。
-      window.__appTriggerSmartLongPress = function(clientX, clientY) {
+      window.__appTriggerSmartLongPress = async function(clientX, clientY) {
         try {
           const x = Number(clientX);
           const y = Number(clientY);
@@ -11364,10 +11729,13 @@ class _BrowserPageState extends State<BrowserPage>
             touches: [{ clientX: cx, clientY: cy }],
             changedTouches: [{ clientX: cx, clientY: cy }]
           };
-          handleMediaDownload(media, fakeEvent);
+          const started = await handleMediaDownload(media, fakeEvent);
           setTimeout(function() {
             try { media.removeAttribute('data-app-smart-gesture'); } catch (_) {}
           }, 2800);
+          if (started === false) {
+            return {ok: false, reason: 'download_not_started'};
+          }
           return {ok: true, tag: media.tagName || ''};
         } catch (err) {
           return {ok: false, reason: String(err && err.message || err || 'error')};
@@ -11711,12 +12079,29 @@ class _BrowserPageState extends State<BrowserPage>
         } else if (phase == 'completed' || phase == 'failed') {
           _telegramOfficialDownloadActive = false;
           _telegramOfficialDownloadLastProgressAt = null;
-          if (phase == 'failed' && _telegramStreamProgressTaskId.isNotEmpty) {
-            _updateDownloadTask(
-              _telegramStreamProgressTaskId,
-              status: 'failed',
-              progressDetail: 'Telegram 原始方式未成功，正在尝试兼容方式',
-            );
+          if (_telegramStreamProgressTaskId.isNotEmpty) {
+            if (phase == 'failed') {
+              _updateDownloadTask(
+                _telegramStreamProgressTaskId,
+                status: 'failed',
+                progressDetail: 'Telegram 原始方式未成功，正在尝试兼容方式',
+              );
+            } else {
+              // Manager reported completion; if the stream saver already marked
+              // completed this is a no-op, otherwise close a stuck row.
+              final idx = _downloadTasks.indexWhere(
+                (row) => row['id'] == _telegramStreamProgressTaskId,
+              );
+              if (idx >= 0 &&
+                  (_downloadTasks[idx]['status'] ?? '') == 'downloading') {
+                _updateDownloadTask(
+                  _telegramStreamProgressTaskId,
+                  status: 'completed',
+                  progress: 1.0,
+                  progressDetail: 'Telegram 媒体已保存',
+                );
+              }
+            }
           }
         }
         debugPrint(
@@ -11741,6 +12126,22 @@ class _BrowserPageState extends State<BrowserPage>
               ),
             );
           }
+        }
+        return;
+      }
+      if (data['type'] == 'media_busy') {
+        final busySmart =
+            data['isSmartGesture'] == true || _isSmartDemoLearningActive();
+        debugPrint(
+          'media busy soft-lock hit smart=$busySmart '
+          'url=${(data['url'] ?? '').toString()}',
+        );
+        if (busySmart) {
+          final task = _smartDownloadTask;
+          if (task != null) {
+            task['lastGestureFailureType'] = 'already_processing';
+          }
+          await _completeSmartGestureDownload(false);
         }
         return;
       }
@@ -11831,6 +12232,27 @@ class _BrowserPageState extends State<BrowserPage>
           'page=$messagePageUrl',
         );
         activeSmartTask['mediaType'] = MediaType.video;
+      }
+      final telegramSmartContext =
+          activeSmartTask != null &&
+          ((activeSmartTask['siteProfile'] ?? '').toString() == 'telegram' ||
+              _isTelegramPlatformPage(messagePageUrl) ||
+              _isTelegramPlatformPage(_currentUrl));
+      // Telegram mixed album: sync task type to the actual centered media.
+      // Video-only / image-only tasks still reject the opposite type.
+      if (isSmartGesture &&
+          telegramSmartContext &&
+          activeSmartTask['allowMixedMedia'] == true &&
+          (requestedMediaType == MediaType.image ||
+              requestedMediaType == MediaType.video)) {
+        if (activeSmartTask['mediaType'] != requestedMediaType) {
+          debugPrint(
+            '[SMART_MEDIA_GATE] telegram mixed sync '
+            '${(activeSmartTask['mediaType'] as MediaType?)?.name ?? '?'}'
+            '->${requestedMediaType.name}',
+          );
+        }
+        activeSmartTask['mediaType'] = requestedMediaType;
       }
       final rejectsUnexpectedSmartMedia =
           isSmartGesture &&
@@ -18009,17 +18431,26 @@ class _BrowserPageState extends State<BrowserPage>
     var historyExpanded = false;
     // 分页嗅探：预先选择最多嗅探到哪一层（页数上限）；嗅探中可软停止并保留已结果。
     var selectedSniffMaxPages = _kPaginatedSniffMaxPages;
-    // 媒体类型：可改；Facebook 的操作步骤完全由动作编排决定。
+    // 媒体类型：可不选（混排）或只选图片/视频。
     // 91 is video-first. A poster under the finger can otherwise make the
     // dialog say "image" while the verified 91 pipeline resolves a video.
     // The user can still explicitly select the image chip afterwards.
     final is91DialogHost =
         dialogHost == '91cg1.com' || dialogHost.endsWith('.91cg1.com');
-    var selectedMediaType = is91DialogHost ? MediaType.video : initialMediaType;
+    final isTelegramDialogHost =
+        _smartSiteProfile(dialogHost) == 'telegram' ||
+        _isTelegramPlatformPage(
+          startFromCurrentPage ? _currentUrl : dialogNormalized,
+        );
+    // null = 图片+视频混排（默认）；点选其一则只下该类型。
+    MediaType? selectedMediaType =
+        is91DialogHost
+            ? MediaType.video
+            : (isTelegramDialogHost ? null : initialMediaType);
     // 沿用套路：本站有专有套路则默认专有；否则默认通用；均可手动改选。
     String selectedPatternId = _defaultConfirmedPatternIdForHost(
       dialogHost,
-      mediaType: selectedMediaType,
+      mediaType: selectedMediaType ?? MediaType.video,
     );
     var pipelineManuallySelected = false;
     final nativePatternId = _defaultConfirmedPatternIdForHost(dialogHost);
@@ -18250,6 +18681,11 @@ class _BrowserPageState extends State<BrowserPage>
                           fontWeight: FontWeight.w600,
                         ),
                       ),
+                      const SizedBox(height: 4),
+                      const Text(
+                        '可不选（默认混排图片+视频）；也可只选图片或只选视频。',
+                        style: TextStyle(fontSize: 11, color: Colors.black54),
+                      ),
                       const SizedBox(height: 6),
                       Wrap(
                         spacing: 6,
@@ -18257,13 +18693,26 @@ class _BrowserPageState extends State<BrowserPage>
                         children: [
                           ChoiceChip(
                             label: const Text(
+                              '混排',
+                              style: TextStyle(fontSize: 12),
+                            ),
+                            selected: selectedMediaType == null,
+                            onSelected: (_) {
+                              setDialogState(() {
+                                selectedMediaType = null;
+                              });
+                            },
+                          ),
+                          ChoiceChip(
+                            label: const Text(
                               '视频',
                               style: TextStyle(fontSize: 12),
                             ),
                             selected: selectedMediaType == MediaType.video,
-                            onSelected: (_) {
+                            onSelected: (selected) {
                               setDialogState(() {
-                                selectedMediaType = MediaType.video;
+                                selectedMediaType =
+                                    selected ? MediaType.video : null;
                               });
                             },
                           ),
@@ -18273,9 +18722,10 @@ class _BrowserPageState extends State<BrowserPage>
                               style: TextStyle(fontSize: 12),
                             ),
                             selected: selectedMediaType == MediaType.image,
-                            onSelected: (_) {
+                            onSelected: (selected) {
                               setDialogState(() {
-                                selectedMediaType = MediaType.image;
+                                selectedMediaType =
+                                    selected ? MediaType.image : null;
                               });
                             },
                           ),
@@ -19309,7 +19759,8 @@ class _BrowserPageState extends State<BrowserPage>
       }
     }
 
-    final mediaType = selectedMediaType;
+    final allowMixedMedia = selectedMediaType == null;
+    final mediaType = selectedMediaType ?? MediaType.video;
 
     /// 「沿用套路」：按所选站点固化管线启动。
     /// 专有套路（91 / X / 未来站点）均可手动借用到当前浏览站；默认仍为本站专有或通用。
@@ -19378,7 +19829,7 @@ class _BrowserPageState extends State<BrowserPage>
           keyword: enteredKeyword,
           targetCount: enteredCount,
           mediaType: mediaType,
-          allowMixedMedia: false,
+          allowMixedMedia: allowMixedMedia,
           startFromCurrentPage: startFromCurrentPage,
           minVideoBytes: minVideoBytes,
           maxVideoBytes: maxVideoBytes,
@@ -19416,7 +19867,7 @@ class _BrowserPageState extends State<BrowserPage>
             recipe: recipe,
             targetCount: enteredCount,
             mediaType: mediaType,
-            allowMixedMedia: false,
+            allowMixedMedia: allowMixedMedia,
             startFromCurrentPage: startFromCurrentPage,
             minVideoBytes: minVideoBytes,
             maxVideoBytes: maxVideoBytes,
@@ -19447,7 +19898,10 @@ class _BrowserPageState extends State<BrowserPage>
         keyword: enteredKeyword,
         targetCount: enteredCount,
         mediaType: mediaType,
-        allowMixedMedia: id == 'instagram_grid' || id == 'facebook_grid',
+        allowMixedMedia:
+            allowMixedMedia ||
+            id == 'instagram_grid' ||
+            id == 'facebook_grid',
         startFromCurrentPage: startFromCurrentPage,
         minVideoBytes: minVideoBytes,
         maxVideoBytes: maxVideoBytes,
@@ -19506,10 +19960,8 @@ class _BrowserPageState extends State<BrowserPage>
           recipe: runRecipe,
           targetCount: enteredCount,
           mediaType: mediaType,
-          // Telegram's media viewer is a mixed photo/video carousel. Its
-          // automatic recipe must download the actual centered media type,
-          // rather than rejecting photos in a video-seeded task (or vice versa).
-          allowMixedMedia: _smartSiteProfile(dialogHost) == 'telegram',
+          // 不选类型=混排；用户显式选图片/视频时只下该类型（含 Telegram）。
+          allowMixedMedia: allowMixedMedia,
           startFromCurrentPage: startFromCurrentPage,
           minVideoBytes: minVideoBytes,
           maxVideoBytes: maxVideoBytes,
@@ -19652,6 +20104,8 @@ class _BrowserPageState extends State<BrowserPage>
     }
     final siteProfile = _smartSiteProfile(host);
     final usesFacebookPipeline = _smartUsesFacebookPipeline(siteProfile);
+    // 混排由对话框「不选类型」显式开启；用户只选图片/视频时不得强行混排。
+    final resolvedAllowMixed = allowMixedMedia;
     // Facebook 视频保留 stub 下限；这是防止黑色视频占位入库的必要校验。
     var resolvedMinVideoBytes = minVideoBytes;
     if (usesFacebookPipeline && mediaType == MediaType.video) {
@@ -19670,7 +20124,7 @@ class _BrowserPageState extends State<BrowserPage>
       'facebookPipeline': usesFacebookPipeline,
       'keyword': '',
       'mediaType': mediaType,
-      'allowMixedMedia': allowMixedMedia,
+      'allowMixedMedia': resolvedAllowMixed,
       'target': targetCount.clamp(1, _kSmartDownloadMaxTarget),
       'minVideoBytes': resolvedMinVideoBytes,
       'maxVideoBytes': resolvedMaxVideoBytes,
@@ -19873,6 +20327,10 @@ class _BrowserPageState extends State<BrowserPage>
     final tag = (identity['tag'] ?? '').toString().trim().toUpperCase();
     if (key.isEmpty || key.startsWith('none|')) return false;
     if (tag == 'NONE') return false;
+    // Telegram document / album-slide keys stay stable across blob URL reuse.
+    if (key.startsWith('tgdoc:') || key.startsWith('tgslide:')) {
+      return true;
+    }
     if (src.isEmpty ||
         src == 'about:blank' ||
         src == 'null' ||
@@ -19951,6 +20409,11 @@ class _BrowserPageState extends State<BrowserPage>
     final srcs = _handledMediaSrcsOf(task);
     // 仅精确匹配，避免 src 子串误判「重复」导致健康页狂切
     if (key.isNotEmpty && keys.contains(key)) return true;
+    // Telegram album reuses blob:/stream URLs across slides — key (tgdoc/
+    // tgslide) is the only reliable handled signal.
+    if (key.startsWith('tgdoc:') || key.startsWith('tgslide:')) {
+      return false;
+    }
     if (src.isNotEmpty && srcs.contains(src)) return true;
     return false;
   }
@@ -20022,7 +20485,17 @@ class _BrowserPageState extends State<BrowserPage>
       final key = (identity!['key'] ?? '').toString();
       final src = (identity['src'] ?? '').toString().trim();
       if (key.isNotEmpty) _handledMediaKeysOf(task).add(key);
-      if (src.isNotEmpty) _handledMediaSrcsOf(task).add(src);
+      // Do not remember Telegram blob/data srcs: the viewer reuses them for
+      // later photos/videos, and excludeSrcs would hide the next real slide.
+      final telegramKey =
+          key.startsWith('tgdoc:') || key.startsWith('tgslide:');
+      final reusableSrc =
+          src.startsWith('blob:') ||
+          src.startsWith('data:') ||
+          src.contains('/stream/');
+      if (src.isNotEmpty && !(telegramKey && reusableSrc)) {
+        _handledMediaSrcsOf(task).add(src);
+      }
       task['lastHandledMediaKey'] = key;
       task['lastHandledMediaSrc'] = src;
       debugPrint(
@@ -20371,12 +20844,14 @@ class _BrowserPageState extends State<BrowserPage>
   bool _actionRecipeIsInvalidMediaOutcome(String outcome) {
     final o = outcome.trim().toLowerCase();
     return o == 'invalid_smart_media_content' ||
+        o == 'invalid_telegram_thumbnail' ||
         o == 'fb_stub_rejected' ||
         o == 'fb_identity_unbound' ||
         o == 'fb_video_track_not_captured' ||
         o == 'fb_audio_track_not_captured' ||
         o == 'outside_requested_size_range' ||
         o.contains('invalid_smart_media') ||
+        o.contains('invalid_telegram_thumbnail') ||
         o.contains('stub') ||
         o.contains('不是有效') ||
         o.contains('无效媒体');
@@ -24702,9 +25177,12 @@ class _BrowserPageState extends State<BrowserPage>
     }
     // 验证/编排时混合识别，优先屏幕中心大媒体，避免右下角小图
     final prevMixed = task['allowMixedMedia'];
-    // Only template probing may inspect mixed media. A real video recipe must
-    // not select a poster IMG and count its WebP/JPG save as video success.
-    if (probe) {
+    final telegramTask =
+        (task['siteProfile'] ?? '').toString() == 'telegram' ||
+        _isTelegramPlatformPage(_currentUrl);
+    // Template probing may inspect mixed media. Mixed Telegram albums also
+    // resolve the centered type. Video-only recipes must not pick a poster.
+    if (probe || (telegramTask && prevMixed == true)) {
       task['allowMixedMedia'] = true;
     }
     var hit = await _actionFindCenterMedia(task);
@@ -24736,15 +25214,19 @@ class _BrowserPageState extends State<BrowserPage>
       final resolvedType =
           hit['type']?.toString() == 'image'
               ? MediaType.image
-              : MediaType.video;
-      if (task['mediaType'] != resolvedType) {
-        debugPrint(
-          '[SMART_MEDIA_GATE] corrected mixed card type from '
-          '${(task['mediaType'] as MediaType?)?.name ?? 'unknown'} '
-          'to ${resolvedType.name}',
-        );
+              : hit['type']?.toString() == 'video'
+              ? MediaType.video
+              : null;
+      if (resolvedType != null) {
+        if (task['mediaType'] != resolvedType) {
+          debugPrint(
+            '[SMART_MEDIA_GATE] corrected mixed card type from '
+            '${(task['mediaType'] as MediaType?)?.name ?? 'unknown'} '
+            'to ${resolvedType.name}',
+          );
+        }
+        task['mediaType'] = resolvedType;
       }
-      task['mediaType'] = resolvedType;
     }
     // 视觉手指：媒体中心；找不到媒体时屏幕正中
     final point = Offset(

@@ -613,13 +613,126 @@ function __smartEaseInOut(t) {
   const w = window.innerWidth || 360;
   const h = window.innerHeight || 640;
   const cx = w / 2, cy = h / 2;
-  const selector = imagesOnly ? 'img' : (videosOnly ? 'video' : 'video, img');
+  let isTelegram = false;
+  let telegramSlideKind = 'unknown';
+  try {
+    const host = String(location.hostname || '').toLowerCase();
+    isTelegram = host === 'web.telegram.org' || host === 'telegram.org' ||
+      host.endsWith('.telegram.org');
+  } catch (_) {}
+  if (isTelegram) {
+    try {
+      const viewer = window.appMediaViewer;
+      const viewerTarget = viewer && viewer.target;
+      const media = viewerTarget && viewerTarget.message && viewerTarget.message.media;
+      if (media) {
+        const doc = media.document;
+        const docType = String((doc && doc.type) || '').toLowerCase();
+        const docMime = String((doc && doc.mime_type) || '').toLowerCase();
+        if (doc && (docType === 'video' || docMime.startsWith('video/'))) {
+          telegramSlideKind = 'video';
+        } else if (media.photo || docType === 'photo' || docMime.startsWith('image/')) {
+          telegramSlideKind = 'photo';
+        }
+      }
+    } catch (_) {}
+    if (telegramSlideKind === 'unknown') {
+      try {
+        for (const v of document.querySelectorAll(
+          '.media-viewer video, .media-viewer-whole video, video'
+        )) {
+          const r = v.getBoundingClientRect();
+          const iw = Math.max(0, Math.min(w, r.right) - Math.max(0, r.left));
+          const ih = Math.max(0, Math.min(h, r.bottom) - Math.max(0, r.top));
+          if (iw * ih < w * h * 0.12) continue;
+          if (!(r.left <= cx && r.right >= cx && r.top <= cy && r.bottom >= cy)) continue;
+          const live =
+            (!v.paused && !v.ended) ||
+            Number(v.currentTime || 0) > 0.2;
+          if (live) { telegramSlideKind = 'video'; break; }
+        }
+        if (telegramSlideKind === 'unknown') {
+          for (const img of document.querySelectorAll(
+            '.media-viewer img, .media-viewer-whole img, .media-photo img'
+          )) {
+            const r = img.getBoundingClientRect();
+            const iw = Math.max(0, Math.min(w, r.right) - Math.max(0, r.left));
+            const ih = Math.max(0, Math.min(h, r.bottom) - Math.max(0, r.top));
+            if (iw * ih < w * h * 0.12) continue;
+            if (r.left <= cx && r.right >= cx && r.top <= cy && r.bottom >= cy) {
+              telegramSlideKind = 'photo';
+              break;
+            }
+          }
+        }
+      } catch (_) {}
+    }
+  }
+  const selector = imagesOnly
+    ? 'img'
+    : (videosOnly
+      ? 'video'
+      : (isTelegram && telegramSlideKind === 'photo'
+        ? 'img, video'
+        : 'video, img'));
   const se = document.scrollingElement || document.documentElement || document.body;
   const marked = document.querySelector('[data-app-smart-current="1"]');
   function srcOf(el) {
     if (!el) return '';
     return String(el.currentSrc || el.src || el.getAttribute('src') ||
       el.getAttribute('data-src') || el.getAttribute('poster') || '').trim();
+  }
+  function telegramSlideToken() {
+    const roots = [];
+    try {
+      document.querySelectorAll(
+        '.media-viewer, .media-viewer-whole, .MediaViewer, #MediaViewer'
+      ).forEach(n => roots.push(n));
+    } catch (_) {}
+    if (!roots.length) roots.push(document.body);
+    const re = /\\b(\\d{1,4})\\s*[\\/／]\\s*(\\d{1,4})\\b/;
+    for (const root of roots) {
+      if (!root) continue;
+      const nodes = root.querySelectorAll
+        ? root.querySelectorAll('span, div, button, p')
+        : [];
+      for (const node of nodes) {
+        const t = String(node.textContent || '').replace(/\\s+/g, ' ').trim();
+        if (!t || t.length > 24) continue;
+        const m = t.match(re);
+        if (m) return m[1] + '/' + m[2];
+      }
+    }
+    return '';
+  }
+  function telegramDocToken(el) {
+    let walk = el;
+    for (let i = 0; i < 10 && walk; i++, walk = walk.parentElement) {
+      try {
+        const ds = walk.dataset || {};
+        for (const k of Object.keys(ds)) {
+          const key = String(k || '').toLowerCase();
+          const val = String(ds[k] || '').trim();
+          if (!val) continue;
+          if (/(message|document|peer|mid|doc|media)/.test(key) &&
+              /\\d{3,}/.test(val)) {
+            return key + '=' + val.slice(0, 80);
+          }
+        }
+        if (walk.attributes) {
+          for (const attr of Array.from(walk.attributes)) {
+            const name = String(attr.name || '').toLowerCase();
+            const val = String(attr.value || '').trim();
+            if (!val || val.length > 120) continue;
+            if (/(message|document|peer|mid|doc)/.test(name) &&
+                /\\d{3,}/.test(val)) {
+              return name + '=' + val.slice(0, 80);
+            }
+          }
+        }
+      } catch (_) {}
+    }
+    return '';
   }
   function pick() {
     if (marked && (!imagesOnly || marked.tagName === 'IMG') &&
@@ -635,8 +748,35 @@ function __smartEaseInOut(t) {
       if (iw < 100 || ih < 80) continue;
       const mx = r.left + r.width / 2, my = r.top + r.height / 2;
       const cover = (r.left <= cx && r.right >= cx && r.top <= cy && r.bottom >= cy) ? 1 : 0;
+      const isVideo = el.tagName === 'VIDEO' ? 1 : 0;
+      let playingBonus = 0;
+      if (isVideo) {
+        try {
+          if (!el.paused && !el.ended) playingBonus += 8000;
+          if (Number(el.currentTime || 0) > 0.2) playingBonus += 2000;
+        } catch (_) {}
+      }
+      let telegramImageBonus = 0;
+      let telegramVideoBonus = 0;
+      let telegramVideoPenalty = 0;
+      let telegramImagePenalty = 0;
+      if (isTelegram) {
+        if (telegramSlideKind === 'photo') {
+          telegramImageBonus = (!isVideo && cover) ? 20000 : 0;
+          telegramVideoPenalty = isVideo ? 25000 : 0;
+        } else if (telegramSlideKind === 'video') {
+          telegramVideoBonus = isVideo ? 30000 : 0;
+          telegramImagePenalty = (!isVideo) ? 40000 : 0;
+        } else {
+          telegramImageBonus = (!isVideo && cover) ? 8000 : 0;
+          telegramVideoPenalty = (isVideo && !playingBonus) ? 6000 : 0;
+        }
+      }
       const score = cover * 50000 + (iw * ih) / (w * h) * 20000 -
-        Math.hypot(mx - cx, my - cy) * 2 + (el.tagName === 'VIDEO' ? 2000 : 0);
+        Math.hypot(mx - cx, my - cy) * 2 +
+        (isTelegram ? 0 : isVideo * 2000) +
+        playingBonus + telegramImageBonus + telegramVideoBonus -
+        telegramVideoPenalty - telegramImagePenalty;
       if (score > bestScore) { bestScore = score; best = el; }
     }
     return best;
@@ -644,16 +784,43 @@ function __smartEaseInOut(t) {
   const el = pick();
   const r = el ? el.getBoundingClientRect() : {left:0,top:0,width:0,height:0};
   const src = srcOf(el);
-  const key = [
-    el ? el.tagName : 'none',
-    src.slice(0, 220),
-    Math.round(r.left), Math.round(r.top),
-    Math.round(r.width), Math.round(r.height),
-    Math.round(Number(se && se.scrollTop) || 0),
-    Math.round(Number(se && se.scrollLeft) || 0),
-    String(location.pathname || ''),
-    String(location.search || '').slice(0, 80)
-  ].join('|');
+  const tag = el ? el.tagName : 'none';
+  let key = '';
+  if (isTelegram && el) {
+    const doc = telegramDocToken(el);
+    const slide = telegramSlideToken();
+    const nw = Math.round(Number(el.naturalWidth || el.videoWidth || r.width) || 0);
+    const nh = Math.round(Number(el.naturalHeight || el.videoHeight || r.height) || 0);
+    let dur = 0;
+    try {
+      if (tag === 'VIDEO') dur = Math.round(Number(el.duration || 0) * 10) / 10;
+    } catch (_) {}
+    if (doc) {
+      key = 'tgdoc:' + doc + '|' + tag + '|' + nw + 'x' + nh +
+        (dur > 0 ? ('|d' + dur) : '');
+    } else if (slide) {
+      key = 'tgslide:' + slide + '|' + tag + '|' + nw + 'x' + nh +
+        (dur > 0 ? ('|d' + dur) : '');
+    } else {
+      // Blob URLs are reused across album slides; keep geometry+kind only as
+      // a last resort so markHandled can still advance the carousel.
+      key = 'tgslide:geom|' + tag + '|' + nw + 'x' + nh +
+        '|' + Math.round(r.width) + 'x' + Math.round(r.height) +
+        (dur > 0 ? ('|d' + dur) : '') +
+        '|' + String(location.pathname || '');
+    }
+  } else {
+    key = [
+      tag,
+      src.slice(0, 220),
+      Math.round(r.left), Math.round(r.top),
+      Math.round(r.width), Math.round(r.height),
+      Math.round(Number(se && se.scrollTop) || 0),
+      Math.round(Number(se && se.scrollLeft) || 0),
+      String(location.pathname || ''),
+      String(location.search || '').slice(0, 80)
+    ].join('|');
+  }
   return {
     ok: true,
     found: !!el,
@@ -1193,12 +1360,16 @@ function __smartEaseInOut(t) {
   const vh = Math.max(1, h);
   let isFacebook = false;
   let isFacebookReels = false;
+  let isTelegram = false;
+  let telegramSlideKind = 'unknown';
   try {
     const host = String(location.hostname || '').toLowerCase();
     isFacebook = host === 'facebook.com' || host.endsWith('.facebook.com') ||
       host === 'fb.com' || host.endsWith('.fb.com') ||
       host === 'fb.watch' || host.endsWith('.fb.watch') ||
       host === 'messenger.com' || host.endsWith('.messenger.com');
+    isTelegram = host === 'web.telegram.org' || host === 'telegram.org' ||
+      host.endsWith('.telegram.org');
     const path = String(location.pathname || '').toLowerCase();
     const href = String(location.href || '').toLowerCase();
     isFacebookReels = isFacebook && (
@@ -1206,7 +1377,66 @@ function __smartEaseInOut(t) {
       href.includes('/reel/') || href.includes('/reels')
     );
   } catch (_) {}
-  const selector = imagesOnly ? 'img' : (videosOnly ? 'video' : 'video, img');
+  if (isTelegram) {
+    try {
+      const viewer = window.appMediaViewer;
+      const viewerTarget = viewer && viewer.target;
+      const media = viewerTarget && viewerTarget.message && viewerTarget.message.media;
+      if (media) {
+        const doc = media.document;
+        const docType = String((doc && doc.type) || '').toLowerCase();
+        const docMime = String((doc && doc.mime_type) || '').toLowerCase();
+        if (doc && (docType === 'video' || docMime.startsWith('video/'))) {
+          telegramSlideKind = 'video';
+        } else if (media.photo || docType === 'photo' || docMime.startsWith('image/')) {
+          telegramSlideKind = 'photo';
+        }
+      }
+    } catch (_) {}
+    if (telegramSlideKind === 'unknown') {
+      try {
+        const videos = Array.from(document.querySelectorAll(
+          '.media-viewer video, .media-viewer-whole video, video'
+        ));
+        for (const v of videos) {
+          const r = v.getBoundingClientRect();
+          const iw = Math.max(0, Math.min(w, r.right) - Math.max(0, r.left));
+          const ih = Math.max(0, Math.min(h, r.bottom) - Math.max(0, r.top));
+          if (iw * ih < vw * vh * 0.12) continue;
+          if (!(r.left <= cx && r.right >= cx && r.top <= cy && r.bottom >= cy)) continue;
+          // Only actively presented video — buffered leftovers keep readyState.
+          const live =
+            (!v.paused && !v.ended) ||
+            Number(v.currentTime || 0) > 0.2;
+          if (live) { telegramSlideKind = 'video'; break; }
+        }
+        if (telegramSlideKind === 'unknown') {
+          const imgs = Array.from(document.querySelectorAll(
+            '.media-viewer img, .media-viewer-whole img, .media-photo img'
+          ));
+          for (const img of imgs) {
+            const r = img.getBoundingClientRect();
+            const iw = Math.max(0, Math.min(w, r.right) - Math.max(0, r.left));
+            const ih = Math.max(0, Math.min(h, r.bottom) - Math.max(0, r.top));
+            if (iw * ih < vw * vh * 0.12) continue;
+            if (r.left <= cx && r.right >= cx && r.top <= cy && r.bottom >= cy) {
+              telegramSlideKind = 'photo';
+              break;
+            }
+          }
+        }
+      } catch (_) {}
+    }
+  }
+  // Mixed albums: on a photo slide prefer IMG; on a video slide prefer VIDEO
+  // so the poster under the finger cannot win the score.
+  const selector = imagesOnly
+    ? 'img'
+    : (videosOnly
+      ? 'video'
+      : (isTelegram && telegramSlideKind === 'photo'
+        ? 'img, video'
+        : 'video, img'));
   function isExcludedSrc(src) {
     if (!src) return false;
     const s = String(src).toLowerCase();
@@ -1337,6 +1567,24 @@ function __smartEaseInOut(t) {
       } catch (_) {}
     }
     // 盖住中心 > 正在播放(Reels) > 面积 > 命中探测 > 视频 > FB CDN > 标记 > 靠近中心
+    // Telegram mixed album: score by CURRENT slide kind.
+    // photo → prefer IMG over leftover VIDEO; video → prefer VIDEO over poster IMG.
+    let telegramImageBonus = 0;
+    let telegramVideoBonus = 0;
+    let telegramVideoPenalty = 0;
+    let telegramImagePenalty = 0;
+    if (isTelegram) {
+      if (telegramSlideKind === 'photo') {
+        telegramImageBonus = (!isVideo && cover && areaRatio >= 0.18) ? 20000 : 0;
+        telegramVideoPenalty = isVideo ? 25000 : 0;
+      } else if (telegramSlideKind === 'video') {
+        telegramVideoBonus = isVideo ? 30000 : 0;
+        telegramImagePenalty = (!isVideo) ? 40000 : 0;
+      } else {
+        telegramImageBonus = (!isVideo && cover && areaRatio >= 0.18) ? 8000 : 0;
+        telegramVideoPenalty = (isVideo && !playingBonus) ? 6000 : 0;
+      }
+    }
     const score =
       cover * 50000 +
       playingBonus +
@@ -1344,7 +1592,11 @@ function __smartEaseInOut(t) {
       fromHitTest * 8000 +
       isVideo * 3000 +
       fbBonus * 2500 +
-      isMarked * 1500 -
+      isMarked * 1500 +
+      telegramImageBonus +
+      telegramVideoBonus -
+      telegramVideoPenalty -
+      telegramImagePenalty -
       dist * 2;
     const candidate = { el, mx, my, cover, areaRatio, isVideo, src, r, score };
     if (isVideo) videoAlternatives.push(candidate);
@@ -1358,7 +1610,12 @@ function __smartEaseInOut(t) {
   // mode the underlying video owns that visual card: downloading the poster
   // must never be counted as downloading the media. Keep genuine image-only
   // cards unchanged.
-  if (!imagesOnly && !videosOnly && best && !best.isVideo) {
+  // Telegram video slides use the same rule; photo slides must NOT promote a
+  // leftover VIDEO over the visible photo.
+  const telegramPromoteVideo =
+    isTelegram && telegramSlideKind === 'video';
+  if ((!isTelegram || telegramPromoteVideo) &&
+      !imagesOnly && !videosOnly && best && !best.isVideo) {
     let owningVideo = null;
     let owningScore = -1e18;
     for (const video of videoAlternatives) {
@@ -1385,12 +1642,14 @@ function __smartEaseInOut(t) {
       try {
         const cardSelector =
           'article, figure, [role="dialog"], [class*="card"], ' +
-          '[class*="item"], [class*="media"], [class*="slide"]';
+          '[class*="item"], [class*="media"], [class*="slide"], ' +
+          '.media-viewer, .media-viewer-whole';
         const imageCard = best.el.closest(cardSelector);
         sameCard = !!imageCard && imageCard === video.el.closest(cardSelector);
       } catch (_) {}
       const centerGap = Math.hypot(video.mx - best.mx, video.my - best.my);
       const ownsPoster =
+        telegramPromoteVideo ||
         overlapRatio >= 0.35 ||
         (sameCard && centerGap <= Math.max(120, Math.min(w, h) * 0.28));
       if (ownsPoster && video.score > owningScore) {
@@ -1399,6 +1658,29 @@ function __smartEaseInOut(t) {
       }
     }
     if (owningVideo) best = owningVideo;
+  }
+  // Telegram photo slide: if scoring still picked a leftover VIDEO, flip back
+  // to the largest center IMG when present.
+  if (isTelegram && telegramSlideKind === 'photo' && best && best.isVideo &&
+      !imagesOnly && !videosOnly) {
+    let photoAlt = null;
+    let photoScore = -1e18;
+    for (const el of candidates) {
+      if (!el || el.tagName !== 'IMG' || isJunkImg(el)) continue;
+      const { r, iw, ih, area } = visibleRect(el);
+      if (iw < minIw || ih < minIh) continue;
+      const mx = r.left + r.width / 2;
+      const my = r.top + r.height / 2;
+      const cover = coversCenter(r) ? 1 : 0;
+      const areaRatio = area / (vw * vh);
+      const score = cover * 50000 + areaRatio * 20000 -
+        Math.hypot(mx - cx, my - cy) * 2;
+      if (score > photoScore) {
+        photoScore = score;
+        photoAlt = { el, mx, my, cover, areaRatio, isVideo: 0, src: '', r, score };
+      }
+    }
+    if (photoAlt) best = photoAlt;
   }
 
   document.querySelectorAll('[data-app-smart-current]').forEach(el => {
