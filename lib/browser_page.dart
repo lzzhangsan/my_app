@@ -1076,6 +1076,79 @@ class _BrowserPageState extends State<BrowserPage>
     return score;
   }
 
+  Future<List<String>> _resolveInstagramHigherQualityVariants({
+    required String postUrl,
+    required String assetId,
+  }) async {
+    final uri = Uri.tryParse(postUrl.trim());
+    if (uri == null ||
+        !_isInstagramPlatformPage(postUrl) ||
+        assetId.trim().isEmpty ||
+        !RegExp(
+          r'/(?:reel|p|tv)/[^/]+',
+          caseSensitive: false,
+        ).hasMatch(uri.path)) {
+      return const <String>[];
+    }
+    try {
+      final networkService = NetworkService();
+      await networkService.initialize();
+      final headers = await _browserLikeMediaHeaders(
+        postUrl,
+        referer: postUrl,
+        accept: 'text/html,application/json;q=0.9,*/*;q=0.8',
+      );
+      final response = await networkService.dio.get<String>(
+        postUrl,
+        options: Options(
+          responseType: ResponseType.plain,
+          headers: headers,
+          sendTimeout: const Duration(seconds: 8),
+          receiveTimeout: const Duration(seconds: 10),
+        ),
+      );
+      var body = response.data ?? '';
+      if (body.isEmpty) return const <String>[];
+      body = body
+          .replaceAll(r'\u0026', '&')
+          .replaceAll(r'\u002F', '/')
+          .replaceAll(r'\u002f', '/')
+          .replaceAll(r'\/', '/')
+          .replaceAll('&amp;', '&');
+      final found = <String>{};
+      final urlPattern = RegExp(
+        r'''https?://[^"'\\\s<>]+?\.mp4(?:\?[^"'\\\s<>]*)?''',
+        caseSensitive: false,
+      );
+      for (final match in urlPattern.allMatches(body)) {
+        final candidate = match.group(0)?.trim() ?? '';
+        if (!_isInstagramCdnUrl(candidate)) continue;
+        final metadata = facebookMediaMetadata(candidate);
+        // The asset id is the hard identity gate. Never accept another Reel
+        // merely because its duration or page position happens to be close.
+        if (metadata?.isVideoTrack == true && metadata!.videoId == assetId) {
+          found.add(candidate);
+        }
+      }
+      final ranked =
+          found.toList()..sort(
+            (left, right) => _scoreInstagramVideoCandidate(
+              right,
+            ).compareTo(_scoreInstagramVideoCandidate(left)),
+          );
+      debugPrint(
+        '[IG_HQ_RESOLVE] post=$postUrl asset=$assetId variants=${ranked.length} '
+        'bestBitrate=${ranked.isEmpty ? 0 : facebookMediaMetadata(ranked.first)?.bitrate ?? 0}',
+      );
+      return ranked;
+    } catch (e) {
+      debugPrint(
+        '[IG_HQ_RESOLVE] failed post=$postUrl asset=$assetId error=$e',
+      );
+      return const <String>[];
+    }
+  }
+
   Future<void> _warmInstagramVideoForHigherQuality({
     required bool smartGesture,
   }) async {
@@ -5367,8 +5440,9 @@ class _BrowserPageState extends State<BrowserPage>
           facebookMetadata?.isVideoTrack == true &&
           facebookMetadata!.videoId == facebookDashVideoId;
       final attemptMinFileBytes =
-          (isFacebookPipeline || isInstagramPipeline) &&
-                  facebookMetadata?.isVideoTrack == true
+          isInstagramPipeline && facebookMetadata?.isVideoTrack == true
+              ? instagramVideoMinimumBytes(attempts[i])
+              : isFacebookPipeline && facebookMetadata?.isVideoTrack == true
               ? facebookVideoMinimumBytes(attempts[i])
               : effectiveMinFileBytes;
       progress.value = null;
@@ -10565,7 +10639,17 @@ class _BrowserPageState extends State<BrowserPage>
                 pageUrl: location.href || '',
                 sourcePageUrl: isXPlatformContext
                   ? String(target.__appXStatusUrl || location.href || '')
-                  : String(location.href || ''),
+                  : (isInstagramContext
+                    ? (() => {
+                        try {
+                          const article = videoEl && videoEl.closest && videoEl.closest('article');
+                          const link = article && article.querySelector(
+                            'a[href*="/reel/"],a[href*="/p/"],a[href*="/tv/"]'
+                          );
+                          return String(link && (link.href || link.getAttribute('href')) || location.href || '');
+                        } catch (_) { return String(location.href || ''); }
+                      })()
+                    : String(location.href || '')),
                 siteMediaId: isXPlatformContext
                   ? String(target.__appXStatusId || '')
                   : (isFacebookContext ? String(target.__appFbVideoKey || '') : ''),
@@ -12011,6 +12095,17 @@ class _BrowserPageState extends State<BrowserPage>
                               metadata.videoId.isNotEmpty,
                         )
                         .videoId;
+                final instagramSourcePageUrl =
+                    (data['sourcePageUrl'] ?? messagePageUrl).toString().trim();
+                final higherQualityVariants =
+                    await _resolveInstagramHigherQualityVariants(
+                      postUrl: instagramSourcePageUrl,
+                      assetId: selectedInstagramAssetId,
+                    );
+                final instagramDownloadTracks = <String>[
+                  ...higherQualityVariants,
+                  ...boundInstagramTracks,
+                ];
                 if (_smartDownloadTask != null) {
                   _smartDownloadTask!['instagramTrackCaptureFailures'] = 0;
                 }
@@ -12020,11 +12115,11 @@ class _BrowserPageState extends State<BrowserPage>
                         messagePageUrl.isNotEmpty
                             ? messagePageUrl
                             : _currentUrl,
-                    'videoUrl': boundInstagramTracks.first,
+                    'videoUrl': instagramDownloadTracks.first,
                     // Keep the matching audio track in this list. The Instagram
                     // pipeline removes it from video attempts only after binding
                     // it to the selected video asset for muxing.
-                    'candidateUrls': boundInstagramTracks,
+                    'candidateUrls': instagramDownloadTracks,
                     'title': (data['title'] ?? '').toString(),
                     'downloadOrigin': 'long_press',
                     'isSmartGesture':

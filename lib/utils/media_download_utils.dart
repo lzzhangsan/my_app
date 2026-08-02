@@ -98,6 +98,18 @@ int facebookVideoMinimumBytes(String url) {
   );
 }
 
+/// Instagram can legitimately serve very short/low-bitrate DASH video tracks
+/// below Facebook's 256 KiB safety floor. Use the signed duration/bitrate
+/// estimate when available, while retaining a small absolute floor that still
+/// rejects init-only placeholders. Container validation remains the final gate.
+int instagramVideoMinimumBytes(String url) {
+  final metadata = facebookMediaMetadata(url);
+  if (metadata?.isVideoTrack != true) return 64 * 1024;
+  final expected = metadata!.expectedBytes;
+  if (expected == null) return 64 * 1024;
+  return (expected * 0.40).round().clamp(64 * 1024, 512 * 1024);
+}
+
 /// Facebook Reels stubs (init-only / incomplete progressive) often land around
 /// tens of KB. Real short videos are typically several MB+. Reject below this
 /// before inserting into the media library; callers should retry the next URL.

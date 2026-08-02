@@ -283,6 +283,20 @@ void main() {
       facebookMediaMetadata(videoUrl)?.expectedBytes,
       greaterThan(facebookMediaMetadata(audioUrl)!.expectedBytes!),
     );
+    final shortLowBitrateVideo = candidate(<String, Object>{
+      'xpv_asset_id': 18111588757781907,
+      'vencode_tag': 'ig-xpvds.clips.c2-C3.dash_baseline_1_v1',
+      'duration_s': 9,
+      'bitrate': 214566,
+    });
+    expect(
+      instagramVideoMinimumBytes(shortLowBitrateVideo),
+      lessThan(kFacebookVerifiedTrackMinBytes),
+    );
+    expect(
+      instagramVideoMinimumBytes(shortLowBitrateVideo),
+      lessThan(facebookMediaMetadata(shortLowBitrateVideo)!.expectedBytes!),
+    );
   });
 
   test('facebookIdentitiesMatch treats quality suffixes as same reel', () {
