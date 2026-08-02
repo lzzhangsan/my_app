@@ -835,6 +835,7 @@ class _BrowserPageState extends State<BrowserPage>
   bool _isLoading = false;
   double _loadingProgress = 0.0;
   String _currentUrl = 'https://www.baidu.com';
+  final Set<String> _facebookMobileFallbackAttempted = <String>{};
   late final DatabaseService _databaseService;
   List<Map<String, String>> _bookmarks = [];
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
@@ -1647,6 +1648,24 @@ class _BrowserPageState extends State<BrowserPage>
     // Keep a stable fbvideo: bind from JS/long-press if already known.
     if (_isFacebookCdnIdentity(boundKey)) {
       return boundKey;
+    }
+
+    // A Reel id reported by the element under the finger is explicit target
+    // identity. When the same numeric id appears in post-prime CDN traffic,
+    // bind it immediately. Neighbor prefetch can generate more requests than
+    // the already-buffered current video, so request-count dominance must
+    // never override this exact match.
+    if (fingerUnderVideo && boundKey.startsWith('reel:')) {
+      final bare = boundKey.substring('reel:'.length);
+      final sameId = 'fbvideo:$bare';
+      final exactCount = postPrimeCounts[sameId] ?? 0;
+      if (RegExp(r'^\d{6,}$').hasMatch(bare) && exactCount > 0) {
+        debugPrint(
+          'FB_DL upgrade exact finger reel $boundKey -> $sameId '
+          'count=$exactCount (ignore neighbor dominance)',
+        );
+        return sameId;
+      }
     }
 
     // Post-prime range traffic from the *finger* video.
@@ -6565,6 +6584,30 @@ class _BrowserPageState extends State<BrowserPage>
         final failedUrl = req.url?.toString() ?? _currentUrl;
         final mainFrame = req.isForMainFrame ?? true;
         if (!mounted || !mainFrame) return;
+        final failedUri = Uri.tryParse(failedUrl);
+        final failedHost = failedUri?.host.toLowerCase() ?? '';
+        final facebookConnectionFailure =
+            (failedHost == 'facebook.com' ||
+                failedHost == 'www.facebook.com') &&
+            (description.contains('ERR_CONNECTION_CLOSED') ||
+                description.contains('ERR_CONNECTION_RESET') ||
+                description.contains('ERR_CONNECTION_TIMED_OUT') ||
+                description.contains('ERR_TIMED_OUT'));
+        if (facebookConnectionFailure &&
+            failedUri != null &&
+            _facebookMobileFallbackAttempted.add(failedUrl)) {
+          final mobileUrl =
+              failedUri.replace(host: 'm.facebook.com').toString();
+          debugPrint(
+            'Facebook www connection failed; retry mobile host: $mobileUrl',
+          );
+          _currentUrl = mobileUrl;
+          _urlController.text = mobileUrl;
+          unawaited(
+            ctrl.loadUrl(urlRequest: URLRequest(url: WebUri(mobileUrl))),
+          );
+          return;
+        }
         if (_isYouTubeBrowsePageUrl(failedUrl) &&
             (description.contains('ERR_CONNECTION') ||
                 description.contains('ERR_PROXY') ||
@@ -13058,7 +13101,49 @@ class _BrowserPageState extends State<BrowserPage>
     }
   }
 
+  void _abortSmartDownloadForWebExit() {
+    final task = _smartDownloadTask;
+    if (task == null) {
+      _cancelSmartBatchDownloads('用户已关闭当前网页');
+      return;
+    }
+
+    // Invalidate the task first. Every async smart loop checks object identity,
+    // so it can no longer schedule another long-press/swipe while resources
+    // below are being released.
+    _smartDownloadTask = null;
+    task['actionAwaitingLibrarySave'] = false;
+    task['actionLongPressNeedsConfirm'] = false;
+    final pendingCompleter = task.remove('actionDownloadCompleter');
+    if (pendingCompleter is Completer<bool> && !pendingCompleter.isCompleted) {
+      pendingCompleter.complete(false);
+    }
+    (task['deadlineTimer'] as Timer?)?.cancel();
+    (task['watchdogTimer'] as Timer?)?.cancel();
+    final discoveryToken = task['discoveryCancelToken'] as CancelToken?;
+    if (discoveryToken != null && !discoveryToken.isCancelled) {
+      discoveryToken.cancel('用户已关闭当前网页');
+    }
+    final discoveryTaskId = (task['discoveryTaskId'] ?? '').toString();
+    if (discoveryTaskId.isNotEmpty) _removeDownloadTask(discoveryTaskId);
+    _cancelSmartBatchDownloads('用户已关闭当前网页');
+    _longPressVideoDownloadInProgress = false;
+    _smartDownloadAdvancing = false;
+    _smartOperationPoint = null;
+    _smartOperationLabel = '';
+    _smartOperationShowFinger = true;
+    if (task['screenWakeLockEnabled'] == true) {
+      unawaited(
+        WakelockPlus.disable().catchError(
+          (Object e) => debugPrint('关闭网页时释放智能下载屏幕常亮失败: $e'),
+        ),
+      );
+    }
+    debugPrint('Smart download aborted and released: web page exited by user');
+  }
+
   void _exitWebPage() {
+    _abortSmartDownloadForWebExit();
     _clearWebBackStack();
     _controller?.loadUrl(urlRequest: URLRequest(url: WebUri('about:blank')));
     setState(() {
