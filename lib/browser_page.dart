@@ -1304,6 +1304,40 @@ class _BrowserPageState extends State<BrowserPage>
         );
         return const <String>[];
       }
+
+      // A reused Instagram feed player can retain many previous/next Reel
+      // assets in the same MediaSource. Duration similarity alone is not a
+      // stable identity: unrelated short Reels are commonly only fractions of
+      // a second apart. In a contaminated binding, fail closed and let the
+      // existing current-video recovery obtain a fresh track instead of
+      // silently downloading a neighbour.
+      final durationMatchedAssets = <String>[];
+      for (final entry in tracksByAsset.entries) {
+        final deltas =
+            entry.value
+                .map(facebookMediaMetadata)
+                .whereType<FacebookMediaMetadata>()
+                .map((value) => value.durationSeconds)
+                .whereType<num>()
+                .map(
+                  (duration) =>
+                      (duration.toDouble() - targetDurationSeconds).abs(),
+                )
+                .toList();
+        if (deltas.isNotEmpty && deltas.reduce(min) <= allowedDelta) {
+          durationMatchedAssets.add(entry.key);
+        }
+      }
+      final bindingIsContaminated = tracksByAsset.length > 4;
+      if (durationMatchedAssets.length != 1 || bindingIsContaminated) {
+        debugPrint(
+          '[IG_BOUND_AMBIGUOUS] targetDuration='
+          '${targetDurationSeconds.toStringAsFixed(3)} '
+          'matched=${durationMatchedAssets.join('/')} '
+          'boundAssets=${tracksByAsset.length}; refusing duration-only guess',
+        );
+        return const <String>[];
+      }
     }
 
     // The exact MediaSource may only expose the audio half when Instagram
