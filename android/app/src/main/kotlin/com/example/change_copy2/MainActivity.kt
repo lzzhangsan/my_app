@@ -182,6 +182,26 @@ class MainActivity: FlutterActivity() {
                 }.start()
                 return@setMethodCallHandler
             }
+            if (call.method == "remuxSingleTrackMp4") {
+                val inputPath = call.argument<String>("inputPath")
+                val outputPath = call.argument<String>("outputPath")
+                val trackType = call.argument<String>("trackType") ?: "video"
+                if (inputPath.isNullOrBlank() || outputPath.isNullOrBlank()) {
+                    result.error("INVALID_ARGUMENT", "Missing remux path", null)
+                    return@setMethodCallHandler
+                }
+                val prefix = if (trackType == "audio") "audio/" else "video/"
+                Thread {
+                    try {
+                        remuxSingleTrackToMp4(inputPath, outputPath, prefix)
+                        runOnUiThread { result.success(true) }
+                    } catch (e: Exception) {
+                        File(outputPath).delete()
+                        runOnUiThread { result.error("REMUX_FAILED", e.toString(), null) }
+                    }
+                }.start()
+                return@setMethodCallHandler
+            }
             if (call.method != "muxMp4") {
                 result.notImplemented()
                 return@setMethodCallHandler
@@ -651,14 +671,19 @@ class MainActivity: FlutterActivity() {
         targetTrack: Int
     ) {
         extractor.selectTrack(sourceTrack)
-        val buffer = ByteBuffer.allocateDirect(16 * 1024 * 1024)
+        var buffer = ByteBuffer.allocateDirect(4 * 1024 * 1024)
         val info = MediaCodec.BufferInfo()
         var firstPresentationTimeUs = -1L
         var lastPresentationTimeUs = -1L
         while (true) {
             buffer.clear()
-            val size = extractor.readSampleData(buffer, 0)
+            var size = extractor.readSampleData(buffer, 0)
             if (size < 0) break
+            if (size > buffer.capacity()) {
+                buffer = ByteBuffer.allocateDirect(size + 1024)
+                size = extractor.readSampleData(buffer, 0)
+                if (size < 0) break
+            }
             info.offset = 0
             info.size = size
             val sampleTimeUs = extractor.sampleTime
@@ -674,6 +699,28 @@ class MainActivity: FlutterActivity() {
             if (!extractor.advance()) break
         }
         extractor.unselectTrack(sourceTrack)
+    }
+
+    /** Turn concatenated fMP4/HLS track files into a seekable progressive MP4. */
+    private fun remuxSingleTrackToMp4(inputPath: String, outputPath: String, trackPrefix: String) {
+        val extractor = MediaExtractor()
+        var muxer: MediaMuxer? = null
+        try {
+            extractor.setDataSource(inputPath)
+            val sourceTrack = findTrack(extractor, trackPrefix)
+            if (sourceTrack < 0) {
+                throw IllegalStateException("No $trackPrefix track in $inputPath")
+            }
+            File(outputPath).delete()
+            muxer = MediaMuxer(outputPath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            val targetTrack = muxer.addTrack(extractor.getTrackFormat(sourceTrack))
+            muxer.start()
+            writeTrack(extractor, sourceTrack, muxer, targetTrack)
+            muxer.stop()
+        } finally {
+            try { muxer?.release() } catch (_: Exception) {}
+            extractor.release()
+        }
     }
 
     private fun muxMp4Tracks(videoPath: String, audioPath: String, outputPath: String) {

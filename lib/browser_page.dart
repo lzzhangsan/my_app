@@ -185,6 +185,13 @@ const int _kDashParallelSegmentFetches = 10;
 /// 单主机最大并行连接数，应 ≥ 分片并行数，否则多余请求会在客户端排队。
 const int _kHlsMaxConnectionsPerHost = 24;
 
+/// X master 双轨并行：视频占大头，音频分片小、少占连接。
+const int _kXHlsVideoSegmentParallel = 18;
+const int _kXHlsAudioSegmentParallel = 6;
+
+/// 单轨 X HLS 自适应并发起始值（上限 [_kHlsMaxConnectionsPerHost]）。
+const int _kXHlsSingleTrackBaselineParallel = 16;
+
 /// 超过此大小的文件在独立 Isolate 中计算 MD5，减轻下载完成后主线程长时间卡顿。
 const int _kMd5IsolateThresholdBytes = 4 * 1024 * 1024;
 
@@ -2666,8 +2673,54 @@ class _BrowserPageState extends State<BrowserPage>
     final match = RegExp(
       r'/(?:amplify_video|ext_tw_video|tweet_video)/(\d+)/',
       caseSensitive: false,
-    ).firstMatch(url);
+    ).firstMatch(url.toLowerCase());
     return match?.group(1) ?? '';
+  }
+
+  Map<String, String> _xMediaIdToFileHashOf(Map<String, dynamic> task) {
+    final raw = task['xMediaIdToFileHash'];
+    if (raw is Map<String, String>) {
+      task['xMediaIdToFileHash'] = raw;
+      return raw;
+    }
+    if (raw is Map) {
+      final casted = raw.map(
+        (key, value) => MapEntry(key.toString(), value.toString()),
+      );
+      task['xMediaIdToFileHash'] = casted;
+      return casted;
+    }
+    final created = <String, String>{};
+    task['xMediaIdToFileHash'] = created;
+    return created;
+  }
+
+  void _rememberXSmartMediaLibraryHash(
+    Map<String, dynamic>? task,
+    String mediaUrl,
+    String fileHash,
+  ) {
+    if (task == null) return;
+    final hash = fileHash.trim();
+    if (hash.isEmpty) return;
+    final xMediaId = _xMediaIdentity(mediaUrl);
+    if (xMediaId.isEmpty) return;
+    _xMediaIdToFileHashOf(task)[xMediaId] = hash;
+  }
+
+  Future<bool> _shouldSkipConfirmedXSmartRedownload(
+    Map<String, dynamic>? task,
+    String xMediaId,
+  ) async {
+    if (task == null || xMediaId.isEmpty) return false;
+    final hash = (_xMediaIdToFileHashOf(task)[xMediaId] ?? '').trim();
+    if (hash.isEmpty) return false;
+    if (!await _libraryConfirmsFileHash(hash)) return false;
+    debugPrint(
+      'Smart download: skip X re-download id=$xMediaId '
+      '(library hash confirmed)',
+    );
+    return true;
   }
 
   int _scoreXVideoCandidate(String url) {
@@ -5179,6 +5232,19 @@ class _BrowserPageState extends State<BrowserPage>
           onFailureType?.call('already_in_smart_task');
           return false;
         }
+        if (!forceNoPreSkip &&
+            (prev == 'completed' || prev == 'failed') &&
+            await _shouldSkipConfirmedXSmartRedownload(
+              smartTask,
+              smartXMediaId,
+            )) {
+          if (isSmartGesture) {
+            smartTask?['lastGestureFailureType'] = 'already_in_library';
+          }
+          onFailureType?.call('already_in_library');
+          smartVideoStates[smartXMediaId] = 'completed';
+          return false;
+        }
         // 动作编排：忽略 completed/会话态预跳过，清掉软状态后强制再下
         if (forceNoPreSkip) {
           smartVideoStates.remove(smartXMediaId);
@@ -5652,7 +5718,8 @@ class _BrowserPageState extends State<BrowserPage>
       );
     }
     if (smartVideoStates != null && smartXMediaId.isNotEmpty) {
-      smartVideoStates[smartXMediaId] = ok ? 'completed' : 'failed';
+      smartVideoStates[smartXMediaId] =
+          ok || lastFailureType == 'already_in_library' ? 'completed' : 'failed';
     }
     if (_downloadTasks.length > taskLenBefore) {
       final last = _downloadTasks.first;
@@ -33348,6 +33415,198 @@ class _BrowserPageState extends State<BrowserPage>
         .join('; ');
   }
 
+  bool _isTwimgHost(String host) => host.toLowerCase() == 'video.twimg.com';
+
+  bool _isXHlsAudioTrackUrl(String url) {
+    final lower = url.toLowerCase();
+    return lower.contains('/pl/mp4a/') ||
+        lower.contains('/aud/mp4a/') ||
+        lower.contains('type=audio');
+  }
+
+  Future<int> _resolveHlsSegmentParallel({
+    required String sampleUrl,
+    int? overrideParallel,
+  }) async {
+    if (overrideParallel != null) {
+      return overrideParallel.clamp(1, _kHlsMaxConnectionsPerHost);
+    }
+    final host = Uri.tryParse(sampleUrl)?.host.toLowerCase() ?? '';
+    if (_isTwimgHost(host)) {
+      if (_isXHlsAudioTrackUrl(sampleUrl)) {
+        return _kXHlsAudioSegmentParallel;
+      }
+      await _ensureRangeTransportPolicyLoaded();
+      return _rangeTransportPolicy.choose(
+        host: host,
+        baseline: _kXHlsSingleTrackBaselineParallel,
+        maxConcurrency: _kHlsMaxConnectionsPerHost,
+      );
+    }
+    return _kHlsParallelSegmentFetches;
+  }
+
+  Future<void> _recordHlsTransportSample({
+    required String sampleUrl,
+    required int parallelUsed,
+    required int mergedBytes,
+    required Duration elapsed,
+    required int segmentFailures,
+    required bool completed,
+  }) async {
+    final host = Uri.tryParse(sampleUrl)?.host.toLowerCase() ?? '';
+    if (host.isEmpty || !_isTwimgHost(host)) return;
+    await _ensureRangeTransportPolicyLoaded();
+    final decision = _rangeTransportPolicy.record(
+      host: host,
+      concurrency: parallelUsed,
+      maxConcurrency: _kHlsMaxConnectionsPerHost,
+      totalBytes: mergedBytes,
+      elapsed: elapsed,
+      firstRoundFailures: segmentFailures,
+      completed: completed,
+    );
+    await _persistRangeTransportPolicy();
+    debugPrint(
+      '[HLS_ADAPT] host=$host parallel=$parallelUsed completed=$completed '
+      'failures=$segmentFailures '
+      'speedMBps=${(decision.bytesPerSecond / 1024 / 1024).toStringAsFixed(2)} '
+      'best=${decision.bestConcurrency} next=${decision.nextConcurrency}',
+    );
+  }
+
+  Future<void> _deleteTempMediaFiles(Iterable<String> paths) async {
+    for (final path in paths) {
+      try {
+        final file = File(path);
+        if (await file.exists()) await file.delete();
+      } catch (_) {}
+    }
+  }
+
+  Future<bool> _nativeMuxMp4Tracks({
+    required String videoPath,
+    required String audioPath,
+    required String outputPath,
+  }) async {
+    try {
+      if (await File(outputPath).exists()) {
+        await File(outputPath).delete();
+      }
+      return await const MethodChannel('media_muxer').invokeMethod<bool>(
+            'muxMp4',
+            <String, String>{
+              'videoPath': videoPath,
+              'audioPath': audioPath,
+              'outputPath': outputPath,
+            },
+          ) ==
+          true;
+    } catch (e) {
+      debugPrint('[X_HLS_MUX] muxMp4 failed video=$videoPath audio=$audioPath err=$e');
+      return false;
+    }
+  }
+
+  Future<String?> _nativeRemuxSingleTrackMp4({
+    required File input,
+    required String trackType,
+  }) async {
+    final output = File('${input.path}.remux.$trackType.mp4');
+    try {
+      if (await output.exists()) await output.delete();
+      final ok =
+          await const MethodChannel('media_muxer').invokeMethod<bool>(
+            'remuxSingleTrackMp4',
+            <String, String>{
+              'inputPath': input.path,
+              'outputPath': output.path,
+              'trackType': trackType,
+            },
+          ) ==
+          true;
+      if (!ok || !await output.exists() || await output.length() == 0) {
+        return null;
+      }
+      return output.path;
+    } catch (e) {
+      debugPrint(
+        '[X_HLS_MUX] remuxSingleTrack failed track=$trackType '
+        'input=${input.path} err=$e',
+      );
+      try {
+        if (await output.exists()) await output.delete();
+      } catch (_) {}
+      return null;
+    }
+  }
+
+  /// X master playlist: never return raw concatenated fMP4 (non-seekable). Remux first.
+  Future<File?> _finalizeXHlsMasterDownload({
+    required File videoFile,
+    required File audioFile,
+    required File outputFile,
+  }) async {
+    final temps = <String>[];
+
+    Future<File?> finish(String path) async {
+      final file = File(path);
+      if (!await file.exists() || await file.length() == 0) return null;
+      await _deleteTempMediaFiles(temps);
+      try {
+        if (await videoFile.exists()) await videoFile.delete();
+      } catch (_) {}
+      return file;
+    }
+
+    if (await _nativeMuxMp4Tracks(
+      videoPath: videoFile.path,
+      audioPath: audioFile.path,
+      outputPath: outputFile.path,
+    )) {
+      debugPrint('[X_HLS_MUX] direct mux ok bytes=${await outputFile.length()}');
+      return finish(outputFile.path);
+    }
+
+    debugPrint('[X_HLS_MUX] direct mux failed; remux tracks then retry mux');
+    final remuxVideo =
+        await _nativeRemuxSingleTrackMp4(input: videoFile, trackType: 'video');
+    if (remuxVideo != null) temps.add(remuxVideo);
+    final remuxAudio =
+        await _nativeRemuxSingleTrackMp4(input: audioFile, trackType: 'audio');
+    if (remuxAudio != null) temps.add(remuxAudio);
+
+    if (remuxVideo != null &&
+        remuxAudio != null &&
+        await _nativeMuxMp4Tracks(
+          videoPath: remuxVideo,
+          audioPath: remuxAudio,
+          outputPath: outputFile.path,
+        )) {
+      debugPrint(
+        '[X_HLS_MUX] remux+mux ok bytes=${await outputFile.length()}',
+      );
+      return finish(outputFile.path);
+    }
+
+    if (remuxVideo != null) {
+      debugPrint(
+        '[X_HLS_MUX] full mux unavailable; keep seekable video-only remux '
+        'bytes=${await File(remuxVideo).length()}',
+      );
+      temps.remove(remuxVideo);
+      await _deleteTempMediaFiles(temps);
+      try {
+        if (await videoFile.exists()) await videoFile.delete();
+      } catch (_) {}
+      return File(remuxVideo);
+    }
+
+    debugPrint('[X_HLS_MUX] all mux/remux paths failed; reject broken fMP4 concat');
+    await _deleteTempMediaFiles(temps);
+    return null;
+  }
+
   Future<File?> _handleM3u8Download(
     String m3u8Path,
     String pageUrl,
@@ -33355,6 +33614,7 @@ class _BrowserPageState extends State<BrowserPage>
     Map<String, String>? requestHeaders,
     void Function(int completed, int totalSegments, int mergedBytes)?
     onMergeProgress,
+    int? segmentParallelFetches,
   }) async {
     final Dio client;
     if (dio != null) {
@@ -33372,17 +33632,40 @@ class _BrowserPageState extends State<BrowserPage>
         );
     final hlsCookieCache = <String, String>{};
     Future<String> fetchPlaylistText(String playlistUrl) async {
-      final headers = await _headersForHlsUrl(
-        playlistUrl,
-        initialHeaders,
-        hlsCookieCache,
+      final host = Uri.tryParse(playlistUrl)?.host.toLowerCase() ?? '';
+      final isTwimg = _isTwimgHost(host);
+      Object? lastError;
+      for (var attempt = 0; attempt < (isTwimg ? 3 : 1); attempt++) {
+        try {
+          final headers = await _headersForHlsUrl(
+            playlistUrl,
+            initialHeaders,
+            hlsCookieCache,
+          );
+          final response = await client.get<String>(
+            playlistUrl,
+            options: Options(
+              responseType: ResponseType.plain,
+              headers: headers,
+              receiveTimeout:
+                  isTwimg ? const Duration(seconds: 15) : null,
+            ),
+          );
+          _rememberHlsResponseCookies(response, playlistUrl, hlsCookieCache);
+          return response.data ?? '';
+        } catch (e) {
+          lastError = e;
+          if (attempt < 2) {
+            await Future<void>.delayed(
+              Duration(milliseconds: 300 * (attempt + 1)),
+            );
+          }
+        }
+      }
+      Error.throwWithStackTrace(
+        lastError ?? StateError('HLS playlist fetch failed: $playlistUrl'),
+        StackTrace.current,
       );
-      final response = await client.get<String>(
-        playlistUrl,
-        options: Options(responseType: ResponseType.plain, headers: headers),
-      );
-      _rememberHlsResponseCookies(response, playlistUrl, hlsCookieCache);
-      return response.data ?? '';
     }
 
     String content = '';
@@ -33410,8 +33693,10 @@ class _BrowserPageState extends State<BrowserPage>
         );
     if (isXMaster) {
       debugPrint(
-        '[X_HLS_TRANSPORT] segmentParallel=12 hostConnectionCap=$_kHlsMaxConnectionsPerHost '
-        'stalledFragmentTimeoutSec=20',
+        '[X_HLS_TRANSPORT] videoParallel=$_kXHlsVideoSegmentParallel '
+        'audioParallel=$_kXHlsAudioSegmentParallel '
+        'hostConnectionCap=$_kHlsMaxConnectionsPerHost '
+        'stalledFragmentTimeoutSec=20 mode=sliding_window',
       );
       final videoUrl = _pickBestHlsVariantUrl(initialLines, baseUri);
       final audioUrl =
@@ -33446,6 +33731,7 @@ class _BrowserPageState extends State<BrowserPage>
               videoUrl,
               client,
               requestHeaders: initialHeaders,
+              segmentParallelFetches: _kXHlsVideoSegmentParallel,
               onMergeProgress: (completed, total, mergedBytes) {
                 videoCompleted = completed;
                 videoTotal = total;
@@ -33458,6 +33744,7 @@ class _BrowserPageState extends State<BrowserPage>
               audioUrl,
               client,
               requestHeaders: initialHeaders,
+              segmentParallelFetches: _kXHlsAudioSegmentParallel,
               onMergeProgress: (completed, total, mergedBytes) {
                 audioCompleted = completed;
                 audioTotal = total;
@@ -33470,45 +33757,22 @@ class _BrowserPageState extends State<BrowserPage>
           audioFile = results[1];
           if (videoFile != null && audioFile != null) {
             final finalFile = File(p.setExtension(m3u8Path, '.mp4'));
-            if (await finalFile.exists()) await finalFile.delete();
-            final muxed =
-                await const MethodChannel(
-                  'media_muxer',
-                ).invokeMethod<bool>('muxMp4', <String, String>{
-                  'videoPath': videoFile.path,
-                  'audioPath': audioFile.path,
-                  'outputPath': finalFile.path,
-                }) ==
-                true;
-            if (muxed &&
-                await finalFile.exists() &&
-                await finalFile.length() > 0) {
-              try {
-                if (await videoFile.exists()) await videoFile.delete();
-              } catch (_) {}
-              reportProgress();
-              return finalFile;
-            }
-          }
-          if (videoFile != null && await videoFile.exists()) {
-            debugPrint(
-              '[SMART_PARTIAL] X HLS mux did not produce a usable output; '
-              'keep complete video track after bounded mux attempt '
-              'bytes=${await videoFile.length()}',
+            final finalized = await _finalizeXHlsMasterDownload(
+              videoFile: videoFile,
+              audioFile: audioFile,
+              outputFile: finalFile,
             );
-            return videoFile;
+            if (finalized != null) {
+              reportProgress();
+              return finalized;
+            }
+            try {
+              if (await videoFile.exists()) await videoFile.delete();
+            } catch (_) {}
+            return null;
           }
         } catch (e) {
-          debugPrint('X HLS 音视频合并失败，将保留已下载的视频轨: $e');
-          if (videoFile != null &&
-              await videoFile.exists() &&
-              await videoFile.length() > 0) {
-            debugPrint(
-              '[SMART_PARTIAL] X HLS mux failed; keep complete video track '
-              'after bounded mux attempt bytes=${await videoFile.length()}',
-            );
-            return videoFile;
-          }
+          debugPrint('X HLS 音视频合并失败: $e');
         } finally {
           for (final temporary in <File?>[audioFile]) {
             try {
@@ -33593,15 +33857,31 @@ class _BrowserPageState extends State<BrowserPage>
 
     var segmentsWritten = 0;
     if (tasks.isNotEmpty) {
-      final ok = await _writeHlsSegmentTasksParallel(
+      final sampleUrl = tasks.first.url;
+      final parallel = await _resolveHlsSegmentParallel(
+        sampleUrl: sampleUrl,
+        overrideParallel: segmentParallelFetches,
+      );
+      final transferWatch = Stopwatch()..start();
+      final result = await _writeHlsSegmentTasksParallel(
         tasks,
         client,
         headers,
         hlsCookieCache,
         sink,
+        parallelFetches: parallel,
         onProgress: onMergeProgress,
       );
-      if (!ok) {
+      transferWatch.stop();
+      await _recordHlsTransportSample(
+        sampleUrl: sampleUrl,
+        parallelUsed: parallel,
+        mergedBytes: result.mergedBytes,
+        elapsed: transferWatch.elapsed,
+        segmentFailures: result.segmentFailures,
+        completed: result.ok,
+      );
+      if (!result.ok) {
         await sink.close();
         try {
           await outFile.delete();
@@ -33613,22 +33893,40 @@ class _BrowserPageState extends State<BrowserPage>
 
     if (segmentsWritten == 0 && !content.contains('METHOD=AES-128')) {
       final plain = _collectHlsPlaintextSegmentUrls(segLines, baseUri);
-      final plainCount = await _downloadPlainHlsUrlsParallel(
-        client,
-        headers,
-        hlsCookieCache,
-        sink,
-        plain,
-        onProgress: onMergeProgress,
-      );
-      if (plainCount == null) {
-        await sink.close();
-        try {
-          await outFile.delete();
-        } catch (_) {}
-        return null;
+      if (plain.isNotEmpty) {
+        final sampleUrl = plain.first;
+        final parallel = await _resolveHlsSegmentParallel(
+          sampleUrl: sampleUrl,
+          overrideParallel: segmentParallelFetches,
+        );
+        final transferWatch = Stopwatch()..start();
+        final plainResult = await _downloadPlainHlsUrlsParallel(
+          client,
+          headers,
+          hlsCookieCache,
+          sink,
+          plain,
+          parallelFetches: parallel,
+          onProgress: onMergeProgress,
+        );
+        transferWatch.stop();
+        await _recordHlsTransportSample(
+          sampleUrl: sampleUrl,
+          parallelUsed: parallel,
+          mergedBytes: plainResult?.mergedBytes ?? 0,
+          elapsed: transferWatch.elapsed,
+          segmentFailures: plainResult?.segmentFailures ?? 1,
+          completed: plainResult != null,
+        );
+        if (plainResult == null) {
+          await sink.close();
+          try {
+            await outFile.delete();
+          } catch (_) {}
+          return null;
+        }
+        segmentsWritten = plainResult.segmentsWritten;
       }
-      segmentsWritten = plainCount;
     }
 
     await sink.close();
@@ -33963,98 +34261,192 @@ class _BrowserPageState extends State<BrowserPage>
     return null;
   }
 
-  Future<bool> _writeHlsSegmentTasksParallel(
+  Uint8List? _finalizeHlsSegmentBytes(_HlsSegTask task, Uint8List? raw) {
+    if (raw == null || raw.isEmpty) return null;
+    var bytes = raw;
+    if (task.rangeStart != null && task.rangeEnd != null) {
+      final expectedLength = task.rangeEnd! - task.rangeStart! + 1;
+      if (bytes.length > task.rangeEnd!) {
+        bytes = Uint8List.fromList(
+          bytes.sublist(task.rangeStart!, task.rangeEnd! + 1),
+        );
+      }
+      if (bytes.length != expectedLength) return null;
+    }
+    if (task.useAes128 && task.aesKey != null) {
+      final iv = task.explicitIv ?? _hlsIvFromMediaSequence(task.mediaSeq);
+      try {
+        return _decryptHlsAes128Cbc(task.aesKey!, iv, bytes);
+      } catch (e, st) {
+        debugPrint('M3U8 AES 解密失败 seq=${task.mediaSeq}: $e\n$st');
+        return null;
+      }
+    }
+    return bytes;
+  }
+
+  /// 滑动窗口并行拉分片，按序号顺序写入 sink（避免批次内最慢分片拖住下一批）。
+  Future<
+    ({
+      bool ok,
+      int mergedBytes,
+      int segmentFailures,
+    })
+  >
+  _writeHlsSegmentTasksParallel(
     List<_HlsSegTask> tasks,
     Dio client,
     Map<String, String> headers,
     Map<String, String> cookieCache,
     IOSink sink, {
+    required int parallelFetches,
     void Function(int completed, int totalSegments, int mergedBytes)?
     onProgress,
   }) async {
     final total = tasks.length;
-    var mergedBytes = 0;
-    var completed = 0;
-    final parallelFetches =
-        tasks.isNotEmpty &&
-                Uri.tryParse(tasks.first.url)?.host.toLowerCase() ==
-                    'video.twimg.com'
-            ? 12
-            : _kHlsParallelSegmentFetches;
-    onProgress?.call(0, total, 0);
-    for (var i = 0; i < tasks.length; i += parallelFetches) {
-      final end = min(i + parallelFetches, tasks.length);
-      final batch = tasks.sublist(i, end);
-      final raws = await Future.wait(
-        batch.map(
-          (task) => _downloadHlsSegmentRaw(client, task, headers, cookieCache),
-        ),
-      );
-      for (var j = 0; j < batch.length; j++) {
-        final raw = raws[j];
-        if (raw == null || raw.isEmpty) return false;
-        final t = batch[j];
-        List<int> toWrite = raw;
-        if (t.useAes128 && t.aesKey != null) {
-          final iv = t.explicitIv ?? _hlsIvFromMediaSequence(t.mediaSeq);
-          try {
-            toWrite = _decryptHlsAes128Cbc(t.aesKey!, iv, raw);
-          } catch (e, st) {
-            debugPrint('M3U8 AES 解密失败 seq=${t.mediaSeq}: $e\n$st');
-            return false;
-          }
-        }
-        sink.add(toWrite);
-        completed++;
-        mergedBytes += toWrite.length;
-        onProgress?.call(completed, total, mergedBytes);
-      }
+    if (total == 0) {
+      return (ok: true, mergedBytes: 0, segmentFailures: 0);
     }
-    return true;
+    final parallel = parallelFetches.clamp(1, _kHlsMaxConnectionsPerHost);
+    final completed = List<Uint8List?>.filled(total, null);
+    final failed = <int>{};
+    final inFlight = <int, Future<void>>{};
+    var nextStart = 0;
+    var writeIndex = 0;
+    var mergedBytes = 0;
+    var segmentFailures = 0;
+
+    Future<void> fetchSegment(int index) async {
+      final task = tasks[index];
+      final raw = await _downloadHlsSegmentRaw(
+        client,
+        task,
+        headers,
+        cookieCache,
+      );
+      final finalized = _finalizeHlsSegmentBytes(task, raw);
+      if (finalized == null) {
+        failed.add(index);
+        segmentFailures++;
+        return;
+      }
+      completed[index] = finalized;
+    }
+
+    onProgress?.call(0, total, 0);
+    while (writeIndex < total) {
+      while (nextStart < total && inFlight.length < parallel) {
+        final idx = nextStart++;
+        inFlight[idx] = fetchSegment(idx).whenComplete(() {
+          inFlight.remove(idx);
+        });
+      }
+
+      if (completed[writeIndex] != null) {
+        final chunk = completed[writeIndex]!;
+        sink.add(chunk);
+        mergedBytes += chunk.length;
+        writeIndex++;
+        onProgress?.call(writeIndex, total, mergedBytes);
+        continue;
+      }
+
+      if (failed.contains(writeIndex)) {
+        return (ok: false, mergedBytes: mergedBytes, segmentFailures: segmentFailures);
+      }
+
+      if (inFlight.isEmpty) {
+        return (ok: false, mergedBytes: mergedBytes, segmentFailures: segmentFailures);
+      }
+
+      await Future.any(inFlight.values);
+    }
+
+    if (inFlight.isNotEmpty) {
+      await Future.wait(inFlight.values);
+    }
+    return (ok: true, mergedBytes: mergedBytes, segmentFailures: segmentFailures);
   }
 
-  /// 成功返回写入的分片数；任一分片失败返回 `null`（不写入残缺合并文件）。
-  Future<int?> _downloadPlainHlsUrlsParallel(
+  /// 成功返回写入的分片数；任一分片失败返回 `null`。
+  Future<
+    ({
+      int segmentsWritten,
+      int mergedBytes,
+      int segmentFailures,
+    })?
+  >
+  _downloadPlainHlsUrlsParallel(
     Dio client,
     Map<String, String> headers,
     Map<String, String> cookieCache,
     IOSink sink,
     List<String> urls, {
+    required int parallelFetches,
     void Function(int completed, int totalSegments, int mergedBytes)?
     onProgress,
   }) async {
     final total = urls.length;
-    var mergedBytes = 0;
-    var n = 0;
-    final parallelFetches =
-        urls.isNotEmpty &&
-                Uri.tryParse(urls.first)?.host.toLowerCase() ==
-                    'video.twimg.com'
-            ? 12
-            : _kHlsParallelSegmentFetches;
-    onProgress?.call(0, total, 0);
-    for (var i = 0; i < urls.length; i += parallelFetches) {
-      final end = min(i + parallelFetches, urls.length);
-      final batch = urls.sublist(i, end);
-      final raws = await Future.wait(
-        batch.map(
-          (url) => _downloadHlsSegmentRaw(
-            client,
-            _HlsSegTask(url: url, mediaSeq: 0, useAes128: false),
-            headers,
-            cookieCache,
-          ),
-        ),
-      );
-      for (final raw in raws) {
-        if (raw == null || raw.isEmpty) return null;
-        sink.add(raw);
-        n++;
-        mergedBytes += raw.length;
-        onProgress?.call(n, total, mergedBytes);
-      }
+    if (total == 0) {
+      return (segmentsWritten: 0, mergedBytes: 0, segmentFailures: 0);
     }
-    return n;
+    final parallel = parallelFetches.clamp(1, _kHlsMaxConnectionsPerHost);
+    final completed = List<Uint8List?>.filled(total, null);
+    final failed = <int>{};
+    final inFlight = <int, Future<void>>{};
+    var nextStart = 0;
+    var writeIndex = 0;
+    var mergedBytes = 0;
+    var segmentFailures = 0;
+
+    Future<void> fetchSegment(int index) async {
+      final raw = await _downloadHlsSegmentRaw(
+        client,
+        _HlsSegTask(url: urls[index], mediaSeq: 0, useAes128: false),
+        headers,
+        cookieCache,
+      );
+      if (raw == null || raw.isEmpty) {
+        failed.add(index);
+        segmentFailures++;
+        return;
+      }
+      completed[index] = raw;
+    }
+
+    onProgress?.call(0, total, 0);
+    while (writeIndex < total) {
+      while (nextStart < total && inFlight.length < parallel) {
+        final idx = nextStart++;
+        inFlight[idx] = fetchSegment(idx).whenComplete(() {
+          inFlight.remove(idx);
+        });
+      }
+
+      if (completed[writeIndex] != null) {
+        final chunk = completed[writeIndex]!;
+        sink.add(chunk);
+        mergedBytes += chunk.length;
+        writeIndex++;
+        onProgress?.call(writeIndex, total, mergedBytes);
+        continue;
+      }
+
+      if (failed.contains(writeIndex)) return null;
+
+      if (inFlight.isEmpty) return null;
+
+      await Future.any(inFlight.values);
+    }
+
+    if (inFlight.isNotEmpty) {
+      await Future.wait(inFlight.values);
+    }
+    return (
+      segmentsWritten: total,
+      mergedBytes: mergedBytes,
+      segmentFailures: segmentFailures,
+    );
   }
 
   /// 无 #EXTINF 时的兜底：收集非 # 行中的分片 URL（仅用于未加密的媒体 playlist）。
@@ -36387,6 +36779,11 @@ class _BrowserPageState extends State<BrowserPage>
           } catch (e) {
             debugPrint('写入智能下载 24 小时备案失败（不影响入库）: $e');
           }
+          _rememberXSmartMediaLibraryHash(
+            smartTask,
+            absoluteUrl,
+            (mediaMap['file_hash'] ?? '').toString(),
+          );
         }
         if (mounted) {
           _updateDownloadTask(taskId, status: 'completed', progressDetail: '');
@@ -36543,6 +36940,11 @@ class _BrowserPageState extends State<BrowserPage>
             pageUrl: smartPageUrl,
             fileHash: (confirmedDuplicate['file_hash'] ?? '').toString(),
             fileSize: duplicateSize,
+          );
+          _rememberXSmartMediaLibraryHash(
+            smartTask,
+            absoluteUrl,
+            (confirmedDuplicate['file_hash'] ?? '').toString(),
           );
         }
         if (mediaType == MediaType.video) {
