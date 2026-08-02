@@ -242,10 +242,25 @@ const String _kEarlyMediaSnifferScript = r'''
       mediaHosts.push(String(new URL(document.referrer).hostname || '').toLowerCase());
     }
   } catch (_) {}
-  const isElementBoundFeedPage = mediaHosts.some(mediaHost =>
-    mediaHost === 'tik.porn' || mediaHost.endsWith('.tik.porn') ||
-    mediaHost === 'pin.porn' || mediaHost.endsWith('.pin.porn') ||
-    mediaHost === 'instagram.com' || mediaHost.endsWith('.instagram.com'));
+  const normalizeAdultHost = (raw) => {
+    let h = String(raw || '').toLowerCase();
+    if (h.startsWith('www.')) h = h.slice(4);
+    if (h.startsWith('m.')) h = h.slice(2);
+    return h;
+  };
+  const hostIsOrUnder = (host, root) => host === root || host.endsWith('.' + root);
+  const shortFeedAdultRoots = [
+    'tik.porn', 'pin.porn', 'fyptt.to', 'fikfap.com', 'tiktits.com',
+    'xxxtik.com', 'redgifs.com', 'scrolller.com', 'thothub.to'
+  ];
+  const galleryAdultRoots = ['fapello.com', 'leakgallery.com', 'erome.com'];
+  const isElementBoundFeedPage = mediaHosts.some(mediaHost => {
+    const host = normalizeAdultHost(mediaHost);
+    if (host === 'instagram.com' || host.endsWith('.instagram.com')) return true;
+    if (shortFeedAdultRoots.some(root => hostIsOrUnder(host, root))) return true;
+    if (galleryAdultRoots.some(root => hostIsOrUnder(host, root))) return true;
+    return false;
+  });
   const isInstagramFeedPage = mediaHosts.some(mediaHost =>
     mediaHost === 'instagram.com' || mediaHost.endsWith('.instagram.com'));
 
@@ -647,6 +662,23 @@ class BrowserPage extends StatefulWidget {
 
   @override
   _BrowserPageState createState() => _BrowserPageState();
+}
+
+/// HLS 音视频轨已下载完毕，但 mux/remux 失败；外层应只重试合并。
+class _HlsMuxFailedWithTracks implements Exception {
+  const _HlsMuxFailedWithTracks({
+    required this.videoTrackPath,
+    required this.audioTrackPath,
+    required this.outputPath,
+  });
+
+  final String videoTrackPath;
+  final String audioTrackPath;
+  final String outputPath;
+
+  @override
+  String toString() =>
+      'HLS mux failed; tracks ready video=$videoTrackPath audio=$audioTrackPath';
 }
 
 class _BrowserPageState extends State<BrowserPage>
@@ -2035,7 +2067,10 @@ class _BrowserPageState extends State<BrowserPage>
       if (token is CancelToken && !token.isCancelled) {
         token.cancel('stale_fb_smart_candidate');
       }
-      _downloadingUrls.remove((_downloadTasks[idx]['url'] ?? '').toString());
+      final staleUrl = (_downloadTasks[idx]['url'] ?? '').toString();
+      _downloadingUrls.remove(staleUrl);
+      final staleXId = _xMediaIdentity(staleUrl);
+      if (staleXId.isNotEmpty) _downloadingXMediaIds.remove(staleXId);
       _removeDownloadTask(id);
     }
     if (staleIds.isNotEmpty) {
@@ -2698,12 +2733,16 @@ class _BrowserPageState extends State<BrowserPage>
   void _rememberXSmartMediaLibraryHash(
     Map<String, dynamic>? task,
     String mediaUrl,
-    String fileHash,
-  ) {
+    String fileHash, {
+    String preferredMediaId = '',
+  }) {
     if (task == null) return;
     final hash = fileHash.trim();
     if (hash.isEmpty) return;
-    final xMediaId = _xMediaIdentity(mediaUrl);
+    final xMediaId =
+        preferredMediaId.trim().isNotEmpty
+            ? preferredMediaId.trim()
+            : _xMediaIdentity(mediaUrl);
     if (xMediaId.isEmpty) return;
     _xMediaIdToFileHashOf(task)[xMediaId] = hash;
   }
@@ -4579,6 +4618,126 @@ class _BrowserPageState extends State<BrowserPage>
     return host == 'tik.porn' || host.endsWith('.tik.porn');
   }
 
+  String _normalizeAdultSiteHost(String? hostOrUrl) {
+    final raw = (hostOrUrl ?? '').trim().toLowerCase();
+    if (raw.isEmpty) return '';
+    final uri = Uri.tryParse(raw.contains('://') ? raw : 'https://$raw');
+    var host = (uri?.host.isNotEmpty == true ? uri!.host : raw).toLowerCase();
+    if (host.startsWith('www.')) host = host.substring(4);
+    if (host.startsWith('m.')) host = host.substring(2);
+    return host;
+  }
+
+  bool _hostIsOrUnder(String host, String root) {
+    final h = host.toLowerCase();
+    final r = root.toLowerCase();
+    return h == r || h.endsWith('.$r');
+  }
+
+  /// 竖屏短视频 / 沉浸信息流站：手动长按须绑当前条，智能下载优先「长按→上滑」。
+  static const List<String> _kShortFeedAdultRoots = <String>[
+    'tik.porn',
+    'pin.porn',
+    'fyptt.to',
+    'fikfap.com',
+    'tiktits.com',
+    'xxxtik.com',
+    'redgifs.com',
+    'scrolller.com',
+    'thothub.to',
+  ];
+
+  /// 竖屏图集 / 单列相册站：优先绑手指下的当前图。
+  static const List<String> _kGalleryAdultRoots = <String>[
+    'fapello.com',
+    'leakgallery.com',
+    'erome.com',
+  ];
+
+  /// 横屏 tube / 详情页播放站：通用嗅探 + 卡片进详情更合适。
+  static const List<String> _kTubeAdultRoots = <String>[
+    'pornhub.com',
+    'spankbang.com',
+    'xnxx.com',
+    'xnxx.es',
+    'beeg.com',
+    'hqporner.com',
+    'missav.com',
+    'jable.tv',
+    'hanime.tv',
+    'xvideos.com',
+  ];
+
+  bool _isShortFeedAdultHost(String? hostOrUrl) {
+    final host = _normalizeAdultSiteHost(hostOrUrl);
+    if (host.isEmpty) return false;
+    return _kShortFeedAdultRoots.any((root) => _hostIsOrUnder(host, root));
+  }
+
+  bool _isGalleryAdultHost(String? hostOrUrl) {
+    final host = _normalizeAdultSiteHost(hostOrUrl);
+    if (host.isEmpty) return false;
+    return _kGalleryAdultRoots.any((root) => _hostIsOrUnder(host, root));
+  }
+
+  bool _isTubeAdultHost(String? hostOrUrl) {
+    final host = _normalizeAdultSiteHost(hostOrUrl);
+    if (host.isEmpty) return false;
+    return _kTubeAdultRoots.any((root) => _hostIsOrUnder(host, root));
+  }
+
+  /// 竖屏信息流站：智能下载应走动作编排「长按→上切」，而不是卡片进详情。
+  bool _smartPrefersFeedActionRecipe(String? hostOrUrl) {
+    final profile = _smartSiteProfile(_normalizeAdultSiteHost(hostOrUrl));
+    return profile == 'shortfeed' ||
+        profile == 'tikporn' ||
+        profile == 'pinporn' ||
+        profile == 'gallery';
+  }
+
+  /// 成人站媒体传输加速：更高 DASH/Range 起步并发（仍受自适应限流回退约束）。
+  bool _shouldAccelerateAdultMediaTransport({
+    String? pageUrl,
+    String? mediaUrl,
+    String? referer,
+  }) {
+    for (final raw in <String?>[pageUrl, referer, mediaUrl]) {
+      if (raw == null || raw.trim().isEmpty) continue;
+      if (_isShortFeedAdultHost(raw) ||
+          _isGalleryAdultHost(raw) ||
+          _isTubeAdultHost(raw) ||
+          _isTikPornPage(raw)) {
+        return true;
+      }
+      final lower = raw.toLowerCase();
+      if (lower.contains('phncdn.com') ||
+          lower.contains('gifdeliverynetwork.com') ||
+          lower.contains('redgifs.com') ||
+          lower.contains('sb-cdns.com') ||
+          lower.contains('xnxx-cdn') ||
+          lower.contains('xvideos-cdn') ||
+          lower.contains('xv-vod') ||
+          lower.contains('hqporner') ||
+          lower.contains('missav') ||
+          lower.contains('jable') ||
+          lower.contains('hanime') ||
+          lower.contains('fyptt') ||
+          lower.contains('fikfap') ||
+          lower.contains('tiktits') ||
+          lower.contains('xxxtik') ||
+          lower.contains('fapello') ||
+          lower.contains('leakgallery') ||
+          lower.contains('scrolller') ||
+          lower.contains('thothub') ||
+          lower.contains('erome') ||
+          lower.contains('tik.porn') ||
+          lower.contains('pin.porn')) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /// 91 风格详情页路径：`/archives/{数字}/`（不绑定域名，供跨站沿用 91 套路）。
   bool _is91StyleArchivePage(String? url) {
     final uri = Uri.tryParse((url ?? '').trim());
@@ -4640,11 +4799,10 @@ class _BrowserPageState extends State<BrowserPage>
 
   bool _isElementBoundFeedPage(String? url) {
     final host = Uri.tryParse((url ?? '').trim())?.host.toLowerCase() ?? '';
-    return host == 'tik.porn' ||
-        host.endsWith('.tik.porn') ||
-        host == 'pin.porn' ||
-        host.endsWith('.pin.porn') ||
-        host == 'x.com' ||
+    if (_isShortFeedAdultHost(host) || _isGalleryAdultHost(host)) {
+      return true;
+    }
+    return host == 'x.com' ||
         host.endsWith('.x.com') ||
         host == 'twitter.com' ||
         host.endsWith('.twitter.com') ||
@@ -5230,10 +5388,31 @@ class _BrowserPageState extends State<BrowserPage>
             smartTask?['lastGestureFailureType'] = 'already_in_smart_task';
           }
           onFailureType?.call('already_in_smart_task');
+          debugPrint(
+            'Smart download: block concurrent re-download id=$smartXMediaId',
+          );
+          return false;
+        }
+        if (!forceNoPreSkip && prev == 'completed') {
+          // 本任务已成功入库过：禁止再整段重下（长视频尤其致命）。
+          // 哈希能确认库内仍在 → already_in_library；哈希暂不可用也绝不清状态重下。
+          final inLibrary = await _shouldSkipConfirmedXSmartRedownload(
+            smartTask,
+            smartXMediaId,
+          );
+          if (isSmartGesture) {
+            smartTask?['lastGestureFailureType'] = 'already_in_library';
+          }
+          onFailureType?.call('already_in_library');
+          smartVideoStates[smartXMediaId] = 'completed';
+          debugPrint(
+            'Smart download: skip X re-download id=$smartXMediaId '
+            '(session completed, libraryHash=${inLibrary ? 'yes' : 'unverified'})',
+          );
           return false;
         }
         if (!forceNoPreSkip &&
-            (prev == 'completed' || prev == 'failed') &&
+            prev == 'failed' &&
             await _shouldSkipConfirmedXSmartRedownload(
               smartTask,
               smartXMediaId,
@@ -5245,20 +5424,18 @@ class _BrowserPageState extends State<BrowserPage>
           smartVideoStates[smartXMediaId] = 'completed';
           return false;
         }
-        // 动作编排：忽略 completed/会话态预跳过，清掉软状态后强制再下
+        // 动作编排可强制再下；failed/stale downloading 才清状态重试。
         if (forceNoPreSkip) {
           smartVideoStates.remove(smartXMediaId);
           debugPrint(
             'Smart download: action_recipe ignore videoMediaState '
             'id=$smartXMediaId prev=$prev (force download)',
           );
-        } else {
-          // completed/failed/stale：会话态 / URL 映射绝不能当「库内已有」；
-          // 清掉后强制再下，由入库内容哈希判定真实重复。
+        } else if (prev == 'failed' || prev == 'downloading') {
           smartVideoStates.remove(smartXMediaId);
           debugPrint(
             'Smart download: cleared videoMediaState '
-            'id=$smartXMediaId prev=$prev (hash-only duplicate gate)',
+            'id=$smartXMediaId prev=$prev (retry after failure/stale)',
           );
         }
       }
@@ -5271,6 +5448,7 @@ class _BrowserPageState extends State<BrowserPage>
             _scoreXVideoCandidate(right).compareTo(_scoreXVideoCandidate(left)),
       );
       smartVideoStates[smartXMediaId] = 'downloading';
+      smartTask['expectedXMediaId'] = smartXMediaId;
     }
     // Facebook: bind-only-current — quality/stub fallbacks must share the same
     // CDN identity as the primary. Never drain previously browsed reels.
@@ -5499,6 +5677,10 @@ class _BrowserPageState extends State<BrowserPage>
         '[稳健下载诊断] 开始: 候选总数=${attempts.length}, pageUrl=${pageUrl.isEmpty ? "-" : pageUrl}, videoUrl=${videoUrl.isEmpty ? "-" : videoUrl}',
       );
     }
+    // Manual / smart long-press: brief toast only after we really enter download.
+    if (isLongPress || isSmartGesture) {
+      _showBriefLongPressTriggeredHint();
+    }
     var ok = false;
     int successIndex = -1;
     var lastFailureType = 'unknown';
@@ -5720,6 +5902,19 @@ class _BrowserPageState extends State<BrowserPage>
     if (smartVideoStates != null && smartXMediaId.isNotEmpty) {
       smartVideoStates[smartXMediaId] =
           ok || lastFailureType == 'already_in_library' ? 'completed' : 'failed';
+      if (ok || lastFailureType == 'already_in_library') {
+        // 用本次绑定的 mediaId 再记一次，避免 URL 变体导致跳过闸门失效。
+        final hash =
+            (_xMediaIdToFileHashOf(smartTask!)[smartXMediaId] ?? '').trim();
+        if (hash.isNotEmpty) {
+          _rememberXSmartMediaLibraryHash(
+            smartTask,
+            downloadUrl,
+            hash,
+            preferredMediaId: smartXMediaId,
+          );
+        }
+      }
     }
     if (_downloadTasks.length > taskLenBefore) {
       final last = _downloadTasks.first;
@@ -7324,6 +7519,8 @@ class _BrowserPageState extends State<BrowserPage>
   }
 
   final Set<String> _downloadingUrls = {};
+  /// X amplify_video mediaId 占用：同一媒体不同 m3u8 变体也不允许并行重下。
+  final Set<String> _downloadingXMediaIds = {};
   final Map<String, String> _videoSourceUrlToMediaId = {};
   static const String _kVideoSourceUrlMapPrefsKey =
       'browser_video_source_url_map_v1';
@@ -7450,7 +7647,13 @@ class _BrowserPageState extends State<BrowserPage>
           const host = u.hostname.toLowerCase();
           const hasMediaExt = /\\.(jpg|jpeg|png|gif|webp|mp4|webm|mov|m3u8|mpd|ts|mp3|m4a)(\\?|\$)/.test(path);
           if (hasMediaExt) return false;
-          const videoSiteHosts = ['tik.', 'porn', 'xvideos', 'xhamster', 'pornhub', 'redtube', 'cdn.', 'stream', 'video.', 'media.', 'fbcdn', 'scontent', 'facebook'];
+          const videoSiteHosts = [
+            'tik.', 'porn', 'xvideos', 'xhamster', 'pornhub', 'redtube', 'xnxx',
+            'spankbang', 'redgifs', 'fyptt', 'fikfap', 'tiktits', 'xxxtik',
+            'fapello', 'leakgallery', 'scrolller', 'thothub', 'erome', 'missav',
+            'jable', 'hanime', 'hqporner', 'beeg', 'cdn.', 'stream', 'video.',
+            'media.', 'fbcdn', 'scontent', 'facebook', 'phncdn', 'gifdelivery'
+          ];
           if (videoSiteHosts.some(h => host.includes(h))) return false;
           const apiPatterns = [
             'detailrecommend', 'wisesearchsetpic', 'wisejson',
@@ -7504,6 +7707,9 @@ class _BrowserPageState extends State<BrowserPage>
           'youtube.com', 'youtu.be', 'googlevideo.com', 'videoplayback', 'vimeo.com', 'dailymotion.com', 'bilibili.com',
           'videopress', '/mp4', '/webm', '/m3u8', '/hls/', '/manifest', '/segment',
           'tik.', 'xvideos', 'xhamster', 'pornhub', 'redtube', 'eporner', 'streamable',
+          'xnxx', 'spankbang', 'redgifs', 'fyptt', 'fikfap', 'tiktits', 'xxxtik',
+          'fapello', 'leakgallery', 'scrolller', 'thothub', 'erome', 'missav',
+          'jable', 'hanime', 'hqporner', 'beeg', 'phncdn', 'gifdelivery',
           'fbcdn.net', 'scontent.', 'facebook.com', 'fb.watch'
         ];
         if (trustedPatterns.some(p => lowerUrl.includes(p))) return true;
@@ -8561,73 +8767,42 @@ class _BrowserPageState extends State<BrowserPage>
       let favLastY = 0;
 
       function createFeedbackElement(touchX, touchY) {
+        // Keep the page clean: no webpage blue/black long-press bubble.
+        // Flutter shows a brief "已触发长按下载" only after download really starts.
         removeFeedbackElement();
-        feedbackElement = document.createElement('div');
-        feedbackElement.style.position = 'fixed';
-        feedbackElement.style.left = (touchX - 50) + 'px';
-        feedbackElement.style.top = (touchY - 50) + 'px';
-        feedbackElement.style.width = '100px';
-        feedbackElement.style.height = '100px';
-        feedbackElement.style.borderRadius = '50%';
-        feedbackElement.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
-        feedbackElement.style.zIndex = '9999';
-        feedbackElement.style.display = 'flex';
-        feedbackElement.style.justifyContent = 'center';
-        feedbackElement.style.alignItems = 'center';
-        feedbackElement.style.color = 'white';
-        feedbackElement.style.fontSize = '14px';
-        feedbackElement.style.textAlign = 'center';
-        feedbackElement.style.transition = 'transform 0.5s, opacity 0.5s';
-        feedbackElement.style.transform = 'scale(0.5)';
-        feedbackElement.style.opacity = '0.7';
-        feedbackElement.innerText = '正在检测媒体...';
-        document.body.appendChild(feedbackElement);
-        setTimeout(() => {
-          if (feedbackElement) {
-            feedbackElement.style.transform = 'scale(1)';
-            feedbackElement.style.opacity = '1';
-          }
-        }, 10);
       }
 
       function removeFeedbackElement(expectedElement) {
         const element = expectedElement || feedbackElement;
         if (element) {
-          element.style.transform = 'scale(0.5)';
-          element.style.opacity = '0';
-          setTimeout(() => {
-            if (element && element.parentNode) {
-              element.parentNode.removeChild(element);
-            }
-            if (feedbackElement === element) feedbackElement = null;
-          }, 300);
+          try {
+            if (element.parentNode) element.parentNode.removeChild(element);
+          } catch (_) {}
+          if (feedbackElement === element) feedbackElement = null;
         }
       }
 
       function updateFeedbackStatus(status, success) {
-        // Telegram progress belongs to the app's existing download ring. Its
-        // injected 100px blue feedback bubble duplicated that UI and covered
-        // the media viewer, so Telegram never renders this webpage overlay.
-        try {
-          const host = String(location.hostname || '').toLowerCase();
-          if (host === 'web.telegram.org' || host === 'telegram.org') {
-            removeFeedbackElement();
+        // In-progress overlay text ("正在获取下载地址…") must not linger on media.
+        // Download success toasts come from Flutter ("已触发长按下载").
+        // Keep short native toasts only for failures / favorite confirmations.
+        removeFeedbackElement();
+        if (success === false || success === true) {
+          const text = String(status || '');
+          if (!text) return;
+          // Skip download-progress style success labels; Flutter owns those.
+          if (success === true &&
+              (text.indexOf('保存') >= 0 || text.indexOf('截图') >= 0 ||
+               text.indexOf('data url') >= 0 || text.indexOf('blob') >= 0)) {
             return;
           }
-        } catch (_) {}
-        if (feedbackElement) {
-          feedbackElement.innerText = status;
-          var bg;
-          if (success === null) {
-            bg = 'rgba(30, 120, 200, 0.55)';
-          } else {
-            bg = success ? 'rgba(0, 128, 0, 0.5)' : 'rgba(255, 0, 0, 0.5)';
-          }
-          feedbackElement.style.backgroundColor = bg;
-          if (success === true || success === false) {
-            const terminalElement = feedbackElement;
-            setTimeout(() => removeFeedbackElement(terminalElement), 700);
-          }
+          try {
+            Flutter.postMessage(JSON.stringify({
+              type: 'page_toast',
+              message: text,
+              durationMs: success === true ? 1200 : 1600
+            }));
+          } catch (_) {}
         }
       }
 
@@ -9180,6 +9355,8 @@ class _BrowserPageState extends State<BrowserPage>
           target.getAttribute('data-app-smart-gesture') === '1');
         let isPinPornContext = false;
         let isTikPornContext = false;
+        let isShortFeedAdultContext = false;
+        let isGalleryAdultContext = false;
         let isXPlatformContext = false;
         let isFacebookContext = false;
         let isInstagramContext = false;
@@ -9188,13 +9365,36 @@ class _BrowserPageState extends State<BrowserPage>
         try {
           const hosts = [location.hostname || ''];
           if (document.referrer) hosts.push(new URL(document.referrer).hostname || '');
+          const normalizeAdultHost = (raw) => {
+            let h = String(raw || '').toLowerCase();
+            if (h.startsWith('www.')) h = h.slice(4);
+            if (h.startsWith('m.')) h = h.slice(2);
+            return h;
+          };
+          const hostIsOrUnder = (host, root) =>
+            host === root || host.endsWith('.' + root);
+          const shortFeedAdultRoots = [
+            'tik.porn', 'pin.porn', 'fyptt.to', 'fikfap.com', 'tiktits.com',
+            'xxxtik.com', 'redgifs.com', 'scrolller.com', 'thothub.to'
+          ];
+          const galleryAdultRoots = [
+            'fapello.com', 'leakgallery.com', 'erome.com'
+          ];
           isPinPornContext = hosts.some(host => {
-            const normalized = String(host).toLowerCase();
-            return normalized === 'pin.porn' || normalized.endsWith('.pin.porn');
+            const normalized = normalizeAdultHost(host);
+            return hostIsOrUnder(normalized, 'pin.porn');
           });
           isTikPornContext = hosts.some(host => {
-            const normalized = String(host).toLowerCase();
-            return normalized === 'tik.porn' || normalized.endsWith('.tik.porn');
+            const normalized = normalizeAdultHost(host);
+            return hostIsOrUnder(normalized, 'tik.porn');
+          });
+          isShortFeedAdultContext = hosts.some(host => {
+            const normalized = normalizeAdultHost(host);
+            return shortFeedAdultRoots.some(root => hostIsOrUnder(normalized, root));
+          });
+          isGalleryAdultContext = hosts.some(host => {
+            const normalized = normalizeAdultHost(host);
+            return galleryAdultRoots.some(root => hostIsOrUnder(normalized, root));
           });
           isXPlatformContext = hosts.some(host => {
             const normalized = String(host).toLowerCase();
@@ -10472,17 +10672,18 @@ class _BrowserPageState extends State<BrowserPage>
         try {
           const hosts = [location.hostname || ''];
           if (document.referrer) hosts.push(new URL(document.referrer).hostname || '');
-          isElementBoundFeedContext = hosts.some(host => {
-            const normalized = String(host).toLowerCase();
-            return normalized === 'tik.porn' || normalized.endsWith('.tik.porn') ||
-                   normalized === 'pin.porn' || normalized.endsWith('.pin.porn') ||
-                   normalized === 'x.com' || normalized.endsWith('.x.com') ||
-                   normalized === 'twitter.com' || normalized.endsWith('.twitter.com') ||
-                   normalized === 'facebook.com' || normalized.endsWith('.facebook.com') ||
-                   normalized === 'fb.com' || normalized.endsWith('.fb.com') ||
-                   normalized === 'fb.watch' || normalized.endsWith('.fb.watch') ||
-                   normalized === 'instagram.com' || normalized.endsWith('.instagram.com');
-          });
+          isElementBoundFeedContext =
+            isShortFeedAdultContext ||
+            isGalleryAdultContext ||
+            hosts.some(host => {
+              const normalized = String(host).toLowerCase();
+              return normalized === 'x.com' || normalized.endsWith('.x.com') ||
+                     normalized === 'twitter.com' || normalized.endsWith('.twitter.com') ||
+                     normalized === 'facebook.com' || normalized.endsWith('.facebook.com') ||
+                     normalized === 'fb.com' || normalized.endsWith('.fb.com') ||
+                     normalized === 'fb.watch' || normalized.endsWith('.fb.watch') ||
+                     normalized === 'instagram.com' || normalized.endsWith('.instagram.com');
+            });
         } catch (_) {}
         const preserveBoundBlob = isElementBoundFeedContext && String(url || '').startsWith('blob:');
 
@@ -10792,10 +10993,9 @@ class _BrowserPageState extends State<BrowserPage>
                 boundFragments: boundFragments,
                 candidates: cands
               }));
-              updateFeedbackStatus('正在获取下载地址…', null);
               return true;
             }
-            updateFeedbackStatus('正在处理blob...', true);
+            // Blob path continues without page overlay; Flutter toasts on trigger.
             if (isTelegramInternalStream) {
               updateFeedbackStatus('正在通过 Telegram 会话读取视频…', null);
               streamTelegramVideoToFlutter(url).catch(error => {
@@ -11526,18 +11726,27 @@ class _BrowserPageState extends State<BrowserPage>
         );
         return;
       }
-      if (data['type'] == 'long_press_status') {
-        if (mounted &&
-            data['isSmartGesture'] != true &&
-            data['isYouTube'] != true &&
-            !_isYouTubeBrowsePageUrl(_currentUrl)) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('已识别长按，正在解析当前媒体…'),
-              duration: Duration(milliseconds: 900),
-            ),
-          );
+      if (data['type'] == 'page_toast') {
+        if (mounted) {
+          final message = (data['message'] ?? '').toString().trim();
+          if (message.isNotEmpty) {
+            final durationMs =
+                (data['durationMs'] as num?)?.toInt().clamp(600, 4000) ?? 1600;
+            ScaffoldMessenger.of(context).hideCurrentSnackBar();
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(message),
+                duration: Duration(milliseconds: durationMs),
+                behavior: SnackBarBehavior.floating,
+              ),
+            );
+          }
         }
+        return;
+      }
+      if (data['type'] == 'long_press_status') {
+        // No on-page coaching toast here; "已触发长按下载" is shown only after
+        // the download pipeline is entered.
         debugPrint(
           'media long press acknowledged: '
           'target=${data['target'] ?? 'unknown'}',
@@ -12666,6 +12875,9 @@ class _BrowserPageState extends State<BrowserPage>
         }
         var success = false;
         var lastFailureType = 'unknown';
+        if (action == 'download' && attempts.isNotEmpty) {
+          _showBriefLongPressTriggeredHint();
+        }
         for (var i = 0; i < attempts.length; i++) {
           var failureType = 'unknown';
           success = await _performBackgroundDownload(
@@ -14443,6 +14655,18 @@ class _BrowserPageState extends State<BrowserPage>
     bool showFinger = true,
   }) {
     if (!mounted || _smartDownloadTask == null) return;
+    // Long-press coaching overlays clutter the media page; keep only a brief
+    // native toast once download is actually triggered.
+    final lower = label.trim().toLowerCase();
+    final isLongPressCoach =
+        lower.contains('长按') ||
+        lower.contains('触发下载') ||
+        lower.contains('模拟长按');
+    if (isLongPressCoach) {
+      _clearSmartOperationVisual();
+      _smartDownloadTask!['visibleOperation'] = label;
+      return;
+    }
     final safePoint = Offset(
       point.dx.clamp(0.08, 0.92),
       point.dy.clamp(0.08, 0.92),
@@ -14453,6 +14677,34 @@ class _BrowserPageState extends State<BrowserPage>
       _smartOperationShowFinger = showFinger;
     });
     _smartDownloadTask!['visibleOperation'] = label;
+  }
+
+  void _clearSmartOperationVisual() {
+    if (!mounted) return;
+    if (_smartOperationPoint == null &&
+        _smartOperationLabel.isEmpty &&
+        !_smartOperationShowFinger) {
+      return;
+    }
+    setState(() {
+      _smartOperationPoint = null;
+      _smartOperationLabel = '';
+      _smartOperationShowFinger = false;
+    });
+  }
+
+  void _showBriefLongPressTriggeredHint() {
+    if (!mounted) return;
+    _clearSmartOperationVisual();
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(
+      const SnackBar(
+        content: Text('已触发长按下载'),
+        duration: Duration(milliseconds: 1200),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
   }
 
   Future<void> _refreshMixedSmartMediaType(Map<String, dynamic> task) async {
@@ -14574,10 +14826,17 @@ class _BrowserPageState extends State<BrowserPage>
     }
     if (value == 'tik.porn' || value.endsWith('.tik.porn')) return 'tikporn';
     if (value == 'pin.porn' || value.endsWith('.pin.porn')) return 'pinporn';
-    if (value.contains('xvideos') ||
+    if (_isShortFeedAdultHost(value)) return 'shortfeed';
+    if (_isGalleryAdultHost(value)) return 'gallery';
+    if (_isTubeAdultHost(value) ||
+        value.contains('xvideos') ||
         value.contains('xfree') ||
         value.contains('freevideo')) {
-      return 'xvideo';
+      return value.contains('xvideos') ||
+              value.contains('xfree') ||
+              value.contains('freevideo')
+          ? 'xvideo'
+          : 'tube';
     }
     if (_isBaiduHost(value)) return 'baidu';
     return 'generic';
@@ -14806,6 +15065,9 @@ class _BrowserPageState extends State<BrowserPage>
     if (profile == 'baidu') return '百度';
     if (profile == 'tikporn') return 'TikPorn';
     if (profile == 'pinporn') return 'PinPorn';
+    if (profile == 'shortfeed') return '竖屏短视频';
+    if (profile == 'gallery') return '竖屏图集';
+    if (profile == 'tube') return '视频站';
     final h = _normalizeSmartHost(host);
     final parts = h.split('.');
     if (parts.length >= 2) return parts[parts.length - 2];
@@ -16728,8 +16990,14 @@ class _BrowserPageState extends State<BrowserPage>
             // Ordinary sites commonly expose videos as thumbnail cards rather
             // than <video> elements. Allow one card-detail hop even without a
             // keyword, but keep the dedicated X/91 state machines untouched.
+            // Vertical short-feed / gallery sites should stay in-place: card hops
+            // often land on neighbor preload media.
             const ordinarySiteCardFlow = siteProfile !== 'x' &&
-              siteProfile !== '91';
+              siteProfile !== '91' &&
+              siteProfile !== 'tikporn' &&
+              siteProfile !== 'pinporn' &&
+              siteProfile !== 'shortfeed' &&
+              siteProfile !== 'gallery';
             if ((keyword || ordinarySiteCardFlow) && hasReturnPage) {
               return {action:'return', key:'', x:0.12, y:0.18};
             }
@@ -16784,10 +17052,11 @@ class _BrowserPageState extends State<BrowserPage>
                 ? 'article[data-testid="tweet"], [data-testid="cellInnerDiv"], a[href*="/status/"]'
                 : siteProfile === '91'
                 ? 'article, a[href*="/archives/"], [class*="post"], [class*="item"]'
-                : siteProfile === 'xvideo'
-                ? '.thumb-block, .thumb-inside, a[href*="/video"], a[href*="/prof-video"]'
-                : (siteProfile === 'tikporn' || siteProfile === 'pinporn')
-                ? 'article, video, [class*="video"], [class*="post"], [role="link"]'
+                : (siteProfile === 'xvideo' || siteProfile === 'tube')
+                ? '.thumb-block, .thumb-inside, .thumb, a[href*="/video"], a[href*="/view_video"], a[href*="/v/"], a[href*="/watch"]'
+                : (siteProfile === 'tikporn' || siteProfile === 'pinporn' ||
+                   siteProfile === 'shortfeed' || siteProfile === 'gallery')
+                ? 'video, img, article, [class*="video"], [class*="swiper"], [class*="post"], [role="link"]'
                 : 'a[href], article, [role="link"], [class*="card"], [class*="item"]';
               const siteRoot = host => {
                 const parts = String(host || '').toLowerCase()
@@ -17721,6 +17990,8 @@ class _BrowserPageState extends State<BrowserPage>
     final countController = TextEditingController(text: '50');
     final minVideoSizeController = TextEditingController();
     final maxVideoSizeController = TextEditingController();
+    final minVideoDurationController = TextEditingController();
+    final maxVideoDurationController = TextEditingController();
     final dialogRawUrl = (website['url'] ?? '').toString().trim();
     final dialogNormalized =
         dialogRawUrl.startsWith('http://') ||
@@ -18809,6 +19080,52 @@ class _BrowserPageState extends State<BrowserPage>
                         '两项留空时，若从当前视频启动，将按约 50%～150% 自动估算；否则不限制。',
                         style: TextStyle(fontSize: 11, color: Colors.grey),
                       ),
+                      const SizedBox(height: 16),
+                      const Text(
+                        '5. 时长区间',
+                        style: TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                      const SizedBox(height: 6),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: minVideoDurationController,
+                              keyboardType: TextInputType.number,
+                              inputFormatters: [
+                                FilteringTextInputFormatter.digitsOnly,
+                              ],
+                              decoration: const InputDecoration(
+                                labelText: '最短（分钟）',
+                                hintText: '不限',
+                                border: OutlineInputBorder(),
+                                isDense: true,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: TextField(
+                              controller: maxVideoDurationController,
+                              keyboardType: TextInputType.number,
+                              inputFormatters: [
+                                FilteringTextInputFormatter.digitsOnly,
+                              ],
+                              decoration: const InputDecoration(
+                                labelText: '最长（分钟）',
+                                hintText: '不限',
+                                border: OutlineInputBorder(),
+                                isDense: true,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      const Text(
+                        '用于跳过过长或过短视频；留空=不按时长过滤。沉浸批量建议设最长 10～15 分钟。',
+                        style: TextStyle(fontSize: 11, color: Colors.grey),
+                      ),
                     ],
                   ),
                 ),
@@ -18876,6 +19193,22 @@ class _BrowserPageState extends State<BrowserPage>
                                 );
                                 return;
                               }
+                              final minDurMin = int.tryParse(
+                                minVideoDurationController.text.trim(),
+                              );
+                              final maxDurMin = int.tryParse(
+                                maxVideoDurationController.text.trim(),
+                              );
+                              if (minDurMin != null &&
+                                  maxDurMin != null &&
+                                  minDurMin > maxDurMin) {
+                                ScaffoldMessenger.of(
+                                  dialogContext,
+                                ).showSnackBar(
+                                  const SnackBar(content: Text('最短时长不能大于最长时长')),
+                                );
+                                return;
+                              }
                               if (runMode == 'reuse') {
                                 if (reuseSource == 'action_recipe') {
                                   if (selectedReuseRecipe == null ||
@@ -18931,6 +19264,8 @@ class _BrowserPageState extends State<BrowserPage>
       countController.dispose();
       minVideoSizeController.dispose();
       maxVideoSizeController.dispose();
+      minVideoDurationController.dispose();
+      maxVideoDurationController.dispose();
       return;
     }
 
@@ -18942,6 +19277,20 @@ class _BrowserPageState extends State<BrowserPage>
         enteredMinVideoMb != null ? enteredMinVideoMb * 1024 * 1024 : null;
     int? maxVideoBytes =
         enteredMaxVideoMb != null ? enteredMaxVideoMb * 1024 * 1024 : null;
+    final enteredMinVideoDurationMin = int.tryParse(
+      minVideoDurationController.text.trim(),
+    );
+    final enteredMaxVideoDurationMin = int.tryParse(
+      maxVideoDurationController.text.trim(),
+    );
+    final minVideoDurationSec =
+        enteredMinVideoDurationMin != null
+            ? enteredMinVideoDurationMin * 60.0
+            : null;
+    final maxVideoDurationSec =
+        enteredMaxVideoDurationMin != null
+            ? enteredMaxVideoDurationMin * 60.0
+            : null;
     var autoVideoSizeRange = false;
     // 分页嗅探不用种子视频自动估大小，避免误杀可下媒体。
     if (confirmed != 'sniff' &&
@@ -19010,6 +19359,8 @@ class _BrowserPageState extends State<BrowserPage>
           startFromCurrentPage: startFromCurrentPage,
           minVideoBytes: minVideoBytes,
           maxVideoBytes: maxVideoBytes,
+          minVideoDurationSec: minVideoDurationSec,
+          maxVideoDurationSec: maxVideoDurationSec,
           autoVideoSizeRange: autoVideoSizeRange,
           strategyManualPick: crossSite,
         );
@@ -19031,6 +19382,8 @@ class _BrowserPageState extends State<BrowserPage>
           startFromCurrentPage: startFromCurrentPage,
           minVideoBytes: minVideoBytes,
           maxVideoBytes: maxVideoBytes,
+          minVideoDurationSec: minVideoDurationSec,
+          maxVideoDurationSec: maxVideoDurationSec,
           autoVideoSizeRange: autoVideoSizeRange,
           demoCount: null,
           preferredStrategyKey: null,
@@ -19041,7 +19394,39 @@ class _BrowserPageState extends State<BrowserPage>
         return;
       }
       // 通用：独立可靠循环（任意站搜索/信息流 → 真实流下载），不走脆弱 FSM。
+      // 竖屏短视频/图集站：卡片进详情易下错邻条，改走「长按→上切」动作编排。
       if (id == 'generic') {
+        final feedHost =
+            startFromCurrentPage && _currentUrl.startsWith('http')
+                ? (_normalizeAdultSiteHost(_currentUrl))
+                : dialogHost;
+        if (_smartPrefersFeedActionRecipe(feedHost)) {
+          debugPrint(
+            '[SMART_PIPELINE_ROUTE] host=$feedHost selected=generic '
+            'upgrade=feed_action_recipe reason=shortfeed_or_gallery',
+          );
+          final recipe =
+              mediaType == MediaType.image
+                  ? SmartActionRecipe.feedTemplate(feedHost)
+                  : SmartActionRecipe.immersiveTemplate(feedHost);
+          advanceAxisHint = axisHintFromRecipe(recipe);
+          advanceMode = modeFromRecipe(recipe);
+          await _startActionRecipeDownload(
+            website: website,
+            recipe: recipe,
+            targetCount: enteredCount,
+            mediaType: mediaType,
+            allowMixedMedia: false,
+            startFromCurrentPage: startFromCurrentPage,
+            minVideoBytes: minVideoBytes,
+            maxVideoBytes: maxVideoBytes,
+            minVideoDurationSec: minVideoDurationSec,
+            maxVideoDurationSec: maxVideoDurationSec,
+            advanceAxisHint: advanceAxisHint,
+            advanceMode: advanceMode,
+          );
+          return;
+        }
         await _startSimpleGenericDownload(
           website: website,
           keyword: enteredKeyword,
@@ -19050,6 +19435,8 @@ class _BrowserPageState extends State<BrowserPage>
           startFromCurrentPage: startFromCurrentPage,
           minVideoBytes: minVideoBytes,
           maxVideoBytes: maxVideoBytes,
+          minVideoDurationSec: minVideoDurationSec,
+          maxVideoDurationSec: maxVideoDurationSec,
           autoVideoSizeRange: autoVideoSizeRange,
         );
         return;
@@ -19064,6 +19451,8 @@ class _BrowserPageState extends State<BrowserPage>
         startFromCurrentPage: startFromCurrentPage,
         minVideoBytes: minVideoBytes,
         maxVideoBytes: maxVideoBytes,
+        minVideoDurationSec: minVideoDurationSec,
+        maxVideoDurationSec: maxVideoDurationSec,
         autoVideoSizeRange: autoVideoSizeRange,
         demoCount: null,
         preferredStrategyKey: null,
@@ -19084,6 +19473,8 @@ class _BrowserPageState extends State<BrowserPage>
         sniffMaxPages: enteredSniffMaxPages,
         minVideoBytes: minVideoBytes,
         maxVideoBytes: maxVideoBytes,
+        minVideoDurationSec: minVideoDurationSec,
+        maxVideoDurationSec: maxVideoDurationSec,
         autoVideoSizeRange: false,
       );
     }
@@ -19122,6 +19513,8 @@ class _BrowserPageState extends State<BrowserPage>
           startFromCurrentPage: startFromCurrentPage,
           minVideoBytes: minVideoBytes,
           maxVideoBytes: maxVideoBytes,
+          minVideoDurationSec: minVideoDurationSec,
+          maxVideoDurationSec: maxVideoDurationSec,
           advanceAxisHint: advanceAxisHint,
           advanceMode: advanceMode,
         );
@@ -19173,6 +19566,8 @@ class _BrowserPageState extends State<BrowserPage>
     countController.dispose();
     minVideoSizeController.dispose();
     maxVideoSizeController.dispose();
+    minVideoDurationController.dispose();
+    maxVideoDurationController.dispose();
   }
 
   Future<void> _startActionRecipeDownload({
@@ -19184,6 +19579,8 @@ class _BrowserPageState extends State<BrowserPage>
     bool startFromCurrentPage = false,
     int? minVideoBytes,
     int? maxVideoBytes,
+    double? minVideoDurationSec,
+    double? maxVideoDurationSec,
     String? advanceAxisHint,
     String? advanceMode,
   }) async {
@@ -19330,6 +19727,11 @@ class _BrowserPageState extends State<BrowserPage>
       'advanceMode': resolvedAdvanceMode,
     };
     final task = _smartDownloadTask!;
+    _applySmartVideoDurationLimits(
+      task,
+      minVideoDurationSec: minVideoDurationSec,
+      maxVideoDurationSec: maxVideoDurationSec,
+    );
     try {
       await WakelockPlus.enable();
       task['screenWakeLockEnabled'] = true;
@@ -20945,6 +21347,8 @@ class _BrowserPageState extends State<BrowserPage>
     int sniffMaxPages = 0,
     int? minVideoBytes,
     int? maxVideoBytes,
+    double? minVideoDurationSec,
+    double? maxVideoDurationSec,
     bool autoVideoSizeRange = false,
   }) async {
     if (_smartDownloadTask != null) return;
@@ -21006,6 +21410,11 @@ class _BrowserPageState extends State<BrowserPage>
       'allowBroadenDiscovery': false,
     };
     final task = _smartDownloadTask!;
+    _applySmartVideoDurationLimits(
+      task,
+      minVideoDurationSec: minVideoDurationSec,
+      maxVideoDurationSec: maxVideoDurationSec,
+    );
     try {
       await WakelockPlus.enable();
       task['screenWakeLockEnabled'] = true;
@@ -25249,6 +25658,8 @@ class _BrowserPageState extends State<BrowserPage>
     bool startFromCurrentPage = false,
     int? minVideoBytes,
     int? maxVideoBytes,
+    double? minVideoDurationSec,
+    double? maxVideoDurationSec,
     bool autoVideoSizeRange = false,
     int? demoCount,
     String? preferredStrategyKey,
@@ -25491,6 +25902,11 @@ class _BrowserPageState extends State<BrowserPage>
       'instagramGridActiveKey': '',
     };
     final activeTask = _smartDownloadTask!;
+    _applySmartVideoDurationLimits(
+      activeTask,
+      minVideoDurationSec: minVideoDurationSec,
+      maxVideoDurationSec: maxVideoDurationSec,
+    );
     final isLegacySite = _smartUsesLegacyPriorityPipeline(siteProfile);
     activeTask['strategyLayer'] = 'default';
     activeTask['strategyFailStreak'] = 0;
@@ -27893,7 +28309,8 @@ class _BrowserPageState extends State<BrowserPage>
             pageUrl,
             durationSec,
           );
-          if (sizeAllowed) {
+          final durationAllowed = _smartVideoDurationAllowed(task, durationSec);
+          if (sizeAllowed && durationAllowed) {
             final seen = task['seenMediaUrls'] as Set<String>;
             final canTrustUrlIdentity =
                 chosen.startsWith('http') && !_isElementBoundFeedPage(pageUrl);
@@ -27929,6 +28346,9 @@ class _BrowserPageState extends State<BrowserPage>
               );
               if (smartFailureType == 'outside_requested_size_range') {
                 task['sizeSkipped'] = ((task['sizeSkipped'] as int?) ?? 0) + 1;
+              } else if (smartFailureType == 'outside_requested_duration_range') {
+                task['durationSkipped'] =
+                    ((task['durationSkipped'] as int?) ?? 0) + 1;
               } else if (smartFailureType == 'invalid_smart_media_content') {
                 task['invalidSkipped'] =
                     ((task['invalidSkipped'] as int?) ?? 0) + 1;
@@ -27940,7 +28360,13 @@ class _BrowserPageState extends State<BrowserPage>
               }
             }
           } else {
-            task['sizeSkipped'] = ((task['sizeSkipped'] as int?) ?? 0) + 1;
+            if (!durationAllowed) {
+              smartFailureType = 'outside_requested_duration_range';
+              task['durationSkipped'] =
+                  ((task['durationSkipped'] as int?) ?? 0) + 1;
+            } else {
+              task['sizeSkipped'] = ((task['sizeSkipped'] as int?) ?? 0) + 1;
+            }
           }
         }
         task[ok ? 'success' : 'failed'] =
@@ -29395,6 +29821,30 @@ class _BrowserPageState extends State<BrowserPage>
         .where((value) => value.length >= 2)
         .take(16);
     return tokens.any(normalizedText.contains) ? 1 : 0;
+  }
+
+  bool _smartVideoDurationAllowed(
+    Map<String, dynamic> task,
+    double durationSec,
+  ) {
+    final minSec = (task['effectiveMinVideoDurationSec'] as num?)?.toDouble();
+    final maxSec = (task['effectiveMaxVideoDurationSec'] as num?)?.toDouble();
+    if (minSec == null && maxSec == null) return true;
+    if (durationSec <= 0) return true;
+    if (minSec != null && durationSec < minSec) return false;
+    if (maxSec != null && durationSec > maxSec) return false;
+    return true;
+  }
+
+  void _applySmartVideoDurationLimits(
+    Map<String, dynamic> task, {
+    double? minVideoDurationSec,
+    double? maxVideoDurationSec,
+  }) {
+    task['minVideoDurationSec'] = minVideoDurationSec;
+    task['maxVideoDurationSec'] = maxVideoDurationSec;
+    task['effectiveMinVideoDurationSec'] = minVideoDurationSec;
+    task['effectiveMaxVideoDurationSec'] = maxVideoDurationSec;
   }
 
   Future<bool> _smartVideoSizeAllowed(
@@ -31567,10 +32017,19 @@ class _BrowserPageState extends State<BrowserPage>
     if (lower.contains('zhihu.com')) return 'https://www.zhihu.com';
     if (lower.contains('weibo.com') || lower.contains('sinaimg.cn'))
       return 'https://weibo.com';
+    if (lower.contains('xnxx.')) {
+      final page =
+          _urlController.text.trim().isNotEmpty
+              ? _urlController.text.trim()
+              : _currentUrl;
+      if (page.startsWith('http') && page.toLowerCase().contains('xnxx.')) {
+        return page;
+      }
+      return 'https://www.xnxx.com';
+    }
     if (lower.contains('xvideos.') ||
         lower.contains('xvideos-cdn') ||
-        lower.contains('xv-vod') ||
-        lower.contains('xnxx.')) {
+        lower.contains('xv-vod')) {
       final page =
           _urlController.text.trim().isNotEmpty
               ? _urlController.text.trim()
@@ -31579,6 +32038,62 @@ class _BrowserPageState extends State<BrowserPage>
         return page;
       }
       return 'https://www.xvideos.com';
+    }
+    if (lower.contains('redgifs.com') ||
+        lower.contains('gifdeliverynetwork.com') ||
+        lower.contains('redgifs')) {
+      final page =
+          _urlController.text.trim().isNotEmpty
+              ? _urlController.text.trim()
+              : _currentUrl;
+      if (page.startsWith('http') && page.toLowerCase().contains('redgifs')) {
+        return page;
+      }
+      return 'https://www.redgifs.com';
+    }
+    if (lower.contains('phncdn.com') ||
+        lower.contains('pornhub.com') ||
+        lower.contains('pornhub.org')) {
+      final page =
+          _urlController.text.trim().isNotEmpty
+              ? _urlController.text.trim()
+              : _currentUrl;
+      if (page.startsWith('http') && page.toLowerCase().contains('pornhub')) {
+        return page;
+      }
+      return 'https://www.pornhub.com';
+    }
+    if (lower.contains('spankbang.com') || lower.contains('sb-cdns.com')) {
+      final page =
+          _urlController.text.trim().isNotEmpty
+              ? _urlController.text.trim()
+              : _currentUrl;
+      if (page.startsWith('http') && page.toLowerCase().contains('spankbang')) {
+        return page;
+      }
+      return 'https://spankbang.com';
+    }
+    if (lower.contains('missav.') ||
+        lower.contains('jable.') ||
+        lower.contains('hanime.') ||
+        lower.contains('hqporner.') ||
+        lower.contains('beeg.com') ||
+        lower.contains('fyptt.') ||
+        lower.contains('fikfap.') ||
+        lower.contains('tiktits.') ||
+        lower.contains('xxxtik.') ||
+        lower.contains('fapello.') ||
+        lower.contains('leakgallery.') ||
+        lower.contains('scrolller.') ||
+        lower.contains('thothub.') ||
+        lower.contains('erome.') ||
+        lower.contains('tik.porn') ||
+        lower.contains('pin.porn')) {
+      final page =
+          _urlController.text.trim().isNotEmpty
+              ? _urlController.text.trim()
+              : _currentUrl;
+      if (page.startsWith('http')) return page;
     }
     if (lower.contains('xcdn') ||
         lower.contains('cdn1.') ||
@@ -32141,24 +32656,34 @@ class _BrowserPageState extends State<BrowserPage>
     return null;
   }
 
-  int _parallelRangePartsForTotalSize(int totalBytes) {
+  int _parallelRangePartsForTotalSize(
+    int totalBytes, {
+    bool accelerateAdult = false,
+  }) {
     if (totalBytes < _kParallelRangeVideoMinBytes) return 1;
-    // Keep the historically proven 4/6/8 starting point. Xfree may explore
-    // higher levels after clean completions, but never starts a task at 12.
+    // Keep the historically proven 4/6/8 starting point. Adult CDN hosts may
+    // start one step higher; adaptive policy still backs off on failures.
     final baseline =
         totalBytes < 32 * 1024 * 1024
-            ? min(4, _kParallelRangeVideoConnections)
+            ? min(accelerateAdult ? 6 : 4, _kParallelRangeVideoConnections)
             : totalBytes < 128 * 1024 * 1024
-            ? min(6, _kParallelRangeVideoConnections)
-            : min(8, _kParallelRangeVideoConnections);
+            ? min(accelerateAdult ? 8 : 6, _kParallelRangeVideoConnections)
+            : min(accelerateAdult ? 10 : 8, _kParallelRangeVideoConnections);
     return baseline;
   }
 
-  int _parallelRangeMaxPartsForTotalSize(int totalBytes) {
+  int _parallelRangeMaxPartsForTotalSize(
+    int totalBytes, {
+    bool accelerateAdult = false,
+  }) {
     if (totalBytes < _kParallelRangeVideoMinBytes) return 1;
     // Avoid tiny ranges: more TLS/HTTP overhead than useful payload.
     final usefulBySize = max(2, totalBytes ~/ _kParallelRangeVideoMinBytes);
-    return min(_kParallelRangeVideoConnections, usefulBySize);
+    final hardCap =
+        accelerateAdult
+            ? _kParallelRangeVideoConnections
+            : min(10, _kParallelRangeVideoConnections);
+    return min(hardCap, usefulBySize);
   }
 
   static const String _rangeTransportPolicyPrefsKey =
@@ -32262,8 +32787,19 @@ class _BrowserPageState extends State<BrowserPage>
     if (cancelToken?.isCancelled == true) return null;
 
     final rangeHost = Uri.tryParse(url)?.host.toLowerCase() ?? '';
-    final baselineParts = _parallelRangePartsForTotalSize(byteTotal);
-    final sizeMaxParts = _parallelRangeMaxPartsForTotalSize(byteTotal);
+    final accelerateAdult = _shouldAccelerateAdultMediaTransport(
+      pageUrl: _currentUrl,
+      mediaUrl: url,
+      referer: headers['Referer'] ?? headers['referer'],
+    );
+    final baselineParts = _parallelRangePartsForTotalSize(
+      byteTotal,
+      accelerateAdult: accelerateAdult,
+    );
+    final sizeMaxParts = _parallelRangeMaxPartsForTotalSize(
+      byteTotal,
+      accelerateAdult: accelerateAdult,
+    );
     await _ensureRangeTransportPolicyLoaded();
     final parts = _rangeTransportPolicy.choose(
       host: rangeHost,
@@ -32281,7 +32817,7 @@ class _BrowserPageState extends State<BrowserPage>
       );
       debugPrint(
         '[RANGE_ADAPT] host=$rangeHost selected=$parts max=$sizeMaxParts '
-        'baseline=$baselineParts',
+        'baseline=$baselineParts adultAccel=$accelerateAdult',
       );
     }
 
@@ -32664,44 +33200,75 @@ class _BrowserPageState extends State<BrowserPage>
           );
 
           Future<File> downloadHls(String playlistUrl) async {
-            final merged = await _handleM3u8Download(
-              filePath,
-              playlistUrl,
-              downloadDio,
-              requestHeaders: requestHeaders,
-              onMergeProgress: (completed, totalSegs, mergedBytes) {
-                final frac =
-                    totalSegs > 0 ? 0.02 + (completed / totalSegs) * 0.98 : 0.5;
-                onProgress?.call(
-                  frac.clamp(0.0, 1.0),
-                  detail:
-                      'HLS 分片 $completed/$totalSegs · 已合并 ${_formatBytes(mergedBytes)}',
-                );
-              },
-            );
             try {
-              final playlist = File(filePath);
-              if (await playlist.exists()) await playlist.delete();
-            } catch (_) {}
-            if (merged == null || !await merged.exists()) {
-              throw Exception('[下载失败] M3U8 无法解析或分片下载失败');
-            }
-            if (await merged.length() == 0) {
+              final merged = await _handleM3u8Download(
+                filePath,
+                playlistUrl,
+                downloadDio,
+                requestHeaders: requestHeaders,
+                onMergeProgress: (completed, totalSegs, mergedBytes) {
+                  final frac =
+                      totalSegs > 0 ? 0.02 + (completed / totalSegs) * 0.98 : 0.5;
+                  onProgress?.call(
+                    frac.clamp(0.0, 1.0),
+                    detail:
+                        'HLS 分片 $completed/$totalSegs · 已合并 ${_formatBytes(mergedBytes)}',
+                  );
+                },
+              );
               try {
-                await merged.delete();
+                final playlist = File(filePath);
+                if (await playlist.exists()) await playlist.delete();
               } catch (_) {}
-              throw Exception('[下载失败] 合并后的视频为空');
+              if (merged == null || !await merged.exists()) {
+                throw Exception('[下载失败] M3U8 无法解析或分片下载失败');
+              }
+              if (await merged.length() == 0) {
+                try {
+                  await merged.delete();
+                } catch (_) {}
+                throw Exception('[下载失败] 合并后的视频为空');
+              }
+              final head = await merged
+                  .openRead(0, 512)
+                  .fold<List<int>>([], (prev, chunk) => [...prev, ...chunk]);
+              if (!_isValidVideoBytes(head) && !_isLikelyMpegTs(head)) {
+                try {
+                  await merged.delete();
+                } catch (_) {}
+                throw Exception('[下载失败] 合并结果不是可播放的视频数据');
+              }
+              return merged;
+            } on _HlsMuxFailedWithTracks catch (muxFailure) {
+              for (var muxAttempt = 0; muxAttempt < 3; muxAttempt++) {
+                if (muxAttempt > 0) {
+                  debugPrint(
+                    '[X_HLS_MUX] mux-only retry ${muxAttempt + 1}/3 '
+                    'video=${muxFailure.videoTrackPath}',
+                  );
+                  await Future<void>.delayed(
+                    Duration(milliseconds: 400 * (muxAttempt + 1)),
+                  );
+                }
+                final finalized = await _finalizeXHlsMasterDownload(
+                  videoFile: File(muxFailure.videoTrackPath),
+                  audioFile: File(muxFailure.audioTrackPath),
+                  outputFile: File(muxFailure.outputPath),
+                );
+                if (finalized != null) {
+                  try {
+                    final playlist = File(filePath);
+                    if (await playlist.exists()) await playlist.delete();
+                  } catch (_) {}
+                  return finalized;
+                }
+              }
+              await _deleteTempMediaFiles([
+                muxFailure.videoTrackPath,
+                muxFailure.audioTrackPath,
+              ]);
+              throw Exception(_kHlsMuxFailedMessage);
             }
-            final head = await merged
-                .openRead(0, 512)
-                .fold<List<int>>([], (prev, chunk) => [...prev, ...chunk]);
-            if (!_isValidVideoBytes(head) && !_isLikelyMpegTs(head)) {
-              try {
-                await merged.delete();
-              } catch (_) {}
-              throw Exception('[下载失败] 合并结果不是可播放的视频数据');
-            }
-            return merged;
           }
 
           if (mediaType == MediaType.video &&
@@ -32786,6 +33353,20 @@ class _BrowserPageState extends State<BrowserPage>
             onProgress: onProgress,
           );
         } catch (e, stackTrace) {
+          final hlsArtifactsReady =
+              (extension == '.m3u8' || extension == '.m3u') &&
+              _hlsTrackArtifactsExist(filePath);
+          final muxOnlyFailure =
+              e is _HlsMuxFailedWithTracks ||
+              e.toString().contains(_kHlsMuxFailedMessage) ||
+              hlsArtifactsReady;
+          if (muxOnlyFailure) {
+            try {
+              final failedFile = File(filePath);
+              if (await failedFile.exists()) await failedFile.delete();
+            } catch (_) {}
+            rethrow;
+          }
           try {
             final failedFile = File(filePath);
             if (await failedFile.exists()) await failedFile.delete();
@@ -33168,12 +33749,14 @@ class _BrowserPageState extends State<BrowserPage>
         plans.where((plan) => plan.mimeType.startsWith('audio/')).toList()
           ..sort((a, b) => b.bandwidth.compareTo(a.bandwidth));
     final audio = audioPlans.isEmpty ? null : audioPlans.first;
-    final useAcceleratedDash =
-        _isTikPornPage(_currentUrl) ||
-        _isTikPornPage(requestHeaders['Referer']);
+    final useAcceleratedDash = _shouldAccelerateAdultMediaTransport(
+      pageUrl: _currentUrl,
+      mediaUrl: manifestUrl,
+      referer: requestHeaders['Referer'] ?? requestHeaders['referer'],
+    );
     final dashHost = Uri.tryParse(manifestUrl)?.host.toLowerCase() ?? '';
-    // Generic DASH also benefits from parallel tracks. Start conservatively
-    // below the TikPORN fast path and retain the per-host failure backoff.
+    // Adult short-feed / tube DASH uses the TikPORN-proven high concurrency;
+    // other sites stay conservative and still back off per-host on failures.
     final baseConcurrency = useAcceleratedDash ? 10 : 6;
     final maxConcurrency = useAcceleratedDash ? 10 : 8;
     final adaptiveConcurrency = (_dashConcurrencyByHost[dashHost] ??
@@ -33443,6 +34026,14 @@ class _BrowserPageState extends State<BrowserPage>
         maxConcurrency: _kHlsMaxConnectionsPerHost,
       );
     }
+    // Adult short-feed / tube HLS: slightly higher than generic 10, still
+    // below per-host connection cap to avoid CDN throttle storms.
+    if (_shouldAccelerateAdultMediaTransport(
+      pageUrl: _currentUrl,
+      mediaUrl: sampleUrl,
+    )) {
+      return min(14, _kHlsMaxConnectionsPerHost);
+    }
     return _kHlsParallelSegmentFetches;
   }
 
@@ -33541,6 +34132,14 @@ class _BrowserPageState extends State<BrowserPage>
     }
   }
 
+  /// HLS 分片已下完但 mux/remux 失败；外层应只重试合并，禁止整段重下。
+  static const String _kHlsMuxFailedMessage = '[下载失败] M3U8 音视频合并失败';
+
+  bool _hlsTrackArtifactsExist(String m3u8Path) {
+    final videoTrack = File('$m3u8Path.x-video.mp4');
+    return videoTrack.existsSync() && videoTrack.lengthSync() > 0;
+  }
+
   /// X master playlist: never return raw concatenated fMP4 (non-seekable). Remux first.
   Future<File?> _finalizeXHlsMasterDownload({
     required File videoFile,
@@ -33607,6 +34206,40 @@ class _BrowserPageState extends State<BrowserPage>
     return null;
   }
 
+  /// Single-track HLS fMP4 concat → seekable progressive MP4.
+  Future<File?> _finalizeSingleTrackHlsDownload(File concatFile) async {
+    if (!await concatFile.exists() || await concatFile.length() == 0) {
+      return null;
+    }
+    final pathLower = concatFile.path.toLowerCase();
+    if (pathLower.contains('.x-audio.') || pathLower.endsWith('.x-audio.mp4')) {
+      debugPrint(
+        '[X_HLS_MUX] refuse video remux for audio artifact ${concatFile.path}',
+      );
+      return null;
+    }
+    final remuxed = await _nativeRemuxSingleTrackMp4(
+      input: concatFile,
+      trackType: 'video',
+    );
+    if (remuxed != null) {
+      debugPrint(
+        '[X_HLS_MUX] single-track remux ok bytes=${await File(remuxed).length()}',
+      );
+      try {
+        if (await concatFile.exists()) await concatFile.delete();
+      } catch (_) {}
+      return File(remuxed);
+    }
+    debugPrint(
+      '[X_HLS_MUX] single-track remux failed; reject non-seekable fMP4 concat',
+    );
+    try {
+      if (await concatFile.exists()) await concatFile.delete();
+    } catch (_) {}
+    return null;
+  }
+
   Future<File?> _handleM3u8Download(
     String m3u8Path,
     String pageUrl,
@@ -33615,6 +34248,8 @@ class _BrowserPageState extends State<BrowserPage>
     void Function(int completed, int totalSegments, int mergedBytes)?
     onMergeProgress,
     int? segmentParallelFetches,
+    /// X master 子轨：只拼接分片，seekable remux 留给最终合并，避免 300MB 轨 remux 两遍。
+    bool seekableFinalize = true,
   }) async {
     final Dio client;
     if (dio != null) {
@@ -33732,6 +34367,7 @@ class _BrowserPageState extends State<BrowserPage>
               client,
               requestHeaders: initialHeaders,
               segmentParallelFetches: _kXHlsVideoSegmentParallel,
+              seekableFinalize: false,
               onMergeProgress: (completed, total, mergedBytes) {
                 videoCompleted = completed;
                 videoTotal = total;
@@ -33745,6 +34381,7 @@ class _BrowserPageState extends State<BrowserPage>
               client,
               requestHeaders: initialHeaders,
               segmentParallelFetches: _kXHlsAudioSegmentParallel,
+              seekableFinalize: false,
               onMergeProgress: (completed, total, mergedBytes) {
                 audioCompleted = completed;
                 audioTotal = total;
@@ -33766,21 +34403,18 @@ class _BrowserPageState extends State<BrowserPage>
               reportProgress();
               return finalized;
             }
-            try {
-              if (await videoFile.exists()) await videoFile.delete();
-            } catch (_) {}
-            return null;
+            throw _HlsMuxFailedWithTracks(
+              videoTrackPath: videoFile.path,
+              audioTrackPath: audioFile.path,
+              outputPath: finalFile.path,
+            );
           }
+        } on _HlsMuxFailedWithTracks {
+          rethrow;
         } catch (e) {
           debugPrint('X HLS 音视频合并失败: $e');
         } finally {
-          for (final temporary in <File?>[audioFile]) {
-            try {
-              if (temporary != null && await temporary.exists()) {
-                await temporary.delete();
-              }
-            } catch (_) {}
-          }
+          // 成功时 audio 临时轨在 finish() 内清理；mux 失败时保留双轨供外层只重试合并。
         }
       }
     }
@@ -33951,14 +34585,23 @@ class _BrowserPageState extends State<BrowserPage>
         await outFile.delete();
         return null;
       }
-      // 83876f6 已验证路径：fMP4 拼接后直接改名入库可播。
-      // MPEG-TS：不要走 MediaMuxer remuxMp4。MediaExtractor 按解码序吐 B 帧，
-      // writeTrack 再强制单调 PTS，会把多帧压成同一 presentationTime（实测同 PTS
-      // 重复 4 次），ExoPlayer 能出首帧但无法推进。本地保留 .ts，ExoPlayer 可直接播。
+      // fMP4 拼接必须经过 remux 才可 seek；MPEG-TS 保留原样（ExoPlayer 可直接播）。
+      // X master 子轨关闭 seekableFinalize：音轨勿按视频 remux，视频勿 remux 两遍。
       if (detectedExtension != '.ts') {
         final corrected = File(p.setExtension(outFile.path, detectedExtension));
         if (await corrected.exists()) await corrected.delete();
-        return outFile.rename(corrected.path);
+        final renamed = await outFile.rename(corrected.path);
+        if (detectedExtension == '.mp4' && seekableFinalize) {
+          final pathLower = renamed.path.toLowerCase();
+          if (pathLower.contains('.x-audio.') || pathLower.contains('x-audio')) {
+            debugPrint(
+              '[X_HLS_MUX] skip video remux on audio track ${renamed.path}',
+            );
+            return renamed;
+          }
+          return await _finalizeSingleTrackHlsDownload(renamed);
+        }
+        return renamed;
       }
       return outFile;
     } catch (e) {
@@ -35323,6 +35966,7 @@ class _BrowserPageState extends State<BrowserPage>
           _commonWebsitesLoaded = true;
           debugPrint('从SharedPreferences加载了${_commonWebsites.length}个常用网站');
           await _ensureYouTubeCommonWebsite();
+          await _ensureSuggestedAdultCommonWebsites();
           if (migrated) {
             await _saveCommonWebsites();
             debugPrint('已迁移旧版 Google /m 常用网站 URL 并写回');
@@ -35399,6 +36043,70 @@ class _BrowserPageState extends State<BrowserPage>
     });
     await _saveCommonWebsites();
     debugPrint('已添加 YouTube 到常用网站');
+  }
+
+  String _commonWebsiteHost(String rawUrl) {
+    final host =
+        Uri.tryParse(rawUrl.trim())?.host.toLowerCase().replaceFirst(
+          RegExp(r'^www\.'),
+          '',
+        ) ??
+        '';
+    if (host.startsWith('m.')) {
+      return host.substring(2);
+    }
+    return host;
+  }
+
+  /// 一次性补充推荐常用站卡片（横屏 tube + 竖屏短视频，按域名去重，不覆盖已有条目）。
+  Future<void> _ensureSuggestedAdultCommonWebsites() async {
+    const suggestions = <Map<String, String>>[
+      // 首批：综合 / 横屏 tube
+      {'name': 'Pornhub', 'url': 'https://www.pornhub.com/'},
+      {'name': 'SpankBang', 'url': 'https://spankbang.com/'},
+      {'name': 'Erome', 'url': 'https://www.erome.com/'},
+      {'name': 'RedGIFs', 'url': 'https://www.redgifs.com/'},
+      {'name': 'Hanime', 'url': 'https://hanime.tv/'},
+      {'name': 'MissAV', 'url': 'https://missav.com/'},
+      {'name': 'Jable', 'url': 'https://jable.tv/'},
+      {'name': 'HQPorner', 'url': 'https://hqporner.com/'},
+      {'name': 'Beeg', 'url': 'https://beeg.com/'},
+      {'name': 'XNXX', 'url': 'https://www.xnxx.com/'},
+      // 竖屏 / 短视频 / 手机单列浏览
+      {'name': 'TikPorn', 'url': 'https://tik.porn/'},
+      {'name': 'PinPorn', 'url': 'https://pin.porn/'},
+      {'name': 'FYPTT', 'url': 'https://fyptt.to/'},
+      {'name': 'FikFap', 'url': 'https://fikfap.com/'},
+      {'name': 'TikTits', 'url': 'https://tiktits.com/'},
+      {'name': 'XXXtik', 'url': 'https://xxxtik.com/'},
+      {'name': 'Fapello', 'url': 'https://fapello.com/'},
+      {'name': 'LeakGallery', 'url': 'https://leakgallery.com/'},
+      {'name': 'Scrolller', 'url': 'https://scrolller.com/'},
+      {'name': 'Thothub', 'url': 'https://thothub.to/'},
+    ];
+    final existingHosts =
+        _commonWebsites
+            .map((site) => _commonWebsiteHost((site['url'] ?? '').toString()))
+            .where((host) => host.isNotEmpty)
+            .toSet();
+    var added = 0;
+    for (final row in suggestions) {
+      final url = BrowserService.normalizeCommonWebsiteUrl(row['url']!);
+      final host = _commonWebsiteHost(url);
+      if (host.isEmpty || existingHosts.contains(host)) continue;
+      existingHosts.add(host);
+      _commonWebsites.add({
+        'name': row['name'],
+        'url': url,
+        'iconCode': Icons.public.codePoint,
+      });
+      added++;
+    }
+    if (added > 0) {
+      if (mounted) setState(() {});
+      await _saveCommonWebsites();
+      debugPrint('已补充 $added 个推荐常用网站');
+    }
   }
 
   // 2. 加载历史记录
@@ -36405,12 +37113,28 @@ class _BrowserPageState extends State<BrowserPage>
       );
       absoluteUrl = _toAbsoluteUrl(recovered.trim());
     }
-    if (_downloadingUrls.contains(absoluteUrl)) {
+    final xMediaInFlightId = _xMediaIdentity(absoluteUrl);
+    final urlInFlight = _downloadingUrls.contains(absoluteUrl);
+    final xIdInFlight =
+        xMediaInFlightId.isNotEmpty &&
+        _downloadingXMediaIds.contains(xMediaInFlightId);
+    if (urlInFlight || xIdInFlight) {
       onFailureType?.call('already_downloading');
-      onProgress?.call(0.0, detail: '同一链接已在下载中');
-      // 智能批量/手势：不能当作「已保存成功」，否则 Completer 会提前放行并切条
-      if (isSmartBatchMedia) return false;
-      return true;
+      onProgress?.call(0.0, detail: '同一媒体已在下载中');
+      debugPrint(
+        'Skip duplicate download: urlInFlight=$urlInFlight '
+        'xIdInFlight=$xIdInFlight id=$xMediaInFlightId',
+      );
+      // 绝不能返回 true：否则 UI/智能任务会当成「已入库成功」并可能切条或假完成。
+      if (mounted && !isSmartBatchMedia) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('该视频正在下载中，请等待完成后再试'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+      return false;
     }
     if (_isApiEndpointUrl(absoluteUrl) &&
         !_isTrustedMediaCandidate(absoluteUrl)) {
@@ -36427,6 +37151,9 @@ class _BrowserPageState extends State<BrowserPage>
       return false;
     }
     _downloadingUrls.add(absoluteUrl);
+    if (xMediaInFlightId.isNotEmpty) {
+      _downloadingXMediaIds.add(xMediaInFlightId);
+    }
     final ownsProgressTask = progressTaskId != null;
     final taskId = progressTaskId ?? const Uuid().v4();
     final cancelToken = progressCancelToken ?? CancelToken();
@@ -36783,6 +37510,10 @@ class _BrowserPageState extends State<BrowserPage>
             smartTask,
             absoluteUrl,
             (mediaMap['file_hash'] ?? '').toString(),
+            preferredMediaId:
+                (smartTask['expectedXMediaId'] ?? '').toString().trim().isNotEmpty
+                    ? (smartTask['expectedXMediaId'] ?? '').toString().trim()
+                    : _xMediaIdentity(absoluteUrl),
           );
         }
         if (mounted) {
@@ -36945,6 +37676,7 @@ class _BrowserPageState extends State<BrowserPage>
             smartTask,
             absoluteUrl,
             (confirmedDuplicate['file_hash'] ?? '').toString(),
+            preferredMediaId: _xMediaIdentity(absoluteUrl),
           );
         }
         if (mediaType == MediaType.video) {
@@ -37021,6 +37753,9 @@ class _BrowserPageState extends State<BrowserPage>
     } finally {
       timeoutTimer?.cancel();
       _downloadingUrls.remove(absoluteUrl);
+      if (xMediaInFlightId.isNotEmpty) {
+        _downloadingXMediaIds.remove(xMediaInFlightId);
+      }
     }
   }
 
@@ -38178,6 +38913,8 @@ class _BrowserPageState extends State<BrowserPage>
     bool startFromCurrentPage = false,
     int? minVideoBytes,
     int? maxVideoBytes,
+    double? minVideoDurationSec,
+    double? maxVideoDurationSec,
     bool autoVideoSizeRange = false,
   }) async {
     if (_smartDownloadTask != null) return;
@@ -38200,6 +38937,7 @@ class _BrowserPageState extends State<BrowserPage>
       return;
     }
     final host = _normalizeSmartHost(uri.host);
+    final siteProfile = _smartSiteProfile(host);
     final kw = keyword.trim();
     final feedUrl = seedBrowse.startsWith('http') ? seedBrowse : normalized;
     await _loadSmartDownload24hRegistry();
@@ -38212,7 +38950,7 @@ class _BrowserPageState extends State<BrowserPage>
       'phase': 'simple_generic_running',
       'siteUrl': normalized,
       'host': host,
-      'siteProfile': 'generic',
+      'siteProfile': siteProfile,
       'keyword': kw,
       'mediaType': mediaType,
       'allowMixedMedia': false,
@@ -38240,6 +38978,11 @@ class _BrowserPageState extends State<BrowserPage>
       'allowBroadenDiscovery': false,
     };
     final task = _smartDownloadTask!;
+    _applySmartVideoDurationLimits(
+      task,
+      minVideoDurationSec: minVideoDurationSec,
+      maxVideoDurationSec: maxVideoDurationSec,
+    );
     try {
       await WakelockPlus.enable();
       task['screenWakeLockEnabled'] = true;
@@ -38736,8 +39479,19 @@ class _BrowserPageState extends State<BrowserPage>
     }
     if (hit == null) return false;
 
+    final host = (task['host'] ?? '').toString();
+    final profile = (task['siteProfile'] ?? '').toString();
+    final shortFeedInline =
+        profile == 'shortfeed' ||
+        profile == 'tikporn' ||
+        profile == 'pinporn' ||
+        profile == 'gallery' ||
+        _isShortFeedAdultHost(host) ||
+        _isGalleryAdultHost(host);
+
     // 先再等一轮捕获池（播放预热），能直链就别长按。
-    if (!imageMode) {
+    // 竖屏信息流站禁止：全局捕获池常混入邻条预加载。
+    if (!imageMode && !shortFeedInline) {
       await Future<void>.delayed(const Duration(milliseconds: 700));
       final warmed = await _simpleGenericDrainStreams(
         task,
@@ -38746,6 +39500,8 @@ class _BrowserPageState extends State<BrowserPage>
         maxDownloads: 1,
       );
       if (warmed > 0) return true;
+    } else if (!imageMode && shortFeedInline) {
+      await Future<void>.delayed(const Duration(milliseconds: 350));
     }
 
     final point = Offset(
@@ -38798,9 +39554,62 @@ class _BrowserPageState extends State<BrowserPage>
   Future<void> _simpleGenericScrollFeed(Map<String, dynamic> task) async {
     final controller = _controller;
     if (controller == null) return;
-    task['matchStage'] = '通用 · 滑动寻找更多';
-    _showSmartOperation('向上滑动，寻找下一个视频', point: const Offset(0.5, 0.78));
+    final host = (task['host'] ?? '').toString();
+    final profile = (task['siteProfile'] ?? '').toString();
+    final shortFeed =
+        profile == 'shortfeed' ||
+        profile == 'tikporn' ||
+        profile == 'pinporn' ||
+        profile == 'gallery' ||
+        _isShortFeedAdultHost(host) ||
+        _isGalleryAdultHost(host);
+    task['matchStage'] = shortFeed ? '通用 · 上滑切下一条' : '通用 · 滑动寻找更多';
+    _showSmartOperation(
+      shortFeed ? '上滑切换下一条媒体' : '向上滑动，寻找下一个视频',
+      point: const Offset(0.5, 0.78),
+    );
     try {
+      if (shortFeed) {
+        // TikTok-style feeds often ignore window.scrollBy; synthesize a swipe.
+        await controller.evaluateJavascript(
+          source: r'''
+(() => {
+  const x = Math.floor(innerWidth * 0.5);
+  const y1 = Math.floor(innerHeight * 0.72);
+  const y2 = Math.floor(innerHeight * 0.22);
+  const target = document.elementFromPoint(x, y1) || document.body;
+  const mk = (type, y, active) => {
+    const ev = new TouchEvent(type, {bubbles:true, cancelable:true});
+    const touch = {
+      identifier: 1,
+      target,
+      clientX: x, clientY: y,
+      pageX: x + scrollX, pageY: y + scrollY,
+      screenX: x, screenY: y
+    };
+    Object.defineProperty(ev, 'touches', {
+      configurable:true, value: active ? [touch] : []
+    });
+    Object.defineProperty(ev, 'changedTouches', {
+      configurable:true, value:[touch]
+    });
+    return ev;
+  };
+  target.dispatchEvent(mk('touchstart', y1, true));
+  setTimeout(() => {
+    target.dispatchEvent(mk('touchmove', y2, true));
+    setTimeout(() => target.dispatchEvent(mk('touchend', y2, false)), 40);
+  }, 40);
+  try {
+    window.scrollBy({top: Math.max(360, innerHeight * 0.85), behavior: 'auto'});
+  } catch (_) {}
+  return true;
+})()
+''',
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 1100));
+        return;
+      }
       await controller.evaluateJavascript(
         source:
             'window.scrollBy({top: Math.max(360, innerHeight * 0.78), behavior: "smooth"}); true;',
@@ -38890,7 +39699,17 @@ class _BrowserPageState extends State<BrowserPage>
       }
 
       // 首页/信息流先扫一轮已暴露流（含捕获池）。
-      if (mediaType != MediaType.image) {
+      // 竖屏信息流站勿先全局 drain：邻条预加载极易下错。
+      final bootstrapHost = (task['host'] ?? '').toString();
+      final bootstrapProfile = (task['siteProfile'] ?? '').toString();
+      final shortFeedBootstrap =
+          bootstrapProfile == 'shortfeed' ||
+          bootstrapProfile == 'tikporn' ||
+          bootstrapProfile == 'pinporn' ||
+          bootstrapProfile == 'gallery' ||
+          _isShortFeedAdultHost(bootstrapHost) ||
+          _isGalleryAdultHost(bootstrapHost);
+      if (mediaType != MediaType.image && !shortFeedBootstrap) {
         await _simpleGenericDrainStreams(
           task,
           pageUrl: _currentUrl,
@@ -38918,8 +39737,18 @@ class _BrowserPageState extends State<BrowserPage>
           const Duration(minutes: 3),
         );
 
-        // A) 当前页真实流
-        if (mediaType != MediaType.image) {
+        final host = (task['host'] ?? '').toString();
+        final profile = (task['siteProfile'] ?? '').toString();
+        final shortFeedInline =
+            profile == 'shortfeed' ||
+            profile == 'tikporn' ||
+            profile == 'pinporn' ||
+            profile == 'gallery' ||
+            _isShortFeedAdultHost(host) ||
+            _isGalleryAdultHost(host);
+
+        // A) 当前页真实流（竖屏信息流站跳过全局嗅探，避免邻条预加载误下）
+        if (mediaType != MediaType.image && !shortFeedInline) {
           progress += await _simpleGenericDrainStreams(
             task,
             pageUrl: _currentUrl,
@@ -38932,8 +39761,14 @@ class _BrowserPageState extends State<BrowserPage>
           return;
         }
 
-        // B) 打开未见过的卡片 → 等捕获 → 下载 → 回列表
-        if (progress == 0) {
+        // B) 竖屏信息流：先长按当前条，不要点卡片进详情。
+        if (progress == 0 && shortFeedInline) {
+          final gestured = await _simpleGenericTryGestureDownload(task);
+          if (gestured) progress += 1;
+        }
+
+        // C) 打开未见过的卡片 → 等捕获 → 下载 → 回列表（tube / 普通站）
+        if (progress == 0 && !shortFeedInline) {
           final cards = await _simpleGenericCollectCardLinks();
           var opened = 0;
           for (final card in cards) {
@@ -38994,7 +39829,7 @@ class _BrowserPageState extends State<BrowserPage>
           }
         }
 
-        // C) 信息流内联媒体：图片和视频都使用与手动长按相同的兜底。
+        // D) 信息流内联媒体：图片和视频都使用与手动长按相同的兜底。
         if (progress == 0) {
           final gestured = await _simpleGenericTryGestureDownload(task);
           if (gestured) progress += 1;
@@ -39052,6 +39887,8 @@ class _BrowserPageState extends State<BrowserPage>
     bool startFromCurrentPage = false,
     int? minVideoBytes,
     int? maxVideoBytes,
+    double? minVideoDurationSec,
+    double? maxVideoDurationSec,
     bool autoVideoSizeRange = false,
 
     /// 用户在非 91 站手动借用 91 套路时为 true；不拦截启动，仅作标记。
@@ -39131,6 +39968,11 @@ class _BrowserPageState extends State<BrowserPage>
       'allowBroadenDiscovery': false,
     };
     final task = _smartDownloadTask!;
+    _applySmartVideoDurationLimits(
+      task,
+      minVideoDurationSec: minVideoDurationSec,
+      maxVideoDurationSec: maxVideoDurationSec,
+    );
     try {
       await WakelockPlus.enable();
       task['screenWakeLockEnabled'] = true;
@@ -39894,6 +40736,8 @@ class _BrowserPageState extends State<BrowserPage>
     bool startFromCurrentPage = false,
     int? minVideoBytes,
     int? maxVideoBytes,
+    double? minVideoDurationSec,
+    double? maxVideoDurationSec,
     bool autoVideoSizeRange = false,
   }) async {
     final rawUrl = (website['url'] ?? '').toString().trim();
@@ -41175,7 +42019,8 @@ class _BrowserPageState extends State<BrowserPage>
             pageUrl,
             durationSec,
           );
-          if (sizeAllowed) {
+          final durationAllowed = _smartVideoDurationAllowed(task, durationSec);
+          if (sizeAllowed && durationAllowed) {
             final seen = task['seenMediaUrls'] as Set<String>;
             final canTrustUrlIdentity =
                 chosen.startsWith('http') && !_isElementBoundFeedPage(pageUrl);
@@ -41210,6 +42055,9 @@ class _BrowserPageState extends State<BrowserPage>
               );
               if (smartFailureType == 'outside_requested_size_range') {
                 task['sizeSkipped'] = ((task['sizeSkipped'] as int?) ?? 0) + 1;
+              } else if (smartFailureType == 'outside_requested_duration_range') {
+                task['durationSkipped'] =
+                    ((task['durationSkipped'] as int?) ?? 0) + 1;
               } else if (smartFailureType == 'invalid_smart_media_content') {
                 task['invalidSkipped'] =
                     ((task['invalidSkipped'] as int?) ?? 0) + 1;
@@ -41221,7 +42069,12 @@ class _BrowserPageState extends State<BrowserPage>
               }
             }
           } else {
-            task['sizeSkipped'] = ((task['sizeSkipped'] as int?) ?? 0) + 1;
+            if (!durationAllowed) {
+              task['durationSkipped'] =
+                  ((task['durationSkipped'] as int?) ?? 0) + 1;
+            } else {
+              task['sizeSkipped'] = ((task['sizeSkipped'] as int?) ?? 0) + 1;
+            }
           }
         }
         task[ok ? 'success' : 'failed'] =

@@ -27,7 +27,13 @@ class MediaSnifferJs {
           const host = u.hostname.toLowerCase();
           const hasMediaExt = /\\.(jpg|jpeg|png|gif|webp|mp4|webm|mov|m3u8|ts|mp3|m4a)(\\?|\$)/.test(path);
           if (hasMediaExt) return false;
-          const videoSiteHosts = ['tik.', 'porn', 'xvideos', 'xhamster', 'pornhub', 'redtube', 'cdn.', 'stream', 'video.', 'media.'];
+          const videoSiteHosts = [
+            'tik.', 'porn', 'xvideos', 'xhamster', 'pornhub', 'redtube', 'xnxx',
+            'spankbang', 'redgifs', 'fyptt', 'fikfap', 'tiktits', 'xxxtik',
+            'fapello', 'leakgallery', 'scrolller', 'thothub', 'erome', 'missav',
+            'jable', 'hanime', 'hqporner', 'beeg', 'cdn.', 'stream', 'video.',
+            'media.', 'phncdn', 'gifdelivery'
+          ];
           if (videoSiteHosts.some(h => host.includes(h))) return false;
           const apiPatterns = [
             'detailrecommend', 'wisesearchsetpic', 'wisejson',
