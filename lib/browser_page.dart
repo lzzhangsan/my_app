@@ -2717,7 +2717,14 @@ class _BrowserPageState extends State<BrowserPage>
   static const int _kPaginatedSniffSoftMaxTarget = 500;
 
   /// 智能下载（沿用套路 / 动作编排 / 通用·91 管线）数量上限。
-  static const int _kSmartDownloadMaxTarget = 300;
+  static const int _kSmartDownloadMaxTarget = 500;
+
+  Duration _smartDownloadDeadlineForTarget(int requestedTarget) {
+    final target = requestedTarget.clamp(1, _kSmartDownloadMaxTarget);
+    final hours = ((target / 50).ceil() * 5).clamp(5, 24);
+    return Duration(hours: hours);
+  }
+
   static const String _kSharedFavoriteVideosPrefsKey =
       'doc_web_video_favorites_v1';
   static const bool _favoriteDownloadDiagnosticsEnabled = true;
@@ -4581,25 +4588,15 @@ class _BrowserPageState extends State<BrowserPage>
         _isFacebookCdnUrl(videoUrlEarly);
     // 智能/动作编排：下载前禁止按 URL/src/磁盘路径宣称「库内已有」。
     // Facebook 手动长按同样禁止：邻条 CDN 误绑后会弹「疑似重复」，但当前条未入库。
-    // 仅入库后内容哈希匹配（或 24h 备案带 fileHash 且库内哈希仍在）才可跳过。
+    // 仅当前候选实际下载后产生的内容哈希匹配才可跳过。24h 备案、
+    // URL、文件名和页面信息都只能作为线索，不能终止本次下载。
     final existingMedia = await _findExistingMediaForItem(item);
     if (existingMedia != null && item['allowSourceUrlReuse'] != true) {
-      if (isSmartDownload || looksFacebookEarly) {
-        debugPrint(
-          'FB_DL ignore robust URL pre-skip '
-          'smart=$isSmartDownload fb=$looksFacebookEarly '
-          'row=${existingMedia['id']}',
-        );
-      } else {
-        final downloadAnyway = await _confirmSourceUrlDuplicateBeforeDownload(
-          existingMedia,
-        );
-        if (!downloadAnyway) {
-          await _markFavoriteDownloaded(item, downloaded: true);
-          onFailureType?.call('already_in_library');
-          return true;
-        }
-      }
+      debugPrint(
+        'Media dedup: ignore robust source pre-skip '
+        'smart=$isSmartDownload longPress=$isLongPress fb=$looksFacebookEarly '
+        'row=${existingMedia['id']}; verify downloaded content hash',
+      );
       // URL matches are only hints. The downloaded content hash remains the
       // authoritative duplicate check for dynamic and signed media URLs.
     }
@@ -4956,8 +4953,8 @@ class _BrowserPageState extends State<BrowserPage>
       if (boundFbKey.startsWith('reel:') || boundFbKey.isEmpty) {
         boundFbKey = facebookMediaIdentity(downloadUrl);
       }
-      // Identity-based anti-duplicate (session + library). Hash-only cannot
-      // catch the same reel across re-signed / multi-quality CDN URLs.
+      // Identity binds candidate tracks to the pressed Reel, but it is not
+      // proof that the current bytes already exist in the media library.
       final identityForSkip =
           _isFacebookCdnIdentity(boundFbKey)
               ? boundFbKey
@@ -4965,52 +4962,10 @@ class _BrowserPageState extends State<BrowserPage>
                   ? expectedFbKey
                   : facebookMediaIdentity(downloadUrl));
       if (identityForSkip.isNotEmpty && isSmartDownload) {
-        if (_sessionHasHandledFacebookIdentity(smartTask, identityForSkip)) {
-          debugPrint(
-            'FB_DL session identity skip $identityForSkip '
-            'url=${downloadUrl.length > 100 ? downloadUrl.substring(0, 100) : downloadUrl}',
-          );
-          if (smartTask != null) {
-            smartTask['expectedFbVideoKey'] = identityForSkip;
-          }
-          if (isSmartGesture) {
-            smartTask?['lastGestureFailureType'] = 'already_in_library';
-          }
-          onFailureType?.call('already_in_library');
-          if (shownDialog && mounted) {
-            final nav = Navigator.of(context, rootNavigator: true);
-            if (nav.canPop()) nav.pop();
-          }
-          progress.dispose();
-          detailNotifier.dispose();
-          return false;
-        }
-        if (await _libraryConfirmsFacebookIdentity(identityForSkip)) {
-          debugPrint(
-            'FB_DL library identity skip $identityForSkip '
-            'url=${downloadUrl.length > 100 ? downloadUrl.substring(0, 100) : downloadUrl}',
-          );
-          _rememberHandledFacebookIdentity(
-            smartTask,
-            identityForSkip,
-            softReelKey:
-                expectedFbKey.startsWith('reel:') ? expectedFbKey : null,
-          );
-          if (smartTask != null) {
-            smartTask['expectedFbVideoKey'] = identityForSkip;
-          }
-          if (isSmartGesture) {
-            smartTask?['lastGestureFailureType'] = 'already_in_library';
-          }
-          onFailureType?.call('already_in_library');
-          if (shownDialog && mounted) {
-            final nav = Navigator.of(context, rootNavigator: true);
-            if (nav.canPop()) nav.pop();
-          }
-          progress.dispose();
-          detailNotifier.dispose();
-          return false;
-        }
+        debugPrint(
+          'FB_DL identity retained for track binding only; '
+          'pre-download duplicate skip disabled key=$identityForSkip',
+        );
       }
       if (boundFbKey.isNotEmpty && !boundFbKey.startsWith('reel:')) {
         final before = attempts.length;
@@ -5832,6 +5787,20 @@ class _BrowserPageState extends State<BrowserPage>
         debugPrint('智能下载：重复行无有效内容哈希，不跳过');
         return;
       }
+      // 记录真正命中的内容哈希：首次遇到某个哈希，说明媒体池确实遍历到
+      // 另一项；同一个哈希反复出现，才说明切换可能失败。二者不能都按
+      // “连续没有成功”处理，否则经过一批旧媒体时会提前结束任务。
+      final confirmedHashes =
+          (smartTask['confirmedDuplicateContentHashes'] as Set<String>?) ??
+          <String>{};
+      smartTask['confirmedDuplicateContentHashes'] = confirmedHashes;
+      final isNewConfirmedDuplicate = confirmedHashes.add(hash);
+      smartTask['lastConfirmedDuplicateHash'] = hash;
+      smartTask['lastConfirmedDuplicateWasNew'] = isNewConfirmedDuplicate;
+      debugPrint(
+        'Smart dedup: exact hash confirmed '
+        'newInTask=$isNewConfirmedDuplicate unique=${confirmedHashes.length}',
+      );
       await _markCurrentMediaHandled(smartTask);
       // 哈希确认库内已存在：关闸 + Completer 完成，立刻允许 waitDownload/findNext
       if (smartTask['instagramGridMode'] == true) {
@@ -7709,12 +7678,8 @@ class _BrowserPageState extends State<BrowserPage>
         };
         window.__appTelegramSavedDocumentIds =
           window.__appTelegramSavedDocumentIds || new Set();
-        if (telegramDocumentId &&
-            window.__appTelegramSavedDocumentIds.has(telegramDocumentId)) {
-          reportManagerStatus('duplicate', media.size, media.size);
-          window.dispatchEvent(new Event('__appTelegramOfficialDownloadSucceeded'));
-          return true;
-        }
+        // A Telegram document id selects the media but does not prove byte
+        // equality. Always acquire it and let native content-hash dedup decide.
         const inFlight = window.__appTelegramManagerInFlight;
         if (inFlight) {
           // A second synthetic/manual press must never create an overlapping
@@ -12145,17 +12110,12 @@ class _BrowserPageState extends State<BrowserPage>
                 _isFacebookPlatformPage(
                   (data['pageUrl'] ?? data['sourcePageUrl'] ?? '').toString(),
                 );
-            if (isSmartGesture || onFacebook) {
-              debugPrint(
-                'FB_DL ignore source-map pre-skip '
-                'smart=$isSmartGesture fb=$onFacebook '
-                'url=${resolvedUrl.length > 100 ? resolvedUrl.substring(0, 100) : resolvedUrl}',
-              );
-            } else if (!await _confirmSourceUrlDuplicateBeforeDownload(
-              existing,
-            )) {
-              return;
-            }
+            debugPrint(
+              'Media dedup: ignore source-map pre-skip '
+              'smart=$isSmartGesture fb=$onFacebook; '
+              'download first and verify by content hash '
+              'url=${resolvedUrl.length > 100 ? resolvedUrl.substring(0, 100) : resolvedUrl}',
+            );
           }
         }
         final canCanvasFallback = selectedType == MediaType.image;
@@ -15233,7 +15193,7 @@ class _BrowserPageState extends State<BrowserPage>
 
   bool _isSmartHardStopReason(String reason) {
     return reason.contains('用户已停止') ||
-        reason.contains('5 小时') ||
+        reason.contains('动态时间上限') ||
         reason.contains('写入媒体库失败') ||
         reason.contains('地址无效');
   }
@@ -16882,6 +16842,7 @@ class _BrowserPageState extends State<BrowserPage>
     if (success || skippedDuplicate) {
       task['gestureConsecutiveFailures'] = 0;
       task['gestureEngineFailures'] = 0;
+      task['actionCurrentMediaTimeoutRetries'] = 0;
       if (success && !actionRecipeMode) {
         final siteProfile = (task['siteProfile'] ?? '').toString();
         String acq;
@@ -18694,7 +18655,9 @@ class _BrowserPageState extends State<BrowserPage>
       await Future<void>.delayed(const Duration(milliseconds: 900));
     }
     final startedAt = DateTime.now();
-    final deadlineAt = startedAt.add(const Duration(hours: 5));
+    final deadlineAt = startedAt.add(
+      _smartDownloadDeadlineForTarget(targetCount),
+    );
     final hintRaw = (advanceAxisHint ?? '').trim();
     final recipeKinds = recipe.steps.map((step) => step.kind).toSet();
     final String resolvedAxisHint;
@@ -18827,7 +18790,7 @@ class _BrowserPageState extends State<BrowserPage>
     } catch (_) {}
     task['deadlineTimer'] = Timer(deadlineAt.difference(DateTime.now()), () {
       if (identical(_smartDownloadTask, task)) {
-        unawaited(_finishSmartDownload('已达到单次任务 5 小时时间上限'));
+        unawaited(_finishSmartDownload('已达到本次任务动态时间上限'));
       }
     });
     final axisLabel = _advanceAxisSpec(task).$3;
@@ -19554,6 +19517,65 @@ class _BrowserPageState extends State<BrowserPage>
     );
   }
 
+  /// 超时只代表本次触发没有拿到入库证据，不代表当前媒体可以放弃。
+  /// 保留在当前媒体上重新长按；只有同一媒体连续耗尽重试预算后才允许跳过。
+  Future<bool> _actionRecipeRetryCurrentAfterTimeout(
+    Map<String, dynamic> task, {
+    required String outcome,
+    String label = '暂未下载成功，保留当前媒体并重试',
+  }) async {
+    const maxRetries = 8;
+    final identity = await _actionCaptureMediaIdentity(task);
+    final identityToken =
+        '${(identity?['key'] ?? '').toString()}|${(identity?['src'] ?? '').toString()}';
+    final previousToken = (task['actionTimeoutRetryIdentity'] ?? '').toString();
+    final sameIdentity =
+        identityToken.replaceAll('|', '').isNotEmpty &&
+        identityToken == previousToken;
+    if (!sameIdentity) {
+      task['actionTimeoutRetryIdentity'] = identityToken;
+      task['actionCurrentMediaTimeoutRetries'] = 0;
+    }
+    final retries =
+        ((task['actionCurrentMediaTimeoutRetries'] as int?) ?? 0) + 1;
+    task['actionCurrentMediaTimeoutRetries'] = retries;
+    if (retries >= maxRetries) {
+      task['actionCurrentMediaTimeoutRetries'] = 0;
+      await _actionRecipeForceSkipCurrent(
+        task,
+        outcome: outcome,
+        statusText: '当前媒体已尝试 $maxRetries 次仍未成功，记录失败后继续',
+      );
+      debugPrint(
+        'action recipe timeout retry exhausted '
+        'epoch=${task['actionDownloadEpoch']} retries=$retries outcome=$outcome',
+      );
+      return false;
+    }
+    task['gestureDownloadPending'] = false;
+    task['actionHealthyStreak'] = false;
+    task['actionForceSkipReleased'] = false;
+    task['needAdvancePastCurrent'] = false;
+    _actionRecipeCancelPlaceholdersOnly(task);
+    _actionRecipeFinishAwaitLibrarySave(
+      task,
+      libraryOk: false,
+      outcome: 'retry_current_timeout',
+    );
+    final pendingCompleter = task.remove('actionDownloadCompleter');
+    if (pendingCompleter is Completer<bool> && !pendingCompleter.isCompleted) {
+      pendingCompleter.complete(false);
+    }
+    task['failed'] = ((task['failed'] as int?) ?? 0) + 1;
+    task['matchStage'] = '$label（$retries/$maxRetries）';
+    _showSmartOperation('$label（$retries/$maxRetries）');
+    debugPrint(
+      'action recipe RETRY-CURRENT outcome=$outcome '
+      'epoch=${task['actionDownloadEpoch']} retries=$retries/$maxRetries',
+    );
+    return true;
+  }
+
   /// 长按会话开始：在媒体库落盘确认前，套路不得 findNext / 切条。
   void _actionRecipeBeginAwaitLibrarySave(Map<String, dynamic> task) {
     task['actionAwaitingLibrarySave'] = true;
@@ -19750,6 +19772,9 @@ class _BrowserPageState extends State<BrowserPage>
   /// 是否允许在长按下载会话之后切条（入库成功 / 明确跳过失败 / 固定等待到点 / 强制跳过）。
   bool _actionRecipeMayAdvancePastDownload(Map<String, dynamic> task) {
     final outcome = (task['actionDownloadOutcome'] ?? '').toString();
+    // A watchdog timeout closes only the current attempt. Until the bounded
+    // same-media retry budget is exhausted it must never authorize findNext.
+    if (outcome == 'retry_current_timeout') return false;
     if (task['mediaType'] == MediaType.video &&
         _isInstagramPlatformPage(_currentUrl) &&
         outcome == 'instagram_current_track_not_captured') {
@@ -19991,7 +20016,9 @@ class _BrowserPageState extends State<BrowserPage>
       await Future<void>.delayed(const Duration(milliseconds: 900));
     }
     final startedAt = DateTime.now();
-    final deadlineAt = startedAt.add(const Duration(hours: 5));
+    final deadlineAt = startedAt.add(
+      _smartDownloadDeadlineForTarget(targetCount),
+    );
     _smartDownloadTask = <String, dynamic>{
       'mode': 'scope_batch',
       'phase': 'scope_batch_running',
@@ -20029,7 +20056,7 @@ class _BrowserPageState extends State<BrowserPage>
     } catch (_) {}
     task['deadlineTimer'] = Timer(deadlineAt.difference(DateTime.now()), () {
       if (identical(_smartDownloadTask, task)) {
-        unawaited(_finishSmartDownload('已达到单次任务 5 小时时间上限'));
+        unawaited(_finishSmartDownload('已达到本次任务动态时间上限'));
       }
     });
     _showSmartOperation(
@@ -20388,7 +20415,9 @@ class _BrowserPageState extends State<BrowserPage>
       await Future<void>.delayed(const Duration(milliseconds: 900));
     }
     final startedAt = DateTime.now();
-    final deadlineAt = startedAt.add(const Duration(hours: 5));
+    final deadlineAt = startedAt.add(
+      _smartDownloadDeadlineForTarget(targetCount),
+    );
     final resolvedTarget =
         unlimitedTarget || targetCount <= 0
             ? _kPaginatedSniffSoftMaxTarget
@@ -20437,7 +20466,7 @@ class _BrowserPageState extends State<BrowserPage>
     } catch (_) {}
     task['deadlineTimer'] = Timer(deadlineAt.difference(DateTime.now()), () {
       if (identical(_smartDownloadTask, task)) {
-        unawaited(_finishSmartDownload('已达到单次任务 5 小时时间上限'));
+        unawaited(_finishSmartDownload('已达到本次任务动态时间上限'));
       }
     });
     _showSmartOperation(
@@ -21627,7 +21656,7 @@ class _BrowserPageState extends State<BrowserPage>
       }
       final deadlineAt = task['deadlineAt'] as DateTime?;
       if (deadlineAt != null && !DateTime.now().isBefore(deadlineAt)) {
-        await _finishSmartDownload('已达到单次任务 5 小时时间上限');
+        await _finishSmartDownload('已达到本次任务动态时间上限');
         return;
       }
 
@@ -21645,6 +21674,11 @@ class _BrowserPageState extends State<BrowserPage>
       }
 
       final beforeSuccess = success;
+      final confirmedDuplicateHashes =
+          (task['confirmedDuplicateContentHashes'] as Set<String>?) ??
+          <String>{};
+      task['confirmedDuplicateContentHashes'] = confirmedDuplicateHashes;
+      final beforeConfirmedDuplicateCount = confirmedDuplicateHashes.length;
       final beforeIdentity = await _actionCaptureMediaIdentity(task);
       final beforeKey = (beforeIdentity?['key'] ?? '').toString();
       final roundStartedAt = DateTime.now();
@@ -21664,13 +21698,13 @@ class _BrowserPageState extends State<BrowserPage>
         if (roundElapsed >= _kActionRecipeStepWatchdog &&
             successNow <= beforeSuccess &&
             task['actionForceSkipReleased'] != true) {
-          await _actionRecipeForceSkipCurrent(
+          final retryCurrent = await _actionRecipeRetryCurrentAfterTimeout(
             task,
             outcome: 'step_watchdog_timeout',
-            statusText: '超时无进展，强制跳过',
           );
           healthyStreak = false;
           task['actionHealthyStreak'] = false;
+          if (retryCurrent) break;
           // 跳到找下一条步骤（若后面还有）；否则本轮结束后保轨切条
           final nextFindIdx = recipe.steps.indexWhere(
             (s) =>
@@ -21711,6 +21745,15 @@ class _BrowserPageState extends State<BrowserPage>
           );
         }
 
+        // waitDownload may have closed this attempt specifically so the same
+        // media can be retried. Do not execute a later findNext/watchdog step
+        // in the same round, or one timeout would both consume two retries and
+        // still risk switching away.
+        if ((task['actionDownloadOutcome'] ?? '').toString() ==
+            'retry_current_timeout') {
+          break;
+        }
+
         if (((task['success'] as int?) ?? 0) > beforeSuccess) {
           roundDownloadOk = true;
         }
@@ -21730,22 +21773,33 @@ class _BrowserPageState extends State<BrowserPage>
       final afterIdentity = await _actionCaptureMediaIdentity(task);
       final afterKey = (afterIdentity?['key'] ?? '').toString();
       final gotNewDownload = afterSuccess > beforeSuccess;
+      final gotNewConfirmedDuplicate =
+          confirmedDuplicateHashes.length > beforeConfirmedDuplicateCount;
       final mediaMoved =
           beforeKey.isNotEmpty && afterKey.isNotEmpty && afterKey != beforeKey;
-      // 重复跳过也算「本轮有进展」，交给 findNext 切走即可
+      // 只有首次遇到的精确内容哈希才证明遍历到了另一项；累计计数、URL、
+      // 文件名和 DOM 身份都不能代替这项证据。
       final gotProgress =
           gotNewDownload ||
-          ((task['duplicateSkipped'] as int?) ?? 0) >
-              ((task['duplicateSkippedBeforeRound'] as int?) ?? 0) ||
+          gotNewConfirmedDuplicate ||
           task['actionForceSkipReleased'] == true;
 
-      if (gotNewDownload || (gotProgress && mediaMoved)) {
+      if (gotNewDownload ||
+          gotNewConfirmedDuplicate ||
+          (gotProgress && mediaMoved)) {
         idleRounds = 0;
         task['noSuccessRounds'] = 0;
         task['stallCount'] = 0;
+        task['actionRecoveryCycles'] = 0;
         // 成功下载后若已切到新媒体 → 下一轮纯长按循环；未切走则下一轮需推走已处理
         healthyStreak = gotNewDownload && mediaMoved;
         task['actionHealthyStreak'] = healthyStreak;
+        if (gotNewConfirmedDuplicate) {
+          debugPrint(
+            'action recipe progress: new exact duplicate hash '
+            '${confirmedDuplicateHashes.length}; continue media-pool traversal',
+          );
+        }
         // 成功路径：不 recover、不二次切条（切条只由套路 findNext 负责）
       } else {
         healthyStreak = false;
@@ -21771,9 +21825,30 @@ class _BrowserPageState extends State<BrowserPage>
           );
         }
         if (idleRounds >= 10 || noSuccess >= 14) {
+          final recoveryCycle =
+              ((task['actionRecoveryCycles'] as int?) ?? 0) + 1;
+          task['actionRecoveryCycles'] = recoveryCycle;
+          task['noSuccessRounds'] = 0;
+          idleRounds = 0;
+          if (recoveryCycle < 4) {
+            task['matchStage'] = '目标未达成 · 第 $recoveryCycle 次自动恢复';
+            _showSmartOperation(
+              '暂未取得新媒体，正在自动恢复并继续寻找（$afterSuccess/$target）',
+              showFinger: false,
+            );
+            await _guardActionRecipeTrack(
+              task,
+              reason: '目标未达成自动恢复#$recoveryCycle',
+              allowAdvance: true,
+              allowHeavy: true,
+              stallLevel: 8 + recoveryCycle,
+            );
+            await Future<void>.delayed(const Duration(milliseconds: 900));
+            continue;
+          }
           await _finishSmartDownload(
-            '连续多轮未能稳定下载（成功 $afterSuccess/$target），已停止。'
-            '可换模板或先验证「上切/长按」零件',
+            '已执行 4 轮分级自愈，页面仍无法切换到新的媒体'
+            '（成功 $afterSuccess/$target）',
           );
           return;
         }
@@ -24087,10 +24162,9 @@ class _BrowserPageState extends State<BrowserPage>
             ) &&
             !_actionRecipeHasRealSmartDownloading() &&
             !_longPressVideoDownloadInProgress) {
-          await _actionRecipeForceSkipCurrent(
+          await _actionRecipeRetryCurrentAfterTimeout(
             task,
             outcome: 'force_skip_timeout',
-            statusText: '超时无进展，强制跳过',
           );
           debugPrint(
             'action waitDownload: EXIT reason=watchdog_before_progress(fixed)',
@@ -24236,6 +24310,7 @@ class _BrowserPageState extends State<BrowserPage>
     // 主路径：若长按创建的 Completer 仍在，必须先 await（健康连胜也绝不跳过）
     // 但加上看门狗上限，避免无效媒体被 suppress 后干等 6 分钟
     final existingCompleter = task['actionDownloadCompleter'];
+    var initialCompleterTimedOut = false;
     if (existingCompleter is Completer<bool> &&
         !existingCompleter.isCompleted) {
       try {
@@ -24243,8 +24318,25 @@ class _BrowserPageState extends State<BrowserPage>
         // await while the UI appears frozen.
         await existingCompleter.future.timeout(const Duration(seconds: 8));
       } on TimeoutException {
+        initialCompleterTimedOut = true;
         debugPrint('action waitDownload: completer timeout, continue poll');
       }
+    }
+    // If eight seconds passed and no real transfer ever started, this is a
+    // missed long-press/capture rather than a slow download. Retry the same
+    // media immediately instead of showing "waiting for library" for another
+    // full watchdog window. Real Telegram/video transfers remain protected by
+    // the active-download/progress checks below.
+    if (initialCompleterTimedOut &&
+        task['actionLongPressNeedsConfirm'] == true &&
+        !_hasActiveSmartBatchDownload()) {
+      await _actionRecipeRetryCurrentAfterTimeout(
+        task,
+        outcome: 'download_not_started_timeout',
+        label: '下载尚未真正启动，正在重新长按当前媒体',
+      );
+      debugPrint('action waitDownload: EXIT reason=no_transfer_started_retry');
+      return;
     }
 
     final started = DateTime.now();
@@ -24304,10 +24396,10 @@ class _BrowserPageState extends State<BrowserPage>
         );
         _cancelStalledSmartMediaDownloads('facebook_smart_round_timeout');
         _longPressVideoDownloadInProgress = false;
-        await _actionRecipeForceSkipCurrent(
+        await _actionRecipeRetryCurrentAfterTimeout(
           task,
           outcome: 'step_watchdog_timeout',
-          statusText: 'Facebook 下载超时，已跳过当前视频',
+          label: 'Facebook 下载暂未完成，保留当前视频并重试',
         );
         return;
       }
@@ -24441,13 +24533,12 @@ class _BrowserPageState extends State<BrowserPage>
       if ((pending || completerPending || awaitingLibrary || needsConfirm) &&
           !activelyDownloading &&
           DateTime.now().difference(stagnantSince) > stagnantLimit) {
-        await _actionRecipeForceSkipCurrent(
+        await _actionRecipeRetryCurrentAfterTimeout(
           task,
           outcome: 'stagnant_timeout',
-          statusText: '超时无进展，强制跳过',
         );
-        await _clearSmartInterruptions(task, silent: false, label: '跳过前清障');
-        debugPrint('action waitDownload: EXIT reason=stagnant_timeout');
+        await _clearSmartInterruptions(task, silent: false, label: '重试前清障');
+        debugPrint('action waitDownload: EXIT reason=stagnant_timeout_retry');
         return;
       }
       // 有真实下载但长时间无指纹变化：看门狗强制跳过
@@ -24457,12 +24548,11 @@ class _BrowserPageState extends State<BrowserPage>
           !_telegramStreamHasRecentProgress &&
           DateTime.now().difference(progressSince) >
               _kActionRecipeLibraryWatchdog) {
-        await _actionRecipeForceSkipCurrent(
+        await _actionRecipeRetryCurrentAfterTimeout(
           task,
           outcome: 'force_skip_timeout',
-          statusText: '超时无进展，强制跳过',
         );
-        debugPrint('action waitDownload: EXIT reason=progress_watchdog');
+        debugPrint('action waitDownload: EXIT reason=progress_watchdog_retry');
         return;
       }
       // 终态已至（finish 清掉 needsConfirm）且无在途：可以退出
@@ -24507,13 +24597,12 @@ class _BrowserPageState extends State<BrowserPage>
         );
         return;
       }
-      await _actionRecipeForceSkipCurrent(
+      await _actionRecipeRetryCurrentAfterTimeout(
         task,
         outcome: 'loop_timeout',
-        statusText: '超时无进展，强制跳过',
       );
     }
-    debugPrint('action waitDownload: EXIT reason=loop_timeout');
+    debugPrint('action waitDownload: EXIT reason=loop_timeout_retry');
   }
 
   /// 零件验证：在当前页单独跑一步/一类动作，便于定位哪一步无效。
@@ -24687,7 +24776,9 @@ class _BrowserPageState extends State<BrowserPage>
     await _loadSmartStrategyProfiles();
     await _loadSmartDemoRecipes();
     final startedAt = DateTime.now();
-    final deadlineAt = startedAt.add(const Duration(hours: 5));
+    final deadlineAt = startedAt.add(
+      _smartDownloadDeadlineForTarget(targetCount),
+    );
     final strict91SearchUrl =
         keywordFirstOn91
             ? '${effectiveUri.origin}/search/${Uri.encodeComponent(keyword.trim())}/'
@@ -24994,7 +25085,7 @@ class _BrowserPageState extends State<BrowserPage>
       deadlineAt.difference(DateTime.now()),
       () {
         if (identical(_smartDownloadTask, activeTask)) {
-          unawaited(_finishSmartDownload('已达到单次任务 5 小时时间上限'));
+          unawaited(_finishSmartDownload('已达到本次任务动态时间上限'));
         }
       },
     );
@@ -25003,7 +25094,7 @@ class _BrowserPageState extends State<BrowserPage>
     ) {
       if (!identical(_smartDownloadTask, activeTask)) return;
       if (!DateTime.now().isBefore(deadlineAt)) {
-        unawaited(_finishSmartDownload('已达到单次任务 5 小时时间上限'));
+        unawaited(_finishSmartDownload('已达到本次任务动态时间上限'));
         return;
       }
       final hasActiveMediaDownload = _downloadTasks.any(
@@ -25416,6 +25507,7 @@ class _BrowserPageState extends State<BrowserPage>
     }
 
     task['instagramGridAdvancing'] = true;
+    final recoveryGridUrl = (task['instagramGridUrl'] ?? '').toString();
     try {
       final actualUrl = (await controller.getUrl())?.toString() ?? _currentUrl;
       final phase = (task['phase'] ?? '').toString();
@@ -25922,7 +26014,26 @@ class _BrowserPageState extends State<BrowserPage>
           'url=$actualUrl',
         );
         if (emptyScans >= 20) {
-          await _finishSmartDownload('$gridSite 网格持续无法加载，已安全停止');
+          final recoveries =
+              ((task['instagramGridDomRecoveries'] as int?) ?? 0) + 1;
+          task['instagramGridDomRecoveries'] = recoveries;
+          task['instagramGridEmptyDomScans'] = 0;
+          if (recoveries <= 3) {
+            task['matchStage'] = '$gridSite 网格未就绪 · 自动恢复 $recoveries/3';
+            _showSmartOperation('网格暂未加载，正在自动重新进入并继续任务');
+            final recoveryUrl =
+                recoveryGridUrl.startsWith('http')
+                    ? recoveryGridUrl
+                    : actualUrl;
+            if (recoveryUrl.startsWith('http')) _loadUrl(recoveryUrl);
+            Future<void>.delayed(const Duration(milliseconds: 1800), () {
+              if (identical(_smartDownloadTask, task)) {
+                unawaited(_advanceSmartDownload(_currentUrl));
+              }
+            });
+            return;
+          }
+          await _finishSmartDownload('$gridSite 网格经过 3 次重新进入仍持续无法加载');
           return;
         }
         Future<void>.delayed(const Duration(milliseconds: 1200), () {
@@ -25933,6 +26044,8 @@ class _BrowserPageState extends State<BrowserPage>
         return;
       }
       task['instagramGridEmptyDomScans'] = 0;
+      task['instagramGridDomRecoveries'] = 0;
+      task['instagramGridEngineFailures'] = 0;
       final noNew = ((task['instagramGridNoNewScans'] as int?) ?? 0) + 1;
       task['instagramGridNoNewScans'] = noNew;
       // Instagram may need several seconds to append the next virtualized
@@ -25952,8 +26065,19 @@ class _BrowserPageState extends State<BrowserPage>
       debugPrint('$gridSite grid pipeline failed: $e');
       final failures = ((task['instagramGridEngineFailures'] as int?) ?? 0) + 1;
       task['instagramGridEngineFailures'] = failures;
-      if (failures >= 3) {
-        await _finishSmartDownload('$gridSite 网格页面识别连续失败');
+      if (failures >= 9) {
+        await _finishSmartDownload('$gridSite 网格页面经过多轮恢复仍无法识别');
+      } else if (failures % 3 == 0) {
+        task['matchStage'] = '$gridSite 网格识别异常 · 自动恢复 ${failures ~/ 3}/2';
+        _showSmartOperation('网格识别暂时失败，正在重新进入并继续任务');
+        final recoveryUrl =
+            recoveryGridUrl.startsWith('http') ? recoveryGridUrl : _currentUrl;
+        if (recoveryUrl.startsWith('http')) _loadUrl(recoveryUrl);
+        Future<void>.delayed(const Duration(milliseconds: 1800), () {
+          if (identical(_smartDownloadTask, task)) {
+            unawaited(_advanceSmartDownload(_currentUrl));
+          }
+        });
       } else {
         Future<void>.delayed(const Duration(milliseconds: 700), () {
           if (identical(_smartDownloadTask, task)) {
@@ -26006,7 +26130,7 @@ class _BrowserPageState extends State<BrowserPage>
     }
     final deadlineAt = task['deadlineAt'] as DateTime?;
     if (deadlineAt != null && !DateTime.now().isBefore(deadlineAt)) {
-      await _finishSmartDownload('已达到单次任务 5 小时时间上限');
+      await _finishSmartDownload('已达到本次任务动态时间上限');
       return;
     }
     if (task['demoPhase'] == 'demo') {
@@ -27514,48 +27638,18 @@ class _BrowserPageState extends State<BrowserPage>
     String title = '',
     String pageUrl = '',
   }) async {
-    final forceNoPreSkip = _smartForceDownloadNoPreSkip(task);
     final key = _smartMediaNameKey(mediaUrl, title: title, pageUrl: pageUrl);
     final titleKey = _smartMediaTitleKey(title);
     if (key.isEmpty && titleKey.isEmpty) return true;
-    final siteHost = (task['host'] ?? '').toString().toLowerCase();
-    final sourceKey = _normalizeVideoSourceUrl(mediaUrl);
-    final pageKey = _smartStablePageKey(pageUrl);
     final allowTitleIdentity = !_isElementBoundFeedPage(pageUrl);
-    // For action recipes/Facebook, reservation is never authoritative. The
-    // candidate must first be downloaded, bound to the pressed media, and
-    // content-hashed by the media-library save path.
-    if (forceNoPreSkip) return true;
-    final cutoff = DateTime.now().subtract(const Duration(hours: 24));
-    final registryHits =
-        _smartDownload24hRegistry.where((row) {
-          if ((row['siteHost'] ?? '').toString() != siteHost) return false;
-          final savedAt = DateTime.tryParse((row['savedAt'] ?? '').toString());
-          if (savedAt == null || savedAt.isBefore(cutoff)) return false;
-          return (key.isNotEmpty && (row['nameKey'] ?? '').toString() == key) ||
-              (allowTitleIdentity &&
-                  titleKey.isNotEmpty &&
-                  (row['titleKey'] ?? '').toString() == titleKey) ||
-              (sourceKey.isNotEmpty &&
-                  (row['sourceKey'] ?? '').toString() == sourceKey) ||
-              (pageKey.isNotEmpty &&
-                  (row['pageKey'] ?? '').toString() == pageKey);
-        }).toList();
-    for (final row in registryHits) {
-      final hash = (row['fileHash'] ?? '').toString();
-      // 仅内容哈希可宣称库内已有；URL/源地址映射一律不算。
-      if (hash.isNotEmpty && await _libraryConfirmsFileHash(hash)) {
-        task['lastSmartReserveBlockReason'] = 'already_in_library';
-        task['duplicateSkipped'] =
-            ((task['duplicateSkipped'] as int?) ?? 0) + 1;
-        task['recent24hSkipped'] =
-            ((task['recent24hSkipped'] as int?) ?? 0) + 1;
-        return false;
-      }
-      // 备案无哈希或哈希未在库：清掉软标记，允许真正下载
-      _smartDownload24hRegistry.remove(row);
-      debugPrint('Smart reserve: 24h registry hit without hash proof, cleared');
-    }
+    // Reservation is never authoritative. The candidate must first be
+    // downloaded, bound to the pressed media, and content-hashed by the
+    // media-library save path.
+    // Names, titles, source/page URLs and the 24h registry are weak identity
+    // hints. They may coordinate retries, but must never terminate the current
+    // candidate as a library duplicate. Only the post-download content hash
+    // may make that decision.
+    task.remove('lastSmartReserveBlockReason');
     final reservedNames = task['reservedMediaNameKeys'] as Set<String>;
     final reservedTitles = task['reservedMediaTitleKeys'] as Set<String>;
     // Same media name already reserved in this task: allow re-entry.
@@ -29063,7 +29157,7 @@ class _BrowserPageState extends State<BrowserPage>
     var round = ((task['discoveryRound'] as int?) ?? 0) + 1;
     final deadlineAt = task['deadlineAt'] as DateTime?;
     if (deadlineAt != null && !DateTime.now().isBefore(deadlineAt)) {
-      unawaited(_finishSmartDownload('已达到单次任务 5 小时时间上限'));
+      unawaited(_finishSmartDownload('已达到本次任务动态时间上限'));
       return;
     }
     var cycleDelay = Duration.zero;
@@ -29820,12 +29914,17 @@ class _BrowserPageState extends State<BrowserPage>
         _smartOperationLabel = '';
         _smartOperationShowFinger = true;
       });
-      ScaffoldMessenger.of(context).showSnackBar(
+      final reachedTarget = success >= target;
+      final statusText =
+          reachedTarget
+              ? '智能下载已完成目标：$success/$target'
+              : '智能下载未达目标：$success/$target，失败尝试 $failed'
+                  '${reason == null ? '' : '；$reason'}';
+      _showBrowserSnackBar(
         SnackBar(
-          content: Text(
-            '智能下载结束：已完成 $success/$target，失败尝试 $failed${reason == null ? '' : '；$reason'}',
-          ),
-          duration: const Duration(seconds: 5),
+          content: Text(statusText),
+          duration: Duration(seconds: reachedTarget ? 4 : 8),
+          action: SnackBarAction(label: '查看媒体库', onPressed: _openMediaLibrary),
         ),
       );
     } else {
@@ -30314,13 +30413,10 @@ class _BrowserPageState extends State<BrowserPage>
                 processedUrl,
               );
               if (existing != null) {
-                if (onFacebook) {
-                  debugPrint('FB_DL ignore dialog-path source-map pre-skip');
-                } else {
-                  final downloadAnyway =
-                      await _confirmSourceUrlDuplicateBeforeDownload(existing);
-                  if (!downloadAnyway) return;
-                }
+                debugPrint(
+                  'Media dedup: dialog-path source hint ignored '
+                  'fb=$onFacebook; verify downloaded content hash',
+                );
               }
             }
             ScaffoldMessenger.of(context).showSnackBar(
@@ -30343,13 +30439,10 @@ class _BrowserPageState extends State<BrowserPage>
               _isFacebookCdnUrl(processedUrl);
           final existing = await _findExistingVideoBeforeDownload(processedUrl);
           if (existing != null) {
-            if (onFacebook) {
-              debugPrint('FB_DL ignore dialog-path source-map pre-skip');
-            } else {
-              final downloadAnyway =
-                  await _confirmSourceUrlDuplicateBeforeDownload(existing);
-              if (!downloadAnyway) return;
-            }
+            debugPrint(
+              'Media dedup: dialog-path source hint ignored '
+              'fb=$onFacebook; verify downloaded content hash',
+            );
           }
         }
         ScaffoldMessenger.of(context).showSnackBar(
@@ -36899,7 +36992,9 @@ class _BrowserPageState extends State<BrowserPage>
     final feedUrl = seedBrowse.startsWith('http') ? seedBrowse : normalized;
     await _loadSmartDownload24hRegistry();
     final startedAt = DateTime.now();
-    final deadlineAt = startedAt.add(const Duration(hours: 5));
+    final deadlineAt = startedAt.add(
+      _smartDownloadDeadlineForTarget(targetCount),
+    );
     _smartDownloadTask = <String, dynamic>{
       'mode': 'simple_generic',
       'phase': 'simple_generic_running',
@@ -36939,7 +37034,7 @@ class _BrowserPageState extends State<BrowserPage>
     } catch (_) {}
     task['deadlineTimer'] = Timer(deadlineAt.difference(DateTime.now()), () {
       if (identical(_smartDownloadTask, task)) {
-        unawaited(_finishSmartDownload('已达到单次任务 5 小时时间上限'));
+        unawaited(_finishSmartDownload('已达到本次任务动态时间上限'));
       }
     });
     _showSmartOperation(
@@ -37371,13 +37466,19 @@ class _BrowserPageState extends State<BrowserPage>
     final controller = _controller;
     if (controller == null) return false;
     final mediaType = task['mediaType'] as MediaType? ?? MediaType.video;
-    if (mediaType == MediaType.image) return false;
+    final imageMode = mediaType == MediaType.image;
+    final confirmedDuplicateHashes =
+        (task['confirmedDuplicateContentHashes'] as Set<String>?) ?? <String>{};
+    task['confirmedDuplicateContentHashes'] = confirmedDuplicateHashes;
+    final duplicateCountBefore = confirmedDuplicateHashes.length;
     Map<String, dynamic>? hit;
     try {
       final raw = await controller.evaluateJavascript(
-        source: r'''
+        source: '''
 (() => {
-  const rows = Array.from(document.querySelectorAll('video')).map((el) => {
+  const imageMode = ${imageMode ? 'true' : 'false'};
+  const selector = imageMode ? 'img' : 'video';
+  const rows = Array.from(document.querySelectorAll(selector)).map((el) => {
     const r = el.getBoundingClientRect();
     const area = Math.max(0, r.width) * Math.max(0, r.height);
     const cx = r.left + r.width / 2;
@@ -37389,13 +37490,18 @@ class _BrowserPageState extends State<BrowserPage>
       x: cx / Math.max(1, innerWidth),
       y: cy / Math.max(1, innerHeight),
       clientX: cx, clientY: cy,
-      src: String(el.currentSrc || el.src || '')
+      src: String(el.currentSrc || el.src || ''),
+      naturalArea: Number(el.naturalWidth || 0) * Number(el.naturalHeight || 0)
     };
-  }).filter((row) => row.inView && row.area >= 12000)
-    .sort((a, b) => b.area - a.area);
+  }).filter((row) => row.inView && row.area >= 12000 &&
+      (!imageMode || row.naturalArea >= 40000))
+    .sort((a, b) => (b.area + b.naturalArea * 0.05) -
+                    (a.area + a.naturalArea * 0.05));
   const best = rows[0];
   if (!best) return null;
-  try { best.el.play && best.el.play().catch(() => {}); } catch (_) {}
+  if (!imageMode) {
+    try { best.el.play && best.el.play().catch(() => {}); } catch (_) {}
+  }
   best.el.setAttribute('data-app-smart-current', '1');
   return {
     x: best.x, y: best.y,
@@ -37414,19 +37520,21 @@ class _BrowserPageState extends State<BrowserPage>
         } catch (_) {}
       }
     } catch (e) {
-      debugPrint('simpleGeneric: find video for gesture failed: $e');
+      debugPrint('simpleGeneric: find media for gesture failed: $e');
     }
     if (hit == null) return false;
 
     // 先再等一轮捕获池（播放预热），能直链就别长按。
-    await Future<void>.delayed(const Duration(milliseconds: 700));
-    final warmed = await _simpleGenericDrainStreams(
-      task,
-      pageUrl: _currentUrl,
-      notBefore: DateTime.now().subtract(const Duration(minutes: 2)),
-      maxDownloads: 1,
-    );
-    if (warmed > 0) return true;
+    if (!imageMode) {
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      final warmed = await _simpleGenericDrainStreams(
+        task,
+        pageUrl: _currentUrl,
+        notBefore: DateTime.now().subtract(const Duration(minutes: 2)),
+        maxDownloads: 1,
+      );
+      if (warmed > 0) return true;
+    }
 
     final point = Offset(
       (hit['x'] as num?)?.toDouble() ?? 0.5,
@@ -37439,7 +37547,10 @@ class _BrowserPageState extends State<BrowserPage>
     task['gestureDownloadStartedAt'] = DateTime.now();
     final completer = Completer<bool>();
     task['actionDownloadCompleter'] = completer;
-    _showSmartOperation('长按当前视频，触发下载', point: point);
+    _showSmartOperation(
+      imageMode ? '长按当前图片，触发下载' : '长按当前视频，触发下载',
+      point: point,
+    );
     try {
       final raw = await controller.evaluateJavascript(
         source: '''
@@ -37468,7 +37579,8 @@ class _BrowserPageState extends State<BrowserPage>
       task['gestureDownloadPending'] = false;
       task.remove('actionDownloadCompleter');
     }
-    return ((task['success'] as int?) ?? 0) > beforeSuccess;
+    return ((task['success'] as int?) ?? 0) > beforeSuccess ||
+        confirmedDuplicateHashes.length > duplicateCountBefore;
   }
 
   Future<void> _simpleGenericScrollFeed(Map<String, dynamic> task) async {
@@ -37657,6 +37769,9 @@ class _BrowserPageState extends State<BrowserPage>
                 final gestured = await _simpleGenericTryGestureDownload(task);
                 if (gestured) got = 1;
               }
+            } else {
+              final gestured = await _simpleGenericTryGestureDownload(task);
+              if (gestured) got = 1;
             }
             progress += got;
             await _simpleGenericReturnToFeed(task, feedUrl);
@@ -37667,8 +37782,8 @@ class _BrowserPageState extends State<BrowserPage>
           }
         }
 
-        // C) 信息流内联视频：长按兜底
-        if (progress == 0 && mediaType != MediaType.image) {
+        // C) 信息流内联媒体：图片和视频都使用与手动长按相同的兜底。
+        if (progress == 0) {
           final gestured = await _simpleGenericTryGestureDownload(task);
           if (gestured) progress += 1;
         }
@@ -37763,7 +37878,9 @@ class _BrowserPageState extends State<BrowserPage>
     }
     await _loadSmartDownload24hRegistry();
     final startedAt = DateTime.now();
-    final deadlineAt = startedAt.add(const Duration(hours: 5));
+    final deadlineAt = startedAt.add(
+      _smartDownloadDeadlineForTarget(targetCount),
+    );
     final native91 = host == '91cg1.com' || host.endsWith('.91cg1.com');
     _smartDownloadTask = <String, dynamic>{
       'mode': 'simple_91_keyword',
@@ -37808,7 +37925,7 @@ class _BrowserPageState extends State<BrowserPage>
     } catch (_) {}
     task['deadlineTimer'] = Timer(deadlineAt.difference(DateTime.now()), () {
       if (identical(_smartDownloadTask, task)) {
-        unawaited(_finishSmartDownload('已达到单次任务 5 小时时间上限'));
+        unawaited(_finishSmartDownload('已达到本次任务动态时间上限'));
       }
     });
     if (browseMode) {
@@ -38593,7 +38710,9 @@ class _BrowserPageState extends State<BrowserPage>
     await _loadSmartDownload24hRegistry();
     await _loadSmartStrategyProfiles();
     final startedAt = DateTime.now();
-    final deadlineAt = startedAt.add(const Duration(hours: 5));
+    final deadlineAt = startedAt.add(
+      _smartDownloadDeadlineForTarget(targetCount),
+    );
     // a00 用 website.origin 拼搜索地址；当前页若是 www.91cg1.com 而书签无 www，
     // 列表同一性会失败并跳过点卡片深挖。从当前浏览 origin 拼，才是同一套流程能跑通。
     final browseOrigin = Uri.tryParse(_currentUrl)?.origin ?? '';
@@ -38682,7 +38801,7 @@ class _BrowserPageState extends State<BrowserPage>
       deadlineAt.difference(DateTime.now()),
       () {
         if (identical(_smartDownloadTask, activeTask)) {
-          unawaited(_finishSmartDownload('已达到单次任务 5 小时时间上限'));
+          unawaited(_finishSmartDownload('已达到本次任务动态时间上限'));
         }
       },
     );
@@ -38691,7 +38810,7 @@ class _BrowserPageState extends State<BrowserPage>
     ) {
       if (!identical(_smartDownloadTask, activeTask)) return;
       if (!DateTime.now().isBefore(deadlineAt)) {
-        unawaited(_finishSmartDownload('已达到单次任务 5 小时时间上限'));
+        unawaited(_finishSmartDownload('已达到本次任务动态时间上限'));
         return;
       }
       final hasActiveMediaDownload = _downloadTasks.any(
@@ -38804,7 +38923,7 @@ class _BrowserPageState extends State<BrowserPage>
     }
     final deadlineAt = task['deadlineAt'] as DateTime?;
     if (deadlineAt != null && !DateTime.now().isBefore(deadlineAt)) {
-      await _finishSmartDownload('已达到单次任务 5 小时时间上限');
+      await _finishSmartDownload('已达到本次任务动态时间上限');
       return;
     }
     _smartDownloadAdvancing = true;
@@ -40557,7 +40676,7 @@ class _BrowserPageState extends State<BrowserPage>
     var round = ((task['discoveryRound'] as int?) ?? 0) + 1;
     final deadlineAt = task['deadlineAt'] as DateTime?;
     if (deadlineAt != null && !DateTime.now().isBefore(deadlineAt)) {
-      unawaited(_finishSmartDownload('已达到单次任务 5 小时时间上限'));
+      unawaited(_finishSmartDownload('已达到本次任务动态时间上限'));
       return;
     }
     var cycleDelay = Duration.zero;
