@@ -2048,16 +2048,41 @@ class _BrowserPageState extends State<BrowserPage>
       );
     }
     // JS may still ship a neighbor progressive as primary when blob has no
-    // CDN bind. Never trust it for identity while we only know soft reel.
+    // CDN bind. However, when the priming probe confirms that the finger is
+    // on a VIDEO and reports the very same currentSrc, that URL is direct
+    // evidence for the pressed video. Facebook's Reel/page id and the CDN
+    // asset id are normally different, so they must not be compared as if
+    // they were interchangeable ids.
     var trustedPrimary = primaryUrl;
+    final primaryId = facebookMediaIdentity(primaryUrl);
+    final primedSrc = (primed?['src'] ?? '').toString().trim();
+    final normalizedPrimary = _normalizeFacebookMediaCandidate(
+      primaryUrl,
+      video: true,
+    );
+    final normalizedPrimed = _normalizeFacebookMediaCandidate(
+      primedSrc,
+      video: true,
+    );
+    final primaryConfirmedByFinger =
+        primedOk &&
+        fingerUnderVideo &&
+        primaryId.isNotEmpty &&
+        normalizedPrimary != null &&
+        normalizedPrimed != null &&
+        normalizedPrimary == normalizedPrimed;
     if (softReelKey.isNotEmpty) {
-      final primaryId = facebookMediaIdentity(primaryUrl);
-      if (_isFacebookCdnIdentity(primaryId)) {
+      if (_isFacebookCdnIdentity(primaryId) && !primaryConfirmedByFinger) {
         debugPrint(
           'FB_DL discard untrusted JS primary id=$primaryId '
           'soft=$softReelKey',
         );
         trustedPrimary = '';
+      } else if (primaryConfirmedByFinger) {
+        debugPrint(
+          'FB_DL trust finger-confirmed currentSrc id=$primaryId '
+          'soft=$softReelKey',
+        );
       }
     }
     final inputTrusted = <String>[
@@ -2070,9 +2095,11 @@ class _BrowserPageState extends State<BrowserPage>
       expectedVideoKey:
           primedVideoIdForBind.isNotEmpty
               ? 'fbvideo:${primedVideoIdForBind.toLowerCase()}'
-              : (_isFacebookCdnIdentity(expectedSeed)
-                  ? expectedSeed
-                  : (softReelKey.isNotEmpty ? softReelKey : expectedSeed)),
+              : (primaryConfirmedByFinger && _isFacebookCdnIdentity(primaryId)
+                  ? primaryId
+                  : (_isFacebookCdnIdentity(expectedSeed)
+                      ? expectedSeed
+                      : (softReelKey.isNotEmpty ? softReelKey : expectedSeed))),
       primaryUrl: trustedPrimary,
       inputCandidates: inputTrusted,
       activeKeys: activeKeys,
@@ -31288,7 +31315,7 @@ class _BrowserPageState extends State<BrowserPage>
     final detectedExtension =
         mediaType == MediaType.image
             ? _detectImageExtension(bytes)
-            : mediaType == MediaType.video
+            : mediaType == MediaType.video || mediaType == MediaType.audio
             ? _detectVideoExtension(bytes)
             : null;
     if (detectedExtension == null) {
