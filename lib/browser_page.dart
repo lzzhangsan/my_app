@@ -1076,6 +1076,115 @@ class _BrowserPageState extends State<BrowserPage>
     return score;
   }
 
+  Future<void> _warmInstagramVideoForHigherQuality({
+    required bool smartGesture,
+  }) async {
+    final controller = _controller;
+    if (controller == null) return;
+    try {
+      final raw = await controller.evaluateJavascript(
+        source: r'''
+(() => {
+  const vw = innerWidth || 1, vh = innerHeight || 1;
+  const videos = Array.from(document.querySelectorAll('video'));
+  let best = null, bestScore = -1;
+  for (const video of videos) {
+    const r = video.getBoundingClientRect();
+    const visibleW = Math.max(0, Math.min(r.right, vw) - Math.max(r.left, 0));
+    const visibleH = Math.max(0, Math.min(r.bottom, vh) - Math.max(r.top, 0));
+    const score = visibleW * visibleH -
+      Math.abs((r.left + r.right) / 2 - vw / 2) * 80 -
+      Math.abs((r.top + r.bottom) / 2 - vh / 2) * 80;
+    if (visibleW * visibleH > 4096 && score > bestScore) {
+      best = video; bestScore = score;
+    }
+  }
+  if (!best) return {ok:false, reason:'no_visible_video'};
+  try { best.preload = 'auto'; } catch (_) {}
+  try { best.setAttribute('preload', 'auto'); } catch (_) {}
+  try { best.playsInline = true; } catch (_) {}
+  try {
+    const playResult = best.play();
+    if (playResult && playResult.catch) playResult.catch(() => {});
+  } catch (_) {}
+  const c = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+  return {
+    ok:true,
+    paused:best.paused,
+    currentTime:Number(best.currentTime || 0).toFixed(2),
+    duration:Number(best.duration || 0).toFixed(2),
+    videoWidth:Number(best.videoWidth || 0),
+    videoHeight:Number(best.videoHeight || 0),
+    cssWidth:Math.round(best.getBoundingClientRect().width || 0),
+    cssHeight:Math.round(best.getBoundingClientRect().height || 0),
+    dpr:Number(devicePixelRatio || 1),
+    effectiveType:c && c.effectiveType || '',
+    saveData:!!(c && c.saveData)
+  };
+})()
+''',
+      );
+      debugPrint('[IG_QUALITY_WARMUP] start smart=$smartGesture state=$raw');
+      // A short capture window lets the current MediaSource expose its paired
+      // tracks. A longer fixed wait did not make Instagram switch rendition
+      // (confirmed by videoWidth/videoHeight logs), and only delayed downloads.
+      await Future<void>.delayed(
+        Duration(milliseconds: smartGesture ? 700 : 900),
+      );
+      final after = await controller.evaluateJavascript(
+        source: r'''
+(() => {
+  const videos = Array.from(document.querySelectorAll('video'));
+  const v = videos.find(x => {
+    const r=x.getBoundingClientRect();
+    return r.bottom>0 && r.right>0 && r.top<innerHeight && r.left<innerWidth;
+  });
+  return v ? {videoWidth:v.videoWidth||0,videoHeight:v.videoHeight||0,
+    currentTime:Number(v.currentTime||0).toFixed(2),paused:v.paused} : {missing:true};
+})()
+''',
+      );
+      debugPrint('[IG_QUALITY_WARMUP] end state=$after');
+    } catch (e) {
+      debugPrint('[IG_QUALITY_WARMUP] failed: $e');
+    }
+  }
+
+  Future<void> _installInstagramPlaybackQualityPreference() async {
+    final controller = _controller;
+    if (controller == null || !_isInstagramPlatformPage(_currentUrl)) return;
+    try {
+      await controller.evaluateJavascript(
+        source: r'''
+(() => {
+  if (window.__APP_IG_QUALITY_PREF__) return true;
+  window.__APP_IG_QUALITY_PREF__ = true;
+  const tune = root => {
+    const videos = [];
+    if (root && root.tagName === 'VIDEO') videos.push(root);
+    if (root && root.querySelectorAll) videos.push(...root.querySelectorAll('video'));
+    for (const video of videos) {
+      try { video.preload = 'auto'; } catch (_) {}
+      try { video.setAttribute('preload', 'auto'); } catch (_) {}
+      try { video.playsInline = true; } catch (_) {}
+    }
+  };
+  tune(document);
+  const observer = new MutationObserver(records => {
+    for (const record of records) for (const node of record.addedNodes) tune(node);
+  });
+  observer.observe(document.documentElement || document, {subtree:true, childList:true});
+  document.addEventListener('play', event => tune(event.target), true);
+  return true;
+})()
+''',
+      );
+      debugPrint('[IG_QUALITY_PREF] preload-auto observer installed');
+    } catch (e) {
+      debugPrint('[IG_QUALITY_PREF] install failed: $e');
+    }
+  }
+
   List<String> _selectInstagramBoundTrackCandidates(
     Iterable<String> fragmentUrls, {
     Iterable<String> fallbackUrls = const <String>[],
@@ -11818,6 +11927,9 @@ class _BrowserPageState extends State<BrowserPage>
             if (isStreamReference &&
                 (_isInstagramPlatformPage(messagePageUrl) ||
                     _isInstagramPlatformPage(_currentUrl))) {
+              await _warmInstagramVideoForHigherQuality(
+                smartGesture: isSmartGesture,
+              );
               final instagramHandledAssetIds =
                   (_smartDownloadTask?['instagramHandledAssetIds']
                       as Set<String>?) ??
@@ -12150,15 +12262,27 @@ class _BrowserPageState extends State<BrowserPage>
 
         final absoluteUrl = _toAbsoluteUrl(urlValue);
         final referer = _getMediaReferer(absoluteUrl);
-        final resolvedUrl = await _resolveFinalUrl(
-          urlValue,
-          headers: {
-            'Referer': referer,
-            'User-Agent':
-                'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
-            'Accept': '*/*',
-          },
-        );
+        // Instagram 的带签名 CDN 图片已经是最终资源地址。再发 HEAD 不但
+        // 无法提供额外信息，部分节点还会等待约 5 秒后拒绝 HEAD，导致用户
+        // 感觉“长按图片很久才开始下载”。视频/未知资源仍保留原有解析流程。
+        final isInstagramDirectImage =
+            _isInstagramCdnUrl(absoluteUrl) &&
+            _guessMimeType(absoluteUrl).startsWith('image/');
+        final resolvedUrl =
+            isInstagramDirectImage
+                ? absoluteUrl
+                : await _resolveFinalUrl(
+                  urlValue,
+                  headers: {
+                    'Referer': referer,
+                    'User-Agent':
+                        'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+                    'Accept': '*/*',
+                  },
+                );
+        if (isInstagramDirectImage) {
+          debugPrint('[MEDIA_FAST_PATH] Instagram direct image: skip HEAD');
+        }
         _trustMediaCandidate(resolvedUrl);
         final mimeType = _guessMimeType(resolvedUrl);
         MediaType selectedType = _determineMediaType(mimeType);
@@ -32004,12 +32128,23 @@ class _BrowserPageState extends State<BrowserPage>
         }
       }
 
+      final preferInstagramOrigin = _isInstagramCdnUrl(absoluteUrl);
       for (final candidate in urlCandidates) {
+        // Instagram CDN 的签名请求经常要求与网页一致的 Origin。
+        // 优先尝试完整浏览器身份；若节点不接受 Origin，后续仍会回退到
+        // 原来的无 Origin 请求，因此不会降低兼容性。
+        if (preferInstagramOrigin) {
+          for (final referer in refererCandidates.take(2)) {
+            addAttempt(candidate, referer, true);
+          }
+        }
         for (final referer in refererCandidates) {
           addAttempt(candidate, referer, false);
         }
-        for (final referer in refererCandidates.take(2)) {
-          addAttempt(candidate, referer, true);
+        if (!preferInstagramOrigin) {
+          for (final referer in refererCandidates.take(2)) {
+            addAttempt(candidate, referer, true);
+          }
         }
       }
       final maxAttempts =
@@ -37047,6 +37182,9 @@ class _BrowserPageState extends State<BrowserPage>
       // 通知父组件浏览器状态变化
       widget.onBrowserHomePageChanged?.call(_showHomePage);
 
+      if (_isInstagramPlatformPage(committedUrl)) {
+        unawaited(_installInstagramPlaybackQualityPreference());
+      }
       debugPrint('页面加载完成: $_currentUrl, 标题: $title');
       unawaited(_advanceSmartDownload(_currentUrl));
     } catch (e) {
