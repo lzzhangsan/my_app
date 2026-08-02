@@ -18948,21 +18948,28 @@ class _BrowserPageState extends State<BrowserPage>
         );
         return;
       }
-      // X keeps the previously verified historical state machine restoration.
+      // X：95ebfeb 已验证路径 — gestureMode + xInlineFeedMode，信息流内直接长按。
       if (id == 'x') {
         debugPrint(
           '[SMART_PIPELINE_95EBFEB] site=x '
-          'commit=95ebfeb61d6869bb4cf4b66c87b74a8853ce1106',
+          'commit=95ebfeb61d6869bb4cf4b66c87b74a8853ce1106 '
+          'route=_startSmartDownload',
         );
-        await _startSmartDownload91A00(
+        await _startSmartDownload(
           website: website,
           keyword: enteredKeyword,
           targetCount: enteredCount,
           mediaType: mediaType,
+          allowMixedMedia: false,
           startFromCurrentPage: startFromCurrentPage,
           minVideoBytes: minVideoBytes,
           maxVideoBytes: maxVideoBytes,
           autoVideoSizeRange: autoVideoSizeRange,
+          demoCount: null,
+          preferredStrategyKey: null,
+          strategyManualPick: crossSite,
+          strategyExplicitNone: true,
+          forceSiteProfile: 'x',
         );
         return;
       }
