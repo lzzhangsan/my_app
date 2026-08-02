@@ -191,7 +191,7 @@ const int _kMd5IsolateThresholdBytes = 4 * 1024 * 1024;
 const int _kParallelRangeVideoMinBytes = 3 * 1024 * 1024;
 
 /// 并行分片数（与 [ _kHlsMaxConnectionsPerHost ] 类似，过大易被 CDN 限流）。
-const int _kParallelRangeVideoConnections = 6;
+const int _kParallelRangeVideoConnections = 12;
 
 /// 下载进度：`fraction` 为 0~1；`detail` 为可选说明（如 HLS 分片、已下字节）。
 typedef DownloadProgressCallback =
@@ -2935,6 +2935,7 @@ class _BrowserPageState extends State<BrowserPage>
   final ValueNotifier<List<Map<String, dynamic>>> _downloadTasksNotifier =
       ValueNotifier([]);
   final Map<String, int> _dashConcurrencyByHost = {};
+  final Map<String, int> _rangeConcurrencyByHost = {};
   final Map<String, DateTime> _recentDuplicatePromptTimes = {};
   static const int _maxDisplayTasks = 8;
   static const Duration _duplicatePromptCooldown = Duration(seconds: 12);
@@ -17676,8 +17677,14 @@ class _BrowserPageState extends State<BrowserPage>
         _isFacebookProfileGridPage(
           startFromCurrentPage ? _currentUrl : dialogNormalized,
         );
-    // reuse 子源：action_recipe（用户成功动作，可跨站）或 pattern（X/91/通用管线）。
-    var reuseSource = siteSuccessRecipe != null ? 'action_recipe' : 'pattern';
+    // 专有站默认必须回到已经反复验证的内置管线。历史“成功动作”只作为
+    // 用户主动选择项，不能静默覆盖 X / 91 / Instagram / Facebook 的
+    // 专有入口；这类覆盖会把站点管线改造成带长等待的通用动作循环。
+    // 普通站仍可沿用最近一次由用户验证成功的动作套路。
+    var reuseSource =
+        hostHasDedicated
+            ? 'pattern'
+            : (siteSuccessRecipe != null ? 'action_recipe' : 'pattern');
     if (facebookHost) {
       if (facebookProfileGrid) {
         runMode = 'reuse';
@@ -18841,6 +18848,10 @@ class _BrowserPageState extends State<BrowserPage>
         }
         return;
       }
+      debugPrint(
+        '[SMART_PIPELINE_ROUTE] host=$dialogHost selected=$id '
+        'native=${id == nativePatternId} source=builtin',
+      );
       final native = _defaultConfirmedPatternIdForHost(dialogHost);
       final crossSite = _dedicatedSmartPatternIds.contains(id) && id != native;
       // 91：实测独立管线（有关键词走搜索；无关键词从当前列表/详情批量）。
@@ -31889,37 +31900,50 @@ class _BrowserPageState extends State<BrowserPage>
     }
   }
 
+  bool _isXfreeOriginalMp4Url(String rawUrl) {
+    final uri = Uri.tryParse(rawUrl);
+    if (uri == null) return false;
+    final host = uri.host.toLowerCase();
+    final path = uri.path.toLowerCase();
+    return host == 'cdn.xfree.com' &&
+        path.contains('/xfree-prod/') &&
+        path.endsWith('/full.mp4');
+  }
+
   /// 探测是否可按字节范围分段下载；返回资源总字节数，否则 null。
   Future<int?> _probeVideoTotalBytesForRangeDownload(
     Dio dio,
     String url,
-    Map<String, String> headers,
-  ) async {
-    try {
-      final headResp = await dio.head<dynamic>(
-        url,
-        options: Options(
-          followRedirects: true,
-          maxRedirects: 5,
-          validateStatus: (c) => c != null && c >= 200 && c < 400,
-          headers: headers,
-        ),
-      );
-      final code = headResp.statusCode ?? 0;
-      if (code >= 200 && code < 300) {
-        final cl = headResp.headers.value('content-length');
-        final ar = headResp.headers.value('accept-ranges')?.toLowerCase();
-        if (cl != null) {
-          final len = int.tryParse(cl.trim());
-          if (len != null &&
-              len >= _kParallelRangeVideoMinBytes &&
-              (ar == null || ar.contains('bytes'))) {
-            return len;
+    Map<String, String> headers, {
+    bool skipHead = false,
+  }) async {
+    if (!skipHead) {
+      try {
+        final headResp = await dio.head<dynamic>(
+          url,
+          options: Options(
+            followRedirects: true,
+            maxRedirects: 5,
+            validateStatus: (c) => c != null && c >= 200 && c < 400,
+            headers: headers,
+          ),
+        );
+        final code = headResp.statusCode ?? 0;
+        if (code >= 200 && code < 300) {
+          final cl = headResp.headers.value('content-length');
+          final ar = headResp.headers.value('accept-ranges')?.toLowerCase();
+          if (cl != null) {
+            final len = int.tryParse(cl.trim());
+            if (len != null &&
+                len >= _kParallelRangeVideoMinBytes &&
+                (ar == null || ar.contains('bytes'))) {
+              return len;
+            }
           }
         }
+      } catch (e) {
+        debugPrint('Range 探测 HEAD 失败（可忽略）: $e');
       }
-    } catch (e) {
-      debugPrint('Range 探测 HEAD 失败（可忽略）: $e');
     }
     try {
       final r = await dio.get<dynamic>(
@@ -31947,13 +31971,30 @@ class _BrowserPageState extends State<BrowserPage>
     return null;
   }
 
-  int _parallelRangePartsForTotalSize(int totalBytes) {
+  int _parallelRangePartsForTotalSize(
+    int totalBytes, {
+    String host = '',
+    bool adaptive = false,
+  }) {
     if (totalBytes < _kParallelRangeVideoMinBytes) return 1;
-    if (totalBytes < 32 * 1024 * 1024)
-      return min(4, _kParallelRangeVideoConnections);
-    if (totalBytes < 128 * 1024 * 1024)
-      return min(6, _kParallelRangeVideoConnections);
-    return _kParallelRangeVideoConnections;
+    // Keep the historically proven 4/6/8 starting point. Xfree may explore
+    // higher levels after clean completions, but never starts a task at 12.
+    final baseline =
+        totalBytes < 32 * 1024 * 1024
+            ? min(4, _kParallelRangeVideoConnections)
+            : totalBytes < 128 * 1024 * 1024
+            ? min(6, _kParallelRangeVideoConnections)
+            : min(8, _kParallelRangeVideoConnections);
+    if (!adaptive || host.isEmpty) return baseline;
+    final maxUsefulParts = _parallelRangeMaxPartsForTotalSize(totalBytes);
+    return (_rangeConcurrencyByHost[host] ?? baseline).clamp(2, maxUsefulParts);
+  }
+
+  int _parallelRangeMaxPartsForTotalSize(int totalBytes) {
+    if (totalBytes < _kParallelRangeVideoMinBytes) return 1;
+    // Avoid tiny ranges: more TLS/HTTP overhead than useful payload.
+    final usefulBySize = max(2, totalBytes ~/ _kParallelRangeVideoMinBytes);
+    return min(_kParallelRangeVideoConnections, usefulBySize);
   }
 
   List<(int start, int end)> _splitByteRanges(int totalBytes, int parts) {
@@ -31981,14 +32022,45 @@ class _BrowserPageState extends State<BrowserPage>
     ValueChanged<int>? onTotalBytesKnown,
   }) async {
     final headers = requestHeaders;
+    final isXfreeOriginal = _isXfreeOriginalMp4Url(url);
 
     int? totalBytes;
     try {
-      totalBytes = await _probeVideoTotalBytesForRangeDownload(
-        downloadDio,
-        url,
-        headers,
-      );
+      if (!isXfreeOriginal) {
+        totalBytes = await _probeVideoTotalBytesForRangeDownload(
+          downloadDio,
+          url,
+          headers,
+        );
+      } else {
+        // Xfree 的 CDN 偶发在 TLS 握手阶段断开。原始 full.mp4 已确认支持
+        // Range，因此探测失败不能立即降级成慢速单连接；换新连接短重试。
+        for (
+          var probeRound = 0;
+          probeRound < 3 && totalBytes == null;
+          probeRound++
+        ) {
+          if (cancelToken?.isCancelled == true) return null;
+          final probeDio = _createDownloadDio(
+            connectTimeout: const Duration(seconds: 6),
+            receiveTimeout: const Duration(seconds: 15),
+            forVideoDownload: true,
+          );
+          try {
+            totalBytes = await _probeVideoTotalBytesForRangeDownload(
+              probeDio,
+              url,
+              headers,
+              skipHead: true,
+            );
+          } finally {
+            probeDio.close(force: true);
+          }
+          if (totalBytes == null) {
+            debugPrint('[XFREE_RANGE_PROBE_RETRY] round=${probeRound + 1}/3');
+          }
+        }
+      }
     } catch (_) {
       return null;
     }
@@ -31997,7 +32069,16 @@ class _BrowserPageState extends State<BrowserPage>
     onTotalBytesKnown?.call(byteTotal);
     if (cancelToken?.isCancelled == true) return null;
 
-    final parts = _parallelRangePartsForTotalSize(byteTotal);
+    final rangeHost = Uri.tryParse(url)?.host.toLowerCase() ?? '';
+    final sizeMaxParts =
+        isXfreeOriginal
+            ? _parallelRangeMaxPartsForTotalSize(byteTotal)
+            : _parallelRangePartsForTotalSize(byteTotal);
+    final parts = _parallelRangePartsForTotalSize(
+      byteTotal,
+      host: rangeHost,
+      adaptive: isXfreeOriginal,
+    );
     if (parts < 2) return null;
 
     final ranges = _splitByteRanges(byteTotal, parts);
@@ -32007,6 +32088,12 @@ class _BrowserPageState extends State<BrowserPage>
       debugPrint(
         '视频下载：已启用 Range 多连接（${_formatBytes(byteTotal)}，${ranges.length} 路并行；非 NetworkService 的 HEAD 日志）',
       );
+      if (isXfreeOriginal) {
+        debugPrint(
+          '[XFREE_RANGE_ADAPT] selected=$parts max=$sizeMaxParts '
+          'remembered=${_rangeConcurrencyByHost[rangeHost]}',
+        );
+      }
     }
 
     final partPaths = List<String>.generate(
@@ -32015,11 +32102,12 @@ class _BrowserPageState extends State<BrowserPage>
     );
     final perPart = List<int>.filled(ranges.length, 0);
 
-    Future<void> downloadOneRange(int ri) async {
+    Future<void> downloadOneRange(int ri, Dio client) async {
       final (start, end) = ranges[ri];
       final expectLen = end - start + 1;
       final partPath = partPaths[ri];
-      final r = await downloadDio.get<ResponseBody>(
+      perPart[ri] = 0;
+      final r = await client.get<ResponseBody>(
         url,
         cancelToken: cancelToken,
         options: Options(
@@ -32058,7 +32146,70 @@ class _BrowserPageState extends State<BrowserPage>
 
     try {
       onProgress?.call(0, detail: '多连接并行 (${ranges.length} 路)…');
-      await Future.wait(List.generate(ranges.length, downloadOneRange));
+      if (!isXfreeOriginal) {
+        await Future.wait(
+          List.generate(
+            ranges.length,
+            (ri) => downloadOneRange(ri, downloadDio),
+          ),
+        );
+      } else {
+        // Xfree 偶发单路 TLS 握手失败时，只重试失败分段；已完成分段保留。
+        // 避免旧逻辑删除所有分段、再用单连接从零下载整个视频。
+        var pending = List<int>.generate(ranges.length, (i) => i);
+        Object? lastError;
+        StackTrace? lastStack;
+        var firstRoundFailures = 0;
+        for (var round = 0; round < 3 && pending.isNotEmpty; round++) {
+          final retryDio = _createDownloadDio(
+            connectTimeout: const Duration(seconds: 6),
+            receiveTimeout: const Duration(seconds: 60),
+            forVideoDownload: true,
+          );
+          final failed = <int>[];
+          await Future.wait(
+            pending.map((ri) async {
+              try {
+                await downloadOneRange(ri, retryDio);
+              } catch (e, st) {
+                failed.add(ri);
+                lastError = e;
+                lastStack = st;
+                debugPrint(
+                  '[XFREE_RANGE_RETRY] part=$ri round=${round + 1}/3 '
+                  'failed=$e',
+                );
+              }
+            }),
+          );
+          retryDio.close(force: true);
+          if (round == 0) firstRoundFailures = failed.length;
+          pending = failed;
+        }
+        if (pending.isNotEmpty) {
+          Error.throwWithStackTrace(
+            lastError ?? StateError('Xfree Range parts failed: $pending'),
+            lastStack ?? StackTrace.current,
+          );
+        }
+        if (rangeHost.isNotEmpty) {
+          if (firstRoundFailures > 0) {
+            _rangeConcurrencyByHost[rangeHost] = max(
+              2,
+              parts - firstRoundFailures,
+            );
+          } else if (parts < sizeMaxParts) {
+            _rangeConcurrencyByHost[rangeHost] = parts + 1;
+          } else {
+            _rangeConcurrencyByHost[rangeHost] = parts;
+          }
+          debugPrint(
+            '[XFREE_RANGE_ADAPT] completed selected=$parts '
+            'firstFailures=$firstRoundFailures '
+            'next=${_rangeConcurrencyByHost[rangeHost]}',
+          );
+        }
+      }
 
       final outSink = File(filePath).openWrite();
       try {
