@@ -54,6 +54,7 @@ import 'services/webview_environment_service.dart';
 import 'services/logger.dart';
 import 'services/network_service.dart';
 import 'app_route_observer.dart';
+import 'media_download/adaptive_range_transport_policy.dart';
 
 bool _hasUsefulRasterContent(Uint8List bytes) {
   final image = image_lib.decodeImage(bytes);
@@ -2935,8 +2936,11 @@ class _BrowserPageState extends State<BrowserPage>
   final ValueNotifier<List<Map<String, dynamic>>> _downloadTasksNotifier =
       ValueNotifier([]);
   final Map<String, int> _dashConcurrencyByHost = {};
-  final Map<String, int> _rangeConcurrencyByHost = {};
+  final AdaptiveRangeTransportPolicy _rangeTransportPolicy =
+      AdaptiveRangeTransportPolicy();
+  bool _rangeTransportPolicyLoaded = false;
   final Map<String, DateTime> _recentDuplicatePromptTimes = {};
+  final Map<String, int> _mainFrameConnectionRetryCounts = {};
   static const int _maxDisplayTasks = 8;
   static const Duration _duplicatePromptCooldown = Duration(seconds: 12);
   bool _downloadPanelExpanded = false;
@@ -6804,13 +6808,64 @@ class _BrowserPageState extends State<BrowserPage>
         if (!mounted || !mainFrame) return;
         final failedUri = Uri.tryParse(failedUrl);
         final failedHost = failedUri?.host.toLowerCase() ?? '';
+        final is91Host =
+            failedHost == '91cg1.com' || failedHost.endsWith('.91cg1.com');
+        final isXHost =
+            failedHost == 'x.com' ||
+            failedHost.endsWith('.x.com') ||
+            failedHost == 'twitter.com' ||
+            failedHost.endsWith('.twitter.com');
+        final transientConnectionFailure =
+            description.contains('ERR_CONNECTION_CLOSED') ||
+            description.contains('ERR_CONNECTION_RESET') ||
+            description.contains('ERR_EMPTY_RESPONSE') ||
+            description.contains('ERR_CONNECTION_TIMED_OUT') ||
+            description.contains('ERR_TIMED_OUT');
+        if ((is91Host || isXHost) &&
+            transientConnectionFailure &&
+            failedUri != null &&
+            (failedUri.scheme == 'http' || failedUri.scheme == 'https')) {
+          final retryKey = failedUri.replace(fragment: '').toString();
+          final retry = (_mainFrameConnectionRetryCounts[retryKey] ?? 0) + 1;
+          _mainFrameConnectionRetryCounts[retryKey] = retry;
+          if (retry <= 2) {
+            final delay = Duration(milliseconds: 650 * retry);
+            final recoverySite = isXHost ? 'X' : '91';
+            debugPrint(
+              '[${recoverySite}_PAGE_RECOVERY] transient=$description retry=$retry/2 '
+              'delayMs=${delay.inMilliseconds} url=$retryKey',
+            );
+            Future<void>.delayed(delay, () async {
+              if (!mounted || _controller != ctrl) return;
+              final current = await ctrl.getUrl();
+              final currentUrl = current?.toString() ?? '';
+              final currentHost =
+                  Uri.tryParse(currentUrl)?.host.toLowerCase() ?? '';
+              if (currentUrl == retryKey ||
+                  (is91Host &&
+                      (currentHost == '91cg1.com' ||
+                          currentHost.endsWith('.91cg1.com'))) ||
+                  (isXHost &&
+                      (currentHost == 'x.com' ||
+                          currentHost.endsWith('.x.com') ||
+                          currentHost == 'twitter.com' ||
+                          currentHost.endsWith('.twitter.com')))) {
+                await ctrl.loadUrl(
+                  urlRequest: URLRequest(url: WebUri(retryKey)),
+                );
+              }
+            });
+            return;
+          }
+          debugPrint(
+            '[${isXHost ? 'X' : '91'}_PAGE_RECOVERY] exhausted retry=2 url=$retryKey '
+            'lastError=$description',
+          );
+        }
         final facebookConnectionFailure =
             (failedHost == 'facebook.com' ||
                 failedHost == 'www.facebook.com') &&
-            (description.contains('ERR_CONNECTION_CLOSED') ||
-                description.contains('ERR_CONNECTION_RESET') ||
-                description.contains('ERR_CONNECTION_TIMED_OUT') ||
-                description.contains('ERR_TIMED_OUT'));
+            transientConnectionFailure;
         if (facebookConnectionFailure &&
             failedUri != null &&
             _facebookMobileFallbackAttempted.add(failedUrl)) {
@@ -17617,12 +17672,18 @@ class _BrowserPageState extends State<BrowserPage>
     // 分页嗅探：预先选择最多嗅探到哪一层（页数上限）；嗅探中可软停止并保留已结果。
     var selectedSniffMaxPages = _kPaginatedSniffMaxPages;
     // 媒体类型：可改；Facebook 的操作步骤完全由动作编排决定。
-    var selectedMediaType = initialMediaType;
+    // 91 is video-first. A poster under the finger can otherwise make the
+    // dialog say "image" while the verified 91 pipeline resolves a video.
+    // The user can still explicitly select the image chip afterwards.
+    final is91DialogHost =
+        dialogHost == '91cg1.com' || dialogHost.endsWith('.91cg1.com');
+    var selectedMediaType = is91DialogHost ? MediaType.video : initialMediaType;
     // 沿用套路：本站有专有套路则默认专有；否则默认通用；均可手动改选。
     String selectedPatternId = _defaultConfirmedPatternIdForHost(
       dialogHost,
       mediaType: selectedMediaType,
     );
+    var pipelineManuallySelected = false;
     final nativePatternId = _defaultConfirmedPatternIdForHost(dialogHost);
     final hostHasDedicated = _hostHasDedicatedSmartPattern(dialogHost);
     SmartActionRecipe? selectedRecipe =
@@ -18118,6 +18179,7 @@ class _BrowserPageState extends State<BrowserPage>
                                   setDialogState(() {
                                     reuseSource = 'pattern';
                                     selectedPatternId = row['id']!;
+                                    pipelineManuallySelected = true;
                                     selectedReuseRecipe = null;
                                   });
                                 },
@@ -18839,7 +18901,17 @@ class _BrowserPageState extends State<BrowserPage>
     /// Facebook 视频 = 长按→等完成→上滑；Facebook 图片 = 长按→等完成→左滑；
     /// 其余专有（含 X）= _startSmartDownload。
     Future<void> startReusePattern() async {
-      final id = selectedPatternId.trim();
+      final requestedId = selectedPatternId.trim();
+      final native = _defaultConfirmedPatternIdForHost(
+        dialogHost,
+        mediaType: mediaType,
+      );
+      // Dedicated routes are a startup invariant, not merely a visual default.
+      // Re-resolve at the moment Start is pressed so stale dialog/config state
+      // cannot silently send a verified site through the generic pipeline.
+      // An explicit chip selection remains authoritative for advanced users.
+      final id =
+          hostHasDedicated && !pipelineManuallySelected ? native : requestedId;
       if (id.isEmpty || !_confirmedSmartPatternIds.contains(id)) {
         if (mounted) {
           ScaffoldMessenger.of(
@@ -18850,13 +18922,19 @@ class _BrowserPageState extends State<BrowserPage>
       }
       debugPrint(
         '[SMART_PIPELINE_ROUTE] host=$dialogHost selected=$id '
-        'native=${id == nativePatternId} source=builtin',
+        'native=${id == native} source=builtin '
+        'manualOverride=$pipelineManuallySelected mediaType=${mediaType.name}',
       );
-      final native = _defaultConfirmedPatternIdForHost(dialogHost);
       final crossSite = _dedicatedSmartPatternIds.contains(id) && id != native;
-      // 91：实测独立管线（有关键词走搜索；无关键词从当前列表/详情批量）。
-      // 跨站借用时仍走 91 管线，但以当前浏览 origin/host 为站点上下文。
+      // 91: 2613820's verified entry is the independent simple-91 loop.
+      // Do not route it through the older A00 state machine merely because
+      // both implementations carry a "91" label; their page traversal and
+      // completion state are different.
       if (id == '91') {
+        debugPrint(
+          '[SMART_PIPELINE_2613820] site=91 '
+          'commit=2613820308e210a621550ded4f88d6d3c4038cda',
+        );
         await _startSimple91KeywordDownload(
           website: website,
           keyword: enteredKeyword,
@@ -18867,6 +18945,24 @@ class _BrowserPageState extends State<BrowserPage>
           maxVideoBytes: maxVideoBytes,
           autoVideoSizeRange: autoVideoSizeRange,
           strategyManualPick: crossSite,
+        );
+        return;
+      }
+      // X keeps the previously verified historical state machine restoration.
+      if (id == 'x') {
+        debugPrint(
+          '[SMART_PIPELINE_95EBFEB] site=x '
+          'commit=95ebfeb61d6869bb4cf4b66c87b74a8853ce1106',
+        );
+        await _startSmartDownload91A00(
+          website: website,
+          keyword: enteredKeyword,
+          targetCount: enteredCount,
+          mediaType: mediaType,
+          startFromCurrentPage: startFromCurrentPage,
+          minVideoBytes: minVideoBytes,
+          maxVideoBytes: maxVideoBytes,
+          autoVideoSizeRange: autoVideoSizeRange,
         );
         return;
       }
@@ -31971,11 +32067,7 @@ class _BrowserPageState extends State<BrowserPage>
     return null;
   }
 
-  int _parallelRangePartsForTotalSize(
-    int totalBytes, {
-    String host = '',
-    bool adaptive = false,
-  }) {
+  int _parallelRangePartsForTotalSize(int totalBytes) {
     if (totalBytes < _kParallelRangeVideoMinBytes) return 1;
     // Keep the historically proven 4/6/8 starting point. Xfree may explore
     // higher levels after clean completions, but never starts a task at 12.
@@ -31985,9 +32077,7 @@ class _BrowserPageState extends State<BrowserPage>
             : totalBytes < 128 * 1024 * 1024
             ? min(6, _kParallelRangeVideoConnections)
             : min(8, _kParallelRangeVideoConnections);
-    if (!adaptive || host.isEmpty) return baseline;
-    final maxUsefulParts = _parallelRangeMaxPartsForTotalSize(totalBytes);
-    return (_rangeConcurrencyByHost[host] ?? baseline).clamp(2, maxUsefulParts);
+    return baseline;
   }
 
   int _parallelRangeMaxPartsForTotalSize(int totalBytes) {
@@ -31995,6 +32085,34 @@ class _BrowserPageState extends State<BrowserPage>
     // Avoid tiny ranges: more TLS/HTTP overhead than useful payload.
     final usefulBySize = max(2, totalBytes ~/ _kParallelRangeVideoMinBytes);
     return min(_kParallelRangeVideoConnections, usefulBySize);
+  }
+
+  static const String _rangeTransportPolicyPrefsKey =
+      'range_transport_profiles_v1';
+
+  Future<void> _ensureRangeTransportPolicyLoaded() async {
+    if (_rangeTransportPolicyLoaded) return;
+    _rangeTransportPolicyLoaded = true;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _rangeTransportPolicy.restore(
+        prefs.getString(_rangeTransportPolicyPrefsKey),
+      );
+    } catch (e) {
+      debugPrint('[RANGE_ROUTE] profile restore failed=$e');
+    }
+  }
+
+  Future<void> _persistRangeTransportPolicy() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+        _rangeTransportPolicyPrefsKey,
+        _rangeTransportPolicy.encode(),
+      );
+    } catch (e) {
+      debugPrint('[RANGE_ROUTE] profile persist failed=$e');
+    }
   }
 
   List<(int start, int end)> _splitByteRanges(int totalBytes, int parts) {
@@ -32070,14 +32188,13 @@ class _BrowserPageState extends State<BrowserPage>
     if (cancelToken?.isCancelled == true) return null;
 
     final rangeHost = Uri.tryParse(url)?.host.toLowerCase() ?? '';
-    final sizeMaxParts =
-        isXfreeOriginal
-            ? _parallelRangeMaxPartsForTotalSize(byteTotal)
-            : _parallelRangePartsForTotalSize(byteTotal);
-    final parts = _parallelRangePartsForTotalSize(
-      byteTotal,
+    final baselineParts = _parallelRangePartsForTotalSize(byteTotal);
+    final sizeMaxParts = _parallelRangeMaxPartsForTotalSize(byteTotal);
+    await _ensureRangeTransportPolicyLoaded();
+    final parts = _rangeTransportPolicy.choose(
       host: rangeHost,
-      adaptive: isXfreeOriginal,
+      baseline: baselineParts,
+      maxConcurrency: sizeMaxParts,
     );
     if (parts < 2) return null;
 
@@ -32088,12 +32205,10 @@ class _BrowserPageState extends State<BrowserPage>
       debugPrint(
         '视频下载：已启用 Range 多连接（${_formatBytes(byteTotal)}，${ranges.length} 路并行；非 NetworkService 的 HEAD 日志）',
       );
-      if (isXfreeOriginal) {
-        debugPrint(
-          '[XFREE_RANGE_ADAPT] selected=$parts max=$sizeMaxParts '
-          'remembered=${_rangeConcurrencyByHost[rangeHost]}',
-        );
-      }
+      debugPrint(
+        '[RANGE_ADAPT] host=$rangeHost selected=$parts max=$sizeMaxParts '
+        'baseline=$baselineParts',
+      );
     }
 
     final partPaths = List<String>.generate(
@@ -32101,6 +32216,8 @@ class _BrowserPageState extends State<BrowserPage>
       (i) => '$filePath.part$i',
     );
     final perPart = List<int>.filled(ranges.length, 0);
+    final transferWatch = Stopwatch()..start();
+    var firstRoundFailures = 0;
 
     Future<void> downloadOneRange(int ri, Dio client) async {
       final (start, end) = ranges[ri];
@@ -32146,7 +32263,7 @@ class _BrowserPageState extends State<BrowserPage>
 
     try {
       onProgress?.call(0, detail: '多连接并行 (${ranges.length} 路)…');
-      if (!isXfreeOriginal) {
+      if (rangeHost.isEmpty) {
         await Future.wait(
           List.generate(
             ranges.length,
@@ -32159,7 +32276,6 @@ class _BrowserPageState extends State<BrowserPage>
         var pending = List<int>.generate(ranges.length, (i) => i);
         Object? lastError;
         StackTrace? lastStack;
-        var firstRoundFailures = 0;
         for (var round = 0; round < 3 && pending.isNotEmpty; round++) {
           final retryDio = _createDownloadDio(
             connectTimeout: const Duration(seconds: 6),
@@ -32176,7 +32292,7 @@ class _BrowserPageState extends State<BrowserPage>
                 lastError = e;
                 lastStack = st;
                 debugPrint(
-                  '[XFREE_RANGE_RETRY] part=$ri round=${round + 1}/3 '
+                  '[RANGE_PART_RETRY] host=$rangeHost part=$ri round=${round + 1}/3 '
                   'failed=$e',
                 );
               }
@@ -32188,25 +32304,8 @@ class _BrowserPageState extends State<BrowserPage>
         }
         if (pending.isNotEmpty) {
           Error.throwWithStackTrace(
-            lastError ?? StateError('Xfree Range parts failed: $pending'),
+            lastError ?? StateError('Range parts failed: $pending'),
             lastStack ?? StackTrace.current,
-          );
-        }
-        if (rangeHost.isNotEmpty) {
-          if (firstRoundFailures > 0) {
-            _rangeConcurrencyByHost[rangeHost] = max(
-              2,
-              parts - firstRoundFailures,
-            );
-          } else if (parts < sizeMaxParts) {
-            _rangeConcurrencyByHost[rangeHost] = parts + 1;
-          } else {
-            _rangeConcurrencyByHost[rangeHost] = parts;
-          }
-          debugPrint(
-            '[XFREE_RANGE_ADAPT] completed selected=$parts '
-            'firstFailures=$firstRoundFailures '
-            'next=${_rangeConcurrencyByHost[rangeHost]}',
           );
         }
       }
@@ -32234,9 +32333,45 @@ class _BrowserPageState extends State<BrowserPage>
         } catch (_) {}
         return null;
       }
+      if (rangeHost.isNotEmpty) {
+        transferWatch.stop();
+        final decision = _rangeTransportPolicy.record(
+          host: rangeHost,
+          concurrency: parts,
+          maxConcurrency: sizeMaxParts,
+          totalBytes: byteTotal,
+          elapsed: transferWatch.elapsed,
+          firstRoundFailures: firstRoundFailures,
+          completed: true,
+        );
+        await _persistRangeTransportPolicy();
+        debugPrint(
+          '[RANGE_ADAPT] host=$rangeHost completed selected=$parts '
+          'firstFailures=$firstRoundFailures '
+          'speedMBps=${(decision.bytesPerSecond / 1024 / 1024).toStringAsFixed(2)} '
+          'best=${decision.bestConcurrency} next=${decision.nextConcurrency}',
+        );
+      }
       return File(filePath);
     } catch (e, st) {
       if (cancelToken?.isCancelled == true) rethrow;
+      if (rangeHost.isNotEmpty) {
+        transferWatch.stop();
+        final decision = _rangeTransportPolicy.record(
+          host: rangeHost,
+          concurrency: parts,
+          maxConcurrency: sizeMaxParts,
+          totalBytes: byteTotal,
+          elapsed: transferWatch.elapsed,
+          firstRoundFailures: max(1, firstRoundFailures),
+          completed: false,
+        );
+        await _persistRangeTransportPolicy();
+        debugPrint(
+          '[RANGE_ADAPT] host=$rangeHost failed selected=$parts '
+          'next=${decision.nextConcurrency}',
+        );
+      }
       debugPrint('Range 多连接下载失败，将回退单连接: $e\n$st');
       for (final pp in partPaths) {
         try {
@@ -32454,6 +32589,47 @@ class _BrowserPageState extends State<BrowserPage>
                     : '*/*',
           );
 
+          Future<File> downloadHls(String playlistUrl) async {
+            final merged = await _handleM3u8Download(
+              filePath,
+              playlistUrl,
+              downloadDio,
+              requestHeaders: requestHeaders,
+              onMergeProgress: (completed, totalSegs, mergedBytes) {
+                final frac =
+                    totalSegs > 0 ? 0.02 + (completed / totalSegs) * 0.98 : 0.5;
+                onProgress?.call(
+                  frac.clamp(0.0, 1.0),
+                  detail:
+                      'HLS 分片 $completed/$totalSegs · 已合并 ${_formatBytes(mergedBytes)}',
+                );
+              },
+            );
+            try {
+              final playlist = File(filePath);
+              if (await playlist.exists()) await playlist.delete();
+            } catch (_) {}
+            if (merged == null || !await merged.exists()) {
+              throw Exception('[下载失败] M3U8 无法解析或分片下载失败');
+            }
+            if (await merged.length() == 0) {
+              try {
+                await merged.delete();
+              } catch (_) {}
+              throw Exception('[下载失败] 合并后的视频为空');
+            }
+            final head = await merged
+                .openRead(0, 512)
+                .fold<List<int>>([], (prev, chunk) => [...prev, ...chunk]);
+            if (!_isValidVideoBytes(head) && !_isLikelyMpegTs(head)) {
+              try {
+                await merged.delete();
+              } catch (_) {}
+              throw Exception('[下载失败] 合并结果不是可播放的视频数据');
+            }
+            return merged;
+          }
+
           if (mediaType == MediaType.video &&
               _videoExtensionSupportsParallelRange(extension) &&
               extension != '.m3u8' &&
@@ -32525,44 +32701,7 @@ class _BrowserPageState extends State<BrowserPage>
                   ? response.realUri.toString()
                   : urlToTry;
           if (extension == '.m3u8' || extension == '.m3u') {
-            final merged = await _handleM3u8Download(
-              filePath,
-              successfulUrl,
-              downloadDio,
-              requestHeaders: requestHeaders,
-              onMergeProgress: (completed, totalSegs, mergedBytes) {
-                final frac =
-                    totalSegs > 0 ? 0.02 + (completed / totalSegs) * 0.98 : 0.5;
-                onProgress?.call(
-                  frac.clamp(0.0, 1.0),
-                  detail:
-                      'HLS 分片 $completed/$totalSegs · 已合并 ${_formatBytes(mergedBytes)}',
-                );
-              },
-            );
-            try {
-              final pl = File(filePath);
-              if (await pl.exists()) await pl.delete();
-            } catch (_) {}
-            if (merged == null || !await merged.exists()) {
-              throw Exception('[下载失败] M3U8 无法解析或分片下载失败');
-            }
-            if (await merged.length() == 0) {
-              try {
-                await merged.delete();
-              } catch (_) {}
-              throw Exception('[下载失败] 合并后的视频为空');
-            }
-            final head = await merged
-                .openRead(0, 512)
-                .fold<List<int>>([], (prev, chunk) => [...prev, ...chunk]);
-            if (!_isValidVideoBytes(head) && !_isLikelyMpegTs(head)) {
-              try {
-                await merged.delete();
-              } catch (_) {}
-              throw Exception('[下载失败] 合并结果不是可播放的视频数据');
-            }
-            return merged;
+            return await downloadHls(successfulUrl);
           }
           return await _finalizeDirectMediaDownload(
             file: File(filePath),
@@ -33263,6 +33402,10 @@ class _BrowserPageState extends State<BrowserPage>
               line.toUpperCase().contains('TYPE=AUDIO'),
         );
     if (isXMaster) {
+      debugPrint(
+        '[X_HLS_TRANSPORT] segmentParallel=12 hostConnectionCap=$_kHlsMaxConnectionsPerHost '
+        'stalledFragmentTimeoutSec=20',
+      );
       final videoUrl = _pickBestHlsVariantUrl(initialLines, baseUri);
       final audioUrl =
           videoUrl == null
@@ -33271,11 +33414,20 @@ class _BrowserPageState extends State<BrowserPage>
       if (videoUrl != null && audioUrl != null) {
         final videoPlaylistPath = '$m3u8Path.x-video.m3u8';
         final audioPlaylistPath = '$m3u8Path.x-audio.m3u8';
-        var videoProgress = 0.0;
-        var audioProgress = 0.0;
+        var videoCompleted = 0;
+        var videoTotal = 0;
+        var audioCompleted = 0;
+        var audioTotal = 0;
+        var videoBytes = 0;
+        var audioBytes = 0;
         void reportProgress() {
-          final combined = videoProgress * 0.85 + audioProgress * 0.15;
-          onMergeProgress?.call((combined * 1000).round(), 1000, 0);
+          final completed = videoCompleted + audioCompleted;
+          final total = videoTotal + audioTotal;
+          onMergeProgress?.call(
+            completed,
+            max(1, total),
+            videoBytes + audioBytes,
+          );
         }
 
         File? videoFile;
@@ -33287,8 +33439,10 @@ class _BrowserPageState extends State<BrowserPage>
               videoUrl,
               client,
               requestHeaders: initialHeaders,
-              onMergeProgress: (completed, total, _) {
-                videoProgress = total > 0 ? completed / total : 0;
+              onMergeProgress: (completed, total, mergedBytes) {
+                videoCompleted = completed;
+                videoTotal = total;
+                videoBytes = mergedBytes;
                 reportProgress();
               },
             ),
@@ -33297,8 +33451,10 @@ class _BrowserPageState extends State<BrowserPage>
               audioUrl,
               client,
               requestHeaders: initialHeaders,
-              onMergeProgress: (completed, total, _) {
-                audioProgress = total > 0 ? completed / total : 0;
+              onMergeProgress: (completed, total, mergedBytes) {
+                audioCompleted = completed;
+                audioTotal = total;
+                audioBytes = mergedBytes;
                 reportProgress();
               },
             ),
@@ -33756,6 +33912,14 @@ class _BrowserPageState extends State<BrowserPage>
             options: Options(
               responseType: ResponseType.bytes,
               headers: requestHeaders,
+              // X occasionally leaves one CDN fragment stalled while the
+              // other parallel fragments finish. Recover that fragment
+              // quickly instead of waiting for the global 60-second timeout.
+              receiveTimeout:
+                  Uri.tryParse(candidate)?.host.toLowerCase() ==
+                          'video.twimg.com'
+                      ? const Duration(seconds: 20)
+                      : null,
               validateStatus:
                   (code) => code != null && code >= 200 && code < 300,
             ),
@@ -33804,9 +33968,15 @@ class _BrowserPageState extends State<BrowserPage>
     final total = tasks.length;
     var mergedBytes = 0;
     var completed = 0;
+    final parallelFetches =
+        tasks.isNotEmpty &&
+                Uri.tryParse(tasks.first.url)?.host.toLowerCase() ==
+                    'video.twimg.com'
+            ? 12
+            : _kHlsParallelSegmentFetches;
     onProgress?.call(0, total, 0);
-    for (var i = 0; i < tasks.length; i += _kHlsParallelSegmentFetches) {
-      final end = min(i + _kHlsParallelSegmentFetches, tasks.length);
+    for (var i = 0; i < tasks.length; i += parallelFetches) {
+      final end = min(i + parallelFetches, tasks.length);
       final batch = tasks.sublist(i, end);
       final raws = await Future.wait(
         batch.map(
@@ -33849,9 +34019,15 @@ class _BrowserPageState extends State<BrowserPage>
     final total = urls.length;
     var mergedBytes = 0;
     var n = 0;
+    final parallelFetches =
+        urls.isNotEmpty &&
+                Uri.tryParse(urls.first)?.host.toLowerCase() ==
+                    'video.twimg.com'
+            ? 12
+            : _kHlsParallelSegmentFetches;
     onProgress?.call(0, total, 0);
-    for (var i = 0; i < urls.length; i += _kHlsParallelSegmentFetches) {
-      final end = min(i + _kHlsParallelSegmentFetches, urls.length);
+    for (var i = 0; i < urls.length; i += parallelFetches) {
+      final end = min(i + parallelFetches, urls.length);
       final batch = urls.sublist(i, end);
       final raws = await Future.wait(
         batch.map(
@@ -35553,6 +35729,12 @@ class _BrowserPageState extends State<BrowserPage>
                                 (t['progressDetail'] as String?)?.trim() ?? '';
                             final transferStatus =
                                 (t['transferStatus'] as String?)?.trim() ?? '';
+                            final visibleTransferStatus =
+                                transferStatus.isNotEmpty
+                                    ? transferStatus
+                                    : status == 'downloading' && progress > 0
+                                    ? '进度 ${(progress.clamp(0.0, 1.0) * 100).toStringAsFixed(1)}% · 正在获取大小与速度'
+                                    : '';
                             final isDownloading = status == 'downloading';
                             final isPaused = status == 'paused';
                             final isSmartBatchMedia =
@@ -35604,18 +35786,18 @@ class _BrowserPageState extends State<BrowserPage>
                                                 overflow: TextOverflow.ellipsis,
                                               ),
                                             ),
-                                          if (transferStatus.isNotEmpty)
+                                          if (visibleTransferStatus.isNotEmpty)
                                             Padding(
                                               padding: const EdgeInsets.only(
                                                 top: 2,
                                               ),
                                               child: Text(
-                                                transferStatus,
+                                                visibleTransferStatus,
                                                 style: const TextStyle(
                                                   color: Colors.greenAccent,
                                                   fontSize: 10,
                                                 ),
-                                                maxLines: 1,
+                                                maxLines: 2,
                                                 overflow: TextOverflow.ellipsis,
                                               ),
                                             ),
@@ -35899,6 +36081,9 @@ class _BrowserPageState extends State<BrowserPage>
         cancelToken: cancelToken,
         maxRequestAttempts: maxRequestAttempts,
         onTotalBytesKnown: (totalBytes) {
+          if (mounted) {
+            _updateDownloadTask(taskId, totalBytes: totalBytes);
+          }
           if (sizeRangeExceeded || cancelToken.isCancelled) return;
           final outsideRange =
               (appliedMinFileBytes != null &&
@@ -36455,7 +36640,9 @@ class _BrowserPageState extends State<BrowserPage>
       'progressDetail': '',
       'transferStatus': '',
       'lastSampleBytes': 0,
-      'lastSampleAtMs': DateTime.now().millisecondsSinceEpoch,
+      'lastSampleAtMs': 0,
+      'transferStartedAtMs': 0,
+      'transferStartBytes': 0,
       'lastProgressAtMs': DateTime.now().millisecondsSinceEpoch,
       'lastProgressValue': 0.0,
       'smoothedBytesPerSecond': 0.0,
@@ -36479,6 +36666,7 @@ class _BrowserPageState extends State<BrowserPage>
     double? progress,
     String? status,
     String? progressDetail,
+    int? totalBytes,
   }) {
     final idx = _downloadTasks.indexWhere((t) => t['id'] == id);
     if (idx < 0) return;
@@ -36493,13 +36681,19 @@ class _BrowserPageState extends State<BrowserPage>
       }
     }
     if (status != null) _downloadTasks[idx]['status'] = status;
+    if (totalBytes != null && totalBytes > 0) {
+      _downloadTasks[idx]['knownTotalBytes'] = totalBytes;
+    }
     if (progressDetail != null) {
       _downloadTasks[idx]['progressDetail'] = progressDetail;
-      final downloadedBytes = _extractDownloadedBytes(progressDetail);
-      if (downloadedBytes != null) {
+      final transfer = _extractTransferBytes(progressDetail);
+      if (transfer != null) {
+        if (transfer.totalBytes != null) {
+          _downloadTasks[idx]['knownTotalBytes'] = transfer.totalBytes;
+        }
         _updateTransferEstimate(
           _downloadTasks[idx],
-          downloadedBytes,
+          transfer.downloadedBytes,
           progress ??
               (_downloadTasks[idx]['progress'] as num?)?.toDouble() ??
               0.0,
@@ -36552,22 +36746,32 @@ class _BrowserPageState extends State<BrowserPage>
     }
   }
 
-  int? _extractDownloadedBytes(String detail) {
-    final match = RegExp(
-      r'(\d+(?:\.\d+)?)\s*(B|KB|MB|GB)\b',
-      caseSensitive: false,
-    ).firstMatch(detail);
-    if (match == null) return null;
-    final value = double.tryParse(match.group(1) ?? '');
-    if (value == null) return null;
-    final unit = (match.group(2) ?? 'B').toUpperCase();
-    final multiplier = switch (unit) {
-      'KB' => 1024,
-      'MB' => 1024 * 1024,
-      'GB' => 1024 * 1024 * 1024,
-      _ => 1,
-    };
-    return (value * multiplier).round();
+  ({int downloadedBytes, int? totalBytes})? _extractTransferBytes(
+    String detail,
+  ) {
+    final matches =
+        RegExp(
+          r'(\d+(?:\.\d+)?)\s*(B|KB|MB|GB)\b',
+          caseSensitive: false,
+        ).allMatches(detail).toList();
+    if (matches.isEmpty) return null;
+    int? parse(RegExpMatch match) {
+      final value = double.tryParse(match.group(1) ?? '');
+      if (value == null) return null;
+      final unit = (match.group(2) ?? 'B').toUpperCase();
+      final multiplier = switch (unit) {
+        'KB' => 1024,
+        'MB' => 1024 * 1024,
+        'GB' => 1024 * 1024 * 1024,
+        _ => 1,
+      };
+      return (value * multiplier).round();
+    }
+
+    final downloaded = parse(matches.first);
+    if (downloaded == null) return null;
+    final total = matches.length > 1 ? parse(matches[1]) : null;
+    return (downloadedBytes: downloaded, totalBytes: total);
   }
 
   void _updateTransferEstimate(
@@ -36576,32 +36780,101 @@ class _BrowserPageState extends State<BrowserPage>
     double progress,
   ) {
     final nowMs = DateTime.now().millisecondsSinceEpoch;
-    final previousMs = (task['lastSampleAtMs'] as num?)?.toInt() ?? nowMs;
+    final previousMs = (task['lastSampleAtMs'] as num?)?.toInt() ?? 0;
     final previousBytes = (task['lastSampleBytes'] as num?)?.toInt() ?? 0;
+    if (downloadedBytes <= 0) return;
+    if (previousMs <= 0 || downloadedBytes < previousBytes) {
+      task['lastSampleAtMs'] = nowMs;
+      task['lastSampleBytes'] = downloadedBytes;
+      task['transferStartedAtMs'] = nowMs;
+      task['transferStartBytes'] = downloadedBytes;
+      task['smoothedBytesPerSecond'] = 0.0;
+      task['transferStatus'] = _buildTransferStatus(
+        task,
+        downloadedBytes,
+        progress,
+        0,
+      );
+      return;
+    }
     final elapsedMs = nowMs - previousMs;
     final deltaBytes = downloadedBytes - previousBytes;
-    if (elapsedMs < 300 || deltaBytes <= 0) return;
+    if (elapsedMs < 300 || deltaBytes <= 0) {
+      // HLS batches report several completed fragments in a burst. Keep the
+      // byte/percentage text current even when the sampling window is still
+      // too short to calculate a trustworthy new speed. Previously the panel
+      // kept the first tiny sample (for example 786 B) while merged bytes had
+      // already reached hundreds of KB, producing an impossible total size.
+      final previousSpeed =
+          (task['smoothedBytesPerSecond'] as num?)?.toDouble() ?? 0.0;
+      task['transferStatus'] = _buildTransferStatus(
+        task,
+        downloadedBytes,
+        progress,
+        previousSpeed,
+      );
+      return;
+    }
     final instantSpeed = deltaBytes * 1000 / elapsedMs;
+    final startedAtMs =
+        (task['transferStartedAtMs'] as num?)?.toInt() ?? previousMs;
+    final startBytes =
+        (task['transferStartBytes'] as num?)?.toInt() ?? previousBytes;
+    final overallElapsedMs = max(1, nowMs - startedAtMs);
+    final averageSpeed =
+        max(0, downloadedBytes - startBytes) * 1000 / overallElapsedMs;
     final previousSpeed =
         (task['smoothedBytesPerSecond'] as num?)?.toDouble() ?? 0.0;
     final smoothedSpeed =
         previousSpeed <= 0
-            ? instantSpeed
-            : previousSpeed * 0.7 + instantSpeed * 0.3;
+            ? averageSpeed > 0
+                ? averageSpeed
+                : instantSpeed
+            : previousSpeed * 0.5 + instantSpeed * 0.2 + averageSpeed * 0.3;
     task['lastSampleAtMs'] = nowMs;
     task['lastSampleBytes'] = downloadedBytes;
     task['smoothedBytesPerSecond'] = smoothedSpeed;
 
-    var status = '${_formatBytes(smoothedSpeed.round())}/s';
-    if (progress > 0.01 && progress < 0.995 && smoothedSpeed > 0) {
-      final estimatedTotal = downloadedBytes / progress;
-      final remainingSeconds =
-          ((estimatedTotal - downloadedBytes) / smoothedSpeed).round();
-      if (remainingSeconds > 0) {
-        status = '$status · 预计剩余 ${_formatRemainingTime(remainingSeconds)}';
-      }
+    task['transferStatus'] = _buildTransferStatus(
+      task,
+      downloadedBytes,
+      progress,
+      smoothedSpeed,
+    );
+  }
+
+  String _buildTransferStatus(
+    Map<String, dynamic> task,
+    int downloadedBytes,
+    double progress,
+    double bytesPerSecond,
+  ) {
+    final knownTotal = (task['knownTotalBytes'] as num?)?.toInt();
+    final estimatedTotal =
+        knownTotal ??
+        (progress > 0.005 ? (downloadedBytes / progress).round() : null);
+    final percent = (progress.clamp(0.0, 1.0) * 100).toStringAsFixed(1);
+    var status = '已下载 ${_formatBytes(downloadedBytes)}';
+    if (estimatedTotal != null && estimatedTotal >= downloadedBytes) {
+      status +=
+          knownTotal != null
+              ? ' / ${_formatBytes(estimatedTotal)}'
+              : ' / 预计 ${_formatBytes(estimatedTotal)}';
     }
-    task['transferStatus'] = status;
+    status += ' · $percent%';
+    if (bytesPerSecond > 0) {
+      status += ' · ${_formatBytes(bytesPerSecond.round())}/s';
+      if (estimatedTotal != null && estimatedTotal > downloadedBytes) {
+        final remainingSeconds =
+            ((estimatedTotal - downloadedBytes) / bytesPerSecond).round();
+        if (remainingSeconds > 0) {
+          status += ' · 预计剩余 ${_formatRemainingTime(remainingSeconds)}';
+        }
+      }
+    } else {
+      status += ' · 正在测速';
+    }
+    return status;
   }
 
   String _formatRemainingTime(int seconds) {

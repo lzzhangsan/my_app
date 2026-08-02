@@ -601,7 +601,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
 
         return Container(
           width: double.infinity,
-          constraints: const BoxConstraints(maxHeight: 132),
+          constraints: const BoxConstraints(maxHeight: 160),
           color: const Color(0xE6121212),
           padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
           child:
@@ -623,6 +623,8 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
                       final progress =
                           (task['progress'] as num?)?.toDouble() ?? 0.0;
                       final detail = (task['progressDetail'] ?? '').toString();
+                      final transferStatus =
+                          (task['transferStatus'] ?? '').toString();
                       final statusLabel = _browserDownloadStatusLabel(status);
                       final smartCompleted =
                           (task['smartBatchCompleted'] as num?)?.toInt();
@@ -698,6 +700,18 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
                               overflow: TextOverflow.ellipsis,
                               style: const TextStyle(
                                 color: Colors.white54,
+                                fontSize: 10,
+                              ),
+                            ),
+                          ],
+                          if (transferStatus.isNotEmpty) ...[
+                            const SizedBox(height: 2),
+                            Text(
+                              transferStatus,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: Colors.greenAccent,
                                 fontSize: 10,
                               ),
                             ),
