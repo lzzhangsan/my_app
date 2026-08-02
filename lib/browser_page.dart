@@ -17373,31 +17373,43 @@ class _BrowserPageState extends State<BrowserPage>
               }
               selected.el.setAttribute('data-app-smart-gesture', '1');
               selected.el.setAttribute('data-app-smart-attempted', '1');
-              const makeTouchEvent = (name, active) => {
-                const event = new Event(name, {bubbles:true, cancelable:true});
-                const touch = {
-                  identifier: Date.now(),
-                  target: selected.el,
-                  clientX: selected.x,
-                  clientY: selected.y,
-                  pageX: selected.x + scrollX,
-                  pageY: selected.y + scrollY,
-                  screenX: selected.x,
-                  screenY: selected.y
+              selected.el.setAttribute('data-app-smart-current', '1');
+              // X 信息流会忽略 isTrusted=false 的合成 touch，表现为「长按已发出但无 media 消息」。
+              // 与动作编排一致：直接走 __appTriggerSmartLongPress → handleMediaDownload。
+              if (xInlineFeedMode &&
+                  typeof window.__appTriggerSmartLongPress === 'function') {
+                try {
+                  Promise.resolve(
+                    window.__appTriggerSmartLongPress(selected.x, selected.y)
+                  ).catch(function() {});
+                } catch (_) {}
+              } else {
+                const makeTouchEvent = (name, active) => {
+                  const event = new Event(name, {bubbles:true, cancelable:true});
+                  const touch = {
+                    identifier: Date.now(),
+                    target: selected.el,
+                    clientX: selected.x,
+                    clientY: selected.y,
+                    pageX: selected.x + scrollX,
+                    pageY: selected.y + scrollY,
+                    screenX: selected.x,
+                    screenY: selected.y
+                  };
+                  Object.defineProperty(event, 'touches', {
+                    configurable:true, value: active ? [touch] : []
+                  });
+                  Object.defineProperty(event, 'changedTouches', {
+                    configurable:true, value:[touch]
+                  });
+                  return event;
                 };
-                Object.defineProperty(event, 'touches', {
-                  configurable:true, value: active ? [touch] : []
-                });
-                Object.defineProperty(event, 'changedTouches', {
-                  configurable:true, value:[touch]
-                });
-                return event;
-              };
-              selected.el.dispatchEvent(makeTouchEvent('touchstart', true));
-              setTimeout(() => {
-                selected.el.dispatchEvent(makeTouchEvent('touchend', false));
-                setTimeout(() => selected.el.removeAttribute('data-app-smart-gesture'), 80);
-              }, 560);
+                selected.el.dispatchEvent(makeTouchEvent('touchstart', true));
+                setTimeout(() => {
+                  selected.el.dispatchEvent(makeTouchEvent('touchend', false));
+                  setTimeout(() => selected.el.removeAttribute('data-app-smart-gesture'), 80);
+                }, 560);
+              }
               return {
                 action:'longpress',
                 key:selected.key,
@@ -17680,6 +17692,43 @@ class _BrowserPageState extends State<BrowserPage>
         }
         _showSmartOperation('长按当前媒体，触发下载', point: point);
         _updateSmartDiscoveryProgress(task, 'gesture_waiting_download');
+        final xInline =
+            task['xInlineFeedMode'] == true ||
+            (task['siteProfile'] ?? '').toString() == 'x';
+        if (xInline) {
+          // JS 侧已改为直接 __appTriggerSmartLongPress；此处仅在仍无 media 时补一枪，
+          // 避免与 JS 同时双触发导致 media_busy 误杀当前条目。
+          Future<void>.delayed(const Duration(seconds: 3), () async {
+            if (!identical(_smartDownloadTask, task) ||
+                task['gestureDownloadPending'] != true) {
+              return;
+            }
+            if (_longPressVideoDownloadInProgress) return;
+            final hasActiveDownload = _downloadTasks.any(
+              (row) =>
+                  row['isSmartBatchMedia'] == true &&
+                  row['status'] == 'downloading',
+            );
+            if (hasActiveDownload) return;
+            debugPrint(
+              '[SMART_GESTURE] X longpress still waiting; retry hook at $point',
+            );
+            _clearJsProcessedMediaUrls();
+            await _triggerVisibleGestureLongPressHook(point);
+            if (identical(_smartDownloadTask, task)) {
+              unawaited(_advanceSmartDownload(_currentUrl));
+            }
+          });
+        }
+        // 等待期定期推进，避免「无 media」时干等到 45s+ 才被其它路径唤醒。
+        for (final sec in <int>[8, 16, 30, 46]) {
+          Future<void>.delayed(Duration(seconds: sec), () {
+            if (identical(_smartDownloadTask, task) &&
+                task['gestureDownloadPending'] == true) {
+              unawaited(_advanceSmartDownload(_currentUrl));
+            }
+          });
+        }
         Future<void>.delayed(const Duration(minutes: 6), () {
           if (identical(_smartDownloadTask, task) &&
               task['gestureDownloadPending'] == true &&
@@ -23709,6 +23758,38 @@ class _BrowserPageState extends State<BrowserPage>
       return ok == true;
     } catch (e) {
       debugPrint('native tap failed: $e');
+      return false;
+    }
+  }
+
+  /// X 信息流可见手势：直接调用页面 `__appTriggerSmartLongPress`（不依赖合成 touch）。
+  Future<bool> _triggerVisibleGestureLongPressHook(Offset point) async {
+    final controller = _controller;
+    if (controller == null) return false;
+    final nx = point.dx.clamp(0.02, 0.98);
+    final ny = point.dy.clamp(0.02, 0.98);
+    try {
+      final raw = await controller.evaluateJavascript(
+        source: '''
+(() => {
+  if (typeof window.__appTriggerSmartLongPress !== 'function') {
+    return {ok:false, reason:'hook_missing'};
+  }
+  const w = window.innerWidth || 360;
+  const h = window.innerHeight || 640;
+  const cx = w * $nx;
+  const cy = h * $ny;
+  return window.__appTriggerSmartLongPress(cx, cy);
+})()
+''',
+      );
+      final parsed =
+          _coerceJsMap(raw) ??
+          (raw is Map ? Map<String, dynamic>.from(raw) : null);
+      debugPrint('[SMART_GESTURE] triggerLongPressHook => $parsed');
+      return parsed == null || parsed['ok'] != false;
+    } catch (e) {
+      debugPrint('[SMART_GESTURE] triggerLongPressHook failed: $e');
       return false;
     }
   }
@@ -34680,12 +34761,29 @@ class _BrowserPageState extends State<BrowserPage>
       try {
         if (await videoFile.exists()) await videoFile.delete();
       } catch (_) {}
+      try {
+        if (await audioFile.exists()) await audioFile.delete();
+      } catch (_) {}
       return File(remuxVideo);
     }
 
-    debugPrint('[X_HLS_MUX] all mux/remux paths failed; reject broken fMP4 concat');
+    // Remux 失败时仍入库已下完的视频轨，避免长视频进度满后被丢弃（严重浪费）。
+    // fMP4 拼接可能不可 seek / 无音轨，但优于整段作废并反复重下。
+    final concatBytes = await videoFile.length();
+    debugPrint(
+      '[X_HLS_MUX] remux unavailable; keep fMP4 video concat for library '
+      'bytes=$concatBytes',
+    );
     await _deleteTempMediaFiles(temps);
-    return null;
+    try {
+      if (await audioFile.exists()) await audioFile.delete();
+    } catch (_) {}
+    try {
+      if (await outputFile.exists()) await outputFile.delete();
+      return await videoFile.rename(outputFile.path);
+    } catch (_) {
+      return videoFile;
+    }
   }
 
   /// Single-track HLS fMP4 concat → seekable progressive MP4.
@@ -34713,13 +34811,12 @@ class _BrowserPageState extends State<BrowserPage>
       } catch (_) {}
       return File(remuxed);
     }
+    // 与 master 路径一致：remux 失败也保留已合并分片，禁止删文件后整段重下。
     debugPrint(
-      '[X_HLS_MUX] single-track remux failed; reject non-seekable fMP4 concat',
+      '[X_HLS_MUX] single-track remux failed; keep fMP4 concat for library '
+      'bytes=${await concatFile.length()}',
     );
-    try {
-      if (await concatFile.exists()) await concatFile.delete();
-    } catch (_) {}
-    return null;
+    return concatFile;
   }
 
   Future<File?> _handleM3u8Download(

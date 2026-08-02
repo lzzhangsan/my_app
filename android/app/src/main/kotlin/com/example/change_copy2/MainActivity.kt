@@ -664,6 +664,76 @@ class MainActivity: FlutterActivity() {
         return -1
     }
 
+    /** Copy only MediaMuxer-safe keys; fMP4 HLS formats often carry keys that break addTrack. */
+    private fun muxerSafeFormat(source: MediaFormat): MediaFormat {
+        val mime = source.getString(MediaFormat.KEY_MIME)
+            ?: throw IllegalStateException("Track missing KEY_MIME")
+        val out = MediaFormat()
+        out.setString(MediaFormat.KEY_MIME, mime)
+        val intKeys = arrayOf(
+            MediaFormat.KEY_WIDTH,
+            MediaFormat.KEY_HEIGHT,
+            MediaFormat.KEY_BIT_RATE,
+            MediaFormat.KEY_FRAME_RATE,
+            MediaFormat.KEY_I_FRAME_INTERVAL,
+            MediaFormat.KEY_CHANNEL_COUNT,
+            MediaFormat.KEY_SAMPLE_RATE,
+            MediaFormat.KEY_MAX_INPUT_SIZE,
+            MediaFormat.KEY_AAC_PROFILE,
+            MediaFormat.KEY_PROFILE,
+            MediaFormat.KEY_LEVEL,
+            MediaFormat.KEY_ROTATION,
+        )
+        for (key in intKeys) {
+            if (source.containsKey(key)) {
+                try {
+                    out.setInteger(key, source.getInteger(key))
+                } catch (_: Exception) {
+                    try {
+                        out.setLong(key, source.getLong(key))
+                    } catch (_: Exception) {
+                    }
+                }
+            }
+        }
+        if (source.containsKey(MediaFormat.KEY_DURATION)) {
+            try {
+                out.setLong(MediaFormat.KEY_DURATION, source.getLong(MediaFormat.KEY_DURATION))
+            } catch (_: Exception) {
+                try {
+                    out.setInteger(
+                        MediaFormat.KEY_DURATION,
+                        source.getInteger(MediaFormat.KEY_DURATION),
+                    )
+                } catch (_: Exception) {
+                }
+            }
+        }
+        // CSD buffers are required for H.264/AAC progressive MP4.
+        for (csd in arrayOf("csd-0", "csd-1", "csd-2")) {
+            if (!source.containsKey(csd)) continue
+            val buf = source.getByteBuffer(csd) ?: continue
+            val copy = ByteBuffer.allocate(buf.remaining())
+            copy.put(buf.duplicate())
+            copy.flip()
+            out.setByteBuffer(csd, copy)
+        }
+        return out
+    }
+
+    private fun allocateSampleBuffer(extractor: MediaExtractor, sourceTrack: Int): ByteBuffer {
+        val format = extractor.getTrackFormat(sourceTrack)
+        var maxInput = 2 * 1024 * 1024
+        if (format.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE)) {
+            try {
+                maxInput = format.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE).coerceAtLeast(maxInput)
+            } catch (_: Exception) {
+            }
+        }
+        // High-bitrate X long-form I-frames can exceed the advertised max; pad generously.
+        return ByteBuffer.allocateDirect((maxInput + 256 * 1024).coerceAtMost(16 * 1024 * 1024))
+    }
+
     private fun writeTrack(
         extractor: MediaExtractor,
         sourceTrack: Int,
@@ -671,34 +741,68 @@ class MainActivity: FlutterActivity() {
         targetTrack: Int
     ) {
         extractor.selectTrack(sourceTrack)
-        var buffer = ByteBuffer.allocateDirect(4 * 1024 * 1024)
+        var buffer = allocateSampleBuffer(extractor, sourceTrack)
         val info = MediaCodec.BufferInfo()
         var firstPresentationTimeUs = -1L
         var lastPresentationTimeUs = -1L
+        var wrote = 0
         while (true) {
             buffer.clear()
             var size = extractor.readSampleData(buffer, 0)
             if (size < 0) break
             if (size > buffer.capacity()) {
-                buffer = ByteBuffer.allocateDirect(size + 1024)
+                val growTo = (size + 256 * 1024).coerceAtMost(32 * 1024 * 1024)
+                if (growTo < size) {
+                    throw IllegalArgumentException(
+                        "Sample too large for remux buffer size=$size capacity=${buffer.capacity()}",
+                    )
+                }
+                buffer = ByteBuffer.allocateDirect(growTo)
                 size = extractor.readSampleData(buffer, 0)
                 if (size < 0) break
             }
+            if (size == 0) {
+                if (!extractor.advance()) break
+                continue
+            }
+            // MediaMuxer validates offset+size against capacity; keep position/limit coherent.
+            buffer.position(0)
+            buffer.limit(size)
             info.offset = 0
             info.size = size
             val sampleTimeUs = extractor.sampleTime
-            if (firstPresentationTimeUs < 0L) firstPresentationTimeUs = sampleTimeUs
-            var normalizedTimeUs = (sampleTimeUs - firstPresentationTimeUs).coerceAtLeast(0L)
-            if (normalizedTimeUs <= lastPresentationTimeUs) {
-                normalizedTimeUs = lastPresentationTimeUs + 1L
+            if (sampleTimeUs >= 0L) {
+                if (firstPresentationTimeUs < 0L) firstPresentationTimeUs = sampleTimeUs
+                var normalizedTimeUs = (sampleTimeUs - firstPresentationTimeUs).coerceAtLeast(0L)
+                if (lastPresentationTimeUs >= 0L && normalizedTimeUs <= lastPresentationTimeUs) {
+                    normalizedTimeUs = lastPresentationTimeUs + 1L
+                }
+                info.presentationTimeUs = normalizedTimeUs
+                lastPresentationTimeUs = normalizedTimeUs
+            } else {
+                val fallback =
+                    if (lastPresentationTimeUs < 0L) 0L else lastPresentationTimeUs + 33_333L
+                info.presentationTimeUs = fallback
+                lastPresentationTimeUs = fallback
+                if (firstPresentationTimeUs < 0L) firstPresentationTimeUs = 0L
             }
-            info.presentationTimeUs = normalizedTimeUs
-            lastPresentationTimeUs = normalizedTimeUs
             info.flags = extractor.sampleFlags
-            muxer.writeSampleData(targetTrack, buffer, info)
+            try {
+                muxer.writeSampleData(targetTrack, buffer, info)
+            } catch (e: IllegalArgumentException) {
+                throw IllegalArgumentException(
+                    "writeSampleData failed wrote=$wrote size=$size pts=${info.presentationTimeUs} " +
+                        "flags=${info.flags} cap=${buffer.capacity()}: ${e.message}",
+                    e,
+                )
+            }
+            wrote++
             if (!extractor.advance()) break
         }
         extractor.unselectTrack(sourceTrack)
+        if (wrote == 0) {
+            throw IllegalStateException("No samples written for track $sourceTrack")
+        }
     }
 
     /** Turn concatenated fMP4/HLS track files into a seekable progressive MP4. */
@@ -713,7 +817,7 @@ class MainActivity: FlutterActivity() {
             }
             File(outputPath).delete()
             muxer = MediaMuxer(outputPath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-            val targetTrack = muxer.addTrack(extractor.getTrackFormat(sourceTrack))
+            val targetTrack = muxer.addTrack(muxerSafeFormat(extractor.getTrackFormat(sourceTrack)))
             muxer.start()
             writeTrack(extractor, sourceTrack, muxer, targetTrack)
             muxer.stop()
@@ -737,8 +841,10 @@ class MainActivity: FlutterActivity() {
             }
             File(outputPath).delete()
             muxer = MediaMuxer(outputPath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-            val videoTargetTrack = muxer.addTrack(videoExtractor.getTrackFormat(videoSourceTrack))
-            val audioTargetTrack = muxer.addTrack(audioExtractor.getTrackFormat(audioSourceTrack))
+            val videoTargetTrack =
+                muxer.addTrack(muxerSafeFormat(videoExtractor.getTrackFormat(videoSourceTrack)))
+            val audioTargetTrack =
+                muxer.addTrack(muxerSafeFormat(audioExtractor.getTrackFormat(audioSourceTrack)))
             muxer.start()
             writeTrack(videoExtractor, videoSourceTrack, muxer, videoTargetTrack)
             writeTrack(audioExtractor, audioSourceTrack, muxer, audioTargetTrack)
