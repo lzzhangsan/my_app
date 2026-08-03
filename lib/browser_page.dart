@@ -12117,8 +12117,7 @@ class _BrowserPageState extends State<BrowserPage>
           if (message.isNotEmpty) {
             final durationMs =
                 (data['durationMs'] as num?)?.toInt().clamp(600, 4000) ?? 1600;
-            ScaffoldMessenger.of(context).hideCurrentSnackBar();
-            ScaffoldMessenger.of(context).showSnackBar(
+            _showBrowserSnackBar(
               SnackBar(
                 content: Text(message),
                 duration: Duration(milliseconds: durationMs),
@@ -15118,9 +15117,9 @@ class _BrowserPageState extends State<BrowserPage>
   void _showBriefLongPressTriggeredHint() {
     if (!mounted) return;
     _clearSmartOperationVisual();
-    final messenger = ScaffoldMessenger.of(context);
-    messenger.hideCurrentSnackBar();
-    messenger.showSnackBar(
+    // Must go through the browser-foreground gate: smart download continues after
+    // the user returns to 媒体/目录, and a raw ScaffoldMessenger tip would leak.
+    _showBrowserSnackBar(
       const SnackBar(
         content: Text('已触发长按下载'),
         duration: Duration(milliseconds: 1200),
