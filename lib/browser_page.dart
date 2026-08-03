@@ -33803,28 +33803,25 @@ class _BrowserPageState extends State<BrowserPage>
               }
               return merged;
             } on _HlsMuxFailedWithTracks catch (muxFailure) {
-              for (var muxAttempt = 0; muxAttempt < 3; muxAttempt++) {
-                if (muxAttempt > 0) {
-                  debugPrint(
-                    '[X_HLS_MUX] mux-only retry ${muxAttempt + 1}/3 '
-                    'video=${muxFailure.videoTrackPath}',
-                  );
-                  await Future<void>.delayed(
-                    Duration(milliseconds: 400 * (muxAttempt + 1)),
-                  );
-                }
-                final finalized = await _finalizeXHlsMasterDownload(
-                  videoFile: File(muxFailure.videoTrackPath),
-                  audioFile: File(muxFailure.audioTrackPath),
-                  outputFile: File(muxFailure.outputPath),
-                );
-                if (finalized != null) {
-                  try {
-                    final playlist = File(filePath);
-                    if (await playlist.exists()) await playlist.delete();
-                  } catch (_) {}
-                  return finalized;
-                }
+              // Tracks are already on disk. One mux-only retry covers transient native
+              // glitches; deterministic A/V skew / truncated remux will not improve
+              // with more loops (previously 3× remux made the UI look "stuck").
+              debugPrint(
+                '[X_HLS_MUX] mux-only retry 1/1 '
+                'video=${muxFailure.videoTrackPath}',
+              );
+              await Future<void>.delayed(const Duration(milliseconds: 400));
+              final finalized = await _finalizeXHlsMasterDownload(
+                videoFile: File(muxFailure.videoTrackPath),
+                audioFile: File(muxFailure.audioTrackPath),
+                outputFile: File(muxFailure.outputPath),
+              );
+              if (finalized != null) {
+                try {
+                  final playlist = File(filePath);
+                  if (await playlist.exists()) await playlist.delete();
+                } catch (_) {}
+                return finalized;
               }
               await _deleteTempMediaFiles([
                 muxFailure.videoTrackPath,
@@ -34638,6 +34635,35 @@ class _BrowserPageState extends State<BrowserPage>
     }
   }
 
+  Future<bool> _nativeFfmpegRemuxCopy({
+    required String videoPath,
+    String? audioPath,
+    required String outputPath,
+    bool videoOnly = false,
+  }) async {
+    try {
+      if (await File(outputPath).exists()) {
+        await File(outputPath).delete();
+      }
+      return await const MethodChannel('media_muxer').invokeMethod<bool>(
+            'ffmpegRemuxCopy',
+            <String, Object?>{
+              'videoPath': videoPath,
+              'audioPath': audioPath,
+              'outputPath': outputPath,
+              'videoOnly': videoOnly,
+            },
+          ) ==
+          true;
+    } catch (e) {
+      debugPrint(
+        '[X_HLS_MUX] ffmpegRemuxCopy failed videoOnly=$videoOnly '
+        'video=$videoPath audio=$audioPath err=$e',
+      );
+      return false;
+    }
+  }
+
   Future<bool> _nativeMuxMp4Tracks({
     required String videoPath,
     required String audioPath,
@@ -34703,7 +34729,11 @@ class _BrowserPageState extends State<BrowserPage>
     return videoTrack.existsSync() && videoTrack.lengthSync() > 0;
   }
 
-  /// X master playlist: never return raw concatenated fMP4 (non-seekable). Remux first.
+  /// X master playlist finalize priority:
+  /// 1) FFmpeg -c copy A+V (seekable; avoids MediaMuxer MPEG4Writer crash)
+  /// 2) FFmpeg -c copy video-only (min bar: complete + seekable)
+  /// 3) Legacy MediaMuxer only for small clips (long fMP4 crashes OEM Writer)
+  /// 4) Keep complete raw video track (last resort; seek may be limited)
   Future<File?> _finalizeXHlsMasterDownload({
     required File videoFile,
     required File audioFile,
@@ -34711,52 +34741,9 @@ class _BrowserPageState extends State<BrowserPage>
   }) async {
     final temps = <String>[];
 
-    Future<File?> finish(String path) async {
+    Future<File?> finish(String path, {File? keepAside}) async {
       final file = File(path);
       if (!await file.exists() || await file.length() == 0) return null;
-      await _deleteTempMediaFiles(temps);
-      try {
-        if (await videoFile.exists()) await videoFile.delete();
-      } catch (_) {}
-      return file;
-    }
-
-    if (await _nativeMuxMp4Tracks(
-      videoPath: videoFile.path,
-      audioPath: audioFile.path,
-      outputPath: outputFile.path,
-    )) {
-      debugPrint('[X_HLS_MUX] direct mux ok bytes=${await outputFile.length()}');
-      return finish(outputFile.path);
-    }
-
-    debugPrint('[X_HLS_MUX] direct mux failed; remux tracks then retry mux');
-    final remuxVideo =
-        await _nativeRemuxSingleTrackMp4(input: videoFile, trackType: 'video');
-    if (remuxVideo != null) temps.add(remuxVideo);
-    final remuxAudio =
-        await _nativeRemuxSingleTrackMp4(input: audioFile, trackType: 'audio');
-    if (remuxAudio != null) temps.add(remuxAudio);
-
-    if (remuxVideo != null &&
-        remuxAudio != null &&
-        await _nativeMuxMp4Tracks(
-          videoPath: remuxVideo,
-          audioPath: remuxAudio,
-          outputPath: outputFile.path,
-        )) {
-      debugPrint(
-        '[X_HLS_MUX] remux+mux ok bytes=${await outputFile.length()}',
-      );
-      return finish(outputFile.path);
-    }
-
-    if (remuxVideo != null) {
-      debugPrint(
-        '[X_HLS_MUX] full mux unavailable; keep seekable video-only remux '
-        'bytes=${await File(remuxVideo).length()}',
-      );
-      temps.remove(remuxVideo);
       await _deleteTempMediaFiles(temps);
       try {
         if (await videoFile.exists()) await videoFile.delete();
@@ -34764,26 +34751,135 @@ class _BrowserPageState extends State<BrowserPage>
       try {
         if (await audioFile.exists()) await audioFile.delete();
       } catch (_) {}
-      return File(remuxVideo);
+      if (keepAside != null) {
+        try {
+          if (await keepAside.exists() && keepAside.path != path) {
+            await keepAside.delete();
+          }
+        } catch (_) {}
+      }
+      return file;
     }
 
-    // Remux 失败时仍入库已下完的视频轨，避免长视频进度满后被丢弃（严重浪费）。
-    // fMP4 拼接可能不可 seek / 无音轨，但优于整段作废并反复重下。
-    final concatBytes = await videoFile.length();
+    final videoBytes = await videoFile.length();
+    final audioBytes =
+        await audioFile.exists() ? await audioFile.length() : 0;
+
+    // Prefer FFmpeg lossless remux — MediaMuxer aborts on this X long AVC path.
+    if (await _nativeFfmpegRemuxCopy(
+      videoPath: videoFile.path,
+      audioPath: audioFile.path,
+      outputPath: outputFile.path,
+      videoOnly: false,
+    )) {
+      debugPrint(
+        '[X_HLS_MUX] ffmpeg A+V copy ok bytes=${await outputFile.length()}',
+      );
+      return finish(outputFile.path);
+    }
+
+    final videoOnlyOut = File('${outputFile.path}.ffmpeg.video.mp4');
+    temps.add(videoOnlyOut.path);
+    if (await _nativeFfmpegRemuxCopy(
+      videoPath: videoFile.path,
+      outputPath: videoOnlyOut.path,
+      videoOnly: true,
+    )) {
+      debugPrint(
+        '[X_HLS_MUX] ffmpeg video-only copy ok bytes=${await videoOnlyOut.length()} '
+        '(priority: complete+seekable video; audio best-effort)',
+      );
+      temps.remove(videoOnlyOut.path);
+      try {
+        if (await outputFile.exists()) await outputFile.delete();
+      } catch (_) {}
+      await videoOnlyOut.rename(outputFile.path);
+      return finish(outputFile.path);
+    }
+
+    // Short clips only: MediaMuxer path still crashes on ~450MB X long fMP4.
+    final allowMediaMuxer = videoBytes > 0 && videoBytes < 80 * 1024 * 1024;
+    if (allowMediaMuxer &&
+        await _nativeMuxMp4Tracks(
+          videoPath: videoFile.path,
+          audioPath: audioFile.path,
+          outputPath: outputFile.path,
+        )) {
+      debugPrint('[X_HLS_MUX] direct mux ok bytes=${await outputFile.length()}');
+      return finish(outputFile.path);
+    }
+
+    if (allowMediaMuxer) {
+      debugPrint('[X_HLS_MUX] direct mux failed; remux tracks then retry mux');
+      final remuxVideo =
+          await _nativeRemuxSingleTrackMp4(input: videoFile, trackType: 'video');
+      if (remuxVideo != null) temps.add(remuxVideo);
+      final remuxAudio =
+          await _nativeRemuxSingleTrackMp4(input: audioFile, trackType: 'audio');
+      if (remuxAudio != null) temps.add(remuxAudio);
+
+      if (remuxVideo != null &&
+          remuxAudio != null &&
+          await _nativeMuxMp4Tracks(
+            videoPath: remuxVideo,
+            audioPath: remuxAudio,
+            outputPath: outputFile.path,
+          )) {
+        debugPrint(
+          '[X_HLS_MUX] remux+mux ok bytes=${await outputFile.length()}',
+        );
+        return finish(outputFile.path);
+      }
+
+      if (remuxVideo != null) {
+        debugPrint(
+          '[X_HLS_MUX] A+V mux unavailable; keep seekable video-only remux '
+          'bytes=${await File(remuxVideo).length()}',
+        );
+        temps.remove(remuxVideo);
+        await _deleteTempMediaFiles(temps);
+        try {
+          if (await videoFile.exists()) await videoFile.delete();
+        } catch (_) {}
+        try {
+          if (await audioFile.exists()) await audioFile.delete();
+        } catch (_) {}
+        return File(remuxVideo);
+      }
+    } else {
+      debugPrint(
+        '[X_HLS_MUX] skip MediaMuxer remux for large fMP4 '
+        'videoBytes=$videoBytes (OEM MPEG4Writer crash risk)',
+      );
+    }
+
+    // Last resort: keep complete raw video track (avoid full re-download).
+    if (videoBytes > 5 * 1024 * 1024) {
+      try {
+        if (await outputFile.exists()) await outputFile.delete();
+      } catch (_) {}
+      final kept = await videoFile.copy(outputFile.path);
+      debugPrint(
+        '[X_HLS_MUX] remux unavailable; keep complete raw video track for library '
+        'bytes=$videoBytes audioBytes=$audioBytes '
+        '(priority: complete入库 first; seek/audio best-effort)',
+      );
+      await _deleteTempMediaFiles(temps);
+      try {
+        if (await videoFile.exists()) await videoFile.delete();
+      } catch (_) {}
+      try {
+        if (await audioFile.exists()) await audioFile.delete();
+      } catch (_) {}
+      return kept;
+    }
+
     debugPrint(
-      '[X_HLS_MUX] remux unavailable; keep fMP4 video concat for library '
-      'bytes=$concatBytes',
+      '[X_HLS_MUX] all mux/remux paths failed; refuse raw fMP4 concat '
+      'videoBytes=$videoBytes',
     );
     await _deleteTempMediaFiles(temps);
-    try {
-      if (await audioFile.exists()) await audioFile.delete();
-    } catch (_) {}
-    try {
-      if (await outputFile.exists()) await outputFile.delete();
-      return await videoFile.rename(outputFile.path);
-    } catch (_) {
-      return videoFile;
-    }
+    return null;
   }
 
   /// Single-track HLS fMP4 concat → seekable progressive MP4.
@@ -34795,6 +34891,28 @@ class _BrowserPageState extends State<BrowserPage>
     if (pathLower.contains('.x-audio.') || pathLower.endsWith('.x-audio.mp4')) {
       debugPrint(
         '[X_HLS_MUX] refuse video remux for audio artifact ${concatFile.path}',
+      );
+      return null;
+    }
+    final ffmpegOut = File('${concatFile.path}.ffmpeg.mp4');
+    if (await _nativeFfmpegRemuxCopy(
+      videoPath: concatFile.path,
+      outputPath: ffmpegOut.path,
+      videoOnly: true,
+    )) {
+      debugPrint(
+        '[X_HLS_MUX] single-track ffmpeg ok bytes=${await ffmpegOut.length()}',
+      );
+      try {
+        if (await concatFile.exists()) await concatFile.delete();
+      } catch (_) {}
+      return ffmpegOut;
+    }
+    final bytes = await concatFile.length();
+    if (bytes >= 80 * 1024 * 1024) {
+      debugPrint(
+        '[X_HLS_MUX] skip MediaMuxer single-track remux for large fMP4 '
+        'bytes=$bytes',
       );
       return null;
     }
@@ -34811,12 +34929,11 @@ class _BrowserPageState extends State<BrowserPage>
       } catch (_) {}
       return File(remuxed);
     }
-    // 与 master 路径一致：remux 失败也保留已合并分片，禁止删文件后整段重下。
     debugPrint(
-      '[X_HLS_MUX] single-track remux failed; keep fMP4 concat for library '
-      'bytes=${await concatFile.length()}',
+      '[X_HLS_MUX] single-track remux failed; refuse non-seekable fMP4 concat '
+      'bytes=$bytes',
     );
-    return concatFile;
+    return null;
   }
 
   Future<File?> _handleM3u8Download(

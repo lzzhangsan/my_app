@@ -107,6 +107,10 @@ dependencies {
     implementation "com.github.bumptech.glide:glide:4.15.1"
     annotationProcessor "com.github.bumptech.glide:compiler:4.15.1"
     implementation "androidx.webkit:webkit:1.9.0"  // Enable WebView features
+    // fMP4/CMAF → progressive MP4 via -c copy (MediaMuxer crashes on X long AVC).
+    implementation 'dev.ffmpegkit-maintained:ffmpeg-kit-min:6.0.3'
+    // Required by FFmpegKitConfig; missing → NoClassDefFoundError kills the process.
+    implementation 'com.arthenica:smart-exception-java:0.2.1'
 }
 
 // Flutter Gradle plugin already declared in the plugins block

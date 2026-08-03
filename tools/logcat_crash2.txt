@@ -1,0 +1,45 @@
+﻿--------- beginning of main
+08-03 18:05:34.910 30825 30889 I ClashMetaForAndroid: [UDP] mihomo --> 114.114.114.114:53 match GeoIP(cn) using DIRECT
+08-03 18:05:34.911 30825 30902 I ClashMetaForAndroid: [UDP] mihomo --> 223.5.5.5:53 match GeoIP(cn) using DIRECT
+08-03 18:05:34.911 30825 30902 I ClashMetaForAndroid: [UDP] mihomo --> 119.29.29.29:53 match GeoIP(cn) using DIRECT
+08-03 18:05:35.081 30825 15999 W ClashMetaForAndroid: [UDP] dial 寰柉浜猴紝鍚捐皝涓庡綊 (match IPCIDR/8.8.8.8/32) mihomo --> 8.8.8.8:53 error: new vless client error: context canceled
+08-03 18:05:39.914 30825 15999 W ClashMetaForAndroid: [TCP] dial DIRECT (match GeoIP/cn) 172.19.0.1:51714 --> apd-pcdnwxstat.teg.tencent-cloud.net:43861 error: connect failed: dial tcp 222.189.172.96:43861: i/o timeout
+08-03 18:05:39.914 30825 15999 W ClashMetaForAndroid: dial tcp 140.249.64.71:43861: i/o timeout
+08-03 18:05:39.914 30825 15999 W ClashMetaForAndroid: dial tcp 49.7.72.94:43861: i/o timeout
+08-03 18:05:44.603 30825 15999 I ClashMetaForAndroid: [TCP] 172.19.0.1:59258 --> apd-pcdnwxstat.teg.tencent-cloud.net:63861 match GeoIP(cn) using DIRECT
+08-03 18:05:45.596  6997  6997 I flutter : [DEBUG] [APP_HEARTBEAT] 2026-08-03T18:05:45.595708 路 搴旂敤杩愯涓?
+08-03 18:05:50.857  5667  5667 W [GT]HotPool#7: type=1400 audit(0.0:3560733): avc:  denied  { getattr } for  path="/sys/kernel/tracing/trace_marker" dev="tracefs" ino=8676 scontext=u:r:untrusted_app:s0:c79,c257,c512,c768 tcontext=u:object_r:debugfs_trace_marker:s0 tclass=file permissive=0 app=com.tencent.mm
+08-03 18:05:50.865  5667  5667 W [GT]HotPool#7: type=1400 audit(0.0:3560734): avc:  denied  { getattr } for  path="/dev/symphony-app-cmd" dev="tmpfs" ino=1173 scontext=u:r:untrusted_app:s0:c79,c257,c512,c768 tcontext=u:object_r:symphony_app_device:s0 tclass=chr_file permissive=0 app=com.tencent.mm
+08-03 18:05:50.873  5667  5667 W [GT]HotPool#7: type=1400 audit(0.0:3560736): avc:  denied  { getattr } for  path="/sys/kernel/tracing/trace_marker" dev="tracefs" ino=8676 scontext=u:r:untrusted_app:s0:c79,c257,c512,c768 tcontext=u:object_r:debugfs_trace_marker:s0 tclass=file permissive=0 app=com.tencent.mm
+08-03 18:05:51.077  5667  5667 W [GT]HotPool#7: type=1400 audit(0.0:3560737): avc:  denied  { getattr } for  path="/sys/kernel/tracing/trace_marker" dev="tracefs" ino=8676 scontext=u:r:untrusted_app:s0:c79,c257,c512,c768 tcontext=u:object_r:debugfs_trace_marker:s0 tclass=file permissive=0 app=com.tencent.mm
+08-03 18:05:53.429  6997  6997 I flutter : [HLS_ADAPT] host=video.twimg.com parallel=18 completed=true failures=0 speedMBps=7.10 best=19 next=19
+08-03 18:05:53.437  6997  6997 W binder:6997_7: type=1400 audit(0.0:3560738): avc:  denied  { ioctl } for  path="/proc/fas/render" dev="proc" ino=4026532164 ioctlcmd=0x6609 scontext=u:r:untrusted_app:s0:c150,c257,c512,c768 tcontext=u:object_r:proc_fas:s0 tclass=file permissive=0 app=com.example.change_copy2
+08-03 18:05:53.860  6997 10694 I X_HLS_MUX_NATIVE: ffmpeg begin videoOnly=false inBytes=450911565 audio=true out=/data/user/0/com.example.change_copy2/app_flutter/media/55b13ba6-6e57-494b-a194-95473a5cdb1a.mp4
+--------- beginning of crash
+08-03 18:05:53.866  6997 10694 E AndroidRuntime: FATAL EXCEPTION: Thread-8
+08-03 18:05:53.866  6997 10694 E AndroidRuntime: Process: com.example.change_copy2, PID: 6997
+08-03 18:05:53.866  6997 10694 E AndroidRuntime: java.lang.NoClassDefFoundError: Failed resolution of: Lcom/arthenica/smartexception/java/Exceptions;
+08-03 18:05:53.866  6997 10694 E AndroidRuntime: 	at com.arthenica.ffmpegkit.FFmpegKitConfig.<clinit>(FFmpegKitConfig.java:134)
+08-03 18:05:53.866  6997 10694 E AndroidRuntime: 	at com.arthenica.ffmpegkit.FFmpegSession.create(FFmpegSession.java:57)
+08-03 18:05:53.866  6997 10694 E AndroidRuntime: 	at com.arthenica.ffmpegkit.FFmpegKit.executeWithArguments(FFmpegKit.java:58)
+08-03 18:05:53.866  6997 10694 E AndroidRuntime: 	at com.example.change_copy2.MainActivity.ffmpegRemuxCopy(MainActivity.kt:1972)
+08-03 18:05:53.866  6997 10694 E AndroidRuntime: 	at com.example.change_copy2.MainActivity.configureFlutterEngine$lambda$17$lambda$13(MainActivity.kt:218)
+08-03 18:05:53.866  6997 10694 E AndroidRuntime: 	at com.example.change_copy2.MainActivity.$r8$lambda$bR3xlfmSdllLnOmbr3pFi8JREtg(Unknown Source:0)
+08-03 18:05:53.866  6997 10694 E AndroidRuntime: 	at com.example.change_copy2.MainActivity$$ExternalSyntheticLambda2.run(D8$$SyntheticClass:0)
+08-03 18:05:53.866  6997 10694 E AndroidRuntime: 	at java.lang.Thread.run(Thread.java:1149)
+08-03 18:05:53.866  6997 10694 E AndroidRuntime: Caused by: java.lang.ClassNotFoundException: Didn't find class "com.arthenica.smartexception.java.Exceptions" on path: DexPathList[[zip file "/data/app/~~-8UMFzHhJexY1oF7k5lrxA==/com.example.change_copy2-m5FurJPsDMX_aHSncOLTBA==/base.apk"],nativeLibraryDirectories=[/data/app/~~-8UMFzHhJexY1oF7k5lrxA==/com.example.change_copy2-m5FurJPsDMX_aHSncOLTBA==/lib/arm64, /data/app/~~-8UMFzHhJexY1oF7k5lrxA==/com.example.change_copy2-m5FurJPsDMX_aHSncOLTBA==/base.apk!/lib/arm64-v8a, /system/lib64, /system_ext/lib64]]
+08-03 18:05:53.866  6997 10694 E AndroidRuntime: 	at dalvik.system.BaseDexClassLoader.findClass(BaseDexClassLoader.java:259)
+08-03 18:05:53.866  6997 10694 E AndroidRuntime: 	at java.lang.ClassLoader.loadClass(ClassLoader.java:637)
+08-03 18:05:53.866  6997 10694 E AndroidRuntime: 	at java.lang.ClassLoader.loadClass(ClassLoader.java:573)
+08-03 18:05:53.866  6997 10694 E AndroidRuntime: 	... 8 more
+08-03 18:05:53.902  6997 10694 I Process : Sending signal. PID: 6997 SIG: 9
+08-03 18:05:54.178 30825 30895 I ClashMetaForAndroid: [TCP] 127.0.0.1:58558 --> abeacdataort-stsdk.vivo.com.cn:443 match DomainSuffix(cn) using DIRECT
+08-03 18:05:56.538 24704 24840 I mars::stn: [longlink_connect_monitor.cc:552, OnHeartbeatAlarmReceived]:longlink_progress on_heartbeat_alarm, time: 249171254, is_noop_timeout:false
+08-03 18:05:56.584 24704 31490 I mars::stn: [longlink_connect_monitor.cc:546, OnHeartbeatAlarmSet]:longlink_progress on_heartbeat_set, time: 249171300, time interval:210000
+08-03 18:05:56.591 24704 31490 I mars::stn: [longlink_connect_monitor.cc:546, OnHeartbeatAlarmSet]:longlink_progress on_heartbeat_set, time: 249171308, time interval:210000
+08-03 18:06:12.274 30825  6947 I ClashMetaForAndroid: [TCP] 127.0.0.1:51346 --> vcode-or.vivo.com.cn:443 match DomainSuffix(cn) using DIRECT
+08-03 18:06:34.962 29864 29916 I id.gms.unstable: Explicit concurrent copying GC freed 257KB AllocSpace bytes, 0(0B) LOS objects, 63% free, 3599KB(1868KB_16KB)/9743KB, 2, itvl 480.115s, cpu 168.502ms, paused 237us,73us total 176.159ms
+08-03 18:06:36.025 30825 30902 I ClashMetaForAndroid: [TCP] 172.19.0.1:59510 --> 101.226.144.240:80 match GeoIP(cn) using DIRECT
+08-03 18:06:44.819 10821 10821 E dumpsys : BBinder_init Processname  dumpsys  
+08-03 18:06:44.820 10821 10821 E dumpsys : BBinder_init hasGetProcessName  dumpsys
+08-03 18:06:44.820 10821 10821 W dumpsys : Thread Pool max thread count is 0. Cannot cache binder as linkToDeath cannot be implemented. serviceName: package

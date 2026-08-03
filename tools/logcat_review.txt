@@ -1,0 +1,17 @@
+﻿--------- beginning of main
+08-03 18:18:29.745 30825 30896 I ClashMetaForAndroid: [TCP] 172.19.0.1:51966 --> www.google.com:443 match DomainKeyword(google) using 寰柉浜猴紝鍚捐皝涓庡綊[馃嚟馃嚢HK-05[HKT]]
+08-03 18:18:29.765 30825 15999 W ClashMetaForAndroid: [TCP] dial DIRECT (match GeoIP/cn) 172.19.0.1:52464 --> apd-pcdnwxstat.teg.tencent-cloud.net:13861 error: connect failed: dial tcp 49.7.72.95:13861: i/o timeout
+08-03 18:18:29.765 30825 15999 W ClashMetaForAndroid: dial tcp 42.81.252.154:13861: i/o timeout
+08-03 18:18:29.765 30825 15999 W ClashMetaForAndroid: dial tcp 42.81.252.103:13861: i/o timeout
+08-03 18:18:39.690 30825 15999 W ClashMetaForAndroid: [TCP] dial DIRECT (match GeoIP/cn) 172.19.0.1:42848 --> apd-pcdnwxstat.teg.tencent-cloud.net:13861 error: connect failed: dial tcp 49.7.72.95:13861: i/o timeout
+08-03 18:18:39.690 30825 15999 W ClashMetaForAndroid: dial tcp 42.81.252.154:13861: i/o timeout
+08-03 18:18:39.690 30825 15999 W ClashMetaForAndroid: dial tcp 42.81.252.103:13861: i/o timeout
+08-03 18:18:39.866 30825 15999 I ClashMetaForAndroid: [TCP] 127.0.0.1:35366 --> onrt-stsdk.vivo.com.cn:443 match DomainSuffix(cn) using DIRECT
+08-03 18:18:50.412  5826  5950 I mars::stn: [longlink_connect_monitor.cc:552, OnHeartbeatAlarmReceived]:longlink_progress on_heartbeat_alarm, time: 249945129, is_noop_timeout:false
+08-03 18:18:50.471  5826 31630 I mars::stn: [longlink_connect_monitor.cc:546, OnHeartbeatAlarmSet]:longlink_progress on_heartbeat_set, time: 249945187, time interval:210000
+08-03 18:18:50.480  5826 31630 I mars::stn: [longlink_connect_monitor.cc:546, OnHeartbeatAlarmSet]:longlink_progress on_heartbeat_set, time: 249945196, time interval:210000
+08-03 18:19:04.239 28563 28563 I fmpo    : (REDACTED) Created gRPC endpoint for service %s
+08-03 18:19:06.627 30825  4866 I ClashMetaForAndroid: [TCP] 172.19.0.1:47932 --> 183.47.118.145:80 match GeoIP(cn) using DIRECT
+08-03 18:19:20.434 30825 30908 I ClashMetaForAndroid: [TCP] 127.0.0.1:42172 --> pbs.twimg.com:443 match DomainSuffix(twimg.com) using 寰柉浜猴紝鍚捐皝涓庡綊[馃嚟馃嚢HK-05[HKT]]
+08-03 18:19:22.234 30825 30954 I ClashMetaForAndroid: [TCP] 127.0.0.1:42178 --> vcode-od.vivo.com.cn:443 match DomainSuffix(cn) using DIRECT
+08-03 18:19:22.320 30825 15999 I ClashMetaForAndroid: [TCP] 172.19.0.1:47734 --> video.twimg.com:443 match DomainSuffix(twimg.com) using 寰柉浜猴紝鍚捐皝涓庡綊[馃嚟馃嚢HK-05[HKT]]

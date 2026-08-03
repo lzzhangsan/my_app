@@ -1,0 +1,14 @@
+﻿--------- beginning of main
+08-03 17:22:48.584  5826  5950 I mars::stn: [longlink_connect_monitor.cc:552, OnHeartbeatAlarmReceived]:longlink_progress on_heartbeat_alarm, time: 246583300, is_noop_timeout:false
+08-03 17:22:48.640  5826 31630 I mars::stn: [longlink_connect_monitor.cc:546, OnHeartbeatAlarmSet]:longlink_progress on_heartbeat_set, time: 246583356, time interval:210000
+08-03 17:22:48.647  5826 31630 I mars::stn: [longlink_connect_monitor.cc:546, OnHeartbeatAlarmSet]:longlink_progress on_heartbeat_set, time: 246583364, time interval:210000
+08-03 17:22:54.421 26150 26155 I .android.chrome: CollectorTransition concurrent copying GC freed 1668KB AllocSpace bytes, 0(0B) LOS objects, 29% free, 4806KB(1756KB_208KB)/6854KB, 2Bd, itvl 159.647s, cpu 117.265ms, paused 486us,103us total 126.684ms
+08-03 17:22:56.289 30825 30953 I ClashMetaForAndroid: [UDP] mihomo --> 223.5.5.5:53 match GeoIP(cn) using DIRECT
+08-03 17:22:56.294 30825 30953 I ClashMetaForAndroid: [UDP] mihomo --> 119.29.29.29:53 match GeoIP(cn) using DIRECT
+08-03 17:22:56.294 30825 30953 I ClashMetaForAndroid: [UDP] mihomo --> 119.29.29.29:53 match GeoIP(cn) using DIRECT
+08-03 17:22:56.294 30825 30953 I ClashMetaForAndroid: [UDP] mihomo --> 223.5.5.5:53 match GeoIP(cn) using DIRECT
+08-03 17:22:56.294 30825 30953 I ClashMetaForAndroid: [UDP] mihomo --> 114.114.114.114:53 match GeoIP(cn) using DIRECT
+08-03 17:22:56.294 30825 30953 I ClashMetaForAndroid: [UDP] mihomo --> 114.114.114.114:53 match GeoIP(cn) using DIRECT
+08-03 17:22:56.340 30825 30953 I ClashMetaForAndroid: [TCP] 127.0.0.1:39162 --> onrt-stsdk.vivo.com.cn:443 match DomainSuffix(cn) using DIRECT
+08-03 17:22:56.782 30825 30953 I ClashMetaForAndroid: [UDP] mihomo --> 8.8.8.8:53 match IPCIDR(8.8.8.8/32) using 寰柉浜猴紝鍚捐皝涓庡綊[馃嚟馃嚢HK-05[HKT]]
+08-03 17:22:59.700 30825 30908 I ClashMetaForAndroid: [TCP] 127.0.0.1:39176 --> vcode-od.vivo.com.cn:443 match DomainSuffix(cn) using DIRECT

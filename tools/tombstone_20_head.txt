@@ -1,0 +1,839 @@
+﻿Softversion: PD2352C_A_16.2.16.5.W10.V000L1
+Time: 2026-08-03 17:21:50
+*** *** *** *** *** *** *** *** *** *** *** *** *** *** *** ***
+Build fingerprint: 'vivo/PD2352/PD2352:16/BP2A.250605.031.A3/compiler260724113042:user/release-keys'
+Revision: '0'
+ABI: 'arm64'
+Timestamp: 2026-08-03 17:21:50.055932065+0800
+Process uptime: 98s
+Cmdline: com.example.change_copy2
+pid: 19966, tid: 21663, name: MPEG4Writer  >>> com.example.change_copy2 <<<
+uid: 10406
+tagged_addr_ctrl: 0000000000000001 (PR_TAGGED_ADDR_ENABLE)
+pac_enabled_keys: 000000000000000f (PR_PAC_APIAKEY, PR_PAC_APIBKEY, PR_PAC_APDAKEY, PR_PAC_APDBKEY)
+signal 6 (SIGABRT), code -1 (SI_QUEUE), fault addr --------
+Abort message: 'FORTIFY: write: count 18446744073709551615 > SSIZE_MAX'
+    x0  0000000000000000  x1  000000000000549f  x2  0000000000000006  x3  0000007173a27e80
+    x4  362f333336353333  x5  362f333336353333  x6  362f333336353333  x7  7f7f7f7f7f7f7f7f
+    x8  00000000000000f0  x9  e39f32f2ac1346da  x10 000000ff00000020  x11 0000000000000000
+    x12 000000006a705dad  x13 000000007fffffff  x14 0000000004a87596  x15 0000044e12a6a7e0
+    x16 00000074b2574e48  x17 00000074b255a740  x18 0000007114044000  x19 0000000000004dfe
+    x20 000000000000549f  x21 00000000ffffffff  x22 00000000000001b5  x23 00009e5b27b32379
+    x24 0000007173a28740  x25 b40000740a495c90  x26 0000007173a28740  x27 00000074d81f0d30
+    x28 b40000740a495c90  x29 0000007173a27f00
+    lr  00000074b24f60ac  sp  0000007173a27e80  pc  00000074b24f60d0  pst 0000000000001000
+
+12 total frames
+backtrace:
+      #00 pc 00000000000b90d0  /apex/com.android.runtime/lib64/bionic/libc.so (abort+160) (BuildId: dd5d3a3e5f8c40ee6b71f5a30962a8b9)
+      #01 pc 00000000000bcaac  /apex/com.android.runtime/lib64/bionic/libc.so (__fortify_fatal(char const*, ...)+132) (BuildId: dd5d3a3e5f8c40ee6b71f5a30962a8b9)
+      #02 pc 00000000000f6a7c  /apex/com.android.runtime/lib64/bionic/libc.so (__write_chk+68) (BuildId: dd5d3a3e5f8c40ee6b71f5a30962a8b9)
+      #03 pc 000000000015690c  /system/lib64/libstagefright.so (android::MPEG4Writer::writeOrPostError(int, void const*, unsigned long)+88) (BuildId: a35b3b7d3e6c6cf3a0ed5262e2c376e3)
+      #04 pc 00000000001566a0  /system/lib64/libstagefright.so (android::MPEG4Writer::addLengthPrefixedSample_l(android::MediaBuffer*)+356) (BuildId: a35b3b7d3e6c6cf3a0ed5262e2c376e3)
+      #05 pc 0000000000172644  /system/lib64/libstagefright.so (android::MPEG4Writer::addMultipleLengthPrefixedSamples_l(android::MediaBuffer*)+296) (BuildId: a35b3b7d3e6c6cf3a0ed5262e2c376e3)
+      #06 pc 000000000016e724  /system/lib64/libstagefright.so (android::MPEG4Writer::addSample_l(android::MediaBuffer*, bool, unsigned int, unsigned long*)+412) (BuildId: a35b3b7d3e6c6cf3a0ed5262e2c376e3)
+      #07 pc 000000000016dffc  /system/lib64/libstagefright.so (android::MPEG4Writer::writeChunkToFile(android::MPEG4Writer::Chunk*)+444) (BuildId: a35b3b7d3e6c6cf3a0ed5262e2c376e3)
+      #08 pc 000000000016d8b8  /system/lib64/libstagefright.so (android::MPEG4Writer::threadFunc()+512) (BuildId: a35b3b7d3e6c6cf3a0ed5262e2c376e3)
+      #09 pc 000000000016d1f8  /system/lib64/libstagefright.so (android::MPEG4Writer::ThreadWrapper(void*) (.cfi)+96) (BuildId: a35b3b7d3e6c6cf3a0ed5262e2c376e3)
+      #10 pc 00000000000c9df0  /apex/com.android.runtime/lib64/bionic/libc.so (__pthread_start(void*)+184) (BuildId: dd5d3a3e5f8c40ee6b71f5a30962a8b9)
+      #11 pc 00000000000bc4bc  /apex/com.android.runtime/lib64/bionic/libc.so (__start_thread+68) (BuildId: dd5d3a3e5f8c40ee6b71f5a30962a8b9)
+
+memory near x3 ([anon:stack_and_tls:21663]):
+    0000007173a27e60 00000000000001b5 b40000740a495c90  .........\I.t...
+    0000007173a27e70 ffffffffffffffff b4000073aa46daf0  ..........F.s...
+    0000007173a27e80 0000000000000000 00000000ffffffff  ................
+    0000007173a27e90 000028a600004dfe 0000000000000000  .M...(..........
+    0000007173a27ea0 0000000000000000 0000000000000000  ................
+    0000007173a27eb0 0000000000000000 0000000000000000  ................
+    0000007173a27ec0 0000000000000000 0000000000000000  ................
+    0000007173a27ed0 0000000000000000 0000000000000000  ................
+    0000007173a27ee0 0000000000000000 0000000000000000  ................
+    0000007173a27ef0 0000000000000000 0000000000000000  ................
+    0000007173a27f00 0000007173a28030 000da3f4b24f9ab0  0..sq.....O.....
+    0000007173a27f10 b40000740a495c90 0000000000000020  .\I.t... .......
+    0000007173a27f20 ffffffffffffffff b4000073aa46daf0  ..........F.s...
+    0000007173a27f30 0000000000000000 0000000000000000  ................
+    0000007173a27f40 0000fad80000f186 0000e7ac0000eb36  ........6.......
+    0000007173a27f50 0000bf880000f1e6 0000ec8a0000fd0a  ................
+
+memory near x14 (/system/framework/boot-framework.vdex):
+    0000000004a87570 0060aed300000000 005f59e5e372c000  ......`...r..Y_.
+    0000000004a87580 00607a7571b94000 005e2a0e53234000  .@.quz`..@#S.*^.
+    0000000004a87590 00602e8d706b8001 0000000082c00000  ..kp..`.........
+    0000000004a875a0 0000000000000000 0061f7e700000000  ..............a.
+    0000000004a875b0 00634c90d4ed0000 0064058df6658001  .....Lc...e...d.
+    0000000004a875c0 00000000671d4000 0000000000000000  .@.g............
+    0000000004a875d0 0000000000000000 0000000000000000  ................
+    0000000004a875e0 0000000000000000 0000000000000000  ................
+    0000000004a875f0 005dd12900000000 00000000700d8000  ....).]....p....
+    0000000004a87600 005efb2500000000 00000000a1518000  ....%.^...Q.....
+    0000000004a87610 00635f1d00000000 0000000006790000  ....._c...y.....
+    0000000004a87620 0000000000000000 0060807e00000000  ............~.`.
+    0000000004a87630 00602e1e332c8000 0061bf40d2bf8001  ..,3..`.....@.a.
+    0000000004a87640 00614bb2a4b68000 00000000a42f4000  .....Ka..@/.....
+    0000000004a87650 0000000000000000 0000000000000000  ................
+    0000000004a87660 005fdc6f00000000 0000000092420000  ....o._...B.....
+
+memory near x16 (/apex/com.android.runtime/lib64/bionic/libc.so):
+    00000074b2574e20 00000074b25067f4 00000074b250a0d0  .gP.t.....P.t...
+    00000074b2574e30 00000074b2506e34 00000074b2513120  4nP.t... 1Q.t...
+    00000074b2574e40 00000074b25090e4 00000074b255a740  ..P.t...@.U.t...
+    00000074b2574e50 00000074b251d4d0 00000074b251cdc0  ..Q.t.....Q.t...
+    00000074b2574e60 0000000000000000 00000074b24f07c0  ..........O.t...
+    00000074b2574e70 00000074b250e36c 00000074b255c080  l.P.t.....U.t...
+    00000074b2574e80 00000074b255b440 00000074b255b500  @.U.t.....U.t...
+    00000074b2574e90 00000074b25131f0 00000074b250b7cc  .1Q.t.....P.t...
+    00000074b2574ea0 00000074b250b6f0 00000074b24fdae0  ..P.t.....O.t...
+    00000074b2574eb0 00000074b2532fd4 00000074b2533a38  ./S.t...8:S.t...
+    00000074b2574ec0 00000074b24f6348 00000074b2559bc0  HcO.t.....U.t...
+    00000074b2574ed0 00000074b2519bd0 00000074b2508a8c  ..Q.t.....P.t...
+    00000074b2574ee0 00000074b250b818 00000074b2507f74  ..P.t...t.P.t...
+    00000074b2574ef0 00000074b2507fd4 00000074b24fda78  ..P.t...x.O.t...
+    00000074b2574f00 00000074b25081d0 00000074b2509f58  ..P.t...X.P.t...
+    00000074b2574f10 00000074b24f0380 00000074b255d300  ..O.t.....U.t...
+
+memory near x17 (/apex/com.android.runtime/lib64/bionic/libc.so):
+    00000074b255a720 0000000000000000 0000000000000000  ................
+    00000074b255a730 0000000000000000 0000000000000000  ................
+    00000074b255a740 d28015c8d503245f b140041fd4000001  _$............@.
+    00000074b255a750 54fffc08da809400 d503201fd65f03c0  .......T.._.. ..
+    00000074b255a760 d503201fd503201f d503201fd503201f  . ... ... ... ..
+    00000074b255a770 d503201fd503201f d503201fd503201f  . ... ... ... ..
+    00000074b255a780 d2801608d503245f b140041fd4000001  _$............@.
+    00000074b255a790 54fffa08da809400 d503201fd65f03c0  .......T.._.. ..
+    00000074b255a7a0 d503201fd503201f d503201fd503201f  . ... ... ... ..
+    00000074b255a7b0 d503201fd503201f d503201fd503201f  . ... ... ... ..
+    00000074b255a7c0 d28015e8d503245f b140041fd4000001  _$............@.
+    00000074b255a7d0 54fff808da809400 d503201fd65f03c0  .......T.._.. ..
+    00000074b255a7e0 d503201fd503201f d503201fd503201f  . ... ... ... ..
+    00000074b255a7f0 d503201fd503201f d503201fd503201f  . ... ... ... ..
+    00000074b255a800 d2801628d503245f b140041fd4000001  _$..(.........@.
+    00000074b255a810 54fff608da809400 d503201fd65f03c0  .......T.._.. ..
+
+memory near x18:
+    0000007114044000 0000000000000000 0000000000000000  ................
+    0000007114044010 0000000000000000 0000000000000000  ................
+    0000007114044020 0000000000000000 0000000000000000  ................
+    0000007114044030 0000000000000000 0000000000000000  ................
+    0000007114044040 0000000000000000 0000000000000000  ................
+    0000007114044050 0000000000000000 0000000000000000  ................
+    0000007114044060 0000000000000000 0000000000000000  ................
+    0000007114044070 0000000000000000 0000000000000000  ................
+    0000007114044080 0000000000000000 0000000000000000  ................
+    0000007114044090 0000000000000000 0000000000000000  ................
+    00000071140440a0 0000000000000000 0000000000000000  ................
+    00000071140440b0 0000000000000000 0000000000000000  ................
+    00000071140440c0 0000000000000000 0000000000000000  ................
+    00000071140440d0 0000000000000000 0000000000000000  ................
+    00000071140440e0 0000000000000000 0000000000000000  ................
+    00000071140440f0 0000000000000000 0000000000000000  ................
+
+memory near x24 ([anon:stack_and_tls:21663]):
+    0000007173a28720 0000000000000000 0000000000000000  ................
+    0000007173a28730 0000000000000000 0000007173a28780  ...........sq...
+    0000007173a28740 00000074b2469068 0000007173a283c0  h.F.t......sq...
+    0000007173a28750 0000000000000000 0000000000000000  ................
+    0000007173a28760 0000000000000000 e39f32f2ac1346da  .........F...2..
+    0000007173a28770 00000074b257cc00 0000000000000000  ..W.t...........
+    0000007173a28780 0000000000000000 0000000000000000  ................
+    0000007173a28790 0000000000000000 0000000000000000  ................
+    0000007173a287a0 0000000000000000 0000000000000000  ................
+    0000007173a287b0 0000000000000000 0000000000000000  ................
+    0000007173a287c0 0000000000000000 0000000000000000  ................
+    0000007173a287d0 0000000000000000 0000000000000000  ................
+    0000007173a287e0 0000000000000000 0000000000000000  ................
+    0000007173a287f0 0000000000000000 0000000000000000  ................
+    0000007173a28800 0000000000000000 0000000000000000  ................
+    0000007173a28810 0000000000000000 0000000000000000  ................
+
+memory near x25 ([anon:scudo:primary]):
+    000000740a495c70 0000000000000000 0000000000000000  ................
+    000000740a495c80 e72300000013a10c 0000000000000000  ......#.........
+    000000740a495c90 6e429f0136010000 34632d0f0f00ff49  ...6..BnI....-c4
+    000000740a495ca0 06e21400e09e3bc9 7829a752088c964b  .;......K...R.)x
+    000000740a495cb0 b4fdde6013b1a590 3476c86cd58cba1e  ....`.......l.v4
+    000000740a495cc0 87506746f26bb7c7 7d2c67ffd7c99bfb  ..k.FgP......g,}
+    000000740a495cd0 d44fb62cb16e3020 f1df9ee504e447f3   0n.,.O..G......
+    000000740a495ce0 686c95043d15810b b3200844d762d13f  ...=..lh?.b.D. .
+    000000740a495cf0 24235f2716e73a31 4dc7451541cfa576  1:..'_#$v..A.E.M
+    000000740a495d00 aae2efa6ffcddba0 2780ca9f6009e92a  ........*..`...'
+    000000740a495d10 7c0ecb656acddac6 e1501bbe604ed2e7  ...je..|..N`..P.
+    000000740a495d20 2efa8747a0906cb9 b7e7768a074f8413  .l..G.....O..v..
+    000000740a495d30 32985359e99ac500 cd90e0c79bd07a4b  ....YS.2Kz......
+    000000740a495d40 da25d022c9cb2ad4 7f5624b78326a1f5  .*..".%...&..$V.
+    000000740a495d50 65c72f3b49fb3965 8da334cfed9ed5ac  e9.I;/.e.....4..
+    000000740a495d60 28abf6a58503148b c45717e27931147f  .......(..1y..W.
+
+memory near x26 ([anon:stack_and_tls:21663]):
+    0000007173a28720 0000000000000000 0000000000000000  ................
+    0000007173a28730 0000000000000000 0000007173a28780  ...........sq...
+    0000007173a28740 00000074b2469068 0000007173a283c0  h.F.t......sq...
+    0000007173a28750 0000000000000000 0000000000000000  ................
+    0000007173a28760 0000000000000000 e39f32f2ac1346da  .........F...2..
+    0000007173a28770 00000074b257cc00 0000000000000000  ..W.t...........
+    0000007173a28780 0000000000000000 0000000000000000  ................
+    0000007173a28790 0000000000000000 0000000000000000  ................
+    0000007173a287a0 0000000000000000 0000000000000000  ................
+    0000007173a287b0 0000000000000000 0000000000000000  ................
+    0000007173a287c0 0000000000000000 0000000000000000  ................
+    0000007173a287d0 0000000000000000 0000000000000000  ................
+    0000007173a287e0 0000000000000000 0000000000000000  ................
+    0000007173a287f0 0000000000000000 0000000000000000  ................
+    0000007173a28800 0000000000000000 0000000000000000  ................
+    0000007173a28810 0000000000000000 0000000000000000  ................
+
+memory near x27 (/system/lib64/libstagefright.so):
+    00000074d81f0d10 00000074d802ba68 0000000000000000  h...t...........
+    00000074d81f0d20 0000000000000000 0000000000000000  ................
+    00000074d81f0d30 00000074d80d667c 00000074d80ae028  |f..t...(...t...
+    00000074d81f0d40 00000074de5f2418 00000074de5f2420  .$_.t... $_.t...
+    00000074d81f0d50 00000074de5f2428 00000074de5f2434  ($_.t...4$_.t...
+    00000074d81f0d60 00000074d802b9e4 00000074d80ae058  ....t...X...t...
+    00000074d81f0d70 00000074d80ae638 00000074d80ae714  8...t.......t...
+    00000074d81f0d80 00000074d80af160 00000074d80af1c4  `...t.......t...
+    00000074d81f0d90 00000074d80af1f8 00000074d802ba24  ....t...$...t...
+    00000074d81f0da0 00000074d802ba30 00000074d802ba3c  0...t...<...t...
+    00000074d81f0db0 00000074d80af2c4 00000074d80af494  ....t.......t...
+    00000074d81f0dc0 00000074d80af4a0 00000074d80af4ac  ....t.......t...
+    00000074d81f0dd0 00000074d802ba54 00000074d802ba54  T...t...T...t...
+    00000074d81f0de0 00000074d802ba54 00000074d802ba48  T...t...H...t...
+    00000074d81f0df0 00000074d802ba68 00000074d80af53c  h...t...<...t...
+    00000074d81f0e00 0000000000000000 0000000000000000  ................
+
+memory near x28 ([anon:scudo:primary]):
+    000000740a495c70 0000000000000000 0000000000000000  ................
+    000000740a495c80 e72300000013a10c 0000000000000000  ......#.........
+    000000740a495c90 6e429f0136010000 34632d0f0f00ff49  ...6..BnI....-c4
+    000000740a495ca0 06e21400e09e3bc9 7829a752088c964b  .;......K...R.)x
+    000000740a495cb0 b4fdde6013b1a590 3476c86cd58cba1e  ....`.......l.v4
+    000000740a495cc0 87506746f26bb7c7 7d2c67ffd7c99bfb  ..k.FgP......g,}
+    000000740a495cd0 d44fb62cb16e3020 f1df9ee504e447f3   0n.,.O..G......
+    000000740a495ce0 686c95043d15810b b3200844d762d13f  ...=..lh?.b.D. .
+    000000740a495cf0 24235f2716e73a31 4dc7451541cfa576  1:..'_#$v..A.E.M
+    000000740a495d00 aae2efa6ffcddba0 2780ca9f6009e92a  ........*..`...'
+    000000740a495d10 7c0ecb656acddac6 e1501bbe604ed2e7  ...je..|..N`..P.
+    000000740a495d20 2efa8747a0906cb9 b7e7768a074f8413  .l..G.....O..v..
+    000000740a495d30 32985359e99ac500 cd90e0c79bd07a4b  ....YS.2Kz......
+    000000740a495d40 da25d022c9cb2ad4 7f5624b78326a1f5  .*..".%...&..$V.
+    000000740a495d50 65c72f3b49fb3965 8da334cfed9ed5ac  e9.I;/.e.....4..
+    000000740a495d60 28abf6a58503148b c45717e27931147f  .......(..1y..W.
+
+memory near x29 ([anon:stack_and_tls:21663]):
+    0000007173a27ee0 0000000000000000 0000000000000000  ................
+    0000007173a27ef0 0000000000000000 0000000000000000  ................
+    0000007173a27f00 0000007173a28030 000da3f4b24f9ab0  0..sq.....O.....
+    0000007173a27f10 b40000740a495c90 0000000000000020  .\I.t... .......
+    0000007173a27f20 ffffffffffffffff b4000073aa46daf0  ..........F.s...
+    0000007173a27f30 0000000000000000 0000000000000000  ................
+    0000007173a27f40 0000fad80000f186 0000e7ac0000eb36  ........6.......
+    0000007173a27f50 0000bf880000f1e6 0000ec8a0000fd0a  ................
+    0000007173a27f60 0000ed46000090c2 000038700000fccc  ....F.......p8..
+    0000007173a27f70 8060180000000000 8060180680601806  ......`...`...`.
+    0000007173a27f80 0000000000000000 0000000000000000  ................
+    0000007173a27f90 0000000000000000 0000000000000000  ................
+    0000007173a27fa0 8060180680601806 8060180680601806  ..`...`...`...`.
+    0000007173a27fb0 000000000000001a 00000074b245d410  ..........E.t...
+    0000007173a27fc0 00000074b245c0cf ffffffffffffffff  ..E.t...........
+    0000007173a27fd0 00ffffffffffffff 0000000004a87596  .........u......
+
+memory near lr (/apex/com.android.runtime/lib64/bionic/libc.so):
+    00000074b24f6080 6f00e4009401dcac aa0003f412800015  .......o........
+    00000074b24f6090 ad0103e0ad0003e0 ad0303e0ad0203e0  ................
+    00000074b24f60a0 b90013f3b9000bf5 93407e689401dc9a  ............h~@.
+    00000074b24f60b0 93407e81b90017e0 910003e3f9000fff  .....~@.........
+    00000074b24f60c0 aa0803e0528000c2 d400000152801e08  ...R.......R....
+    00000074b24f60d0 528000c0aa1f03e1 528015809401dc52  .......RR......R
+    00000074b24f60e0 aa0003f39401dc94 9401dc9152801640  ........@..R....
+    00000074b24f60f0 aa0003f46f00e400 ad0103e0ad0003e0  ...o............
+    00000074b24f6100 ad0303e0ad0203e0 b90013f3b9000bf5  ................
+    00000074b24f6110 93407e689401dc80 93407e81b90017e0  ....h~@......~@.
+    00000074b24f6120 910003e3f9000fff aa0803e0528000c2  ...........R....
+    00000074b24f6130 d400000152801e08 9401dd8d52800fe0  ...R.......R....
+    00000074b24f6140 2a1f03e3d503245f d503245f1401dd5e  _$.....*^..._$..
+    00000074b24f6150 aa0003e12a0103e2 2a1f03e312800c60  ...*....`......*
+    00000074b24f6160 d503233f1401dd88 f9000bf9a9bb7bfd  ....?#...{......
+    00000074b24f6170 a90357f6a9025ff8 910003fda9044ff4  ._...W...O......
+
+memory near sp ([anon:stack_and_tls:21663]):
+    0000007173a27e60 00000000000001b5 b40000740a495c90  .........\I.t...
+    0000007173a27e70 ffffffffffffffff b4000073aa46daf0  ..........F.s...
+    0000007173a27e80 0000000000000000 00000000ffffffff  ................
+    0000007173a27e90 000028a600004dfe 0000000000000000  .M...(..........
+    0000007173a27ea0 0000000000000000 0000000000000000  ................
+    0000007173a27eb0 0000000000000000 0000000000000000  ................
+    0000007173a27ec0 0000000000000000 0000000000000000  ................
+    0000007173a27ed0 0000000000000000 0000000000000000  ................
+    0000007173a27ee0 0000000000000000 0000000000000000  ................
+    0000007173a27ef0 0000000000000000 0000000000000000  ................
+    0000007173a27f00 0000007173a28030 000da3f4b24f9ab0  0..sq.....O.....
+    0000007173a27f10 b40000740a495c90 0000000000000020  .\I.t... .......
+    0000007173a27f20 ffffffffffffffff b4000073aa46daf0  ..........F.s...
+    0000007173a27f30 0000000000000000 0000000000000000  ................
+    0000007173a27f40 0000fad80000f186 0000e7ac0000eb36  ........6.......
+    0000007173a27f50 0000bf880000f1e6 0000ec8a0000fd0a  ................
+
+memory near pc (/apex/com.android.runtime/lib64/bionic/libc.so):
+    00000074b24f60b0 93407e81b90017e0 910003e3f9000fff  .....~@.........
+    00000074b24f60c0 aa0803e0528000c2 d400000152801e08  ...R.......R....
+    00000074b24f60d0 528000c0aa1f03e1 528015809401dc52  .......RR......R
+    00000074b24f60e0 aa0003f39401dc94 9401dc9152801640  ........@..R....
+    00000074b24f60f0 aa0003f46f00e400 ad0103e0ad0003e0  ...o............
+    00000074b24f6100 ad0303e0ad0203e0 b90013f3b9000bf5  ................
+    00000074b24f6110 93407e689401dc80 93407e81b90017e0  ....h~@......~@.
+    00000074b24f6120 910003e3f9000fff aa0803e0528000c2  ...........R....
+    00000074b24f6130 d400000152801e08 9401dd8d52800fe0  ...R.......R....
+    00000074b24f6140 2a1f03e3d503245f d503245f1401dd5e  _$.....*^..._$..
+    00000074b24f6150 aa0003e12a0103e2 2a1f03e312800c60  ...*....`......*
+    00000074b24f6160 d503233f1401dd88 f9000bf9a9bb7bfd  ....?#...{......
+    00000074b24f6170 a90357f6a9025ff8 910003fda9044ff4  ._...W...O......
+    00000074b24f6180 91004108b0001508 c8dffd18aa0303f3  .....A..........
+    00000074b24f6190 aa0103f5aa0203f4 b4000218aa0003f6  ................
+    00000074b24f61a0 910042f7b0001517 aa1803e0f9401301  .....B....@.....
+
+memory map (4548 entries):
+    00000000'01de4000-00000000'020f3fff rw-         0    310000  [anon:dalvik-/system/framework/boot.art]
+    00000000'020f4000-00000000'02147fff rw-         0     54000  [anon:dalvik-/system/framework/boot-core-libart.art]
+    00000000'02148000-00000000'02173fff rw-         0     2c000  [anon:dalvik-/system/framework/boot-okhttp.art]
+    00000000'02174000-00000000'021c7fff rw-         0     54000  [anon:dalvik-/system/framework/boot-bouncycastle.art]
+    00000000'021c8000-00000000'021e7fff rw-         0     20000  [anon:dalvik-/system/framework/boot-apache-xml.art]
+    00000000'021e8000-00000000'0329ffff rw-         0   10b8000  [anon:dalvik-/system/framework/boot-framework.art]
+    00000000'032a0000-00000000'032a3fff rw-         0      4000  [anon:dalvik-/system/framework/boot-framework-graphics.art]
+    00000000'032a4000-00000000'032c7fff rw-         0     24000  [anon:dalvik-/system/framework/boot-framework-location.art]
+    00000000'032c8000-00000000'032f7fff rw-         0     30000  [anon:dalvik-/system/framework/boot-ext.art]
+    00000000'032f8000-00000000'0346ffff rw-         0    178000  [anon:dalvik-/system/framework/boot-telephony-common.art]
+    00000000'03470000-00000000'03517fff rw-         0     a8000  [anon:dalvik-/system/framework/boot-voip-common.art]
+    00000000'03518000-00000000'0355bfff rw-         0     44000  [anon:dalvik-/system/framework/boot-ims-common.art]
+    00000000'0355c000-00000000'0355ffff rw-         0      4000  [anon:dalvik-/system/framework/boot-framework-ondeviceintelligence-platform.art]
+    00000000'03560000-00000000'0358ffff rw-         0     30000  [anon:dalvik-/system/framework/boot-framework-nfc.art]
+    00000000'03590000-00000000'03593fff rw-         0      4000  [anon:dalvik-/system/framework/boot-tcmiface.art]
+    00000000'03594000-00000000'03597fff rw-         0      4000  [anon:dalvik-/system/framework/boot-telephony-ext.art]
+    00000000'03598000-00000000'0359bfff rw-         0      4000  [anon:dalvik-/system/framework/boot-qcom.fmradio.art]
+    00000000'0359c000-00000000'0359ffff rw-         0      4000  [anon:dalvik-/system/framework/boot-QPerformance.art]
+    00000000'035a0000-00000000'035a3fff rw-         0      4000  [anon:dalvik-/system/framework/boot-UxPerformance.art]
+    00000000'035a4000-00000000'035a7fff rw-         0      4000  [anon:dalvik-/system/framework/boot-WfdCommon.art]
+    00000000'035a8000-00000000'036a3fff rw-         0     fc000  [anon:dalvik-/system/framework/boot-vivo-framework.art]
+    00000000'036a4000-00000000'036f3fff rw-         0     50000  [anon:dalvik-/system/framework/boot-vivo-media.art]
+    00000000'036f4000-00000000'036f7fff rw-         0      4000  [anon:dalvik-/system/framework/boot-framework-adapter.art]
+    00000000'036f8000-00000000'036fbfff rw-         0      4000  [anon:dalvik-/system/framework/boot-soc-framework.art]
+    00000000'036fc000-00000000'036fffff rw-         0      4000  [anon:dalvik-/system/framework/boot-vivo-vgcclient.art]
+    00000000'03700000-00000000'03703fff rw-         0      4000  [anon:dalvik-/system/framework/boot-vivo-emmclient.art]
+    00000000'03704000-00000000'0370bfff rw-         0      8000  [anon:dalvik-/system/framework/boot-vivo-coworkclient.art]
+    00000000'0370c000-00000000'03893fff rw-         0    188000  [anon:dalvik-/system/framework/boot-core-icu4j.art]
+    00000000'03894000-00000000'03943fff r--         0     b0000  /system/framework/arm64/boot.oat (BuildId: 7ce52dfd19708611b48ff745dd70444f4b340d09)
+    00000000'03944000-00000000'03c1cfff r-x     b0000    2d9000  /system/framework/arm64/boot.oat (BuildId: 7ce52dfd19708611b48ff745dd70444f4b340d09)
+    00000000'03c1d000-00000000'03c1ffff ---         0      3000  [anon:dalvik-Boot image reservation]
+    00000000'03c20000-00000000'03c20fff rw-         0      1000  [anon:.bss]
+    00000000'03c21000-00000000'03c23fff ---         0      3000  [anon:dalvik-Boot image reservation]
+    00000000'03c24000-00000000'03c3ffff rw-         0     1c000  /system/framework/boot.vdex
+    00000000'03c40000-00000000'03c53fff r--         0     14000  /system/framework/arm64/boot-core-libart.oat (BuildId: 965625c7b9e2d4d17190c27e0cae0f7aae895657)
+    00000000'03c54000-00000000'03ca1fff r-x     14000     4e000  /system/framework/arm64/boot-core-libart.oat (BuildId: 965625c7b9e2d4d17190c27e0cae0f7aae895657)
+    00000000'03ca2000-00000000'03ca3fff ---         0      2000  [anon:dalvik-Boot image reservation]
+    00000000'03ca4000-00000000'03ca7fff rw-         0      4000  /system/framework/boot-core-libart.vdex
+    00000000'03ca8000-00000000'03cb7fff r--         0     10000  /system/framework/arm64/boot-okhttp.oat (BuildId: fc2070c8e8b8a44b54b8f29d9cf931967c4a2d1f)
+    00000000'03cb8000-00000000'03cebfff r-x     10000     34000  /system/framework/arm64/boot-okhttp.oat (BuildId: fc2070c8e8b8a44b54b8f29d9cf931967c4a2d1f)
+    00000000'03cec000-00000000'03cecfff rw-         0      1000  [anon:.bss]
+    00000000'03ced000-00000000'03ceffff ---         0      3000  [anon:dalvik-Boot image reservation]
+    00000000'03cf0000-00000000'03cf1fff rw-         0      2000  /system/framework/boot-okhttp.vdex
+    00000000'03cf2000-00000000'03cf3fff ---         0      2000  [anon:dalvik-Boot image reservation]
+    00000000'03cf4000-00000000'03cfbfff r--         0      8000  /system/framework/arm64/boot-bouncycastle.oat (BuildId: f08335b75092f71e7018c6caf3b5df29020a9e96)
+    00000000'03cfc000-00000000'03d17fff r-x      8000     1c000  /system/framework/arm64/boot-bouncycastle.oat (BuildId: f08335b75092f71e7018c6caf3b5df29020a9e96)
+    00000000'03d18000-00000000'03d1dfff rw-         0      6000  /system/framework/boot-bouncycastle.vdex
+    00000000'03d1e000-00000000'03d1ffff ---         0      2000  [anon:dalvik-Boot image reservation]
+    00000000'03d20000-00000000'03d27fff r--         0      8000  /system/framework/arm64/boot-apache-xml.oat (BuildId: 37206558df4ff49eb8b0dde55ddcd52a388515a9)
+    00000000'03d28000-00000000'03d3ffff r-x      8000     18000  /system/framework/arm64/boot-apache-xml.oat (BuildId: 37206558df4ff49eb8b0dde55ddcd52a388515a9)
+    00000000'03d40000-00000000'03d44fff rw-         0      5000  /system/framework/boot-apache-xml.vdex
+    00000000'03d45000-00000000'03d47fff ---         0      3000  [anon:dalvik-Boot image reservation]
+    00000000'03d48000-00000000'03fe3fff r--         0    29c000  /system/framework/arm64/boot-framework.oat (BuildId: 934b7c28dde95207ac968a48eee1ad307c9b8af1)
+    00000000'03fe4000-00000000'049f4fff r-x    29c000    a11000  /system/framework/arm64/boot-framework.oat (BuildId: 934b7c28dde95207ac968a48eee1ad307c9b8af1)
+    00000000'049f5000-00000000'049f7fff ---         0      3000  [anon:dalvik-Boot image reservation]
+    00000000'049f8000-00000000'049f8fff rw-         0      1000  [anon:.bss]
+    00000000'049f9000-00000000'049fbfff ---         0      3000  [anon:dalvik-Boot image reservation]
+    00000000'049fc000-00000000'04ab4fff rw-         0     b9000  /system/framework/boot-framework.vdex
+    00000000'04ab5000-00000000'04ab7fff ---         0      3000  [anon:dalvik-Boot image reservation]
+    00000000'04ab8000-00000000'04abbfff r--         0      4000  /system/framework/arm64/boot-framework-graphics.oat (BuildId: 95850afbec633f25f788664671e703e6bcc0bc5c)
+    00000000'04abc000-00000000'04abcfff r-x      4000      1000  /system/framework/arm64/boot-framework-graphics.oat (BuildId: 95850afbec633f25f788664671e703e6bcc0bc5c)
+    00000000'04abd000-00000000'04abffff ---         0      3000  [anon:dalvik-Boot image reservation]
+    00000000'04ac0000-00000000'04ac0fff rw-         0      1000  /system/framework/boot-framework-graphics.vdex
+    00000000'04ac1000-00000000'04ac3fff ---         0      3000  [anon:dalvik-Boot image reservation]
+    00000000'04ac4000-00000000'04acbfff r--         0      8000  /system/framework/arm64/boot-framework-location.oat (BuildId: a5639d8c261bb3f518721ad7f66a0e846663a58a)
+    00000000'04acc000-00000000'04adcfff r-x      8000     11000  /system/framework/arm64/boot-framework-location.oat (BuildId: a5639d8c261bb3f518721ad7f66a0e846663a58a)
+    00000000'04add000-00000000'04adffff ---         0      3000  [anon:dalvik-Boot image reservation]
+    00000000'04ae0000-00000000'04ae1fff rw-         0      2000  /system/framework/boot-framework-location.vdex
+    00000000'04ae2000-00000000'04ae3fff ---         0      2000  [anon:dalvik-Boot image reservation]
+    00000000'04ae4000-00000000'04aebfff r--         0      8000  /system/framework/arm64/boot-ext.oat (BuildId: e18a073f09dd7cc0a171cf2bf86a04ef7486e97b)
+    00000000'04aec000-00000000'04b04fff r-x      8000     19000  /system/framework/arm64/boot-ext.oat (BuildId: e18a073f09dd7cc0a171cf2bf86a04ef7486e97b)
+    00000000'04b05000-00000000'04b07fff ---         0      3000  [anon:dalvik-Boot image reservation]
+    00000000'04b08000-00000000'04b08fff rw-         0      1000  /system/framework/boot-ext.vdex
+    00000000'04b09000-00000000'04b0bfff ---         0      3000  [anon:dalvik-Boot image reservation]
+    00000000'04b0c000-00000000'04b17fff r--         0      c000  /system/framework/arm64/boot-telephony-common.oat (BuildId: 2972b708d49e516e39f1eee7822d53b3f5c55488)
+    00000000'04b18000-00000000'04b1afff r-x      c000      3000  /system/framework/arm64/boot-telephony-common.oat (BuildId: 2972b708d49e516e39f1eee7822d53b3f5c55488)
+    00000000'04b1b000-00000000'04b1bfff ---         0      1000  [anon:dalvik-Boot image reservation]
+    00000000'04b1c000-00000000'04b2cfff rw-         0     11000  /system/framework/boot-telephony-common.vdex
+    00000000'04b2d000-00000000'04b2ffff ---         0      3000  [anon:dalvik-Boot image reservation]
+    00000000'04b30000-00000000'04b33fff r--         0      4000  /system/framework/arm64/boot-voip-common.oat (BuildId: 5abf16431449f02c8adce128c628fefc9636182e)
+    00000000'04b34000-00000000'04b34fff r-x      4000      1000  /system/framework/arm64/boot-voip-common.oat (BuildId: 5abf16431449f02c8adce128c628fefc9636182e)
+    00000000'04b35000-00000000'04b37fff ---         0      3000  [anon:dalvik-Boot image reservation]
+    00000000'04b38000-00000000'04b3cfff rw-         0      5000  /system/framework/boot-voip-common.vdex
+    00000000'04b3d000-00000000'04b3ffff ---         0      3000  [anon:dalvik-Boot image reservation]
+    00000000'04b40000-00000000'04b43fff r--         0      4000  /system/framework/arm64/boot-ims-common.oat (BuildId: 80e1fafca93f8dcbb504e617d78cc9009a0f0a74)
+    00000000'04b44000-00000000'04b45fff rw-         0      2000  /system/framework/boot-ims-common.vdex
+    00000000'04b46000-00000000'04b47fff ---         0      2000  [anon:dalvik-Boot image reservation]
+    00000000'04b48000-00000000'04b4bfff r--         0      4000  /system/framework/arm64/boot-framework-ondeviceintelligence-platform.oat (BuildId: 777f6d99b14066fbb9f399ddba2952dd6de25d97)
+    00000000'04b4c000-00000000'04b4cfff rw-         0      1000  /system/framework/boot-framework-ondeviceintelligence-platform.vdex
+    00000000'04b4d000-00000000'04b4ffff ---         0      3000  [anon:dalvik-Boot image reservation]
+    00000000'04b50000-00000000'04b53fff r--         0      4000  /system/framework/arm64/boot-framework-nfc.oat (BuildId: 7cd99ff0f6a2fa8fb2ab57fed920fa43d7403f97)
+    00000000'04b54000-00000000'04b57fff r-x      4000      4000  /system/framework/arm64/boot-framework-nfc.oat (BuildId: 7cd99ff0f6a2fa8fb2ab57fed920fa43d7403f97)
+    00000000'04b58000-00000000'04b5afff rw-         0      3000  /system/framework/boot-framework-nfc.vdex
+    00000000'04b5b000-00000000'04b5bfff ---         0      1000  [anon:dalvik-Boot image reservation]
+    00000000'04b5c000-00000000'04b5ffff r--         0      4000  /system/framework/arm64/boot-tcmiface.oat (BuildId: d708d9ed67e59eb49a5a0aec77082096af6cb2e4)
+    00000000'04b60000-00000000'04b60fff rw-         0      1000  /system/framework/boot-tcmiface.vdex
+    00000000'04b61000-00000000'04b63fff ---         0      3000  [anon:dalvik-Boot image reservation]
+    00000000'04b64000-00000000'04b67fff r--         0      4000  /system/framework/arm64/boot-telephony-ext.oat (BuildId: 5456398a9b8227059de67047878cc270c2de7e1b)
+    00000000'04b68000-00000000'04b68fff rw-         0      1000  /system/framework/boot-telephony-ext.vdex
+    00000000'04b69000-00000000'04b6bfff ---         0      3000  [anon:dalvik-Boot image reservation]
+    00000000'04b6c000-00000000'04b6ffff r--         0      4000  /system/framework/arm64/boot-qcom.fmradio.oat (BuildId: 56f773cbfcdbb19244e19a383e2ead3b9de049d3)
+    00000000'04b70000-00000000'04b70fff r-x      4000      1000  /system/framework/arm64/boot-qcom.fmradio.oat (BuildId: 56f773cbfcdbb19244e19a383e2ead3b9de049d3)
+    00000000'04b71000-00000000'04b73fff ---         0      3000  [anon:dalvik-Boot image reservation]
+    00000000'04b74000-00000000'04b74fff rw-         0      1000  /system/framework/boot-qcom.fmradio.vdex
+    00000000'04b75000-00000000'04b77fff ---         0      3000  [anon:dalvik-Boot image reservation]
+    00000000'04b78000-00000000'04b7bfff r--         0      4000  /system/framework/arm64/boot-QPerformance.oat (BuildId: 8f96bb2bc30a6e7650764d725a4cc6049822f7d1)
+    00000000'04b7c000-00000000'04b7cfff r-x      4000      1000  /system/framework/arm64/boot-QPerformance.oat (BuildId: 8f96bb2bc30a6e7650764d725a4cc6049822f7d1)
+    00000000'04b7d000-00000000'04b7ffff ---         0      3000  [anon:dalvik-Boot image reservation]
+    00000000'04b80000-00000000'04b80fff rw-         0      1000  /system/framework/boot-QPerformance.vdex
+    00000000'04b81000-00000000'04b83fff ---         0      3000  [anon:dalvik-Boot image reservation]
+    00000000'04b84000-00000000'04b87fff r--         0      4000  /system/framework/arm64/boot-UxPerformance.oat (BuildId: bf3652754b1dc947bb9d8ce59c63268901bdfe8a)
+    00000000'04b88000-00000000'04b88fff r-x      4000      1000  /system/framework/arm64/boot-UxPerformance.oat (BuildId: bf3652754b1dc947bb9d8ce59c63268901bdfe8a)
+    00000000'04b89000-00000000'04b8bfff ---         0      3000  [anon:dalvik-Boot image reservation]
+    00000000'04b8c000-00000000'04b8cfff rw-         0      1000  /system/framework/boot-UxPerformance.vdex
+    00000000'04b8d000-00000000'04b8ffff ---         0      3000  [anon:dalvik-Boot image reservation]
+    00000000'04b90000-00000000'04b93fff r--         0      4000  /system/framework/arm64/boot-WfdCommon.oat (BuildId: 983eb5e19c6624047a6e38dfadb826f03fdd544e)
+    00000000'04b94000-00000000'04b94fff rw-         0      1000  /system/framework/boot-WfdCommon.vdex
+    00000000'04b95000-00000000'04b97fff ---         0      3000  [anon:dalvik-Boot image reservation]
+    00000000'04b98000-00000000'04be3fff r--         0     4c000  /system/framework/arm64/boot-vivo-framework.oat (BuildId: 8c20deae31da3ef331dde96d23e7180aeaf29034)
+    00000000'04be4000-00000000'04ceefff r-x     4c000    10b000  /system/framework/arm64/boot-vivo-framework.oat (BuildId: 8c20deae31da3ef331dde96d23e7180aeaf29034)
+    00000000'04cef000-00000000'04ceffff ---         0      1000  [anon:dalvik-Boot image reservation]
+    00000000'04cf0000-00000000'04cf0fff rw-         0      1000  [anon:.bss]
+    00000000'04cf1000-00000000'04cf3fff ---         0      3000  [anon:dalvik-Boot image reservation]
+    00000000'04cf4000-00000000'04d0ffff rw-         0     1c000  /system/framework/boot-vivo-framework.vdex
+    00000000'04d10000-00000000'04d27fff r--         0     18000  /system/framework/arm64/boot-vivo-media.oat (BuildId: 4024549eb13a7796732678000bd18887ecc89610)
+    00000000'04d28000-00000000'04d78fff r-x     18000     51000  /system/framework/arm64/boot-vivo-media.oat (BuildId: 4024549eb13a7796732678000bd18887ecc89610)
+    00000000'04d79000-00000000'04d7bfff ---         0      3000  [anon:dalvik-Boot image reservation]
+    00000000'04d7c000-00000000'04d7cfff rw-         0      1000  [anon:.bss]
+    00000000'04d7d000-00000000'04d7ffff ---         0      3000  [anon:dalvik-Boot image reservation]
+    00000000'04d80000-00000000'04d83fff rw-         0      4000  /system/framework/boot-vivo-media.vdex
+    00000000'04d84000-00000000'04d87fff r--         0      4000  /system/framework/arm64/boot-framework-adapter.oat (BuildId: bd9fd68363e9e46b01929661d1c65498fa7a7629)
+    00000000'04d88000-00000000'04d88fff rw-         0      1000  /system/framework/boot-framework-adapter.vdex
+    00000000'04d89000-00000000'04d8bfff ---         0      3000  [anon:dalvik-Boot image reservation]
+    00000000'04d8c000-00000000'04d8ffff r--         0      4000  /system/framework/arm64/boot-soc-framework.oat (BuildId: 2f67320c88862c7e4d53bee12678b3f31a709028)
+    00000000'04d90000-00000000'04d90fff rw-         0      1000  /system/framework/boot-soc-framework.vdex
+    00000000'04d91000-00000000'04d93fff ---         0      3000  [anon:dalvik-Boot image reservation]
+    00000000'04d94000-00000000'04d97fff r--         0      4000  /system/framework/arm64/boot-vivo-vgcclient.oat (BuildId: 1dd2a9004d4e2480b4b906e022759c2cfa780337)
+    00000000'04d98000-00000000'04d99fff r-x      4000      2000  /system/framework/arm64/boot-vivo-vgcclient.oat (BuildId: 1dd2a9004d4e2480b4b906e022759c2cfa780337)
+    00000000'04d9a000-00000000'04d9bfff ---         0      2000  [anon:dalvik-Boot image reservation]
+    00000000'04d9c000-00000000'04d9cfff rw-         0      1000  /system/framework/boot-vivo-vgcclient.vdex
+    00000000'04d9d000-00000000'04d9ffff ---         0      3000  [anon:dalvik-Boot image reservation]
+    00000000'04da0000-00000000'04da3fff r--         0      4000  /system/framework/arm64/boot-vivo-emmclient.oat (BuildId: ac1ca95cc3f106e72270ca765f0532f0166bd76b)
+    00000000'04da4000-00000000'04da4fff rw-         0      1000  /system/framework/boot-vivo-emmclient.vdex
+    00000000'04da5000-00000000'04da7fff ---         0      3000  [anon:dalvik-Boot image reservation]
+    00000000'04da8000-00000000'04dabfff r--         0      4000  /system/framework/arm64/boot-vivo-coworkclient.oat (BuildId: e41e4b8561598911e3298ddf28af4d006ffe2c66)
+    00000000'04dac000-00000000'04dadfff r-x      4000      2000  /system/framework/arm64/boot-vivo-coworkclient.oat (BuildId: e41e4b8561598911e3298ddf28af4d006ffe2c66)
+    00000000'04dae000-00000000'04daffff ---         0      2000  [anon:dalvik-Boot image reservation]
+    00000000'04db0000-00000000'04db1fff rw-         0      2000  /system/framework/boot-vivo-coworkclient.vdex
+    00000000'04db2000-00000000'04db3fff ---         0      2000  [anon:dalvik-Boot image reservation]
+    00000000'04db4000-00000000'04de3fff r--         0     30000  /system/framework/arm64/boot-core-icu4j.oat (BuildId: 665e7c95e7005f673852498f92367fb19dec7e24)
+    00000000'04de4000-00000000'04eb9fff r-x     30000     d6000  /system/framework/arm64/boot-core-icu4j.oat (BuildId: 665e7c95e7005f673852498f92367fb19dec7e24)
+    00000000'04eba000-00000000'04ebbfff ---         0      2000  [anon:dalvik-Boot image reservation]
+    00000000'04ebc000-00000000'04ec4fff rw-         0      9000  /system/framework/boot-core-icu4j.vdex
+    00000000'04ec5000-00000000'04ec7fff ---         0      3000  [anon:dalvik-Boot image reservation]
+    00000000'04ec8000-00000000'051c7fff rw-         0    300000  [anon:dalvik-/system/framework/boot-framework-adservices.art]
+    00000000'051c8000-00000000'0521bfff r--         0     54000  /system/framework/arm64/boot-framework-adservices.oat (BuildId: aca09c50691db9b1ec919b763e11f8d9f190b579)
+    00000000'0521c000-00000000'05310fff r-x     54000     f5000  /system/framework/arm64/boot-framework-adservices.oat (BuildId: aca09c50691db9b1ec919b763e11f8d9f190b579)
+    00000000'05311000-00000000'05313fff ---         0      3000  [anon:dalvik-Boot image reservation]
+    00000000'05314000-00000000'05315fff r--    14c000      2000  /system/framework/arm64/boot-framework-adservices.oat (BuildId: aca09c50691db9b1ec919b763e11f8d9f190b579)
+    00000000'05316000-00000000'05317fff ---         0      2000  [anon:dalvik-Boot image reservation]
+    00000000'05318000-00000000'05318fff rw-         0      1000  [anon:.bss]
+    00000000'05319000-00000000'0531bfff ---         0      3000  [anon:dalvik-Boot image reservation]
+    00000000'0531c000-00000000'0534dfff rw-         0     32000  /system/framework/boot-framework-adservices.vdex
+    00000000'0534e000-00000000'0534ffff ---         0      2000  [anon:dalvik-Boot image reservation]
+    00000000'05350000-00000000'059e0fff rw-         0    691000  [anon:dalvik-zygote space]
+    00000000'059e1000-00000000'059e1fff rw-         0      1000  [anon:dalvik-non moving space]
+    00000000'059e2000-00000000'05a04fff rw-         0     23000  [anon:dalvik-non moving space]
+    00000000'05a05000-00000000'0eb50fff ---         0   914c000  [anon:dalvik-non moving space]
+    00000000'0eb51000-00000000'0f34ffff rw-         0    7ff000  [anon:dalvik-non moving space]
+    00000000'18000000-00000000'37ffffff rw-         0  20000000  [anon:dalvik-main space (region space)]
+    00000000'a8000000-00000000'b7ffffff rw-         0  10000000  [anon:dalvik-free list large object space]
+    00000000'ebad6000-00000000'ebad6fff ---         0      1000  [anon:dalvik-Sentinel fault page]
+    00000000'ebad7000-00000000'edad6fff r--         0   2000000  /memfd:jit-zygote-cache (deleted)
+    00000000'edad7000-00000000'efad6fff r-x   2000000   2000000  /memfd:jit-zygote-cache (deleted)
+    00000000'efad7000-00000000'f1ad6fff r--         0   2000000  /memfd:jit-cache (deleted)
+    00000000'f1ad7000-00000000'f3ad6fff r-x   2000000   2000000  /memfd:jit-cache (deleted)
+    00000065'4e80d000-00000065'4e80ffff r--         0      3000  /system/bin/app_process64 (BuildId: 9350e31b559c63b148098d9a0a5815a1)
+    00000065'4e810000-00000065'4e811fff r-x      3000      2000  /system/bin/app_process64 (BuildId: 9350e31b559c63b148098d9a0a5815a1)
+    00000065'4e812000-00000065'4e812fff r--      5000      1000  /system/bin/app_process64 (BuildId: 9350e31b559c63b148098d9a0a5815a1)
+    00000065'4e813000-00000065'4e813fff rw-      6000      1000  /system/bin/app_process64 (BuildId: 9350e31b559c63b148098d9a0a5815a1)
+    0000006b'bb400000-0000006b'bc047fff ---         0    c48000
+    0000006b'bc048000-0000006b'bc04bfff rw-         0      4000
+    0000006b'bc04c000-0000006b'bc3fffff ---         0    3b4000
+    0000006b'bec00000-0000006b'beedbfff ---         0    2dc000
+    0000006b'beedc000-0000006b'beedffff rw-         0      4000
+    0000006b'beee0000-0000006b'bfbfffff ---         0    d20000
+    0000006b'cc000000-0000006b'cc17ffff ---         0    180000
+    0000006b'cc180000-0000006b'cc183fff rw-         0      4000
+    0000006b'cc184000-0000006b'cd5b3fff ---         0   1430000
+    0000006b'cd5b4000-0000006b'cd5b7fff rw-         0      4000
+    0000006b'cd5b8000-0000006b'cef0bfff ---         0   1954000
+    0000006b'cef0c000-0000006b'cef0ffff rw-         0      4000
+    0000006b'cef10000-0000006b'cfafbfff ---         0    bec000
+    0000006b'cfafc000-0000006b'cfafffff rw-         0      4000
+    0000006b'cfb00000-0000006b'd0843fff ---         0    d44000
+    0000006b'd0844000-0000006b'd0847fff rw-         0      4000
+    0000006b'd0848000-0000006b'd1097fff ---         0    850000
+    0000006b'd1098000-0000006b'd109bfff rw-         0      4000
+    0000006b'd109c000-0000006b'd1ffffff ---         0    f64000
+    0000006b'd4000000-0000006b'd4ad7fff ---         0    ad8000
+    0000006b'd4ad8000-0000006b'd4adbfff rw-         0      4000
+    0000006b'd4adc000-0000006b'd5877fff ---         0    d9c000
+    0000006b'd5878000-0000006b'd587bfff rw-         0      4000
+    0000006b'd587c000-0000006b'd5ffffff ---         0    784000
+    0000006b'd7000000-0000006b'd708ffff ---         0     90000
+    0000006b'd7090000-0000006b'd7093fff rw-         0      4000
+    0000006b'd7094000-0000006b'd7ffffff ---         0    f6c000
+    0000006b'db600000-0000006b'db61ffff ---         0     20000
+    0000006b'db620000-0000006b'db623fff rw-         0      4000
+    0000006b'db624000-0000006b'dd1c7fff ---         0   1ba4000
+    0000006b'dd1c8000-0000006b'dd1cbfff rw-         0      4000
+    0000006b'dd1cc000-0000006b'dd7dffff ---         0    614000
+    0000006b'dd7e0000-0000006b'dd7e3fff rw-         0      4000
+    0000006b'dd7e4000-0000006b'de5fffff ---         0    e1c000
+    0000006b'df600000-0000006b'dfa83fff ---         0    484000
+    0000006b'dfa84000-0000006b'dfa87fff rw-         0      4000
+    0000006b'dfa88000-0000006b'e05fffff ---         0    b78000
+    0000006b'e2200000-0000006b'e27cbfff ---         0    5cc000
+    0000006b'e27cc000-0000006b'e27cffff rw-         0      4000
+    0000006b'e27d0000-0000006b'e31fffff ---         0    a30000
+    0000006b'e3800000-0000006b'e3ec3fff ---         0    6c4000
+    0000006b'e3ec4000-0000006b'e3ec7fff rw-         0      4000
+    0000006b'e3ec8000-0000006b'e47fffff ---         0    938000
+    0000006b'e4980000-0000006b'e49acfff rwx         0     2d000  [anon:dart-code]
+    0000006b'e4f80000-0000006b'e4ffffff rwx         0     80000  [anon:dart-code]
+    0000006b'e5074000-0000006b'e5173fff rw-         0    100000  [anon:scudo:secondary]
+    0000006b'e5200000-0000006b'e555bfff ---         0    35c000
+    0000006b'e555c000-0000006b'e555ffff rw-         0      4000
+    0000006b'e5560000-0000006b'e61fffff ---         0    ca0000
+    0000006b'e6384000-0000006b'e6384fff ---         0      1000
+    0000006b'e6385000-0000006b'e6385fff ---         0      1000  [anon:stack_and_tls:20612]
+    0000006b'e6386000-0000006b'e6480fff rw-         0     fb000  [anon:stack_and_tls:20612]
+    0000006b'e6481000-0000006b'e6481fff ---         0      1000
+    0000006b'e6482000-0000006b'e6482fff r--         0      1000  /system/lib64/media_permission-aidl-cpp.so (BuildId: 127d7d69499e8159571c4e063a06e48a)
+    0000006b'e6483000-0000006b'e6483fff r-x      1000      1000  /system/lib64/media_permission-aidl-cpp.so (BuildId: 127d7d69499e8159571c4e063a06e48a)
+    0000006b'e6484000-0000006b'e6484fff r--      2000      1000  /system/lib64/media_permission-aidl-cpp.so (BuildId: 127d7d69499e8159571c4e063a06e48a)
+    0000006b'e64c1000-0000006b'e64c3fff r--         0      3000  /system/lib64/libprocessinfoservice_aidl.so (BuildId: 3eb51ad1725606d4dfa19124d550cfcf)
+    0000006b'e64c4000-0000006b'e64c5fff r-x      3000      2000  /system/lib64/libprocessinfoservice_aidl.so (BuildId: 3eb51ad1725606d4dfa19124d550cfcf)
+    0000006b'e64c6000-0000006b'e64c6fff r--      5000      1000  /system/lib64/libprocessinfoservice_aidl.so (BuildId: 3eb51ad1725606d4dfa19124d550cfcf)
+    0000006b'e64c7000-0000006b'e64c7fff rw-      6000      1000  /system/lib64/libprocessinfoservice_aidl.so (BuildId: 3eb51ad1725606d4dfa19124d550cfcf)
+    0000006b'e650e000-0000006b'e6518fff r--         0      b000  /system/lib64/android.frameworks.sensorservice-V1-ndk.so (BuildId: b6fc8a670eae4961d104b0c5f0565b3c)
+    0000006b'e6519000-0000006b'e6520fff r-x      b000      8000  /system/lib64/android.frameworks.sensorservice-V1-ndk.so (BuildId: b6fc8a670eae4961d104b0c5f0565b3c)
+    0000006b'e6521000-0000006b'e6522fff r--     13000      2000  /system/lib64/android.frameworks.sensorservice-V1-ndk.so (BuildId: b6fc8a670eae4961d104b0c5f0565b3c)
+    0000006b'e6523000-0000006b'e6523fff rw-     15000      1000  /system/lib64/android.frameworks.sensorservice-V1-ndk.so (BuildId: b6fc8a670eae4961d104b0c5f0565b3c)
+    0000006b'e6571000-0000006b'e6573fff r--         0      3000  /system/lib64/libconfiginfoutils.so (BuildId: 20e39fd1984b826188cf2a359fb7a2d5)
+    0000006b'e6574000-0000006b'e6576fff r-x      3000      3000  /system/lib64/libconfiginfoutils.so (BuildId: 20e39fd1984b826188cf2a359fb7a2d5)
+    0000006b'e6577000-0000006b'e6577fff r--      6000      1000  /system/lib64/libconfiginfoutils.so (BuildId: 20e39fd1984b826188cf2a359fb7a2d5)
+    0000006b'e6578000-0000006b'e6578fff rw-         0      1000  [anon:.bss]
+    0000006b'e6585000-0000006b'e658bfff r--         0      7000  /system/lib64/vendor.vivo.hardware.camera.vif3ainfotransmitter-V1-ndk.so (BuildId: c24ea9607496e3d456e729642797e544)
+    0000006b'e658c000-0000006b'e6590fff r-x      7000      5000  /system/lib64/vendor.vivo.hardware.camera.vif3ainfotransmitter-V1-ndk.so (BuildId: c24ea9607496e3d456e729642797e544)
+    0000006b'e6591000-0000006b'e6591fff r--      c000      1000  /system/lib64/vendor.vivo.hardware.camera.vif3ainfotransmitter-V1-ndk.so (BuildId: c24ea9607496e3d456e729642797e544)
+    0000006b'e6592000-0000006b'e6592fff rw-      d000      1000  /system/lib64/vendor.vivo.hardware.camera.vif3ainfotransmitter-V1-ndk.so (BuildId: c24ea9607496e3d456e729642797e544)
+    0000006b'e65ed000-0000006b'e65f2fff r--         0      6000  /system/lib64/libvif3ainfoutils.so (BuildId: 9adc3c3d08d495db88c14a13d24a68f4)
+    0000006b'e65f3000-0000006b'e65f5fff r-x      6000      3000  /system/lib64/libvif3ainfoutils.so (BuildId: 9adc3c3d08d495db88c14a13d24a68f4)
+    0000006b'e65f6000-0000006b'e65f6fff r--      9000      1000  /system/lib64/libvif3ainfoutils.so (BuildId: 9adc3c3d08d495db88c14a13d24a68f4)
+    0000006b'e65f7000-0000006b'e65f7fff rw-         0      1000  [anon:.bss]
+    0000006b'e6611000-0000006b'e6620fff r--         0     10000  /system/lib64/vendor.vivo.hardware.vivocameraprovider-V1-ndk.so (BuildId: 02f9a6ebc2c2b927695daec7a79a637d)
+    0000006b'e6621000-0000006b'e662dfff r-x     10000      d000  /system/lib64/vendor.vivo.hardware.vivocameraprovider-V1-ndk.so (BuildId: 02f9a6ebc2c2b927695daec7a79a637d)
+    0000006b'e662e000-0000006b'e662ffff r--     1d000      2000  /system/lib64/vendor.vivo.hardware.vivocameraprovider-V1-ndk.so (BuildId: 02f9a6ebc2c2b927695daec7a79a637d)
+    0000006b'e6630000-0000006b'e6630fff rw-     1f000      1000  /system/lib64/vendor.vivo.hardware.vivocameraprovider-V1-ndk.so (BuildId: 02f9a6ebc2c2b927695daec7a79a637d)
+    0000006b'e664a000-0000006b'e6650fff r--         0      7000  /system/lib64/vendor.vivo.hardware.camera.jpegencoder-V1-ndk.so (BuildId: 8aca63b83bf665a4ffb171cb27d99eb9)
+    0000006b'e6651000-0000006b'e6655fff r-x      7000      5000  /system/lib64/vendor.vivo.hardware.camera.jpegencoder-V1-ndk.so (BuildId: 8aca63b83bf665a4ffb171cb27d99eb9)
+    0000006b'e6656000-0000006b'e6656fff r--      c000      1000  /system/lib64/vendor.vivo.hardware.camera.jpegencoder-V1-ndk.so (BuildId: 8aca63b83bf665a4ffb171cb27d99eb9)
+    0000006b'e6657000-0000006b'e6657fff rw-      d000      1000  /system/lib64/vendor.vivo.hardware.camera.jpegencoder-V1-ndk.so (BuildId: 8aca63b83bf665a4ffb171cb27d99eb9)
+    0000006b'e668e000-0000006b'e6692fff r--         0      5000  /system/lib64/libVivoCameraServerJsonResourceManager.so (BuildId: 3e82fdbd231191648ce7b8288179761b)
+    0000006b'e6693000-0000006b'e6699fff r-x      5000      7000  /system/lib64/libVivoCameraServerJsonResourceManager.so (BuildId: 3e82fdbd231191648ce7b8288179761b)
+    0000006b'e669a000-0000006b'e669afff r--      c000      1000  /system/lib64/libVivoCameraServerJsonResourceManager.so (BuildId: 3e82fdbd231191648ce7b8288179761b)
+    0000006b'e669b000-0000006b'e669bfff rw-      d000      1000  /system/lib64/libVivoCameraServerJsonResourceManager.so (BuildId: 3e82fdbd231191648ce7b8288179761b)
+    0000006b'e66cf000-0000006b'e66d8fff r--         0      a000  /system/lib64/vendor.vivo.hardware.camera.vivopostproc-V1-ndk.so (BuildId: 2f3689294f6f8a072142295d312a5abe)
+    0000006b'e66d9000-0000006b'e66e0fff r-x      a000      8000  /system/lib64/vendor.vivo.hardware.camera.vivopostproc-V1-ndk.so (BuildId: 2f3689294f6f8a072142295d312a5abe)
+    0000006b'e66e1000-0000006b'e66e1fff r--     12000      1000  /system/lib64/vendor.vivo.hardware.camera.vivopostproc-V1-ndk.so (BuildId: 2f3689294f6f8a072142295d312a5abe)
+    0000006b'e66e2000-0000006b'e66e2fff rw-     13000      1000  /system/lib64/vendor.vivo.hardware.camera.vivopostproc-V1-ndk.so (BuildId: 2f3689294f6f8a072142295d312a5abe)
+    0000006b'e6717000-0000006b'e6724fff r--         0      e000  /system/lib64/vendor.vivo.hardware.camera.vif3ainfotransmitter@1.0.so (BuildId: c23d8df5609a7d2be1c964e626f025df)
+    0000006b'e6725000-0000006b'e6731fff r-x      e000      d000  /system/lib64/vendor.vivo.hardware.camera.vif3ainfotransmitter@1.0.so (BuildId: c23d8df5609a7d2be1c964e626f025df)
+    0000006b'e6732000-0000006b'e6734fff r--     1b000      3000  /system/lib64/vendor.vivo.hardware.camera.vif3ainfotransmitter@1.0.so (BuildId: c23d8df5609a7d2be1c964e626f025df)
+    0000006b'e6735000-0000006b'e6735fff rw-     1e000      1000  /system/lib64/vendor.vivo.hardware.camera.vif3ainfotransmitter@1.0.so (BuildId: c23d8df5609a7d2be1c964e626f025df)
+    0000006b'e6740000-0000006b'e678bfff r--         0     4c000  /system/lib64/libvivocameraservice.so (BuildId: 820b177caad130bcae708afdd0deab69)
+    0000006b'e678c000-0000006b'e67e8fff r-x     4c000     5d000  /system/lib64/libvivocameraservice.so (BuildId: 820b177caad130bcae708afdd0deab69)
+    0000006b'e67e9000-0000006b'e67fcfff r--     a9000     14000  /system/lib64/libvivocameraservice.so (BuildId: 820b177caad130bcae708afdd0deab69)
+    0000006b'e67fd000-0000006b'e67fdfff rw-     bd000      1000  /system/lib64/libvivocameraservice.so (BuildId: 820b177caad130bcae708afdd0deab69)
+    0000006b'e6800000-0000006b'e6c67fff ---         0    468000
+    0000006b'e6c68000-0000006b'e6c6bfff rw-         0      4000
+    0000006b'e6c6c000-0000006b'e77fffff ---         0    b94000
+    0000006b'e7853000-0000006b'e7853fff r--         0      1000  /system/lib64/android.hardware.camera.metadata-V3-ndk.so (BuildId: 216fcc760692514c88fef40a479a6756)
+    0000006b'e7854000-0000006b'e7855fff r-x      1000      2000  /system/lib64/android.hardware.camera.metadata-V3-ndk.so (BuildId: 216fcc760692514c88fef40a479a6756)
+    0000006b'e7856000-0000006b'e7856fff r--      3000      1000  /system/lib64/android.hardware.camera.metadata-V3-ndk.so (BuildId: 216fcc760692514c88fef40a479a6756)
+    0000006b'e7893000-0000006b'e789afff r--         0      8000  /system/lib64/libsensorprivacy.so (BuildId: 1a98fedc2f5524af067dafa435938648)
+    0000006b'e789b000-0000006b'e78a1fff r-x      8000      7000  /system/lib64/libsensorprivacy.so (BuildId: 1a98fedc2f5524af067dafa435938648)
+    0000006b'e78a2000-0000006b'e78a4fff r--      f000      3000  /system/lib64/libsensorprivacy.so (BuildId: 1a98fedc2f5524af067dafa435938648)
+    0000006b'e78a5000-0000006b'e78a5fff rw-     12000      1000  /system/lib64/libsensorprivacy.so (BuildId: 1a98fedc2f5524af067dafa435938648)
+    0000006b'e78f6000-0000006b'e78f6fff ---         0      1000
+    0000006b'e78f7000-0000006b'e78f7fff ---         0      1000  [anon:stack_and_tls:20579]
+    0000006b'e78f8000-0000006b'e79fefff rw-         0    107000  [anon:stack_and_tls:20579]
+    0000006b'e79ff000-0000006b'e79fffff ---         0      1000
+    0000006b'e7a00000-0000006b'e7afffff r--         0    100000  /dev/__properties__/u:object_r:wifi_log_prop:s0
+    0000006b'e7b00000-0000006b'e7bfffff r--         0    100000  /dev/__properties__/u:object_r:vusbd_root_prop:s0
+    0000006b'e7c00000-0000006b'e7cfffff r--         0    100000  /dev/__properties__/u:object_r:vts_status_prop:s0
+    0000006b'e7d00000-0000006b'e7dfffff r--         0    100000  /dev/__properties__/u:object_r:vts_config_prop:s0
+    0000006b'e7e00000-0000006b'e7efffff r--         0    100000  /dev/__properties__/u:object_r:vold_prop:s0
+    0000006b'e7f00000-0000006b'e7ffffff r--         0    100000  /dev/__properties__/u:object_r:vold_config_prop:s0
+    0000006b'e8000000-0000006b'e80fffff r--         0    100000  /dev/__properties__/u:object_r:vivo_video_prop:s0
+    0000006b'e8100000-0000006b'e81fffff r--         0    100000  /dev/__properties__/u:object_r:vendor_vivo_camera_prop:s0
+    0000006b'e8200000-0000006b'e82fffff r--         0    100000  /dev/__properties__/u:object_r:vendor_security_patch_level_prop:s0
+    0000006b'e8300000-0000006b'e83fffff r--         0    100000  /dev/__properties__/u:object_r:vendor_persist_rcs_prop:s0
+    0000006b'e8400000-0000006b'e84fffff r--         0    100000  /dev/__properties__/u:object_r:vendor_persist_ntn_prop:s0
+    0000006b'e8500000-0000006b'e85fffff r--         0    100000  /dev/__properties__/u:object_r:vendor_persist_camera_prop:s0
+    0000006b'e8600000-0000006b'e86fffff r--         0    100000  /dev/__properties__/u:object_r:vendor_medsrv_set_64b:s0
+    0000006b'e8700000-0000006b'e87fffff r--         0    100000  /dev/__properties__/u:object_r:vendor_iop_prop:s0
+    0000006b'e8800000-0000006b'e88fffff r--         0    100000  /dev/__properties__/u:object_r:vendor_exported_system_prop:s0
+    0000006b'e8900000-0000006b'e89fffff r--         0    100000  /dev/__properties__/u:object_r:vendor_exported_odm_prop:s0
+    0000006b'e8a00000-0000006b'e8afffff r--         0    100000  /dev/__properties__/u:object_r:vendor_camera_prop:s0
+    0000006b'e8b00000-0000006b'e8bfffff r--         0    100000  /dev/__properties__/u:object_r:vendor_adsprpc_prop:s0
+    0000006b'e8c00000-0000006b'e8cfffff r--         0    100000  /dev/__properties__/u:object_r:userspace_reboot_test_prop:s0
+    0000006b'e8d00000-0000006b'e8dfffff r--         0    100000  /dev/__properties__/u:object_r:userspace_reboot_log_prop:s0
+    0000006b'e8e00000-0000006b'e8efffff r--         0    100000  /dev/__properties__/u:object_r:userspace_reboot_exported_prop:s0
+    0000006b'e8f00000-0000006b'e8ffffff r--         0    100000  /dev/__properties__/u:object_r:userspace_reboot_config_prop:s0
+    0000006b'e9000000-0000006b'e90fffff r--         0    100000  /dev/__properties__/u:object_r:usb_prop:s0
+    0000006b'e9100000-0000006b'e91fffff r--         0    100000  /dev/__properties__/u:object_r:usb_control_prop:s0
+    0000006b'e9200000-0000006b'e92fffff r--         0    100000  /dev/__properties__/u:object_r:usb_config_prop:s0
+    0000006b'e9300000-0000006b'e93fffff r--         0    100000  /dev/__properties__/u:object_r:traced_oome_heap_session_count_prop:s0
+    0000006b'e9400000-0000006b'e94fffff r--         0    100000  /dev/__properties__/u:object_r:test_harness_prop:s0
+    0000006b'e9500000-0000006b'e95fffff r--         0    100000  /dev/__properties__/u:object_r:telephony_status_prop:s0
+    0000006b'e9600000-0000006b'e96fffff r--         0    100000  /dev/__properties__/u:object_r:telephony_config_prop:s0
+    0000006b'e9700000-0000006b'e97fffff r--         0    100000  /dev/__properties__/u:object_r:tango_prop:s0
+    0000006b'e9800000-0000006b'e98fffff r--         0    100000  /dev/__properties__/u:object_r:systemsound_config_prop:s0
+    0000006b'e9900000-0000006b'e99fffff r--         0    100000  /dev/__properties__/u:object_r:surfaceflinger_color_prop:s0
+    0000006b'e9a00000-0000006b'e9afffff r--         0    100000  /dev/__properties__/u:object_r:storagemanager_config_prop:s0
+    0000006b'e9b00000-0000006b'e9bfffff r--         0    100000  /dev/__properties__/u:object_r:sqlite_log_prop:s0
+    0000006b'e9c00000-0000006b'e9cfffff r--         0    100000  /dev/__properties__/u:object_r:socket_hook_prop:s0
+    0000006b'e9d00000-0000006b'e9dfffff r--         0    100000  /dev/__properties__/u:object_r:shell_prop:s0
+    0000006b'e9e00000-0000006b'e9efffff r--         0    100000  /dev/__properties__/u:object_r:setupwizard_prop:s0
+    0000006b'e9f00000-0000006b'e9ffffff r--         0    100000  /dev/__properties__/u:object_r:setupwizard_mode_prop:s0
+    0000006b'ea000000-0000006b'ea0fffff r--         0    100000  /dev/__properties__/u:object_r:sendbug_config_prop:s0
+    0000006b'ea100000-0000006b'ea1fffff r--         0    100000  /dev/__properties__/u:object_r:rollback_test_prop:s0
+    0000006b'ea200000-0000006b'ea2fffff r--         0    100000  /dev/__properties__/u:object_r:restorecon_prop:s0
+    0000006b'ea300000-0000006b'ea3fffff r--         0    100000  /dev/__properties__/u:object_r:radio_control_prop:s0
+    0000006b'ea400000-0000006b'ea4fffff r--         0    100000  /dev/__properties__/u:object_r:powerctl_prop:s0
+    0000006b'ea500000-0000006b'ea5fffff r--         0    100000  /dev/__properties__/u:object_r:pm_prop:s0
+    0000006b'ea600000-0000006b'ea6fffff r--         0    100000  /dev/__properties__/u:object_r:persist_sysui_ranking_update_prop:s0
+    0000006b'ea700000-0000006b'ea7fffff r--         0    100000  /dev/__properties__/u:object_r:persist_sysui_builder_extras_prop:s0
+    0000006b'ea800000-0000006b'ea8fffff r--         0    100000  /dev/__properties__/u:object_r:permissive_mte_prop:s0
+    0000006b'ea900000-0000006b'ea9fffff r--         0    100000  /dev/__properties__/u:object_r:pan_result_prop:s0
+    0000006b'eaa00000-0000006b'eaafffff r--         0    100000  /dev/__properties__/u:object_r:ota_prop:s0
+    0000006b'eab00000-0000006b'eabfffff r--         0    100000  /dev/__properties__/u:object_r:nnapi_ext_deny_product_prop:s0
+    0000006b'eac00000-0000006b'eacfffff r--         0    100000  /dev/__properties__/u:object_r:nfc_prop:s0
+    0000006b'ead00000-0000006b'eadfffff r--         0    100000  /dev/__properties__/u:object_r:net_radio_prop:s0
+    0000006b'eae00000-0000006b'eaefffff r--         0    100000  /dev/__properties__/u:object_r:mm_activity_prop:s0
+    0000006b'eaf00000-0000006b'eaffffff r--         0    100000  /dev/__properties__/u:object_r:mediadrm_config_prop:s0
+    0000006b'eb000000-0000006b'eb0fffff r--         0    100000  /dev/__properties__/u:object_r:media_config_prop:s0
+    0000006b'eb100000-0000006b'eb1fffff r--         0    100000  /dev/__properties__/u:object_r:localization_prop:s0
+    0000006b'eb200000-0000006b'eb2fffff r--         0    100000  /dev/__properties__/u:object_r:init_service_status_private_prop:s0
+    0000006b'eb300000-0000006b'eb3fffff r--         0    100000  /dev/__properties__/u:object_r:hypervisor_prop:s0
+    0000006b'eb400000-0000006b'eb4fffff r--         0    100000  /dev/__properties__/u:object_r:high_barometer_quality_prop:s0
+    0000006b'eb500000-0000006b'eb5fffff r--         0    100000  /dev/__properties__/u:object_r:hal_instrumentation_prop:s0
+    0000006b'eb600000-0000006b'eb6fffff r--         0    100000  /dev/__properties__/u:object_r:ffs_config_prop:s0
+    0000006b'eb700000-0000006b'eb7fffff r--         0    100000  /dev/__properties__/u:object_r:exported_pm_prop:s0
+    0000006b'eb800000-0000006b'eb8fffff r--         0    100000  /dev/__properties__/u:object_r:exported_dumpstate_prop:s0
+    0000006b'eb900000-0000006b'eb9fffff r--         0    100000  /dev/__properties__/u:object_r:exported3_system_prop:s0
+    0000006b'eba00000-0000006b'ebafffff r--         0    100000  /dev/__properties__/u:object_r:dumpstate_prop:s0
+    0000006b'ebb00000-0000006b'ebbfffff r--         0    100000  /dev/__properties__/u:object_r:dhcp_prop:s0
+    0000006b'ebc00000-0000006b'ebcfffff r--         0    100000  /dev/__properties__/u:object_r:device_config_nnapi_native_prop:s0
+    0000006b'ebd00000-0000006b'ebdfffff r--         0    100000  /dev/__properties__/u:object_r:device_config_memory_safety_native_boot_prop:s0
+    0000006b'ebe00000-0000006b'ebefffff r--         0    100000  /dev/__properties__/u:object_r:device_config_media_native_prop:s0
+    0000006b'ebf00000-0000006b'ebffffff r--         0    100000  /dev/__properties__/u:object_r:device_config_aconfig_flags_prop:s0
+    0000006b'ec000000-0000006b'ec0fffff r--         0    100000  /dev/__properties__/u:object_r:debuggerd_prop:s0
+    0000006b'ec100000-0000006b'ec1fffff r--         0    100000  /dev/__properties__/u:object_r:dck_prop:s0
+    0000006b'ec200000-0000006b'ec2fffff r--         0    100000  /dev/__properties__/u:object_r:dalvik_prop:s0
+    0000006b'ec300000-0000006b'ec3fffff r--         0    100000  /dev/__properties__/u:object_r:cppreopt_prop:s0
+    0000006b'ec400000-0000006b'ec4fffff r--         0    100000  /dev/__properties__/u:object_r:cotamnt_prop:s0
+    0000006b'ec500000-0000006b'ec5fffff r--         0    100000  /dev/__properties__/u:object_r:codec2_config_prop:s0
+    0000006b'ec600000-0000006b'ec6fffff r--         0    100000  /dev/__properties__/u:object_r:camerax_extensions_prop:s0
+    0000006b'ec700000-0000006b'ec7fffff r--         0    100000  /dev/__properties__/u:object_r:camera_calibration_prop:s0
+    0000006b'ec800000-0000006b'ec8fffff r--         0    100000  /dev/__properties__/u:object_r:camera2_extensions_prop:s0
+    0000006b'ec900000-0000006b'ec9fffff r--         0    100000  /dev/__properties__/u:object_r:bluetooth_config_prop:s0
+    0000006b'eca00000-0000006b'ecafffff r--         0    100000  /dev/__properties__/u:object_r:bionic_linker_16kb_app_compat_prop:s0
+    0000006b'ecb00000-0000006b'ecbfffff r--         0    100000  /dev/__properties__/u:object_r:binder_cache_telephony_server_prop:s0
+    0000006b'ecc00000-0000006b'eccfffff r--         0    100000  /dev/__properties__/u:object_r:binder_cache_system_server_prop:s0
+    0000006b'ecd00000-0000006b'ecdfffff r--         0    100000  /dev/__properties__/u:object_r:binder_cache_bluetooth_server_prop:s0
+    0000006b'ece00000-0000006b'ecefffff r--         0    100000  /dev/__properties__/u:object_r:audio_prop:s0
+    0000006b'ecf00000-0000006b'ecffffff r--         0    100000  /dev/__properties__/u:object_r:arm64_memtag_prop:s0
+    0000006b'ed000000-0000006b'ed0fffff r--         0    100000  /dev/__properties__/u:object_r:apexd_select_prop:s0
+    0000006b'ed100000-0000006b'ed1fffff r--         0    100000  /dev/__properties__/u:object_r:apex_ready_prop:s0
+    0000006b'ed200000-0000006b'ed873fff ---         0    674000
+    0000006b'ed874000-0000006b'ed877fff rw-         0      4000
+    0000006b'ed878000-0000006b'ee1fffff ---         0    988000
+    0000006b'ee245000-0000006b'ee25cfff r--         0     18000  /system/lib64/android.frameworks.sensorservice@1.0.so (BuildId: 4c494a5ad366bddc39d55cf4c29d2e38)
+    0000006b'ee25d000-0000006b'ee277fff r-x     18000     1b000  /system/lib64/android.frameworks.sensorservice@1.0.so (BuildId: 4c494a5ad366bddc39d55cf4c29d2e38)
+    0000006b'ee278000-0000006b'ee27cfff r--     33000      5000  /system/lib64/android.frameworks.sensorservice@1.0.so (BuildId: 4c494a5ad366bddc39d55cf4c29d2e38)
+    0000006b'ee27d000-0000006b'ee27dfff rw-     38000      1000  /system/lib64/android.frameworks.sensorservice@1.0.so (BuildId: 4c494a5ad366bddc39d55cf4c29d2e38)
+    0000006b'ee28d000-0000006b'ee299fff r--         0      d000  /system/lib64/libVivoJsonResourceManager_jni.so (BuildId: b4fc609a17587368f60006bad5752158)
+    0000006b'ee29a000-0000006b'ee2affff r-x      d000     16000  /system/lib64/libVivoJsonResourceManager_jni.so (BuildId: b4fc609a17587368f60006bad5752158)
+    0000006b'ee2b0000-0000006b'ee2b0fff r--     23000      1000  /system/lib64/libVivoJsonResourceManager_jni.so (BuildId: b4fc609a17587368f60006bad5752158)
+    0000006b'ee2b1000-0000006b'ee2b1fff rw-     24000      1000  /system/lib64/libVivoJsonResourceManager_jni.so (BuildId: b4fc609a17587368f60006bad5752158)
+    0000006b'ee2f6000-0000006b'ee2f6fff ---         0      1000
+    0000006b'ee2f7000-0000006b'ee2f7fff ---         0      1000  [anon:stack_and_tls:20564]
+    0000006b'ee2f8000-0000006b'ee3fefff rw-         0    107000  [anon:stack_and_tls:20564]
+    0000006b'ee3ff000-0000006b'ee3fffff ---         0      1000
+    0000006b'ee400000-0000006b'ef3e3fff ---         0    fe4000
+    0000006b'ef3e4000-0000006b'ef3e7fff rw-         0      4000
+    0000006b'ef3e8000-0000006b'ef9ebfff ---         0    604000
+    0000006b'ef9ec000-0000006b'ef9effff rw-         0      4000
+    0000006b'ef9f0000-0000006b'f03fffff ---         0    a10000
+    0000006b'f041e000-0000006b'f0428fff r--         0      b000  /system/lib64/android.hardware.sensors-V3-ndk.so (BuildId: 02d1103f3284b46b19a503d8e72a5818)
+    0000006b'f0429000-0000006b'f0436fff r-x      b000      e000  /system/lib64/android.hardware.sensors-V3-ndk.so (BuildId: 02d1103f3284b46b19a503d8e72a5818)
+    0000006b'f0437000-0000006b'f0437fff r--     19000      1000  /system/lib64/android.hardware.sensors-V3-ndk.so (BuildId: 02d1103f3284b46b19a503d8e72a5818)
+    0000006b'f0438000-0000006b'f0438fff rw-     1a000      1000  /system/lib64/android.hardware.sensors-V3-ndk.so (BuildId: 02d1103f3284b46b19a503d8e72a5818)
+    0000006b'f047f000-0000006b'f0550fff r--         0     d2000  /vendor/lib64/hw/vulkan.adreno.so (BuildId: 6a6c0d028c1976929b347385e1d2ccca)
+    0000006b'f0551000-0000006b'f074dfff r-x     d2000    1fd000  /vendor/lib64/hw/vulkan.adreno.so (BuildId: 6a6c0d028c1976929b347385e1d2ccca)
+    0000006b'f074e000-0000006b'f075efff r--    2cf000     11000  /vendor/lib64/hw/vulkan.adreno.so (BuildId: 6a6c0d028c1976929b347385e1d2ccca)
+    0000006b'f075f000-0000006b'f0794fff rw-    2df000     36000  /vendor/lib64/hw/vulkan.adreno.so (BuildId: 6a6c0d028c1976929b347385e1d2ccca)
+    0000006b'f0795000-0000006b'f07abfff rw-         0     17000  [anon:.bss]
+    0000006b'f0800000-0000006b'f0ffffff ---         0    800000
+    0000006b'f1002000-0000006b'f1101fff r--         0    100000  /dev/__properties__/u:object_r:adbd_config_prop:s0
+    0000006b'f1102000-0000006b'f1102fff ---         0      1000
+    0000006b'f1103000-0000006b'f1103fff ---         0      1000  [anon:stack_and_tls:20561]
+    0000006b'f1104000-0000006b'f11fefff rw-         0     fb000  [anon:stack_and_tls:20561]
+    0000006b'f11ff000-0000006b'f11fffff ---         0      1000
+    0000006b'f1200000-0000006b'f1efffff ---         0    d00000
+    0000006b'f1f00000-0000006b'f1f03fff rw-         0      4000
+    0000006b'f1f04000-0000006b'f21fffff ---         0    2fc000
+    0000006b'f2240000-0000006b'f2253fff r--         0     14000  /system_ext/lib64/vendor.vivo.hardware.camera.vivoreprocess@1.0.so (BuildId: 20be962b5f0fac23a4e0d1e0e05634fe)
+    0000006b'f2254000-0000006b'f2267fff r-x     14000     14000  /system_ext/lib64/vendor.vivo.hardware.camera.vivoreprocess@1.0.so (BuildId: 20be962b5f0fac23a4e0d1e0e05634fe)
+    0000006b'f2268000-0000006b'f226bfff r--     28000      4000  /system_ext/lib64/vendor.vivo.hardware.camera.vivoreprocess@1.0.so (BuildId: 20be962b5f0fac23a4e0d1e0e05634fe)
+    0000006b'f226c000-0000006b'f226cfff rw-     2c000      1000  /system_ext/lib64/vendor.vivo.hardware.camera.vivoreprocess@1.0.so (BuildId: 20be962b5f0fac23a4e0d1e0e05634fe)
+    0000006b'f2287000-0000006b'f2296fff r--         0     10000  /system/lib64/vendor.vivo.hardware.camera.vivopostproc@1.0.so (BuildId: e88cbc6551653954737175431f61ef28)
+    0000006b'f2297000-0000006b'f22a6fff r-x     10000     10000  /system/lib64/vendor.vivo.hardware.camera.vivopostproc@1.0.so (BuildId: e88cbc6551653954737175431f61ef28)
+    0000006b'f22a7000-0000006b'f22a9fff r--     20000      3000  /system/lib64/vendor.vivo.hardware.camera.vivopostproc@1.0.so (BuildId: e88cbc6551653954737175431f61ef28)
+    0000006b'f22aa000-0000006b'f22aafff rw-     23000      1000  /system/lib64/vendor.vivo.hardware.camera.vivopostproc@1.0.so (BuildId: e88cbc6551653954737175431f61ef28)
+    0000006b'f22f8000-0000006b'f23f7fff r--         0    100000  /dev/__properties__/u:object_r:aaudio_config_prop:s0
+    0000006b'f23f8000-0000006b'f23f8fff ---         0      1000
+    0000006b'f23f9000-0000006b'f23f9fff ---         0      1000  [anon:stack_and_tls:20559]
+    0000006b'f23fa000-0000006b'f2500fff rw-         0    107000  [anon:stack_and_tls:20559]
+    0000006b'f2501000-0000006b'f2502fff ---         0      2000
+    0000006b'f2503000-0000006b'f25fefff rw-         0     fc000  [anon:stack_and_tls:20558]
+    0000006b'f25ff000-0000006b'f25fffff ---         0      1000
+    0000006b'f2600000-0000006b'f27fffff rw-         0    200000  /dev/ashmem/shared_memory/371CC60A666358911C3A14EEDB7A153A (deleted)
+    0000006b'f2800000-0000006b'f2aeffff ---         0    2f0000
+    0000006b'f2af0000-0000006b'f2af3fff rw-         0      4000
+    0000006b'f2af4000-0000006b'f3c1bfff ---         0   1128000
+    0000006b'f3c1c000-0000006b'f3c1ffff rw-         0      4000
+    0000006b'f3c20000-0000006b'f47fffff ---         0    be0000
+    0000006b'f4804000-0000006b'f4804fff ---         0      1000
+    0000006b'f4805000-0000006b'f4805fff ---         0      1000  [anon:stack_and_tls:20553]
+    0000006b'f4806000-0000006b'f4900fff rw-         0     fb000  [anon:stack_and_tls:20553]
+    0000006b'f4901000-0000006b'f4902fff ---         0      2000
+    0000006b'f4903000-0000006b'f49fefff rw-         0     fc000  [anon:stack_and_tls:20499]
+    0000006b'f49ff000-0000006b'f49fffff ---         0      1000
+    0000006b'f4a00000-0000006b'f5153fff ---         0    754000
+    0000006b'f5154000-0000006b'f5157fff rw-         0      4000
+    0000006b'f5158000-0000006b'f59fffff ---         0    8a8000
+    0000006b'f5a4b000-0000006b'f5a56fff r--         0      c000  /system/lib64/android.hardware.sensors@1.0.so (BuildId: 48918f5326b61c4e2157f35dc785dd36)
+    0000006b'f5a57000-0000006b'f5a68fff r-x      c000     12000  /system/lib64/android.hardware.sensors@1.0.so (BuildId: 48918f5326b61c4e2157f35dc785dd36)
+    0000006b'f5a69000-0000006b'f5a6afff r--     1e000      2000  /system/lib64/android.hardware.sensors@1.0.so (BuildId: 48918f5326b61c4e2157f35dc785dd36)
+    0000006b'f5a6b000-0000006b'f5a6bfff rw-     20000      1000  /system/lib64/android.hardware.sensors@1.0.so (BuildId: 48918f5326b61c4e2157f35dc785dd36)
+    0000006b'f5a84000-0000006b'f5a91fff r--         0      e000  /system/lib64/vendor.vivo.hardware.camera.jpegencoder@1.0.so (BuildId: 9cdeca658670e5691dbe58aad7d919e8)
+    0000006b'f5a92000-0000006b'f5a9efff r-x      e000      d000  /system/lib64/vendor.vivo.hardware.camera.jpegencoder@1.0.so (BuildId: 9cdeca658670e5691dbe58aad7d919e8)
+    0000006b'f5a9f000-0000006b'f5aa1fff r--     1b000      3000  /system/lib64/vendor.vivo.hardware.camera.jpegencoder@1.0.so (BuildId: 9cdeca658670e5691dbe58aad7d919e8)
+    0000006b'f5aa2000-0000006b'f5aa2fff rw-     1e000      1000  /system/lib64/vendor.vivo.hardware.camera.jpegencoder@1.0.so (BuildId: 9cdeca658670e5691dbe58aad7d919e8)
+    0000006b'f5af6000-0000006b'f5af6fff ---         0      1000
+    0000006b'f5af7000-0000006b'f5af7fff ---         0      1000  [anon:stack_and_tls:20498]
+    0000006b'f5af8000-0000006b'f5bfefff rw-         0    107000  [anon:stack_and_tls:20498]
+    0000006b'f5bff000-0000006b'f5bfffff ---         0      1000
+    0000006b'f5c00000-0000006b'f65c3fff ---         0    9c4000
+    0000006b'f65c4000-0000006b'f65c7fff rw-         0      4000
+    0000006b'f65c8000-0000006b'f71cffff ---         0    c08000
+    0000006b'f71d0000-0000006b'f71d3fff rw-         0      4000
+    0000006b'f71d4000-0000006b'f7f8bfff ---         0    db8000
+    0000006b'f7f8c000-0000006b'f7f8ffff rw-         0      4000
+    0000006b'f7f90000-0000006b'f8bfffff ---         0    c70000
+    0000006b'f8c5e000-0000006b'f8c6afff r--         0      d000  /system/lib64/vendor.vivo.hardware.camera.vop@1.0.so (BuildId: 209586aad4e50f9231a0f7aef008436c)
+    0000006b'f8c6b000-0000006b'f8c76fff r-x      d000      c000  /system/lib64/vendor.vivo.hardware.camera.vop@1.0.so (BuildId: 209586aad4e50f9231a0f7aef008436c)
+    0000006b'f8c77000-0000006b'f8c79fff r--     19000      3000  /system/lib64/vendor.vivo.hardware.camera.vop@1.0.so (BuildId: 209586aad4e50f9231a0f7aef008436c)
+    0000006b'f8c7a000-0000006b'f8c7afff rw-     1c000      1000  /system/lib64/vendor.vivo.hardware.camera.vop@1.0.so (BuildId: 209586aad4e50f9231a0f7aef008436c)
+    0000006b'f8c93000-0000006b'f8c94fff r--         0      2000  /system/lib64/android.hardware.camera.common-V1-ndk.so (BuildId: 3dc1f7d17f9de7f38229167d99a145b6)
+    0000006b'f8c95000-0000006b'f8c97fff r-x      2000      3000  /system/lib64/android.hardware.camera.common-V1-ndk.so (BuildId: 3dc1f7d17f9de7f38229167d99a145b6)
+    0000006b'f8c98000-0000006b'f8c98fff r--      5000      1000  /system/lib64/android.hardware.camera.common-V1-ndk.so (BuildId: 3dc1f7d17f9de7f38229167d99a145b6)
+    0000006b'f8c99000-0000006b'f8c99fff rw-      6000      1000  /system/lib64/android.hardware.camera.common-V1-ndk.so (BuildId: 3dc1f7d17f9de7f38229167d99a145b6)
+    0000006b'f8cf6000-0000006b'f8cf6fff ---         0      1000
+    0000006b'f8cf7000-0000006b'f8cf7fff ---         0      1000  [anon:stack_and_tls:20495]
+    0000006b'f8cf8000-0000006b'f8dfefff rw-         0    107000  [anon:stack_and_tls:20495]
+    0000006b'f8dff000-0000006b'f8dfffff ---         0      1000
+    0000006b'f8e00000-0000006b'f9df3fff ---         0    ff4000
+    0000006b'f9df4000-0000006b'f9df7fff rw-         0      4000
+    0000006b'f9df8000-0000006b'f9dfffff ---         0      8000
+    0000006b'f9e04000-0000006b'f9e04fff ---         0      1000
+    0000006b'f9e05000-0000006b'f9f00fff rw-         0     fc000  [anon:stack_and_tls:20496]
+    0000006b'f9f01000-0000006b'f9f02fff ---         0      2000
+    0000006b'f9f03000-0000006b'f9f03fff ---         0      1000  [anon:stack_and_tls:20494]
+    0000006b'f9f04000-0000006b'f9ffefff rw-         0     fb000  [anon:stack_and_tls:20494]
+    0000006b'f9fff000-0000006b'f9ffffff ---         0      1000
+    0000006b'fa000000-0000006b'faef3fff ---         0    ef4000
+    0000006b'faef4000-0000006b'faef7fff rw-         0      4000
+    0000006b'faef8000-0000006b'fb023fff ---         0    12c000
+    0000006b'fb024000-0000006b'fb027fff rw-         0      4000
+    0000006b'fb028000-0000006b'fc8dffff ---         0   18b8000
+    0000006b'fc8e0000-0000006b'fc8e3fff rw-         0      4000
+    0000006b'fc8e4000-0000006b'fd91ffff ---         0   103c000
+    0000006b'fd920000-0000006b'fd923fff rw-         0      4000
+    0000006b'fd924000-0000006b'fe367fff ---         0    a44000
+    0000006b'fe368000-0000006b'fe36bfff rw-         0      4000
+    0000006b'fe36c000-0000006b'ff86bfff ---         0   1500000
+    0000006b'ff86c000-0000006b'ff86ffff rw-         0      4000
+    0000006b'ff870000-0000006b'ffffffff ---         0    790000
+    0000006c'00000000-0000006c'00000fff ---         0      1000  [anon:partition_alloc]
+    0000006c'00001000-0000006c'00001fff rw-         0      1000  [anon:partition_alloc]
+    0000006c'00002000-0000006c'00003fff ---         0      2000  [anon:partition_alloc]
+    0000006c'00004000-0000006c'00036fff rw-         0     33000  [anon:partition_alloc]
+    0000006c'00037000-0000006c'00037fff ---         0      1000  [anon:partition_alloc]
+    0000006c'00038000-0000006c'0006afff rw-         0     33000  [anon:partition_alloc]
+    0000006c'0006b000-0000006c'0006bfff ---         0      1000  [anon:partition_alloc]
+    0000006c'0006c000-0000006c'0007afff rw-         0      f000  [anon:partition_alloc]
+    0000006c'0007b000-0000006c'0007bfff ---         0      1000  [anon:partition_alloc]
+    0000006c'0007c000-0000006c'0009efff rw-         0     23000  [anon:partition_alloc]
+    0000006c'0009f000-0000006c'0009ffff ---         0      1000  [anon:partition_alloc]
+    0000006c'000a0000-0000006c'000b6fff rw-         0     17000  [anon:partition_alloc]
+    0000006c'000b7000-0000006c'000b7fff ---         0      1000  [anon:partition_alloc]
+    0000006c'000b8000-0000006c'000befff rw-         0      7000  [anon:partition_alloc]
+    0000006c'000bf000-0000006c'000bffff ---         0      1000  [anon:partition_alloc]
+    0000006c'000c0000-0000006c'000d6fff rw-         0     17000  [anon:partition_alloc]
+    0000006c'000d7000-0000006c'000d7fff ---         0      1000  [anon:partition_alloc]
+    0000006c'000d8000-0000006c'000fafff rw-         0     23000  [anon:partition_alloc]
+    0000006c'000fb000-0000006c'000fbfff ---         0      1000  [anon:partition_alloc]
+    0000006c'000fc000-0000006c'00112fff rw-         0     17000  [anon:partition_alloc]
+    0000006c'00113000-0000006c'00113fff ---         0      1000  [anon:partition_alloc]
+    0000006c'00114000-0000006c'00122fff rw-         0      f000  [anon:partition_alloc]
+    0000006c'00123000-0000006c'00123fff ---         0      1000  [anon:partition_alloc]
+    0000006c'00124000-0000006c'00132fff rw-         0      f000  [anon:partition_alloc]
+    0000006c'00133000-0000006c'00133fff ---         0      1000  [anon:partition_alloc]
+    0000006c'00134000-0000006c'00146fff rw-         0     13000  [anon:partition_alloc]
+    0000006c'00147000-0000006c'00147fff ---         0      1000  [anon:partition_alloc]
+    0000006c'00148000-0000006c'00166fff rw-         0     1f000  [anon:partition_alloc]
+    0000006c'00167000-0000006c'00167fff ---         0      1000  [anon:partition_alloc]
+    0000006c'00168000-0000006c'0016efff rw-         0      7000  [anon:partition_alloc]
+    0000006c'0016f000-0000006c'0016ffff ---         0      1000  [anon:partition_alloc]
+    0000006c'00170000-0000006c'0019afff rw-         0     2b000  [anon:partition_alloc]
+    0000006c'0019b000-0000006c'0019bfff ---         0      1000  [anon:partition_alloc]
+    0000006c'0019c000-0000006c'001befff rw-         0     23000  [anon:partition_alloc]
+    0000006c'001bf000-0000006c'001bffff ---         0      1000  [anon:partition_alloc]
+    0000006c'001c0000-0000006c'001f7fff rw-         0     38000  [anon:partition_alloc]
+    0000006c'001f8000-0000006c'00200fff ---         0      9000  [anon:partition_alloc]
+    0000006c'00201000-0000006c'00201fff rw-         0      1000  [anon:partition_alloc]
+    0000006c'00202000-0000006c'00203fff ---         0      2000  [anon:partition_alloc]
+    0000006c'00204000-0000006c'00227fff rw-         0     24000  [anon:partition_alloc]
+    0000006c'00228000-0000006c'00400fff ---         0    1d9000  [anon:partition_alloc]
+    0000006c'00401000-0000006c'00401fff rw-         0      1000  [anon:partition_alloc]
+    0000006c'00402000-0000006c

@@ -72,6 +72,12 @@
 }
 -keep class com.bumptech.glide.** { *; }
 
+# FFmpegKit（X HLS fMP4 -c copy remux）
+-keep class com.arthenica.ffmpegkit.** { *; }
+-dontwarn com.arthenica.ffmpegkit.**
+-keep class com.arthenica.smartexception.** { *; }
+-dontwarn com.arthenica.smartexception.**
+
 # OkHttp / Okio（下载、网络库传递依赖）
 -dontwarn okhttp3.**
 -dontwarn okio.**
