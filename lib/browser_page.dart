@@ -5575,13 +5575,13 @@ class _BrowserPageState extends State<BrowserPage>
         );
         if (pairedDashAudioUrl == null) {
           // Audio requests often follow the first video range slightly later.
-          // Hold the current reel instead of switching/accepting silence.
+          // Hold the current reel and retry capture before accepting silence.
           for (
             var audioWait = 0;
-            audioWait < 6 && pairedDashAudioUrl == null;
+            audioWait < 10 && pairedDashAudioUrl == null;
             audioWait++
           ) {
-            await Future<void>.delayed(const Duration(milliseconds: 300));
+            await Future<void>.delayed(const Duration(milliseconds: 500));
             pairedDashAudioUrl = _findFacebookPairedAudioUrl(
               videoId: selectedVideoMetadata.videoId,
               explicitCandidates: <String>[
@@ -5618,7 +5618,7 @@ class _BrowserPageState extends State<BrowserPage>
             debugPrint(
               'FB pipeline: matching audio track not captured for '
               'videoId=${selectedVideoMetadata.videoId} after bounded wait; '
-              'preserve the bound video track as a partial success',
+              'keep seekable video track as last-resort library save',
             );
           }
         }
@@ -5659,8 +5659,8 @@ class _BrowserPageState extends State<BrowserPage>
       }
       if (missingFacebookAudioTrack) {
         debugPrint(
-          '[SMART_PARTIAL] Facebook audio track unavailable; '
-          'continue with the verified video track only',
+          '[SMART_PARTIAL] Facebook audio track unavailable after wait; '
+          'continue with the verified seekable video track',
         );
       }
     }
@@ -5772,6 +5772,17 @@ class _BrowserPageState extends State<BrowserPage>
                 ? pairedDashAudioUrl
                 : null,
         requirePairedAudio: attemptRequiresFacebookAudio,
+        // Smart-batch FB/IG often contend on the same CDN; 12s audio timeout
+        // was saving silent video after pairing succeeded (log: paired audio
+        // download timeout → SMART_PARTIAL).
+        pairedAudioDownloadTimeout:
+            (isFacebookPipeline || isInstagramPipeline)
+                ? const Duration(seconds: 60)
+                : const Duration(seconds: 12),
+        pairedAudioMuxTimeout:
+            (isFacebookPipeline || isInstagramPipeline)
+                ? const Duration(seconds: 30)
+                : const Duration(seconds: 9),
         expectedMediaIdentity:
             isFacebookPipeline
                 ? (item['expectedFbVideoKey'] ??
@@ -11967,7 +11978,9 @@ class _BrowserPageState extends State<BrowserPage>
       if (!recentlyNotified) {
         _lastMediaHandlerFailureUrl = injectionUrl;
         _lastMediaHandlerFailureAt = now;
-        ScaffoldMessenger.of(context).showSnackBar(
+        // Only while the browser tab/route is visible. Smart download keeps
+        // reinjecting in the background; do not toast over 媒体/目录 pages.
+        _showBrowserSnackBar(
           const SnackBar(
             content: Text('媒体监听初始化失败，已自动改用兼容模式继续尝试'),
             duration: Duration(seconds: 2),
@@ -37933,95 +37946,131 @@ class _BrowserPageState extends State<BrowserPage>
       if (downloadedFile != null) {
         debugPrint('文件下载成功: ');
         var pairedAudioMuxed = false;
+        var videoFile = downloadedFile;
         if (mediaType == MediaType.video &&
             pairedAudioUrl != null &&
             pairedAudioUrl.trim().isNotEmpty) {
           File? audioFile;
           File? muxedFile;
+          // Prefer A+V; retry audio on its own token so a timeout does not
+          // poison the already-finished video download / later retries.
+          final audioAttempts = requirePairedAudio ? 3 : 1;
           try {
-            onProgress?.call(0.96, detail: '视频轨完成，正在下载音频轨…');
-            resetInactivityTimeout();
-            audioFile = await _downloadFile(
-              pairedAudioUrl,
-              MediaType.audio,
-              cancelToken: cancelToken,
-              maxRequestAttempts: maxRequestAttempts,
-              onProgress: (p, {detail}) {
+            for (var audioTry = 1; audioTry <= audioAttempts; audioTry++) {
+              final audioCancel = CancelToken();
+              try {
+                onProgress?.call(
+                  0.96,
+                  detail:
+                      audioAttempts > 1
+                          ? '视频轨完成，正在下载音频轨（$audioTry/$audioAttempts）…'
+                          : '视频轨完成，正在下载音频轨…',
+                );
                 resetInactivityTimeout();
-                final combined = 0.96 + (p.clamp(0.0, 1.0) * 0.025);
-                onProgress?.call(combined, detail: detail ?? '音频轨下载中');
-                if (mounted) {
-                  _updateDownloadTask(
-                    taskId,
-                    progress: combined,
-                    progressDetail: detail ?? '音频轨下载中',
+                audioFile = await _downloadFile(
+                  pairedAudioUrl,
+                  MediaType.audio,
+                  cancelToken: audioCancel,
+                  maxRequestAttempts: maxRequestAttempts,
+                  onProgress: (p, {detail}) {
+                    resetInactivityTimeout();
+                    final combined = 0.96 + (p.clamp(0.0, 1.0) * 0.025);
+                    onProgress?.call(combined, detail: detail ?? '音频轨下载中');
+                    if (mounted) {
+                      _updateDownloadTask(
+                        taskId,
+                        progress: combined,
+                        progressDetail: detail ?? '音频轨下载中',
+                      );
+                    }
+                  },
+                ).timeout(
+                  pairedAudioDownloadTimeout,
+                  onTimeout: () {
+                    timedOut = true;
+                    if (!audioCancel.isCancelled) {
+                      audioCancel.cancel('paired_audio_timeout');
+                    }
+                    throw TimeoutException(
+                      'paired audio download timeout '
+                      '(try $audioTry/$audioAttempts, '
+                      '${pairedAudioDownloadTimeout.inSeconds}s)',
+                    );
+                  },
+                );
+                if (audioFile != null && await audioFile.exists()) {
+                  muxedFile = File('${videoFile.path}.fb-mux.mp4');
+                  if (await muxedFile.exists()) await muxedFile.delete();
+                  onProgress?.call(0.99, detail: '视频与音频合并中');
+                  final muxed =
+                      await const MethodChannel('media_muxer')
+                          .invokeMethod<bool>('muxMp4', <String, String>{
+                            'videoPath': videoFile.path,
+                            'audioPath': audioFile.path,
+                            'outputPath': muxedFile.path,
+                          })
+                          .timeout(
+                            pairedAudioMuxTimeout,
+                            onTimeout: () {
+                              timedOut = true;
+                              debugPrint(
+                                'Paired audio mux hard timeout after '
+                                '${pairedAudioMuxTimeout.inSeconds}s',
+                              );
+                              return false;
+                            },
+                          ) ==
+                      true;
+                  if (muxed &&
+                      await muxedFile.exists() &&
+                      await muxedFile.length() > 0) {
+                    final originalPath = videoFile.path;
+                    await videoFile.delete();
+                    videoFile = await muxedFile.rename(originalPath);
+                    downloadedFile = videoFile;
+                    muxedFile = null;
+                    pairedAudioMuxed = true;
+                    debugPrint(
+                      'Paired video+audio mux completed '
+                      '(audioTry=$audioTry/$audioAttempts)',
+                    );
+                    break;
+                  }
+                }
+              } catch (e) {
+                debugPrint(
+                  'Paired audio attempt failed '
+                  '(try=$audioTry/$audioAttempts required=$requirePairedAudio): $e',
+                );
+                try {
+                  if (audioFile != null && await audioFile.exists()) {
+                    await audioFile.delete();
+                  }
+                } catch (_) {}
+                audioFile = null;
+                try {
+                  if (muxedFile != null && await muxedFile.exists()) {
+                    await muxedFile.delete();
+                  }
+                } catch (_) {}
+                muxedFile = null;
+                if (audioTry < audioAttempts) {
+                  await Future<void>.delayed(
+                    Duration(milliseconds: 400 * audioTry),
+                  );
+                  continue;
+                }
+                if (warnOnPairedMuxFailure &&
+                    mounted &&
+                    !skipFailurePrompt) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('音视频合并失败，将尝试下载带声音的版本'),
+                      duration: Duration(seconds: 2),
+                    ),
                   );
                 }
-              },
-            ).timeout(
-              pairedAudioDownloadTimeout,
-              onTimeout: () {
-                timedOut = true;
-                if (!cancelToken.isCancelled) {
-                  cancelToken.cancel('paired_audio_timeout');
-                }
-                throw TimeoutException('paired audio download timeout');
-              },
-            );
-            if (audioFile != null && await audioFile.exists()) {
-              muxedFile = File('${downloadedFile.path}.fb-mux.mp4');
-              if (await muxedFile.exists()) await muxedFile.delete();
-              onProgress?.call(0.99, detail: '视频与音频合并中');
-              final muxed =
-                  await const MethodChannel('media_muxer')
-                      .invokeMethod<bool>('muxMp4', <String, String>{
-                        'videoPath': downloadedFile.path,
-                        'audioPath': audioFile.path,
-                        'outputPath': muxedFile.path,
-                      })
-                      .timeout(
-                        pairedAudioMuxTimeout,
-                        onTimeout: () {
-                          timedOut = true;
-                          debugPrint(
-                            'Paired audio mux hard timeout after ${pairedAudioMuxTimeout.inSeconds}s',
-                          );
-                          return false;
-                        },
-                      ) ==
-                  true;
-              if (muxed &&
-                  await muxedFile.exists() &&
-                  await muxedFile.length() > 0) {
-                final originalPath = downloadedFile.path;
-                await downloadedFile.delete();
-                downloadedFile = await muxedFile.rename(originalPath);
-                muxedFile = null;
-                pairedAudioMuxed = true;
-                debugPrint('Paired video+audio mux completed');
-              } else if (warnOnPairedMuxFailure &&
-                  mounted &&
-                  !skipFailurePrompt) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('音视频合并失败，将尝试下载带声音的版本'),
-                    duration: Duration(seconds: 2),
-                  ),
-                );
               }
-            }
-          } catch (e) {
-            debugPrint(
-              'Paired audio mux failed '
-              '(required=$requirePairedAudio): $e',
-            );
-            if (warnOnPairedMuxFailure && mounted && !skipFailurePrompt) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('音视频合并失败，将尝试下载带声音的版本'),
-                  duration: Duration(seconds: 2),
-                ),
-              );
             }
           } finally {
             for (final temporary in <File?>[audioFile, muxedFile]) {
@@ -38033,10 +38082,12 @@ class _BrowserPageState extends State<BrowserPage>
             }
           }
         }
+        // After real effort (longer timeout + retries), keep a seekable
+        // video-only file rather than discarding the whole download.
         if (requirePairedAudio && !pairedAudioMuxed) {
           debugPrint(
-            '[SMART_PARTIAL] Facebook audio mux did not complete after the '
-            'bounded attempt; preserve the downloaded video track',
+            '[SMART_PARTIAL] Facebook/IG paired audio did not complete after '
+            'bounded retries; preserve the seekable video track',
           );
         }
         if (warnOnPairedMuxFailure &&
@@ -38044,7 +38095,8 @@ class _BrowserPageState extends State<BrowserPage>
             pairedAudioUrl.trim().isNotEmpty &&
             !pairedAudioMuxed) {
           debugPrint(
-            'Rejecting silent-only download because paired audio mux failed',
+            'Rejecting silent-only download because paired audio mux failed '
+            '(warnOnPairedMuxFailure=true)',
           );
           try {
             await downloadedFile?.delete();

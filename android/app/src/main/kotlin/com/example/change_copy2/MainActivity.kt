@@ -1011,6 +1011,7 @@ class MainActivity: FlutterActivity() {
         var lastRawSampleTimeUs = -1L
         var wrote = 0
         var ptsForcedMono = 0
+        var skippedAlreadyWritten = 0
         var resumeFromUs = 0L
         var pass = 0
         val maxPasses = 64
@@ -1020,6 +1021,11 @@ class MainActivity: FlutterActivity() {
             val extractor = MediaExtractor()
             var passWrote = 0
             var passLastRaw = lastRawSampleTimeUs
+            // Only resume passes may skip by raw PTS. On the first continuous read,
+            // H.264 B-frames arrive in decode order with non-monotonic PTS; treating
+            // "rawPts <= lastRaw" as duplicate drops most B-frames and yields sparse
+            // video (audio OK) — the FB/IG DASH mux regression after X long-fMP4 work.
+            val resumePass = resumeFromUs > 0L
             try {
                 extractor.setDataSource(inputPath)
                 val sourceTrack = findTrack(extractor, trackPrefix)
@@ -1027,7 +1033,7 @@ class MainActivity: FlutterActivity() {
                     throw IllegalStateException("No $trackPrefix track in $inputPath")
                 }
                 extractor.selectTrack(sourceTrack)
-                if (resumeFromUs > 0L) {
+                if (resumePass) {
                     extractor.seekTo(resumeFromUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
                     android.util.Log.i(
                         "X_HLS_MUX_NATIVE",
@@ -1063,11 +1069,13 @@ class MainActivity: FlutterActivity() {
                         continue
                     }
                     val sampleTimeUs = extractor.sampleTime
-                    // Skip samples already committed in a previous resume pass.
-                    if (sampleTimeUs >= 0L &&
+                    // Skip samples already committed in a previous resume pass only.
+                    if (resumePass &&
+                        sampleTimeUs >= 0L &&
                         lastRawSampleTimeUs >= 0L &&
                         sampleTimeUs <= lastRawSampleTimeUs
                     ) {
+                        skippedAlreadyWritten++
                         if (!extractor.advance()) break
                         continue
                     }
@@ -1096,8 +1104,14 @@ class MainActivity: FlutterActivity() {
                         }
                         info.presentationTimeUs = normalizedTimeUs
                         lastPresentationTimeUs = normalizedTimeUs
-                        lastRawSampleTimeUs = sampleTimeUs
-                        passLastRaw = sampleTimeUs
+                        // Track max raw PTS for resume bookmarking — do not use as a
+                        // same-pass "already written" gate (B-frames go backwards).
+                        if (sampleTimeUs > lastRawSampleTimeUs) {
+                            lastRawSampleTimeUs = sampleTimeUs
+                        }
+                        if (sampleTimeUs > passLastRaw) {
+                            passLastRaw = sampleTimeUs
+                        }
                     } else {
                         val fallback =
                             if (lastPresentationTimeUs < 0L) {
@@ -1175,6 +1189,7 @@ class MainActivity: FlutterActivity() {
             "X_HLS_MUX_NATIVE",
             "writeTrack seek-resume wrote=$wrote lastPtsUs=$lastPresentationTimeUs " +
                 "lastRawPtsUs=$lastRawSampleTimeUs ptsForcedMono=$ptsForcedMono " +
+                "skippedAlreadyWritten=$skippedAlreadyWritten " +
                 "passes=$pass targetDurUs=$targetDurationUs",
         )
 
