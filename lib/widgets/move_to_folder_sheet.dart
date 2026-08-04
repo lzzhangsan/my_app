@@ -38,6 +38,11 @@ Future<String?> showMoveTargetSheet({
     isScrollControlled: true,
     backgroundColor: Colors.transparent,
     builder: (sheetContext) {
+      // 面板仍贴屏幕底边；仅把选项列表底部垫高，避开系统导航/手势条。
+      // ~1cm ≈ 38 logical px + viewPadding.bottom。
+      final contentBottomPad =
+          MediaQuery.viewPaddingOf(sheetContext).bottom + 38;
+
       Widget buildTile(MoveSheetChoice choice) {
         final enabled = choice.enabled;
         final content = Container(
@@ -119,7 +124,7 @@ Future<String?> showMoveTargetSheet({
             ),
             Expanded(
               child: GridView.builder(
-                padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
+                padding: EdgeInsets.fromLTRB(10, 0, 10, contentBottomPad),
                 gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                   crossAxisCount: columns,
                   mainAxisExtent: tileExtent,

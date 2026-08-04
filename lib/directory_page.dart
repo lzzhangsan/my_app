@@ -1673,6 +1673,42 @@ class _DirectoryPageState extends State<DirectoryPage>
         (folder['name'] as String);
   }
 
+  /// 与目录页一致：按各层 [order_index] 深度优先，父子文件夹紧挨在一起。
+  List<Map<String, dynamic>> _foldersInDirectoryPageOrder(
+    List<Map<String, dynamic>> allFolders,
+  ) {
+    int orderOf(Map<String, dynamic> folder) {
+      final raw = folder['order_index'];
+      if (raw is num) return raw.toInt();
+      return int.tryParse('$raw') ?? 0;
+    }
+
+    List<Map<String, dynamic>> childrenOf(String? parentId) {
+      final kids =
+          allFolders.where((folder) {
+            final parent = folder['parent_folder']?.toString();
+            if (parentId == null) {
+              return parent == null || parent.isEmpty;
+            }
+            return parent == parentId;
+          }).toList();
+      kids.sort((a, b) => orderOf(a).compareTo(orderOf(b)));
+      return kids;
+    }
+
+    final ordered = <Map<String, dynamic>>[];
+    void walk(String? parentId) {
+      for (final folder in childrenOf(parentId)) {
+        ordered.add(folder);
+        final id = folder['id']?.toString();
+        if (id != null && id.isNotEmpty) walk(id);
+      }
+    }
+
+    walk(null);
+    return ordered;
+  }
+
   /// 递归获取所有子文件夹id
   List<String> _getAllSubFolderIds(
     String folderId,
@@ -1700,9 +1736,9 @@ class _DirectoryPageState extends State<DirectoryPage>
     try {
       final folders =
           await getService<DatabaseService>().getAllDirectoryFolders();
-      // 排除指定id的文件夹
+      // 先按目录页自然顺序（DFS + order_index）排好，再排除不可选目标。
       final availableFolders =
-          folders
+          _foldersInDirectoryPageOrder(folders)
               .where(
                 (folder) =>
                     excludeFolderIds == null ||
