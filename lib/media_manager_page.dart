@@ -33,6 +33,7 @@ import 'media_player_settings.dart'
     show applyMediaSettingsImportMap, buildMediaSettingsExportMap;
 import 'widgets/image_layout_utils.dart' show ZoomCenterMarkerCoverOverlay;
 import 'widgets/safe_modal_sheet_body.dart';
+import 'widgets/move_to_folder_sheet.dart';
 import 'browser_page.dart';
 import 'services/cache_service.dart';
 import 'services/export_import_utils.dart'
@@ -2846,7 +2847,9 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     if (!mounted || !_isMoveMode) return;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
-        content: Text('移动模式：按住后直接拖动；可调整位置、移入文件夹，或拖到底部收藏夹/回收站'),
+        content: Text(
+          '移动模式：同类内可拖排序；未收藏拖到收藏区将自动收藏；也可拖入普通文件夹',
+        ),
         duration: Duration(seconds: 3),
       ),
     );
@@ -2912,11 +2915,94 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     final ordered =
         _mediaItems.where((item) => !_isSystemMediaFolder(item)).toList();
     final oldIndex = ordered.indexWhere((item) => item.id == dragged.id);
-    var newIndex = ordered.indexWhere((item) => item.id == target.id);
-    if (oldIndex < 0 || newIndex < 0 || oldIndex == newIndex) return;
-    final moved = ordered.removeAt(oldIndex);
-    if (oldIndex < newIndex) newIndex--;
-    ordered.insert(newIndex, moved);
+    if (oldIndex < 0) return;
+
+    // Reorder only within the same category (folder / video / image / …).
+    // Cross-category drops are illegal → snap to front of unfavorited zone.
+    final sameType = dragged.type == target.type;
+    var moved = ordered.removeAt(oldIndex);
+    var autoFavorited = false;
+
+    if (sameType) {
+      var newIndex = ordered.indexWhere((item) => item.id == target.id);
+      if (newIndex < 0) {
+        newIndex = oldIndex.clamp(0, ordered.length);
+      }
+
+      final typeStart = ordered.indexWhere((item) => item.type == moved.type);
+      var typeEndExclusive = typeStart;
+      if (typeStart >= 0) {
+        typeEndExclusive = typeStart;
+        while (typeEndExclusive < ordered.length &&
+            ordered[typeEndExclusive].type == moved.type) {
+          typeEndExclusive++;
+        }
+      }
+
+      if (typeStart < 0) {
+        newIndex = _indexForTypeBlockFront(ordered, moved.type);
+      } else {
+        newIndex = newIndex.clamp(typeStart, typeEndExclusive);
+
+        // Favorite block = leading starred items inside this type.
+        // Indices [typeStart, unfavStart) are inside the favorite zone.
+        // Index == unfavStart is the boundary: treat as front of unfavorited
+        // (not "last favorite"), so unstarred drops there stay unstarred.
+        var unfavStart = typeEndExclusive;
+        for (var i = typeStart; i < typeEndExclusive; i++) {
+          if (!ordered[i].isFavorite) {
+            unfavStart = i;
+            break;
+          }
+        }
+        final hasFavoriteZone = unfavStart > typeStart;
+
+        if (!moved.isFavorite &&
+            hasFavoriteZone &&
+            newIndex < unfavStart &&
+            (moved.type == MediaType.image || moved.type == MediaType.video)) {
+          // Any slot strictly inside the favorite zone → auto-star & keep index.
+          autoFavorited = true;
+          moved = moved.copyWith(isFavorite: true);
+        } else if (moved.isFavorite) {
+          // Starred items stay inside the favorite zone (may occupy last fav slot).
+          final favInsertMax =
+              hasFavoriteZone ? unfavStart : typeStart; // exclusive end OK
+          newIndex = newIndex.clamp(typeStart, favInsertMax);
+        } else {
+          // Unstarred: unfavorited zone only (includes boundary == unfavStart).
+          newIndex = newIndex.clamp(unfavStart, typeEndExclusive);
+        }
+      }
+      ordered.insert(newIndex, moved);
+    } else {
+      ordered.insert(
+        _indexForUnfavoritedBlockFront(ordered, moved.type),
+        moved,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('只能在同一类内排序；已移到未收藏区最前面'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+    }
+
+    if (autoFavorited) {
+      try {
+        await _databaseService.ensureMediaItemFavorite(moved.id);
+      } catch (e) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('自动收藏失败：$e')));
+        await _loadMediaItems(silent: true);
+        return;
+      }
+    }
+
     final systemItems = _mediaItems.where(_isSystemMediaFolder).toList();
     setState(() {
       _mediaItems
@@ -2936,6 +3022,43 @@ class _MediaManagerPageState extends State<MediaManagerPage>
         context,
       ).showSnackBar(SnackBar(content: Text('保存位置失败：$e')));
     }
+  }
+
+  /// First index where [type] belongs in a folder→video→image→other list.
+  int _indexForTypeBlockFront(List<MediaItem> ordered, MediaType type) {
+    final existing = ordered.indexWhere((item) => item.type == type);
+    if (existing >= 0) return existing;
+    int rank(MediaType t) {
+      switch (t) {
+        case MediaType.folder:
+          return 1;
+        case MediaType.video:
+          return 2;
+        case MediaType.image:
+          return 3;
+        case MediaType.audio:
+          return 4;
+      }
+    }
+
+    final want = rank(type);
+    for (var i = 0; i < ordered.length; i++) {
+      if (rank(ordered[i].type) > want) return i;
+    }
+    return ordered.length;
+  }
+
+  /// Front of the unfavorited zone for [type] (after any starred peers).
+  int _indexForUnfavoritedBlockFront(List<MediaItem> ordered, MediaType type) {
+    final typeStart = ordered.indexWhere((item) => item.type == type);
+    if (typeStart < 0) return _indexForTypeBlockFront(ordered, type);
+    for (var i = typeStart; i < ordered.length; i++) {
+      if (ordered[i].type != type) {
+        return i;
+      }
+      if (!ordered[i].isFavorite) return i;
+    }
+    return ordered.length;
   }
 
   Future<void> _moveSelectedItems(String targetDirectory) async {
@@ -3021,84 +3144,50 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
     showDialog(
       context: context,
+      barrierDismissible: false,
       builder:
-          (context) => FutureBuilder<List<MediaItem>>(
-            future: _getAllAvailableFolders(
-              excludeFolderId: excludeId,
-              excludeCurrentDirectoryId: _currentDirectory,
+          (ctx) => const AlertDialog(
+            content: Row(
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(width: 20),
+                Text('加载中...'),
+              ],
             ),
-            builder: (context, snapshot) {
-              if (snapshot.connectionState == ConnectionState.waiting) {
-                return const AlertDialog(
-                  content: Row(
-                    children: [
-                      CircularProgressIndicator(),
-                      SizedBox(width: 20),
-                      Text('加载中...'),
-                    ],
-                  ),
-                );
-              }
-              if (snapshot.hasError || !snapshot.hasData) {
-                return AlertDialog(
-                  title: const Text('移动到'),
-                  content: const Text('没有可用的目标文件夹。'),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.pop(context),
-                      child: const Text('取消'),
-                    ),
-                  ],
-                );
-              }
-
-              final folders = snapshot.data!;
-              return AlertDialog(
-                title: const Text('移动到'),
-                content: SingleChildScrollView(
-                  child: Column(
-                    children: [
-                      ListTile(
-                        title: const Text('根目录'),
-                        enabled: _currentDirectory != 'root',
-                        onTap:
-                            _currentDirectory != 'root'
-                                ? () {
-                                  Navigator.of(context).pop();
-                                  if (item != null) {
-                                    _moveMediaItem(item, 'root');
-                                  } else {
-                                    _moveSelectedItems('root');
-                                  }
-                                }
-                                : null,
-                      ),
-                      ...folders.map((folder) {
-                        return ListTile(
-                          title: Text(folder.name),
-                          onTap: () {
-                            Navigator.of(context).pop();
-                            if (item != null) {
-                              _moveMediaItem(item, folder.id);
-                            } else {
-                              _moveSelectedItems(folder.id);
-                            }
-                          },
-                        );
-                      }),
-                    ],
-                  ),
-                ),
-                actions: [
-                  TextButton(
-                    onPressed: () => Navigator.pop(context),
-                    child: const Text('取消'),
-                  ),
-                ],
-              );
-            },
           ),
     );
+    List<MediaItem> folders;
+    try {
+      folders = await _getAllAvailableFolders(
+        excludeFolderId: excludeId,
+        excludeCurrentDirectoryId: _currentDirectory,
+      );
+    } catch (_) {
+      if (mounted) Navigator.of(context, rootNavigator: true).pop();
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('没有可用的目标文件夹。')));
+      }
+      return;
+    }
+    if (!mounted) return;
+    Navigator.of(context, rootNavigator: true).pop(); // dismiss loading
+
+    final chosen = await showMoveToFolderSheet(
+      context: context,
+      folders: folders,
+      includeRoot: true,
+      rootEnabled: _currentDirectory != 'root',
+      // 透明度 20% → 不透明度 0.8，减轻下方略缩图透出造成的混淆。
+      panelOpacity: 0.8,
+    );
+    if (!mounted || chosen == null) return;
+    if (item != null) {
+      await _moveMediaItem(item, chosen.id);
+    } else {
+      await _moveSelectedItems(chosen.id);
+    }
   }
 
   Future<List<MediaItem>> _getAllAvailableFolders({
@@ -3362,8 +3451,8 @@ class _MediaManagerPageState extends State<MediaManagerPage>
     const double padding = _gridPadding;
     final bottomSafeInset = MediaQuery.viewPaddingOf(context).bottom;
     final bottomOverlayHeight =
-        _isMoveMode && _currentDirectory != 'root'
-            ? 72.0
+        _isMoveMode
+            ? 0.0
             : (_selectedItems.isNotEmpty
                 ? 56.0
                 : (_isMultiSelectMode ? 72.0 : 0.0));
@@ -7340,33 +7429,8 @@ class _MediaManagerPageState extends State<MediaManagerPage>
 
   /// 底部操作栏：选中时显示计数+移动+删除+查重，未选中时仅显示查重按钮
   Widget _buildBottomActionBar() {
-    if (_isMoveMode) {
-      if (_currentDirectory == 'root') return const SizedBox.shrink();
-      return Material(
-        color: Theme.of(context).colorScheme.surface,
-        elevation: 8,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          child: Row(
-            children: [
-              _buildMoveModeSystemDropTarget(
-                id: 'favorites',
-                label: '收藏夹',
-                icon: Icons.favorite_outline,
-                color: Colors.pink,
-              ),
-              const SizedBox(width: 10),
-              _buildMoveModeSystemDropTarget(
-                id: 'recycle_bin',
-                label: '回收站',
-                icon: Icons.delete_outline,
-                color: Colors.red,
-              ),
-            ],
-          ),
-        ),
-      );
-    }
+    // 移动模式不再显示底部「拖到收藏夹/回收站」落点。
+    if (_isMoveMode) return const SizedBox.shrink();
 
     final hasSelection = _selectedItems.isNotEmpty;
     int imageCount = 0;
@@ -7461,64 +7525,6 @@ class _MediaManagerPageState extends State<MediaManagerPage>
             ),
           ],
         ),
-      ),
-    );
-  }
-
-  Widget _buildMoveModeSystemDropTarget({
-    required String id,
-    required String label,
-    required IconData icon,
-    required Color color,
-  }) {
-    return Expanded(
-      child: DragTarget<MediaItem>(
-        onWillAcceptWithDetails:
-            (details) =>
-                !_isSystemMediaFolder(details.data) &&
-                details.data.directory != id,
-        onAcceptWithDetails: (details) {
-          final target = MediaItem(
-            id: id,
-            name: label,
-            path: '',
-            type: MediaType.folder,
-            directory: 'root',
-            dateAdded: DateTime.fromMillisecondsSinceEpoch(0),
-          );
-          unawaited(
-            _handleMediaDrop(details.data, target, moveIntoFolder: true),
-          );
-        },
-        builder: (context, candidateData, rejectedData) {
-          final active = candidateData.isNotEmpty;
-          return AnimatedContainer(
-            duration: const Duration(milliseconds: 120),
-            height: 46,
-            decoration: BoxDecoration(
-              color:
-                  active
-                      ? color.withValues(alpha: 0.18)
-                      : color.withValues(alpha: 0.06),
-              border: Border.all(
-                color: active ? color : color.withValues(alpha: 0.55),
-                width: active ? 2.5 : 1,
-              ),
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(icon, color: color),
-                const SizedBox(width: 7),
-                Text(
-                  active ? '松开移入$label' : '拖到$label',
-                  style: TextStyle(color: color, fontWeight: FontWeight.w600),
-                ),
-              ],
-            ),
-          );
-        },
       ),
     );
   }

@@ -25,6 +25,7 @@ import 'models/video_view_params.dart';
 import 'widgets/video_interactive_surface.dart';
 import 'widgets/image_interactive_surface.dart';
 import 'widgets/floating_ui_shadows.dart';
+import 'widgets/move_to_folder_sheet.dart';
 import 'utils/background_video_volume_prefs.dart';
 
 enum MediaMode { none, manual, auto }
@@ -1248,113 +1249,11 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
       }
     } catch (e) {}
 
-    // 在底部面板显示文件夹列表：50%透明，高度随目录数量自适应，最多占屏幕一半可滚动
-    final screenHeight = MediaQuery.of(context).size.height;
-    const itemHeight = 48.0;
-    const headerHeight = 52.0;
-    const minPanelHeight = 150.0;
-    final itemCount = folders.length + 1; // +1 根目录
-    final contentHeight = itemCount * itemHeight + headerHeight;
-    final maxPanelHeight = screenHeight * 0.5;
-    final panelHeight = (contentHeight < maxPanelHeight
-            ? contentHeight
-            : maxPanelHeight)
-        .clamp(minPanelHeight, maxPanelHeight);
-
-    final MediaItem? targetFolder = await showModalBottomSheet<MediaItem?>(
+    final MediaItem? targetFolder = await showMoveToFolderSheet(
       context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder:
-          (context) => Container(
-            height: panelHeight,
-            decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.5),
-              borderRadius: const BorderRadius.vertical(
-                top: Radius.circular(12),
-              ),
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Padding(
-                  padding: const EdgeInsets.symmetric(
-                    vertical: 12,
-                    horizontal: 16,
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text(
-                        '移动到',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      TextButton(
-                        onPressed: () => Navigator.pop(context),
-                        child: const Text('取消', style: TextStyle(fontSize: 13)),
-                      ),
-                    ],
-                  ),
-                ),
-                Flexible(
-                  child: ListView.builder(
-                    itemCount: folders.length + 1,
-                    itemBuilder: (context, index) {
-                      if (index == 0) {
-                        return ListTile(
-                          dense: true,
-                          visualDensity: const VisualDensity(
-                            horizontal: 0,
-                            vertical: -4,
-                          ),
-                          contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 16,
-                          ),
-                          leading: const Icon(Icons.folder_open, size: 20),
-                          title: const Text(
-                            '根目录',
-                            style: TextStyle(fontSize: 13),
-                          ),
-                          onTap:
-                              () => Navigator.pop(
-                                context,
-                                MediaItem(
-                                  id: 'root',
-                                  name: '根目录',
-                                  path: '',
-                                  type: MediaType.folder,
-                                  directory: '',
-                                  dateAdded: DateTime.now(),
-                                ),
-                              ),
-                        );
-                      }
-                      final folder = folders[index - 1];
-                      return ListTile(
-                        dense: true,
-                        visualDensity: const VisualDensity(
-                          horizontal: 0,
-                          vertical: -4,
-                        ),
-                        contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                        ),
-                        leading: const Icon(Icons.folder, size: 20),
-                        title: Text(
-                          folder.name,
-                          style: const TextStyle(fontSize: 13),
-                        ),
-                        onTap: () => Navigator.pop(context, folder),
-                      );
-                    },
-                  ),
-                ),
-              ],
-            ),
-          ),
+      folders: folders,
+      includeRoot: true,
+      rootEnabled: true,
     );
 
     // 如果用户取消，则不执行任何操作

@@ -26,6 +26,7 @@ import 'widgets/stored_view_image_layer.dart';
 import 'widgets/stored_view_video_background_layer.dart';
 import 'widgets/floating_ui_shadows.dart';
 import 'widgets/safe_modal_sheet_body.dart';
+import 'widgets/move_to_folder_sheet.dart';
 import 'widgets/directory_last_visited_frame.dart';
 import 'models/media_type.dart';
 import 'utils/background_media_preview.dart';
@@ -1721,50 +1722,25 @@ class _DirectoryPageState extends State<DirectoryPage>
           availableFolders
               .map((folder) => _getFolderFullPath(folder, folders))
               .toList();
-      String? selectedFolder;
-      await showDialog<void>(
+      if (!mounted) return null;
+      final choices = <MoveSheetChoice>[
+        if (showRoot)
+          const MoveSheetChoice(value: '', label: '根目录', isRoot: true),
+        ...List.generate(
+          availableFolders.length,
+          (i) => MoveSheetChoice(
+            value: availableFolders[i]['name'] as String,
+            label: folderPaths[i],
+          ),
+        ),
+      ];
+      // 与媒体库「移动到」同风格：半透明底部面板；目录页保持单列，透明度 20%。
+      return showMoveTargetSheet(
         context: context,
-        builder: (BuildContext context) {
-          return AlertDialog(
-            title: Text('选择目标文件夹'),
-            content: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (showRoot)
-                    ListTile(
-                      title: Text('根目录'),
-                      onTap: () {
-                        selectedFolder = '';
-                        Navigator.of(context).pop();
-                      },
-                    ),
-                  ...List.generate(
-                    availableFolders.length,
-                    (i) => ListTile(
-                      title: Text(folderPaths[i]),
-                      onTap: () {
-                        selectedFolder = availableFolders[i]['name'] as String;
-                        Navigator.of(context).pop();
-                      },
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            actions: [
-              TextButton(
-                child: Text('取消'),
-                onPressed: () {
-                  selectedFolder = null;
-                  Navigator.of(context).pop();
-                },
-              ),
-            ],
-          );
-        },
+        choices: choices,
+        crossAxisCount: 1,
+        panelOpacity: 0.8,
       );
-      return selectedFolder;
     } catch (e) {
       Logger.log('Error selecting folder: $e');
       if (mounted) {

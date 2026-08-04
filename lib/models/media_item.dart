@@ -30,7 +30,8 @@ class MediaItem {
   /// 星标收藏（仅图/视频；不移动目录，仅排序靠前 + UI 标识）。
   final bool isFavorite;
 
-  /// User-defined position inside [directory]. Null keeps the legacy order.
+  /// Position inside [directory] within the same [type] (lower = fronter).
+  /// Null sorts after explicit orders, then by newest [dateAdded].
   final int? sortOrder;
 
   MediaItem({

@@ -1326,6 +1326,9 @@ class DatabaseService {
       final folderTypeIndex = 3;
       final imageTypeIndex = 0;
       final videoTypeIndex = 1;
+      // Always: system folders → folders → videos → images → other.
+      // Within a type: starred first (by sort_order / newest star), then
+      // unstarred (manual sort_order if dragged, else newest date_added).
       final orderBy = '''
         ORDER BY
           CASE
@@ -1335,26 +1338,26 @@ class DatabaseService {
           END ASC,
           CASE
             WHEN id = 'recycle_bin' OR id = 'favorites' THEN 0
-            WHEN sort_order IS NOT NULL THEN 0
-            ELSE 1
-          END ASC,
-          CASE
-            WHEN id = 'recycle_bin' OR id = 'favorites' THEN 0
-            ELSE sort_order
-          END ASC,
-          CASE
-            WHEN id = 'recycle_bin' OR id = 'favorites' THEN 0
-            WHEN sort_order IS NOT NULL THEN 0
             WHEN type = $folderTypeIndex THEN 1
             WHEN type = $videoTypeIndex THEN 2
             WHEN type = $imageTypeIndex THEN 3
             ELSE 4
           END ASC,
           CASE
-            WHEN id = 'recycle_bin' OR id = 'favorites' OR sort_order IS NOT NULL THEN 0
-            WHEN type = $imageTypeIndex OR type = $videoTypeIndex THEN COALESCE(is_favorite, 0)
+            WHEN id = 'recycle_bin' OR id = 'favorites' THEN 0
+            WHEN type = $imageTypeIndex OR type = $videoTypeIndex
+              THEN COALESCE(is_favorite, 0)
             ELSE 0
           END DESC,
+          CASE
+            WHEN id = 'recycle_bin' OR id = 'favorites' THEN 0
+            WHEN sort_order IS NULL THEN 1
+            ELSE 0
+          END ASC,
+          CASE
+            WHEN id = 'recycle_bin' OR id = 'favorites' THEN 0
+            ELSE sort_order
+          END ASC,
           CASE
             WHEN id = 'recycle_bin' OR id = 'favorites' THEN 0
             ELSE datetime(date_added)
@@ -1377,6 +1380,85 @@ class DatabaseService {
       _handleError('获取媒体项失败', e, stackTrace);
       rethrow;
     }
+  }
+
+  /// Push existing same-type rows down and return `0` for a new/moved item
+  /// at the front of a scope inside [directory].
+  ///
+  /// [favoriteOnly]: `true` = starred only, `false` = unstarred only,
+  /// `null` = whole type.
+  Future<int> _allocateFrontSortOrder(
+    DatabaseExecutor txn, {
+    required String directory,
+    required int typeIndex,
+    int? nowMs,
+    bool? favoriteOnly,
+  }) async {
+    final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
+    final favoriteClause =
+        favoriteOnly == null
+            ? ''
+            : favoriteOnly
+            ? 'AND COALESCE(is_favorite, 0) = 1'
+            : 'AND COALESCE(is_favorite, 0) = 0';
+    await txn.rawUpdate(
+      '''
+      UPDATE media_items
+      SET sort_order = sort_order + 1, updated_at = ?
+      WHERE directory = ?
+        AND type = ?
+        AND id NOT IN ('recycle_bin', 'favorites')
+        AND sort_order IS NOT NULL
+        $favoriteClause
+      ''',
+      [now, directory, typeIndex],
+    );
+    return 0;
+  }
+
+  Future<bool> _hasOrderedPeers(
+    DatabaseExecutor txn, {
+    required String directory,
+    required int typeIndex,
+    required bool favoriteOnly,
+  }) async {
+    final rows = await txn.rawQuery(
+      '''
+      SELECT COUNT(*) AS c
+      FROM media_items
+      WHERE directory = ?
+        AND type = ?
+        AND id NOT IN ('recycle_bin', 'favorites')
+        AND sort_order IS NOT NULL
+        AND COALESCE(is_favorite, 0) = ?
+      ''',
+      [directory, typeIndex, favoriteOnly ? 1 : 0],
+    );
+    return ((rows.first['c'] as num?)?.toInt() ?? 0) > 0;
+  }
+
+  /// Front of unstarred zone: custom order if peers were dragged, else null
+  /// (list uses newest [date_added]).
+  Future<int?> _allocateUnfavoritedFrontSortOrder(
+    DatabaseExecutor txn, {
+    required String directory,
+    required int typeIndex,
+    int? nowMs,
+  }) async {
+    final hasOrdered = await _hasOrderedPeers(
+      txn,
+      directory: directory,
+      typeIndex: typeIndex,
+      favoriteOnly: false,
+    );
+    if (!hasOrdered) return null;
+    return _allocateFrontSortOrder(
+      txn,
+      directory: directory,
+      typeIndex: typeIndex,
+      nowMs: nowMs,
+      favoriteOnly: false,
+    );
   }
 
   /// 与 [getMediaItems] 返回行中的 [type] 解析一致（SQLite 可能为 int / num）。
@@ -1476,13 +1558,47 @@ class DatabaseService {
     var repairedSchema = false;
     for (var attempt = 0; attempt < 3; attempt++) {
       try {
-        final result = await db.insert(
-          'media_items',
-          data,
-          conflictAlgorithm: ConflictAlgorithm.replace,
-        );
-        if (kDebugMode) Logger.log('插入结果: $result');
-        return result;
+        return await db.transaction((txn) async {
+          final id = data['id']?.toString() ?? '';
+          if (id != 'recycle_bin' &&
+              id != 'favorites' &&
+              data['sort_order'] == null) {
+            final typeIndex = mediaTypeIndex(data);
+            final directory = (data['directory']?.toString() ?? 'root').trim();
+            if (directory.isNotEmpty && typeIndex >= 0) {
+              final favRaw = data['is_favorite'];
+              final isFav =
+                  favRaw == true ||
+                  favRaw == 1 ||
+                  (favRaw is num && favRaw != 0);
+              if (isFav) {
+                data['sort_order'] = await _allocateFrontSortOrder(
+                  txn,
+                  directory: directory,
+                  typeIndex: typeIndex,
+                  nowMs: now,
+                  favoriteOnly: true,
+                );
+              } else {
+                final order = await _allocateUnfavoritedFrontSortOrder(
+                  txn,
+                  directory: directory,
+                  typeIndex: typeIndex,
+                  nowMs: now,
+                );
+                if (order != null) data['sort_order'] = order;
+                // else null → unfavorited zone sorts by newest date_added
+              }
+            }
+          }
+          final result = await txn.insert(
+            'media_items',
+            data,
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
+          if (kDebugMode) Logger.log('插入结果: $result');
+          return result;
+        });
       } on DatabaseException catch (e, stackTrace) {
         final message = e.toString().toLowerCase();
         final missingColumn =
@@ -1611,6 +1727,35 @@ class DatabaseService {
         final id = row['id']?.toString() ?? '';
         if (id.isNotEmpty) {
           await txn.delete('media_items', where: 'id = ?', whereArgs: [id]);
+        }
+      }
+      final id = data['id']?.toString() ?? '';
+      if (id != 'recycle_bin' &&
+          id != 'favorites' &&
+          data['sort_order'] == null) {
+        final typeIndex = mediaTypeIndex(data);
+        final directory = (data['directory']?.toString() ?? 'root').trim();
+        if (directory.isNotEmpty && typeIndex >= 0) {
+          final favRaw = data['is_favorite'];
+          final isFav =
+              favRaw == true || favRaw == 1 || (favRaw is num && favRaw != 0);
+          if (isFav) {
+            data['sort_order'] = await _allocateFrontSortOrder(
+              txn,
+              directory: directory,
+              typeIndex: typeIndex,
+              nowMs: now,
+              favoriteOnly: true,
+            );
+          } else {
+            final order = await _allocateUnfavoritedFrontSortOrder(
+              txn,
+              directory: directory,
+              typeIndex: typeIndex,
+              nowMs: now,
+            );
+            if (order != null) data['sort_order'] = order;
+          }
         }
       }
       await txn.insert(
@@ -1884,7 +2029,8 @@ class DatabaseService {
   }
 
   /// 根据ID获取媒体项目
-  /// 切换图/视频的星标：不改动 [directory]；标星后更新 [date_added] 以排在本目录同类项最前。
+  /// 切换图/视频的星标：不改动 [directory]。
+  /// 标星后放到本目录同类收藏区最前；取消标星后放到未收藏区最前。
   /// 返回切换后的星标状态（true=已标星）。
   Future<bool> toggleMediaItemFavorite(String id) async {
     final row = await getMediaItemById(id);
@@ -1903,29 +2049,65 @@ class DatabaseService {
     final wasFav = ((row['is_favorite'] as int?) ?? 0) == 1;
     final nowMs = DateTime.now().millisecondsSinceEpoch;
     if (wasFav) {
-      await db.update(
+      // Unstar → front of the unfavorited zone (still "preferred" vs older files).
+      await db.transaction((txn) async {
+        await txn.update(
+          'media_items',
+          {'sort_order': null, 'updated_at': nowMs},
+          where: 'id = ?',
+          whereArgs: [id],
+        );
+        final frontOrder = await _allocateFrontSortOrder(
+          txn,
+          directory: dir.isEmpty ? 'root' : dir,
+          typeIndex: t,
+          nowMs: nowMs,
+          favoriteOnly: false,
+        );
+        await txn.update(
+          'media_items',
+          {
+            'is_favorite': 0,
+            'sort_order': frontOrder,
+            'updated_at': nowMs,
+          },
+          where: 'id = ?',
+          whereArgs: [id],
+        );
+      });
+      return false;
+    }
+    await db.transaction((txn) async {
+      await txn.update(
         'media_items',
-        {'is_favorite': 0, 'updated_at': nowMs},
+        {'sort_order': null, 'updated_at': nowMs},
         where: 'id = ?',
         whereArgs: [id],
       );
-      return false;
-    }
-    await db.update(
-      'media_items',
-      {
-        'is_favorite': 1,
-        'date_added': DateTime.now().toIso8601String(),
-        'updated_at': nowMs,
-      },
-      where: 'id = ?',
-      whereArgs: [id],
-    );
+      final frontOrder = await _allocateFrontSortOrder(
+        txn,
+        directory: dir.isEmpty ? 'root' : dir,
+        typeIndex: t,
+        nowMs: nowMs,
+        favoriteOnly: true,
+      );
+      await txn.update(
+        'media_items',
+        {
+          'is_favorite': 1,
+          'sort_order': frontOrder,
+          'date_added': DateTime.now().toIso8601String(),
+          'updated_at': nowMs,
+        },
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+    });
     return true;
   }
 
   /// 仅标星、不取消：已标星则 no-op（用于文档编辑等无法看到收藏态的入口）。
-  /// 校验规则与 [toggleMediaItemFavorite] 一致。
+  /// 校验规则与 [toggleMediaItemFavorite] 一致；标星后置顶同类收藏区。
   Future<void> ensureMediaItemFavorite(String id) async {
     final row = await getMediaItemById(id);
     if (row == null) {
@@ -1944,16 +2126,32 @@ class DatabaseService {
 
     final db = await database;
     final nowMs = DateTime.now().millisecondsSinceEpoch;
-    await db.update(
-      'media_items',
-      {
-        'is_favorite': 1,
-        'date_added': DateTime.now().toIso8601String(),
-        'updated_at': nowMs,
-      },
-      where: 'id = ?',
-      whereArgs: [id],
-    );
+    await db.transaction((txn) async {
+      await txn.update(
+        'media_items',
+        {'sort_order': null, 'updated_at': nowMs},
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+      final frontOrder = await _allocateFrontSortOrder(
+        txn,
+        directory: dir.isEmpty ? 'root' : dir,
+        typeIndex: t,
+        nowMs: nowMs,
+        favoriteOnly: true,
+      );
+      await txn.update(
+        'media_items',
+        {
+          'is_favorite': 1,
+          'sort_order': frontOrder,
+          'date_added': DateTime.now().toIso8601String(),
+          'updated_at': nowMs,
+        },
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+    });
   }
 
   Future<Map<String, dynamic>?> getMediaItemById(String id) async {
@@ -2052,17 +2250,14 @@ class DatabaseService {
     final db = await database;
     await _ensureMediaItemsRecycleColumns(db);
     final nowMs = DateTime.now().millisecondsSinceEpoch;
+    final typeIndex = mediaTypeIndex(row);
     final updated = await db.transaction((txn) async {
-      final orderRows = await txn.rawQuery('''
-        SELECT
-          COUNT(sort_order) AS ordered_count,
-          MAX(sort_order) AS max_order
-        FROM media_items
-        WHERE directory = 'recycle_bin'
-        ''');
-      final orderedCount =
-          (orderRows.first['ordered_count'] as num?)?.toInt() ?? 0;
-      final maxOrder = (orderRows.first['max_order'] as num?)?.toInt() ?? -1;
+      final frontOrder = await _allocateFrontSortOrder(
+        txn,
+        directory: 'recycle_bin',
+        typeIndex: typeIndex,
+        nowMs: nowMs,
+      );
       return txn.update(
         'media_items',
         {
@@ -2070,7 +2265,7 @@ class DatabaseService {
           'deleted_from_directory':
               currentDirectory.isEmpty ? 'root' : currentDirectory,
           'deleted_at': nowMs,
-          'sort_order': orderedCount > 0 ? maxOrder + 1 : null,
+          'sort_order': frontOrder,
           'updated_at': nowMs,
         },
         where: 'id = ?',
@@ -2115,17 +2310,44 @@ class DatabaseService {
 
     final db = await database;
     await _ensureMediaItemsRecycleColumns(db);
-    final updated = await db.update(
-      'media_items',
-      {
-        'directory': targetDirectory,
-        'deleted_from_directory': null,
-        'deleted_at': null,
-        'updated_at': DateTime.now().millisecondsSinceEpoch,
-      },
-      where: 'id = ?',
-      whereArgs: [itemId],
-    );
+    final typeIndex = mediaTypeIndex(row);
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    final favRaw = row['is_favorite'];
+    final isFav =
+        favRaw == true || favRaw == 1 || (favRaw is num && favRaw != 0);
+    final updated = await db.transaction((txn) async {
+      final int? frontOrder;
+      if (isFav) {
+        frontOrder = await _allocateFrontSortOrder(
+          txn,
+          directory: targetDirectory,
+          typeIndex: typeIndex,
+          nowMs: nowMs,
+          favoriteOnly: true,
+        );
+      } else {
+        frontOrder = await _allocateUnfavoritedFrontSortOrder(
+          txn,
+          directory: targetDirectory,
+          typeIndex: typeIndex,
+          nowMs: nowMs,
+        );
+      }
+      return txn.update(
+        'media_items',
+        {
+          'directory': targetDirectory,
+          'deleted_from_directory': null,
+          'deleted_at': null,
+          'sort_order': frontOrder,
+          if (!isFav && frontOrder == null)
+            'date_added': DateTime.now().toIso8601String(),
+          'updated_at': nowMs,
+        },
+        where: 'id = ?',
+        whereArgs: [itemId],
+      );
+    });
     return updated > 0;
   }
 
@@ -2821,7 +3043,10 @@ class DatabaseService {
     }
   }
 
-  /// Persists the complete user-visible order for one media directory.
+  /// Persists user order within each media type for one directory.
+  ///
+  /// [orderedIds] may be a full directory list; `sort_order` is rewritten
+  /// per type (folder / video / image / …) so categories never interleave.
   Future<void> reorderMediaItems(
     String directory,
     List<String> orderedIds,
@@ -2829,27 +3054,49 @@ class DatabaseService {
     final ids = orderedIds
         .where((id) => id != 'recycle_bin' && id != 'favorites')
         .toList(growable: false);
+    if (ids.isEmpty) return;
     final db = await database;
     await db.transaction((txn) async {
       final now = DateTime.now().millisecondsSinceEpoch;
+      final rows = await txn.query(
+        'media_items',
+        columns: ['id', 'type', 'is_favorite'],
+        where:
+            'directory = ? AND id NOT IN (\'recycle_bin\', \'favorites\')',
+        whereArgs: [directory],
+      );
+      final typeById = <String, int>{};
+      final favById = <String, bool>{};
+      for (final row in rows) {
+        final id = row['id']?.toString() ?? '';
+        if (id.isEmpty) continue;
+        typeById[id] = mediaTypeIndex(row);
+        final favRaw = row['is_favorite'];
+        favById[id] =
+            favRaw == true || favRaw == 1 || (favRaw is num && favRaw != 0);
+      }
+      // Separate counters for starred vs unstarred within each type.
+      final counters = <String, int>{};
       final batch = txn.batch();
-      for (var index = 0; index < ids.length; index++) {
+      for (final id in ids) {
+        final typeIndex = typeById[id];
+        if (typeIndex == null) continue;
+        final isFav = favById[id] ?? false;
+        final key = '$typeIndex:${isFav ? 1 : 0}';
+        final index = counters[key] ?? 0;
+        counters[key] = index + 1;
         batch.update(
           'media_items',
           {'sort_order': index, 'updated_at': now},
           where: 'id = ? AND directory = ?',
-          whereArgs: [ids[index], directory],
+          whereArgs: [id, directory],
         );
       }
       await batch.commit(noResult: true);
     });
   }
 
-  /// Moves one item into [directory].
-  ///
-  /// A directory keeps the default folder/video/image grouping until the user
-  /// explicitly reorders it. If it already has a custom order, append the
-  /// moved item to that order; otherwise leave [sort_order] null.
+  /// Moves one item into [directory] at the front of its fav/unfav zone.
   Future<void> moveMediaItemToDirectory(String id, String directory) async {
     if (id == 'recycle_bin' || id == 'favorites') {
       throw ArgumentError('System media folders cannot be moved');
@@ -2859,35 +3106,47 @@ class DatabaseService {
     await db.transaction((txn) async {
       final currentRows = await txn.query(
         'media_items',
-        columns: ['directory'],
+        columns: ['directory', 'type', 'is_favorite'],
         where: 'id = ?',
         whereArgs: [id],
         limit: 1,
       );
+      if (currentRows.isEmpty) return;
+      final current = currentRows.first;
       final wasInRecycleBin =
-          currentRows.isNotEmpty &&
-          currentRows.first['directory']?.toString() == 'recycle_bin';
-      final orderRows = await txn.rawQuery(
-        '''
-        SELECT
-          COUNT(sort_order) AS ordered_count,
-          MAX(sort_order) AS max_order
-        FROM media_items
-        WHERE directory = ? AND id NOT IN ('recycle_bin', 'favorites')
-        ''',
-        [directory],
-      );
-      final orderedCount =
-          (orderRows.first['ordered_count'] as num?)?.toInt() ?? 0;
-      final maxOrder = (orderRows.first['max_order'] as num?)?.toInt() ?? -1;
+          current['directory']?.toString() == 'recycle_bin';
+      final typeIndex = mediaTypeIndex(current);
+      final favRaw = current['is_favorite'];
+      final isFav =
+          favRaw == true || favRaw == 1 || (favRaw is num && favRaw != 0);
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final int? frontOrder;
+      if (isFav) {
+        frontOrder = await _allocateFrontSortOrder(
+          txn,
+          directory: directory,
+          typeIndex: typeIndex,
+          nowMs: now,
+          favoriteOnly: true,
+        );
+      } else {
+        frontOrder = await _allocateUnfavoritedFrontSortOrder(
+          txn,
+          directory: directory,
+          typeIndex: typeIndex,
+          nowMs: now,
+        );
+      }
       await txn.update(
         'media_items',
         {
           'directory': directory,
-          'sort_order': orderedCount > 0 ? maxOrder + 1 : null,
+          'sort_order': frontOrder,
+          if (!isFav && frontOrder == null)
+            'date_added': DateTime.now().toIso8601String(),
           if (wasInRecycleBin) 'deleted_from_directory': null,
           if (wasInRecycleBin) 'deleted_at': null,
-          'updated_at': DateTime.now().millisecondsSinceEpoch,
+          'updated_at': now,
         },
         where: 'id = ?',
         whereArgs: [id],
