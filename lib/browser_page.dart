@@ -33,6 +33,7 @@ import 'package:http/io_client.dart';
 
 import 'core/service_locator.dart';
 import 'services/database_service.dart';
+import 'services/file_cleanup_service.dart';
 import 'utils/export_import_error_utils.dart';
 import 'utils/media_download_utils.dart';
 import 'utils/system_proxy.dart';
@@ -3427,6 +3428,10 @@ class _BrowserPageState extends State<BrowserPage>
     );
     _loanListenerAttached = true;
     _databaseService = getService<DatabaseService>();
+    // 进入浏览页时检查媒体缓存配额（超限则清缓存、保留登录）
+    unawaited(
+      getService<FileCleanupService>().enforceWebViewMediaCacheQuota(),
+    );
     _initializeDownloader();
     _loadBookmarks();
     _loadCommonWebsites();

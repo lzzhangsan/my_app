@@ -47,6 +47,16 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
   /// 应用专属外部存储（Android 计入系统「数据」，含导出文件、browser_backups 等）
   int _externalStorageSize = 0;
 
+  /// Android dataDir 一级子项（含 app_webview；path_provider 原先扫不到）
+  final Map<String, int> _nativeDataDirChildren = {};
+  int _nativeDataDirTotal = 0;
+
+  bool _webViewCacheAutoClean = true;
+  int _webViewCacheQuotaBytes =
+      FileCleanupService.kDefaultWebViewCacheQuotaBytes;
+  int _webViewMediaCacheBytes = 0;
+  int _packageCodeBytes = 0;
+
   /// 应用文档目录下其他未分类的子项（目录名 -> 字节数），用于定位不明占用
   final Map<String, int> _otherAppPaths = {};
 
@@ -70,6 +80,9 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
     });
 
     try {
+      // 先按配额清理浏览器媒体缓存，再统计（避免总览含大量可清缓存）
+      await _fileCleanupService.enforceWebViewMediaCacheQuota();
+
       // 获取各种存储大小
       _totalStorageUsage = await _fileCleanupService.getAppTotalStorageUsage();
 
@@ -192,6 +205,21 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
       // 应用专属外部存储（与系统「数据」一致，含导出 ZIP、browser_backups 等）
       _externalStorageSize =
           await _fileCleanupService.getExternalStorageUsage();
+
+      // Android 私有 dataDir 全量（对齐系统「数据」；暴露 app_webview 等漏项）
+      _nativeDataDirChildren.clear();
+      _nativeDataDirTotal = 0;
+      final native = await _fileCleanupService.getInternalDataDirBreakdown();
+      _nativeDataDirTotal = native.totalBytes;
+      _nativeDataDirChildren.addAll(native.children);
+
+      _webViewCacheAutoClean =
+          await _fileCleanupService.isWebViewMediaCacheAutoCleanEnabled();
+      _webViewCacheQuotaBytes =
+          await _fileCleanupService.getWebViewMediaCacheQuotaBytes();
+      _webViewMediaCacheBytes =
+          await _fileCleanupService.getWebViewMediaCacheBytes();
+      _packageCodeBytes = await _fileCleanupService.getPackageCodeBytes();
     } catch (e) {
       if (kDebugMode) {
         Logger.log('加载存储信息失败: $e');
@@ -227,13 +255,16 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
     }
   }
 
-  /// 格式化文件大小
+  /// 格式化文件大小（十进制 1000，与 Android 系统「存储」显示一致）。
   String _formatFileSize(int bytes) {
-    if (bytes < 1024) return '${bytes}B';
-    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)}KB';
-    if (bytes < 1024 * 1024 * 1024)
-      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)}MB';
-    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)}GB';
+    if (bytes < 1000) return '${bytes}B';
+    if (bytes < 1000 * 1000) {
+      return '${(bytes / 1000).toStringAsFixed(1)}KB';
+    }
+    if (bytes < 1000 * 1000 * 1000) {
+      return '${(bytes / (1000 * 1000)).toStringAsFixed(1)}MB';
+    }
+    return '${(bytes / (1000 * 1000 * 1000)).toStringAsFixed(1)}GB';
   }
 
   Color _selfCheckColor(bool ok) {
@@ -679,6 +710,53 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
     }
   }
 
+  /// 清理 Android WebView 媒体/资源缓存（保留登录 Cookie / IndexedDB 等）
+  Future<void> _cleanWebViewData() async {
+    final webViewBytes = _nativeDataDirChildren['app_webview'] ?? 0;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder:
+          (ctx) => AlertDialog(
+            title: const Text('清理浏览器媒体缓存'),
+            content: Text(
+              '将只删除网页缓存的图片/视频等资源（当前浏览器相关约 ${_formatFileSize(webViewBytes)}，'
+              '其中绝大部分是 Service Worker 媒体缓存）。\n\n'
+              '会保留：登录 Cookie、Local Storage、IndexedDB 等登录相关数据。\n'
+              '不影响：媒体库、日记、文档等业务文件。\n\n'
+              '清理后网站一般仍保持登录；首次打开页面可能稍慢（需重新拉资源）。',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('取消'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('只清缓存'),
+              ),
+            ],
+          ),
+    );
+    if (confirmed != true) return;
+    try {
+      final freed = await _fileCleanupService.clearWebViewData();
+      await _loadStorageInfo();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('已清理浏览器媒体缓存，约释放 ${_formatFileSize(freed)}（登录态已保留）'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('清理浏览器缓存失败: $e')));
+      }
+    }
+  }
+
   /// 清理孤立文件
   Future<void> _cleanOrphanedFiles() async {
     try {
@@ -786,6 +864,10 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
                             // 详细存储信息
                             _buildDetailedStorageInfo(),
 
+                            const SizedBox(height: 16),
+
+                            _buildWebViewCacheQuotaCard(),
+
                             const SizedBox(height: 24),
 
                             // 清理操作
@@ -843,10 +925,99 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
                 color: color,
               ),
             ),
+            if (title == '总存储使用量') ...[
+              const SizedBox(height: 8),
+              Text(
+                '采用与手机系统相同的十进制单位（1GB=1000MB），并计入安装包体积，便于对照「应用信息 → 存储」总计',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 12, color: Colors.grey[600], height: 1.3),
+              ),
+            ],
           ],
         ),
       ),
     );
+  }
+
+  Widget _buildWebViewCacheQuotaCard() {
+    const options = <({String label, int? quotaBytes})>[
+      (label: '关闭自动', quotaBytes: null),
+      (label: '200MB', quotaBytes: 200 * 1000 * 1000),
+      (label: '500MB', quotaBytes: 500 * 1000 * 1000),
+      (label: '1GB', quotaBytes: 1000 * 1000 * 1000),
+      (label: '2GB', quotaBytes: 2 * 1000 * 1000 * 1000),
+      (label: '5GB', quotaBytes: 5 * 1000 * 1000 * 1000),
+    ];
+
+    return Card(
+      elevation: 2,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              '浏览器媒体缓存配额',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '网页缓存的图/视频对下载到媒体库没有帮助，超限后自动清理（保留登录）。'
+              '当前缓存 ${_formatFileSize(_webViewMediaCacheBytes)}'
+              '${_webViewCacheAutoClean ? ' · 限额 ${_formatFileSize(_webViewCacheQuotaBytes)}' : ' · 自动清理已关闭'}。',
+              style: TextStyle(fontSize: 13, color: Colors.grey[700], height: 1.35),
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children:
+                  options.map((opt) {
+                    final selected =
+                        opt.quotaBytes == null
+                            ? !_webViewCacheAutoClean
+                            : _webViewCacheAutoClean &&
+                                _webViewCacheQuotaBytes == opt.quotaBytes;
+                    return ChoiceChip(
+                      label: Text(opt.label),
+                      selected: selected,
+                      onSelected: (_) => _onWebViewQuotaOptionSelected(opt.quotaBytes),
+                    );
+                  }).toList(),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _onWebViewQuotaOptionSelected(int? quotaBytes) async {
+    try {
+      if (quotaBytes == null) {
+        await _fileCleanupService.setWebViewMediaCacheAutoCleanEnabled(false);
+      } else {
+        await _fileCleanupService.setWebViewMediaCacheAutoCleanEnabled(true);
+        await _fileCleanupService.setWebViewMediaCacheQuotaBytes(quotaBytes);
+        await _fileCleanupService.enforceWebViewMediaCacheQuota();
+      }
+      await _loadStorageInfo();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            quotaBytes == null
+                ? '已关闭浏览器缓存自动清理'
+                : '已设置配额 ${_formatFileSize(quotaBytes)}，超限将自动清理（保留登录）',
+          ),
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('设置失败: $e')));
+      }
+    }
   }
 
   /// 构建详细存储信息
@@ -889,6 +1060,49 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
             _buildStorageItem('临时文件', _tempSize, Icons.folder_open),
             _buildStorageItem('数据库文件', _databaseSize, Icons.storage),
             _buildStorageItem('应用外部存储', _externalStorageSize, Icons.sd_storage),
+            if (_packageCodeBytes > 0)
+              _buildStorageItem('应用安装包', _packageCodeBytes, Icons.android),
+            if (_nativeDataDirChildren.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Text(
+                '系统私有数据目录（对齐手机「应用数据」）',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.grey[800],
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '合计 ${_formatFileSize(_nativeDataDirTotal)}。其中 app_flutter 已在上方分类统计；'
+                'app_webview 为内置浏览器缓存，此前未计入总览。',
+                style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+              ),
+              const SizedBox(height: 8),
+              ...(() {
+                final entries =
+                    _nativeDataDirChildren.entries.toList()
+                      ..sort((a, b) => b.value.compareTo(a.value));
+                return entries.map((e) {
+                  final label = switch (e.key) {
+                    'app_flutter' => '业务文件(app_flutter)',
+                    'app_webview' => '浏览器缓存(app_webview)',
+                    'cache' => '系统缓存(cache)',
+                    'files' => '支持目录(files)',
+                    'code_cache' => '代码缓存(code_cache)',
+                    'shared_prefs' => '偏好设置(shared_prefs)',
+                    _ => e.key,
+                  };
+                  return _buildStorageItem(
+                    label,
+                    e.value,
+                    e.key == 'app_webview'
+                        ? Icons.public
+                        : Icons.folder_special,
+                  );
+                });
+              })(),
+            ],
           ],
         ),
       ),
@@ -951,6 +1165,13 @@ class _StorageManagementPageState extends State<StorageManagementPage> {
               Icons.cached,
               _cleanCacheFiles,
             ),
+            if ((_nativeDataDirChildren['app_webview'] ?? 0) > 0)
+              _buildCleanupButton(
+                '清理浏览器媒体缓存',
+                '只删网页缓存的图/视频等（约 ${_formatFileSize(_nativeDataDirChildren['app_webview']!)}），保留登录 Cookie；不影响媒体库',
+                Icons.public,
+                _cleanWebViewData,
+              ),
             _buildCleanupButton(
               '清理孤立文件',
               '删除数据库中不存在的文件',

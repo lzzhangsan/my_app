@@ -31,6 +31,7 @@ import com.arthenica.ffmpegkit.ReturnCode
 class MainActivity: FlutterActivity() {
     private val CHANNEL = "media_auto_import"
     private val PERF_CHANNEL = "performance_service"
+    private val APP_STORAGE_CHANNEL = "app_storage"
     private var lastCpuTime: Long = 0
     private var lastCpuSampleTime: Long = 0
 
@@ -38,6 +39,61 @@ class MainActivity: FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
 
         persistWebCookies()
+
+        // 应用私有 dataDir 体积（含 app_webview 等 path_provider 扫不到的目录）
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, APP_STORAGE_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "getInternalDataDirBreakdown" -> {
+                        Thread {
+                            try {
+                                val breakdown = internalDataDirBreakdown()
+                                runOnUiThread { result.success(breakdown) }
+                            } catch (e: Exception) {
+                                runOnUiThread {
+                                    result.error("STORAGE_BREAKDOWN", e.toString(), null)
+                                }
+                            }
+                        }.start()
+                    }
+                    "clearWebViewData" -> {
+                        Thread {
+                            try {
+                                val freed = clearWebViewDataInternal()
+                                runOnUiThread { result.success(freed) }
+                            } catch (e: Exception) {
+                                runOnUiThread {
+                                    result.error("CLEAR_WEBVIEW", e.toString(), null)
+                                }
+                            }
+                        }.start()
+                    }
+                    "getWebViewMediaCacheBytes" -> {
+                        Thread {
+                            try {
+                                val bytes = webViewMediaCacheBytes()
+                                runOnUiThread { result.success(bytes) }
+                            } catch (e: Exception) {
+                                runOnUiThread {
+                                    result.error("WEBVIEW_CACHE_SIZE", e.toString(), null)
+                                }
+                            }
+                        }.start()
+                    }
+                    "getPackageCodeBytes" -> {
+                        Thread {
+                            try {
+                                runOnUiThread { result.success(packageCodeBytes()) }
+                            } catch (e: Exception) {
+                                runOnUiThread {
+                                    result.error("PACKAGE_CODE_SIZE", e.toString(), null)
+                                }
+                            }
+                        }.start()
+                    }
+                    else -> result.notImplemented()
+                }
+            }
 
         // 性能监控：真实内存与 CPU 数据
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, PERF_CHANNEL).setMethodCallHandler { call, result ->
@@ -675,6 +731,141 @@ class MainActivity: FlutterActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             manager.flush()
         }
+    }
+
+    /** 应用私有 dataDir 一级子项体积（字节），供存储管理对齐系统「数据」。 */
+    private fun internalDataDirBreakdown(): Map<String, Any> {
+        val dataDir = applicationInfo.dataDir?.let { File(it) } ?: filesDir.parentFile
+        val children = LinkedHashMap<String, Long>()
+        var total = 0L
+        if (dataDir != null && dataDir.exists()) {
+            dataDir.listFiles()?.forEach { child ->
+                val size = directoryOrFileSize(child)
+                children[child.name] = size
+                total += size
+            }
+        }
+        return mapOf(
+            "dataDir" to (dataDir?.absolutePath ?: ""),
+            "totalBytes" to total,
+            "children" to children,
+        )
+    }
+
+    private fun directoryOrFileSize(file: File): Long {
+        if (!file.exists()) return 0L
+        if (file.isFile) return file.length()
+        var sum = 0L
+        file.walkTopDown().forEach { f ->
+            if (f.isFile) {
+                try {
+                    sum += f.length()
+                } catch (_: Exception) {
+                }
+            }
+        }
+        return sum
+    }
+
+    /** APK / split APK 体积（对应系统「应用」一项）。 */
+    private fun packageCodeBytes(): Long {
+        return try {
+            val ai = packageManager.getApplicationInfo(packageName, 0)
+            var sum = 0L
+            val main = ai.sourceDir
+            if (main != null) sum += File(main).length()
+            ai.splitSourceDirs?.forEach { path ->
+                sum += File(path).length()
+            }
+            sum
+        } catch (_: Exception) {
+            0L
+        }
+    }
+
+    /** 浏览器媒体/资源缓存体积（主要是 Service Worker CacheStorage）。 */
+    private fun webViewMediaCacheBytes(): Long {
+        val dataDir = applicationInfo.dataDir?.let { File(it) } ?: filesDir.parentFile
+        val defaultDir = if (dataDir != null) File(dataDir, "app_webview/Default") else null
+        if (defaultDir == null || !defaultDir.exists()) return 0L
+        var total = 0L
+        for (rel in listOf(
+            "Service Worker/CacheStorage",
+            "Service Worker/ScriptCache",
+            "Shared Dictionary/cache",
+            "GPUCache",
+            "Code Cache",
+            "Cache",
+            "HTTP Cache",
+        )) {
+            val f = File(defaultDir, rel)
+            if (f.exists()) total += directoryOrFileSize(f)
+        }
+        return total
+    }
+
+    /**
+     * 仅清理 WebView 媒体/资源缓存（Service Worker CacheStorage 等），
+     * **保留** Cookies / Local Storage / IndexedDB / Session Storage（登录态）。
+     */
+    private fun clearWebViewDataInternal(): Long {
+        val dataDir = applicationInfo.dataDir?.let { File(it) } ?: filesDir.parentFile
+        val defaultDir = if (dataDir != null) File(dataDir, "app_webview/Default") else null
+        if (defaultDir == null || !defaultDir.exists()) return 0L
+
+        var freed = 0L
+
+        // 大宗：站点 Service Worker 缓存的图片/视频/静态资源（实测可达十余 GB）
+        val cacheTargets = listOf(
+            File(defaultDir, "Service Worker/CacheStorage"),
+            File(defaultDir, "Service Worker/ScriptCache"),
+            File(defaultDir, "Shared Dictionary/cache"),
+            File(defaultDir, "GPUCache"),
+            File(defaultDir, "Code Cache"),
+            File(defaultDir, "Cache"),
+            File(defaultDir, "HTTP Cache"),
+        )
+        for (target in cacheTargets) {
+            if (!target.exists()) continue
+            val before = directoryOrFileSize(target)
+            try {
+                if (target.deleteRecursively()) {
+                    freed += before
+                } else {
+                    val after = directoryOrFileSize(target)
+                    freed += (before - after).coerceAtLeast(0L)
+                }
+            } catch (_: Exception) {
+                val after = try {
+                    directoryOrFileSize(target)
+                } catch (_: Exception) {
+                    before
+                }
+                freed += (before - after).coerceAtLeast(0L)
+            }
+        }
+
+        // HTTP 磁盘缓存（不删 Cookie）
+        try {
+            val latch = java.util.concurrent.CountDownLatch(1)
+            runOnUiThread {
+                try {
+                    WebView(this).apply {
+                        clearCache(true)
+                        destroy()
+                    }
+                } catch (_: Exception) {
+                } finally {
+                    latch.countDown()
+                }
+            }
+            latch.await(3, java.util.concurrent.TimeUnit.SECONDS)
+        } catch (_: Exception) {
+        }
+
+        // 刻意不调用 WebStorage.deleteAllData() / CookieManager.removeAllCookies()
+        // 也不删除：Cookies、Local Storage、IndexedDB、Session Storage、WebStorage、Preferences
+        return freed
     }
 
     override fun onPause() {

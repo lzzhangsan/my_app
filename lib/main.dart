@@ -17,6 +17,7 @@ import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb;
 import 'diary_page.dart';
 import 'services/database_service.dart';
 import 'services/error_service.dart';
+import 'services/file_cleanup_service.dart';
 import 'services/logger.dart';
 import 'services/debug_file_log.dart';
 import 'services/webview_environment_service.dart';
@@ -53,6 +54,11 @@ void main() {
         if (backgroundService.isInitialized) {
           Logger.i('后台媒体服务已启动');
         }
+
+        // 启动时按配额清理浏览器媒体缓存（保留登录），避免长期囤积
+        unawaited(
+          getService<FileCleanupService>().enforceWebViewMediaCacheQuota(),
+        );
       } catch (e) {
         Logger.e('服务架构初始化失败', e);
       }

@@ -3,6 +3,8 @@
 
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'logger.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as path;
@@ -50,6 +52,136 @@ class FileCleanupService {
   FileService? _fileService;
 
   bool get isInitialized => _isInitialized;
+
+  static const MethodChannel _appStorageChannel = MethodChannel('app_storage');
+
+  /// 读取 Android 应用私有 dataDir 一级子目录体积（含 [app_webview] 等）。
+  /// 非 Android 或失败时返回空。
+  Future<({String dataDir, int totalBytes, Map<String, int> children})>
+  getInternalDataDirBreakdown() async {
+    if (!Platform.isAndroid) {
+      return (dataDir: '', totalBytes: 0, children: <String, int>{});
+    }
+    try {
+      final raw = await _appStorageChannel.invokeMethod<dynamic>(
+        'getInternalDataDirBreakdown',
+      );
+      if (raw is! Map) {
+        return (dataDir: '', totalBytes: 0, children: <String, int>{});
+      }
+      final dataDir = raw['dataDir']?.toString() ?? '';
+      final total =
+          raw['totalBytes'] is int
+              ? raw['totalBytes'] as int
+              : (raw['totalBytes'] as num?)?.toInt() ?? 0;
+      final children = <String, int>{};
+      final c = raw['children'];
+      if (c is Map) {
+        c.forEach((key, value) {
+          final n = value is int ? value : (value as num?)?.toInt() ?? 0;
+          if (n > 0) children[key.toString()] = n;
+        });
+      }
+      return (dataDir: dataDir, totalBytes: total, children: children);
+    } catch (e) {
+      if (kDebugMode) Logger.log('getInternalDataDirBreakdown 失败: $e');
+      return (dataDir: '', totalBytes: 0, children: <String, int>{});
+    }
+  }
+
+  /// 清理浏览器媒体/资源缓存（保留 Cookies 等登录态）。返回释放字节数。
+  Future<int> clearWebViewData() async {
+    if (!Platform.isAndroid) return 0;
+    try {
+      final freed = await _appStorageChannel.invokeMethod<dynamic>(
+        'clearWebViewData',
+      );
+      if (freed is int) return freed;
+      if (freed is num) return freed.toInt();
+      return 0;
+    } catch (e) {
+      if (kDebugMode) Logger.log('clearWebViewData 失败: $e');
+      rethrow;
+    }
+  }
+
+  /// 当前浏览器媒体缓存字节数（CacheStorage 等，不含登录 Cookie）。
+  Future<int> getWebViewMediaCacheBytes() async {
+    if (!Platform.isAndroid) return 0;
+    try {
+      final raw = await _appStorageChannel.invokeMethod<dynamic>(
+        'getWebViewMediaCacheBytes',
+      );
+      if (raw is int) return raw;
+      if (raw is num) return raw.toInt();
+      return 0;
+    } catch (e) {
+      if (kDebugMode) Logger.log('getWebViewMediaCacheBytes 失败: $e');
+      return 0;
+    }
+  }
+
+  static const String _kWebViewCacheAutoClean =
+      'webview_media_cache_auto_clean_v1';
+  static const String _kWebViewCacheQuotaBytes =
+      'webview_media_cache_quota_bytes_v1';
+
+  /// 默认配额 1GB（十进制，与系统存储单位一致）。
+  static const int kDefaultWebViewCacheQuotaBytes = 1000 * 1000 * 1000;
+
+  Future<bool> isWebViewMediaCacheAutoCleanEnabled() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_kWebViewCacheAutoClean) ?? true;
+  }
+
+  Future<void> setWebViewMediaCacheAutoCleanEnabled(bool enabled) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kWebViewCacheAutoClean, enabled);
+  }
+
+  Future<int> getWebViewMediaCacheQuotaBytes() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getInt(_kWebViewCacheQuotaBytes) ??
+        kDefaultWebViewCacheQuotaBytes;
+  }
+
+  Future<void> setWebViewMediaCacheQuotaBytes(int bytes) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_kWebViewCacheQuotaBytes, bytes.clamp(0, 50 * 1000 * 1000 * 1000));
+  }
+
+  /// 若开启自动清理且缓存超过配额，则清理媒体缓存（保留登录）。返回释放字节；未触发返回 0。
+  Future<int> enforceWebViewMediaCacheQuota({bool forceLog = false}) async {
+    if (!Platform.isAndroid) return 0;
+    try {
+      final enabled = await isWebViewMediaCacheAutoCleanEnabled();
+      if (!enabled) return 0;
+      final quota = await getWebViewMediaCacheQuotaBytes();
+      if (quota <= 0) return 0;
+      final used = await getWebViewMediaCacheBytes();
+      if (used <= quota) {
+        if (forceLog && kDebugMode) {
+          Logger.log(
+            '浏览器媒体缓存未超限: ${_formatFileSize(used)} / ${_formatFileSize(quota)}',
+          );
+        }
+        return 0;
+      }
+      if (kDebugMode) {
+        Logger.log(
+          '浏览器媒体缓存超限，开始清理: ${_formatFileSize(used)} > ${_formatFileSize(quota)}',
+        );
+      }
+      final freed = await clearWebViewData();
+      if (kDebugMode) {
+        Logger.log('浏览器媒体缓存已自动清理，释放 ${_formatFileSize(freed)}');
+      }
+      return freed;
+    } catch (e) {
+      if (kDebugMode) Logger.log('enforceWebViewMediaCacheQuota 失败: $e');
+      return 0;
+    }
+  }
 
   /// 初始化文件清理服务
   Future<void> initialize() async {
@@ -668,36 +800,85 @@ class FileCleanupService {
 
   /// 格式化文件大小
   String _formatFileSize(int bytes) {
-    if (bytes < 1024) return '${bytes}B';
-    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)}KB';
-    if (bytes < 1024 * 1024 * 1024)
-      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)}MB';
-    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)}GB';
+    if (bytes < 1000) return '${bytes}B';
+    if (bytes < 1000 * 1000) {
+      return '${(bytes / 1000).toStringAsFixed(1)}KB';
+    }
+    if (bytes < 1000 * 1000 * 1000) {
+      return '${(bytes / (1000 * 1000)).toStringAsFixed(1)}MB';
+    }
+    return '${(bytes / (1000 * 1000 * 1000)).toStringAsFixed(1)}GB';
   }
 
-  /// 获取应用总存储使用量（含内部存储+应用专属外部存储，与系统应用详情一致）
+  Future<int> getPackageCodeBytes() async {
+    if (!Platform.isAndroid) return 0;
+    try {
+      final raw = await _appStorageChannel.invokeMethod<dynamic>(
+        'getPackageCodeBytes',
+      );
+      if (raw is int) return raw;
+      if (raw is num) return raw.toInt();
+      return 0;
+    } catch (e) {
+      if (kDebugMode) Logger.log('getPackageCodeBytes 失败: $e');
+      return 0;
+    }
+  }
+
+  /// 获取应用总存储使用量（含内部 dataDir + 应用包体 + 外部存储，对齐系统「总计」口径）
   Future<int> getAppTotalStorageUsage() async {
     if (!_isInitialized) return 0;
 
     try {
       int totalSize = 0;
 
-      if (_appDocumentsDirectory != null &&
-          await _appDocumentsDirectory!.exists()) {
-        totalSize += await _getDirectorySize(_appDocumentsDirectory!.path);
-      }
+      // Android：以系统 dataDir 全量为准（含 app_webview），避免漏计浏览器缓存
+      if (Platform.isAndroid) {
+        final breakdown = await getInternalDataDirBreakdown();
+        if (breakdown.totalBytes > 0) {
+          totalSize += breakdown.totalBytes;
+        } else {
+          // 通道失败时回退到 path_provider 可见目录
+          if (_appDocumentsDirectory != null &&
+              await _appDocumentsDirectory!.exists()) {
+            totalSize += await _getDirectorySize(_appDocumentsDirectory!.path);
+          }
+          if (_appCacheDirectory != null && await _appCacheDirectory!.exists()) {
+            totalSize += await _getDirectorySize(_appCacheDirectory!.path);
+          }
+          if (_appSupportDirectory != null &&
+              await _appSupportDirectory!.exists()) {
+            totalSize += await _getDirectorySize(_appSupportDirectory!.path);
+          }
+          if (_tempDirectory != null && await _tempDirectory!.exists()) {
+            final tempPath = _tempDirectory!.path;
+            final cachePath = _appCacheDirectory?.path;
+            if (cachePath == null ||
+                path.normalize(tempPath) != path.normalize(cachePath)) {
+              totalSize += await _getDirectorySize(tempPath);
+            }
+          }
+        }
+        // 系统「总计」含「应用」APK 体积
+        totalSize += await getPackageCodeBytes();
+      } else {
+        if (_appDocumentsDirectory != null &&
+            await _appDocumentsDirectory!.exists()) {
+          totalSize += await _getDirectorySize(_appDocumentsDirectory!.path);
+        }
 
-      if (_appCacheDirectory != null && await _appCacheDirectory!.exists()) {
-        totalSize += await _getDirectorySize(_appCacheDirectory!.path);
-      }
+        if (_appCacheDirectory != null && await _appCacheDirectory!.exists()) {
+          totalSize += await _getDirectorySize(_appCacheDirectory!.path);
+        }
 
-      if (_appSupportDirectory != null &&
-          await _appSupportDirectory!.exists()) {
-        totalSize += await _getDirectorySize(_appSupportDirectory!.path);
-      }
+        if (_appSupportDirectory != null &&
+            await _appSupportDirectory!.exists()) {
+          totalSize += await _getDirectorySize(_appSupportDirectory!.path);
+        }
 
-      if (_tempDirectory != null && await _tempDirectory!.exists()) {
-        totalSize += await _getDirectorySize(_tempDirectory!.path);
+        if (_tempDirectory != null && await _tempDirectory!.exists()) {
+          totalSize += await _getDirectorySize(_tempDirectory!.path);
+        }
       }
 
       // 应用专属外部存储（Android: browser_backups、导出文件等，系统计入「数据」）
