@@ -35,6 +35,7 @@ import 'widgets/stored_view_video_background_layer.dart';
 import 'widgets/floating_ui_shadows.dart';
 import 'widgets/safe_modal_sheet_body.dart';
 import 'utils/background_media_preview.dart';
+import 'utils/background_cover_view.dart';
 import 'utils/background_layer_defaults.dart';
 import 'utils/background_physical_file.dart';
 import 'models/background_media_origin.dart';
@@ -456,6 +457,14 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
         );
       }
 
+      if (!mounted) return;
+      await applyBackgroundCoverViewParams(
+        context: context,
+        filePath: finalImagePath,
+        isVideo: false,
+      );
+
+      if (!mounted) return;
       setState(() {
         _backgroundImage = File(finalImagePath);
         _backgroundVideo = null;
@@ -552,6 +561,14 @@ class _DocumentEditorPageState extends State<DocumentEditorPage>
         );
       }
 
+      if (!mounted) return;
+      await applyBackgroundCoverViewParams(
+        context: context,
+        filePath: finalVideoPath,
+        isVideo: true,
+      );
+
+      if (!mounted) return;
       setState(() {
         _backgroundVideo = File(finalVideoPath);
         _backgroundImage = null;

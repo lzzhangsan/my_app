@@ -30,6 +30,7 @@ import 'widgets/move_to_folder_sheet.dart';
 import 'widgets/directory_last_visited_frame.dart';
 import 'models/media_type.dart';
 import 'utils/background_media_preview.dart';
+import 'utils/background_cover_view.dart';
 import 'app_route_observer.dart';
 
 class DirectoryPage extends StatefulWidget {
@@ -561,14 +562,20 @@ class _DirectoryPageState extends State<DirectoryPage>
 
         final File newImage = await File(picked.path).copy(permanentPath);
 
-        if (mounted) {
-          setState(() {
-            _backgroundImage = newImage;
-            _backgroundVideo = null;
-            _backgroundImageOrigin = picked.origin;
-            _backgroundVideoOrigin = null;
-          });
-        }
+        if (!mounted) return;
+        await applyBackgroundCoverViewParams(
+          context: context,
+          filePath: permanentPath,
+          isVideo: false,
+        );
+
+        if (!mounted) return;
+        setState(() {
+          _backgroundImage = newImage;
+          _backgroundVideo = null;
+          _backgroundImageOrigin = picked.origin;
+          _backgroundVideoOrigin = null;
+        });
 
         await getService<DatabaseService>().insertOrUpdateDirectorySettings(
           folderName: _currentParentFolder,
@@ -651,14 +658,20 @@ class _DirectoryPageState extends State<DirectoryPage>
 
       final File newVideo = await File(picked.path).copy(permanentPath);
 
-      if (mounted) {
-        setState(() {
-          _backgroundVideo = newVideo;
-          _backgroundImage = null;
-          _backgroundVideoOrigin = picked.origin;
-          _backgroundImageOrigin = null;
-        });
-      }
+      if (!mounted) return;
+      await applyBackgroundCoverViewParams(
+        context: context,
+        filePath: permanentPath,
+        isVideo: true,
+      );
+
+      if (!mounted) return;
+      setState(() {
+        _backgroundVideo = newVideo;
+        _backgroundImage = null;
+        _backgroundVideoOrigin = picked.origin;
+        _backgroundImageOrigin = null;
+      });
 
       await getService<DatabaseService>().insertOrUpdateDirectorySettings(
         folderName: _currentParentFolder,

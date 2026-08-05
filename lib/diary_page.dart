@@ -34,6 +34,7 @@ import 'services/test_data_generator_service.dart';
 import 'widgets/floating_ui_shadows.dart';
 import 'models/media_type.dart';
 import 'utils/background_media_preview.dart';
+import 'utils/background_cover_view.dart';
 import 'utils/background_layer_defaults.dart';
 import 'utils/background_physical_file.dart';
 import 'models/background_media_origin.dart';
@@ -243,11 +244,18 @@ class _DiaryPageState extends State<DiaryPage>
           'diary_bg_${DateTime.now().millisecondsSinceEpoch}${path.extension(picked.path)}';
       final destPath = '${bgDir.path}/$fileName';
       final newImage = await File(picked.path).copy(destPath);
+      if (!mounted) return;
+      await applyBackgroundCoverViewParams(
+        context: context,
+        filePath: destPath,
+        isVideo: false,
+      );
       await getService<DatabaseService>().insertOrUpdateDiarySettings(
         imagePath: destPath,
         colorValue: _diaryBgColor?.value,
         backgroundImageOrigin: picked.origin,
       );
+      if (!mounted) return;
       setState(() {
         _diaryBgImage = newImage;
         _diaryBgVideo = null;
@@ -269,11 +277,18 @@ class _DiaryPageState extends State<DiaryPage>
         'diary_bgv_${DateTime.now().millisecondsSinceEpoch}$ext';
     final destPath = '${bgDir.path}/$fileName';
     final newVideo = await File(picked.path).copy(destPath);
+    if (!mounted) return;
+    await applyBackgroundCoverViewParams(
+      context: context,
+      filePath: destPath,
+      isVideo: true,
+    );
     await getService<DatabaseService>().insertOrUpdateDiarySettings(
       videoPath: destPath,
       colorValue: _diaryBgColor?.value,
       backgroundVideoOrigin: picked.origin,
     );
+    if (!mounted) return;
     setState(() {
       _diaryBgVideo = newVideo;
       _diaryBgImage = null;

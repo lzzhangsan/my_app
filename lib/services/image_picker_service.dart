@@ -58,8 +58,10 @@ class ImagePickerService {
     }
 
     if (source == 'media_library') {
-      final selectedImagePath = await showDialog<String>(
+      final selectedImagePath = await showModalBottomSheet<String>(
         context: context,
+        isScrollControlled: true,
+        backgroundColor: Colors.transparent,
         builder: (context) => MediaLibraryImagePicker(
           onImageSelected: (String imagePath) {
             Navigator.of(context).pop(imagePath);
@@ -153,8 +155,10 @@ class ImagePickerService {
     if (source == null) return null;
 
     if (source == 'media_library') {
-      final selectedPath = await showDialog<String>(
+      final selectedPath = await showModalBottomSheet<String>(
         context: context,
+        isScrollControlled: true,
+        backgroundColor: Colors.transparent,
         builder:
             (context) => MediaLibraryVideoPicker(
               onVideoSelected: (String p) {

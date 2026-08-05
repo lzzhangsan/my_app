@@ -97,22 +97,29 @@ class _MediaLibraryVideoPickerState extends State<MediaLibraryVideoPicker> {
   }
 
   Widget _buildFolderItem(Map<String, dynamic> item) {
-    return Card(
+    return Material(
+      color: Colors.transparent,
       child: InkWell(
+        borderRadius: BorderRadius.circular(8),
         onTap: () => _navigateToDirectory(item['id'], item['name']),
         child: Container(
-          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: const Color(0xFF87CEEB), width: 1.2),
+            color: Colors.white.withValues(alpha: 0.35),
+          ),
+          padding: const EdgeInsets.all(6),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Icon(Icons.folder, size: 40, color: Colors.amber),
-              const SizedBox(height: 4),
+              const Icon(Icons.folder, size: 32, color: Colors.amber),
+              const SizedBox(height: 2),
               Expanded(
                 child: SizedBox(
                   width: double.infinity,
                   child: Text(
                     item['name'],
-                    style: const TextStyle(fontSize: 12),
+                    style: const TextStyle(fontSize: 11, height: 1.1),
                     textAlign: TextAlign.center,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
@@ -128,8 +135,10 @@ class _MediaLibraryVideoPickerState extends State<MediaLibraryVideoPicker> {
 
   Widget _buildVideoItem(Map<String, dynamic> item) {
     final srcPath = item['path'] as String? ?? '';
-    return Card(
+    return Material(
+      color: Colors.transparent,
       child: InkWell(
+        borderRadius: BorderRadius.circular(8),
         onTap: () async {
           if (srcPath.isEmpty) return;
           final src = File(srcPath);
@@ -164,42 +173,45 @@ class _MediaLibraryVideoPickerState extends State<MediaLibraryVideoPicker> {
             }
           }
         },
-        child: Column(
-          children: [
-            Expanded(
-              child: srcPath.isNotEmpty && File(srcPath).existsSync()
-                  ? VideoGridThumbnail(
-                      key: ValueKey('mlv_thumb_$srcPath'),
-                      videoPath: srcPath,
-                    )
-                  : Container(
-                      width: double.infinity,
-                      decoration: BoxDecoration(
-                        borderRadius: const BorderRadius.vertical(
-                          top: Radius.circular(4),
+        child: Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: const Color(0xFF87CEEB), width: 1.2),
+            color: Colors.white.withValues(alpha: 0.35),
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: Column(
+            children: [
+              Expanded(
+                child:
+                    srcPath.isNotEmpty && File(srcPath).existsSync()
+                        ? VideoGridThumbnail(
+                          key: ValueKey('mlv_thumb_$srcPath'),
+                          videoPath: srcPath,
+                        )
+                        : ColoredBox(
+                          color: Colors.grey[900]!,
+                          child: Center(
+                            child: Icon(
+                              Icons.videocam_off,
+                              color: Colors.grey[600],
+                              size: 26,
+                            ),
+                          ),
                         ),
-                        color: Colors.grey[900],
-                      ),
-                      child: Center(
-                        child: Icon(
-                          Icons.videocam_off,
-                          color: Colors.grey[600],
-                          size: 30,
-                        ),
-                      ),
-                    ),
-            ),
-            Container(
-              padding: const EdgeInsets.all(4),
-              child: Text(
-                item['name'] as String? ?? '',
-                style: const TextStyle(fontSize: 10),
-                textAlign: TextAlign.center,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
               ),
-            ),
-          ],
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 3),
+                child: Text(
+                  item['name'] as String? ?? '',
+                  style: const TextStyle(fontSize: 10, height: 1.1),
+                  textAlign: TextAlign.center,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -207,88 +219,90 @@ class _MediaLibraryVideoPickerState extends State<MediaLibraryVideoPicker> {
 
   @override
   Widget build(BuildContext context) {
-    return Dialog(
-      child: Container(
-        width: MediaQuery.of(context).size.width * 0.9,
-        height: MediaQuery.of(context).size.height * 0.8,
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          children: [
-            Row(
+    final screenHeight = MediaQuery.sizeOf(context).height;
+    final contentBottomPad = MediaQuery.viewPaddingOf(context).bottom + 38;
+    return Container(
+      height: screenHeight * 0.85,
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.8),
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+      ),
+      child: Column(
+        children: [
+          SizedBox(
+            height: 40,
+            child: Row(
               children: [
-                const Expanded(
-                  child: Text(
-                    '从媒体库选择视频',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                  ),
-                ),
                 if (_currentDirectory != 'root')
                   IconButton(
-                    icon: const Icon(Icons.arrow_upward),
+                    icon: const Icon(Icons.arrow_back_ios_new, size: 18),
                     onPressed: _navigateUp,
                     tooltip: '返回上级',
+                  )
+                else
+                  const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    _directoryPath.join(' / '),
+                    style: TextStyle(color: Colors.grey[700], fontSize: 12),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
+                ),
                 IconButton(
-                  icon: const Icon(Icons.close),
+                  icon: const Icon(Icons.close, size: 20),
+                  tooltip: '取消',
                   onPressed: () => Navigator.of(context).pop(),
                 ),
               ],
             ),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(vertical: 8),
-              child: Text(
-                _directoryPath.join(' / '),
-                style: TextStyle(color: Colors.grey[600], fontSize: 12),
-              ),
-            ),
-            const Divider(),
-            Expanded(
-              child:
-                  _isLoading
-                      ? const Center(child: CircularProgressIndicator())
-                      : (_folderItems.isEmpty && _videoItems.isEmpty)
-                      ? Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(
-                              Icons.video_library,
-                              size: 64,
-                              color: Colors.grey[400],
+          ),
+          Expanded(
+            child:
+                _isLoading
+                    ? const Center(child: CircularProgressIndicator())
+                    : (_folderItems.isEmpty && _videoItems.isEmpty)
+                    ? Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            Icons.video_library,
+                            size: 56,
+                            color: Colors.grey[400],
+                          ),
+                          const SizedBox(height: 12),
+                          Text(
+                            '此文件夹中没有视频',
+                            style: TextStyle(
+                              color: Colors.grey[600],
+                              fontSize: 15,
                             ),
-                            const SizedBox(height: 16),
-                            Text(
-                              '此文件夹中没有视频',
-                              style: TextStyle(
-                                color: Colors.grey[600],
-                                fontSize: 16,
-                              ),
-                            ),
-                          ],
-                        ),
-                      )
-                      : GridView.builder(
-                        gridDelegate:
-                            const SliverGridDelegateWithFixedCrossAxisCount(
-                              crossAxisCount: 3,
-                              crossAxisSpacing: 8,
-                              mainAxisSpacing: 8,
-                              childAspectRatio: 0.8,
-                            ),
-                        itemCount: _folderItems.length + _videoItems.length,
-                        itemBuilder: (context, index) {
-                          if (index < _folderItems.length) {
-                            return _buildFolderItem(_folderItems[index]);
-                          }
-                          return _buildVideoItem(
-                            _videoItems[index - _folderItems.length],
-                          );
-                        },
+                          ),
+                        ],
                       ),
-            ),
-          ],
-        ),
+                    )
+                    : GridView.builder(
+                      padding: EdgeInsets.fromLTRB(10, 0, 10, contentBottomPad),
+                      gridDelegate:
+                          const SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: 4,
+                            crossAxisSpacing: 6,
+                            mainAxisSpacing: 6,
+                            childAspectRatio: 0.78,
+                          ),
+                      itemCount: _folderItems.length + _videoItems.length,
+                      itemBuilder: (context, index) {
+                        if (index < _folderItems.length) {
+                          return _buildFolderItem(_folderItems[index]);
+                        }
+                        return _buildVideoItem(
+                          _videoItems[index - _folderItems.length],
+                        );
+                      },
+                    ),
+          ),
+        ],
       ),
     );
   }

@@ -29,6 +29,7 @@ import 'widgets/stored_view_image_layer.dart';
 import 'widgets/stored_view_video_background_layer.dart';
 import 'models/media_type.dart';
 import 'utils/background_media_preview.dart';
+import 'utils/background_cover_view.dart';
 import 'utils/background_layer_defaults.dart';
 import 'utils/background_physical_file.dart';
 import 'models/background_media_origin.dart';
@@ -222,6 +223,14 @@ class _CoverPageState extends State<CoverPage> with WidgetsBindingObserver {
           );
         }
 
+        if (!mounted) return;
+        await applyBackgroundCoverViewParams(
+          context: context,
+          filePath: destinationPath,
+          isVideo: false,
+        );
+
+        if (!mounted) return;
         setState(() {
           _backgroundImage = File(destinationPath);
           _backgroundVideo = null;
@@ -904,6 +913,14 @@ class _CoverPageState extends State<CoverPage> with WidgetsBindingObserver {
 
       await getService<DatabaseService>().deleteCoverImage();
 
+      if (!mounted) return;
+      await applyBackgroundCoverViewParams(
+        context: context,
+        filePath: destinationPath,
+        isVideo: true,
+      );
+
+      if (!mounted) return;
       setState(() {
         _backgroundVideo = File(destinationPath);
         _backgroundImage = null;

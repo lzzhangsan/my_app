@@ -82,26 +82,29 @@ class _MediaLibraryImagePickerState extends State<MediaLibraryImagePicker> {
   }
 
   Widget _buildFolderItem(Map<String, dynamic> item) {
-    return Card(
+    return Material(
+      color: Colors.transparent,
       child: InkWell(
+        borderRadius: BorderRadius.circular(8),
         onTap: () => _navigateToDirectory(item['id'], item['name']),
         child: Container(
-          padding: EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: const Color(0xFF87CEEB), width: 1.2),
+            color: Colors.white.withValues(alpha: 0.35),
+          ),
+          padding: const EdgeInsets.all(6),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(
-                Icons.folder,
-                size: 40,
-                color: Colors.amber,
-              ),
-              SizedBox(height: 4),
+              const Icon(Icons.folder, size: 32, color: Colors.amber),
+              const SizedBox(height: 2),
               Expanded(
-                child: Container(
+                child: SizedBox(
                   width: double.infinity,
                   child: Text(
                     item['name'],
-                    style: TextStyle(fontSize: 12),
+                    style: const TextStyle(fontSize: 11, height: 1.1),
                     textAlign: TextAlign.center,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
@@ -116,11 +119,13 @@ class _MediaLibraryImagePickerState extends State<MediaLibraryImagePicker> {
   }
 
   Widget _buildImageItem(Map<String, dynamic> item) {
-    return Card(
+    final srcPath = item['path'] as String? ?? '';
+    return Material(
+      color: Colors.transparent,
       child: InkWell(
+        borderRadius: BorderRadius.circular(8),
         onTap: () async {
-          final srcPath = item['path'] as String?;
-          if (srcPath == null || srcPath.isEmpty) return;
+          if (srcPath.isEmpty) return;
           final src = File(srcPath);
           if (!await src.exists()) {
             if (!mounted) return;
@@ -131,7 +136,12 @@ class _MediaLibraryImagePickerState extends State<MediaLibraryImagePicker> {
           }
           try {
             final diaryDir = await ensureDiaryMediaDirectory();
-            final dest = File(path.join(diaryDir.path, '${const Uuid().v4()}${path.extension(srcPath)}'));
+            final dest = File(
+              path.join(
+                diaryDir.path,
+                '${const Uuid().v4()}${path.extension(srcPath)}',
+              ),
+            );
             await src.copy(dest.path);
             if (!mounted) return;
             if (widget.onImageSelected != null) {
@@ -149,44 +159,46 @@ class _MediaLibraryImagePickerState extends State<MediaLibraryImagePicker> {
           }
         },
         child: Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: const Color(0xFF87CEEB), width: 1.2),
+            color: Colors.white.withValues(alpha: 0.35),
+          ),
+          clipBehavior: Clip.antiAlias,
           child: Column(
             children: [
               Expanded(
-                child: Container(
-                  width: double.infinity,
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.vertical(top: Radius.circular(4)),
-                    child: File(item['path']).existsSync()
+                child:
+                    srcPath.isNotEmpty && File(srcPath).existsSync()
                         ? Image.file(
-                            File(item['path']),
-                            fit: BoxFit.cover,
-                            errorBuilder: (context, error, stackTrace) {
-                              return Container(
-                                color: Colors.grey[300],
-                                child: Icon(
-                                  Icons.broken_image,
-                                  color: Colors.grey[600],
-                                  size: 30,
-                                ),
-                              );
-                            },
-                          )
-                        : Container(
-                            color: Colors.grey[300],
-                            child: Icon(
-                              Icons.image_not_supported,
-                              color: Colors.grey[600],
-                              size: 30,
-                            ),
+                          File(srcPath),
+                          fit: BoxFit.cover,
+                          width: double.infinity,
+                          errorBuilder: (context, error, stackTrace) {
+                            return ColoredBox(
+                              color: Colors.grey[300]!,
+                              child: Icon(
+                                Icons.broken_image,
+                                color: Colors.grey[600],
+                                size: 26,
+                              ),
+                            );
+                          },
+                        )
+                        : ColoredBox(
+                          color: Colors.grey[300]!,
+                          child: Icon(
+                            Icons.image_not_supported,
+                            color: Colors.grey[600],
+                            size: 26,
                           ),
-                  ),
-                ),
+                        ),
               ),
-              Container(
-                padding: EdgeInsets.all(4),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 3),
                 child: Text(
-                  item['name'],
-                  style: TextStyle(fontSize: 10),
+                  item['name'] as String? ?? '',
+                  style: const TextStyle(fontSize: 10, height: 1.1),
                   textAlign: TextAlign.center,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -201,88 +213,90 @@ class _MediaLibraryImagePickerState extends State<MediaLibraryImagePicker> {
 
   @override
   Widget build(BuildContext context) {
-    return Dialog(
-      child: Container(
-        width: MediaQuery.of(context).size.width * 0.9,
-        height: MediaQuery.of(context).size.height * 0.8,
-        padding: EdgeInsets.all(16),
-        child: Column(
-          children: [
-            // 标题栏
-            Row(
+    final screenHeight = MediaQuery.sizeOf(context).height;
+    final contentBottomPad = MediaQuery.viewPaddingOf(context).bottom + 38;
+    return Container(
+      height: screenHeight * 0.85,
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.8),
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+      ),
+      child: Column(
+        children: [
+          SizedBox(
+            height: 40,
+            child: Row(
               children: [
-                Expanded(
-                  child: Text(
-                    '选择背景图片',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                  ),
-                ),
                 if (_currentDirectory != 'root')
                   IconButton(
-                    icon: Icon(Icons.arrow_upward),
+                    icon: const Icon(Icons.arrow_back_ios_new, size: 18),
                     onPressed: _navigateUp,
                     tooltip: '返回上级',
+                  )
+                else
+                  const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    _directoryPath.join(' / '),
+                    style: TextStyle(color: Colors.grey[700], fontSize: 12),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
+                ),
                 IconButton(
-                  icon: Icon(Icons.close),
+                  icon: const Icon(Icons.close, size: 20),
+                  tooltip: '取消',
                   onPressed: () => Navigator.of(context).pop(),
                 ),
               ],
             ),
-            // 路径导航
-            Container(
-              width: double.infinity,
-              padding: EdgeInsets.symmetric(vertical: 8),
-              child: Text(
-                _directoryPath.join(' / '),
-                style: TextStyle(color: Colors.grey[600], fontSize: 12),
-              ),
-            ),
-            Divider(),
-            // 内容区域
-            Expanded(
-              child: _isLoading
-                  ? Center(child: CircularProgressIndicator())
-                  : (_folderItems.isEmpty && _imageItems.isEmpty)
-                      ? Center(
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Icon(
-                                Icons.image_not_supported,
-                                size: 64,
-                                color: Colors.grey[400],
-                              ),
-                              SizedBox(height: 16),
-                              Text(
-                                '此文件夹中没有图片',
-                                style: TextStyle(
-                                  color: Colors.grey[600],
-                                  fontSize: 16,
-                                ),
-                              ),
-                            ],
+          ),
+          Expanded(
+            child:
+                _isLoading
+                    ? const Center(child: CircularProgressIndicator())
+                    : (_folderItems.isEmpty && _imageItems.isEmpty)
+                    ? Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            Icons.image_not_supported,
+                            size: 56,
+                            color: Colors.grey[400],
                           ),
-                        )
-                      : GridView.builder(
-                          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                            crossAxisCount: 3,
-                            crossAxisSpacing: 8,
-                            mainAxisSpacing: 8,
-                            childAspectRatio: 0.8,
+                          const SizedBox(height: 12),
+                          Text(
+                            '此文件夹中没有图片',
+                            style: TextStyle(
+                              color: Colors.grey[600],
+                              fontSize: 15,
+                            ),
                           ),
-                          itemCount: _folderItems.length + _imageItems.length,
-                          itemBuilder: (context, index) {
-                            if (index < _folderItems.length) {
-                              return _buildFolderItem(_folderItems[index]);
-                            } else {
-                              return _buildImageItem(_imageItems[index - _folderItems.length]);
-                            }
-                          },
-                        ),
-            ),
-          ],
-        ),
+                        ],
+                      ),
+                    )
+                    : GridView.builder(
+                      padding: EdgeInsets.fromLTRB(10, 0, 10, contentBottomPad),
+                      gridDelegate:
+                          const SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: 4,
+                            crossAxisSpacing: 6,
+                            mainAxisSpacing: 6,
+                            childAspectRatio: 0.78,
+                          ),
+                      itemCount: _folderItems.length + _imageItems.length,
+                      itemBuilder: (context, index) {
+                        if (index < _folderItems.length) {
+                          return _buildFolderItem(_folderItems[index]);
+                        }
+                        return _buildImageItem(
+                          _imageItems[index - _folderItems.length],
+                        );
+                      },
+                    ),
+          ),
+        ],
       ),
     );
   }
