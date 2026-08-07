@@ -4,24 +4,80 @@ import 'services/browser_session_preview.dart';
 import 'services/database_service.dart';
 import 'services/logger.dart';
 
-class MediaSelectionDialog extends StatefulWidget {
-  final Function(String)? onMediaSelected;
-  final Function(String)? onDirectorySelected;
-  final String? selectedDirectory;
-
-  const MediaSelectionDialog({
-    super.key,
-    this.onMediaSelected,
-    this.onDirectorySelected,
-    this.selectedDirectory,
+/// 媒体来源对话框中的一个可选条目。
+class _MediaSourceChoice {
+  const _MediaSourceChoice({
+    required this.value,
+    required this.label,
+    required this.icon,
+    this.subtitle,
+    this.enabled = true,
+    this.isReturnUp = false,
   });
 
-  @override
-  _MediaSelectionDialogState createState() => _MediaSelectionDialogState();
+  final String value;
+  final String label;
+  final IconData icon;
+  final String? subtitle;
+  final bool enabled;
+  final bool isReturnUp;
 }
 
-class _MediaSelectionDialogState extends State<MediaSelectionDialog> {
-  List<Map<String, dynamic>> _mediaItems = [];
+/// 弹出底部大面板样式的「选择媒体来源」，返回选中的目录 id（含
+/// [kMediaSourceBrowserLive] / 真实目录 id / 'root' 整个媒体库）。
+///
+/// 视觉与「移动到」面板保持一致：底部 85% 屏高、天蓝细边框卡片、
+/// GridView 两列、右上角关闭按钮。
+Future<String?> showMediaSourceSelectionSheet({
+  required BuildContext context,
+  required String? selectedDirectory,
+  double panelOpacity = 0.8,
+}) async {
+  final screenHeight = MediaQuery.of(context).size.height;
+  final panelHeight = screenHeight * 0.85;
+  const tileExtent = (44.0 * 1.2 + 4) * (2 / 3);
+  final clampedOpacity = panelOpacity.clamp(0.0, 1.0);
+  const columns = 2;
+
+  return showModalBottomSheet<String?>(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: Colors.transparent,
+    builder: (sheetContext) {
+      return _MediaSourceSelectionBody(
+        panelHeight: panelHeight,
+        clampedOpacity: clampedOpacity,
+        tileExtent: tileExtent,
+        columns: columns,
+        selectedDirectory: selectedDirectory,
+      );
+    },
+  );
+}
+
+class _MediaSourceSelectionBody extends StatefulWidget {
+  const _MediaSourceSelectionBody({
+    required this.panelHeight,
+    required this.clampedOpacity,
+    required this.tileExtent,
+    required this.columns,
+    required this.selectedDirectory,
+  });
+
+  final double panelHeight;
+  final double clampedOpacity;
+  final double tileExtent;
+  final int columns;
+  final String? selectedDirectory;
+
+  @override
+  State<_MediaSourceSelectionBody> createState() =>
+      _MediaSourceSelectionBodyState();
+}
+
+class _MediaSourceSelectionBodyState
+    extends State<_MediaSourceSelectionBody> {
+  List<Map<String, dynamic>> _folders = [];
   bool _isLoading = true;
   String _currentDirectory = 'root';
   late final DatabaseService _databaseService;
@@ -33,7 +89,7 @@ class _MediaSelectionDialogState extends State<MediaSelectionDialog> {
     BrowserSessionPreview.instance.availabilityNotifier.addListener(
       _onBrowserAvailabilityChanged,
     );
-    _loadMediaItems();
+    _loadFolders();
   }
 
   @override
@@ -48,200 +104,277 @@ class _MediaSelectionDialogState extends State<MediaSelectionDialog> {
     if (mounted) setState(() {});
   }
 
-  Future<void> _loadMediaItems() async {
-    setState(() {
-      _isLoading = true;
-    });
+  bool _isSelected(String value) => widget.selectedDirectory == value;
+
+  Future<void> _loadFolders() async {
+    setState(() => _isLoading = true);
     try {
       final items = await _databaseService.getMediaItems(_currentDirectory);
-      Logger.i('加载媒体项: $_currentDirectory, 共 ${items.length} 项');
-      for (var item in items) {
-        Logger.d('媒体项: ${item['name']}, 类型: ${item['type']}');
-      }
+      final folders = items.where((item) {
+        final t = item['type'];
+        final idx =
+            t is int ? t : (t is num ? t.toInt() : int.tryParse('$t') ?? -1);
+        return idx == 3; // MediaType.folder
+      }).toList();
       setState(() {
-        _mediaItems = items.where((item) => item['type'] == 3).toList();
+        _folders = folders;
         _isLoading = false;
       });
     } catch (e) {
-      Logger.e('加载媒体项时出错', e);
-      setState(() {
-        _isLoading = false;
-      });
+      Logger.e('加载媒体来源文件夹出错', e);
+      setState(() => _isLoading = false);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('加载媒体文件时出错，请重试。')),
+          const SnackBar(content: Text('加载文件夹失败，请重试。')),
         );
       }
     }
   }
 
   Future<void> _navigateUp() async {
-    if (_currentDirectory != 'root') {
-      final parentDir =
-          await _databaseService.getMediaItemParentDirectory(_currentDirectory);
-      setState(() {
-        _currentDirectory = parentDir ?? 'root';
-      });
-      await _loadMediaItems();
+    if (_currentDirectory == 'root') return;
+    final parent =
+        await _databaseService.getMediaItemParentDirectory(_currentDirectory);
+    setState(() => _currentDirectory = parent ?? 'root');
+    await _loadFolders();
+  }
+
+  String _currentFolderLabel() {
+    if (_currentDirectory == 'root') return '选择媒体来源';
+    for (final f in _folders) {
+      if (f['id']?.toString() == _currentDirectory) {
+        return '选择媒体来源 / ${f['name']}';
+      }
     }
+    return '选择媒体来源 / ...';
   }
 
-  String _getFolderNameById(String id) {
-    final item = _mediaItems.firstWhere(
-      (item) => item['id'] == id,
-      orElse: () => {'name': '未知文件夹'},
-    );
-    return item['name'];
-  }
-
-  bool _isSelected(String directoryId) {
-    return widget.selectedDirectory == directoryId;
-  }
-
-  Widget _buildBrowserLiveTile() {
-    final available = BrowserSessionPreview.instance.isAvailable;
-    final selected = _isSelected(kMediaSourceBrowserLive);
-    final url = BrowserSessionPreview.instance.pageUrl;
-
-    return ListTile(
-      leading: Icon(
-        Icons.language,
-        color: !available
-            ? Colors.grey
-            : (selected ? Colors.blue : Colors.teal),
-      ),
-      title: Text(
-        '当前的浏览页面',
-        style: TextStyle(
-          color: !available
-              ? Colors.grey
-              : (selected ? Colors.blue : null),
-          fontWeight: selected ? FontWeight.bold : null,
-        ),
-      ),
-      subtitle: Text(
-        available
-            ? (url != null && url.isNotEmpty ? url : '实时预览浏览器页面与下载进度')
-            : '请从浏览器目录入口进入',
-        maxLines: 2,
-        overflow: TextOverflow.ellipsis,
-        style: TextStyle(
-          fontSize: 12,
-          color: available ? null : Colors.grey,
-        ),
-      ),
-      enabled: available,
-      tileColor: selected ? Colors.blue.withOpacity(0.1) : null,
-      onTap: available
-          ? () {
-              if (widget.onDirectorySelected != null) {
-                widget.onDirectorySelected!(kMediaSourceBrowserLive);
-              }
-            }
-          : null,
-    );
-  }
-
-  Widget _buildDirectoryItem(Map<String, dynamic> item) {
-    final bool isSelected = _isSelected(item['id']);
-
-    return ListTile(
-      leading: Icon(
-        Icons.folder,
-        color: isSelected ? Colors.blue : Colors.amber,
-      ),
-      title: Text(
-        item['name'],
-        style: TextStyle(
-          color: isSelected ? Colors.blue : null,
-          fontWeight: isSelected ? FontWeight.bold : null,
-        ),
-      ),
-      tileColor: isSelected ? Colors.blue.withOpacity(0.1) : null,
-      onTap: () {
-        if (widget.onDirectorySelected != null) {
-          widget.onDirectorySelected!(item['id']);
-        }
-      },
-    );
+  Future<void> _enterFolder(Map<String, dynamic> folder) async {
+    setState(() => _currentDirectory = folder['id']?.toString() ?? 'root');
+    await _loadFolders();
   }
 
   @override
   Widget build(BuildContext context) {
-    return Dialog(
-      child: Container(
-        width: MediaQuery.of(context).size.width * 0.8,
-        height: MediaQuery.of(context).size.height * 0.7,
-        padding: EdgeInsets.all(16),
-        child: Column(
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+    final contentBottomPad =
+        MediaQuery.viewPaddingOf(context).bottom + 38;
+
+    // 特殊项（仅 root 时显示：浏览器实时预览 + 整个媒体库）
+    final specialChoices = <_MediaSourceChoice>[
+      if (_currentDirectory == 'root')
+        _MediaSourceChoice(
+          value: kMediaSourceBrowserLive,
+          label: '当前的浏览页面',
+          icon: Icons.language,
+          subtitle: BrowserSessionPreview.instance.isAvailable
+              ? (BrowserSessionPreview.instance.pageUrl ??
+                  '实时预览浏览器页面与下载进度')
+              : '请从浏览器目录入口进入',
+          enabled: BrowserSessionPreview.instance.isAvailable,
+        ),
+      if (_currentDirectory == 'root')
+        _MediaSourceChoice(
+          value: 'root',
+          label: '整个媒体库',
+          icon: Icons.library_music,
+        ),
+    ];
+
+    // 返回上级（非 root 时作为第一个卡片显示）
+    final returnUp = <_MediaSourceChoice>[
+      if (_currentDirectory != 'root')
+        const _MediaSourceChoice(
+          value: '__navigate_up__',
+          label: '返回上级',
+          icon: Icons.arrow_upward,
+          isReturnUp: true,
+        ),
+    ];
+
+    // 真正的文件夹卡片：点击进入文件夹（而不是立即选中）——
+    // 和旧 Dialog 行为一致：先一层层进入子目录，选中项用 tileColor 高亮。
+    final folderChoices = _folders
+        .map(
+          (f) => _MediaSourceChoice(
+            value: f['id']?.toString() ?? '',
+            label: f['name']?.toString() ?? '未命名',
+            icon: Icons.folder,
+          ),
+        )
+        .toList();
+
+    final allChoices = [
+      ...specialChoices,
+      ...returnUp,
+      ...folderChoices,
+    ];
+
+    return Container(
+      height: widget.panelHeight,
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: widget.clampedOpacity),
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+      ),
+      child: Column(
+        children: [
+          SizedBox(
+            height: 44,
+            child: Row(
               children: [
+                if (_currentDirectory != 'root')
+                  IconButton(
+                    padding: EdgeInsets.zero,
+                    constraints:
+                        const BoxConstraints(minWidth: 36, minHeight: 28),
+                    visualDensity: VisualDensity.compact,
+                    tooltip: '返回上级',
+                    onPressed: _navigateUp,
+                    icon: const Icon(Icons.arrow_back, size: 20),
+                  )
+                else
+                  const SizedBox(width: 12),
                 Expanded(
                   child: Text(
-                    _currentDirectory == 'root'
-                        ? '选择媒体来源'
-                        : '选择媒体来源 / ${_getFolderNameById(_currentDirectory)}',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                    _currentFolderLabel(),
+                    style: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
+                    ),
+                    maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
-                if (_currentDirectory != 'root')
-                  IconButton(
-                    icon: Icon(Icons.arrow_upward),
-                    onPressed: _navigateUp,
-                    tooltip: '返回上级',
-                  ),
+                IconButton(
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints(minWidth: 36, minHeight: 28),
+                  visualDensity: VisualDensity.compact,
+                  tooltip: '取消',
+                  onPressed: () => Navigator.pop(context),
+                  icon: const Icon(Icons.close, size: 20),
+                ),
               ],
             ),
-            SizedBox(height: 16),
-            if (widget.onDirectorySelected != null &&
-                _currentDirectory == 'root') ...[
-              _buildBrowserLiveTile(),
-              ListTile(
-                leading: Icon(
-                  Icons.library_music,
-                  color: _isSelected('root') ? Colors.blue : null,
-                ),
-                title: Text(
-                  '整个媒体库',
-                  style: TextStyle(
-                    color: _isSelected('root') ? Colors.blue : null,
-                    fontWeight: _isSelected('root') ? FontWeight.bold : null,
-                  ),
-                ),
-                tileColor:
-                    _isSelected('root') ? Colors.blue.withOpacity(0.1) : null,
-                onTap: () {
-                  widget.onDirectorySelected!('root');
-                },
-              ),
-            ],
-            Expanded(
-              child: _isLoading
-                  ? Center(child: CircularProgressIndicator())
-                  : _mediaItems.isEmpty
-                      ? Center(child: Text('没有可用的文件夹'))
-                      : ListView.builder(
-                          itemCount: _mediaItems.length,
-                          itemBuilder: (context, index) {
-                            final item = _mediaItems[index];
-                            return _buildDirectoryItem(item);
-                          },
+          ),
+          Expanded(
+            child: _isLoading
+                ? const Center(child: CircularProgressIndicator())
+                : allChoices.isEmpty
+                    ? const Center(child: Text('没有可用的文件夹'))
+                    : GridView.builder(
+                        padding: EdgeInsets.fromLTRB(10, 0, 10, contentBottomPad),
+                        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: widget.columns,
+                          mainAxisExtent: widget.tileExtent,
+                          crossAxisSpacing: 8,
+                          mainAxisSpacing: 6,
                         ),
+                        itemCount: allChoices.length,
+                        itemBuilder: (ctx, index) => _buildTile(
+                          allChoices[index],
+                          folderListMap: _folders,
+                        ),
+                      ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTile(
+    _MediaSourceChoice choice, {
+    required List<Map<String, dynamic>> folderListMap,
+  }) {
+    final selected = !choice.isReturnUp && _isSelected(choice.value);
+    final enabled = choice.enabled;
+
+    final borderColor =
+        selected
+            ? Colors.blue
+            : (enabled
+                ? const Color(0xFF87CEEB)
+                : const Color(0xFF87CEEB).withValues(alpha: 0.35));
+
+    final content = Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: borderColor, width: 1.2),
+        color:
+            selected
+                ? Colors.blue.withOpacity(0.12)
+                : Colors.white.withValues(alpha: enabled ? 0.28 : 0.12),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      child: Row(
+        children: [
+          Icon(
+            choice.icon,
+            size: 18,
+            color:
+                selected
+                    ? Colors.blue
+                    : (enabled ? Colors.black87 : Colors.black38),
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              choice.label,
+              style: TextStyle(
+                fontSize: 13,
+                color:
+                    selected
+                        ? Colors.blue
+                        : (enabled ? Colors.black87 : Colors.black38),
+                fontWeight: selected ? FontWeight.bold : FontWeight.w500,
+                height: 1.1,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              softWrap: false,
             ),
-            SizedBox(height: 16),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                TextButton(
-                  onPressed: () => Navigator.of(context).pop(),
-                  child: Text('取消'),
-                ),
-              ],
-            ),
-          ],
+          ),
+        ],
+      ),
+    );
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap:
+            !enabled
+                ? null
+                : () {
+                    // 1. 返回上级
+                    if (choice.isReturnUp) {
+                      _navigateUp();
+                      return;
+                    }
+                    // 2. 真实文件夹：先判断是不是「进入子目录」还是「作为来源选中这个文件夹本身」
+                    //    - 和旧 Dialog 保持一致逻辑：点击文件夹就立即作为来源选中（onDirectorySelected）
+                    //    - 同时保留"如果还想一层层进入"的可能：用 onLongPress 进入子目录
+                    Navigator.pop(context, choice.value);
+                  },
+        onLongPress:
+            !enabled || choice.isReturnUp
+                ? null
+                : () {
+                    // 长按文件夹 → 进入该目录查看子文件夹
+                    final folder = folderListMap.firstWhere(
+                      (f) => f['id']?.toString() == choice.value,
+                      orElse: () => const {},
+                    );
+                    if (folder.isNotEmpty) _enterFolder(folder);
+                  },
+        child: Tooltip(
+          message:
+              choice.subtitle != null && choice.subtitle!.isNotEmpty
+                  ? choice.subtitle!
+                  : (choice.isReturnUp
+                      ? '返回上一级文件夹'
+                      : '短按：选中该文件夹作为媒体来源；长按：进入该文件夹查看子文件夹'),
+          preferBelow: false,
+          child: content,
         ),
       ),
     );

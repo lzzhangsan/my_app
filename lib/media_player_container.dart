@@ -1395,56 +1395,50 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
 
   void _showMediaSourceSelectionDialog() {
     Logger.d('Showing media source selection dialog');
-    showDialog(
-      context: context,
-      barrierDismissible: true, // 允许点击外部关闭对话框
-      builder:
-          (BuildContext dialogContext) => MediaSelectionDialog(
-            selectedDirectory: _selectedDirectory, // 传入当前选中的目录
-            onDirectorySelected: (directory) async {
-              Navigator.of(dialogContext).pop();
-              if (!mounted) return;
+    unawaited(
+      showMediaSourceSelectionSheet(
+        context: context,
+        selectedDirectory: _selectedDirectory,
+        panelOpacity: 0.8,
+      ).then((directory) async {
+        Logger.d('Dialog closed, selected: $directory');
+        if (directory == null || !mounted) return;
 
-              final MediaSourceFavoriteFilter scope;
-              if (directory == kMediaSourceBrowserLive) {
-                // 浏览页面预览不区分收藏范围
-                scope = MediaSourceFavoriteFilter.all;
-              } else {
-                final presetScope = await _loadScopeForDirectory(directory);
-                final picked = await _showFavoriteScopeDialog(
-                  initialScope: presetScope,
-                );
-                if (!mounted || picked == null) return;
-                scope = picked;
-              }
+        final MediaSourceFavoriteFilter scope;
+        if (directory == kMediaSourceBrowserLive) {
+          // 浏览页面预览不区分收藏范围
+          scope = MediaSourceFavoriteFilter.all;
+        } else {
+          final presetScope = await _loadScopeForDirectory(directory);
+          final picked = await _showFavoriteScopeDialog(initialScope: presetScope);
+          if (!mounted || picked == null) return;
+          scope = picked;
+        }
 
-              final changed =
-                  directory != _selectedDirectory || scope != _favoriteFilter;
-              if (!changed) return;
+        final changed =
+            directory != _selectedDirectory || scope != _favoriteFilter;
+        if (!changed) return;
 
-              _stopBrowserLivePreview();
-              setState(() {
-                _selectedDirectory = directory;
-                _favoriteFilter = scope;
-                _currentPlayingMedia = null;
-                _mediaWidget = null;
-                _currentVideoWidget = null;
-                _mediaMode = MediaMode.none;
-                _mediaTimer?.cancel();
-              });
+        _stopBrowserLivePreview();
+        setState(() {
+          _selectedDirectory = directory;
+          _favoriteFilter = scope;
+          _currentPlayingMedia = null;
+          _mediaWidget = null;
+          _currentVideoWidget = null;
+          _mediaMode = MediaMode.none;
+          _mediaTimer?.cancel();
+        });
 
-              await _saveMediaSourceSelection(directory, scope);
-              await _loadMediaList();
-              Logger.i(
-                directory == kMediaSourceBrowserLive
-                    ? '已选择媒体来源: 当前的浏览页面'
-                    : '已选择媒体来源: $directory，范围: ${scope.displayLabel}',
-              );
-            },
-          ),
-    ).then((_) {
-      Logger.d('Dialog closed');
-    });
+        await _saveMediaSourceSelection(directory, scope);
+        await _loadMediaList();
+        Logger.i(
+          directory == kMediaSourceBrowserLive
+              ? '已选择媒体来源: 当前的浏览页面'
+              : '已选择媒体来源: $directory，范围: ${scope.displayLabel}',
+        );
+      }),
+    );
   }
 
   /// 选定目录/整个媒体库后，再选「全部 / 已收藏 / 未收藏」。
