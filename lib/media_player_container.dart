@@ -21,6 +21,7 @@ import 'widgets/ken_burns_image_display.dart';
 import 'widgets/zoom_pan_edge_image_display.dart';
 import 'widgets/fit_width_blur_static_image.dart';
 import 'widgets/image_interactive_surface.dart';
+import 'widgets/move_to_folder_sheet.dart';
 import 'widgets/image_layout_utils.dart'
     show
         ImageLetterboxFill,
@@ -1530,7 +1531,7 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
     super.dispose();
   }
 
-  // 新增方法: 移动当前媒体到指定目录
+  // 新增方法: 移动当前媒体到指定目录（使用和媒体页一致的半透明底部面板）
   Future<bool> moveCurrentMedia(BuildContext context) async {
     if (_currentPlayingMedia == null) {
       _showMessage(context, '没有正在播放的媒体文件');
@@ -1538,115 +1539,73 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
     }
 
     try {
-      // 显示移动对话框
-      final List<Map<String, dynamic>> availableFolders =
-          await _getAllAvailableFolders();
       final String currentDirectory =
           _currentPlayingMedia!['directory']?.toString() ?? 'root';
 
+      // —— 和媒体页一致：先弹出加载中遮罩 ——
+      if (context.mounted) {
+        showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder:
+              (ctx) => const AlertDialog(
+                content: Row(
+                  children: [
+                    CircularProgressIndicator(),
+                    SizedBox(width: 20),
+                    Text('加载中...'),
+                  ],
+                ),
+              ),
+        );
+      }
+
+      // 加载所有文件夹（排除系统文件夹：回收站/收藏夹），并过滤掉当前目录
+      List<MediaItem> folders;
+      try {
+        final raw = await _getAllAvailableFolders();
+        folders =
+            raw
+                .map((m) {
+                  try {
+                    return MediaItem.fromMap(m);
+                  } catch (_) {
+                    return null;
+                  }
+                })
+                .whereType<MediaItem>()
+                .where((f) => f.id != currentDirectory)
+                .where(
+                  (f) => f.id != 'recycle_bin' && f.id != 'favorites',
+                )
+                .toList();
+      } catch (_) {
+        if (context.mounted) Navigator.of(context, rootNavigator: true).pop();
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('没有可用的目标文件夹。')),
+          );
+        }
+        return false;
+      }
+
       if (!context.mounted) return false;
+      Navigator.of(context, rootNavigator: true).pop(); // 关闭 loading
 
-      final String? targetDirectory = await showDialog<String>(
+      // —— 和媒体页一致：调用统一的 showMoveToFolderSheet 面板 ——
+      final chosen = await showMoveToFolderSheet(
         context: context,
-        builder:
-            (context) => AlertDialog(
-              // 仅 20% 透明（80% 不透明），避免背景过度透出导致文字难读。
-              backgroundColor: Colors.white.withAlpha((0.8 * 255).round()),
-              title: Container(
-                padding: EdgeInsets.zero,
-                height: 30,
-                child: Text(
-                  '移动到',
-                  style: TextStyle(
-                    fontSize: 16.8,
-                    fontWeight: FontWeight.w700,
-                    color: Colors.black.withValues(alpha: 0.8),
-                  ),
-                ),
-              ),
-              titlePadding: const EdgeInsets.only(left: 12, top: 8, bottom: 0),
-              contentPadding: const EdgeInsets.symmetric(
-                vertical: 4,
-                horizontal: 8,
-              ),
-              content: SizedBox(
-                width: MediaQuery.of(context).size.width * 0.9, // 加宽面板
-                height: MediaQuery.of(context).size.height * 0.7, // 加高面板
-                child: Scrollbar(
-                  thumbVisibility: true,
-                  child: ListView(
-                    children: [
-                      if (currentDirectory != 'root')
-                        ListTile(
-                          dense: true,
-                          visualDensity: const VisualDensity(
-                            horizontal: 0,
-                            vertical: -3,
-                          ),
-                          contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 8,
-                          ),
-                          title: Text(
-                            '根目录',
-                            style: TextStyle(
-                              fontSize: 15.6,
-                              fontWeight: FontWeight.w700,
-                              color: Colors.black.withValues(alpha: 0.8),
-                            ),
-                          ),
-                          onTap: () => Navigator.of(context).pop('root'),
-                        ),
-                      ...availableFolders
-                          .where((folder) {
-                            final id = folder['id']?.toString() ?? '';
-                            return id.isNotEmpty && id != currentDirectory;
-                          })
-                          .map((folder) {
-                            return ListTile(
-                              dense: true,
-                              visualDensity: const VisualDensity(
-                                horizontal: 0,
-                                vertical: -3,
-                              ),
-                              contentPadding: const EdgeInsets.symmetric(
-                                horizontal: 8,
-                              ),
-                              title: Text(
-                                folder['name'],
-                                style: TextStyle(
-                                  fontSize: 15.6,
-                                  fontWeight: FontWeight.w700,
-                                  color: Colors.black.withValues(alpha: 0.8),
-                                ),
-                              ),
-                              onTap:
-                                  () => Navigator.of(context).pop(folder['id']),
-                            );
-                          }),
-                    ],
-                  ),
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.of(context).pop(null),
-                  child: Text(
-                    '取消',
-                    style: TextStyle(
-                      fontSize: 15.6,
-                      fontWeight: FontWeight.w700,
-                      color: Colors.black.withValues(alpha: 0.8),
-                    ),
-                  ),
-                ),
-              ],
-            ),
+        folders: folders,
+        includeRoot: true,
+        rootEnabled: currentDirectory != 'root',
+        // 和媒体页保持一致透明度：80% 不透明，减轻缩略图透出混淆
+        panelOpacity: 0.8,
       );
-
-      if (targetDirectory == null) return false;
+      if (!context.mounted || chosen == null) return false;
+      final String targetDirectory = chosen.id == 'root' ? 'root' : chosen.id;
 
       // 检查目标是否与当前目录相同
-      if (_currentPlayingMedia!['directory'] == targetDirectory) {
+      if (_currentPlayingMedia!['directory']?.toString() == targetDirectory) {
         if (context.mounted) {
           _showMessage(context, '媒体文件已在所选目录中');
         }
@@ -1673,16 +1632,15 @@ class MediaPlayerContainerState extends State<MediaPlayerContainer>
         // 我们仍然可以继续更新数据库记录
       }
 
-      // 更新数据库记录
-      await _databaseService.updateMediaItem({
-        'id': currentMedia['id'],
-        'name': currentMedia['name'],
-        'path': currentMedia['path'],
-        'type': currentMedia['type'],
-        'directory': targetDirectory,
-        'date_added':
-            currentMedia['date_added'] ?? DateTime.now().millisecondsSinceEpoch,
-      });
+      // 更新数据库记录：调用专用 moveMediaItemToDirectory，保证：
+      // 1) 在目标目录同类(fav/unfav)区最前面；
+      // 2) 若新目录无人工排序，则 date_added 更新为 now，兜底按最新排最前；
+      // 3) 若新目录有 sort_order，旧项全体 +1，新项 sort_order = 0。
+      final mediaId = currentMedia['id']?.toString() ?? '';
+      if (mediaId.isEmpty) {
+        throw StateError('当前媒体没有 id，无法移动');
+      }
+      await _databaseService.moveMediaItemToDirectory(mediaId, targetDirectory);
 
       // 立即从当前列表中移除该媒体
       if (currentIndex != -1) {
