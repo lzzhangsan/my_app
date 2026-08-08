@@ -740,12 +740,50 @@ function __smartEaseInOut(t) {
       const r = marked.getBoundingClientRect();
       if (r.width >= 80 && r.height >= 60) return marked;
     }
+    let activeRoot = null;
+    if (isTelegram) {
+      try {
+        activeRoot = document.querySelector(
+          '.MediaViewerSlide--active, .MediaViewerSlide.active, ' +
+          '#MediaViewer .MediaViewerSlide--active'
+        );
+        if (!activeRoot) {
+          let bestRoot = null, bestRootScore = -1e18;
+          for (const node of document.querySelectorAll(
+            '.media-viewer-aspecter, .media-viewer-movers > div, .MediaViewerSlide'
+          )) {
+            const rr = node.getBoundingClientRect();
+            if (rr.width < 80 || rr.height < 80) continue;
+            const coverRoot = (rr.left <= cx && rr.right >= cx &&
+              rr.top <= cy && rr.bottom >= cy) ? 1 : 0;
+            const scoreRoot = coverRoot * 1e9 -
+              Math.hypot(rr.left + rr.width / 2 - cx, rr.top + rr.height / 2 - cy);
+            if (scoreRoot > bestRootScore) {
+              bestRootScore = scoreRoot;
+              bestRoot = node;
+            }
+          }
+          activeRoot = bestRoot;
+        }
+      } catch (_) {}
+    }
     let best = null, bestScore = -1e18;
-    for (const el of document.querySelectorAll(selector)) {
+    const pool = (isTelegram && activeRoot && activeRoot.querySelectorAll)
+      ? Array.from(activeRoot.querySelectorAll(selector))
+      : Array.from(document.querySelectorAll(selector));
+    if (isTelegram && activeRoot && !pool.length) {
+      pool.push(...document.querySelectorAll(selector));
+    }
+    for (const el of pool) {
       const r = el.getBoundingClientRect();
       const iw = Math.max(0, Math.min(w, r.right) - Math.max(0, r.left));
       const ih = Math.max(0, Math.min(h, r.bottom) - Math.max(0, r.top));
       if (iw < 100 || ih < 80) continue;
+      try {
+        const st = getComputedStyle(el);
+        if (st.display === 'none' || st.visibility === 'hidden' ||
+            Number(st.opacity || 1) < 0.35) continue;
+      } catch (_) {}
       const mx = r.left + r.width / 2, my = r.top + r.height / 2;
       const cover = (r.left <= cx && r.right >= cx && r.top <= cy && r.bottom >= cy) ? 1 : 0;
       const isVideo = el.tagName === 'VIDEO' ? 1 : 0;
@@ -760,7 +798,11 @@ function __smartEaseInOut(t) {
       let telegramVideoBonus = 0;
       let telegramVideoPenalty = 0;
       let telegramImagePenalty = 0;
+      let telegramActiveBonus = 0;
       if (isTelegram) {
+        if (activeRoot && activeRoot.contains && activeRoot.contains(el)) {
+          telegramActiveBonus = 100000;
+        }
         if (telegramSlideKind === 'photo') {
           telegramImageBonus = (!isVideo && cover) ? 20000 : 0;
           telegramVideoPenalty = isVideo ? 25000 : 0;
@@ -775,7 +817,8 @@ function __smartEaseInOut(t) {
       const score = cover * 50000 + (iw * ih) / (w * h) * 20000 -
         Math.hypot(mx - cx, my - cy) * 2 +
         (isTelegram ? 0 : isVideo * 2000) +
-        playingBonus + telegramImageBonus + telegramVideoBonus -
+        playingBonus + telegramImageBonus + telegramVideoBonus +
+        telegramActiveBonus -
         telegramVideoPenalty - telegramImagePenalty;
       if (score > bestScore) { bestScore = score; best = el; }
     }
@@ -787,6 +830,27 @@ function __smartEaseInOut(t) {
   const tag = el ? el.tagName : 'none';
   let key = '';
   if (isTelegram && el) {
+    let viewerPhotoId = '';
+    let viewerDocId = '';
+    let viewerMid = '';
+    try {
+      const viewer = window.appMediaViewer;
+      const viewerTarget = viewer && viewer.target;
+      const media = viewerTarget && viewerTarget.message &&
+        viewerTarget.message.media;
+      viewerPhotoId = String((media && media.photo && media.photo.id) || '');
+      viewerDocId = String(
+        (media && media.document && media.document.id) || ''
+      );
+      viewerMid = String(
+        (viewerTarget && viewerTarget.mid != null ? viewerTarget.mid : '') ||
+        (viewerTarget && viewerTarget.message &&
+          viewerTarget.message.mid != null
+          ? viewerTarget.message.mid
+          : '') ||
+        ''
+      );
+    } catch (_) {}
     const doc = telegramDocToken(el);
     const slide = telegramSlideToken();
     const nw = Math.round(Number(el.naturalWidth || el.videoWidth || r.width) || 0);
@@ -795,7 +859,13 @@ function __smartEaseInOut(t) {
     try {
       if (tag === 'VIDEO') dur = Math.round(Number(el.duration || 0) * 10) / 10;
     } catch (_) {}
-    if (doc) {
+    // Prefer Telegram's authoritative media ids over reused blob:/geom keys.
+    if (viewerPhotoId || viewerDocId) {
+      key = 'tgdoc:id=' + (viewerPhotoId || viewerDocId) +
+        (viewerMid ? ('|mid=' + viewerMid) : '') +
+        (slide ? ('|slide=' + slide) : '') +
+        '|' + tag;
+    } else if (doc) {
       key = 'tgdoc:' + doc + '|' + tag + '|' + nw + 'x' + nh +
         (dur > 0 ? ('|d' + dur) : '');
     } else if (slide) {

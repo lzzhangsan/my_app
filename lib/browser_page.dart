@@ -2748,10 +2748,28 @@ class _BrowserPageState extends State<BrowserPage>
     _xMediaIdToFileHashOf(task)[xMediaId] = hash;
   }
 
+  Future<void> _loadBrowserDownloadDedupEnabled() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+    setState(() {
+      _browserDownloadDedupEnabled =
+          prefs.getBool(_kBrowserDownloadDedupEnabledKey) ?? true;
+    });
+  }
+
+  Future<void> _setBrowserDownloadDedupEnabled(bool enabled) async {
+    if (_browserDownloadDedupEnabled == enabled) return;
+    setState(() => _browserDownloadDedupEnabled = enabled);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kBrowserDownloadDedupEnabledKey, enabled);
+    debugPrint('浏览页下载查重: ${enabled ? "开启" : "关闭"}');
+  }
+
   Future<bool> _shouldSkipConfirmedXSmartRedownload(
     Map<String, dynamic>? task,
     String xMediaId,
   ) async {
+    if (!_browserDownloadDedupEnabled) return false;
     if (task == null || xMediaId.isEmpty) return false;
     final hash = (_xMediaIdToFileHashOf(task)[xMediaId] ?? '').trim();
     if (hash.isEmpty) return false;
@@ -3074,10 +3092,10 @@ class _BrowserPageState extends State<BrowserPage>
   static int get _kPaginatedSniffMaxPages => _kPaginatedSniffLayerSizes.last;
 
   /// 分页嗅探「不限」数量软上限，避免一次任务过大。
-  static const int _kPaginatedSniffSoftMaxTarget = 500;
+  static const int _kPaginatedSniffSoftMaxTarget = 5000;
 
   /// 智能下载（沿用套路 / 动作编排 / 通用·91 管线）数量上限。
-  static const int _kSmartDownloadMaxTarget = 500;
+  static const int _kSmartDownloadMaxTarget = 5000;
 
   Duration _smartDownloadDeadlineForTarget(int requestedTarget) {
     final target = requestedTarget.clamp(1, _kSmartDownloadMaxTarget);
@@ -3130,6 +3148,30 @@ class _BrowserPageState extends State<BrowserPage>
     final last = _telegramOfficialDownloadLastProgressAt;
     return last != null &&
         DateTime.now().difference(last) < const Duration(minutes: 2);
+  }
+
+  /// Close a stuck Telegram "official/fallback" progress row when another path
+  /// already saved the media (canvas / blob / HTTP). Prevents dual-path waits.
+  void _releaseTelegramOfficialProgressUi({
+    required bool success,
+    String? detail,
+  }) {
+    _telegramOfficialDownloadActive = false;
+    _telegramOfficialDownloadLastProgressAt = null;
+    final id = _telegramStreamProgressTaskId;
+    if (id.isEmpty) return;
+    final idx = _downloadTasks.indexWhere((row) => row['id'] == id);
+    if (idx < 0) return;
+    final status = (_downloadTasks[idx]['status'] ?? '').toString();
+    if (status != 'downloading' && status != 'pending') return;
+    _updateDownloadTask(
+      id,
+      status: success ? 'completed' : 'failed',
+      progress: success ? 1.0 : null,
+      progressDetail:
+          detail ??
+          (success ? 'Telegram 媒体已保存' : 'Telegram 原始方式未成功'),
+    );
   }
 
   void _notifyMediaDownloadSaved() {
@@ -3355,6 +3397,10 @@ class _BrowserPageState extends State<BrowserPage>
   static const String _kSmartStrategyProfilesKey =
       'browser_smart_strategy_profiles_v1';
   static const String _kSmartDemoRecipesKey = 'browser_smart_demo_recipes_v1';
+  /// 浏览页下载内容查重（哈希）：默认开；关闭后长按/智能下载均直接入库。
+  static const String _kBrowserDownloadDedupEnabledKey =
+      'browser_download_content_dedup_enabled_v1';
+  bool _browserDownloadDedupEnabled = true;
   final List<Map<String, dynamic>> _smartDownload24hRegistry = [];
   final Map<String, Map<String, dynamic>> _smartStrategyProfiles = {};
   final Map<String, Map<String, dynamic>> _smartDemoRecipes = {};
@@ -3441,6 +3487,7 @@ class _BrowserPageState extends State<BrowserPage>
     unawaited(_loadSmartDownload24hRegistry());
     unawaited(_loadSmartStrategyProfiles());
     unawaited(_loadSmartDemoRecipes());
+    unawaited(_loadBrowserDownloadDedupEnabled());
     _favoriteProgressSyncTimer = Timer.periodic(
       const Duration(seconds: 3),
       (_) => unawaited(_syncCurrentFavoriteProgress()),
@@ -5405,9 +5452,11 @@ class _BrowserPageState extends State<BrowserPage>
           );
           return false;
         }
-        if (!forceNoPreSkip && prev == 'completed') {
+        if (!forceNoPreSkip &&
+            prev == 'completed' &&
+            _browserDownloadDedupEnabled) {
           // 本任务已成功入库过：禁止再整段重下（长视频尤其致命）。
-          // 哈希能确认库内仍在 → already_in_library；哈希暂不可用也绝不清状态重下。
+          // 查重关闭时允许再次下载入库。
           final inLibrary = await _shouldSkipConfirmedXSmartRedownload(
             smartTask,
             smartXMediaId,
@@ -6057,7 +6106,9 @@ class _BrowserPageState extends State<BrowserPage>
             (currentItem['title'] ?? currentItem['name'] ?? '未知媒体').toString();
         updateBatchProgress(currentName);
 
-        if (!forceRedownload && _isFavoriteLikelyDownloaded(currentItem)) {
+        if (!forceRedownload &&
+            _browserDownloadDedupEnabled &&
+            _isFavoriteLikelyDownloaded(currentItem)) {
           skipped++;
           processed++;
           updateBatchProgress(currentName);
@@ -6449,6 +6500,8 @@ class _BrowserPageState extends State<BrowserPage>
   Future<bool> _confirmSourceUrlDuplicateBeforeDownload(
     Map<String, dynamic> existingRow,
   ) async {
+    // 查重关闭：不做「疑似重复」拦截，直接放行下载（仍走媒体校验）。
+    if (!_browserDownloadDedupEnabled) return true;
     final smartTask = _smartDownloadTask;
     if (smartTask != null) {
       // URL/src/磁盘路径绝不能宣称「库内已有」；强制下载后由内容哈希判定。
@@ -6878,7 +6931,10 @@ class _BrowserPageState extends State<BrowserPage>
     );
   }
 
-  void _ensureTelegramOfficialProgressTask({required bool isSmartGesture}) {
+  void _ensureTelegramOfficialProgressTask({
+    required bool isSmartGesture,
+    String mediaKind = 'video',
+  }) {
     final smartTask = _smartDownloadTask;
     final smartProgressId =
         isSmartGesture ? (smartTask?['discoveryTaskId'] ?? '').toString() : '';
@@ -6886,12 +6942,13 @@ class _BrowserPageState extends State<BrowserPage>
     _telegramStreamProgressTaskId =
         smartProgressId.isNotEmpty ? smartProgressId : const Uuid().v4();
     if (_telegramStreamOwnsProgressTask) {
+      final isPhoto = mediaKind == 'photo' || mediaKind == 'image';
       _addDownloadTask(
         _telegramStreamProgressTaskId,
         'telegram-official://${DateTime.now().microsecondsSinceEpoch}',
-        MediaType.video,
+        isPhoto ? MediaType.image : MediaType.video,
         CancelToken(),
-        displayName: 'Telegram 原始视频',
+        displayName: isPhoto ? 'Telegram 原始图片' : 'Telegram 原始视频',
         isSmartBatchMedia: isSmartGesture,
       );
     }
@@ -6905,12 +6962,18 @@ class _BrowserPageState extends State<BrowserPage>
     final raw = total > 0 ? (done / total).clamp(0.0, 1.0) : 0.0;
     final progress =
         phase == 'streaming' ? 0.85 : (raw * 0.85).clamp(0.0, 0.85);
+    final idx = _downloadTasks.indexWhere((row) => row['id'] == id);
+    final isPhoto =
+        idx >= 0 &&
+        DatabaseService.mediaTypeIndex(_downloadTasks[idx]) ==
+            MediaType.image.index;
+    final label = isPhoto ? '图片' : '视频';
     final detail =
         phase == 'streaming'
-            ? 'Telegram 原始媒体读取完成，正在写入应用'
+            ? 'Telegram 原始$label读取完成，正在写入应用'
             : total > 0
-            ? '正在读取 Telegram 原始视频 · ${_formatBytes(done)} / ${_formatBytes(total)}'
-            : '正在调用 Telegram 原始媒体下载';
+            ? '正在读取 Telegram 原始$label · ${_formatBytes(done)} / ${_formatBytes(total)}'
+            : '正在调用 Telegram 原始$label下载';
     _updateDownloadTask(
       id,
       status: 'downloading',
@@ -8384,11 +8447,13 @@ class _BrowserPageState extends State<BrowserPage>
         // equality. Always acquire it and let native content-hash dedup decide.
         const inFlight = window.__appTelegramManagerInFlight;
         if (inFlight) {
-          // A second synthetic/manual press must never create an overlapping
-          // Telegram Blob task. The original task owns the library gate.
           reportManagerStatus('busy', inFlight.done || 0, inFlight.total || 0);
           updateFeedbackStatus('Telegram 下载进行中…', 'progress');
-          return true;
+          // Videos: keep ownership so callers do not start MediaRecorder
+          // fallbacks on top of an in-flight official download.
+          // Photos: return false so album smart-download can canvas-capture
+          // the active slide instead of treating busy as "saved".
+          return mediaKind !== 'photo';
         }
         reportManagerStatus('start', 0, media.size || 0);
         let download = null;
@@ -10027,6 +10092,278 @@ class _BrowserPageState extends State<BrowserPage>
           return 0;
         }
 
+        // Telegram albums keep neighbor slides (often the FIRST item) in the
+        // DOM with large rects / reused blob: URLs. Always prefer the active
+        // viewer slide + appMediaViewer.target media id — never "first IMG".
+        function telegramMediaIsVisiblyActive(el) {
+          if (!el || !el.getBoundingClientRect) return false;
+          try {
+            const style = getComputedStyle(el);
+            if (style.display === 'none' || style.visibility === 'hidden') {
+              return false;
+            }
+            if (Number(style.opacity || 1) < 0.35) return false;
+          } catch (_) {}
+          try {
+            if (el.closest && el.closest('[aria-hidden="true"]') &&
+                !(el.closest('.MediaViewerSlide--active') ||
+                  el.closest('.MediaViewerSlide.active'))) {
+              return false;
+            }
+          } catch (_) {}
+          const r = el.getBoundingClientRect();
+          const vw = window.innerWidth || 360;
+          const vh = window.innerHeight || 640;
+          const iw = Math.max(0, Math.min(vw, r.right) - Math.max(0, r.left));
+          const ih = Math.max(0, Math.min(vh, r.bottom) - Math.max(0, r.top));
+          return iw >= 80 && ih >= 80 && iw * ih >= vw * vh * 0.04;
+        }
+        function telegramActiveSlideRoot() {
+          const named = [
+            '.MediaViewerSlide--active',
+            '.MediaViewerSlide.active',
+            '#MediaViewer .MediaViewerSlide--active',
+            '.media-viewer-movers .active',
+            '[class*="MediaViewerSlide"][class*="active"]'
+          ];
+          for (const sel of named) {
+            try {
+              const node = document.querySelector(sel);
+              if (node) return node;
+            } catch (_) {}
+          }
+          try {
+            const vw = window.innerWidth || 360;
+            const vh = window.innerHeight || 640;
+            const cx = vw / 2;
+            const cy = vh / 2;
+            let best = null;
+            let bestScore = -1e18;
+            const candidates = document.querySelectorAll(
+              '.media-viewer-aspecter, .media-viewer-movers > div, ' +
+              '.media-viewer-whole .media-viewer-aspecter, ' +
+              '.MediaViewerSlide, .media-viewer-item'
+            );
+            for (const node of candidates) {
+              if (!telegramMediaIsVisiblyActive(node)) continue;
+              const r = node.getBoundingClientRect();
+              const mx = r.left + r.width / 2;
+              const my = r.top + r.height / 2;
+              const cover = (r.left <= cx && r.right >= cx &&
+                r.top <= cy && r.bottom >= cy) ? 1 : 0;
+              const score = cover * 1e9 -
+                Math.hypot(mx - cx, my - cy) * 10 +
+                (r.width * r.height);
+              if (score > bestScore) {
+                bestScore = score;
+                best = node;
+              }
+            }
+            if (best) return best;
+          } catch (_) {}
+          return null;
+        }
+        function pickTelegramActiveViewerMedia(kind) {
+          const want = String(kind || 'any');
+          const root = telegramActiveSlideRoot();
+          const vw = window.innerWidth || 360;
+          const vh = window.innerHeight || 640;
+          const cx = vw / 2;
+          const cy = vh / 2;
+          const selector = want === 'video'
+            ? 'video'
+            : (want === 'image' ? 'img' : 'video, img');
+          const scoped = [];
+          try {
+            if (root && root.querySelectorAll) {
+              scoped.push(...root.querySelectorAll(selector));
+            }
+          } catch (_) {}
+          if (!scoped.length) {
+            try {
+              scoped.push(...document.querySelectorAll(
+                '.media-viewer ' + selector +
+                ', .media-viewer-whole ' + selector +
+                ', .MediaViewer ' + selector +
+                ', .media-photo ' + selector +
+                ', img.thumbnail'
+              ));
+            } catch (_) {}
+          }
+          let best = null;
+          let bestScore = -1e18;
+          for (const el of scoped) {
+            if (!telegramMediaIsVisiblyActive(el)) continue;
+            const src = String(el.currentSrc || el.src || '').trim();
+            if (!src) continue;
+            const r = el.getBoundingClientRect();
+            const iw = Math.max(0, Math.min(vw, r.right) - Math.max(0, r.left));
+            const ih = Math.max(0, Math.min(vh, r.bottom) - Math.max(0, r.top));
+            const cover = (r.left <= cx && r.right >= cx &&
+              r.top <= cy && r.bottom >= cy) ? 1 : 0;
+            const mx = r.left + r.width / 2;
+            const my = r.top + r.height / 2;
+            let score = cover * 50000 + (iw * ih) / (vw * vh) * 20000 -
+              Math.hypot(mx - cx, my - cy) * 2;
+            if (root && root.contains && root.contains(el)) score += 100000;
+            if (el.tagName === 'VIDEO' && want === 'image') score -= 80000;
+            if (el.tagName === 'IMG' && want === 'video') score -= 80000;
+            // Prefer the fully-decoded slide over a still-blurry thumbnail.
+            if (el.tagName === 'IMG') {
+              const nw = Number(el.naturalWidth || 0);
+              const nh = Number(el.naturalHeight || 0);
+              score += Math.min(nw * nh, 8e6) / 200;
+              const cls = String(el.className || '').toLowerCase();
+              if (cls.includes('thumbnail') || cls.includes('thumb')) {
+                score -= 30000;
+              }
+            }
+            if (score > bestScore) {
+              bestScore = score;
+              best = el;
+            }
+          }
+          return best;
+        }
+        function telegramViewerMediaIds() {
+          try {
+            const viewer = window.appMediaViewer;
+            const viewerTarget = viewer && viewer.target;
+            const media = viewerTarget && viewerTarget.message &&
+              viewerTarget.message.media;
+            const photoId = String((media && media.photo && media.photo.id) || '');
+            const docId = String(
+              (media && media.document && media.document.id) || ''
+            );
+            const mid = String(
+              (viewerTarget && viewerTarget.mid != null
+                ? viewerTarget.mid
+                : '') ||
+              (viewerTarget && viewerTarget.message &&
+                viewerTarget.message.mid != null
+                ? viewerTarget.message.mid
+                : '') ||
+              ''
+            );
+            return {photoId: photoId, docId: docId, mid: mid};
+          } catch (_) {
+            return {photoId: '', docId: '', mid: ''};
+          }
+        }
+        function telegramPhotoExpectedSize() {
+          try {
+            const viewer = window.appMediaViewer;
+            const media = viewer && viewer.target && viewer.target.message &&
+              viewer.target.message.media;
+            if (!media) return {w: 0, h: 0};
+            let bestW = 0;
+            let bestH = 0;
+            const consider = (w, h) => {
+              const ww = Number(w || 0);
+              const hh = Number(h || 0);
+              if (ww * hh > bestW * bestH) {
+                bestW = ww;
+                bestH = hh;
+              }
+            };
+            if (media.photo) {
+              const sizes = media.photo.sizes;
+              if (Array.isArray(sizes)) {
+                for (const size of sizes) {
+                  if (size) consider(size.w, size.h);
+                }
+              }
+              consider(media.photo.w, media.photo.h);
+            }
+            if (media.document) {
+              consider(media.document.w, media.document.h);
+              const attrs = media.document.attributes;
+              if (Array.isArray(attrs)) {
+                for (const attr of attrs) {
+                  if (attr && (attr.w || attr.h)) consider(attr.w, attr.h);
+                }
+              }
+            }
+            return {w: bestW, h: bestH};
+          } catch (_) {
+            return {w: 0, h: 0};
+          }
+        }
+        // Reject progressive / thumbnail frames so smart-download never saves
+        // the blurry outline shown before Telegram finishes loading the photo.
+        function telegramPhotoLooksFullyLoaded(imgEl) {
+          if (!imgEl) return false;
+          try {
+            if (!imgEl.complete) return false;
+          } catch (_) {
+            return false;
+          }
+          const nw = Number(imgEl.naturalWidth || 0);
+          const nh = Number(imgEl.naturalHeight || 0);
+          if (nw < 480 || nh < 480) return false;
+          const cls = String(imgEl.className || '').toLowerCase();
+          const expect = telegramPhotoExpectedSize();
+          if (expect.w >= 700 && expect.h >= 700) {
+            if (nw < expect.w * 0.55 || nh < expect.h * 0.55) return false;
+          } else if (cls.includes('thumbnail') || cls.includes('thumb')) {
+            // Without an authoritative size, never trust thumbnail-class nodes.
+            if (nw < 1000 || nh < 1000) return false;
+          }
+          return true;
+        }
+        function waitForTelegramPhotoFullyLoaded(imgEl, timeoutMs) {
+          const budget = Math.max(800, Number(timeoutMs) || 8000);
+          const started = Date.now();
+          return new Promise(resolve => {
+            const tick = () => {
+              const current = pickTelegramActiveViewerMedia('image') || imgEl;
+              if (telegramPhotoLooksFullyLoaded(current)) {
+                resolve(current);
+                return;
+              }
+              if (Date.now() - started >= budget) {
+                resolve(current || imgEl || null);
+                return;
+              }
+              setTimeout(tick, 140);
+            };
+            tick();
+          });
+        }
+        function captureTelegramImageFromElement(imgEl, opts) {
+          try {
+            if (!imgEl) return null;
+            const requireSharp = !!(opts && opts.requireSharp);
+            // Smart-download only: refuse progressive / blurry placeholders.
+            // Manual long-press trusts the user's eyes and saves immediately.
+            if (requireSharp && !telegramPhotoLooksFullyLoaded(imgEl)) {
+              return null;
+            }
+            const w = Math.round(Number(
+              imgEl.naturalWidth || imgEl.width || 0
+            ));
+            const h = Math.round(Number(
+              imgEl.naturalHeight || imgEl.height || 0
+            ));
+            const minEdge = requireSharp ? 480 : 48;
+            if (w < minEdge || h < minEdge) return null;
+            const canvas = document.createElement('canvas');
+            canvas.width = w;
+            canvas.height = h;
+            const ctx = canvas.getContext('2d');
+            if (!ctx) return null;
+            ctx.drawImage(imgEl, 0, 0, w, h);
+            const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+            if (!dataUrl || !dataUrl.startsWith('data:image/')) return null;
+            const b64 = extractBase64FromDataUrl(dataUrl);
+            const minB64 = requireSharp ? 28000 : 64;
+            if (!b64 || b64.length < minB64) return null;
+            return b64;
+          } catch (_) {
+            return null;
+          }
+        }
+
         // Telegram mixed albums: decide the CURRENT slide kind from the media
         // viewer message object first. Never treat a video slide's poster IMG
         // as the download target, and never let a leftover VIDEO steal a photo.
@@ -10138,42 +10475,10 @@ class _BrowserPageState extends State<BrowserPage>
             const slideKind = telegramViewerSlideKind(
               pointImage || pointVideo || bestTarget || target
             );
-            let telegramVideo = pointVideo;
-            if (!telegramVideo) {
-              try {
-                const vids = Array.from(document.querySelectorAll(
-                  '.media-viewer video, .media-viewer-whole video, video'
-                )).filter(el => {
-                  const r = el.getBoundingClientRect();
-                  return r.width >= 120 && r.height >= 100 &&
-                    r.left <= window._lastTouchX && r.right >= window._lastTouchX &&
-                    r.top <= window._lastTouchY && r.bottom >= window._lastTouchY;
-                }).sort((a, b) => {
-                  const ra = a.getBoundingClientRect();
-                  const rb = b.getBoundingClientRect();
-                  return (rb.width * rb.height) - (ra.width * ra.height);
-                });
-                telegramVideo = vids[0] || null;
-              } catch (_) {}
-            }
-            let telegramImg = pointImage;
-            if (!telegramImg) {
-              try {
-                const imgs = Array.from(document.querySelectorAll(
-                  '.media-viewer img, .media-viewer-whole img, .media-photo img, img.thumbnail'
-                )).filter(el => {
-                  const r = el.getBoundingClientRect();
-                  return r.width >= 160 && r.height >= 160 &&
-                    r.left <= window._lastTouchX && r.right >= window._lastTouchX &&
-                    r.top <= window._lastTouchY && r.bottom >= window._lastTouchY;
-                }).sort((a, b) => {
-                  const ra = a.getBoundingClientRect();
-                  const rb = b.getBoundingClientRect();
-                  return (rb.width * rb.height) - (ra.width * ra.height);
-                });
-                telegramImg = imgs[0] || null;
-              } catch (_) {}
-            }
+            // Prefer the active album slide. Neighbor / first-slide nodes often
+            // still cover the touch point with large rects or reused blob URLs.
+            let telegramVideo = pickTelegramActiveViewerMedia('video') || pointVideo;
+            let telegramImg = pickTelegramActiveViewerMedia('image') || pointImage;
             if (slideKind === 'video') {
               const videoNode = telegramVideo || currentVideo;
               if (videoNode && (videoNode.currentSrc || videoNode.src)) {
@@ -10211,13 +10516,20 @@ class _BrowserPageState extends State<BrowserPage>
               }
             }
             try {
+              const ids = telegramViewerMediaIds();
               Flutter.postMessage(JSON.stringify({
                 type: 'telegram_debug',
                 phase: 'slide_kind',
                 kind: slideKind,
                 targetTag: String((bestTarget && bestTarget.tagName) || ''),
                 hasVideo: !!(pointVideo || telegramVideo),
-                hasImage: !!(pointImage || telegramImg)
+                hasImage: !!(pointImage || telegramImg),
+                photoId: ids.photoId,
+                docId: ids.docId,
+                mid: ids.mid,
+                src: String(
+                  (bestTarget && (bestTarget.currentSrc || bestTarget.src)) || ''
+                ).slice(0, 180)
               }));
             } catch (_) {}
           }
@@ -11398,11 +11710,8 @@ class _BrowserPageState extends State<BrowserPage>
             if (!videoEl || !(videoEl.currentSrc || videoEl.src) ||
                 tagName === 'img' || tagName === 'image') {
               try {
-                const viewerVideo = document.querySelector(
-                  '.media-viewer video, .media-viewer-whole video'
-                );
-                if (viewerVideo && (viewerVideo.currentSrc || viewerVideo.src) &&
-                    (!viewerVideo.paused || Number(viewerVideo.currentTime || 0) > 0.2)) {
+                const viewerVideo = pickTelegramActiveViewerMedia('video');
+                if (viewerVideo && (viewerVideo.currentSrc || viewerVideo.src)) {
                   target = viewerVideo;
                   videoEl = viewerVideo;
                   tagName = 'video';
@@ -11412,6 +11721,14 @@ class _BrowserPageState extends State<BrowserPage>
             }
           } else if (slideKind === 'photo') {
             mediaType = 'image';
+            try {
+              const viewerImg = pickTelegramActiveViewerMedia('image');
+              if (viewerImg && (viewerImg.currentSrc || viewerImg.src)) {
+                target = viewerImg;
+                tagName = 'img';
+                url = String(viewerImg.currentSrc || viewerImg.src || url);
+              }
+            } catch (_) {}
           } else if (tagName === 'img' || tagName === 'image') {
             // Finger is on an image and slide kind is ambiguous → download photo.
             mediaType = 'image';
@@ -11600,36 +11917,25 @@ class _BrowserPageState extends State<BrowserPage>
           e.preventDefault();
           return;
         }
-        // Telegram images must stay on the same fast path as every other site:
-        // resolve the pressed IMG (blob/data/http) and save. Do NOT route photos
-        // through appDownloadManager / TG_STREAM — that path is for videos and
-        // made a simple long-press wait many seconds with a stuck progress row.
+        // Telegram album photos: one path, never save blurry placeholders.
+        // 1) Prefer appDownloadManager original bytes when viewer.target is fresh
+        // 2) Else wait until the active slide is fully loaded, then canvas/blob
+        // Do not canvas-capture progressive outlines after a fast swipe.
         if (isTelegramContext && mediaType === 'image' &&
             telegramViewerSlideKind(target) !== 'video') {
+          let activeImg = pickTelegramActiveViewerMedia('image') || (
+            String((target && target.tagName) || '').toLowerCase() === 'img'
+              ? target
+              : (target && target.querySelector && target.querySelector('img'))
+          );
           let imageUrl = url;
           try {
-            const imgEl = (String((target && target.tagName) || '').toLowerCase() === 'img')
-              ? target
-              : (target && target.querySelector && target.querySelector('img'));
-            if (imgEl) {
-              const current = String(imgEl.currentSrc || imgEl.src || '').trim();
-              const srcset = String(imgEl.srcset || imgEl.getAttribute('srcset') || '');
-              if (srcset) {
-                let best = current;
-                let bestW = 0;
-                srcset.split(',').forEach(part => {
-                  const trimmed = String(part || '').trim();
-                  if (!trimmed) return;
-                  const bits = trimmed.split(/\\s+/);
-                  const u = bits[0];
-                  const wMatch = trimmed.match(/(\\d+)w/);
-                  const w = wMatch ? parseInt(wMatch[1], 10) : 0;
-                  if (u && w >= bestW) { bestW = w; best = u; }
-                });
-                if (best) imageUrl = best;
-              } else if (current) {
-                imageUrl = current;
-              }
+            if (activeImg) {
+              target = activeImg;
+              const current = String(
+                activeImg.currentSrc || activeImg.src || ''
+              ).trim();
+              if (current) imageUrl = current;
               try {
                 if (imageUrl && !/^https?:|^blob:|^data:/i.test(imageUrl)) {
                   imageUrl = new URL(imageUrl, location.href).href;
@@ -11637,22 +11943,322 @@ class _BrowserPageState extends State<BrowserPage>
               } catch (_) {}
             }
           } catch (_) {}
-          if (tryBlobOrDataUrl(imageUrl, 'image')) {
-            e.preventDefault();
-            return;
+          const ids = telegramViewerMediaIds();
+          let slideToken = '';
+          try {
+            const roots = document.querySelectorAll(
+              '.media-viewer, .media-viewer-whole, .MediaViewer, #MediaViewer'
+            );
+            const re = /\\b(\\d{1,4})\\s*[\\/／]\\s*(\\d{1,4})\\b/;
+            for (const root of roots) {
+              const nodes = root.querySelectorAll
+                ? root.querySelectorAll('span, div, button, p')
+                : [];
+              for (const node of nodes) {
+                const t = String(node.textContent || '').replace(/\\s+/g, ' ').trim();
+                if (!t || t.length > 24) continue;
+                const m = t.match(re);
+                if (m) { slideToken = m[1] + '/' + m[2]; break; }
+              }
+              if (slideToken) break;
+            }
+          } catch (_) {}
+          // Counter text can vanish mid-album; fall back to active slide index.
+          if (!slideToken) {
+            try {
+              const movers = document.querySelector('.media-viewer-movers');
+              const activeRoot = telegramActiveSlideRoot();
+              if (movers && activeRoot && movers.contains(activeRoot)) {
+                const kids = Array.from(movers.children || []);
+                const idx = kids.indexOf(activeRoot);
+                if (idx >= 0 && kids.length > 0) {
+                  slideToken = (idx + 1) + '/' + kids.length;
+                }
+              }
+            } catch (_) {}
           }
-          Flutter.postMessage(JSON.stringify({
-            type: 'media',
-            mediaType: 'image',
-            url: imageUrl,
-            isBase64: false,
-            isSmartGesture: isSmartGesture,
-            action: 'download',
-            pageUrl: location.href || '',
-            title: document.title || '',
-            sessionId: longPressSessionId,
-            candidates: cands
-          }));
+          if (!slideToken) {
+            try {
+              const slides = Array.from(document.querySelectorAll(
+                '.MediaViewerSlide, .media-viewer-aspecter'
+              ));
+              const activeRoot = telegramActiveSlideRoot();
+              const idx = activeRoot ? slides.indexOf(activeRoot) : -1;
+              if (idx >= 0 && slides.length > 0) {
+                slideToken = (idx + 1) + '/' + slides.length;
+              }
+            } catch (_) {}
+          }
+          const mediaKey = String(
+            ids.photoId || ids.docId || (ids.mid ? ('mid:' + ids.mid) : '') || ''
+          );
+          window.__appTelegramSavedMediaKeys =
+            window.__appTelegramSavedMediaKeys || new Set();
+          window.__appTelegramMediaKeyToSlide =
+            window.__appTelegramMediaKeyToSlide || {};
+          window.__appTelegramSlideToMediaKey =
+            window.__appTelegramSlideToMediaKey || {};
+          const priorSlideForKey = mediaKey
+            ? String(window.__appTelegramMediaKeyToSlide[mediaKey] || '')
+            : '';
+          const priorKeyForSlide = slideToken
+            ? String(window.__appTelegramSlideToMediaKey[slideToken] || '')
+            : '';
+          const keyAlreadySaved = !!(
+            mediaKey && window.__appTelegramSavedMediaKeys.has(mediaKey)
+          );
+          // CRITICAL: after some slides, appMediaViewer.target often snaps back
+          // to the FIRST album photo while the UI shows another slide. The old
+          // "same as last key" check missed that (last key was a different
+          // photo). Any already-saved viewer key must not drive manager again.
+          const targetLooksStale = !!(
+            mediaKey && (
+              keyAlreadySaved ||
+              (slideToken && priorSlideForKey &&
+                priorSlideForKey !== slideToken) ||
+              (slideToken && priorKeyForSlide &&
+                priorKeyForSlide !== mediaKey &&
+                !String(priorKeyForSlide).startsWith('canvas:')) ||
+              (slideToken &&
+                window.__appTelegramLastSavedMediaKey === mediaKey &&
+                window.__appTelegramLastSavedSlideToken &&
+                window.__appTelegramLastSavedSlideToken !== slideToken)
+            )
+          );
+          const alreadySharp = telegramPhotoLooksFullyLoaded(activeImg);
+          try {
+            Flutter.postMessage(JSON.stringify({
+              type: 'telegram_debug',
+              phase: 'photo_download_begin',
+              photoId: ids.photoId,
+              docId: ids.docId,
+              mid: ids.mid,
+              slide: slideToken,
+              staleTarget: targetLooksStale,
+              keySaved: keyAlreadySaved,
+              priorSlide: priorSlideForKey,
+              sharp: alreadySharp,
+              natural: activeImg
+                ? (Number(activeImg.naturalWidth || 0) + 'x' +
+                  Number(activeImg.naturalHeight || 0))
+                : '',
+              src: String(imageUrl || '').slice(0, 180),
+              isSmartGesture: !!isSmartGesture
+            }));
+          } catch (_) {}
+          const rememberTelegramPhotoIdentity = (opts) => {
+            const trustedViewer = !!(opts && opts.trustedViewerKey);
+            if (slideToken) {
+              window.__appTelegramLastSavedSlideToken = slideToken;
+            }
+            if (trustedViewer && mediaKey) {
+              window.__appTelegramLastSavedMediaKey = mediaKey;
+              window.__appTelegramSavedMediaKeys.add(mediaKey);
+              if (slideToken) {
+                window.__appTelegramMediaKeyToSlide[mediaKey] = slideToken;
+                window.__appTelegramSlideToMediaKey[slideToken] = mediaKey;
+              }
+              return;
+            }
+            // Active-slide canvas while viewer.target was stale/wrong: bind the
+            // slide only. Never claim the stale first-photo id belongs here.
+            if (slideToken) {
+              const canvasKey = 'canvas:' + slideToken;
+              window.__appTelegramLastSavedMediaKey = canvasKey;
+              window.__appTelegramSlideToMediaKey[slideToken] = canvasKey;
+            }
+          };
+          const postTelegramPhotoBase64 = (painted) => {
+            Flutter.postMessage(JSON.stringify({
+              type: 'media',
+              mediaType: 'image',
+              url: painted,
+              isBase64: true,
+              isSmartGesture: isSmartGesture,
+              action: 'download',
+              pageUrl: location.href || '',
+              title: document.title || '',
+              sessionId: longPressSessionId,
+              siteMediaId: slideToken
+                ? ('tgslide:' + slideToken)
+                : (mediaKey || ''),
+              candidates: cands
+            }));
+            rememberTelegramPhotoIdentity({trustedViewerKey: false});
+            updateFeedbackStatus('已保存当前 Telegram 图片', true);
+          };
+          const tryTelegramPhotoSaveNow = (imgNode, requireSharp) => {
+            const node = imgNode || pickTelegramActiveViewerMedia('image') ||
+              activeImg;
+            if (requireSharp && !telegramPhotoLooksFullyLoaded(node)) {
+              return false;
+            }
+            const painted = captureTelegramImageFromElement(node, {
+              requireSharp: !!requireSharp
+            });
+            if (painted) {
+              postTelegramPhotoBase64(painted);
+              return true;
+            }
+            // When viewer.target is stale (often snapped back to album #1),
+            // blob URLs are reused and must not be fetched — canvas only.
+            if (targetLooksStale) return false;
+            const sharpUrl = String(
+              (node && (node.currentSrc || node.src)) || imageUrl || ''
+            ).trim();
+            if (sharpUrl && tryBlobOrDataUrl(sharpUrl, 'image')) {
+              rememberTelegramPhotoIdentity({trustedViewerKey: false});
+              return true;
+            }
+            return false;
+          };
+          const runTelegramPhotoDownload = async () => {
+            // Manual long-press: download immediately. The user already waited
+            // until the image looks right — do not apply smart sharpness gates.
+            if (!isSmartGesture) {
+              if (!targetLooksStale && (ids.photoId || ids.docId)) {
+                updateFeedbackStatus('正在下载当前 Telegram 原始图片…', null);
+                try {
+                  const started = await tryTelegramManagerMediaDownload(false);
+                  if (started) {
+                    rememberTelegramPhotoIdentity({trustedViewerKey: true});
+                    return;
+                  }
+                } catch (_) {}
+              }
+              if (tryTelegramPhotoSaveNow(activeImg, false)) return;
+              if (!targetLooksStale) {
+                try {
+                  const started = await tryTelegramManagerMediaDownload(false);
+                  if (started) {
+                    rememberTelegramPhotoIdentity({trustedViewerKey: true});
+                    return;
+                  }
+                } catch (_) {}
+              }
+              Flutter.postMessage(JSON.stringify({
+                type: 'media',
+                mediaType: 'image',
+                url: imageUrl,
+                isBase64: false,
+                isSmartGesture: false,
+                action: 'download',
+                pageUrl: location.href || '',
+                title: document.title || '',
+                sessionId: longPressSessionId,
+                siteMediaId: slideToken
+                  ? ('tgslide:' + slideToken)
+                  : (mediaKey || ''),
+                candidates: cands
+              }));
+              rememberTelegramPhotoIdentity({trustedViewerKey: false});
+              updateFeedbackStatus('正在保存…', null);
+              return;
+            }
+
+            // Smart-download: original bytes only for a NEW viewer media id.
+            if (!targetLooksStale && (ids.photoId || ids.docId)) {
+              updateFeedbackStatus('正在下载当前 Telegram 原始图片…', null);
+              try {
+                const started = await tryTelegramManagerMediaDownload(true);
+                if (started) {
+                  rememberTelegramPhotoIdentity({trustedViewerKey: true});
+                  try {
+                    Flutter.postMessage(JSON.stringify({
+                      type: 'telegram_debug',
+                      phase: 'photo_download_manager',
+                      photoId: ids.photoId,
+                      docId: ids.docId,
+                      mid: ids.mid,
+                      slide: slideToken,
+                      ok: true
+                    }));
+                  } catch (_) {}
+                  return;
+                }
+              } catch (_) {}
+              try {
+                Flutter.postMessage(JSON.stringify({
+                  type: 'telegram_debug',
+                  phase: 'photo_download_manager',
+                  photoId: ids.photoId,
+                  docId: ids.docId,
+                  mid: ids.mid,
+                  slide: slideToken,
+                  ok: false
+                }));
+              } catch (_) {}
+            } else if (targetLooksStale) {
+              try {
+                Flutter.postMessage(JSON.stringify({
+                  type: 'telegram_debug',
+                  phase: 'photo_skip_stale_manager',
+                  photoId: ids.photoId,
+                  docId: ids.docId,
+                  slide: slideToken,
+                  priorSlide: priorSlideForKey,
+                  keySaved: keyAlreadySaved
+                }));
+              } catch (_) {}
+            }
+            // Smart only: wait out progressive/blurry frames after a fast swipe.
+            if (!telegramPhotoLooksFullyLoaded(activeImg)) {
+              updateFeedbackStatus('正在等待清晰图片加载…', null);
+              activeImg = await waitForTelegramPhotoFullyLoaded(activeImg, 9000);
+              try {
+                if (activeImg) {
+                  imageUrl = String(
+                    activeImg.currentSrc || activeImg.src || imageUrl || ''
+                  ).trim();
+                }
+              } catch (_) {}
+              try {
+                Flutter.postMessage(JSON.stringify({
+                  type: 'telegram_debug',
+                  phase: 'photo_wait_sharp',
+                  sharp: telegramPhotoLooksFullyLoaded(activeImg),
+                  natural: activeImg
+                    ? (Number(activeImg.naturalWidth || 0) + 'x' +
+                      Number(activeImg.naturalHeight || 0))
+                    : '',
+                  slide: slideToken
+                }));
+              } catch (_) {}
+            }
+            if (tryTelegramPhotoSaveNow(activeImg, true)) return;
+            if (!targetLooksStale && !keyAlreadySaved) {
+              updateFeedbackStatus('正在下载当前 Telegram 原始图片…', null);
+              try {
+                const started = await tryTelegramManagerMediaDownload(true);
+                if (started) {
+                  rememberTelegramPhotoIdentity({trustedViewerKey: true});
+                  return;
+                }
+              } catch (_) {}
+            }
+            updateFeedbackStatus(
+              '当前图片尚未加载清晰，请稍候再长按或稍后重试',
+              false
+            );
+            try {
+              Flutter.postMessage(JSON.stringify({
+                type: 'telegram_debug',
+                phase: 'photo_download_rejected_blurry',
+                slide: slideToken,
+                natural: activeImg
+                  ? (Number(activeImg.naturalWidth || 0) + 'x' +
+                    Number(activeImg.naturalHeight || 0))
+                  : ''
+              }));
+            } catch (_) {}
+            Flutter.postMessage(JSON.stringify({
+              type: 'media_busy',
+              isSmartGesture: true,
+              reason: 'telegram_photo_not_sharp',
+              url: String(imageUrl || '').slice(0, 240)
+            }));
+          };
+          runTelegramPhotoDownload();
           e.preventDefault();
           return;
         }
@@ -11975,21 +12581,17 @@ class _BrowserPageState extends State<BrowserPage>
     }
     if (mounted) {
       final now = DateTime.now();
-      final recentlyNotified =
+      final recentlyLogged =
           _lastMediaHandlerFailureUrl == injectionUrl &&
           _lastMediaHandlerFailureAt != null &&
           now.difference(_lastMediaHandlerFailureAt!) <
               const Duration(seconds: 30);
-      if (!recentlyNotified) {
+      if (!recentlyLogged) {
         _lastMediaHandlerFailureUrl = injectionUrl;
         _lastMediaHandlerFailureAt = now;
-        // Only while the browser tab/route is visible. Smart download keeps
-        // reinjecting in the background; do not toast over 媒体/目录 pages.
-        _showBrowserSnackBar(
-          const SnackBar(
-            content: Text('媒体监听初始化失败，已自动改用兼容模式继续尝试'),
-            duration: Duration(seconds: 2),
-          ),
+        // 完整监听注入失败时已自动走兼容模式；不再弹 SnackBar（多站会反复失败，打扰浏览）。
+        debugPrint(
+          '媒体监听初始化失败，已改用兼容模式: $injectionUrl',
         );
       }
     }
@@ -12003,6 +12605,18 @@ class _BrowserPageState extends State<BrowserPage>
       if (data['type'] == 'telegram_debug') {
         debugPrint(
           '[TG_BLOB_DEBUG] phase=${data['phase'] ?? ''} '
+          'kind=${data['kind'] ?? ''} '
+          'slide=${data['slide'] ?? ''} '
+          'photoId=${data['photoId'] ?? ''} '
+          'docId=${data['docId'] ?? ''} '
+          'mid=${data['mid'] ?? ''} '
+          'staleTarget=${data['staleTarget'] ?? ''} '
+          'keySaved=${data['keySaved'] ?? ''} '
+          'priorSlide=${data['priorSlide'] ?? ''} '
+          'sharp=${data['sharp'] ?? ''} '
+          'natural=${data['natural'] ?? ''} '
+          'ok=${data['ok'] ?? ''} '
+          'src=${data['src'] ?? data['currentSrc'] ?? ''} '
           'foundStream=${data['foundStream']} '
           'possible=${data['possibleCount']} '
           'dedicated=${data['dedicatedCount']} '
@@ -12010,7 +12624,7 @@ class _BrowserPageState extends State<BrowserPage>
           'intercepted=${data['interceptedCount']} '
           'performanceStreams=${data['performanceTelegramCount']} '
           'readyState=${data['readyState']} duration=${data['duration']} '
-          'currentSrc=${data['currentSrc']} controls=${data['controls']}',
+          'controls=${data['controls']}',
         );
         return;
       }
@@ -12076,23 +12690,40 @@ class _BrowserPageState extends State<BrowserPage>
         } else if (phase == 'start') {
           _ensureTelegramOfficialProgressTask(
             isSmartGesture: data['isSmartGesture'] == true,
+            mediaKind: (data['mediaKind'] ?? '').toString(),
           );
           _telegramOfficialDownloadActive = true;
           _telegramOfficialDownloadLastProgressAt = DateTime.now();
           _updateTelegramOfficialProgress(phase);
-        } else if (phase == 'progress' ||
-            phase == 'streaming' ||
-            phase == 'fallback') {
+        } else if (phase == 'progress' || phase == 'streaming') {
           _telegramOfficialDownloadActive = true;
           _telegramOfficialDownloadLastProgressAt = DateTime.now();
-          if (phase != 'fallback') {
-            _updateTelegramOfficialProgress(phase);
-          } else if (_telegramStreamProgressTaskId.isNotEmpty) {
+          _updateTelegramOfficialProgress(phase);
+        } else if (phase == 'fallback') {
+          // Official manager gave up. Do NOT keep the 2-minute "recent
+          // progress" gate closed — the alternate path may already have saved
+          // (or will save) and smart-download must be free to advance.
+          if (_telegramStreamProgressTaskId.isNotEmpty) {
             _updateDownloadTask(
               _telegramStreamProgressTaskId,
               status: 'downloading',
               progressDetail: '原始方式停滞，正在尝试 Telegram 兼容下载方式',
             );
+          }
+          _telegramOfficialDownloadActive = false;
+          _telegramOfficialDownloadLastProgressAt = null;
+          if (_mediaDownloadSaveResolved) {
+            _releaseTelegramOfficialProgressUi(
+              success: true,
+              detail: '兼容方式已保存到媒体库',
+            );
+            final smartTask = _smartDownloadTask;
+            if (smartTask != null &&
+                (smartTask['gestureDownloadPending'] == true ||
+                    smartTask['actionAwaitingLibrarySave'] == true ||
+                    smartTask['actionLongPressNeedsConfirm'] == true)) {
+              await _completeSmartGestureDownload(true);
+            }
           }
         } else if (phase == 'completed' || phase == 'failed') {
           _telegramOfficialDownloadActive = false;
@@ -12149,14 +12780,19 @@ class _BrowserPageState extends State<BrowserPage>
       if (data['type'] == 'media_busy') {
         final busySmart =
             data['isSmartGesture'] == true || _isSmartDemoLearningActive();
+        final busyReason =
+            (data['reason'] ?? 'already_processing').toString().trim();
         debugPrint(
           'media busy soft-lock hit smart=$busySmart '
+          'reason=$busyReason '
           'url=${(data['url'] ?? '').toString()}',
         );
         if (busySmart) {
           final task = _smartDownloadTask;
           if (task != null) {
-            task['lastGestureFailureType'] = 'already_processing';
+            // Blurry Telegram album frame: retryable, not a hard soft-lock.
+            task['lastGestureFailureType'] =
+                busyReason.isEmpty ? 'already_processing' : busyReason;
           }
           await _completeSmartGestureDownload(false);
         }
@@ -13347,6 +13983,13 @@ class _BrowserPageState extends State<BrowserPage>
         }
         if (success) {
           _notifyMediaDownloadSaved();
+          _releaseTelegramOfficialProgressUi(
+            success: true,
+            detail:
+                selectedType == MediaType.image
+                    ? 'Telegram 图片已保存'
+                    : '媒体已保存',
+          );
           if (isSmartGesture) {
             await _completeSmartGestureDownload(true);
           }
@@ -13634,15 +14277,38 @@ class _BrowserPageState extends State<BrowserPage>
         relaxValidation: false,
       );
       _notifyMediaDownloadSaved();
+      // Canvas / blob image saves must release any stuck Telegram official
+      // progress row and the smart-download library gate immediately.
+      _releaseTelegramOfficialProgressUi(
+        success: true,
+        detail:
+            normalizedMediaType == 'image'
+                ? 'Telegram 图片已保存'
+                : 'Telegram 媒体已保存',
+      );
+      final smartTask = _smartDownloadTask;
+      if (smartTask != null &&
+          (smartTask['gestureDownloadPending'] == true ||
+              smartTask['actionAwaitingLibrarySave'] == true ||
+              smartTask['actionLongPressNeedsConfirm'] == true)) {
+        debugPrint(
+          '[BLOB_SAVE] library saved; completing smart gesture immediately '
+          'type=$normalizedMediaType',
+        );
+        await _completeSmartGestureDownload(true);
+      }
       if (mounted) {
         _showBrowserSnackBar(
           SnackBar(
             content: Text('已保存到媒体库：${file.path.split('/').last}'),
             duration: _kMediaSaveSnackDuration,
-            action: SnackBarAction(
-              label: '查看',
-              onPressed: () => _openMediaLibraryAt(savedMedia),
-            ),
+            action:
+                smartTask == null
+                    ? SnackBarAction(
+                      label: '查看',
+                      onPressed: () => _openMediaLibraryAt(savedMedia),
+                    )
+                    : null,
           ),
         );
       }
@@ -13652,7 +14318,21 @@ class _BrowserPageState extends State<BrowserPage>
           await outputFile.delete();
         }
       } catch (_) {}
-      await _showMediaDuplicateDialog(e.existingRow);
+      _notifyMediaDownloadSaved();
+      _releaseTelegramOfficialProgressUi(
+        success: true,
+        detail: '媒体库已有相同内容',
+      );
+      final smartTask = _smartDownloadTask;
+      if (smartTask != null &&
+          (smartTask['gestureDownloadPending'] == true ||
+              smartTask['actionAwaitingLibrarySave'] == true ||
+              smartTask['actionLongPressNeedsConfirm'] == true)) {
+        smartTask['lastGestureFailureType'] = 'already_in_library';
+        await _completeSmartGestureDownload(false);
+      } else {
+        await _showMediaDuplicateDialog(e.existingRow);
+      }
     } catch (e, stackTrace) {
       debugPrint('处理Base64数据时出错: $e');
       debugPrint('错误堆栈: $stackTrace');
@@ -19642,6 +20322,29 @@ class _BrowserPageState extends State<BrowserPage>
                         '用于跳过过长或过短视频；留空=不按时长过滤。沉浸批量建议设最长 10～15 分钟。',
                         style: TextStyle(fontSize: 11, color: Colors.grey),
                       ),
+                      const SizedBox(height: 16),
+                      const Text(
+                        '6. 下载查重',
+                        style: TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                      SwitchListTile(
+                        contentPadding: EdgeInsets.zero,
+                        dense: true,
+                        title: const Text('内容查重（默认开启）'),
+                        subtitle: Text(
+                          _browserDownloadDedupEnabled
+                              ? '开启：哈希/库内身份/收藏已下载等重复判定会跳过入库（手动长按同样生效）'
+                              : '关闭：撤销全部重复拦截，直接入库；仍校验须为有效图片/视频（非垃圾文件）',
+                          style: const TextStyle(fontSize: 11),
+                        ),
+                        value: _browserDownloadDedupEnabled,
+                        onChanged: (v) async {
+                          await _setBrowserDownloadDedupEnabled(v);
+                          if (dialogContext.mounted) {
+                            setDialogState(() {});
+                          }
+                        },
+                      ),
                     ],
                   ),
                 ),
@@ -20350,6 +21053,7 @@ class _BrowserPageState extends State<BrowserPage>
   }
 
   Future<bool> _libraryConfirmsFacebookIdentity(String identity) async {
+    if (!_browserDownloadDedupEnabled) return false;
     final key = identity.trim();
     if (key.isEmpty) return false;
 
@@ -20429,6 +21133,7 @@ class _BrowserPageState extends State<BrowserPage>
 
   Future<bool> _libraryConfirmsMediaSource(String src) async {
     // 仅作提示/清理映射；绝不可单独作为「库内已有」跳过依据。
+    if (!_browserDownloadDedupEnabled) return false;
     final s = src.trim();
     if (s.isEmpty || s.startsWith('blob:') || s.startsWith('data:')) {
       return false;
@@ -20439,6 +21144,7 @@ class _BrowserPageState extends State<BrowserPage>
 
   /// 内容哈希命中且库内对应文件仍在磁盘 → 唯一合法的「库内已有」确认。
   Future<bool> _libraryConfirmsFileHash(String fileHash) async {
+    if (!_browserDownloadDedupEnabled) return false;
     final hash = fileHash.trim();
     if (hash.isEmpty) return false;
     try {
@@ -20452,6 +21158,7 @@ class _BrowserPageState extends State<BrowserPage>
   Future<bool> _libraryConfirmsExistingMediaRow(
     Map<String, dynamic>? row,
   ) async {
+    if (!_browserDownloadDedupEnabled) return false;
     if (row == null) return false;
     final directory = (row['directory'] ?? '').toString();
     if (directory == 'recycle_bin') return false;
@@ -25191,14 +25898,20 @@ class _BrowserPageState extends State<BrowserPage>
       );
       task['mediaType'] = MediaType.video;
     }
-    // Facebook 视频一旦在本任务中成功入库或确认重复，就不得再次长按下载。
-    // 页面回弹/循环回到旧视频时，先切走再处理新的当前视频。
+    // Facebook 视频：查重开启时，本任务已处理或库内身份确认则切走；
+    // 查重关闭时仅跳过「本任务已成功处理」的会话标记，避免同一条死循环，
+    // 不再因库内身份误判而拒绝入库。
     if (!probe && _actionRecipeRequiresSuccessfulVideoSave(task)) {
       // Prefer stable fbvideo:/reel: over fragile DOM blob geometry keys.
       final fbIdNow = await _actionCaptureFacebookVideoIdentity(task);
-      if (fbIdNow.isNotEmpty &&
-          (_sessionHasHandledFacebookIdentity(task, fbIdNow) ||
-              await _libraryConfirmsFacebookIdentity(fbIdNow))) {
+      final libraryDup =
+          _browserDownloadDedupEnabled &&
+          fbIdNow.isNotEmpty &&
+          await _libraryConfirmsFacebookIdentity(fbIdNow);
+      final sessionDup =
+          fbIdNow.isNotEmpty &&
+          _sessionHasHandledFacebookIdentity(task, fbIdNow);
+      if (fbIdNow.isNotEmpty && (sessionDup || libraryDup)) {
         _rememberHandledFacebookIdentity(task, fbIdNow);
         task['needAdvancePastCurrent'] = true;
         final advanced = await _advancePastHandledMedia(task);
@@ -25211,7 +25924,9 @@ class _BrowserPageState extends State<BrowserPage>
         await Future<void>.delayed(const Duration(milliseconds: 420));
       } else {
         final currentIdentity = await _actionCaptureMediaIdentity(task);
-        if (_isHandledMediaIdentity(task, currentIdentity)) {
+        // 查重关闭：不因会话「已处理」几何指纹跳过（易误伤邻条）；仅依赖真实入库结果推进。
+        if (_browserDownloadDedupEnabled &&
+            _isHandledMediaIdentity(task, currentIdentity)) {
           task['needAdvancePastCurrent'] = true;
           final advanced = await _advancePastHandledMedia(task);
           if (!advanced) {
@@ -35930,6 +36645,8 @@ class _BrowserPageState extends State<BrowserPage>
     bool relaxValidation = false,
   }) async {
     try {
+      // 用户关闭查重时：跳过内容哈希去重，始终写入新媒体项。
+      final skipContentDedup = allowDuplicate || !_browserDownloadDedupEnabled;
       if (!await file.exists()) {
         throw const FileSystemException('下载完成后的媒体文件不存在');
       }
@@ -35964,7 +36681,7 @@ class _BrowserPageState extends State<BrowserPage>
         throw Exception('视频数据不完整，未保存到媒体库');
       }
       final fileHash = await _calculateFileHash(file);
-      if (fileHash.isEmpty && !allowDuplicate) {
+      if (fileHash.isEmpty && !skipContentDedup) {
         throw const FileSystemException('无法计算媒体内容哈希，已停止入库以避免产生重复文件');
       }
       final uuid = const Uuid().v4();
@@ -35981,7 +36698,7 @@ class _BrowserPageState extends State<BrowserPage>
 
       for (var attempt = 0; attempt < 3; attempt++) {
         try {
-          if (allowDuplicate) {
+          if (skipContentDedup) {
             await _databaseService.insertMediaItem(mediaItemMap);
             return mediaItemMap;
           }
@@ -37527,6 +38244,33 @@ class _BrowserPageState extends State<BrowserPage>
                               color: Colors.white,
                               fontWeight: FontWeight.bold,
                             ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              _browserDownloadDedupEnabled
+                                  ? '内容查重：开'
+                                  : '内容查重：关（不拦重复，仍校验有效媒体）',
+                              style: TextStyle(
+                                color:
+                                    _browserDownloadDedupEnabled
+                                        ? Colors.white70
+                                        : Colors.orangeAccent,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ),
+                          Switch(
+                            materialTapTargetSize:
+                                MaterialTapTargetSize.shrinkWrap,
+                            value: _browserDownloadDedupEnabled,
+                            onChanged: (v) {
+                              unawaited(_setBrowserDownloadDedupEnabled(v));
+                            },
                           ),
                         ],
                       ),
