@@ -68,6 +68,10 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
   int _currentIndex = 0;
   final Map<int, VideoPlayerController> _videoControllers = {};
   final Map<int, ChewieController> _chewieControllers = {};
+  /// Indexes whose [VideoPlayerController.initialize] failed (timeout/codec).
+  final Set<int> _videoInitFailed = <int>{};
+  final Map<int, String> _videoInitFailureDetail = <int, String>{};
+  final Set<int> _videoInitInFlight = <int>{};
   final bool _isFullScreen = false;
   late final DatabaseService _dbService;
   MediaMode _mediaMode = MediaMode.none;
@@ -804,23 +808,43 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
     );
   }
 
+  /// Large / HEVC Telegram files often need well over 10s to open moov + decoder.
+  Duration _videoInitTimeoutForBytes(int fileSize) {
+    if (fileSize <= 80 * 1024 * 1024) return const Duration(seconds: 15);
+    if (fileSize <= 200 * 1024 * 1024) return const Duration(seconds: 35);
+    if (fileSize <= 500 * 1024 * 1024) return const Duration(seconds: 60);
+    return const Duration(seconds: 90);
+  }
+
   Future<void> _initializeVideoControllerAt(int index) async {
     if (index < 0 || index >= widget.mediaItems.length) return;
 
     final item = widget.mediaItems[index];
     if (item.type != MediaType.video) return;
+    if (_videoControllers.containsKey(index) &&
+        _chewieControllers.containsKey(index)) {
+      return;
+    }
+    if (_videoInitInFlight.contains(index)) return;
+    _videoInitInFlight.add(index);
 
     try {
       if (!_videoControllers.containsKey(index)) {
         // 检查文件是否存在
         final File videoFile = File(item.path);
         if (!await videoFile.exists()) {
+          _videoInitFailed.add(index);
+          _videoInitFailureDetail[index] = '文件不存在';
+          if (mounted) setState(() {});
           return;
         }
 
         // 验证文件大小
         final fileSize = await videoFile.length();
         if (fileSize <= 0) {
+          _videoInitFailed.add(index);
+          _videoInitFailureDetail[index] = '文件为空';
+          if (mounted) setState(() {});
           return;
         }
 
@@ -832,20 +856,50 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
           if (controller.value.hasError) {}
         });
 
-        // 初始化带有超时处理
+        // 大文件 / HEVC 打开 moov 与硬解初始化常超过旧的 10s 上限；
+        // 超时后若静默丢掉 controller，界面会永远停在「正在加载视频」。
+        final initTimeout = _videoInitTimeoutForBytes(fileSize);
         bool initializeSuccessful = false;
+        Object? initError;
         try {
-          await controller.initialize().timeout(const Duration(seconds: 10));
+          debugPrint(
+            'preview video init start index=$index '
+            'sizeMB=${(fileSize / (1024 * 1024)).toStringAsFixed(1)} '
+            'timeout=${initTimeout.inSeconds}s path=${item.path}',
+          );
+          await controller.initialize().timeout(initTimeout);
           initializeSuccessful = controller.value.isInitialized;
-        } catch (timeoutError) {}
+          if (!initializeSuccessful) {
+            initError = controller.value.errorDescription ?? 'not initialized';
+          }
+        } catch (e) {
+          initError = e;
+        }
 
         if (!initializeSuccessful) {
+          debugPrint(
+            'preview video init FAILED index=$index '
+            'sizeMB=${(fileSize / (1024 * 1024)).toStringAsFixed(1)} '
+            'error=$initError',
+          );
           if (_videoControllers.containsKey(index)) {
             _videoControllers[index]?.dispose();
             _videoControllers.remove(index);
           }
+          _videoInitFailed.add(index);
+          _videoInitFailureDetail[index] = initError == null
+              ? '初始化失败'
+              : initError.toString();
+          if (mounted) setState(() {});
           return;
         }
+        _videoInitFailed.remove(index);
+        _videoInitFailureDetail.remove(index);
+        debugPrint(
+          'preview video init OK index=$index '
+          'sizeMB=${(fileSize / (1024 * 1024)).toStringAsFixed(1)} '
+          'size=${controller.value.size}',
+        );
 
         if (widget.initialResumeVideoPosition != null &&
             index == widget.initialIndex &&
@@ -948,6 +1002,9 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
             await _videoControllers[index]?.dispose();
             _videoControllers.remove(index);
           }
+          _videoInitFailed.add(index);
+          _videoInitFailureDetail[index] = chewieError.toString();
+          if (mounted) setState(() {});
           return;
         }
 
@@ -962,6 +1019,11 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
         _chewieControllers[index]?.dispose();
         _chewieControllers.remove(index);
       }
+      _videoInitFailed.add(index);
+      _videoInitFailureDetail[index] = e.toString();
+      if (mounted) setState(() {});
+    } finally {
+      _videoInitInFlight.remove(index);
     }
   }
 
@@ -1507,6 +1569,48 @@ class _MediaPreviewPageState extends State<MediaPreviewPage> {
   Widget _buildVideoPreview(MediaItem item, int index, Size viewportSize) {
     if (!_videoControllers.containsKey(index) ||
         !_chewieControllers.containsKey(index)) {
+      if (_videoInitFailed.contains(index)) {
+        final detail = (_videoInitFailureDetail[index] ?? '').trim();
+        return Center(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 28),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.error_outline, color: Colors.orange, size: 48),
+                const SizedBox(height: 10),
+                const Text(
+                  '视频加载失败',
+                  style: TextStyle(color: Colors.white, fontSize: 16),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  detail.isEmpty
+                      ? '大文件或特殊编码（如 HEVC）可能需要更久；也可点重试。'
+                      : detail,
+                  style: const TextStyle(color: Colors.white70, fontSize: 12),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 14),
+                TextButton(
+                  onPressed: () {
+                    _videoInitFailed.remove(index);
+                    _videoInitFailureDetail.remove(index);
+                    setState(() {});
+                    unawaited(
+                      _initializeVideoControllerAt(index).then((_) {
+                        if (!mounted) return;
+                        if (index == _currentIndex) _playCurrentMedia();
+                      }),
+                    );
+                  },
+                  child: const Text('重试'),
+                ),
+              ],
+            ),
+          ),
+        );
+      }
       // 视频控制器尚未初始化，显示加载中
       return Center(
         child: Column(
